@@ -1,0 +1,55 @@
+[build-system]
+requires = [
+    "setuptools>=61",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feedbax"
+version = "0.0.1"
+description = "Optimal feedback control in JAX."
+# url = ""
+authors = [
+    {name = "MLL", email = "mll@mll.bio"}
+]
+license = {text = "Apache 2.0"}
+readme = "README.md"
+keywords = [
+    'optimal control',
+    'optimal feedback control',
+    'pytorch',
+    'biomechanics'
+]
+requires-python = ">=3.10.6"
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "equinox",
+    "jax",
+    "jaxtyping",
+    "matplotlib",
+    "mypy",
+    "numpy",
+    "optax",
+    "seaborn",
+]
+
+[project.urls]
+# homepage = ""
+# documentation = ""
+# repository = ""
+
+[project.optional-dependencies]
+tests = [
+    'coverage',
+    'pytest',
+]
+
+[tool.setuptools]
+py-modules = ["feedbax"]
+
+[tool.black]
+
+
