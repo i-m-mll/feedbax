@@ -2,13 +2,13 @@
 
 notebooks-to-py:
 	# convert all notebooks to scripts (for version control)
-	@jupytext --to jupytext//py:percent notebooks/*.ipynb
+	@jupytext --to scripts//py:percent notebooks/*.ipynb
 
 regenerate-notebooks:
 	# delete all notebooks and regenerate from jupytext scripts
 	# useful when switching branches
 	@find notebooks -name '*.ipynb' -xtype f -exec trash {} +
-	@jupytext --set-formats ipynb,jupytext//py:percent --sync notebooks/jupytext/*.py
+	@jupytext --set-formats ipynb,scripts//py:percent --sync notebooks/scripts/*.py
 
 checkout:
 	@make notebooks-to-py
