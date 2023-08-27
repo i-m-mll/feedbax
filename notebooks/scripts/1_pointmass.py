@@ -87,7 +87,7 @@ def solve(y0, dt0, args):
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
-y0 = jnp.array([0.1, 0.1, 0.1, 0.1])  
+y0 = jnp.array([0., 0., 0.1, 0.1])  
 dt0 = 0.01  
 args = None
 sol = solve(y0, dt0, args)   
