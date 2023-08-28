@@ -29,7 +29,7 @@ import optax
 import seaborn as sns
 from tqdm import tqdm
 
-from feedbax.utils import exp_taylor
+from feedbax.utils import exp_taylor, sincos_derivative_signs
 
 
 # %%
@@ -95,31 +95,24 @@ dt0 = 0.01
 args = None
 sol = solve(y0, dt0, args)   
 
+
 # %%
-# TODO troubleshoot this. the segment lengths are changing. 
-
-_sincos_derivative_signs = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)]).reshape((4, 1, 1, 2))
-
-def sincos_derivative_signs(i):
-    return _sincos_derivative_signs[-i]
-
-def angular_to_cartesian(theta, dtheta, twolink):
+def nlink_angular_to_cartesian(theta, dtheta, nlink):
     angle_sum = jnp.cumsum(theta)  # links
-    sincos_angle_sum = jnp.array([jnp.cos(angle_sum),
-                                  jnp.sin(angle_sum)])  # links, dims
-    sincos_tmp = twolink.l.reshape((1, -1, 1)) * sincos_angle_sum  # links, dims
-    xy_position = jnp.cumsum(sincos_tmp, axis=0)
+    length_components = nlink.l * jnp.array([jnp.cos(angle_sum),
+                                             jnp.sin(angle_sum)])  # xy, links
+    xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
     
-    ang_vel_sum = jnp.cumsum(dtheta)#.unsqueeze(-1)  # links
-    xy_velocity = jnp.cumsum(jnp.flip(sincos_tmp, (-1,)) * ang_vel_sum
+    ang_vel_sum = jnp.cumsum(dtheta)  # links
+    xy_velocity = jnp.cumsum(jnp.flip(length_components, (0,)) * ang_vel_sum
                              * sincos_derivative_signs(1),
-                             axis=0)
+                             axis=1)
     return xy_position, xy_velocity
 
 
 # %%
-xy_pos, xy_vel = jax.vmap(angular_to_cartesian, in_axes=[0, 0, None])(sol.ys[0], sol.ys[1], TwoLink())
-xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (1,0), (0,0)))
+xy_pos, xy_vel = jax.vmap(nlink_angular_to_cartesian, in_axes=[0, 0, None])(sol.ys[0], sol.ys[1], TwoLink())
+xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
 
 
 # %%
@@ -142,19 +135,17 @@ def plot_2D_positions(xy, links=True, cmap_func=mpl.cm.viridis,
     cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
     cmap = mpl.colors.ListedColormap(cmap)
 
-    for j in range(xy.shape[1]):
-        # xy[np.array((0, len(xy) // 2, -1))]
-        ax.plot(*xy[0].T, c=cmap(0.), lw=1, marker="o")
-        ax.plot(*xy[len(xy)//2].T, c=cmap(0.5), lw=1, marker='o')
-        ax.plot(*xy[-1].T, c=cmap(1.), lw=1, marker='o')
-        # scatter = sns.scatterplot((xy[:, j, 0], xy[:, j, 1]),
-        #                           marker='.', linewidth=0, #hue=range(xy.shape[0]),
-        #                           ax=ax, legend=False palette=cmap.colors)
+    ax.plot(*xy[0], c=cmap(0.), lw=2, marker="o")
+    ax.plot(*xy[len(xy)//2], c=cmap(0.5), lw=2, marker='o')
+    ax.plot(*xy[-1], c=cmap(1.), lw=2, marker='o')
 
+    for j in range(xy.shape[2]):
+        ax.scatter(*xy[..., j].T, marker='.', s=4, linewidth=0, c=cmap.colors)
 
     ax.margins(0.1, 0.2)
     ax.set_aspect('equal')
     return ax
+
 
 # %%
 ax = plot_2D_positions(xy_pos, add_root=False)
@@ -162,15 +153,16 @@ plt.show()
 
 # %% [markdown]
 # Verifying that the segments stay constant length
+#
+# TODO: this should be a unit test for angular_to_cartesian
 
 # %%
-distances = np.sqrt(np.sum(np.diff(xy_pos, axis=1)**2, axis=2))
-print(distances)
-np.std(distances, axis=0)
+distances = np.sqrt(np.sum(np.diff(xy_pos, axis=2)**2, axis=1)) - twolink.l
+print(distances, '\n')
+print("Mean difference from actual length: ", np.mean(distances, axis=0))
+print("% difference from actual length: ", 100 * np.mean(distances, axis=0) / twolink.l)
+print("St. dev. difference from actual length: ", np.std(distances, axis=0))
 
-
-# %% [markdown]
-# Clearly something is wrong in the angular -> Cartesian conversion
 
 # %% [markdown]
 # ### Linearization
