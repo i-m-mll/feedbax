@@ -1,6 +1,7 @@
 """ """
 
 import matplotlib as mpl
+from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -34,3 +35,26 @@ def plot_2D_positions(xy, links=True, cmap_func=mpl.cm.viridis,
     ax.margins(0.1, 0.2)
     ax.set_aspect('equal')
     return ax
+
+
+def animate_arm2(xy):
+    """xy: (n_seq, n_links, n_dim)"""
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+
+    ax.set_aspect('equal')
+    # TODO: set limits based on arm geometry and angle limits
+    ax.set_xlim([-0.4, 0.75])
+    ax.set_ylim([-0.35, 0.65])
+
+    arm_line, = ax.plot(*xy[0].T, 'k-')
+    traj_line, = ax.plot(*xy[0, :, 2].T, 'g-')
+
+    def animate(i):
+        arm_line.set_data(*xy[i].T)
+        traj_line.set_data(*xy[:i+1, :, 2].T)
+        return fig,
+
+    anim = animation.FuncAnimation(fig, animate, frames=len(xy),
+                                interval=1, blit=True)
+    return anim

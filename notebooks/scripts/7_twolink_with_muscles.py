@@ -36,7 +36,7 @@ from feedbax.plot import plot_2D_positions
 # %%
 from jax import config
 
-config.update("jax_debug_nans", True)
+config.update("jax_debug_nans", False)
 
 # %%
 beta = 1.93
@@ -62,10 +62,10 @@ def muscle_l(theta, muscles):
     l = 1 + (M[0] * (theta0[0] - theta[0]) + M[1] * (theta0[1] - theta[1])) / l0
     return l
 
-def muscle_v(dtheta, muscles):
+def muscle_v(d_theta, muscles):
     # muscle velocity
     M, l0 = muscles.M, muscles.l0
-    v = (M[0] * dtheta[0] + M[1] * dtheta[1]) / l0
+    v = (M[0] * d_theta[0] + M[1] * d_theta[1]) / l0
     return v
 
 def tension_from_lv_lt2004(l, v, a=1):
@@ -82,37 +82,55 @@ def tension_from_lv_lt2004(l, v, a=1):
     tension = A_f * (f_l * f_fv + f_p)
     return tension
 
-def tension_lt2004(theta, dtheta, muscles):
+def tension_lt2004(theta, d_theta, muscles):
     """Simple helper to take joint configuration as input."""
     l = muscle_l(theta, muscles)
-    v = muscle_v(dtheta, muscles)
+    v = muscle_v(d_theta, muscles)
     return tension_from_lv_lt2004(l, v)
 
 
 # %%
-l = muscle_l(y0[0], muscles)
-v = muscle_v(y0[1], muscles)
-tension_lt2004(y0[0], y0[1], muscles)
-
-# %%
-twolink = TwoLink()
-muscles = MuscleGroup()
-u = jnp.array([0.1, 0.1, 0.1, 0.1, 0.2, 0.1])
+tau_act = 50  # [ms]
+tau_deact = 66  # [ms]
 
 def torque(t, y, args):
-    theta, dtheta = y
-    torque = muscles.M @ (u * tension_lt2004(theta, dtheta, muscles))
+    muscles, _ = args
+    theta, d_theta, activation = y
+    torque = muscles.M @ (activation * tension_lt2004(theta, d_theta, muscles))
     return torque
+
+
+def muscle_activation_field(t, y, args):
+    """Approximation of muscle activation (calcium) dynamics from Todorov & Li 2004.
+    
+    Just a simple filter.
+    """
+    activation = y
+    u = args  
+    
+    # TODO: assuming tau_act and tau_deact aren't passed as args; e.g. if this is a method of a dataclass
+    tau = tau_deact + jnp.where(u < activation, u, jnp.zeros(1)) * (tau_act - tau_deact)
+    d_activation = (u - activation) / tau
+    
+    return d_activation
+
+
+# TODO: separate dd_dtheta calculation from composite field
+# def twolink_field(t, y, args):
+#     theta, d_theta = y
 
 
 def twolink_field(twolink):
     def field(t, y, args):
-        theta, dtheta = y 
+        theta, d_theta, activation = y 
+        _, u = args  # TODO: what is the best way to pass the input? (if interactively iterating the solver, can pass `args` at each step)
+        
+        d_activation = muscle_activation_field(t, activation, u)
         
         # centripetal and coriolis forces 
         c_vec = jnp.array((
-            -dtheta[1] * (2 * dtheta[0] + dtheta[1]),
-            dtheta[0] ** 2
+            -d_theta[1] * (2 * d_theta[0] + d_theta[1]),
+            d_theta[0] ** 2
         )) * twolink.a2 * jnp.sin(theta[1])  
         
         cs1 = jnp.cos(theta[1])
@@ -120,27 +138,34 @@ def twolink_field(twolink):
         inertia_mat = jnp.array(((twolink.a1 + 2 * twolink.a2 * cs1, tmp),
                                  (tmp, twolink.a3 * jnp.ones_like(cs1))))
         
-        net_torque = torque(t, y, args) - c_vec.T - jnp.matmul(dtheta, twolink.B.T) # - viscosity * state.dtheta
+        net_torque = torque(t, y, args) - c_vec.T - jnp.matmul(d_theta, twolink.B.T) # - viscosity * state.d_theta
         
-        ddtheta = jnp.linalg.inv(inertia_mat) @ net_torque
+        dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
         
-        return dtheta, ddtheta
+        return d_theta, dd_theta, d_activation
     
     return field
 
-def solve(y0, dt0, args):
-    term = dfx.ODETerm(twolink_field(twolink))
+
+def solve(field, y0, dt0, t0, t1, args):
+    term = dfx.ODETerm(field)
     solver = dfx.Tsit5()
-    t0 = 0
-    t1 = 1
     saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
-y0 = (jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0., 0.]))
-dt0 = 0.01  
-args = None
-sol = solve(y0, dt0, args)   
+
+# %%
+y0 = (jnp.array([np.pi / 5, np.pi / 3]), 
+      jnp.array([0., 0.]),
+      jnp.zeros(6))
+u = jnp.array([0., 0., 0., 0., 1e-4, 0.])
+t0 = 0
+dt0 = 1  # [ms]
+t1 = 1000
+field = twolink_field(TwoLink())
+args = (MuscleGroup(), u)
+sol = solve(field, y0, dt0, t0, t1, args)   
 
 # %%
 xy_pos, xy_vel = jax.vmap(nlink_angular_to_cartesian, in_axes=[0, 0, None])(sol.ys[0], sol.ys[1], TwoLink())
@@ -149,5 +174,61 @@ xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
 # %%
 ax = plot_2D_positions(xy_pos, add_root=False)
 plt.show()
+
+# %% [markdown]
+# Testing the activation dynamics. See Fig 1D in Todorov & Li 2004.
+
+# %%
+tau_act = 50 # [ms]
+tau_deact = 66 # [ms]
+
+def muscle_activation_field(t, y, args):
+    """Approximation of muscle activation (calcium) dynamics from Todorov & Li 2004.
+    
+    Just a simple filter.
+    """
+    activation = y
+    u_t = args  # switching from before to use an interpolated step up-down
+    u = u_t.evaluate(t)
+    
+    # TODO: assuming tau_act and tau_deact aren't passed as args; e.g. if this is a method of a dataclass
+    tau = tau_deact + jnp.where(u < activation, u, jnp.zeros(1)) * (tau_act - tau_deact)
+    d_activation = (u - activation) / tau
+    
+    return d_activation
+
+
+# %%
+t0 = 0
+dt0 = 1
+t1 = 600
+ts = jnp.array([t0, t1/100, t1/100 + dt0, t1/2, t1/2 + dt0, t1])
+
+us = jnp.array([0,0,1,1,0,0])
+us = us * jnp.array([0.1, 0.25, 0.5, 1.0])[:,None]
+u_t = dfx.LinearInterpolation(ts, us.T)
+
+y0 = jnp.array([0., 0., 0., 0.]) 
+
+field = muscle_activation_field
+args = u_t
+sol = solve(field, y0, dt0, t0, t1, args)  
+
+# %%
+plt.plot(sol.ts, sol.ys)
+plt.ylabel("Muscle activation")
+plt.xlabel("Time [ms]")
+
+# %% [markdown]
+# The shape doesn't quite match the figure from Todorov & Li 2004... the lower curves look similar, but the upper curve plateaus more quickly in their figure.
+#
+# I chose the magnitude of the inputs `u` arbitrarily. If I choose a value higher than 1, the muscle activation will exceed 1. But perhaps it should saturate at 1. In that case, maybe their plateauing curve is due to a larger input, plus saturation? But they never mentioned anything like that. 
+#
+# It's probably not a big deal, overall the dynamics are very similar and it could just be a matter of the exact values I chose and how I plotted it.
+
+# %% [markdown]
+# ### Use FLV approximation
+#
+# TODO
 
 # %%
