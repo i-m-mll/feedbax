@@ -15,6 +15,7 @@
 
 # %%
 import math
+from pathlib import Path
 
 import diffrax as dfx
 import equinox as eqx
@@ -33,6 +34,9 @@ from tqdm import tqdm
 
 from feedbax.networks import SimpleNet
 from feedbax.utils import normalize
+
+# %%
+SAVE_PATH = Path("../models/muscle_flv")
 
 
 # %% [markdown]
@@ -103,6 +107,7 @@ bv = 0.62
 
 def tension_from_lv_ls2013(l, v):
     """FLV function from Lillicrap & Scott 2013."""
+    # #! why is the inner sign different from Todorov & Li 2004
     f_l = jnp.exp(jnp.abs((l ** beta - 1) / omega))
     f_fv_rhs = (bv - v * (av0 + av1 * l + av2 * l**2)) / (bv + v)
     f_fv_lhs = (vmax - v) / (vmax + v * (cv0 + cv1 * l))
@@ -615,4 +620,14 @@ axs[0].set_title("1. Model")
 axs[1].set_title("2. Exact")    
 axs[2].set_title("1 - 2");
 
+# %% [markdown]
+# Serialize the model to disk
+
 # %%
+# #! this doesn't save the model architecture; when reloading need a similar model already instantiated
+model_save_path = SAVE_PATH / 'todorov_li_2004.eqx'
+eqx.tree_serialise_leaves(model_save_path, model)
+
+# %%
+# example reloading the model; requires a similar model instance
+eqx.tree_deserialise_leaves(model_save_path, model)

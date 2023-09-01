@@ -65,6 +65,12 @@ def point_mass(mass=1):
 
 sys = point_mass(mass=2)
 
+# %%
+from feedbax.mechanics.linear import point_mass
+
+# %%
+sys = point_mass(mass=1)
+
 
 # %% [markdown]
 # Simulate the system with a time-dependent force
@@ -79,19 +85,21 @@ def lti_field(sys):
     
     return field
 
-def solve(y0, dt0, args):
-    term = dfx.ODETerm(lti_field(sys))
+
+# %%
+def solve(y0, t0, t1, dt0, args):
+    term = dfx.ODETerm(sys.field)
     solver = dfx.Tsit5()
-    t0 = 0
-    t1 = 1
     saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
-y0 = jnp.array([0., 0., 0.1, 0.1])  
+y0 = jnp.array([0., 0., 0.5, 0.])  
+t0 = 0
 dt0 = 0.01  
-args = None
-sol = solve(y0, dt0, args)   
+t1 = 1
+args = jnp.array([-0.5, 0.5])
+sol = solve(y0, t0, t1, dt0, args)   
 
 # %%
 # simulation performance with and without JIT for different step sizes
@@ -104,7 +112,10 @@ sol = solve(y0, dt0, args)
 
 # %%
 # plot the simulated position over time
-plt.plot(*sol.ys[:, :2].T)
+fig = plt.figure()
+ax = fig.add_subplot(111)
+ax.plot(*sol.ys[:, :2].T)
+ax.set_aspect('equal')
 
 # %% [markdown]
 # We can also [step through](https://docs.kidger.site/diffrax/usage/manual-stepping/) the solution:

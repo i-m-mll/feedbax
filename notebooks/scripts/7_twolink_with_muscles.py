@@ -30,13 +30,23 @@ import optax
 from tqdm import tqdm
 
 from feedbax.mechanics.arm import TwoLink, nlink_angular_to_cartesian
-from feedbax.mechanics.muscle import MuscleGroup
+from feedbax.mechanics.muscle import LillicrapScott 
 from feedbax.plot import plot_2D_positions
 
 # %%
 from jax import config
 
 config.update("jax_debug_nans", False)
+
+
+# %%
+def solve(field, y0, dt0, t0, t1, args, **kwargs):
+    term = dfx.ODETerm(field)
+    solver = dfx.Tsit5()
+    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
+    sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat, **kwargs)
+    return sol
+
 
 # %%
 beta = 1.93
@@ -93,12 +103,6 @@ def tension_lt2004(theta, d_theta, muscles):
 tau_act = 50  # [ms]
 tau_deact = 66  # [ms]
 
-def torque(t, y, args):
-    muscles, _ = args
-    theta, d_theta, activation = y
-    torque = muscles.M @ (activation * tension_lt2004(theta, d_theta, muscles))
-    return torque
-
 
 def muscle_activation_field(t, y, args):
     """Approximation of muscle activation (calcium) dynamics from Todorov & Li 2004.
@@ -115,44 +119,39 @@ def muscle_activation_field(t, y, args):
     return d_activation
 
 
-# TODO: separate dd_dtheta calculation from composite field
-# def twolink_field(t, y, args):
-#     theta, d_theta = y
+def twolink_field(t, y, args):
+    theta, d_theta = y 
+    input_torque, twolink = args
 
-
-def twolink_field(twolink):
-    def field(t, y, args):
-        theta, d_theta, activation = y 
-        _, u = args  # TODO: what is the best way to pass the input? (if interactively iterating the solver, can pass `args` at each step)
-        
-        d_activation = muscle_activation_field(t, activation, u)
-        
-        # centripetal and coriolis forces 
-        c_vec = jnp.array((
-            -d_theta[1] * (2 * d_theta[0] + d_theta[1]),
-            d_theta[0] ** 2
-        )) * twolink.a2 * jnp.sin(theta[1])  
-        
-        cs1 = jnp.cos(theta[1])
-        tmp = twolink.a3 + twolink.a2 * cs1
-        inertia_mat = jnp.array(((twolink.a1 + 2 * twolink.a2 * cs1, tmp),
-                                 (tmp, twolink.a3 * jnp.ones_like(cs1))))
-        
-        net_torque = torque(t, y, args) - c_vec.T - jnp.matmul(d_theta, twolink.B.T) # - viscosity * state.d_theta
-        
-        dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
-        
-        return d_theta, dd_theta, d_activation
+    # centripetal and coriolis forces 
+    c_vec = jnp.array((
+        -d_theta[1] * (2 * d_theta[0] + d_theta[1]),
+        d_theta[0] ** 2
+    )) * twolink.a2 * jnp.sin(theta[1])  
     
-    return field
+    cs1 = jnp.cos(theta[1])
+    tmp = twolink.a3 + twolink.a2 * cs1
+    inertia_mat = jnp.array(((twolink.a1 + 2 * twolink.a2 * cs1, tmp),
+                                (tmp, twolink.a3 * jnp.ones_like(cs1))))
+    
+    net_torque = input_torque - c_vec.T - jnp.matmul(d_theta, twolink.B.T) # - viscosity * state.d_theta
+    
+    dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
+    
+    return d_theta, dd_theta
 
 
-def solve(field, y0, dt0, t0, t1, args):
-    term = dfx.ODETerm(field)
-    solver = dfx.Tsit5()
-    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
-    sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
-    return sol
+def field(t, y, args):
+    theta, d_theta, activation = y 
+    muscles, u, twolink = args 
+    
+    d_activation = muscle_activation_field(t, activation, u)
+    
+    input_torque = muscles.M @ (activation * tension_lt2004(theta, d_theta, muscles))
+    
+    d_theta, dd_theta = twolink_field(t, (theta, d_theta), (input_torque, twolink))
+    
+    return d_theta, dd_theta, d_activation
 
 
 # %%
@@ -163,8 +162,7 @@ u = jnp.array([0., 0., 0., 0., 1e-4, 0.])
 t0 = 0
 dt0 = 1  # [ms]
 t1 = 1000
-field = twolink_field(TwoLink())
-args = (MuscleGroup(), u)
+args = (LillicrapScott(), u, TwoLink())
 sol = solve(field, y0, dt0, t0, t1, args)   
 
 # %%
@@ -200,7 +198,7 @@ def muscle_activation_field(t, y, args):
 
 # %%
 t0 = 0
-dt0 = 1
+dt0 = 0.1
 t1 = 600
 ts = jnp.array([t0, t1/100, t1/100 + dt0, t1/2, t1/2 + dt0, t1])
 
@@ -212,12 +210,12 @@ y0 = jnp.array([0., 0., 0., 0.])
 
 field = muscle_activation_field
 args = u_t
-sol = solve(field, y0, dt0, t0, t1, args)  
+sol = solve(field, y0, dt0, t0, t1, args, max_steps=10000)  
 
 # %%
 plt.plot(sol.ts, sol.ys)
 plt.ylabel("Muscle activation")
-plt.xlabel("Time [ms]")
+plt.xlabel("Time [ms]");
 
 # %% [markdown]
 # The shape doesn't quite match the figure from Todorov & Li 2004... the lower curves look similar, but the upper curve plateaus more quickly in their figure.
