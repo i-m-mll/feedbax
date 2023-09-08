@@ -2,6 +2,7 @@
 
 import equinox as eqx
 import jax.numpy as jnp
+from jaxtyping import Array, Float
 
 
 # global defaults
@@ -16,26 +17,40 @@ class LTISystem(eqx.Module):
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
     """
-    A: jnp.ndarray  # state evolution matrix
-    B: jnp.ndarray  # control matrix
-    C: jnp.ndarray  # observation matrix
+    A: Float[Array, "stat state"]  # state evolution matrix
+    B: Float[Array, "state input"]  # control matrix
+    C: Float[Array, "obs state"]  # observation matrix
     
-    def field(self, t, y, args):
+    def field(
+        self, 
+        t: float, 
+        y: Float[Array, "state"],
+        args: Float[Array, "input"]
+    ) -> Float[Array, "state"]:
         u = args  #? right way?
         d_y = self.A @ y + self.control(t, u)
         return d_y
         
-    def control(self, t, u):
+    def control(
+        self, 
+        t: float, 
+        u: Float[Array, "input"]
+    ):
         return self.B @ u
-        
+    
 
 def point_mass(
     mass: float = 1., 
     order: int = ORDER, 
     n_dim: int = N_DIM
 ) -> LTISystem:
-    A = sum([jnp.diagflat(jnp.ones((order - i) * n_dim), i * n_dim)
+    A = sum([jnp.diagflat(jnp.ones((order - i) * n_dim), 
+                          i * n_dim)
              for i in range(1, order)])
-    B = jnp.concatenate([jnp.zeros((n_dim, n_dim)), jnp.eye(n_dim) / mass], axis=0)
-    C = jnp.array(1)
+    B = jnp.concatenate(
+        [jnp.zeros((n_dim, n_dim)), 
+         jnp.eye(n_dim) / mass], 
+        axis=0
+    )
+    C = jnp.array(1)  # TODO 
     return LTISystem(A, B, C)
