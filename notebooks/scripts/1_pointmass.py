@@ -68,7 +68,6 @@ sys = point_mass(mass=2)
 # %%
 from feedbax.mechanics.linear import point_mass
 
-# %%
 sys = point_mass(mass=1)
 
 
@@ -140,5 +139,8 @@ while tprev < t1:
     print(f"At t={tnext:0.2f}, y={y}")
     tprev = tnext
     tnext = min(tprev + dt0, t1)  
+
+# %%
+state
 
 # %%

@@ -11,7 +11,10 @@ from feedbax.utils import interleave_unequal
 
 
 class SimpleMultiLayerNet(eqx.Module):
-    """A series of layers of the same type with nonlinearities of the same type."""
+    """A series of layers of the same type with nonlinearities of the same type.
+    
+    NOTE: Could just use `eqx.nn.MLP` in case of linear layers with fixed nonlinearity.
+    """
     layers: list 
     
     def __init__(

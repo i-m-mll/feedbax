@@ -1,13 +1,30 @@
 """"""
 
+from typing import Any, Protocol, TypeVar
+
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PyTree
 
 
 # global defaults
 ORDER = 2  # maximum order of the state derivatives
 N_DIM = 2  # number of spatial dimensions
+
+
+T = TypeVar("T")
+
+
+# TODO maybe this should be `AbstractSystem(eqx.Module)` instead
+class System(Protocol):
+    def vector_field(
+        self, 
+        t: float, 
+        y: PyTree[T], 
+        args: PyTree,  # controls
+) -> PyTree[T]:
+        """Vector field of the system."""
+        pass
 
 
 class LTISystem(eqx.Module):
@@ -17,11 +34,11 @@ class LTISystem(eqx.Module):
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
     """
-    A: Float[Array, "stat state"]  # state evolution matrix
+    A: Float[Array, "state state"]  # state evolution matrix
     B: Float[Array, "state input"]  # control matrix
     C: Float[Array, "obs state"]  # observation matrix
     
-    def field(
+    def vector_field(
         self, 
         t: float, 
         y: Float[Array, "state"],
