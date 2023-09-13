@@ -27,6 +27,7 @@ import numpy as np
 import optax 
 from tqdm import tqdm
 
+from feedbax.mechanics.linear import point_mass
 from feedbax.utils import exp_taylor
 
 # %%
@@ -56,18 +57,17 @@ class LTISystem(eqx.Module):
     B: jnp.ndarray
     C: jnp.ndarray
 
-def point_mass(mass=1):
+def point_mass_old(mass=1):
     A = sum([jnp.diagflat(jnp.ones((ORDER - i) * N_DIM), i * N_DIM)
              for i in range(1, ORDER)])
     B = jnp.concatenate([jnp.zeros((N_DIM, N_DIM)), jnp.eye(N_DIM) / mass], axis=0)
     C = jnp.array(1)
     return LTISystem(A, B, C)
 
-sys = point_mass(mass=2)
+sys = point_mass_old(mass=1)
 
 # %%
-from feedbax.mechanics.linear import point_mass
-
+# #! use the version from feedbax
 sys = point_mass(mass=1)
 
 
@@ -75,21 +75,10 @@ sys = point_mass(mass=1)
 # Simulate the system with a time-dependent force
 
 # %%
-def force(t, y, args):
-    return jnp.array([t, -t])
-
-def lti_field(sys):
-    def field(t, y, args):
-        return sys.A @ y + sys.B @ force(t, y, args)
-    
-    return field
-
-
-# %%
 def solve(y0, t0, t1, dt0, args):
-    term = dfx.ODETerm(sys.field)
+    term = dfx.ODETerm(sys.vector_field)
     solver = dfx.Tsit5()
-    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
+    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 100))
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
@@ -101,6 +90,9 @@ args = jnp.array([-0.5, 0.5])
 sol = solve(y0, t0, t1, dt0, args)   
 
 # %%
+# %timeit solve(y0, t0, t1, dt0, args)
+
+# %%
 # simulation performance with and without JIT for different step sizes
 # %timeit solve(y0, 0.1, args)  
 # %timeit jax.jit(solve)(y0, 0.1, args) 
@@ -110,37 +102,102 @@ sol = solve(y0, t0, t1, dt0, args)
 # %timeit jax.jit(solve)(y0, 0.001, args)  
 
 # %%
+
+# %%
 # plot the simulated position over time
-fig = plt.figure()
-ax = fig.add_subplot(111)
-ax.plot(*sol.ys[:, :2].T)
-ax.set_aspect('equal')
+cmap = plt.get_cmap('viridis')
+cs = [cmap(i) for i in sol.ts * 0.9]  # 0.9 cuts off yellows
+
+fig, axs = plt.subplots(1, 2, constrained_layout=True)
+axs[0].scatter(*sol.ys[:, :2].T, c=cs, s=1)
+axs[0].set_xlabel('x')
+axs[0].set_ylabel('y')
+axs[0].set_aspect('equal')
+axs[1].scatter(*sol.ys[:, 2:].T, c=cs, s=1) 
+axs[1].set_xlabel('$v_x$')
+axs[1].set_ylabel('$v_y$')
+axs[1].set_aspect('equal')
+
 
 # %% [markdown]
 # We can also [step through](https://docs.kidger.site/diffrax/usage/manual-stepping/) the solution:
 
 # %%
-term = dfx.ODETerm(lti_field(sys))
-solver = dfx.Tsit5()
+# #! this takes much longer, ~17 s for 100 steps 
+def diffeqsolve_loop_old(term, solver, t0, t1, dt0, y0, args):
+    
+    tprev = t0
+    tnext = t0 + dt0
+    state = solver.init(term, tprev, tnext, y0, args)
+    ys = [y0]
+    ts = [t0]
+    
+    while tprev < t1:
+        y, _, _, state, _ = solver.step(term, tprev, tnext, ys[-1], args, state, made_jump=False)
+        ys.append(y)
+        #print(f"At t={tnext:0.2f}, y={y}")
+        tprev = tnext
+        ts.append(tprev)
+        tnext = min(tprev + dt0, t1)  
+    
+    return ys, ts
 
+
+# #! JIT-compatible version, ~0.2 s for 100 steps
+@eqx.filter_jit
+def diffeqsolve_loop(term, solver, t0, t1, dt0, y0, args):
+    
+    steps = int(t1 // dt0) + 1
+    ys = jnp.zeros((steps, y0.shape[0]))
+    ys = ys.at[0].set(y0)
+    
+    state = solver.init(term, t0, t1 + dt0, y0, args)
+    init_val = ys, state
+
+    def body_fn(i, x):
+        ys, state = x
+        y, _, _, state, _ = solver.step(term, 0, dt0, ys[i], args, state, made_jump=False)
+        ys = ys.at[i+1].set(y)
+        return ys, state
+    
+    ys, state = jax.lax.fori_loop(0, steps, body_fn, init_val)
+    
+    return ys
+
+
+    
+
+# %%
+def solve_loop(y0, t0, t1, dt0, args):
+    term = dfx.ODETerm(sys.vector_field)
+    solver = dfx.Tsit5()
+    sol = diffeqsolve_loop(term, solver, t0, t1, dt0, y0, args=args)
+    return sol
+
+
+# %%
 t0 = 0
 dt0 = 0.01  
 t1 = 1
-y0 = jnp.array([0.1, 0.1, 0.1, 0.1])  
-args = None
+y0 = jnp.array([0., 0., 0.5, 0.])  
+args = jnp.array([-0.5, 0.5])
 
-tprev = t0
-tnext = t0 + dt0
-y = y0
-state = solver.init(term, tprev, tnext, y, args)
-
-while tprev < t1:
-    y, _, _, state, _ = solver.step(term, tprev, tnext, y, args, state, made_jump=False)
-    print(f"At t={tnext:0.2f}, y={y}")
-    tprev = tnext
-    tnext = min(tprev + dt0, t1)  
+ys = solve_loop(y0, t0, t1, dt0, args)
 
 # %%
-state
+# %timeit solve_loop(y0, t0, t1, dt0, args)
+
+# %%
+ys = jnp.vstack(ys)
+# plot the simulated position over time
+fig, axs = plt.subplots(1, 2, constrained_layout=True)
+axs[0].scatter(*ys[:, :2].T, s=1)
+axs[0].set_xlabel('x')
+axs[0].set_ylabel('y')
+axs[0].set_aspect('equal')
+axs[1].scatter(*ys[:, 2:].T, s=1) 
+axs[1].set_xlabel('$v_x$')
+axs[1].set_ylabel('$v_y$')
+axs[1].set_aspect('equal')
 
 # %%

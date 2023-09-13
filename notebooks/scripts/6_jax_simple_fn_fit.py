@@ -24,7 +24,7 @@ import numpy as np
 import optax 
 from tqdm import tqdm
 
-from feedbax.networks import SimpleNet
+from feedbax.networks import SimpleMultiLayerNet
 
 # %% [markdown]
 # Try a very simple function approximation, since I was having trouble getting it to converge for the muscle model FLV function.
@@ -35,7 +35,7 @@ layer_sizes = [1, 10, 1]
 learning_rate = 1.e-2
 n_batches = 5000
 
-model = SimpleNet(layer_sizes, key=jrandom.PRNGKey(0))
+model = SimpleMultiLayerNet(layer_sizes, key=jrandom.PRNGKey(0))
 print(model)
 
 

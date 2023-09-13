@@ -4,6 +4,7 @@ from itertools import zip_longest
 from typing import Tuple
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 
@@ -32,7 +33,7 @@ class SimpleMultiLayerNet(eqx.Module):
         if bool(use_bias) is use_bias:
             use_bias = (use_bias,) * (len(sizes) - 1)
             
-        layers = [eqx.nn.Linear(m, n, key=k, use_bias=b) 
+        layers = [layer_type(m, n, key=k, use_bias=b) 
                   for m, n, k, b in zip(sizes[:-1], sizes[1:], keys, use_bias)]
         
         nonlinearities = [nonlinearity] * (len(sizes) - 2) 
@@ -45,8 +46,36 @@ class SimpleMultiLayerNet(eqx.Module):
         if linear_final_layer:
             self.layers[-1] = eqx.nn.Linear(sizes[-2], sizes[-1], key=keys[-1])
 
-    def __call__(self, x):
+    def __call__(self, x):        
         for layer in self.layers:
             x = layer(x)
         return x
-    
+
+
+class RNN(eqx.Module):
+    """From https://docs.kidger.site/equinox/examples/train_rnn/"""
+    hidden_size: int
+    out_size: int
+    cell: eqx.Module
+    linear: eqx.nn.Linear
+    bias: jax.Array
+
+    def __init__(self, in_size, out_size, hidden_size, *, key):
+        ckey, lkey = jrandom.split(key)
+        self.hidden_size = hidden_size
+        self.out_size = out_size
+        self.cell = eqx.nn.GRUCell(in_size, hidden_size, key=ckey)
+        self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
+        self.bias = jnp.zeros(out_size)
+
+    def __call__(self, input):
+        hidden = jnp.zeros((self.hidden_size,))
+        
+        out = self.cell(input, hidden)
+
+        # def f(carry, inp):
+        #     return self.cell(inp, carry), None
+
+        # out, _ = jax.lax.scan(f, hidden, input)
+        
+        return self.linear(out) + self.bias, out

@@ -3,6 +3,7 @@
 from typing import Any, Protocol, TypeVar
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 
@@ -24,6 +25,11 @@ class System(Protocol):
         args: PyTree,  # controls
 ) -> PyTree[T]:
         """Vector field of the system."""
+        pass
+
+    @property
+    def control_size(self) -> int:
+        """Number of control inputs."""
         pass
 
 
@@ -54,6 +60,10 @@ class LTISystem(eqx.Module):
         u: Float[Array, "input"]
     ):
         return self.B @ u
+    
+    @property
+    def control_size(self) -> int:
+        return self.B.shape[1]
     
 
 def point_mass(
