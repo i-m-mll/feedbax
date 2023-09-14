@@ -15,6 +15,7 @@
 # %%
 from functools import partial
 import math
+import sys
 
 import diffrax as dfx
 import equinox as eqx
@@ -26,6 +27,7 @@ from jaxtyping import Array, Float, PyTree
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
+import tqdm
 from tqdm import tqdm
 
 from feedbax.mechanics.linear import point_mass, System
@@ -56,7 +58,7 @@ class Mechanics(eqx.Module):
     system: System 
     dt: float = eqx.field(static=True)
     term: dfx.AbstractTerm = eqx.field(static=True)
-    solver: dfx.AbstractSolver = eqx.field(static=True)
+    solver: dfx.AbstractSolver #= eqx.field(static=True)
     
     def __init__(self, system, dt):
         self.system = system
@@ -87,24 +89,23 @@ class SimpleFeedback(eqx.Module):
         self.mechanics = mechanics
     
     def __call__(self, state, args):
-        # net_state, mechanics_state = state
-        mechanics_state, _, _, solver_state  = state
+        mechanics_state, _, _, solver_state = state
         inputs = args
+        
+        # mechanics state feedback plus task inputs (e.g. target state)
         net_inputs = jnp.concatenate([mechanics_state.reshape(-1), inputs]) 
         control, activity = self.net(net_inputs)
+        
         state = self.mechanics(mechanics_state, (control, solver_state))
+        
         return mechanics_state, control, activity, solver_state
     
     def init_state(self, mechanics_state):
-        # TODO: how can we handle this through vmap without explicitly dealing with batch size?
-        solver_state = self.mechanics.init_solver_state(mechanics_state)
         return (
             mechanics_state, 
-            # jnp.zeros((batch_size, self.net.layers[-1].out_features,)), 
-            # jnp.zeros((batch_size, self.net.layers[0].hidden_size,)),
-            jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
-            solver_state
+            jnp.zeros((self.net.out_size,)),
+            self.mechanics.init_solver_state(mechanics_state),   
         )
     
     
@@ -126,26 +127,21 @@ class Recursion(eqx.Module):
         return states, args
     
     def __call__(self, state, args):
-        state = self.step.init_state(state)
-        arrays = self._init_zero_arrays(state, args)
-        # self.states[0] = state
+        init_state = self.step.init_state(state)
+        init_states = self._init_zero_arrays(init_state, args)
+        # #! self.states[0] = state
         return lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (arrays, args),
+            (init_states, args),
         )
     
     def _init_zero_arrays(self, state, args):
         return jax.tree_util.tree_map(
-            lambda x: jnp.zeros((self.n_steps, *x.shape)),
+            lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
             eqx.filter_eval_shape(self.step, state, args)
         )
-
-
-# %%
-r = RNN(8, 2, 20, key=jrandom.PRNGKey(0))
-jax.vmap(r)(jnp.zeros((10,8,)))
 
 
 # %%
@@ -154,41 +150,35 @@ jax.vmap(r)(jnp.zeros((10,8,)))
 
 # %%
 def get_model(dt, mass, n_input, n_hidden, n_steps, key):
+    
     mechanics = Mechanics(point_mass(mass=mass, n_dim=N_DIM), dt)
-  
-    # net = SimpleMultiLayerNet(
-    #     (n_input, n_hidden, N_DIM),
-    #     layer_type=eqx.nn.GRUCell,
-    #     use_bias=True,
-    #     linear_final_layer=True,
-    #     key=key,
-    # ) 
     net = RNN(n_input, N_DIM, n_hidden, key=key)
-    
     body = SimpleFeedback(net, mechanics)
-    
-    model = Recursion(body, n_steps)
-    
-    return model
 
+    return Recursion(body, n_steps)
 
 
 # %%
-def loss_fn(diff_model, static_model, init_state, target_state, weights=(1., 1., 1e-5, 1e-5)):  
+def loss_fn(
+    diff_model, 
+    static_model, 
+    init_state, 
+    target_state, 
+    weights=jnp.array((1., 1., 1e-5, 1e-5))
+):  
     model = eqx.combine(diff_model, static_model)  
     model = jax.vmap(model)
 
     states, _ = model(init_state, target_state)
     states, controls, activities, solver_state = states
     
-    pos_cost = jnp.sum((states[..., :2] - target_state[..., :2]) ** 2, axis=-1)  # sum over xyz
-    vel_cost = jnp.sum((states[..., -1, 2:] - target_state[..., 2:]) ** 2, axis=-1)  # over xyz
-    control_cost = jnp.sum(controls ** 2, axis=-1)  # over control variables
-    activity_cost = activities ** 2
+    pos_cost = jnp.sum((states[..., :2] - target_state[..., :2]) ** 2, axis=(-1, -2))  # sum over xyz and time
+    vel_cost = jnp.sum((states[..., -1, 2:] - target_state[..., 2:]) ** 2, axis=-1).squeeze()  # over xyz
+    control_cost = jnp.sum(controls ** 2, axis=(-1, -2))  # over control variables and time
+    activity_cost = jnp.sum(activities ** 2, axis=(-1, -2))  # over network units and time
     
-    return jnp.sum(w * jnp.mean(cost, axis=0)  # mean over batch 
-                   for w, cost in zip(weights, 
-                                      [pos_cost, vel_cost, control_cost, activity_cost]))
+    costs = jnp.stack([pos_cost, vel_cost, control_cost, activity_cost], axis=1)
+    return jnp.sum(weights * jnp.mean(costs, axis=0))  # mean over batch, sum over terms
 
 
 # %%
@@ -198,7 +188,7 @@ def main(
     dt=0.1,
     workspace = jnp.array([[-1., 1.], [-1., 1.]]),
     batch_size=100,
-    n_batches=1000,
+    n_batches=50,
     epochs=1,
     learning_rate=3e-4,
     hidden_size=20,
@@ -207,9 +197,10 @@ def main(
     key = jrandom.PRNGKey(seed)
 
     def get_batch(batch_size, key):
+        """Segment endpoints uniformly distributed in a rectangular workspace."""
         pos_endpoints = jrandom.uniform(
             key, 
-            (batch_size, N_DIM, 2),
+            (batch_size, N_DIM, 2),   # (..., start/end)
             minval=workspace[:, 0], 
             maxval=workspace[:, 1]
         )
@@ -220,13 +211,10 @@ def main(
     n_input = N_DIM * 2 * 2  # 2D state (pos, vel) feedback & target state
     
     model = get_model(dt, mass, n_input, hidden_size, n_steps, key)
-    
+
     # only train the hidden RNN layer 
     filter_spec = jax.tree_util.tree_map(lambda _: False, model)
     filter_spec = eqx.tree_at(
-        # lambda tree: (tree.step.net.layers[0].weight_hh, 
-        #               tree.step.net.layers[0].weight_ih, 
-        #               tree.step.net.layers[0].bias),
         lambda tree: (tree.step.net.cell.weight_hh, 
                       tree.step.net.cell.weight_ih, 
                       tree.step.net.cell.bias),
@@ -237,12 +225,15 @@ def main(
     optim = optax.adam(learning_rate)
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
+    @jax.jit
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         loss, grads = eqx.filter_value_and_grad(loss_fn)(diff_model, static_model, init_state, target_state)
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, model, opt_state
+
+    losses = []
 
     for _ in range(epochs):
         for batch in tqdm(range(n_batches)):
@@ -253,15 +244,101 @@ def main(
             
             loss, model, opt_state = train_step(model, init_state, target_state, opt_state)
             
+            losses.append(loss)
+            
             if batch % 10 == 0:
-                print(f"step: {batch}, loss: {loss:.4f}")
+                tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
+                
+    return model, losses
 
 
 # %%
-mmm = main(dt=0.01, seed=5566)
+trained, losses = main(dt=0.01, seed=5566)
 
 
 # %% [markdown]
+# Evaluate on a centre-out task
+
+# %%
+def centreout_endpoints(center, n_directions, angle_offset, length):
+    angles = jnp.linspace(0, 2 * np.pi, n_directions + 1)[:-1]
+    angles = angles + angle_offset
+
+    starts = jnp.tile(center, (n_directions, 1))
+    ends = center + length * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=1)
+
+    pos_endpoints = jnp.stack([starts, ends], axis=-1)  # (directions/batch, endpoints, dims)
+    state_endpoints = jnp.pad(pos_endpoints, ((0, 0), (0, 2), (0, 0)))
+    
+    return state_endpoints
+
+
+# %%
+n_directions = 8
+reach_length = 1.
+state_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
+(states, controls, activities, _), _ = jax.vmap(trained)(
+    state_endpoints[..., 0], state_endpoints[..., 1]
+)
+
+# %% [markdown]
+# The network activities are constant after the 0th step. Probably because I keep overriding the hidden state with zeros whenever GRUCell is called...
+
+# %%
+activities[0]
+
+
+# %%
+def states_controls_2d(states, controls, endpoints=None, straight_guides=False,
+                       fig=None, ms=3, ms_source=6, ms_target=7):
+    """Plot 2D trajectories of position, velocity, force.
+    - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `controls`.
+    - First dim is batch, second dim is time step.
+    """
+    fig, axs = plt.subplots(1, 3, figsize=(12, 6))
+
+    cmap = plt.get_cmap('tab10')
+    colors = [cmap(i) for i in np.linspace(0, 1, states.shape[0])]
+
+   
+    for i in range(states.shape[0]):
+        # position and 
+        axs[0].plot(states[i, :, 0], states[i, :, 1], '.', color=colors[i], ms=ms)
+        if endpoints is not None:
+            if straight_guides:
+                axs[0].plot(*endpoints[i], linestyle='dashed', color=colors[i])
+            axs[0].plot(*endpoints[i, :, 0], linestyle='none', marker='s', fillstyle='none',
+                        color=colors[i], ms=ms_source)
+            axs[0].plot(*endpoints[i, :, 1], linestyle='none', marker='o', fillstyle='none',
+                        color=colors[i], ms=ms_target)
+        
+        # velocity
+        axs[1].plot(states[i, :, 2], states[i, :, 3], '-o', color=colors[i], ms=ms)
+        
+        # force 
+        axs[2].plot(controls[i, :, 0], controls[i, :, 1], '-o', color=colors[i], ms=ms)
+
+    labels = [("Position", "$x$", "$y$"),
+              ("Velocity", "$\dot x$", "$\dot y$"),
+              ("Control force", "$\mathrm{f}_x$", "$\mathrm{f}_y$")]
+
+    for i, (title, xlabel, ylabel) in enumerate(labels):
+        axs[i].set_title(title)
+        axs[i].set_xlabel(xlabel)
+        axs[i].set_ylabel(ylabel)
+        axs[i].set_aspect('equal')
+        
+    plt.tight_layout()
+
+    return fig, axs
+
+# %%
+states_controls_2d(states, controls, endpoints=state_endpoints[:,:2])
+
+
+# %% [markdown]
+# ### Single module
+#
 # Trying a single module that uses `dfx.diffeqsolve`...
 
 # %%
@@ -399,5 +476,7 @@ def main(
             
             if batch % 10 == 0:
                 print(f"step: {batch}, loss: {loss:.4f}")
+
+# %%
 
 # %%

@@ -54,8 +54,8 @@ class SimpleMultiLayerNet(eqx.Module):
 
 class RNN(eqx.Module):
     """From https://docs.kidger.site/equinox/examples/train_rnn/"""
-    hidden_size: int
-    out_size: int
+    hidden_size: int = eqx.field(static=True)
+    out_size: int = eqx.field(static=True)
     cell: eqx.Module
     linear: eqx.nn.Linear
     bias: jax.Array
