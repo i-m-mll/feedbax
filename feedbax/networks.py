@@ -68,14 +68,14 @@ class RNN(eqx.Module):
         self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
         self.bias = jnp.zeros(out_size)
 
-    def __call__(self, input):
+    def __call__(self, input, hidden):
         hidden = jnp.zeros((self.hidden_size,))
+        hidden = self.cell(input, hidden)
         
-        out = self.cell(input, hidden)
-
-        # def f(carry, inp):
-        #     return self.cell(inp, carry), None
-
-        # out, _ = jax.lax.scan(f, hidden, input)
-        
-        return self.linear(out) + self.bias, out
+        return self.linear(hidden) + self.bias, hidden
+    
+    def init_state(self, state=None):
+        if state is None:
+            return jnp.zeros(self.hidden_size)
+        else:
+            return jnp.array(state)
