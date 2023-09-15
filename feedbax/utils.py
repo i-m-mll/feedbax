@@ -19,7 +19,11 @@ def normalize(*args, min=0, max=1):
     """Normalize each column of each input array to [min, max]"""
     return [(arr - jnp.min(arr, axis=0)) / (jnp.max(arr, axis=0) - jnp.min(arr, axis=0)) * (max - min) + min
             for arr in args]
-    
+
+# 
+# jax.debug.print(''.join([f"{s.shape}\t{p}\n" 
+#                             for p, s in jax.tree_util.tree_leaves_with_path(state)]))
+
 
 _sincos_derivative_signs = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)]).reshape((4, 1, 1, 2))
 

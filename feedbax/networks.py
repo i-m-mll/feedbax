@@ -1,7 +1,7 @@
 """Neural network architectures."""
 
 from itertools import zip_longest
-from typing import Tuple
+from typing import Callable, Tuple
 
 import equinox as eqx
 import jax
@@ -59,6 +59,7 @@ class RNN(eqx.Module):
     cell: eqx.Module
     linear: eqx.nn.Linear
     bias: jax.Array
+    # activation: Callable
 
     def __init__(self, in_size, out_size, hidden_size, *, key):
         ckey, lkey = jrandom.split(key)
@@ -67,12 +68,16 @@ class RNN(eqx.Module):
         self.cell = eqx.nn.GRUCell(in_size, hidden_size, key=ckey)
         self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
         self.bias = jnp.zeros(out_size)
+        # if activation is None:
+        #     self.activation = lambda x: x
+        # else:
+        #     self.activation = activation
 
-    def __call__(self, input, hidden):
-        hidden = jnp.zeros((self.hidden_size,))
-        hidden = self.cell(input, hidden)
-        
-        return self.linear(hidden) + self.bias, hidden
+    def __call__(self, input, state):
+        state = self.init_state()
+        state = self.cell(input, state)
+        #state = jax.nn.tanh(state)
+        return self.linear(state) + self.bias, state
     
     def init_state(self, state=None):
         if state is None:
