@@ -30,7 +30,9 @@ import optax
 import seaborn as sns
 from tqdm import tqdm
 
-from feedbax.utils import exp_taylor, sincos_derivative_signs
+from feedbax.mechanics.arm import nlink_angular_to_cartesian
+from feedbax.plot import plot_2D_joint_positions
+from feedbax.utils import SINCOS_GRAD_SIGNS
 
 
 # %%
@@ -94,63 +96,61 @@ def solve(y0, dt0, args):
 y0 = (jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0., 0.]))
 dt0 = 0.01  
 args = None
-sol = solve(y0, dt0, args)   
 
-
-# %%
-def nlink_angular_to_cartesian(theta, dtheta, nlink):
-    angle_sum = jnp.cumsum(theta)  # links
-    length_components = nlink.l * jnp.array([jnp.cos(angle_sum),
-                                             jnp.sin(angle_sum)])  # xy, links
-    xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
-    
-    ang_vel_sum = jnp.cumsum(dtheta)  # links
-    xy_velocity = jnp.cumsum(jnp.flip(length_components, (0,)) * ang_vel_sum
-                             * sincos_derivative_signs(1),
-                             axis=1)
-    return xy_position, xy_velocity
-
+with jax.default_device(jax.devices('cpu')[0]):
+    sol = solve(y0, dt0, args)      
 
 # %%
-xy_pos, xy_vel = jax.vmap(nlink_angular_to_cartesian, in_axes=[0, 0, None])(sol.ys[0], sol.ys[1], TwoLink())
-xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
-
-
-# %%
-def plot_2D_positions(xy, links=True, cmap_func=mpl.cm.viridis,
-                      unit='m', ax=None, add_root=True):
-    """Plot 2D position trajectories.
-    Could also plot the controls on the joints.
-    Args:
-        xy ():
-        links (bool):
-        cmap_func ():
-    """
-    if ax is None:
-        fig = plt.figure(figsize=(4,8))
-        ax = fig.add_subplot()
-
-    if add_root:
-        xy = np.pad(xy, ((0,0), (1,0), (0,0)))
-
-    cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
-    cmap = mpl.colors.ListedColormap(cmap)
-
-    ax.plot(*xy[0], c=cmap(0.), lw=2, marker="o")
-    ax.plot(*xy[len(xy)//2], c=cmap(0.5), lw=2, marker='o')
-    ax.plot(*xy[-1], c=cmap(1.), lw=2, marker='o')
-
-    for j in range(xy.shape[2]):
-        ax.scatter(*xy[..., j].T, marker='.', s=4, linewidth=0, c=cmap.colors)
-
-    ax.margins(0.1, 0.2)
-    ax.set_aspect('equal')
-    return ax
-
+xy_pos, xy_vel = jax.vmap(nlink_angular_to_cartesian, in_axes=[None, 0, 0])(TwoLink(), sol.ys[0], sol.ys[1])
+xy_pos = np.pad(xy_pos, ((0,0), (0,0), (1,0)))  # add origin (shoulder) joint
 
 # %%
-ax = plot_2D_positions(xy_pos, add_root=False)
+ax = plot_2D_joint_positions(xy_pos, add_root=False)
 plt.show()
+
+
+# %% [markdown]
+# Iterative solution
+
+# %%
+@eqx.filter_jit
+def diffeqsolve_loop(term, solver, t0, t1, dt0, y0, args):
+    
+    steps = int(t1 // dt0) + 1
+    ys = jnp.zeros((steps, 4))
+    ys = ys.at[0, :2].set(y0[0])
+    ys = ys.at[0, 2:].set(y0[1])
+    
+    state = solver.init(term, t0, t1 + dt0, y0, args)
+    init_val = ys, state
+
+    def body_fn(i, x):
+        ys, state = x
+        y, _, _, state, _ = solver.step(term, 0, dt0, ys[i], args, state, made_jump=False)
+        ys = ys.at[i+1, :2].set(y[0])
+        ys = ys.at[i+1, 2:].set(y[1])
+        return ys, state
+    
+    ys, state = jax.lax.fori_loop(0, steps, body_fn, init_val)
+    
+    return ys
+
+
+# %%
+def solve_loop(y0, t0, t1, dt0, args):
+    term = dfx.ODETerm(twolink_field(TwoLink()))
+    solver = dfx.Tsit5()
+    sol = diffeqsolve_loop(term, solver, t0, t1, dt0, y0, args=args)
+    return sol
+
+
+# %%
+y0 = (jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0., 0.]))
+dt0 = 0.01  
+t0 = 0
+t1 = 1 
+
+ys = solve_loop(y0, t0, t1, dt0, args)
 
 # %% [markdown]
 # Verifying that the segments stay constant length
@@ -164,12 +164,15 @@ print("Mean difference from actual length: ", np.mean(distances, axis=0))
 print("% difference from actual length: ", 100 * np.mean(distances, axis=0) / twolink.l)
 print("St. dev. difference from actual length: ", np.std(distances, axis=0))
 
-
 # %% [markdown]
-# ### Linearization
+# Inverse kinematics:
 
 # %%
-class LTISystem(eqx.Module):
-    A: jnp.ndarray
-    B: jnp.ndarray
-    C: jnp.ndarray
+from feedbax.mechanics.arm import TwoLink, twolink_effector_pos_to_angles
+
+# %%
+batch_size = 5
+pos = jnp.tile(jnp.array([0., 0.5]), (batch_size, 1))
+twolink = TwoLink()
+# %timeit jax.vmap(twolink_effector_pos_to_angles, 
+                 in_axes=(None, 0))(twolink, pos)

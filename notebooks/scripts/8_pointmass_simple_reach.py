@@ -13,8 +13,6 @@
 # ---
 
 # %%
-from functools import partial
-import math
 import sys
 from typing import Optional
 
@@ -24,14 +22,14 @@ import jax
 import jax.lax as lax
 import jax.numpy as jnp 
 import jax.random as jrandom
-from jaxtyping import Array, Float, PyTree
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 import tqdm
 from tqdm import tqdm
 
-from feedbax.mechanics.linear import point_mass, System
+from feedbax.mechanics.linear import point_mass
+from feedbax.mechanics.system import System
 from feedbax.networks import SimpleMultiLayerNet, RNN
 from feedbax.plot import plot_loglog_losses, plot_states_forces_2d
 from feedbax.task import centreout_endpoints, uniform_endpoints
@@ -82,10 +80,11 @@ class Mechanics(eqx.Module):
         state, _, _, solver_state, _ = self.solver.step(
             self.term, 0, self.dt, state, inputs, solver_state, made_jump=False
         )
+        # #! I don't even return solver state, so apparently it's not important
         return state
     
     def init_solver_state(self, state):
-        args = inputs_empty = jnp.zeros((self.system.B.shape[1],))
+        args = inputs_empty = jnp.zeros((self.system.control_size,))
         return self.solver.init(self.term, 0, self.dt, state, args)
     
 
@@ -93,27 +92,38 @@ class SimpleFeedback(eqx.Module):
     """Simple feedback loop with a single RNN and single mechanical system."""
     net: eqx.Module  
     mechanics: Mechanics 
+    delay: int = eqx.field(static=True)
     
-    def __init__(self, net, mechanics):
+    def __init__(self, net, mechanics, delay=0):
         self.net = net
         self.mechanics = mechanics
+        self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
     def __call__(self, state, args):
-        mechanics_state, _, hidden, solver_state = state
+        mechanics_states, _, hidden, solver_state = state
         inputs = args
         
-        # TODO: feedback delay
         # mechanics state feedback plus task inputs (e.g. target state)
-        net_inputs = jnp.concatenate([mechanics_state.reshape(-1), inputs]) 
+        feedback_state = mechanics_states[-self.delay]
+        net_inputs = jnp.concatenate([feedback_state.reshape(-1), inputs]) 
         control, hidden = self.net(net_inputs, hidden)
         
-        mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
+        net_force = control  # TODO: noise, perturbations
+        mechanics_state = self.mechanics(mechanics_states[-1], (net_force, solver_state))
+        mechanics_states = jnp.roll(mechanics_states, -1, 0).at[-1].set(mechanics_state)
         
-        return mechanics_state, control, hidden, solver_state
+        return mechanics_states, control, hidden, solver_state
+    
+    def _recursion(self, state, args):
+        """Thinking about how to create an interface for `Recursion` that doesn't require `__call__` arguments to always be the same."""
+        # init_state, _, hidden, solver_state = state
+        # inputs = args
+        # state = self(inputs, init_state)
+        # return state 
     
     def init_state(self, mechanics_state):
         return (
-            mechanics_state, 
+            jnp.zeros((self.delay, *mechanics_state.shape)).at[-1].set(mechanics_state), 
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
             self.mechanics.init_solver_state(mechanics_state),   
@@ -140,7 +150,8 @@ class Recursion(eqx.Module):
     def __call__(self, state, args):
         init_state = self.step.init_state(state)
         init_states = self._init_zero_arrays(init_state, args)
-        # #! self.states[0] = state  # TODO
+        init_states = jax.tree_util.tree_map(lambda xs, x: xs.at[0].set(x), 
+                                             init_states, init_state)
         
         if DEBUG: #! jax.debug doesn't work inside of lax loops  
             states = init_states
@@ -164,15 +175,117 @@ class Recursion(eqx.Module):
         )
 
 
+# %% [markdown]
+# Notice the delay machinery in `SimpleFeedback`. This isn't ideal because returning `delay` timesteps of mechanics state, causes `Recursion._init_zero_arrays` to memorize the entire delay period at *each* timestep; so that e.g. if `delay=5` then 6x as much data then necessary will be memorized by `Recursion`.
+#
+# Ideally we will generalize `Body` (of which `SimpleFeedback` would be a subclass) so that it can be constructed by wiring together different modules according to their arguments and returns, and specifying which returns should be memorized and how. In particular this would need to deal with cases like this one where the wiring occurs between one call and the next...
+#
+# But for now I just want to deal with the memory issue, so I'm implementing a different hack that indexes out feedback from the memory of the state that `Recursion` already keeps.
+#
+# (One more option might be to keep the delay states as an aux array that is returned from `SimpleFeedback` calls, so that it is passed from one call to the next without being memorized.)
+
 # %%
-def get_model(dt, mass, n_hidden, n_steps, key):
+class SimpleFeedback(eqx.Module):
+    """Simple feedback loop with a single RNN and single mechanical system."""
+    net: eqx.Module  
+    mechanics: Mechanics 
+    delay: int = eqx.field(static=True)
     
-    mechanics = Mechanics(point_mass(mass=mass, n_dim=N_DIM), dt)
+    def __init__(self, net, mechanics, delay=0):
+        self.net = net
+        self.mechanics = mechanics
+        self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
+    
+    def __call__(self, state, args):
+        mechanics_state, _, hidden, solver_state = state
+        inputs, feedback_state = args
+        
+        # mechanics state feedback plus task inputs (e.g. target state)
+        net_inputs = jnp.concatenate([feedback_state.reshape(-1), inputs]) 
+        control, hidden = self.net(net_inputs, hidden)
+        
+        net_force = control  # TODO: noise, perturbations
+        mechanics_state = self.mechanics(mechanics_state, (net_force, solver_state))
+        
+        return mechanics_state, control, hidden, solver_state
+    
+    def _recursion(self, state, args):
+        """Thinking about how to create an interface for `Recursion` that doesn't require `__call__` arguments to always be the same."""
+        # init_state, _, hidden, solver_state = state
+        # inputs = args
+        # state = self(inputs, init_state)
+        # return state 
+    
+    def init_state(self, mechanics_state):
+        return (
+            mechanics_state, 
+            jnp.zeros((self.net.out_size,)),
+            jnp.zeros((self.net.hidden_size,)),
+            self.mechanics.init_solver_state(mechanics_state),   
+        )
+    
+    
+class Recursion(eqx.Module):
+    """"""
+    step: eqx.Module 
+    n_steps: int = eqx.field(static=True)
+    
+    def __init__(self, step, n_steps):
+        self.step = step
+        self.n_steps = n_steps        
+        
+    def _body_func(self, i, x):
+        states, args = x 
+        # this seems to work, but I'm worried it will break on non-array leaves later
+        state = jax.tree_util.tree_map(lambda xs: xs[i], states)
+        
+        # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
+        feedback_state = states[0][i - self.step.delay]  
+        args = (args[0], feedback_state)  
+        
+        state = self.step(state, args)
+        states = jax.tree_util.tree_map(lambda xs, x: xs.at[i+1].set(x), states, state)
+        return states, args
+    
+    def __call__(self, state, args):
+        init_state = self.step.init_state(state)
+        args_init = (args, jnp.zeros_like(args))  #! part of the feedback_state hack: stand in target_state for feedback_state
+        init_states = self._init_zero_arrays(init_state, args_init)
+        init_states = jax.tree_util.tree_map(lambda xs, x: xs.at[0].set(x), 
+                                             init_states, init_state)
+        
+        if DEBUG: #! jax.debug doesn't work inside of lax loops  
+            states = init_states
+            args = args_init
+  
+            for i in range(self.n_steps):
+                states, args = self._body_func(i, (states, args))
+                
+            return states, args    
+        
+        return lax.fori_loop(
+            0, 
+            self.n_steps, 
+            self._body_func,
+            (init_states, args_init),
+        )
+    
+    def _init_zero_arrays(self, state, args):
+        return jax.tree_util.tree_map(
+            lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
+            eqx.filter_eval_shape(self.step, state, args)
+        )
+
+
+# %%
+def get_model(dt, mass, n_hidden, n_steps, key, feedback_delay=0):
+    
+    system = point_mass(mass=mass, n_dim=N_DIM)
+    mechanics = Mechanics(system, dt)
     # #! in principle n_input is a function of mechanics state and task inputs
-    n_input = N_DIM * 2 * 2  # 2D pos & vel: feedback & target state
-    n_output = N_DIM  # 2D linear forces
-    net = RNN(n_input, n_output, n_hidden, key=key)
-    body = SimpleFeedback(net, mechanics)
+    n_input = system.state_size * 2  # feedback & target states
+    net = RNN(n_input, system.control_size, n_hidden, key=key)
+    body = SimpleFeedback(net, mechanics, delay=feedback_delay)
 
     return Recursion(body, n_steps)
 
@@ -199,6 +312,7 @@ def loss_fn(
 
     states, _ = model(init_state, target_state)
     states, controls, activities, solver_state = states
+    # states = states[:, :, -1]  #! this was for the old delay solution with `SimpleFeedback`
     
     # sum over xyz, apply temporal discount, sum over time
     position_loss = jnp.sum(discount * jnp.sum((states[..., :2] - target_state[:, None, :2]) ** 2, axis=-1), axis=-1)
@@ -222,6 +336,7 @@ def train(
     mass=1.0,
     n_steps=100,
     dt=0.1,
+    feedback_delay_steps=0,
     workspace = jnp.array([[-1., 1.], [-1., 1.]]),
     batch_size=100,
     n_batches=50,
@@ -236,7 +351,8 @@ def train(
         """Segment endpoints uniformly distributed in a rectangular workspace."""
         return uniform_endpoints(key, batch_size, N_DIM, workspace)
     
-    model = get_model(dt, mass, hidden_size, n_steps, key)
+    model = get_model(dt, mass, hidden_size, n_steps, key, 
+                      feedback_delay=feedback_delay_steps)
     
     # only train the RNN layer (input weights & hidden weights and biases)
     filter_spec = jax.tree_util.tree_map(lambda _: False, model)
@@ -285,8 +401,9 @@ def train(
 
 # %%
 trained, losses, losses_terms = train(
-    batch_size=1000, 
+    batch_size=500, 
     dt=0.1, 
+    feedback_delay_steps=5,
     n_batches=2000, 
     n_steps=100, 
     hidden_size=50, 
@@ -305,9 +422,14 @@ n_directions = 8
 reach_length = 1.
 state_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
 (states, controls, activities, _), _ = jax.vmap(trained)(*state_endpoints)
+states = states[:, :, -1]  # TODO: this is because of the delay stuff in SimpleFeedback...
 
 # %% [markdown]
 # The network activities are constant after the 0th step. Probably because I keep overriding the hidden state with zeros whenever GRUCell is called...
+
+# %%
+plt.plot(jnp.sum(states[...,2:] ** 2, -1).T, '-')
+plt.show()
 
 # %%
 plot_states_forces_2d(states, controls, endpoints=state_endpoints[...,:2])
