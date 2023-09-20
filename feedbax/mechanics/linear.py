@@ -1,36 +1,16 @@
 """"""
 
-from typing import Any, Protocol, TypeVar
+from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float
 
 
 # global defaults
 ORDER = 2  # maximum order of the state derivatives
 N_DIM = 2  # number of spatial dimensions
-
-
-T = TypeVar("T")
-
-
-# TODO maybe this should be `AbstractSystem(eqx.Module)` instead
-class System(Protocol):
-    def vector_field(
-        self, 
-        t: float, 
-        y: PyTree[T], 
-        args: PyTree,  # controls
-) -> PyTree[T]:
-        """Vector field of the system."""
-        pass
-
-    @property
-    def control_size(self) -> int:
-        """Number of control inputs."""
-        pass
 
 
 class LTISystem(eqx.Module):
@@ -51,19 +31,16 @@ class LTISystem(eqx.Module):
         args: Float[Array, "input"]
     ) -> Float[Array, "state"]:
         u = args  #? right way?
-        d_y = self.A @ y + self.control(t, u)
+        d_y = self.A @ y + self.B @ u
         return d_y
-        
-    def control(
-        self, 
-        t: float, 
-        u: Float[Array, "input"]
-    ):
-        return self.B @ u
     
     @property
     def control_size(self) -> int:
         return self.B.shape[1]
+    
+    @property 
+    def state_size(self) -> int:
+        return self.A.shape[1]
     
 
 def point_mass(

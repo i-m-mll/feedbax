@@ -19,7 +19,10 @@ def plot_2D_joint_positions(
 ):
     """Plot paths of joint position for an n-link arm. 
     
-    TODO: Could also plot the controls on the joints.
+    TODO: 
+    - Plot the controls on the joints?
+    - Plot the root joint with a different marker
+    
     
     Args:
         xy ():
@@ -49,9 +52,10 @@ def plot_2D_joint_positions(
 
 
 def plot_states_forces_2d(
-        states: Float[Array, "batch time state"], 
+        positions: Float[Array, "batch time xy"], 
+        velocities: Float[Array, "batch time xy"],
         forces: Float[Array, "batch time control"],
-        endpoints: Optional[Float[Array, "batch xy startend"]] = None, 
+        endpoints: Optional[Float[Array, "startend batch xy"]] = None, 
         straight_guides=False,
         fig=None, 
         ms=3, 
@@ -68,11 +72,11 @@ def plot_states_forces_2d(
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
     cmap = plt.get_cmap('tab10')
-    colors = [cmap(i) for i in np.linspace(0, 1, states.shape[0])]
+    colors = [cmap(i) for i in np.linspace(0, 1, positions.shape[0])]
    
-    for i in range(states.shape[0]):
+    for i in range(positions.shape[0]):
         # position and 
-        axs[0].plot(states[i, :, 0], states[i, :, 1], '.', color=colors[i], ms=ms)
+        axs[0].plot(positions[i, :, 0], positions[i, :, 1], '.', color=colors[i], ms=ms)
         if endpoints is not None:
             if straight_guides:
                 axs[0].plot(*endpoints[:, i].T, linestyle='dashed', color=colors[i])
@@ -82,7 +86,7 @@ def plot_states_forces_2d(
                         color=colors[i], ms=ms_target)
         
         # velocity
-        axs[1].plot(states[i, :, 2], states[i, :, 3], '-o', color=colors[i], ms=ms)
+        axs[1].plot(velocities[i, :, 0], velocities[i, :, 1], '-o', color=colors[i], ms=ms)
         
         # force 
         axs[2].plot(forces[i, :, 0], forces[i, :, 1], '-o', color=colors[i], ms=ms)

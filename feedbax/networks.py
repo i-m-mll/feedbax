@@ -61,7 +61,7 @@ class RNN(eqx.Module):
     bias: jax.Array
     # activation: Callable
 
-    def __init__(self, in_size, out_size, hidden_size, *, key):
+    def __init__(self, in_size, out_size, hidden_size, key):
         ckey, lkey = jrandom.split(key)
         self.hidden_size = hidden_size
         self.out_size = out_size
@@ -75,6 +75,7 @@ class RNN(eqx.Module):
 
     def __call__(self, input, state):
         state = self.init_state()
+        input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)
         #state = jax.nn.tanh(state)
         return self.linear(state) + self.bias, state

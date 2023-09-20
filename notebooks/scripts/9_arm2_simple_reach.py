@@ -35,14 +35,20 @@ from feedbax.mechanics.arm import (
 )
 from feedbax.mechanics.system import System
 from feedbax.networks import SimpleMultiLayerNet, RNN
-from feedbax.plot import plot_loglog_losses, plot_states_forces_2d
+from feedbax.plot import (
+    plot_loglog_losses, 
+    plot_2D_joint_positions,
+    plot_states_forces_2d,
+)
 from feedbax.task import centreout_endpoints, uniform_endpoints
+from feedbax.utils import tree_get_idx, tree_set_idx
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
 
 # %%
 DEBUG = False
+jax.config.update("jax_debug_nans", True)
 
 N_DIM = 2
 
@@ -90,31 +96,28 @@ class SimpleFeedback(eqx.Module):
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
     def __call__(self, state, args):
-        eqx.tree_pprint(state)
         mechanics_state, ee_state, _, hidden, solver_state = state
         inputs, feedback_state = args
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        net_inputs = jnp.concatenate(feedback_state + (inputs,)) 
-        control, hidden = self.net(net_inputs, hidden)
+        control, hidden = self.net((inputs, feedback_state), hidden)
         
         net_force = control  # TODO: noise, perturbations
         
         mechanics_state = self.mechanics(mechanics_state, (net_force, solver_state))
         
-        # TODO: pass theta, dtheta as mechanics_state[0] and mechanics_state[1]
-        ee_state = jnp.concatenate(nlink_angular_to_cartesian(
-            self.mechanics.system, mechanics_state[:2], mechanics_state[2:]
-        ), axis=0)[:, -1]     
+        ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
+            self.mechanics.system, mechanics_state[0], mechanics_state[1]
+        ))
         
         return mechanics_state, ee_state, control, hidden, solver_state
     
     def init_state(self, mechanics_state): 
         
         # #! how to avoid this here?
-        ee_state = jnp.concatenate(nlink_angular_to_cartesian(
-            self.mechanics.system, mechanics_state[:2], mechanics_state[2:]
-        ), axis=0)[:, -1]
+        ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
+            self.mechanics.system, mechanics_state[0], mechanics_state[1]
+        ))
         
         return (
             mechanics_state, 
@@ -137,33 +140,34 @@ class Recursion(eqx.Module):
     def _body_func(self, i, x):
         states, args = x 
         # this seems to work, but I'm worried it will break on non-array leaves later
-        state = jax.tree_util.tree_map(lambda xs: xs[i], states)
-        
-        eqx.tree_pprint(state)
+        state = tree_get_idx(states, i)
         
         # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         # #! could put the concatenate inside of `Network`? & pass any pytree of inputs
-        feedback = (
-            states[0][i - self.step.delay],  # angular
-            states[1][i - self.step.delay],  # effector cartesian
-        )
+        # states[:2] includes both the angular and cartesian state
+        feedback = tree_get_idx(states[:2], i - self.step.delay)
         args = (args[0], feedback)  
         
         state = self.step(state, args)
         
-        states = jax.tree_util.tree_map(lambda xs, x: xs.at[i+1].set(x), states, state)
+        states = tree_set_idx(states, state, i + 1)
         return states, args
     
     def __call__(self, state, args):
         init_state = self.step.init_state(state)
         
         # #! part of the feedback hack
-        args = (args, (jnp.zeros_like(args), jnp.zeros_like(args)))
+        args = (args, jax.tree_map(jnp.zeros_like, (state, state)))
         
         states = self._init_zero_arrays(init_state, args)
-        states = jax.tree_util.tree_map(lambda xs, x: xs.at[0].set(x), 
-                                        states, init_state)
+        states = tree_set_idx(states, init_state, 0)
         
+        if DEBUG: #! jax.debug doesn't work inside of lax loops  
+            for i in range(self.n_steps):
+                states, args = self._body_func(i, (states, args))
+                
+            return states, args   
+                 
         return lax.fori_loop(
             0, 
             self.n_steps, 
@@ -211,11 +215,11 @@ def loss_fn(
     batched_model = jax.vmap(model)
 
     # dataset gives init state in terms of effector position, but we need joint angles
-    init_joints_state = jax.vmap(twolink_effector_pos_to_angles, in_axes=(None, 0))(
+    init_joints_pos = jax.vmap(twolink_effector_pos_to_angles, in_axes=(None, 0))(
         model.step.mechanics.system, init_state
     )
     # #! assumes zero initial velocity; TODO convert initial velocity also
-    init_joints_state = jnp.pad(init_joints_state, ((0, 0), (0, 2)))
+    init_joints_state = (init_joints_pos, jnp.zeros_like(init_joints_pos))
 
     (joints_states, ee_states, controls, activities, _), _ = batched_model(
         init_joints_state, target_state
@@ -224,12 +228,12 @@ def loss_fn(
     states = ee_states  # operational space loss
   
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((states[..., :2] - target_state[:, None, :2]) ** 2, axis=-1), axis=-1)
+    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[:, None, :2]) ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
         position=position_loss,  
-        final_velocity=jnp.sum((states[..., -1, 2:] - target_state[..., 2:]) ** 2, axis=-1).squeeze(),  # over xyz
+        final_velocity=jnp.sum((states[1][:, -1] - target_state[..., 2:]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
@@ -276,7 +280,6 @@ def train(
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
     
-    @jax.jit
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
@@ -285,6 +288,9 @@ def train(
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, loss_terms, model, opt_state
+    
+    if not DEBUG:
+        train_step = jax.jit(train_step)
 
     losses = []
     losses_terms = [] 
@@ -310,18 +316,59 @@ def train(
 # %%
 trained, losses, losses_terms = train(
     batch_size=500, 
-    dt=0.1, 
+    dt=0.05, 
     feedback_delay_steps=0,
-    n_batches=500, 
+    n_batches=2600, 
     n_steps=100, 
-    hidden_size=50, 
+    hidden_size=100, 
     seed=5566,
     learning_rate=0.01,
 )
 
 # %%
-state = (jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0.05, -0.1]))
-states = jax.tree_map(lambda x: jnp.tile(x, (5, 1)), state)
-twolink = TwoLink()
+plot_loglog_losses(losses, losses_terms, loss_term_labels=LOSS_TERMS)
+plt.show()
 
-nlink_angular_to_cartesian(twolink, *state)
+# %% [markdown]
+# Evaluate on a centre-out task
+
+# %%
+n_directions = 8
+reach_length = 0.1
+state_endpoints = centreout_endpoints(
+    jnp.array([0., 0.5]), n_directions, 0, reach_length
+)
+init_joints_pos = jax.vmap(twolink_effector_pos_to_angles, in_axes=(None, 0))(
+        trained.step.mechanics.system, state_endpoints[0, :, :2]
+)
+# #! assumes zero initial velocity; TODO convert initial velocity also
+init_states = (init_joints_pos, jnp.zeros_like(init_joints_pos))
+target_states = state_endpoints[1]
+
+(states, ee_states, controls, activities, _), _ = jax.vmap(trained)(
+    init_states, target_states
+)
+
+# %%
+test_pos = jax.vmap(nlink_angular_to_cartesian, in_axes=(None, 0, 0))(
+    trained.step.mechanics.system, *init_states
+)[0]
+test_pos[0]
+
+# %%
+# plot EE trajectories for all directions
+plot_states_forces_2d(ee_states[0], ee_states[1], controls, state_endpoints[..., :2])
+plt.show()
+
+# %%
+# plot entire arm trajectory for an example direction
+# convert all joints to Cartesian since I only saved the EE state
+xy_pos = jax.vmap(nlink_angular_to_cartesian, in_axes=(None, 0, 0))(
+    trained.step.mechanics.system, states[0].reshape(-1, 2), states[1].reshape(-1, 2)
+)[0].reshape(n_directions, -1, 2, 2)
+
+# %%
+ax = plot_2D_joint_positions(xy_pos[0], add_root=True)
+plt.show()
+
+# %%

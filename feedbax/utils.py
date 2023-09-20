@@ -2,7 +2,15 @@
 from itertools import zip_longest, chain
 import math
 
+import jax
 import jax.numpy as jnp
+
+
+"""The signs of the i-th derivatives of cos and sin.
+
+TODO: infinite cycle
+"""
+SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
 
 def exp_taylor(x: float, n: int):
@@ -20,13 +28,23 @@ def normalize(*args, min=0, max=1):
     return [(arr - jnp.min(arr, axis=0)) / (jnp.max(arr, axis=0) - jnp.min(arr, axis=0)) * (max - min) + min
             for arr in args]
 
+
+def tree_get_idx(tree, idx: int):
+    """Retrieve the `idx`-th element of each leaf of `tree`."""
+    return jax.tree_map(lambda xs: xs[idx], tree)
+
+
+def tree_set_idx(tree, vals, idx: int):
+    """Update the `idx`-th element of each leaf of `tree`.
+    
+    `vals` should be a pytree with the same structure as `tree`,
+    except that each leaf should be missing the first dimension of 
+    the corresponding leaf in `tree`.
+    """
+    return jax.tree_util.tree_map(lambda xs, x: xs.at[idx].set(x), tree, vals)
+
 # 
 # jax.debug.print(''.join([f"{s.shape}\t{p}\n" 
 #                             for p, s in jax.tree_util.tree_leaves_with_path(state)]))
 
 
-_sincos_derivative_signs = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)]).reshape((4, 1, 1, 2))
-
-def sincos_derivative_signs(i):
-    """Return the signs of the i-th derivatives of sin and cos."""
-    return _sincos_derivative_signs[-i]

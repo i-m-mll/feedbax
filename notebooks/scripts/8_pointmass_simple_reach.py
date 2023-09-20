@@ -422,17 +422,14 @@ n_directions = 8
 reach_length = 1.
 state_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
 (states, controls, activities, _), _ = jax.vmap(trained)(*state_endpoints)
-states = states[:, :, -1]  # TODO: this is because of the delay stuff in SimpleFeedback...
+#states = states[:, :, -1]  # TODO: this is because of the delay stuff in SimpleFeedback...
 
-# %% [markdown]
-# The network activities are constant after the 0th step. Probably because I keep overriding the hidden state with zeros whenever GRUCell is called...
+# %%
+plot_states_forces_2d(states, controls, endpoints=state_endpoints[...,:2])
 
 # %%
 plt.plot(jnp.sum(states[...,2:] ** 2, -1).T, '-')
 plt.show()
-
-# %%
-plot_states_forces_2d(states, controls, endpoints=state_endpoints[...,:2])
 
 
 # %% [markdown]

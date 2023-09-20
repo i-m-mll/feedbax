@@ -126,7 +126,7 @@ def diffeqsolve_loop(term, solver, t0, t1, dt0, y0, args):
 
     def body_fn(i, x):
         ys, state = x
-        y, _, _, state, _ = solver.step(term, 0, dt0, ys[i], args, state, made_jump=False)
+        y, _, _, state, _ = solver.step(term, 0, dt0, (ys[i, :2], ys[i, 2:]), args, state, made_jump=False)
         ys = ys.at[i+1, :2].set(y[0])
         ys = ys.at[i+1, 2:].set(y[1])
         return ys, state
@@ -158,6 +158,8 @@ ys = solve_loop(y0, t0, t1, dt0, args)
 # TODO: this should be a unit test for angular_to_cartesian
 
 # %%
+twolink = TwoLink()
+
 distances = np.sqrt(np.sum(np.diff(xy_pos, axis=2)**2, axis=1)) - twolink.l
 print(distances, '\n')
 print("Mean difference from actual length: ", np.mean(distances, axis=0))
