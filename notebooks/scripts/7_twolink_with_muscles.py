@@ -15,6 +15,7 @@
 
 # %%
 import math
+from typing import Any
 
 import diffrax as dfx
 import equinox as eqx
@@ -30,13 +31,12 @@ import optax
 from tqdm import tqdm
 
 from feedbax.mechanics.arm import TwoLink, nlink_angular_to_cartesian
-from feedbax.mechanics.muscle import LillicrapScott 
-from feedbax.plot import plot_2D_positions
+from feedbax.mechanics.muscle import LillicrapScott, TodorovLi, ActivationFilter
+from feedbax.mechanics.muscled_arm import TwoLinkMuscled
+from feedbax.plot import plot_2D_joint_positions
 
 # %%
-from jax import config
-
-config.update("jax_debug_nans", False)
+jax.config.update("jax_debug_nans", False)
 
 
 # %%
@@ -49,128 +49,26 @@ def solve(field, y0, dt0, t0, t1, args, **kwargs):
 
 
 # %%
-beta = 1.93
-omega = 1.03
-rho = 1.87
-vmax = -5.72
-cv0 = 1.38
-cv1 = 2.09
-av0 = -3.12
-av1 = 4.21
-av2 = -2.67
-bv = 0.62
-nf0 = 2.11
-nf1 = 4.16
-a_f = 0.56
-c2 = -0.02
-k2 = -18.7
-l_r2 = 0.79
-tmp1 = -k2 * l_r2
+arm2M = TwoLinkMuscled(
+    muscle_model=TodorovLi(),
+    activator=ActivationFilter(),
+)
 
-def muscle_l(theta, muscles):
-    M, theta0, l0 = muscles.M, muscles.theta0, muscles.l0
-    l = 1 + (M[0] * (theta0[0] - theta[0]) + M[1] * (theta0[1] - theta[1])) / l0
-    return l
-
-def muscle_v(d_theta, muscles):
-    # muscle velocity
-    M, l0 = muscles.M, muscles.l0
-    v = (M[0] * d_theta[0] + M[1] * d_theta[1]) / l0
-    return v
-
-def tension_from_lv_lt2004(l, v, a=1):
-    """FLV function from Li & Todorov 2004."""
-    f_l = jnp.exp(-jnp.abs((l ** beta - 1) / omega) ** rho)
-    f_fv_rhs = (bv - v * (av0 + av1 * l + av2 * l ** 2)) / (bv + v)
-    f_fv_lhs = (vmax - v) / (vmax + v * (cv0 + cv1 * l))
-    rhs_cond = v > 0
-    f_fv = rhs_cond * f_fv_rhs + ~rhs_cond * f_fv_lhs  # FV = 1 for isometric condition
-    f_p = c2 * jnp.exp(tmp1 + k2 * l)  # PE; elastic muscle fascicles
-    # (this f_p accounts for only the compressive spring component F_PE2 from Brown 1999)
-    n_f = nf0 + nf1 * (1 / l - 1)
-    A_f = 1 - jnp.exp(-(a / (a_f * n_f)) ** n_f)
-    tension = A_f * (f_l * f_fv + f_p)
-    return tension
-
-def tension_lt2004(theta, d_theta, muscles):
-    """Simple helper to take joint configuration as input."""
-    l = muscle_l(theta, muscles)
-    v = muscle_v(d_theta, muscles)
-    return tension_from_lv_lt2004(l, v)
-
-
-# %%
-tau_act = 50  # [ms]
-tau_deact = 66  # [ms]
-
-
-def muscle_activation_field(t, y, args):
-    """Approximation of muscle activation (calcium) dynamics from Todorov & Li 2004.
-    
-    Just a simple filter.
-    """
-    activation = y
-    u = args  
-    
-    # TODO: assuming tau_act and tau_deact aren't passed as args; e.g. if this is a method of a dataclass
-    tau = tau_deact + jnp.where(u < activation, u, jnp.zeros(1)) * (tau_act - tau_deact)
-    d_activation = (u - activation) / tau
-    
-    return d_activation
-
-
-def twolink_field(t, y, args):
-    theta, d_theta = y 
-    input_torque, twolink = args
-
-    # centripetal and coriolis forces 
-    c_vec = jnp.array((
-        -d_theta[1] * (2 * d_theta[0] + d_theta[1]),
-        d_theta[0] ** 2
-    )) * twolink.a2 * jnp.sin(theta[1])  
-    
-    cs1 = jnp.cos(theta[1])
-    tmp = twolink.a3 + twolink.a2 * cs1
-    inertia_mat = jnp.array(((twolink.a1 + 2 * twolink.a2 * cs1, tmp),
-                                (tmp, twolink.a3 * jnp.ones_like(cs1))))
-    
-    net_torque = input_torque - c_vec.T - jnp.matmul(d_theta, twolink.B.T) # - viscosity * state.d_theta
-    
-    dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
-    
-    return d_theta, dd_theta
-
-
-def field(t, y, args):
-    theta, d_theta, activation = y 
-    muscles, u, twolink = args 
-    
-    d_activation = muscle_activation_field(t, activation, u)
-    
-    input_torque = muscles.M @ (activation * tension_lt2004(theta, d_theta, muscles))
-    
-    d_theta, dd_theta = twolink_field(t, (theta, d_theta), (input_torque, twolink))
-    
-    return d_theta, dd_theta, d_activation
-
-
-# %%
 y0 = (jnp.array([np.pi / 5, np.pi / 3]), 
       jnp.array([0., 0.]),
       jnp.zeros(6))
-u = jnp.array([0., 0., 0., 0., 1e-4, 0.])
+u = jnp.array([0., 0., 0., 0., 1., 0.])
 t0 = 0
 dt0 = 1  # [ms]
 t1 = 1000
-args = (LillicrapScott(), u, TwoLink())
-sol = solve(field, y0, dt0, t0, t1, args)   
+sol = solve(arm2M.vector_field, y0, dt0, t0, t1, u)   
 
 # %%
-xy_pos, xy_vel = jax.vmap(nlink_angular_to_cartesian, in_axes=[0, 0, None])(sol.ys[0], sol.ys[1], TwoLink())
+xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(TwoLink(), sol.ys[0], sol.ys[1])
 xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
 
 # %%
-ax = plot_2D_positions(xy_pos, add_root=False)
+ax = plot_2D_joint_positions(xy_pos, lw_arm=4, add_root=False)
 plt.show()
 
 # %% [markdown]

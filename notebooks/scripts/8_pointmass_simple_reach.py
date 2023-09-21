@@ -204,8 +204,7 @@ class SimpleFeedback(eqx.Module):
         net_inputs = jnp.concatenate([feedback_state.reshape(-1), inputs]) 
         control, hidden = self.net(net_inputs, hidden)
         
-        net_force = control  # TODO: noise, perturbations
-        mechanics_state = self.mechanics(mechanics_state, (net_force, solver_state))
+        mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
         
         return mechanics_state, control, hidden, solver_state
     
@@ -425,7 +424,7 @@ state_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reac
 #states = states[:, :, -1]  # TODO: this is because of the delay stuff in SimpleFeedback...
 
 # %%
-plot_states_forces_2d(states, controls, endpoints=state_endpoints[...,:2])
+plot_states_forces_2d(states[...,:2], states[..., 2:], controls, endpoints=state_endpoints[...,:2])
 
 # %%
 plt.plot(jnp.sum(states[...,2:] ** 2, -1).T, '-')

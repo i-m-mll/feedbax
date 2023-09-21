@@ -11,18 +11,19 @@ import numpy as np
 
 def plot_2D_joint_positions(
         xy, 
-        links=True, 
+        t0t1=(0, 1),  # (t0, t1)
         cmap_func=mpl.cm.viridis,
-        unit='m', 
+        length_unit=None, 
         ax=None, 
-        add_root=True
+        add_root=True,
+        colorbar=True,
+        ms_trace=6,
+        lw_arm=4,
 ):
     """Plot paths of joint position for an n-link arm. 
     
     TODO: 
     - Plot the controls on the joints?
-    - Plot the root joint with a different marker
-    
     
     Args:
         xy ():
@@ -38,13 +39,31 @@ def plot_2D_joint_positions(
 
     cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
     cmap = mpl.colors.ListedColormap(cmap)
+    
+    # arms: beginning, midpoint, and end of trajectory
+    for i in (len(xy), 2, 1):
+        idx = len(xy) // i - 1
+        c = cmap(idx / len(xy))
+        # segment lines
+        ax.plot(*xy[idx, :], c=c, lw=lw_arm, ms=0)
+        # mobile joints
+        ax.plot(*xy[idx, :, 1:], c=c, lw=0, marker='o', ms=5)
+        # root joint
+        ax.plot(*xy[idx, :, 0], c=c, lw=lw_arm, marker='s', ms=7)
 
-    ax.plot(*xy[0], c=cmap(0.), lw=2, marker="o")
-    ax.plot(*xy[len(xy)//2], c=cmap(0.5), lw=2, marker='o')
-    ax.plot(*xy[-1], c=cmap(1.), lw=2, marker='o')
-
+    # full joint traces along trajectory
     for j in range(xy.shape[2]):
-        ax.scatter(*xy[..., j].T, marker='.', s=4, linewidth=0, c=cmap.colors)
+        ax.scatter(*xy[..., j].T, 
+                   marker='.', s=ms_trace, linewidth=0, c=cmap.colors)
+
+    if colorbar:
+        fig.colorbar(mpl.cm.ScalarMappable(mpl.colors.Normalize(*t0t1), cmap),
+                     ax=ax, label='Time', location='bottom', ticks=[],
+                     shrink=0.7, pad=0.1)  
+    
+    if length_unit is not None:
+        ax.set_xlabel(f' [{length_unit}]')
+        ax.set_ylabel(f' [{length_unit}]')
 
     ax.margins(0.1, 0.2)
     ax.set_aspect('equal')
@@ -57,10 +76,11 @@ def plot_states_forces_2d(
         forces: Float[Array, "batch time control"],
         endpoints: Optional[Float[Array, "startend batch xy"]] = None, 
         straight_guides=False,
+        force_label_type='linear',
         fig=None, 
         ms=3, 
         ms_source=6, 
-        ms_target=7
+        ms_target=7,
 ):
     """Plot trajectories of position, velocity, force in 2D subplots.
     
@@ -91,9 +111,14 @@ def plot_states_forces_2d(
         # force 
         axs[2].plot(forces[i, :, 0], forces[i, :, 1], '-o', color=colors[i], ms=ms)
 
+    if force_label_type == 'linear':
+        force_labels = ("Control force", r"$\mathrm{f}_x$", r"$\mathrm{f}_y$")
+    elif force_label_type == 'torques':
+        force_labels = ("Control torques", r"$\tau_1$", r"$\tau_2$")
+        
     labels = [("Position", "$x$", "$y$"),
               ("Velocity", "$\dot x$", "$\dot y$"),
-              ("Control force", "$\mathrm{f}_x$", "$\mathrm{f}_y$")]
+              force_labels]
 
     for i, (title, xlabel, ylabel) in enumerate(labels):
         axs[i].set_title(title)

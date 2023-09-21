@@ -75,6 +75,7 @@ class RNN(eqx.Module):
 
     def __call__(self, input, state):
         state = self.init_state()
+        # TODO: flatten leaves before concatenating 
         input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)
         #state = jax.nn.tanh(state)

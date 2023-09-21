@@ -31,7 +31,7 @@ import seaborn as sns
 from tqdm import tqdm
 
 from feedbax.mechanics.arm import nlink_angular_to_cartesian
-from feedbax.plot import plot_2D_joint_positions
+from feedbax.plot import plot_2D_joint_positions, plot_states_forces_2d
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
 
@@ -101,8 +101,23 @@ with jax.default_device(jax.devices('cpu')[0]):
     sol = solve(y0, dt0, args)      
 
 # %%
-xy_pos, xy_vel = jax.vmap(nlink_angular_to_cartesian, in_axes=[None, 0, 0])(TwoLink(), sol.ys[0], sol.ys[1])
-xy_pos = np.pad(xy_pos, ((0,0), (0,0), (1,0)))  # add origin (shoulder) joint
+xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(
+    TwoLink(), sol.ys[0], sol.ys[1]
+)
+
+# %% [markdown]
+# Plot the trajectory of the end of the arm, plus the (constant) control torques:
+
+# %%
+controls = jnp.tile(jnp.array([-0.1, 0.1]), (1000, 1))
+position = xy_pos[..., -1]
+velocity = xy_vel[..., -1]
+data = (position, velocity, controls)
+plot_states_forces_2d(*jax.tree_map(lambda x: x[None, :], data), force_label_type='torques')
+plt.show()
+
+# %% [markdown]
+# Plot the position of the entire arm over time
 
 # %%
 ax = plot_2D_joint_positions(xy_pos, add_root=False)

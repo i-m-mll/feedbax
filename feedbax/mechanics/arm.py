@@ -39,7 +39,6 @@ class TwoLink(eqx.Module):
         # otherwise their initialization is a side effect
         self._a  
         
-    
     def vector_field(self, t, y, args):
         # TODO: pass y as a pytree (tuple)?
         theta, d_theta = y
@@ -87,7 +86,7 @@ class TwoLink(eqx.Module):
     @property 
     def n_links(self) -> int:
         return 2
-
+    
 
 def twolink_effector_pos_to_angles(
         twolink: TwoLink, 
@@ -108,7 +107,7 @@ def twolink_effector_pos_to_angles(
     TODO:
     - Convert velocity using the Jacobian.
     - Try to generalize to n-link arm using Jacobian of forward kinematics?
-    - Unit test round trip with `nlink_angular_to_cartesian`
+    - Unit test round trip with `nlink_angular_to_cartesian`.
     """
     l, lsq = twolink.l, twolink._lsq
     dsq = jnp.sum(pos ** 2)
@@ -138,6 +137,9 @@ def nlink_angular_to_cartesian(
       Denavit-Hartenberg method, which uses a matrix for each joint, 
       transforming its angle into a change in position relative to the 
       preceding joint.
+      
+    TODO:
+    - Any point to reducing memory by only calculating the last link?
     """
     angle_sum = jnp.cumsum(theta)  # links
     length_components = nlink.l * jnp.array([jnp.cos(angle_sum),
@@ -145,10 +147,7 @@ def nlink_angular_to_cartesian(
     xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
     
     ang_vel_sum = jnp.cumsum(dtheta)  # links
-    xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[::-1] 
+    xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
                              * ang_vel_sum,
                              axis=1)
     return xy_position, xy_velocity
-
-def nlink_angular_to_cartesian_end(nlink, state):
-    return nlink_angular_to_cartesian(nlink, state)[-1]
