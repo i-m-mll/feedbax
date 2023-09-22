@@ -30,6 +30,8 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
+import orbax.checkpoint as ocp
+from pathlib import Path
 import tqdm
 from tqdm import tqdm
 
@@ -47,7 +49,14 @@ from feedbax.plot import (
     plot_states_forces_2d,
 )
 from feedbax.task import centreout_endpoints, uniform_endpoints
-from feedbax.utils import tree_get_idx, tree_set_idx, internal_grid_points
+from feedbax.utils import (
+    delete_contents,
+    internal_grid_points,
+    tree_get_idx, 
+    tree_set_idx, 
+    tree_stack,
+    tree_sum_squares,
+)
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
@@ -58,6 +67,13 @@ jax.config.update("jax_debug_nans", False)
 jax.config.update("jax_enable_x64", False)
 
 N_DIM = 2
+
+# %%
+# paths
+
+# training checkpoints
+chkpt_dir = Path("/tmp/jax-checkpoints/")
+chkpt_dir.mkdir(exist_ok=True)
 
 
 # %%
@@ -82,7 +98,7 @@ class Mechanics(eqx.Module):
         state, _, _, solver_state, _ = self.solver.step(
             self.term, 0, self.dt, state, inputs, solver_state, made_jump=False
         )
-        # #! I don't even return solver state, so apparently it's not important
+        # # #! I don't even return solver state, so apparently it's not important
         return state
     
     def init_solver_state(self, state):
@@ -118,7 +134,7 @@ class SimpleFeedback(eqx.Module):
     
     def init_state(self, mechanics_state): 
         
-        # #! how to avoid this here?
+        # # #! how to avoid this here?
         ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
             self.mechanics.system.twolink, mechanics_state[0], mechanics_state[1]
         ))
@@ -146,8 +162,8 @@ class Recursion(eqx.Module):
         # this seems to work, but I'm worried it will break on non-array leaves later
         state = tree_get_idx(states, i)
         
-        # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        # #! could put the concatenate inside of `Network`? & pass any pytree of inputs
+        # # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
+        # # #! could put the concatenate inside of `Network`? & pass any pytree of inputs
         feedback = (
             tree_get_idx(states[0][:2], i - self.step.delay),  # omit muscle activation
             tree_get_idx(states[1], i - self.step.delay),
@@ -162,7 +178,7 @@ class Recursion(eqx.Module):
     def __call__(self, state, args):
         init_state = self.step.init_state(state)
         
-        # #! part of the feedback hack
+        # # #! part of the feedback hack
         args = (args, jax.tree_map(jnp.zeros_like, (state[:2], state[:2])))
         
         states = self._init_zero_arrays(init_state, args)
@@ -208,6 +224,7 @@ def get_model(
     )
     mechanics = Mechanics(system, dt)
     # target state + feedback: angular pos & vel of joints & cartesian EE 
+    # #! this should be inferred by `Body` based on the desired wiring and knowledge of the task structure
     n_input = system.twolink.state_size * 2 + N_DIM * 2  
     net = RNN(n_input, system.control_size, n_hidden, key=key, out_nonlinearity=out_nonlinearity)
     body = SimpleFeedback(net, mechanics, delay=feedback_delay)
@@ -216,14 +233,18 @@ def get_model(
 
 
 # %%
-LOSS_TERMS = ('position', 'final_velocity', 'control', 'hidden')
-
 def loss_fn(
     diff_model, 
     static_model, 
     init_state, 
     target_state, 
-    weights=jnp.array((1., 1., 1e-5, 1e-6)),
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-6, 
+    ),
+    weight_decay=1e-4,
     discount=1.,
 ):  
     """Quadratic in states, controls, and hidden activities.
@@ -265,9 +286,19 @@ def loss_fn(
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
     
-    loss_terms = weights * jnp.mean(jnp.stack(list(loss_terms.values()), axis=1), axis=0)  # mean over batch
+    # mean over batch
+    loss_terms = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_terms)
+    # term scaling
+    loss_terms = jax.tree_map(lambda term, weight: term * weight, loss_terms, term_weights) 
     
-    loss = jnp.sum(loss_terms)  # sum over terms
+    if weight_decay is not None:
+        # this is separate because the tree map of `jnp.mean` doesn't like floats
+        # and it doesn't make sense to batch-mean the model parameters anyway
+        loss_terms['weight_decay'] = weight_decay * tree_sum_squares(diff_model)
+        
+    # sum over terms
+    loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
+    
     return loss, loss_terms
 
 
@@ -281,9 +312,17 @@ def train(
     n_batches=2500,
     epochs=1,
     learning_rate=1e-2,
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-6, 
+    ),
+    weight_decay=1e-4,
     hidden_size=50,
     seed=5566,
     log_step=100,
+    restore_checkpoint=False,
 ):
     key = jrandom.PRNGKey(seed)
 
@@ -305,13 +344,14 @@ def train(
     )     
     
     optim = optax.adam(learning_rate)
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
     
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, discount=position_error_discount
+            diff_model, static_model, init_state, target_state, 
+            discount=position_error_discount, term_weights=term_weights,
+            weight_decay=weight_decay,
         )
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
@@ -319,30 +359,71 @@ def train(
     
     if not DEBUG:
         train_step = eqx.filter_jit(train_step)
-
-    losses = []
-    losses_terms = [] 
-
-    for _ in range(epochs):
-        for batch in tqdm(range(n_batches)):
-            key = jrandom.split(key)[0]
-            init_state, target_state = get_batch(batch_size, key)
-            
-            loss, loss_terms, model_updated, opt_state = train_step(model, init_state, target_state, opt_state)
-            
-            losses.append(loss)
-            losses_terms.append(loss_terms)
-            
-            if jnp.isnan(loss):
-                print(f"NaN loss at batch {batch}")
-                break  #! assumes 1 epoch
-            else:
-                model = model_updated
-            
-            if batch % log_step == 0:
-                tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
+        
+    chkpt_options = ocp.CheckpointManagerOptions(
+        max_to_keep=3, 
+        save_interval_steps=log_step,
+    )
+    chkpt_manager = ocp.CheckpointManager(
+        chkpt_dir, 
+        dict(
+            extra=ocp.PyTreeCheckpointer(),
+        ),
+        options=chkpt_options,
+    )
     
-    losses_terms = jnp.vstack(losses_terms)
+    if restore_checkpoint:
+        last_batch = chkpt_manager.latest_step()
+        start_batch = last_batch + 1
+        
+        model = eqx.tree_deserialise_leaves(chkpt_dir / f'model{last_batch}.eqx', model)
+        
+        chkpt_dict = chkpt_manager.restore(last_batch)
+        losses = jnp.array(chkpt_dict['extra']['losses'])
+        losses_terms = jax.tree_map(jnp.array, chkpt_dict['extra']['losses_terms'])
+        
+        print(f"Restored checkpoint from training step {last_batch}")
+    else:
+        start_batch = 0
+        delete_contents(chkpt_dir)  
+        losses = jnp.full((n_batches,), jnp.nan)
+        losses_terms = dict(zip(
+            term_weights.keys(), 
+            [jnp.full((n_batches,), jnp.nan) for _ in term_weights]
+        ))
+        
+    opt_state = optim.init(eqx.filter(model, eqx.is_array))
+
+    #for _ in range(epochs): #! assume 1 epoch (no fixed dataset)
+    for batch in tqdm(range(start_batch, n_batches)):
+        key = jrandom.split(key)[0]
+        init_state, target_state = get_batch(batch_size, key)
+        
+        loss, loss_terms, model_updated, opt_state = train_step(
+            model, init_state, target_state, opt_state
+        )
+        
+        losses = losses.at[batch].set(loss)
+        losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
+        
+        if jnp.isnan(loss):
+            print(f"NaN loss at batch {batch}")
+            break  #! assumes 1 epoch
+        else:
+            model = model_updated
+         
+        chkpt_manager.save(batch, dict(
+            extra=dict(
+                losses=losses,
+                losses_terms=losses_terms,
+            ),
+        ))
+        
+        if batch % log_step == 0:
+            # #! I'd rather do this together with checkpointing
+            # #! but I don't know how to map the reloaded model dict onto the `eqx.Module`
+            eqx.tree_serialise_leaves(chkpt_dir / f'model{batch}.eqx', model)
+            tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
     
     return model, losses, losses_terms
 
@@ -355,17 +436,25 @@ trained, losses, losses_terms = train(
     batch_size=500, 
     dt=0.05, 
     feedback_delay_steps=0,
-    n_batches=3000, 
-    n_steps=50, 
+    n_batches=100, 
+    n_steps=20, 
     hidden_size=50, 
     seed=5566,
     learning_rate=0.01,
-    log_step=50,
+    log_step=10,
     workspace=workspace,
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-4, 
+    ),
+    weight_decay=None,
+    restore_checkpoint=True,
 )
 
 # %%
-plot_loglog_losses(losses, losses_terms, loss_term_labels=LOSS_TERMS)
+plot_loglog_losses(losses, losses_terms)
 plt.show()
 
 # %% [markdown]
@@ -416,4 +505,33 @@ xy_pos = eqx.filter_vmap(nlink_angular_to_cartesian)(
 ax = plot_2D_joint_positions(xy_pos[0], add_root=True)
 plt.show()
 
+
+# %% [markdown]
+# ## Debugging stuff
+
 # %%
+def training_partition(
+    n_steps=100,
+    dt=0.05,
+    feedback_delay_steps=5,
+    workspace = jnp.array([[-0.2, 0.2], [0.10, 0.50]]),
+    hidden_size=50,
+    seed=5566,
+):
+    key = jrandom.PRNGKey(seed)
+    
+    model = get_model(dt, hidden_size, n_steps, key, 
+                      feedback_delay=feedback_delay_steps)
+    
+    # only train the RNN layer (input weights & hidden weights and biases)
+    filter_spec = jax.tree_util.tree_map(lambda _: False, model)
+    filter_spec = eqx.tree_at(
+        lambda tree: (tree.step.net.cell.weight_hh, 
+                      tree.step.net.cell.weight_ih, 
+                      tree.step.net.cell.bias),
+        filter_spec,
+        replace=(True, True, True)
+    )     
+    
+    diff_model, static_model = eqx.partition(model, filter_spec)
+    return model, diff_model, static_model

@@ -1,6 +1,9 @@
 
 from itertools import zip_longest, chain
 import math
+from pathlib import Path
+from shutil import rmtree
+from typing import Union 
 
 import jax
 import jax.numpy as jnp
@@ -13,6 +16,15 @@ TODO: infinite cycle
 """
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
+
+def delete_contents(path: Union[str, Path]):
+    """Delete all subdirectories and files of `path`."""
+    for p in Path(path).iterdir():
+        if p.is_dir():
+            rmtree(p)
+        elif p.is_file():
+            p.unlink()
+    
 
 def exp_taylor(x: float, n: int):
     """First `n` terms of the Taylor series for `exp` at the origin."""
@@ -68,6 +80,26 @@ def tree_set_idx(tree, vals, idx: int):
     """
     return jax.tree_util.tree_map(lambda xs, x: xs.at[idx].set(x), tree, vals)
 
+
+def tree_stack(trees):
+    """Stack the leaves of each tree in `trees`.
+    
+    All trees should have the same structure.
+    
+    See https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75?permalink_comment_id=4634557#gistcomment-4634557
+    """
+    return jax.tree_util.tree_map(lambda *v: jnp.stack(v), *trees)
+
+
+def tree_sum_squares(tree):
+    """Sum the sums of squares of the leaves of a PyTree.
+    
+    Useful for (say) doing weight decay on model parameters.
+    """
+    return jax.tree_util.tree_reduce(
+        lambda x, y: x + y, 
+        jax.tree_map(lambda x: jnp.sum(x ** 2), tree)
+    )
 
 def corners_2d(bounds: Float[Array, "ndim=2 2"]):    
     """Generate the corners of a rectangle from its bounds."""

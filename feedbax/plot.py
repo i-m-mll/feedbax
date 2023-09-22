@@ -1,6 +1,7 @@
 """Plotting utilities."""
 
 from typing import Optional
+import jax
 
 import jax.numpy as jnp
 from jaxtyping import Float, Array
@@ -141,19 +142,20 @@ def plot_states_forces_2d(
     return fig, axs
 
 
-def plot_loglog_losses(losses, losses_terms=None, loss_term_labels=[]):
+def plot_loglog_losses(losses, losses_terms: dict = None):
     """Log-log plot of losses and component loss terms."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
     ax.loglog(losses, 'white', lw=3)
     
     if losses_terms is not None:
-        ax.loglog(losses_terms, lw=0.75)
+        for loss_term in losses_terms.values():
+            ax.loglog(loss_term, lw=0.75)
         
     ax.set_xlabel('Training step')
     ax.set_ylabel('Loss')
     
-    ax.legend(['Total', *loss_term_labels])
+    ax.legend(['Total', *losses_terms.keys()])
     
     return fig, ax
 

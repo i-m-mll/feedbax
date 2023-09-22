@@ -20,6 +20,9 @@ tmp*
 *.insyncdl
 _debris/
 
+# training checkpoints
+checkpoints/
+
 # tensorboard
 runs/
 _runs/
