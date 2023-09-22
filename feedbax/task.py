@@ -26,10 +26,10 @@ def uniform_endpoints(
 
 
 def centreout_endpoints(
-        center: Float[Array, "2"], 
-        n_directions: int, 
-        angle_offset: float, 
-        length: float,
+    center: Float[Array, "2"], 
+    n_directions: int, 
+    angle_offset: float, 
+    length: float,
 ): 
     ndim = 2  # TODO: generalize to sphere?
     """Segment endpoints starting in the centre and ending equally spaced on a circle."""

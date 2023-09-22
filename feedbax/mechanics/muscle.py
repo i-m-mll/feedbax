@@ -160,7 +160,7 @@ class VirtualMuscle(eqx.Module):
         return d_l_eff
 
 
-class TodorovLi(VirtualMuscle):
+class TodorovLiVirtualMuscle(VirtualMuscle):
     """Muscle model from Todorov & Li 2004.
     
     Simplification of the Brown et al. 1999 Virtual Muscle Model, omitting the 
@@ -175,7 +175,7 @@ class TodorovLi(VirtualMuscle):
         return 0, self.force_passive_2(l)
 
 
-class LillicrapScott(VirtualMuscle): 
+class LillicrapScottVirtualMuscle(VirtualMuscle): 
     """Muscle model from Lillicrap & Scott 2013.
     
     Simplification of the Brown et al. 1999 Virtual Muscle Model:
@@ -202,7 +202,6 @@ class LillicrapScott(VirtualMuscle):
         return a 
     
 
-#! some params of `VirtualMuscle` are omitted
 _TODOROV_LI_VIRTUAL_MUSCLE_PARAMS = dict(
     beta=1.93,
     omega=1.03,
@@ -213,31 +212,35 @@ _TODOROV_LI_VIRTUAL_MUSCLE_PARAMS = dict(
     b_v=0.62,
     n_f=(2.11, 4.16),
     a_f=0.56,
-    c1=None,
     c2=-0.02,
-    k1=None,
     k2=-18.7,
-    l_r1=None,
     l_r2=0.79,
+    
+    #! unused
+    c1=0.,
+    k1=0., 
+    l_r1=0.,
 )
 
 
 _LILLICRAP_SCOTT_VIRTUAL_MUSCLE_PARAMS = dict(
     beta = 1.55,
     omega = 0.81,
-    rho = 1.0, #! not specified
+    rho = 1.0, # not specified as such
     v_max = -7.39,
     c_v = (-3.21, 4.17),
     a_v = (-3.12, 4.21, -2.67),
     b_v = 0.62, 
-    n_f=None,
-    a_f=None,
-    c1=None,
-    c2=None,
-    k1=None,
-    k2=None,
-    l_r1=None,
-    l_r2=None,
+    
+    #! unused
+    n_f=0.,
+    a_f=0.,
+    c1=0.,
+    c2=0.,
+    k1=0.,
+    k2=0.,
+    l_r1=0.,
+    l_r2=0.,
 )
     
     

@@ -2,17 +2,20 @@
 
 from typing import Optional
 
+import jax.numpy as jnp
 from jaxtyping import Float, Array
 import matplotlib as mpl
 from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
 
+from feedbax import utils
+
 
 def plot_2D_joint_positions(
         xy, 
         t0t1=(0, 1),  # (t0, t1)
-        cmap_func=mpl.cm.viridis,
+        cmap="viridis",
         length_unit=None, 
         ax=None, 
         add_root=True,
@@ -37,6 +40,7 @@ def plot_2D_joint_positions(
     if add_root:
         xy = np.pad(xy, ((0,0), (0,0), (1,0)))
 
+    cmap_func = plt.get_cmap(cmap)
     cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
     cmap = mpl.colors.ListedColormap(cmap)
     
@@ -77,6 +81,8 @@ def plot_states_forces_2d(
         endpoints: Optional[Float[Array, "startend batch xy"]] = None, 
         straight_guides=False,
         force_label_type='linear',
+        cmap='tab10',
+        workspace=None,
         fig=None, 
         ms=3, 
         ms_source=6, 
@@ -91,8 +97,8 @@ def plot_states_forces_2d(
     """
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
-    cmap = plt.get_cmap('tab10')
-    colors = [cmap(i) for i in np.linspace(0, 1, positions.shape[0])]
+    cmap_func = plt.get_cmap(cmap)
+    colors = [cmap_func(i) for i in np.linspace(0, 1, positions.shape[0])]
    
     for i in range(positions.shape[0]):
         # position and 
@@ -119,6 +125,10 @@ def plot_states_forces_2d(
     labels = [("Position", "$x$", "$y$"),
               ("Velocity", "$\dot x$", "$\dot y$"),
               force_labels]
+    
+    if workspace is not None:
+        corners = utils.corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
+        axs[0].plot(*corners, 'w--', lw=0.8)
 
     for i, (title, xlabel, ylabel) in enumerate(labels):
         axs[i].set_title(title)
@@ -131,7 +141,7 @@ def plot_states_forces_2d(
     return fig, axs
 
 
-def plot_loglog_losses(losses, losses_terms, loss_term_labels=[]):
+def plot_loglog_losses(losses, losses_terms=None, loss_term_labels=[]):
     """Log-log plot of losses and component loss terms."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     

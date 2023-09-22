@@ -41,7 +41,7 @@ from feedbax.plot import (
     plot_states_forces_2d,
 )
 from feedbax.task import centreout_endpoints, uniform_endpoints
-from feedbax.utils import tree_get_idx, tree_set_idx
+from feedbax.utils import tree_get_idx, tree_set_idx, internal_grid_points
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
@@ -200,7 +200,7 @@ def loss_fn(
     static_model, 
     init_state, 
     target_state, 
-    weights=jnp.array((1., 1., 1e-5, 1e-6)),
+    weights=jnp.array((1., 1., 1e-5, 1e-7)),
     discount=1.,
 ):  
     """Quadratic in states, controls, and hidden activities.
@@ -289,7 +289,7 @@ def train(
         return loss, loss_terms, model, opt_state
     
     if not DEBUG:
-        train_step = jax.jit(train_step)
+        train_step = eqx.filter_jit(train_step)
 
     losses = []
     losses_terms = [] 
@@ -313,35 +313,46 @@ def train(
 
 
 # %%
+workspace = jnp.array([[-0.2, 0.2], [0.10, 0.50]])
+
 trained, losses, losses_terms = train(
-    batch_size=500, 
+    batch_size=1000, 
     dt=0.05, 
-    feedback_delay_steps=5,
-    n_batches=2600, 
+    feedback_delay_steps=0,
+    n_batches=10000, 
     n_steps=50, 
     hidden_size=50, 
     seed=5566,
-    learning_rate=0.01,
+    learning_rate=2e-2,
+    workspace=workspace,
 )
 
 # %%
 plot_loglog_losses(losses, losses_terms, loss_term_labels=LOSS_TERMS)
 plt.show()
 
+# %%
+losses[-1]
+
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
 n_directions = 8
-reach_length = 0.1
-state_endpoints = centreout_endpoints(
-    jnp.array([0., 0.4]), n_directions, 0, reach_length
-)
+reach_length = 0.05
+centers = internal_grid_points(workspace, 2)
+state_endpoints = jnp.concatenate([
+    centreout_endpoints(jnp.array(center), n_directions, 0, reach_length) 
+    for center in centers
+], axis=1)
 init_joints_pos = eqx.filter_vmap(twolink_effector_pos_to_angles)(
-        trained.step.mechanics.system, state_endpoints[0, :, :2]
+    trained.step.mechanics.system, state_endpoints[0, :, :2]
 )
 # #! assumes zero initial velocity; TODO convert initial velocity also
-init_states = (init_joints_pos, jnp.zeros_like(init_joints_pos))
+init_states = (
+    init_joints_pos, 
+    jnp.zeros_like(init_joints_pos),
+)
 target_states = state_endpoints[1]
 
 (states, ee_states, controls, activities, _), _ = jax.vmap(trained)(
@@ -350,7 +361,8 @@ target_states = state_endpoints[1]
 
 # %%
 # plot EE trajectories for all directions
-plot_states_forces_2d(ee_states[0], ee_states[1], controls, state_endpoints[..., :2])#, force_label_type='torques')
+plot_states_forces_2d(ee_states[0], ee_states[1], controls, state_endpoints[..., :2], 
+                      cmap='viridis', force_label_type='torques')
 plt.show()
 
 # %%

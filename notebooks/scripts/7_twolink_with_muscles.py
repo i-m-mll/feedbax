@@ -57,7 +57,7 @@ arm2M = TwoLinkMuscled(
 y0 = (jnp.array([np.pi / 5, np.pi / 3]), 
       jnp.array([0., 0.]),
       jnp.zeros(6))
-u = jnp.array([0., 0., 0., 0., 1., 0.])
+u = jnp.array([0., 0., 0., 0., 0.05, 0.])
 t0 = 0
 dt0 = 1  # [ms]
 t1 = 1000
