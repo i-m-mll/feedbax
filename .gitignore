@@ -24,6 +24,7 @@ _debris/
 checkpoints/
 
 # tensorboard
+.runs/
 runs/
 _runs/
 

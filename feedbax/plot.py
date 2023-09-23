@@ -23,6 +23,7 @@ def plot_2D_joint_positions(
         colorbar=True,
         ms_trace=6,
         lw_arm=4,
+        workspace=None,
 ):
     """Plot paths of joint position for an n-link arm. 
     
@@ -60,6 +61,10 @@ def plot_2D_joint_positions(
     for j in range(xy.shape[2]):
         ax.scatter(*xy[..., j].T, 
                    marker='.', s=ms_trace, linewidth=0, c=cmap.colors)
+
+    if workspace is not None:
+        corners = utils.corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
+        ax.plot(*corners, 'w--', lw=0.8)
 
     if colorbar:
         fig.colorbar(mpl.cm.ScalarMappable(mpl.colors.Normalize(*t0t1), cmap),
