@@ -1,7 +1,8 @@
 """Neural network architectures."""
 
+from functools import cached_property
 from itertools import zip_longest
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -60,25 +61,49 @@ class RNN(eqx.Module):
     linear: eqx.nn.Linear
     bias: jax.Array
     out_nonlinearity: Callable 
-    # activation: Callable
+    noise_std: Optional[float]
 
-    def __init__(self, in_size, out_size, hidden_size, key, out_nonlinearity=lambda x: x):
+    def __init__(
+            self, 
+            in_size, 
+            out_size, 
+            hidden_size, 
+            key, 
+            out_nonlinearity=lambda x: x,
+            noise_std=None,
+        ):
         ckey, lkey = jrandom.split(key)
         self.hidden_size = hidden_size
         self.out_size = out_size
         self.cell = eqx.nn.GRUCell(in_size, hidden_size, key=ckey)
         self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
         self.bias = jnp.zeros(out_size)
-        self.out_nonlinearity = out_nonlinearity
+        self.out_nonlinearity = out_nonlinearity       
+        self.noise_std = noise_std
+        
+        # initialize cached properties
+        self._add_noise  
 
-    def __call__(self, input, state):
+    def __call__(self, input, state, key=None):
         state = self.init_state()
-        # TODO: flatten leaves before concatenating 
+        # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
         input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)
-        #state = jax.nn.tanh(state)
+        state = self._add_noise(state, key)
         output = self.out_nonlinearity(self.linear(state) + self.bias)
+        
         return output, state
+    
+    @cached_property
+    def _add_noise(self):
+        if self.noise_std is not None:
+            return self.__add_noise
+        else:
+            return lambda state, _: state
+    
+    def __add_noise(self, state, key):
+        noise = self.noise_std * jrandom.normal(key, state.shape) 
+        return state + noise
     
     def init_state(self, state=None):
         if state is None:
