@@ -23,6 +23,7 @@ os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 # %%
 from datetime import datetime
+from functools import cached_property
 from pathlib import Path
 import sys
 from typing import Optional
@@ -92,6 +93,20 @@ model_dir = Path("../models/")
 # %%
 TB_PREFIX = "nb10"
 
+# %%
+aa = list(jnp.arange(100))
+bb = jnp.array(101, dtype=jnp.int32)
+def test(aa):
+    aa.pop(0)
+    aa.append(bb)
+    return aa
+    
+print(test(test(aa)))
+
+
+# %%
+aa = jnp.arange(100)
+# %timeit jnp.roll(aa, -1, axis=0)
 
 # %% [markdown]
 # Define the model components.
@@ -112,42 +127,82 @@ class Mechanics(eqx.Module):
             self.solver = solver
         self.dt = dt        
     
-    def __call__(self, state, args):
-        inputs, solver_state = args 
+    def __call__(self, input, state, key):
+        system_state, solver_state = state
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        state, _, _, solver_state, _ = self.solver.step(
-            self.term, 0, self.dt, state, inputs, solver_state, made_jump=False
+        mechanics_state, _, _, solver_state, _ = self.solver.step(
+            self.term, 0, self.dt, mechanics_state, input, solver_state, made_jump=False
         )
-        # # #! I don't even return solver state, so apparently it's not important
-        return state
+        return input, (system_state, solver_state)
     
-    def init_solver_state(self, state):
-        args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return self.solver.init(self.term, 0, self.dt, state, args)
+    def init_state(self, input, state, key):
+        # #! init from self.mechanics.init_state if none given?
+        inputs_zero = jnp.zeros((self.system.control_size,))
+        return (state, 
+                self.solver.init(self.term, 0, self.dt, state, inputs_zero))
+
+
+class Wire(eqx.Module):
+    """Connection delay implemented as a queue, with added noise.
     
+    A list implementation is faster than modifying a JAX array.
+    
+    TODO: 
+    - Infer delay steps from time.
+    """
+    delay: int 
+    noise_std: float 
+    
+    def __call__(self, input, state, key):
+        # state = jax.tree_map(lambda x: jnp.roll(x, -1, axis=0), state)
+        # state = tree_set_idx(state, self._add_noise(input, key), -1)
+        _, queue = state
+        queue.append(input)
+        output = self._add_noise(queue.pop(0), key)
+        return input, (output, queue), key 
+    
+    def init_state(self, input, state, key):
+        # return jax.tree_map(
+        #     lambda x: jnp.zeros((self.delay, *x.shape), dtype=x.dtype),
+        #     input
+        # )
+        input_zeros = jax.tree_map(jnp.zeros_like, input)
+        return (input_zeros, 
+                (self.delay - 1) * [input_zeros] + [input])
+        
+    @cached_property
+    def _add_noise(self):
+        if self.noise_std is None:
+            return lambda x: x
+        else:
+            return self.__add_noise 
+    
+    def __add_noise(self, x, key):
+        return x + self.noise_std * jrandom.normal(key, x.shape) 
+
 
 class SimpleFeedback(eqx.Module):
     """Simple feedback loop with a single RNN and single mechanical system."""
     net: eqx.Module  
     mechanics: Mechanics 
-    delay: int = eqx.field(static=True)
+    afferent: Wire
     
-    def __init__(self, net, mechanics, delay=0):
+    def __init__(self, net, mechanics, afferent):
         self.net = net
         self.mechanics = mechanics
-        self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
+        self.afferent = afferent
     
-    def __call__(self, state, args, key):
-        mechanics_state, _, _, hidden, solver_state = state
-        inputs, feedback_state = args
+    def __call__(self, input, state, key):
+        mechanics_state, _, _, net_state, afferent_state = state
         
         # #! if we split the key multiple times here, won't we end up with the 
         # #! same keys used in subsequent steps in `Recursion`?
+        key1, key2 = jrandom.split(key)        
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((inputs, feedback_state), hidden, key)
+        control, net_state = self.net((input, afferent_state), net_state, key1)
         
-        mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
+        _, mechanics_state = self.mechanics(control, mechanics_state)
         
         # #! wouldn't need to worry about referencing `self.mechanics...twolink` 
         # #! if `nlink_angular_to_cartesian` was a method of an `NLink` class
@@ -155,21 +210,27 @@ class SimpleFeedback(eqx.Module):
             self.mechanics.system.twolink, mechanics_state[0], mechanics_state[1]
         ))
         
-        return mechanics_state, ee_state, control, hidden, solver_state
+        afferent_state = self.afferent((mechanics_state[:2], ee_state), afferent_state, key2)
+        
+        state = (mechanics_state, ee_state, control, net_state, afferent_state)
+        
+        return input, state, key1
     
-    def init_state(self, mechanics_state): 
+    def init_state(self, state, key): 
+        mechanics_state, _, _, _, _, _ = state        
+        system_state, _ = mechanics_state
         
         # #! how to avoid this here? "Vision" module?
         ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
-            self.mechanics.system.twolink, mechanics_state[0], mechanics_state[1]
+            self.mechanics.system.twolink, system_state[0], system_state[1]
         ))
         
         return (
-            mechanics_state, 
+            system_state, 
             ee_state, 
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
-            self.mechanics.init_solver_state(mechanics_state),   
+            self.afferent.init_state((system_state[:2], ee_state)),
         )
     
 
@@ -183,56 +244,53 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        states, args, key = x
+        inputs, states, key = x
         
-        key1, key2 = jrandom.split(key)
+        _, key = jrandom.split(key)
          
-        # this seems to work, but I'm worried it will break on non-array leaves later
-        state = tree_get_idx(states, i)
-        
-        # # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        # # #! could put the concatenate inside of `Network`? & pass any pytree of inputs
-        feedback = (
-            tree_get_idx(states[0][:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states[1], i - self.step.delay),
-        )
-        args = (args[0], feedback)  
-        
-        state = self.step(state, args, key1)
-        
+        state = tree_get_idx(states, i) 
+        # #! todo: pytree input with indexing! e.g. for moving target
+        input = inputs 
+        input, state, key = self.step(input, state, key)
         states = tree_set_idx(states, state, i + 1)
-        return states, args, key2
+        
+        return inputs, states, key
     
-    def __call__(self, state, args, key):
+    def __call__(self, input, state, key):
+        # #! could give `Recursion.init_state` and initialize `states` there, including that for `step`
         init_state = self.step.init_state(state)
         
         # # #! part of the feedback hack
-        args = (args, jax.tree_map(jnp.zeros_like, (state[:2], state[:2])))
+        # args = (jax.tree_map(jnp.zeros_like, (state[:2], state[:2])),)
         
-        states = self._init_zero_arrays(init_state, args, key)
+        # #! todo: use an eqx filter to determine which states get memorized;
+        # #! self.step should be the one to tell it so, probably;
+        # #! for the others, just keep and pass the current state
+        states = self._init_zero_arrays(input, init_state, key)
         states = tree_set_idx(states, init_state, 0)
         
-        if DEBUG: #! jax.debug doesn't work inside of lax loops?
+        if DEBUG: 
             # this tqdm doesn't show except on an exception, which might be useful
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                states, args = self._body_func(i, (states, args, key))
+                input, states, key = self._body_func(i, (input, states, key))
                 
-            return states, args   
+            return input, states, key    
                  
         input, states, key = lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (states, args, key),
+            (input, states, key),
         )
         
-        # return states
+        return states
     
-    def _init_zero_arrays(self, state, args, key):
+    def init_state(self, input, state, key):
+        # TODO: would it be faster to use placeholders in a list?
         return jax.tree_util.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            eqx.filter_eval_shape(self.step, state, args, key)
+            eqx.filter_eval_shape(self.step, input, state, key)
         )
 
 
