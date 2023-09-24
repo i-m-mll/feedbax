@@ -61,7 +61,6 @@ from feedbax.plot import (
 )
 from feedbax.task import centreout_endpoints, uniform_endpoints
 from feedbax.utils import (
-    catchtime,
     delete_contents,
     internal_grid_points,
     tree_get_idx, 
@@ -75,7 +74,7 @@ from feedbax.utils import (
 # %%
 logging.getLogger("jax").setLevel(logging.INFO)
 
-DEBUG = False
+DEBUG = True
 jax.config.update("jax_debug_nans", False)
 jax.config.update("jax_enable_x64", False)
 
@@ -141,7 +140,8 @@ class SimpleFeedback(eqx.Module):
         self.mechanics = mechanics
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
-    def __call__(self, state, args, key):
+    @eqx.filter_jit
+    def __call__(self, batch, state, args, key):
         mechanics_state, _, _, hidden, solver_state = state
         inputs, feedback_state = args
         
@@ -187,7 +187,7 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        states, args, key = x
+        batch, states, args, key = x
         
         key1, key2 = jrandom.split(key)
          
@@ -201,13 +201,17 @@ class Recursion(eqx.Module):
             tree_get_idx(states[1], i - self.step.delay),
         )
         args = (args[0], feedback)  
-
-        state = self.step(state, args, key1)
         
+        if batch == 1:
+            with jax.profiler.trace(str(tb_logdir.absolute())):
+                state = self.step(batch, state, args, key1)
+        else:
+            state = self.step(batch, state, args, key1)
+               
         states = tree_set_idx(states, state, i + 1)
-        return states, args, key2
+        return batch, states, args, key2
     
-    def __call__(self, state, args, key):
+    def __call__(self, batch, state, args, key):
         init_state = self.step.init_state(state)
         
         # # #! part of the feedback hack
@@ -220,15 +224,15 @@ class Recursion(eqx.Module):
             # this tqdm doesn't show except on an exception, which might be useful
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                states, args = self._body_func(i, (states, args, key))
+                batch, states, args, key = self._body_func(i, (batch, states, args, key))
                 
-            return states, args   
+            return states, args, key
                  
-        states, args, key = lax.fori_loop(
+        _, states, args, key = lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (states, args, key),
+            (batch, states, args, key),
         )
         
         return states, args, key
@@ -238,7 +242,7 @@ class Recursion(eqx.Module):
     def _init_zero_arrays(self, state, args, key):
         return jax.tree_util.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            eqx.filter_eval_shape(self.step, state, args, key)
+            eqx.filter_eval_shape(self.step, 0, state, args, key)
         )
 
 
@@ -278,6 +282,7 @@ def get_model(
 
 # %%
 def loss_fn(
+    batch,
     diff_model, 
     static_model, 
     init_state, 
@@ -301,7 +306,7 @@ def loss_fn(
     model = eqx.combine(diff_model, static_model)  
     
     # #! stuff after this point is largely model-specific
-    batched_model = jax.vmap(model, in_axes=(0, 0, None))  #? `in_axes` are model-specific?
+    batched_model = jax.vmap(model, in_axes=(None, 0, 0, None))  #? `in_axes` are model-specific?
     
     # dataset gives init state in terms of effector position, but we need joint angles
     init_joints_pos = eqx.filter_vmap(twolink_effector_pos_to_angles)(
@@ -317,7 +322,7 @@ def loss_fn(
     )
     
     (joints_states, ee_states, controls, activities, _), _, _ = batched_model(
-        init_state, target_state, key
+        batch, init_state, target_state, key
     )
     
     states = ee_states  # operational space loss
@@ -404,14 +409,13 @@ def get_evaluate_func(
         loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
         
         return loss, loss_terms
+    
+    batched_model = eqx.filter_jit(jax.vmap(model, in_axes=(0, 0, None)))
 
-    def evaluate_centerout(model, key):
-        batched_model = jax.vmap(model, in_axes=(0, 0, None))
-        with catchtime() as t:
-            (states, ee_states, controls, activities, _), _, _ = batched_model(
-                init_states, target_states, key
-            )
-        print(f"Model evaluation took {t.time:.3f} s")
+    def evaluate(model, key):
+        (states, ee_states, controls, activities, _), _, _ = batched_model(
+            init_states, target_states, key
+        )
         
         loss, loss_terms = loss_fn(ee_states, controls, activities)
         
@@ -423,7 +427,7 @@ def get_evaluate_func(
         
         return loss, loss_terms, states, controls, activities, fig
 
-    return evaluate_centerout
+    return evaluate
 
 
 # %%
@@ -481,10 +485,10 @@ def train(
     # prepare training machinery
     optim = optax.adam(learning_rate)
     
-    def train_step(model, init_state, target_state, opt_state, key):
+    def train_step(batch, model, init_state, target_state, opt_state, key):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, key, 
+            batch, diff_model, static_model, init_state, target_state, key, 
             discount=position_error_discount, term_weights=term_weights,
             weight_decay=weight_decay,
         )
@@ -516,11 +520,8 @@ def train(
     ))
     
     def get_last_checkpoint():
-        try:
-            with open(chkpt_dir / "last_batch.txt", 'r') as f:
-                last_batch = int(f.read()) 
-        except FileNotFoundError:
-            return
+        with open(chkpt_dir / "last_batch.txt", 'r') as f:
+            last_batch = int(f.read()) 
             
         model = eqx.tree_deserialise_leaves(chkpt_dir / f'model{last_batch}.eqx', model)
         losses, losses_terms = eqx.tree_deserialise_leaves(
@@ -549,7 +550,7 @@ def train(
         init_state, target_state = get_batch(batch_size, keyb)
         
         loss, loss_terms, model, opt_state = train_step(
-            model, init_state, target_state, opt_state, keyt
+            batch, model, init_state, target_state, opt_state, keyt
         )
         
         losses = losses.at[batch].set(loss)
@@ -561,12 +562,9 @@ def train(
             writer.add_scalar(f'Loss/train/{term}', loss_term.item(), batch)
         
         if jnp.isnan(loss):
+            last_batch, model, losses, losses_terms = get_last_checkpoint()
             print(f"\nNaN loss at batch {batch}!")
-            if (checkpoint := get_last_checkpoint()) is not None:
-                last_batch, model, losses, losses_terms = checkpoint
-                print(f"Returning checkpoint from batch {last_batch}.")
-            else:
-                print("No checkpoint found, returning model from final iteration.")
+            print(f"Returning checkpoint from batch {last_batch}.")
             return model, losses, losses_terms
         
         if batch % log_step == 0:
@@ -610,20 +608,21 @@ term_weights = dict(
 # %%
 model, losses, losses_terms = train(
     batch_size=500, 
-    dt=0.05, 
+    dt=0.1, 
     feedback_delay_steps=0,
-    n_batches=300, 
-    n_steps=50, 
+    n_batches=5, 
+    n_steps=1, 
     hidden_size=50, 
     seed=5566,
-    learning_rate=0.01,
-    log_step=100,
+    learning_rate=0.1,
+    log_step=500,
     workspace=workspace,
     term_weights=term_weights,
     weight_decay=None,
     restore_checkpoint=False,
 )
 
+# %%
 plot_loglog_losses(losses, losses_terms)
 plt.show()
 

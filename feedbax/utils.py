@@ -1,8 +1,15 @@
+"""Utility functions.
+
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 from itertools import zip_longest, chain
+import logging 
 import math
 from pathlib import Path
 from shutil import rmtree
+from time import perf_counter
 from typing import Union 
 
 import jax
@@ -10,11 +17,29 @@ import jax.numpy as jnp
 from jaxtyping import Float, Array, PyTree
 
 
+logger = logging.getLogger(__name__)
+
+
 """The signs of the i-th derivatives of cos and sin.
 
 TODO: infinite cycle
 """
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
+
+
+class catchtime:
+    """Context manager for timing code blocks.
+    
+    From https://stackoverflow.com/a/69156219
+    """
+    def __enter__(self):
+        self.start = perf_counter()
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.time = perf_counter() - self.start
+        self.readout = f'Time: {self.time:.3f} seconds'
+        print(self.readout)
 
 
 def delete_contents(path: Union[str, Path]):

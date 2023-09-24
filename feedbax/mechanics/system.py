@@ -1,8 +1,16 @@
-""""""
+"""
 
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
+
+import logging 
 from typing import Any, Protocol, TypeVar
 
 from jaxtyping import PyTree
+
+
+logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T")

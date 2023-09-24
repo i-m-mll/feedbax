@@ -13,10 +13,14 @@ TODO:
 - It's kind of annoying to keep so many fields for parameters, but it seems
   like the cleanest way to do it. But maybe there's a way to use the default
   dataclass init, at least.
+  
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
 """
 
 
 from functools import cached_property
+import logging 
 from typing import Optional, Tuple
 
 import equinox as eqx
@@ -24,6 +28,9 @@ import jax
 import jax.random as jrandom
 import jax.numpy as jnp
 from jaxtyping import Float, Array
+
+
+logger = logging.getLogger(__name__)
 
 
 class VirtualMuscle(eqx.Module):

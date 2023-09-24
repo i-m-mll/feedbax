@@ -1,7 +1,12 @@
-"""Neural network architectures."""
+"""Neural network architectures.
+
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 from functools import cached_property
 from itertools import zip_longest
+import logging
 from typing import Callable, Optional, Tuple
 
 import equinox as eqx
@@ -10,6 +15,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 from feedbax.utils import interleave_unequal
+
+
+logger = logging.getLogger(__name__)
 
 
 class SimpleMultiLayerNet(eqx.Module):

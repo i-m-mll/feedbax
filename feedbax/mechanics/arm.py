@@ -1,7 +1,11 @@
-""" """
+""" 
+
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 from functools import cached_property
-
+import logging
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -9,6 +13,9 @@ from jaxtyping import Float, Array
 import numpy as np
 
 from feedbax.utils import SINCOS_GRAD_SIGNS
+
+
+logger = logging.getLogger(__name__)
 
 
 class TwoLink(eqx.Module):

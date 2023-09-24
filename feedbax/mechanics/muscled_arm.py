@@ -1,5 +1,11 @@
+"""
+
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 from functools import cached_property
+import logging 
 from typing import Any, Optional
 
 import equinox as eqx
@@ -8,6 +14,10 @@ from jaxtyping import Array, Float
 
 from feedbax.mechanics.arm import TwoLink
 from feedbax.mechanics.muscle import VirtualMuscle
+
+
+logger = logging.getLogger(__name__)
+
 
 class TwoLinkMuscled(eqx.Module):
     """

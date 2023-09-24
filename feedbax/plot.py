@@ -1,5 +1,10 @@
-"""Plotting utilities."""
+"""Plotting utilities.
 
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
+
+import logging 
 from typing import Optional
 import jax
 
@@ -12,6 +17,9 @@ import numpy as np
 import seaborn as sns
 
 from feedbax import utils
+
+
+logger = logging.getLogger(__name__)
 
 
 def plot_2D_joint_positions(
