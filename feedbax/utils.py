@@ -32,14 +32,16 @@ class catchtime:
     
     From https://stackoverflow.com/a/69156219
     """
-    def __enter__(self):
+    def __enter__(self, printout=False):
         self.start = perf_counter()
+        self.printout = printout
         return self
 
     def __exit__(self, type, value, traceback):
         self.time = perf_counter() - self.start
         self.readout = f'Time: {self.time:.3f} seconds'
-        print(self.readout)
+        if self.printout:
+            print(self.readout)
 
 
 def delete_contents(path: Union[str, Path]):

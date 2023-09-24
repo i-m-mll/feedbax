@@ -411,7 +411,6 @@ def get_evaluate_func(
             (states, ee_states, controls, activities, _), _, _ = batched_model(
                 init_states, target_states, key
             )
-        print(f"Model evaluation took {t.time:.3f} s")
         
         loss, loss_terms = loss_fn(ee_states, controls, activities)
         
@@ -421,7 +420,7 @@ def get_evaluate_func(
             cmap='plasma', workspace=workspace
         )
         
-        return loss, loss_terms, states, controls, activities, fig
+        return loss, loss_terms, states, controls, activities, fig, t.time
 
     return evaluate_centerout
 
@@ -544,12 +543,12 @@ def train(
     # batch is 1-indexed for printing and logging purposes (batch 100 is the 100th batch)
     for batch in tqdm(range(start_batch, n_batches + 1),
                       desc='batch', initial=start_batch, total=n_batches):
-        keyb, keyt, keye = jrandom.split(key, 3)
+        key, key_train, key_eval = jrandom.split(key, 3)
         # TODO: I think `init_state` isn't a tuple here but the old concatenated version...
-        init_state, target_state = get_batch(batch_size, keyb)
+        init_state, target_state = get_batch(batch_size, key)
         
         loss, loss_terms, model, opt_state = train_step(
-            model, init_state, target_state, opt_state, keyt
+            model, init_state, target_state, opt_state, key_train
         )
         
         losses = losses.at[batch].set(loss)
@@ -578,14 +577,16 @@ def train(
                 f.write(str(batch)) 
             
             # tensorboard
-            loss_eval, loss_eval_terms, _, _, _, fig = evaluate(model, keye)
+            loss_eval, loss_eval_terms, _, _, _, fig, t = evaluate(model, key_eval)
             writer.add_figure('Eval/centerout', fig, batch)
             writer.add_scalar('Loss/eval', loss_eval.item(), batch)
             for term, loss_term in loss_eval_terms.items():
                 writer.add_scalar(f'Loss/eval/{term}', loss_term.item(), batch)
-                
-            tqdm.write(f"step: {batch}, training loss: {loss:.4f}", file=sys.stderr)
-            tqdm.write(f"step: {batch}, center out loss: {loss_eval:.4f}", file=sys.stderr)
+            
+            tqdm.write(f"step: {batch}", file=sys.stderr)
+            tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stderr)
+            tqdm.write(f"\tcenter out loss: {loss_eval:.4f}", file=sys.stderr)
+            tqdm.write(f"\tevaluation time: {t:.3f} s", file=sys.stderr)
     
     # TODO: run logging: save evaluation figure, loss curve, commit ID, date, etc. along with model
     eqx.tree_serialise_leaves(model_dir / f'model_final.eqx', model)
@@ -610,13 +611,13 @@ term_weights = dict(
 # %%
 model, losses, losses_terms = train(
     batch_size=500, 
-    dt=0.05, 
+    dt=0.1, 
     feedback_delay_steps=0,
-    n_batches=300, 
+    n_batches=2500, 
     n_steps=50, 
     hidden_size=50, 
     seed=5566,
-    learning_rate=0.01,
+    learning_rate=0.1,
     log_step=100,
     workspace=workspace,
     term_weights=term_weights,
