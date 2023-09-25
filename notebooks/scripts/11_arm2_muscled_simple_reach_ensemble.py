@@ -32,6 +32,8 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
+import pandas as pd
+import seaborn as sns
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
 from tqdm import tqdm
@@ -219,31 +221,52 @@ class Recursion(eqx.Module):
 
 
 # %%
-def get_model(
-        dt, 
-        n_hidden, 
-        n_steps, 
-        key, 
-        feedback_delay=0, 
-        tau=0.01, 
-        out_nonlinearity=jax.nn.sigmoid,
+def get_model_generator(
+    dt, 
+    n_hidden, 
+    n_steps, 
+    feedback_delay=0, 
+    tau=0.01, 
+    out_nonlinearity=jax.nn.sigmoid,
 ):
-    
-    system = TwoLinkMuscled(
-        muscle_model=TodorovLiVirtualMuscle(), 
-        activator=ActivationFilter(
-            tau_act=tau,  
-            tau_deact=tau,
+    """Returns a function that generates models with the given parameters.
+    """
+    def make_model(key):    
+        system = TwoLinkMuscled(
+            muscle_model=TodorovLiVirtualMuscle(), 
+            activator=ActivationFilter(
+                tau_act=tau,  
+                tau_deact=tau,
+            )
         )
-    )
-    mechanics = Mechanics(system, dt)
-    # target state + feedback: angular pos & vel of joints & cartesian EE 
-    # #! this should be inferred by `Body` based on the desired wiring and knowledge of the task structure
-    n_input = system.twolink.state_size * 2 + N_DIM * 2  
-    net = RNN(n_input, system.control_size, n_hidden, key=key, out_nonlinearity=out_nonlinearity)
-    body = SimpleFeedback(net, mechanics, delay=feedback_delay)
+        mechanics = Mechanics(system, dt)
+        # target state + feedback: angular pos & vel of joints & cartesian EE 
+        n_input = system.twolink.state_size * 2 + N_DIM * 2  
+        net = RNN(n_input, system.control_size, n_hidden, key=key, out_nonlinearity=out_nonlinearity)
+        body = SimpleFeedback(net, mechanics, delay=feedback_delay)
 
-    return Recursion(body, n_steps)
+        return Recursion(body, n_steps)
+    
+    make_ensemble = eqx.filter_vmap(make_model)
+    
+    return make_ensemble
+
+
+# %%
+n_replicates = 3
+
+make_ensemble = get_model_generator(0.1, 50, 50)
+key = jrandom.PRNGKey(0)
+keys = jrandom.split(key, n_replicates)
+models = make_ensemble(keys)
+
+optim = optax.adam(1e-3)
+
+opt_states = eqx.filter_vmap(lambda model: optim.init(eqx.filter(model, eqx.is_array)))(
+    models
+)   
+
+opt_states
 
 
 # %% [markdown]
@@ -374,24 +397,20 @@ def get_evaluate_func(
         return loss, loss_terms
 
     def evaluate(trained):
-        (states, ee_states, controls, activities, _), _ = jax.vmap(trained)(
+        states, _ = jax.vmap(trained)(
             init_states, target_states
         )
         
-        loss, loss_terms = loss_fn(ee_states, controls, activities)
+        loss, loss_terms = loss_fn(states[1], states[2], states[3])
         
-        fig, _ = plot_states_forces_2d(
-            ee_states[0], ee_states[1], controls, state_endpoints[..., :2], 
-            cmap='plasma', workspace=workspace
-        )
-        
-        return loss, loss_terms, states, fig
+        return loss, loss_terms, states
 
-    return evaluate
+    return evaluate, state_endpoints
 
 
 # %%
 def train(
+    n_replicates=1,
     n_steps=100,
     dt=0.05,
     feedback_delay_steps=5,
@@ -412,17 +431,22 @@ def train(
     log_step=100,
     restore_checkpoint=False,
 ):
-    key = jrandom.PRNGKey(seed)
+    key = jrandom.PRNGKey(seed)  # for data generation
+    
+    keys = jrandom.split(key, n_replicates)  # for models initialization
+    
+    make_ensemble = get_model_generator(
+        dt, hidden_size, n_steps, feedback_delay=feedback_delay_steps
+    )
 
-    model = get_model(dt, hidden_size, n_steps, key, 
-                      feedback_delay=feedback_delay_steps)
+    models = make_ensemble(keys)
 
     def get_batch(batch_size, key):
         """Segment endpoints uniformly distributed in a rectangular workspace."""
         return uniform_endpoints(key, batch_size, N_DIM, workspace)
     
     # only train the RNN layer (input weights & hidden weights and biases)
-    filter_spec = jax.tree_util.tree_map(lambda _: False, model)
+    filter_spec = jax.tree_util.tree_map(lambda _: False, models)
     filter_spec = eqx.tree_at(
         lambda tree: (tree.step.net.cell.weight_hh, 
                       tree.step.net.cell.weight_ih, 
@@ -432,8 +456,8 @@ def train(
     )     
     
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
-    evaluate = get_evaluate_func(
-        model, 
+    evaluate, eval_endpoints = get_evaluate_func(
+        models, 
         workspace, 
         discount=position_error_discount, 
         term_weights=term_weights
@@ -442,6 +466,8 @@ def train(
     # prepare training machinery
     optim = optax.adam(learning_rate)
     
+    # #! vmap the ensembles of models onto the same data
+    @eqx.filter_vmap(in_axes=(eqx.if_array(0), None, None, eqx.if_array(0)))
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
@@ -469,10 +495,13 @@ def train(
     }
     writer.add_custom_scalars(layout)    
     
-    losses = jnp.empty((n_batches,))
+    # def get_loss_arrays(n_batches, term_weights):
+    #     pass 
+    
+    losses = jnp.empty((n_batches, n_replicates))
     losses_terms = dict(zip(
         term_weights.keys(), 
-        [jnp.empty((n_batches,)) for _ in term_weights]
+        [jnp.empty((n_batches, n_replicates)) for _ in term_weights]
     ))
     
     if restore_checkpoint:
@@ -481,7 +510,7 @@ def train(
             
         start_batch = last_batch + 1
         
-        model = eqx.tree_deserialise_leaves(chkpt_dir / f'model{last_batch}.eqx', model)
+        models = eqx.tree_deserialise_leaves(chkpt_dir / f'model{last_batch}.eqx', models)
         losses, losses_terms = eqx.tree_deserialise_leaves(
             chkpt_dir / f'losses{last_batch}.eqx', 
             (losses, losses_terms),
@@ -494,52 +523,61 @@ def train(
         delete_contents(chkpt_dir)  
         
     # TODO: should also restore this from checkpoint
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
+    opt_states = eqx.filter_vmap(lambda model: optim.init(eqx.filter(model, eqx.is_array)))(
+        models
+    )    
 
     #for _ in range(epochs): #! assume 1 epoch (no fixed dataset)
     for batch in tqdm(range(start_batch, n_batches),
                       desc='batch', initial=start_batch, total=n_batches):
-        key = jrandom.split(key)[0]
+        key, _ = jrandom.split(key)
         # TODO: I think `init_state` isn't a tuple here but the old concatenated version...
         init_state, target_state = get_batch(batch_size, key)
         
-        loss, loss_terms, model, opt_state = train_step(
-            model, init_state, target_state, opt_state
+        loss, loss_terms, models, opt_states = train_step(
+            models, init_state, target_state, opt_states
         )
         
         losses = losses.at[batch].set(loss)
         losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
         
-        # tensorboad
-        writer.add_scalar('Loss/train', loss.item(), batch)
+        # tensorboard losses on every iteration
+        # #! just report for one of the replicates
+        writer.add_scalar('Loss/train', loss[0].item(), batch)
         for term, loss_term in loss_terms.items():
-            writer.add_scalar(f'Loss/train/{term}', loss_term.item(), batch)
+            writer.add_scalar(f'Loss/train/{term}', loss_term[0].item(), batch)
         
-        if jnp.isnan(loss):
-            raise ValueError(f"\nNaN loss at batch {batch}!")
+        if jnp.sum(jnp.isnan(loss)) > n_replicates // 2:
+            raise ValueError(f"\nNaN loss on more than 50% of replicates at batch {batch}!")
         
+        # checkpointing and evaluation occasionally
         if (batch + 1) % log_step == 0:
             # model checkpoint
-            eqx.tree_serialise_leaves(chkpt_dir / f'model{batch}.eqx', model)
+            eqx.tree_serialise_leaves(chkpt_dir / f'models{batch}.eqx', models)
             eqx.tree_serialise_leaves(chkpt_dir / f'losses{batch}.eqx', 
                                       (losses, losses_terms))
             with open(chkpt_dir / "last_batch.txt", 'w') as f:
                 f.write(str(batch)) 
             
             # tensorboard
-            loss_eval, loss_eval_terms, _, fig = evaluate(model)
+            loss_eval, loss_eval_terms, states = eqx.filter_vmap(evaluate)(models)
+            fig, _ = plot_states_forces_2d(
+                    states[1][0][0], states[1][1][0], states[2][0], eval_endpoints[..., :2], 
+                    cmap='plasma', workspace=workspace
+            )
+        
             writer.add_figure('Eval/centerout', fig, batch)
-            writer.add_scalar('Loss/eval', loss_eval.item(), batch)
+            writer.add_scalar('Loss/eval', loss_eval[0].item(), batch)
             for term, loss_term in loss_eval_terms.items():
-                writer.add_scalar(f'Loss/eval/{term}', loss_term.item(), batch)
+                writer.add_scalar(f'Loss/eval/{term}', loss_term[0].item(), batch)
                 
-            tqdm.write(f"step: {batch}, training loss: {loss:.4f}", file=sys.stderr)
-            tqdm.write(f"step: {batch}, center out loss: {loss_eval:.4f}", file=sys.stderr)
+            tqdm.write(f"step: {batch}, training loss: {loss[0]:.4f}", file=sys.stderr)
+            tqdm.write(f"step: {batch}, center out loss: {loss_eval[0]:.4f}", file=sys.stderr)
     
     # TODO: run logging: save evaluation figure, loss curve, commit ID, date, etc. along with model
-    eqx.tree_serialise_leaves(model_dir / f'model_final.eqx', model)
+    eqx.tree_serialise_leaves(model_dir / f'models_final.eqx', models)
     
-    return model, losses, losses_terms
+    return models, losses, losses_terms
 
 
 # %% [markdown]
@@ -556,21 +594,41 @@ term_weights = dict(
     hidden=0., 
 )
 
-trained, losses, losses_terms = train(
+n_replicates=10
+n_steps = 50
+
+# %%
+models, losses, losses_terms = train(
+    n_replicates=n_replicates,
     batch_size=500, 
     dt=0.05, 
     feedback_delay_steps=0,
-    n_batches=2500, 
-    n_steps=50, 
+    n_batches=7000, 
+    n_steps=n_steps, 
     hidden_size=50, 
     seed=5566,
     learning_rate=0.05,
-    log_step=100,
+    log_step=500,
     workspace=workspace,
     term_weights=term_weights,
     weight_decay=None,
     restore_checkpoint=False,
 )
+
+# %%
+losses_terms_df = jax.tree_map(
+    lambda losses: pd.DataFrame(losses.T, index=range(n_replicates)).melt(
+        var_name='Time step', 
+        value_name='Loss'
+    ),
+    dict(losses_terms, total=losses),
+)
+
+fig, ax = plt.subplots()
+ax.set(xscale='log', yscale='log')
+for label, df in losses_terms_df.items():
+    sns.lineplot(data=df, x='Time step', y='Loss', errorbar='sd', label=label, ax=ax)
+plt.show()
 
 # %%
 plot_loglog_losses(losses, losses_terms)
@@ -580,8 +638,14 @@ plt.show()
 # Evaluate on a centre-out task
 
 # %%
-evaluate = get_evaluate_func(trained, workspace, term_weights=term_weights)
-loss, loss_terms, states, fig = evaluate(trained)
+evaluate, eval_endpoints = get_evaluate_func(models, workspace, term_weights=term_weights)
+loss, loss_terms, states = eqx.filter_vmap(evaluate)(models)
+
+# %%
+fig, _ = plot_states_forces_2d(
+                    states[1][0][0], states[1][1][0], states[2][0], eval_endpoints[..., :2], 
+                    cmap='plasma', workspace=workspace
+)
 
 # %%
 # plot entire arm trajectory for an example direction

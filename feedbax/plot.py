@@ -149,6 +149,9 @@ def plot_states_forces_2d(
 
 def plot_loglog_losses(losses, losses_terms: dict = None):
     """Log-log plot of losses and component loss terms."""
+    if losses_terms is None:
+        losses_terms = dict()
+    
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
     ax.loglog(losses, 'white', lw=3)
