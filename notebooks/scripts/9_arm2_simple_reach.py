@@ -296,7 +296,8 @@ def train(
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, discount=position_error_discount
+            diff_model, static_model, init_state, target_state, 
+            discount=position_error_discount, term_weights=term_weights
         )
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)

@@ -315,9 +315,9 @@ def loss_fn(
     User can apply a temporal discount broadcastable by elementwise multiplication with `(n_batch, n_steps)`.
     """
     model = eqx.combine(diff_model, static_model)  
-    model = jax.vmap(model)
+    batched_model = jax.vmap(model)
 
-    states, _ = model(init_state, target_state)
+    states, _ = batched_model(init_state, target_state)
     states, controls, activities, solver_state = states
     # states = states[:, :, -1]  #! this was for the old delay solution with `SimpleFeedback`
     
@@ -396,7 +396,8 @@ def train(
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, discount=position_error_discount
+            diff_model, static_model, init_state, target_state, 
+            term_weights=term_weights, discount=position_error_discount
         )
         updates, opt_state = optim.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
@@ -416,7 +417,7 @@ def train(
             loss, loss_terms, model, opt_state = train_step(model, init_state, target_state, opt_state)
             
             losses = losses.at[batch].set(loss)
-            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
+            #losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             if batch % 50 == 0:
                 tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)

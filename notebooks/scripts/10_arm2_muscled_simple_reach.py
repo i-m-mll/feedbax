@@ -370,6 +370,7 @@ def loss_fn(
     if weight_decay is not None:
         # this is separate because the tree map of `jnp.mean` doesn't like floats
         # and it doesn't make sense to batch-mean the model parameters anyway
+        # #! this is actually weight + bias decay. should be separate
         loss_terms['weight_decay'] = weight_decay * tree_sum_squares(diff_model)
         
     # sum over terms
