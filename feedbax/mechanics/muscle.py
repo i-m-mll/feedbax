@@ -184,6 +184,7 @@ class VirtualMuscle(eqx.Module):
         # A_f = 1 - jnp.exp(-((a * Y) / (a_f * n_f)) ** n_f)
         return A_f
   
+    # TODO: how can we toggle noise on an existing model? 
     @cached_property
     def _add_noise(self):
         if self.noise_std is None:

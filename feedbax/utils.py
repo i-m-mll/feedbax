@@ -7,10 +7,12 @@
 from itertools import zip_longest, chain
 import logging 
 import math
-from pathlib import Path
+import os
+from pathlib import Path, PosixPath
 from shutil import rmtree
+import subprocess
 from time import perf_counter
-from typing import Union 
+from typing import Optional, Union 
 
 import jax
 import jax.numpy as jnp
@@ -51,11 +53,32 @@ def delete_contents(path: Union[str, Path]):
             rmtree(p)
         elif p.is_file():
             p.unlink()
+            
+            
+def dirname_of_this_module():
+    return os.path.dirname(os.path.abspath(__file__))
     
 
 def exp_taylor(x: float, n: int):
     """First `n` terms of the Taylor series for `exp` at the origin."""
     return [(x ** i) / math.factorial(i) for i in range(n)]
+
+
+def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
+    """Get the ID of the currently checked-out commit in the repo at `path`.
+
+    If no `path` is given, returns the commit ID for the repo containing this
+    module.
+
+    Based on <https://stackoverflow.com/a/57683700>
+    """
+    if path is None:
+        path = dirname_of_this_module()
+
+    commit_id = subprocess.check_output(["git", "describe", "--always"],
+                                        cwd=path).strip().decode()
+
+    return commit_id
 
 
 def interleave_unequal(*args):

@@ -37,7 +37,7 @@ from feedbax.utils import SINCOS_GRAD_SIGNS
 
 # %%
 def torque(t, y, args):
-    return jnp.array([-0.1, 0.1])
+    return jnp.array([0.1, 0.])
 
 class TwoLink:
     l: Float[Array, "2"] = jnp.array((0.30, 0.33))  # [m] lengths of arm segments
@@ -120,7 +120,7 @@ plt.show()
 # Plot the position of the entire arm over time
 
 # %%
-ax = plot_2D_joint_positions(xy_pos, add_root=False)
+ax = plot_2D_joint_positions(xy_pos, add_root=True)
 plt.show()
 
 
