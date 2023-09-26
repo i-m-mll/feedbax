@@ -31,7 +31,11 @@ import optax
 from tqdm import tqdm
 
 from feedbax.mechanics.arm import TwoLink, nlink_angular_to_cartesian
-from feedbax.mechanics.muscle import LillicrapScott, TodorovLi, ActivationFilter
+from feedbax.mechanics.muscle import (
+    LillicrapScottVirtualMuscle, 
+    TodorovLiVirtualMuscle, 
+    ActivationFilter,
+)
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.plot import plot_2D_joint_positions
 
@@ -50,25 +54,26 @@ def solve(field, y0, dt0, t0, t1, args, **kwargs):
 
 # %%
 arm2M = TwoLinkMuscled(
-    muscle_model=TodorovLi(),
+    muscle_model=TodorovLiVirtualMuscle(),
     activator=ActivationFilter(),
 )
 
 y0 = (jnp.array([np.pi / 5, np.pi / 3]), 
       jnp.array([0., 0.]),
       jnp.zeros(6))
-u = jnp.array([0., 0., 0., 0., 0.05, 0.])
+u = jnp.array([0., 0., 0., 0., 0.0, 0.00015])
 t0 = 0
 dt0 = 1  # [ms]
 t1 = 1000
-sol = solve(arm2M.vector_field, y0, dt0, t0, t1, u)   
+with jax.default_device(jax.devices('cpu')[0]):
+    sol = solve(arm2M.vector_field, y0, dt0, t0, t1, u)   
 
 # %%
 xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(TwoLink(), sol.ys[0], sol.ys[1])
-xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
+#xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
 
 # %%
-ax = plot_2D_joint_positions(xy_pos, lw_arm=4, add_root=False)
+ax = plot_2D_joint_positions(xy_pos, lw_arm=4, add_root=True)
 plt.show()
 
 # %% [markdown]

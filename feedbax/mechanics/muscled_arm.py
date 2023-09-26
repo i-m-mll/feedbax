@@ -1,5 +1,11 @@
+"""
+
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 from functools import cached_property
+import logging 
 from typing import Any, Optional
 
 import equinox as eqx
@@ -9,8 +15,23 @@ from jaxtyping import Array, Float
 from feedbax.mechanics.arm import TwoLink
 from feedbax.mechanics.muscle import VirtualMuscle
 
+
+logger = logging.getLogger(__name__)
+
+
 class TwoLinkMuscled(eqx.Module):
     """
+    
+    NOTE: 
+    - The six muscle groups given by the default parameters are (see 
+      Lillicrap & Scott 2013):
+        - shoulder flexors: pectoralis major, deltoid anterior
+        - shoulder extensors: deltoid posterior, deltoid middle 
+        - elbow flexors: brachialis, brachioradialis, extensor carpi radialis longus
+        - elbow extensors: triceps lateral, triceps long 
+        - bijoint flexors: biceps long, biceps short 
+        - bijoint extensors: dorsoepitrochlearis, triceps long
+    
     TODO: 
     - the activator should be defined as part of the muscle model, I think?
         - though this class probably still needs to pass around activations so
@@ -39,7 +60,7 @@ class TwoLinkMuscled(eqx.Module):
         theta0=2 * jnp.pi * jnp.array(((15.0, 4.88, 0.0, 0.0, 4.5, 2.12), # [rad]
                                        (0.0, 0.0, 80.86, 109.32, 92.96, 91.52))) / 360.,  
         l0=jnp.array((7.32, 3.26, 6.4, 4.26, 5.95, 4.04)),  # [cm]
-        f0=1. #31.8 * jnp.array((18., 14., 22., 12., 5., 10.)),  # [N] = [N/cm^2] * [cm^2]
+        f0=1. #31.8 * jnp.array((22., 12., 18., 14., 5., 10.)),  # [N] = [N/cm^2] * [cm^2]
     ):
         self.twolink = twolink
         self.muscle_model = muscle_model

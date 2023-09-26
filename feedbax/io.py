@@ -1,12 +1,19 @@
-"""Saving to and loading from disk."""
+"""Saving to and loading from disk.
 
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 import json
+import logging 
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
 import equinox as eqx
 from jaxtyping import PyTree 
+
+
+logger = logging.getLogger(__name__)
 
 
 #! this is currently unused and doesn't work because json can't serialize jnp.ndarray

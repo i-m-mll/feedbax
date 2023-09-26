@@ -1,9 +1,18 @@
+""" 
 
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
+
+import logging 
 
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array, Float
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
 
 
 def uniform_endpoints(

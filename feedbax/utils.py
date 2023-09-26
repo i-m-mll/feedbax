@@ -1,13 +1,25 @@
+"""Utility functions.
+
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
 
 from itertools import zip_longest, chain
+import logging 
 import math
-from pathlib import Path
+import os
+from pathlib import Path, PosixPath
 from shutil import rmtree
-from typing import Union 
+import subprocess
+from time import perf_counter
+from typing import Optional, Union 
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array, PyTree
+
+
+logger = logging.getLogger(__name__)
 
 
 """The signs of the i-th derivatives of cos and sin.
@@ -17,6 +29,23 @@ TODO: infinite cycle
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
 
+class catchtime:
+    """Context manager for timing code blocks.
+    
+    From https://stackoverflow.com/a/69156219
+    """
+    def __enter__(self, printout=False):
+        self.start = perf_counter()
+        self.printout = printout
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.time = perf_counter() - self.start
+        self.readout = f'Time: {self.time:.3f} seconds'
+        if self.printout:
+            print(self.readout)
+
+
 def delete_contents(path: Union[str, Path]):
     """Delete all subdirectories and files of `path`."""
     for p in Path(path).iterdir():
@@ -24,11 +53,32 @@ def delete_contents(path: Union[str, Path]):
             rmtree(p)
         elif p.is_file():
             p.unlink()
+            
+            
+def dirname_of_this_module():
+    return os.path.dirname(os.path.abspath(__file__))
     
 
 def exp_taylor(x: float, n: int):
     """First `n` terms of the Taylor series for `exp` at the origin."""
     return [(x ** i) / math.factorial(i) for i in range(n)]
+
+
+def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
+    """Get the ID of the currently checked-out commit in the repo at `path`.
+
+    If no `path` is given, returns the commit ID for the repo containing this
+    module.
+
+    Based on <https://stackoverflow.com/a/57683700>
+    """
+    if path is None:
+        path = dirname_of_this_module()
+
+    commit_id = subprocess.check_output(["git", "describe", "--always"],
+                                        cwd=path).strip().decode()
+
+    return commit_id
 
 
 def interleave_unequal(*args):

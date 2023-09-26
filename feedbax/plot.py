@@ -1,5 +1,10 @@
-"""Plotting utilities."""
+"""Plotting utilities.
 
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
+
+import logging 
 from typing import Optional
 import jax
 
@@ -9,8 +14,12 @@ import matplotlib as mpl
 from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 
 from feedbax import utils
+
+
+logger = logging.getLogger(__name__)
 
 
 def plot_2D_joint_positions(
@@ -86,6 +95,7 @@ def plot_states_forces_2d(
         forces: Float[Array, "batch time control"],
         endpoints: Optional[Float[Array, "startend batch xy"]] = None, 
         straight_guides=False,
+        force_labels=None,
         force_label_type='linear',
         cmap='tab10',
         workspace=None,
@@ -123,10 +133,11 @@ def plot_states_forces_2d(
         # force 
         axs[2].plot(forces[i, :, 0], forces[i, :, 1], '-o', color=colors[i], ms=ms)
 
-    if force_label_type == 'linear':
-        force_labels = ("Control force", r"$\mathrm{f}_x$", r"$\mathrm{f}_y$")
-    elif force_label_type == 'torques':
-        force_labels = ("Control torques", r"$\tau_1$", r"$\tau_2$")
+    if force_labels is None:
+        if force_label_type == 'linear':
+            force_labels = ("Control force", r"$\mathrm{f}_x$", r"$\mathrm{f}_y$")
+        elif force_label_type == 'torques':
+            force_labels = ("Control torques", r"$\tau_1$", r"$\tau_2$")
         
     labels = [("Position", "$x$", "$y$"),
               ("Velocity", "$\dot x$", "$\dot y$"),
@@ -145,6 +156,19 @@ def plot_states_forces_2d(
     plt.tight_layout()
 
     return fig, axs
+
+
+def plot_activity_heatmap(
+    activity: Float[Array, "time unit"],
+    cmap: str = 'viridis',
+):
+    """Plot activity of network units over time."""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 2))
+    im = ax.imshow(activity.T, aspect='auto', cmap=cmap)
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Unit')
+    fig.colorbar(im)
+    return fig, ax
 
 
 def plot_loglog_losses(losses, losses_terms: dict = None):

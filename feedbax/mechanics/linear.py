@@ -1,11 +1,19 @@
-""""""
+"""
 
+:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:license: Apache 2.0, see LICENSE for details.
+"""
+
+import logging 
 from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
+
+
+logger = logging.getLogger(__name__)
 
 
 # global defaults
