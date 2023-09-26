@@ -34,6 +34,7 @@ from feedbax.mechanics.system import System
 from feedbax.networks import SimpleMultiLayerNet, RNN
 from feedbax.plot import plot_loglog_losses, plot_states_forces_2d
 from feedbax.task import centreout_endpoints, uniform_endpoints
+from feedbax.utils import tree_set_idx, tree_sum_squares
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a point mass to reach from a starting position to a target position. 
@@ -298,8 +299,14 @@ def loss_fn(
     static_model, 
     init_state, 
     target_state, 
-    weights=jnp.array((1., 1., 1e-5, 1e-5)),
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-5
+    ),
     discount=1.,
+    weight_decay=None,
 ):  
     """Quadratic in states, controls, and hidden activities.
     
@@ -324,10 +331,20 @@ def loss_fn(
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
+    # mean over batch
+    loss_terms = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_terms)
+    # term scaling
+    loss_terms = jax.tree_map(lambda term, weight: term * weight, loss_terms, term_weights) 
     
-    loss_terms = weights * jnp.mean(jnp.stack(list(loss_terms.values()), axis=1), axis=0)  # mean over batch
+    # NOTE: optax also gives optimizers that implement weight decay
+    if weight_decay is not None:
+        # this is separate because the tree map of `jnp.mean` doesn't like floats
+        # and it doesn't make sense to batch-mean the model parameters anyway
+        loss_terms['weight_decay'] = weight_decay * tree_sum_squares(diff_model)
+        
+    # sum over terms
+    loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
     
-    loss = jnp.sum(loss_terms)  # sum over terms
     return loss, loss_terms
 
 
@@ -336,13 +353,20 @@ def train(
     mass=1.0,
     n_steps=100,
     dt=0.1,
+    hidden_size=20,
     feedback_delay_steps=0,
-    workspace = jnp.array([[-1., 1.], [-1., 1.]]),
+    workspace = jnp.array([[-1., 1.], 
+                           [-1., 1.]]),
     batch_size=100,
     n_batches=50,
     epochs=1,
     learning_rate=3e-4,
-    hidden_size=20,
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-5
+    ),
     seed=5566,
 ):
     key = jrandom.PRNGKey(seed)
@@ -368,7 +392,7 @@ def train(
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
     
-    @jax.jit
+    @eqx.filter_jit
     def train_step(model, init_state, target_state, opt_state):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
@@ -378,8 +402,11 @@ def train(
         model = eqx.apply_updates(model, updates)
         return loss, loss_terms, model, opt_state
 
-    losses = []
-    losses_terms = [] 
+    losses = jnp.empty((n_batches,))
+    losses_terms = dict(zip(
+        term_weights.keys(), 
+        [jnp.empty((n_batches,)) for _ in term_weights]
+    ))
 
     for _ in range(epochs):
         for batch in tqdm(range(n_batches)):
@@ -388,13 +415,11 @@ def train(
             
             loss, loss_terms, model, opt_state = train_step(model, init_state, target_state, opt_state)
             
-            losses.append(loss)
-            losses_terms.append(loss_terms)
+            losses = losses.at[batch].set(loss)
+            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             if batch % 50 == 0:
                 tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
-    
-    losses_terms = jnp.vstack(losses_terms)
     
     return model, losses, losses_terms
 
@@ -412,7 +437,7 @@ trained, losses, losses_terms = train(
 )
 
 # %%
-plot_loglog_losses(losses, losses_terms, loss_term_labels=LOSS_TERMS)
+plot_loglog_losses(losses, losses_terms)
 
 # %% [markdown]
 # Evaluate on a centre-out task

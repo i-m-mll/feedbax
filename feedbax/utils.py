@@ -14,6 +14,7 @@ import subprocess
 from time import perf_counter
 from typing import Optional, Union 
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array, PyTree
@@ -117,18 +118,32 @@ def normalize(
 
 
 def tree_get_idx(tree, idx: int):
-    """Retrieve the `idx`-th element of each leaf of `tree`."""
-    return jax.tree_map(lambda xs: xs[idx], tree)
+    """Retrieve the `idx`-th element of each array leaf of `tree`.
+    
+    Any non-array leaves are returned unchanged.
+    """
+    arrays, other = eqx.partition(tree, eqx.is_array)
+    values = jax.tree_map(lambda xs: xs[idx], arrays)
+    return eqx.combine(values, other)
 
 
 def tree_set_idx(tree, vals, idx: int):
-    """Update the `idx`-th element of each leaf of `tree`.
+    """Update the `idx`-th element of each array leaf of `tree`.
     
     `vals` should be a pytree with the same structure as `tree`,
     except that each leaf should be missing the first dimension of 
     the corresponding leaf in `tree`.
+    
+    Non-array leaves are simply replaced by their matching leaves in `vals`.
     """
-    return jax.tree_util.tree_map(lambda xs, x: xs.at[idx].set(x), tree, vals)
+    arrays = eqx.filter(tree, eqx.is_array)
+    vals_update, other_update = eqx.partition(
+        vals, jax.tree_map(lambda x: x is not None, arrays)
+    )
+    arrays_update = jax.tree_map(
+        lambda xs, x: xs.at[idx].set(x), arrays, vals_update
+    )
+    return eqx.combine(arrays_update, other_update)
 
 
 def tree_stack(trees):

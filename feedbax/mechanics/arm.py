@@ -1,7 +1,5 @@
 """ 
 
-TODO:
-- Use Jacobian to convert joint angular velocity to effector velocity.
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -82,8 +80,9 @@ class TwoLink(eqx.Module):
         )
     
     @cached_property
-    def _lsq(self):
-        return self.l ** 2
+    def _lsqpm(self):
+        lsq = self.l ** 2
+        return (lsq[0] - lsq[1], lsq[0] + lsq[1])
     
     @property 
     def control_size(self) -> int:
@@ -98,66 +97,66 @@ class TwoLink(eqx.Module):
         return 2
     
 
-def twolink_effector_pos_to_angles(
-        twolink: TwoLink, 
-        pos: Float[Array, "2"]
-) -> Float[Array, "2"]:
-    """Convert Cartesian effector position to joint angles for a two-link arm.
-    
-    NOTE: 
-    
-    - This is the "inverse kinematics" problem.
-    - This gives the "elbow down" or "righty" solution. The "elbow up" or
-      "lefty" solution is given by `theta0 = gamma + alpha` and 
-      `theta1 = beta - pi`.
-    - No solution exists if `dsq` is outside of `(l[0] - l[1], l[0] + l[1])`.
-    - See https://robotics.stackexchange.com/a/6393 which also covers
-      how to convert velocity.
-      
-    TODO:
-    - Convert velocity using the Jacobian.
-    - Try to generalize to n-link arm using Jacobian of forward kinematics?
-    - Unit test round trip with `nlink_angular_to_cartesian`.
-    """
-    l, lsq = twolink.l, twolink._lsq
-    dsq = jnp.sum(pos ** 2)
+    def inverse_kinematics(
+            self,
+            pos: Float[Array, "2"]
+    ) -> Float[Array, "2"]:
+        """Convert Cartesian effector position to joint angles for a two-link arm.
+        
+        NOTE: 
+        
+        - This is the "inverse kinematics" problem.
+        - This gives the "elbow down" or "righty" solution. The "elbow up" or
+        "lefty" solution is given by `theta0 = gamma + alpha` and 
+        `theta1 = beta - pi`.
+        - No solution exists if `dsq` is outside of `(l[0] - l[1], l[0] + l[1])`.
+        - See https://robotics.stackexchange.com/a/6393 which also covers
+        how to convert velocity.
+        
+        TODO:
+        - Convert velocity using the effector Jacobian.
+        - Try to generalize to n-link arm using Jacobian of forward kinematics?
+        - Unit test round trip with `nlink_angular_to_cartesian`.
+        """
+        l, lsqpm = self.l, self._lsqpm
+        dsq = jnp.sum(pos ** 2)
 
-    alpha = jnp.arccos((lsq[0] - lsq[1] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
-    gamma = jnp.arctan2(pos[1], pos[0])
-    theta0 = gamma - alpha
-    
-    beta = jnp.arccos((lsq[0] + lsq[1] - dsq) / (2 * l[0] * l[1]))
-    theta1 = np.pi - beta
+        alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
+        gamma = jnp.arctan2(pos[1], pos[0])
+        theta0 = gamma - alpha
+        
+        beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
+        theta1 = np.pi - beta
 
-    angles = jnp.stack([theta0, theta1], axis=-1)
+        angles = jnp.stack([theta0, theta1], axis=-1)
 
-    return angles    
+        return angles    
 
 
-def nlink_angular_to_cartesian(
-        nlink: eqx.Module, 
-        theta: Float[Array, "links"],
-        dtheta: Float[Array, "links"],
-):
-    """Convert angular state to Cartesian state.
-    
-    NOTE:
-    - This is the "forward kinematics" problem.
-    - See https://robotics.stackexchange.com/a/6393; which suggests the 
-      Denavit-Hartenberg method, which uses a matrix for each joint, 
-      transforming its angle into a change in position relative to the 
-      preceding joint.
-      
-    TODO:
-    - Any point to reducing memory by only calculating the last link?
-    """
-    angle_sum = jnp.cumsum(theta)  # links
-    length_components = nlink.l * jnp.array([jnp.cos(angle_sum),
-                                             jnp.sin(angle_sum)])  # xy, links
-    xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
-    
-    ang_vel_sum = jnp.cumsum(dtheta)  # links
-    xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
-                             * ang_vel_sum,
-                             axis=1)
-    return xy_position, xy_velocity
+    def forward_kinematics(
+            self,
+            theta: Float[Array, "links"],
+            dtheta: Float[Array, "links"],
+    ):
+        """Convert angular state to Cartesian state.
+        
+        NOTE:
+        - This is the "forward kinematics" problem.
+        - See https://robotics.stackexchange.com/a/6393; which suggests the 
+        Denavit-Hartenberg method, which uses a matrix for each joint, 
+        transforming its angle into a change in position relative to the 
+        preceding joint.
+        
+        TODO:
+        - Any point to reducing memory by only calculating the last link?
+        """
+        angle_sum = jnp.cumsum(theta)  # links
+        length_components = self.l * jnp.array([jnp.cos(angle_sum),
+                                                jnp.sin(angle_sum)])  # xy, links
+        xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
+        
+        ang_vel_sum = jnp.cumsum(dtheta)  # links
+        xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
+                                 * ang_vel_sum,
+                                 axis=1)
+        return xy_position, xy_velocity

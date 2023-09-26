@@ -52,10 +52,6 @@ from torch.utils.tensorboard import SummaryWriter
 import tqdm
 from tqdm import tqdm
 
-from feedbax.mechanics.arm import (
-    nlink_angular_to_cartesian, 
-    twolink_effector_pos_to_angles
-)
 from feedbax.mechanics.muscle import (
     ActivationFilter,
     LillicrapScottVirtualMuscle,
@@ -85,11 +81,15 @@ from feedbax.utils import (
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
 
 # %%
+DEBUG = False
+
 logging.getLogger("jax").setLevel(logging.INFO)
 
-DEBUG = False
-jax.config.update("jax_debug_nans", False)
+jax.config.update("jax_debug_nans", DEBUG)
 jax.config.update("jax_enable_x64", False)
+
+# not sure if this will work or if I need to use the env variable version
+#jax.config.update("jax_traceback_filtering", DEBUG)  
 
 N_DIM = 2
 
@@ -128,18 +128,22 @@ class Mechanics(eqx.Module):
             self.solver = solver
         self.dt = dt        
     
-    def __call__(self, state, args):
-        inputs, solver_state = args 
+    def __call__(self, input, state):
+        system_state, solver_state = state
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        state, _, _, solver_state, _ = self.solver.step(
-            self.term, 0, self.dt, state, inputs, solver_state, made_jump=False
+        system_state, _, _, solver_state, _ = self.solver.step(
+            self.term, 0, self.dt, system_state, input, solver_state, made_jump=False
         )
         # # #! I don't even return solver state, so apparently it's not important
+        state = system_state, solver_state
         return state
     
-    def init_solver_state(self, state):
+    def init(self, system_state, input=None, key=None):
         args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return self.solver.init(self.term, 0, self.dt, state, args)
+        return (
+            system_state,  # self.system.init()
+            self.solver.init(self.term, 0, self.dt, system_state, args),
+        )
     
 
 class SimpleFeedback(eqx.Module):
@@ -147,47 +151,49 @@ class SimpleFeedback(eqx.Module):
     net: eqx.Module  
     mechanics: Mechanics 
     delay: int = eqx.field(static=True)
-    perturbation: Optional[eqx.Module]
+    #perturbation: Optional[eqx.Module]
     
     def __init__(self, net, mechanics, delay=0):
         self.net = net
         self.mechanics = mechanics
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
-    def __call__(self, state, args, key):
-        mechanics_state, _, _, hidden, solver_state = state
-        inputs, feedback_state = args
+    def __call__(self, input, state, args, key):
+        mechanics_state, _, _, hidden= state
+        feedback_state = args  #! part of feedback hack
+        
+        key1, key2 = jrandom.split(key)
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((inputs, feedback_state), hidden, key)
+        control, hidden = self.net((input, feedback_state), hidden, key1)
         
         # TODO: construct pytree of controls + extra inputs
         # TODO: transform extra inputs to appropriate forces
         
-        mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
+        mechanics_state = self.mechanics(control, mechanics_state)        
         
         # TODO: could be replaced with a general call to a `Mechanics` method that knows about the operational space
-        # #! wouldn't need to worry about referencing `self.mechanics...twolink` 
-        # #! if `nlink_angular_to_cartesian` was a method of an `NLink` class
-        ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
-            self.mechanics.system.twolink, mechanics_state[0], mechanics_state[1]
+        system_state = mechanics_state[0]
+        twolink = self.mechanics.system.twolink
+        ee_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
+            system_state[0], system_state[1]
         ))
         
-        return mechanics_state, ee_state, control, hidden, solver_state
+        return mechanics_state, ee_state, control, hidden
     
-    def init_state(self, mechanics_state): 
+    def init(self, system_state): 
         
         # #! how to avoid this here? "Vision" module?
-        ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
-            self.mechanics.system.twolink, mechanics_state[0], mechanics_state[1]
+        twolink = self.mechanics.system.twolink
+        ee_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
+            system_state[0], system_state[1]
         ))
         
         return (
-            mechanics_state, 
+            self.mechanics.init(system_state),
             ee_state, 
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
-            self.mechanics.init_solver_state(mechanics_state),   
         )
     
 
@@ -201,59 +207,63 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        states, args, key = x
+        input, states, args, key = x
         
         key1, key2 = jrandom.split(key)
-         
-        # this seems to work, but I'm worried it will break on non-array leaves later
-        state = tree_get_idx(states, i)
         
         # # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        # # #! could put the concatenate inside of `Network`? & pass any pytree of inputs
         feedback = (
-            tree_get_idx(states[0][:2], i - self.step.delay),  # omit muscle activation
+            tree_get_idx(states[0][0][:2], i - self.step.delay),  # omit muscle activation
             tree_get_idx(states[1], i - self.step.delay),
         )
-        args = (args[0], feedback)  
+        args = feedback
+        
+        state = tree_get_idx(states, i)
 
-        state = self.step(state, args, key1)
+        state = self.step(input, state, args, key1)
         
         states = tree_set_idx(states, state, i + 1)
-        return states, args, key2
+        return input, states, args, key2
     
-    def __call__(self, state, args, key):
-        init_state = self.step.init_state(state)
+    def __call__(self, input, system_state, key):
+        #! `args` is vestigial. part of the feedback hack
+        args = jax.tree_map(jnp.zeros_like, (system_state[:2], system_state[:2]))
         
-        # # #! part of the feedback hack
-        args = (args, jax.tree_map(jnp.zeros_like, (state[:2], state[:2])))
+        key1, key2, key3 = jrandom.split(key, 3)
         
-        key1, key2 = jrandom.split(key)
-        
-        states = self._init_zero_arrays(init_state, args, key1)
-        states = tree_set_idx(states, init_state, 0)
+        state = self.step.init(system_state) #! maybe this should be outside
+        states = self.init(input, state, args, key2)
         
         if DEBUG: 
             # this tqdm doesn't show except on an exception, which might be useful
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                states, args = self._body_func(i, (states, args, key2))
+                states, args = self._body_func(i, (states, args, key3))
                 
             return states, args   
                  
-        states, args, _ = lax.fori_loop(
+        _, states, _, _ = lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (states, args, key2),
+            (input, states, args, key3),
         )
         
         return states
     
-    def _init_zero_arrays(self, state, args, key):
-        return jax.tree_util.tree_map(
+    def init(self, input, state, args, key):
+        # 1. generate empty trajectories of states 
+        outputs = eqx.filter_eval_shape(self.step, input, state, args, key)
+        # `eqx.is_array_like` is False for jax.ShapeDtypeSty
+        scalars, array_structs = eqx.partition(outputs, eqx.is_array_like)
+        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
+        states = jax.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            eqx.filter_eval_shape(self.step, state, args, key)
+            asarrays,
         )
+        # 2. initialize the first state
+        states = tree_set_idx(states, state, 0)
+        return states
 
 
 # %%
@@ -285,7 +295,7 @@ def get_model(
         net, 
         mechanics, 
         delay=feedback_delay,
-        perturbation=None,
+        #perturbation=None,
     )
 
     return Recursion(body, n_steps)
@@ -322,9 +332,9 @@ def loss_fn(
     batched_model = jax.vmap(model, in_axes=(0, 0, None))  #? `in_axes` are model-specific?
     
     # dataset gives init state in terms of effector position, but we need joint angles
-    init_joints_pos = eqx.filter_vmap(twolink_effector_pos_to_angles)(
-        model.step.mechanics.system.twolink, init_state
-    )
+    init_joints_pos = eqx.filter_vmap(
+        model.step.mechanics.system.twolink.inverse_kinematics
+    )(init_state)
     # #! assumes zero initial velocity; TODO convert initial velocity also
     # TODO: the model should provide a way to initialize this, given partial user input
     init_state = (
@@ -334,9 +344,9 @@ def loss_fn(
                    model.step.mechanics.system.control_size)),  # per-muscle activation
     )
     
-    states = batched_model(init_state, target_state, key)
+    states = batched_model(target_state, init_state, key)
     
-    joints_states, ee_states, controls, activities, _ = states
+    (system_states, _), ee_states, controls, activities = states
     states = ee_states  # operational space loss
   
     # sum over xyz, apply temporal discount, sum over time
@@ -373,6 +383,7 @@ def get_evaluate_func(
     model,
     workspace, 
     n_directions=8, 
+    grid_points_per_dim=2,
     reach_length=0.05,
     discount=1.,
     term_weights=None,
@@ -381,16 +392,16 @@ def get_evaluate_func(
     
     Returns a function that takes a model and returns losses and a figure.
     """
-    centers = internal_grid_points(workspace, 2)
+    centers = internal_grid_points(workspace, grid_points_per_dim)
     state_endpoints = jnp.concatenate([
         centreout_endpoints(jnp.array(center), n_directions, 0, reach_length) 
         for center in centers
     ], axis=1)
 
     target_states = state_endpoints[1]
-    init_joints_pos = eqx.filter_vmap(twolink_effector_pos_to_angles)(
-        model.step.mechanics.system.twolink, state_endpoints[0, :, :2]
-    )
+    init_joints_pos = eqx.filter_vmap(
+        model.step.mechanics.system.twolink.inverse_kinematics
+    )(state_endpoints[0, :, :2])
     # #! assumes zero initial velocity; TODO convert initial velocity also
     init_states = (
         init_joints_pos, 
@@ -423,9 +434,10 @@ def get_evaluate_func(
         return loss, loss_terms
 
     def evaluate_centerout(model, key):
+        # TODO: arbitrary # of batch dims? i.e. to keep different center-out sets separate
         batched_model = jax.vmap(model, in_axes=(0, 0, None))
         with catchtime() as t:
-            states = batched_model(init_states, target_states, key)
+            states = batched_model(target_states, init_states, key)
         
         loss, loss_terms = loss_fn(states[1], states[2], states[3])
         
@@ -645,13 +657,10 @@ def train(
         commit_hash=git_commit_id(),
     )
     save_model(model, hyperparams, fig_funcs)
-    writer.add_hparams(hyperparams, {"hparam/eval_loss": loss_eval.item()})
+    #writer.add_hparams(hyperparams, {"hparam/eval_loss": loss_eval.item()})
     
     return model, losses, losses_terms
 
-
-# %%
-get_model()
 
 # %% [markdown]
 # Train the model.
@@ -672,12 +681,12 @@ model, losses, losses_terms = train(
     batch_size=500, 
     dt=0.05, 
     feedback_delay_steps=0,
-    n_batches=10000, 
+    n_batches=500, 
     n_steps=50, 
     hidden_size=50, 
     seed=5566,
     learning_rate=0.05,
-    log_step=500,
+    log_step=100,
     workspace=workspace,
     term_weights=term_weights,
     weight_decay=None,
@@ -692,13 +701,13 @@ plt.show()
 
 # %%
 model = get_model()
-model = eqx.tree_deserialise_leaves("../models/model_20230925-141003_nb10.eqx", model)
+model = eqx.tree_deserialise_leaves("../models/model_20230926-093821_nb10.eqx", model)
 
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
-evaluate, make_eval_plot = get_evaluate_func(model, workspace, term_weights=term_weights)
+evaluate, make_eval_plot = get_evaluate_func(model, workspace, term_weights=term_weights, grid_points_per_dim=2)
 loss, loss_terms, states, t = evaluate(model, key=jrandom.PRNGKey(0))
 
 # %%

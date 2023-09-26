@@ -30,9 +30,7 @@ import tqdm
 from tqdm import tqdm
 
 from feedbax.mechanics.arm import (
-    TwoLink, 
-    nlink_angular_to_cartesian, 
-    twolink_effector_pos_to_angles
+    TwoLink
 )
 from feedbax.mechanics.system import System
 from feedbax.networks import RNN
@@ -42,7 +40,7 @@ from feedbax.plot import (
     plot_states_forces_2d,
 )
 from feedbax.task import centreout_endpoints, uniform_endpoints
-from feedbax.utils import tree_get_idx, tree_set_idx, internal_grid_points
+from feedbax.utils import tree_get_idx, tree_set_idx, internal_grid_points, tree_sum_squares
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
@@ -105,8 +103,9 @@ class SimpleFeedback(eqx.Module):
         
         mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
         
-        ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
-            self.mechanics.system, mechanics_state[0], mechanics_state[1]
+        system = self.mechanics.system
+        ee_state = tuple(arr[:, -1] for arr in system.forward_kinematics(
+            mechanics_state[0], mechanics_state[1]
         ))
         
         return mechanics_state, ee_state, control, hidden, solver_state
@@ -114,8 +113,9 @@ class SimpleFeedback(eqx.Module):
     def init_state(self, mechanics_state): 
         
         # #! how to avoid this here?
-        ee_state = tuple(arr[:, -1] for arr in nlink_angular_to_cartesian(
-            self.mechanics.system, mechanics_state[0], mechanics_state[1]
+        system = self.mechanics.system
+        ee_state = tuple(arr[:, -1] for arr in system.forward_kinematics(
+            mechanics_state[0], mechanics_state[1]
         ))
         
         return (
@@ -201,8 +201,9 @@ def loss_fn(
     static_model, 
     init_state, 
     target_state, 
-    weights=jnp.array((1., 1., 1e-5, 1e-7)),
+    term_weights=jnp.array((1., 1., 1e-5, 1e-7)),
     discount=1.,
+    weight_decay=None,
 ):  
     """Quadratic in states, controls, and hidden activities.
     
@@ -214,9 +215,9 @@ def loss_fn(
     batched_model = jax.vmap(model)
 
     # dataset gives init state in terms of effector position, but we need joint angles
-    init_joints_pos = eqx.filter_vmap(twolink_effector_pos_to_angles)(
-        model.step.mechanics.system, init_state
-    )
+    init_joints_pos = eqx.filter_vmap(
+        model.step.mechanics.system.inverse_kinematics
+    )(init_state)
     # #! assumes zero initial velocity; TODO convert initial velocity also
     init_joints_state = (init_joints_pos, jnp.zeros_like(init_joints_pos))
 
@@ -237,9 +238,20 @@ def loss_fn(
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
     
-    loss_terms = weights * jnp.mean(jnp.stack(list(loss_terms.values()), axis=1), axis=0)  # mean over batch
+    # mean over batch
+    loss_terms = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_terms)
+    # term scaling
+    loss_terms = jax.tree_map(lambda term, weight: term * weight, loss_terms, term_weights) 
     
-    loss = jnp.sum(loss_terms)  # sum over terms
+    # NOTE: optax also gives optimizers that implement weight decay
+    if weight_decay is not None:
+        # this is separate because the tree map of `jnp.mean` doesn't like floats
+        # and it doesn't make sense to batch-mean the model parameters anyway
+        loss_terms['weight_decay'] = weight_decay * tree_sum_squares(diff_model)
+        
+    # sum over terms
+    loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
+    
     return loss, loss_terms
 
 
@@ -247,13 +259,14 @@ def loss_fn(
 def train(
     n_steps=100,
     dt=0.05,
+    hidden_size=50,
     feedback_delay_steps=5,
     workspace = jnp.array([[-0.15, 0.15], [0.20, 0.50]]),
     batch_size=500,
     n_batches=2500,
     epochs=1,
     learning_rate=1e-2,
-    hidden_size=50,
+    term_weights=jnp.array((1., 1., 1e-5, 1e-5)),
     seed=5566,
     log_step=100,
 ):
@@ -292,8 +305,11 @@ def train(
     if not DEBUG:
         train_step = eqx.filter_jit(train_step)
 
-    losses = []
-    losses_terms = [] 
+    losses = jnp.empty((n_batches,))
+    losses_terms = dict(zip(
+        term_weights.keys(), 
+        [jnp.empty((n_batches,)) for _ in term_weights]
+    ))
 
     for _ in range(epochs):
         for batch in tqdm(range(n_batches)):
@@ -302,13 +318,11 @@ def train(
             
             loss, loss_terms, model, opt_state = train_step(model, init_state, target_state, opt_state)
             
-            losses.append(loss)
-            losses_terms.append(loss_terms)
+            losses = losses.at[batch].set(loss)
+            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             if batch % log_step == 0:
                 tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
-    
-    losses_terms = jnp.vstack(losses_terms)
     
     return model, losses, losses_terms
 
