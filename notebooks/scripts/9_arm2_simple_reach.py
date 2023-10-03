@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 import tqdm
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from feedbax.mechanics.arm import (
     TwoLink

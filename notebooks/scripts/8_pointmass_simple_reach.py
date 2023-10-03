@@ -27,14 +27,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 import tqdm
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.system import System
 from feedbax.networks import SimpleMultiLayerNet, RNN
 from feedbax.plot import plot_loglog_losses, plot_states_forces_2d
 from feedbax.task import centreout_endpoints, uniform_endpoints
-from feedbax.utils import tree_set_idx, tree_sum_squares
+from feedbax.utils import tree_set_idx, tree_sum_squares, tree_get_idx
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a point mass to reach from a starting position to a target position. 
@@ -75,21 +75,24 @@ class Mechanics(eqx.Module):
             self.solver = solver
         self.dt = dt        
     
-    def __call__(self, state, args):
+    def __call__(self, input, state):
         # TODO: optional multiple timesteps per call
-        inputs, solver_state = args 
+        system_state, solver_state = state 
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        state, _, _, solver_state, _ = self.solver.step(
-            self.term, 0, self.dt, state, inputs, solver_state, made_jump=False
+        system_state, _, _, solver_state, _ = self.solver.step(
+            self.term, 0, self.dt, system_state, input, solver_state, made_jump=False
         )
-        # #! I don't even return solver state, so apparently it's not important
+        state = system_state, solver_state
         return state
     
-    def init_solver_state(self, state):
+    def init(self, system_state, input=None, key=None):
         args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return self.solver.init(self.term, 0, self.dt, state, args)
+        return (
+            system_state,
+            self.solver.init(self.term, 0, self.dt, system_state, args),
+        )
     
-
+# #! the following classes are deprecated and use the old argument structure
 class SimpleFeedback(eqx.Module):
     """Simple feedback loop with a single RNN and single mechanical system."""
     net: eqx.Module  
@@ -123,7 +126,7 @@ class SimpleFeedback(eqx.Module):
         # state = self(inputs, init_state)
         # return state 
     
-    def init_state(self, mechanics_state):
+    def init(self, mechanics_state):
         return (
             jnp.zeros((self.delay, *mechanics_state.shape)).at[-1].set(mechanics_state), 
             jnp.zeros((self.net.out_size,)),
@@ -198,17 +201,18 @@ class SimpleFeedback(eqx.Module):
         self.mechanics = mechanics
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
-    def __call__(self, state, args):
-        mechanics_state, _, hidden, solver_state = state
-        inputs, feedback_state = args
+    def __call__(self, input, state, args, key):
+        mechanics_state, _, hidden = state
+        feedback_state = args
+        
+        key1, key2 = jrandom.split(key)
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        net_inputs = jnp.concatenate([feedback_state.reshape(-1), inputs]) 
-        control, hidden = self.net(net_inputs, hidden)
+        control, hidden = self.net((input, feedback_state), hidden, key1)
         
-        mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
+        mechanics_state = self.mechanics(control, mechanics_state)
         
-        return mechanics_state, control, hidden, solver_state
+        return mechanics_state, control, hidden
     
     def _recursion(self, state, args):
         """Thinking about how to create an interface for `Recursion` that doesn't require `__call__` arguments to always be the same."""
@@ -217,12 +221,11 @@ class SimpleFeedback(eqx.Module):
         # state = self(inputs, init_state)
         # return state 
     
-    def init_state(self, mechanics_state):
+    def init(self, system_state):
         return (
-            mechanics_state, 
+            self.mechanics.init(system_state),
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
-            self.mechanics.init_solver_state(mechanics_state),   
         )
     
     
@@ -236,46 +239,61 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        states, args = x 
-        # this seems to work, but I'm worried it will break on non-array leaves later
-        state = jax.tree_util.tree_map(lambda xs: xs[i], states)
+        input, states, key = x 
+        
+        key1, key2 = jrandom.split(key)
         
         # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        feedback_state = states[0][i - self.step.delay]  
-        args = (args[0], feedback_state)  
+        feedback = tree_get_idx(states[0][0], i - self.step.delay)
+        args = feedback 
         
-        state = self.step(state, args)
+        # this seems to work, but I'm worried it will break on non-array leaves later
+        state = jax.tree_util.tree_map(lambda xs: xs[i], states)
+               
+        state = self.step(input, state, args, key1)
+        
         states = jax.tree_util.tree_map(lambda xs, x: xs.at[i+1].set(x), states, state)
-        return states, args
+        
+        return input, states, key2
     
-    def __call__(self, state, args):
-        init_state = self.step.init_state(state)
-        args_init = (args, jnp.zeros_like(args))  #! part of the feedback_state hack: stand in target_state for feedback_state
-        init_states = self._init_zero_arrays(init_state, args_init)
-        init_states = jax.tree_util.tree_map(lambda xs, x: xs.at[0].set(x), 
-                                             init_states, init_state)
+    def __call__(self, input, system_state, key):
+        
+        # #! vestigial; part of the feedback_state hack: stand in target_state for feedback_state
+        args = jax.tree_map(jnp.zeros_like, (system_state[:2], system_state[:2]))
+        
+        key1, key2, key3 = jrandom.split(key, 3)
+        
+        state = self.step.init(system_state)
+        states = self.init(input, state, args, key2)
         
         if DEBUG: #! jax.debug doesn't work inside of lax loops  
-            states = init_states
-            args = args_init
-  
             for i in range(self.n_steps):
                 states, args = self._body_func(i, (states, args))
                 
             return states, args    
         
-        return lax.fori_loop(
+        _, states, _ = lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (init_states, args_init),
+            (input, states, key3),
         )
+        
+        return states
     
-    def _init_zero_arrays(self, state, args):
-        return jax.tree_util.tree_map(
+    def init(self, input, state, args, key):
+        # 1. generate empty trajectories of states 
+        outputs = eqx.filter_eval_shape(self.step, input, state, args, key)
+        # `eqx.is_array_like` is False for jax.ShapeDtypeSty
+        scalars, array_structs = eqx.partition(outputs, eqx.is_array_like)
+        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
+        states = jax.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            eqx.filter_eval_shape(self.step, state, args)
+            asarrays,
         )
+        # 2. initialize the first state
+        states = tree_set_idx(states, state, 0)
+        return states
 
 
 # %%
@@ -292,13 +310,12 @@ def get_model(dt, mass, n_hidden, n_steps, key, feedback_delay=0):
 
 
 # %%
-LOSS_TERMS = ('position', 'final_velocity', 'control', 'hidden')
-
 def loss_fn(
     diff_model, 
     static_model, 
     init_state, 
     target_state, 
+    key,
     term_weights=dict(
         position=1., 
         final_velocity=1., 
@@ -315,10 +332,11 @@ def loss_fn(
     User can apply a temporal discount broadcastable by elementwise multiplication with `(n_batch, n_steps)`.
     """
     model = eqx.combine(diff_model, static_model)  
-    batched_model = jax.vmap(model)
+    batched_model = jax.vmap(model, in_axes=(0, 0, None))  # don't batch random key
 
-    states, _ = batched_model(init_state, target_state)
-    states, controls, activities, solver_state = states
+    states = batched_model(target_state, init_state, key)
+    (system_states, _), controls, activities = states
+    states = system_states
     # states = states[:, :, -1]  #! this was for the old delay solution with `SimpleFeedback`
     
     # sum over xyz, apply temporal discount, sum over time
@@ -368,6 +386,7 @@ def train(
         hidden=1e-5
     ),
     seed=5566,
+    log_step=50,
 ):
     key = jrandom.PRNGKey(seed)
 
@@ -393,10 +412,10 @@ def train(
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
     
     @eqx.filter_jit
-    def train_step(model, init_state, target_state, opt_state):
+    def train_step(model, init_state, target_state, opt_state, key):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, 
+            diff_model, static_model, init_state, target_state, key, 
             term_weights=term_weights, discount=position_error_discount
         )
         updates, opt_state = optim.update(grads, opt_state)
@@ -411,15 +430,18 @@ def train(
 
     for _ in range(epochs):
         for batch in tqdm(range(n_batches)):
-            key = jrandom.split(key)[0]
+            key, key_train = jrandom.split(key)
             init_state, target_state = get_batch(batch_size, key)
             
-            loss, loss_terms, model, opt_state = train_step(model, init_state, target_state, opt_state)
+            loss, loss_terms, model, opt_state = train_step(
+                model, init_state, target_state, opt_state, key_train
+            )
             
+            # #! slow
             losses = losses.at[batch].set(loss)
-            #losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
+            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
-            if batch % 50 == 0:
+            if batch % log_step == 0:
                 tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
     
     return model, losses, losses_terms
@@ -446,9 +468,14 @@ plot_loglog_losses(losses, losses_terms)
 # %%
 n_directions = 8
 reach_length = 1.
+key = jrandom.PRNGKey(5566)
 state_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
-(states, controls, activities, _), _ = jax.vmap(trained)(*state_endpoints)
-#states = states[:, :, -1]  # TODO: this is because of the delay stuff in SimpleFeedback...
+init_states, target_states = state_endpoints
+states = jax.vmap(trained, in_axes=(0, 0, None))(
+    target_states, init_states, key
+)
+(system_states, _), controls, activities = states
+states = system_states
 
 # %%
 plot_states_forces_2d(states[...,:2], states[..., 2:], controls, endpoints=state_endpoints[...,:2])

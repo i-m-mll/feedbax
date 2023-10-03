@@ -50,7 +50,7 @@ import numpy as np
 import optax 
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from feedbax.mechanics.muscle import (
     ActivationFilter,
@@ -335,8 +335,8 @@ def loss_fn(
     init_joints_pos = eqx.filter_vmap(
         model.step.mechanics.system.twolink.inverse_kinematics
     )(init_state)
+    # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
     # #! assumes zero initial velocity; TODO convert initial velocity also
-    # TODO: the model should provide a way to initialize this, given partial user input
     init_state = (
         init_joints_pos, 
         jnp.zeros_like(init_joints_pos),  

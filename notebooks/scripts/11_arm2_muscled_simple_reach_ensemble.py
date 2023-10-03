@@ -37,7 +37,7 @@ import pandas as pd
 import seaborn as sns
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from feedbax.mechanics.arm import (
     nlink_angular_to_cartesian, 
