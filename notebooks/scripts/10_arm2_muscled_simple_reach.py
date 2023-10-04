@@ -182,10 +182,10 @@ class SimpleFeedback(eqx.Module):
         return mechanics_state, ee_state, control, hidden
     
     def init(self, ee_state): 
-        
+              
         # dataset gives init state in terms of effector position, but we need joint angles
         init_joints_pos = self.mechanics.system.twolink.inverse_kinematics(
-            ee_state
+            ee_state[0]
         )
         # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
         # #! assumes zero initial velocity; TODO convert initial velocity also
@@ -197,7 +197,7 @@ class SimpleFeedback(eqx.Module):
 
         return (
             self.mechanics.init(system_state),
-            (ee_state[:2], ee_state[2:]), 
+            ee_state,
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
         )
@@ -225,10 +225,9 @@ class Recursion(eqx.Module):
         args = feedback
         
         state = tree_get_idx(states, i)
-
         state = self.step(input, state, args, key1)
-        
         states = tree_set_idx(states, state, i + 1)
+        
         return input, states, key2
     
     def __call__(self, input, system_state, key):
@@ -344,12 +343,12 @@ def loss_fn(
     states = ee_states  # operational space loss
   
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[:, None, :2]) ** 2, axis=-1), axis=-1)
+    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
         position=position_loss,  
-        final_velocity=jnp.sum((states[1][:, -1] - target_state[..., 2:]) ** 2, axis=-1).squeeze(),  # over xyz
+        final_velocity=jnp.sum((states[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
@@ -388,21 +387,22 @@ def get_evaluate_func(
     Returns a function that takes a model and returns losses and a figure.
     """
     centers = internal_grid_points(workspace, grid_points_per_dim)
-    state_endpoints = jnp.concatenate([
+    pos_endpoints = jnp.concatenate([
         centreout_endpoints(jnp.array(center), n_directions, 0, reach_length) 
         for center in centers
     ], axis=1)
-    init_states, target_states = state_endpoints
+    vel_endpoints = jnp.zeros_like(pos_endpoints)
+    init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
     
     @eqx.filter_jit
     def loss_fn(states, controls, activities):
         # TODO: implementing `Loss` as a class would stop this from repeating the other cost function?
-        position_loss = jnp.sum(discount * jnp.sum((states[0] - target_states[:, None, :2]) ** 2, axis=-1), axis=-1)
+        position_loss = jnp.sum(discount * jnp.sum((states[0] - pos_endpoints[1][:, None]) ** 2, axis=-1), axis=-1)
     
         loss_terms = dict(
             #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
             position=position_loss,  
-            final_velocity=jnp.sum((states[1][:, -1] - target_states[..., 2:]) ** 2, axis=-1).squeeze(),  # over xyz
+            final_velocity=jnp.sum((states[1][:, -1] - vel_endpoints[1]) ** 2, axis=-1).squeeze(),  # over xyz
             control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
             hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
         )
@@ -430,7 +430,7 @@ def get_evaluate_func(
     def make_eval_fig(ee_states, controls, workspace):
         # #! maybe this shouldn't be in here, but I need to call it in multiple places
         fig, _ = plot_states_forces_2d(
-            ee_states[0], ee_states[1], controls[:, 2:, -2:], state_endpoints[..., :2], 
+            ee_states[0], ee_states[1], controls[:, 2:, -2:], pos_endpoints, 
             force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
             cmap='plasma', workspace=workspace
         )
@@ -471,7 +471,10 @@ def train(
 
     def get_batch(batch_size, key):
         """Segment endpoints uniformly distributed in a rectangular workspace."""
-        return uniform_endpoints(key, batch_size, N_DIM, workspace)
+        pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        return init_states, target_states
     
     # only train the RNN layer (input weights & hidden weights and biases)
     filter_spec = jax.tree_util.tree_map(lambda _: False, model)

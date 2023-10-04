@@ -23,15 +23,12 @@ def uniform_endpoints(
                                                    [-1., 1.]]),
 ):
     """Segment endpoints uniformly distributed in a rectangular workspace."""
-    pos_endpoints = jrandom.uniform(
+    return jrandom.uniform(
         key, 
         (2, batch_size, ndim),   # (start/end, ...)
         minval=workspace[:, 0], 
         maxval=workspace[:, 1]
     )
-    # add 0 velocity to init and target state
-    state_endpoints = jnp.pad(pos_endpoints, ((0, 0), (0, 0), (0, ndim)))
-    return state_endpoints
 
 
 def centreout_endpoints(
@@ -48,7 +45,4 @@ def centreout_endpoints(
     starts = jnp.tile(center, (n_directions, 1))
     ends = center + length * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=1)
 
-    pos_endpoints = jnp.stack([starts, ends], axis=0)  
-    state_endpoints = jnp.pad(pos_endpoints, ((0, 0), (0, 0), (0, ndim)))
-    
-    return state_endpoints
+    return jnp.stack([starts, ends], axis=0)  

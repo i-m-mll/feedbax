@@ -257,7 +257,7 @@ class Recursion(eqx.Module):
     def __call__(self, input, system_state, key):
         
         # #! vestigial; part of the feedback_state hack: stand in target_state for feedback_state
-        args = jax.tree_map(jnp.zeros_like, (system_state[:2], system_state[:2]))
+        args = jax.tree_map(jnp.zeros_like, system_state)
         
         key1, key2, key3 = jrandom.split(key, 3)
         
@@ -337,13 +337,15 @@ def loss_fn(
     states = system_states
     # states = states[:, :, -1]  #! this was for the old delay solution with `SimpleFeedback`
     
+    eqx.tree_pprint(states)
+    
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((states[..., :2] - target_state[:, None, :2]) ** 2, axis=-1), axis=-1)
+    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
         position=position_loss,  
-        final_velocity=jnp.sum((states[..., -1, 2:] - target_state[..., 2:]) ** 2, axis=-1).squeeze(),  # over xyz
+        final_velocity=jnp.sum((states[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
@@ -390,7 +392,10 @@ def train(
 
     def get_batch(batch_size, key):
         """Segment endpoints uniformly distributed in a rectangular workspace."""
-        return uniform_endpoints(key, batch_size, N_DIM, workspace)
+        pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        return init_states, target_states
     
     model = get_model(dt, mass, hidden_size, n_steps, key, 
                       feedback_delay=feedback_delay_steps)
@@ -467,8 +472,9 @@ plot_loglog_losses(losses, losses_terms)
 n_directions = 8
 reach_length = 1.
 key = jrandom.PRNGKey(5566)
-state_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
-init_states, target_states = state_endpoints
+pos_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
+vel_endpoints = jnp.zeros_like(pos_endpoints)   
+init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
 states = jax.vmap(trained, in_axes=(0, 0, None))(
     target_states, init_states, key
 )
@@ -476,7 +482,7 @@ states = jax.vmap(trained, in_axes=(0, 0, None))(
 states = system_states
 
 # %%
-plot_states_forces_2d(states[...,:2], states[..., 2:], controls, endpoints=state_endpoints[...,:2])
+plot_states_forces_2d(states[0], states[1], controls, endpoints=pos_endpoints)
 
 # %%
 plt.plot(jnp.sum(states[...,2:] ** 2, -1).T, '-')

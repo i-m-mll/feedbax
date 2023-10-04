@@ -68,20 +68,22 @@ class Mechanics(eqx.Module):
             self.solver = solver
         self.dt = dt        
     
-    def __call__(self, state, args):
-        inputs, solver_state = args 
-        
+    def __call__(self, input, state):
+        system_state, solver_state = state
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        state, _, _, solver_state, _ = self.solver.step(
-            self.term, 0, self.dt, state, inputs, solver_state, made_jump=False
+        system_state, _, _, solver_state, _ = self.solver.step(
+            self.term, 0, self.dt, system_state, input, solver_state, made_jump=False
         )
-        # #! I don't even return solver state, so apparently it's not important
+        # # #! I don't even return solver state, so apparently it's not important
+        state = system_state, solver_state
         return state
     
-    def init_solver_state(self, state):
+    def init(self, system_state, input=None, key=None):
         args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return self.solver.init(self.term, 0, self.dt, state, args)
-    
+        return (
+            system_state,  # self.system.init()
+            self.solver.init(self.term, 0, self.dt, system_state, args),
+        )
 
 class SimpleFeedback(eqx.Module):
     """Simple feedback loop with a single RNN and single mechanical system."""
@@ -94,36 +96,43 @@ class SimpleFeedback(eqx.Module):
         self.mechanics = mechanics
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
-    def __call__(self, state, args):
-        mechanics_state, _, _, hidden, solver_state = state
-        inputs, feedback_state = args
+    def __call__(self, input, state, args, key):
+        mechanics_state, _, _, hidden = state
+        feedback_state = args
+        
+        key1, key2 = jrandom.split(key)
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((inputs, feedback_state), hidden)
+        control, hidden = self.net((input, feedback_state), hidden, key1)
         
-        mechanics_state = self.mechanics(mechanics_state, (control, solver_state))
+        mechanics_state = self.mechanics(control, mechanics_state)
         
+        system_state = mechanics_state[0]
         system = self.mechanics.system
         ee_state = tuple(arr[:, -1] for arr in system.forward_kinematics(
-            mechanics_state[0], mechanics_state[1]
+            system_state[0], system_state[1]
         ))
         
-        return mechanics_state, ee_state, control, hidden, solver_state
+        return mechanics_state, ee_state, control, hidden
     
-    def init_state(self, mechanics_state): 
-        
-        # #! how to avoid this here?
-        system = self.mechanics.system
-        ee_state = tuple(arr[:, -1] for arr in system.forward_kinematics(
-            mechanics_state[0], mechanics_state[1]
-        ))
-        
+    def init(self, ee_state): 
+              
+        # dataset gives init state in terms of effector position, but we need joint angles
+        init_joints_pos = self.mechanics.system.inverse_kinematics(
+            ee_state[0]
+        )
+        # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
+        # #! assumes zero initial velocity; TODO convert initial velocity also
+        system_state = (
+            init_joints_pos, 
+            jnp.zeros_like(init_joints_pos),  
+        )
+
         return (
-            mechanics_state, 
-            ee_state, 
+            self.mechanics.init(system_state),
+            ee_state,
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
-            self.mechanics.init_solver_state(mechanics_state),   
         )
     
 
@@ -137,48 +146,65 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        states, args = x 
-        # this seems to work, but I'm worried it will break on non-array leaves later
-        state = tree_get_idx(states, i)
+        input, states, key = x 
+        
+        key1, key2 = jrandom.split(key)
         
         # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         # #! could put the concatenate inside of `Network`? & pass any pytree of inputs
         # states[:2] includes both the angular and cartesian state
-        feedback = tree_get_idx(states[:2], i - self.step.delay)
-        args = (args[0], feedback)  
+        feedback = (
+            tree_get_idx(states[0][0][:2], i - self.step.delay),  # omit muscle activation
+            tree_get_idx(states[1], i - self.step.delay),  # ee state
+        )
+        args = feedback
         
-        state = self.step(state, args)
-        
+        state = tree_get_idx(states, i)
+        state = self.step(input, state, args, key1)
         states = tree_set_idx(states, state, i + 1)
-        return states, args
+        
+        return input, states, key2
     
-    def __call__(self, state, args):
-        init_state = self.step.init_state(state)
+    def __call__(self, input, system_state, key):
+        key1, key2, key3 = jrandom.split(key, 3)
         
-        # #! part of the feedback hack
-        args = (args, jax.tree_map(jnp.zeros_like, (state, state)))
+        state = self.step.init(system_state) #! maybe this should be outside
         
-        states = self._init_zero_arrays(init_state, args)
-        states = tree_set_idx(states, init_state, 0)
+        #! `args` is vestigial. part of the feedback hack
+        args = jax.tree_map(jnp.zeros_like, (state[0][0][:2], state[1]))
         
-        if DEBUG: #! jax.debug doesn't work inside of lax loops  
-            for i in range(self.n_steps):
-                states, args = self._body_func(i, (states, args))
+        states = self.init(input, state, args, key2)
+        
+        if DEBUG: 
+            # this tqdm doesn't show except on an exception, which might be useful
+            for i in tqdm(range(self.n_steps),
+                          desc="steps"):
+                input, states, key3 = self._body_func(i, (input, states, key3))
                 
-            return states, args   
+            return states
                  
-        return lax.fori_loop(
+        _, states, _ = lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (states, args),
+            (input, states, key3),
         )
+        
+        return states
     
-    def _init_zero_arrays(self, state, args):
-        return jax.tree_util.tree_map(
+    def init(self, input, state, args, key):
+        # 1. generate empty trajectories of states 
+        outputs = eqx.filter_eval_shape(self.step, input, state, args, key)
+        # `eqx.is_array_like` is False for jax.ShapeDtypeSty
+        scalars, array_structs = eqx.partition(outputs, eqx.is_array_like)
+        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
+        states = jax.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            eqx.filter_eval_shape(self.step, state, args)
+            asarrays,
         )
+        # 2. initialize the first state
+        states = tree_set_idx(states, state, 0)
+        return states
 
 
 # %%
@@ -194,16 +220,20 @@ def get_model(dt, n_hidden, n_steps, key, feedback_delay=0):
 
 
 # %%
-LOSS_TERMS = ('position', 'final_velocity', 'control', 'hidden')
-
 def loss_fn(
     diff_model, 
     static_model, 
     init_state, 
     target_state, 
-    term_weights=jnp.array((1., 1., 1e-5, 1e-7)),
-    discount=1.,
+    key, 
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-7, 
+    ),
     weight_decay=None,
+    discount=1.,
 ):  
     """Quadratic in states, controls, and hidden activities.
     
@@ -212,28 +242,22 @@ def loss_fn(
     User can apply a temporal discount broadcastable by elementwise multiplication with `(n_batch, n_steps)`.
     """
     model = eqx.combine(diff_model, static_model)  
-    batched_model = jax.vmap(model)
+    batched_model = jax.vmap(model, in_axes=(0, 0, None)) 
 
-    # dataset gives init state in terms of effector position, but we need joint angles
-    init_joints_pos = eqx.filter_vmap(
-        model.step.mechanics.system.inverse_kinematics
-    )(init_state)
-    # #! assumes zero initial velocity; TODO convert initial velocity also
-    init_joints_state = (init_joints_pos, jnp.zeros_like(init_joints_pos))
-
-    (joints_states, ee_states, controls, activities, _), _ = batched_model(
-        init_joints_state, target_state
+    states = batched_model(
+        target_state, init_state, key 
     )
     
+    (system_states, _), ee_states, controls, activities = states
     states = ee_states  # operational space loss
   
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[:, None, :2]) ** 2, axis=-1), axis=-1)
+    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
         position=position_loss,  
-        final_velocity=jnp.sum((states[1][:, -1] - target_state[..., 2:]) ** 2, axis=-1).squeeze(),  # over xyz
+        final_velocity=jnp.sum((states[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
     )
@@ -261,12 +285,18 @@ def train(
     dt=0.05,
     hidden_size=50,
     feedback_delay_steps=5,
-    workspace = jnp.array([[-0.15, 0.15], [0.20, 0.50]]),
+    workspace = jnp.array([[-0.15, 0.15], 
+                           [0.20, 0.50]]),
     batch_size=500,
     n_batches=2500,
     epochs=1,
     learning_rate=1e-2,
-    term_weights=jnp.array((1., 1., 1e-5, 1e-5)),
+    term_weights=dict(
+        position=1., 
+        final_velocity=1., 
+        control=1e-5, 
+        hidden=1e-6, 
+    ),
     seed=5566,
     log_step=100,
 ):
@@ -274,7 +304,10 @@ def train(
 
     def get_batch(batch_size, key):
         """Segment endpoints uniformly distributed in a rectangular workspace."""
-        return uniform_endpoints(key, batch_size, N_DIM, workspace)
+        pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        return init_states, target_states
     
     model = get_model(dt, hidden_size, n_steps, key, 
                       feedback_delay=feedback_delay_steps)
@@ -289,14 +322,14 @@ def train(
         replace=(True, True, True)
     )     
     
-    optim = optax.adam(learning_rate)
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
     
-    def train_step(model, init_state, target_state, opt_state):
+    optim = optax.adam(learning_rate)
+    
+    def train_step(model, init_state, target_state, opt_state, key):
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, 
+            diff_model, static_model, init_state, target_state, key, 
             discount=position_error_discount, term_weights=term_weights
         )
         updates, opt_state = optim.update(grads, opt_state)
@@ -306,36 +339,41 @@ def train(
     if not DEBUG:
         train_step = eqx.filter_jit(train_step)
 
-    # losses = jnp.empty((n_batches,))
-    # losses_terms = dict(zip(
-    #     term_weights.keys(), 
-    #     [jnp.empty((n_batches,)) for _ in term_weights]
-    # ))
+    losses = jnp.empty((n_batches,))
+    losses_terms = dict(zip(
+        term_weights.keys(), 
+        [jnp.empty((n_batches,)) for _ in term_weights]
+    ))
+    
+    opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
     for _ in range(epochs):
         for batch in tqdm(range(n_batches)):
-            key = jrandom.split(key)[0]
+            key, key_train = jrandom.split(key)
             init_state, target_state = get_batch(batch_size, key)
             
-            loss, loss_terms, model, opt_state = train_step(model, init_state, target_state, opt_state)
+            loss, loss_terms, model, opt_state = train_step(
+                model, init_state, target_state, opt_state, key_train
+            )
             
-            # losses = losses.at[batch].set(loss)
-            # losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
+            losses = losses.at[batch].set(loss)
+            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             if batch % log_step == 0:
                 tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
     
-    return model#, losses, losses_terms
+    return model, losses, losses_terms
 
 
 # %%
-workspace = jnp.array([[-0.2, 0.2], [0.10, 0.50]])
+workspace = jnp.array([[-0.2, 0.2], 
+                       [0.10, 0.50]])
 
 trained, losses, losses_terms = train(
-    batch_size=1000, 
+    batch_size=500, 
     dt=0.05, 
     feedback_delay_steps=0,
-    n_batches=10000, 
+    n_batches=500, 
     n_steps=50, 
     hidden_size=50, 
     seed=5566,
@@ -343,50 +381,50 @@ trained, losses, losses_terms = train(
     workspace=workspace,
 )
 
-# %%
-plot_loglog_losses(losses, losses_terms, loss_term_labels=LOSS_TERMS)
+plot_loglog_losses(losses, losses_terms)
 plt.show()
 
 # %%
-losses[-1]
 
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
 n_directions = 8
+n_grid = 2
+n_reaches = n_directions * n_grid ** 2
 reach_length = 0.05
-centers = internal_grid_points(workspace, 2)
-state_endpoints = jnp.concatenate([
+key = jrandom.PRNGKey(1234)
+centers = internal_grid_points(workspace, n_grid)
+pos_endpoints = jnp.concatenate([
     centreout_endpoints(jnp.array(center), n_directions, 0, reach_length) 
     for center in centers
 ], axis=1)
-init_joints_pos = eqx.filter_vmap(twolink_effector_pos_to_angles)(
-    trained.step.mechanics.system, state_endpoints[0, :, :2]
-)
-# #! assumes zero initial velocity; TODO convert initial velocity also
-init_states = (
-    init_joints_pos, 
-    jnp.zeros_like(init_joints_pos),
-)
-target_states = state_endpoints[1]
+vel_endpoints = jnp.zeros_like(pos_endpoints)
+init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
 
-(states, ee_states, controls, activities, _), _ = jax.vmap(trained)(
-    init_states, target_states
+(system_states, _), ee_states, controls, activities= jax.vmap(trained, in_axes=(0, 0, None))(
+    target_states, init_states, key
 )
 
 # %%
 # plot EE trajectories for all directions
-plot_states_forces_2d(ee_states[0], ee_states[1], controls, state_endpoints[..., :2], 
+plot_states_forces_2d(ee_states[0], ee_states[1], controls, pos_endpoints, 
                       cmap='viridis', force_label_type='torques')
 plt.show()
 
 # %%
+eqx.tree_pprint(system_states)
+
+# %%
 # plot entire arm trajectory for an example direction
 # convert all joints to Cartesian since I only saved the EE state
-xy_pos = eqx.filter_vmap(nlink_angular_to_cartesian)(
-    trained.step.mechanics.system, states[0].reshape(-1, 2), states[1].reshape(-1, 2)
+xy_pos = eqx.filter_vmap(trained.step.mechanics.system.forward_kinematics)(
+    system_states[0].reshape(-1, 2), system_states[1].reshape(-1, 2)
 )[0].reshape(n_directions, -1, 2, 2)
+
+# %%
+eqx.tree_pprint(xy_pos)
 
 # %%
 ax = plot_2D_joint_positions(xy_pos[0], add_root=True)

@@ -111,6 +111,8 @@ def plot_states_forces_2d(
     - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
     - First dim is batch, second dim is time step.
     """
+    endpoints = jnp.asarray(endpoints)
+    
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
     cmap_func = plt.get_cmap(cmap)

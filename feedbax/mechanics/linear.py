@@ -38,9 +38,10 @@ class LTISystem(eqx.Module):
         y: Float[Array, "state"],
         args: Float[Array, "input"]
     ) -> Float[Array, "state"]:
-        u = args  #? right way?
-        d_y = self.A @ y + self.B @ u
-        return d_y
+        u = args  
+        d_y = self.A @ jnp.concatenate(y) + self.B @ u
+        d_pos, d_vel = d_y[:2], d_y[2:]
+        return d_pos, d_vel
     
     @property
     def control_size(self) -> int:
