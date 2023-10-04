@@ -96,9 +96,12 @@ class TwoLinkMuscled(eqx.Module):
         v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
         return v
     
-    def init_state(self, state):
-        # TODO
-        pass
+    def init(self, state):
+        return (
+            # joint angle, 
+            # joint angular velocity,
+            # muscle activation,
+        )
     
     @property
     def control_size(self):

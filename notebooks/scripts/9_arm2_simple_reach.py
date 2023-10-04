@@ -306,11 +306,11 @@ def train(
     if not DEBUG:
         train_step = eqx.filter_jit(train_step)
 
-    losses = jnp.empty((n_batches,))
-    losses_terms = dict(zip(
-        term_weights.keys(), 
-        [jnp.empty((n_batches,)) for _ in term_weights]
-    ))
+    # losses = jnp.empty((n_batches,))
+    # losses_terms = dict(zip(
+    #     term_weights.keys(), 
+    #     [jnp.empty((n_batches,)) for _ in term_weights]
+    # ))
 
     for _ in range(epochs):
         for batch in tqdm(range(n_batches)):
@@ -319,13 +319,13 @@ def train(
             
             loss, loss_terms, model, opt_state = train_step(model, init_state, target_state, opt_state)
             
-            losses = losses.at[batch].set(loss)
-            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
+            # losses = losses.at[batch].set(loss)
+            # losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             if batch % log_step == 0:
                 tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
     
-    return model, losses, losses_terms
+    return model#, losses, losses_terms
 
 
 # %%

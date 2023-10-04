@@ -248,11 +248,9 @@ class Recursion(eqx.Module):
         args = feedback 
         
         # this seems to work, but I'm worried it will break on non-array leaves later
-        state = jax.tree_util.tree_map(lambda xs: xs[i], states)
-               
+        state = tree_get_idx(states, i)       
         state = self.step(input, state, args, key1)
-        
-        states = jax.tree_util.tree_map(lambda xs, x: xs.at[i+1].set(x), states, state)
+        states = tree_set_idx(states, state, i + 1)
         
         return input, states, key2
     

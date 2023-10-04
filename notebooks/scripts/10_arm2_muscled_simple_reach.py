@@ -181,17 +181,23 @@ class SimpleFeedback(eqx.Module):
         
         return mechanics_state, ee_state, control, hidden
     
-    def init(self, system_state): 
+    def init(self, ee_state): 
         
-        # #! how to avoid this here? "Vision" module?
-        twolink = self.mechanics.system.twolink
-        ee_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
-            system_state[0], system_state[1]
-        ))
-        
+        # dataset gives init state in terms of effector position, but we need joint angles
+        init_joints_pos = self.mechanics.system.twolink.inverse_kinematics(
+            ee_state
+        )
+        # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
+        # #! assumes zero initial velocity; TODO convert initial velocity also
+        system_state = (
+            init_joints_pos, 
+            jnp.zeros_like(init_joints_pos),  
+            jnp.zeros((self.mechanics.system.control_size,)),  # per-muscle activation
+        )
+
         return (
             self.mechanics.init(system_state),
-            ee_state, 
+            (ee_state[:2], ee_state[2:]), 
             jnp.zeros((self.net.out_size,)),
             jnp.zeros((self.net.hidden_size,)),
         )
@@ -207,14 +213,14 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        input, states, args, key = x
+        input, states, key = x
         
         key1, key2 = jrandom.split(key)
         
         # # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         feedback = (
             tree_get_idx(states[0][0][:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states[1], i - self.step.delay),
+            tree_get_idx(states[1], i - self.step.delay),  # ee state
         )
         args = feedback
         
@@ -223,30 +229,31 @@ class Recursion(eqx.Module):
         state = self.step(input, state, args, key1)
         
         states = tree_set_idx(states, state, i + 1)
-        return input, states, args, key2
+        return input, states, key2
     
     def __call__(self, input, system_state, key):
-        #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (system_state[:2], system_state[:2]))
-        
         key1, key2, key3 = jrandom.split(key, 3)
         
         state = self.step.init(system_state) #! maybe this should be outside
+        
+        #! `args` is vestigial. part of the feedback hack
+        args = jax.tree_map(jnp.zeros_like, (state[0][0][:2], state[1]))
+        
         states = self.init(input, state, args, key2)
         
         if DEBUG: 
             # this tqdm doesn't show except on an exception, which might be useful
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                states, args = self._body_func(i, (states, args, key3))
+                input, states, key3 = self._body_func(i, (input, states, key3))
                 
-            return states, args   
+            return states
                  
-        _, states, _, _ = lax.fori_loop(
+        _, states, _ = lax.fori_loop(
             0, 
             self.n_steps, 
             self._body_func,
-            (input, states, args, key3),
+            (input, states, key3),
         )
         
         return states
@@ -328,24 +335,11 @@ def loss_fn(
     """
     model = eqx.combine(diff_model, static_model)  
     
-    # #! stuff after this point is largely model-specific
-    batched_model = jax.vmap(model, in_axes=(0, 0, None))  #? `in_axes` are model-specific?
-    
-    # dataset gives init state in terms of effector position, but we need joint angles
-    init_joints_pos = eqx.filter_vmap(
-        model.step.mechanics.system.twolink.inverse_kinematics
-    )(init_state)
-    # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
-    # #! assumes zero initial velocity; TODO convert initial velocity also
-    init_state = (
-        init_joints_pos, 
-        jnp.zeros_like(init_joints_pos),  
-        jnp.zeros((init_joints_pos.shape[0], 
-                   model.step.mechanics.system.control_size)),  # per-muscle activation
-    )
+    batched_model = jax.vmap(model, in_axes=(0, 0, None)) 
     
     states = batched_model(target_state, init_state, key)
     
+    # #! stuff after this point is largely model-specific
     (system_states, _), ee_states, controls, activities = states
     states = ee_states  # operational space loss
   
@@ -398,19 +392,8 @@ def get_evaluate_func(
         centreout_endpoints(jnp.array(center), n_directions, 0, reach_length) 
         for center in centers
     ], axis=1)
-
-    target_states = state_endpoints[1]
-    init_joints_pos = eqx.filter_vmap(
-        model.step.mechanics.system.twolink.inverse_kinematics
-    )(state_endpoints[0, :, :2])
-    # #! assumes zero initial velocity; TODO convert initial velocity also
-    init_states = (
-        init_joints_pos, 
-        jnp.zeros_like(init_joints_pos),
-        jnp.zeros((init_joints_pos.shape[0], 
-                model.step.mechanics.system.control_size)),
-    )
-
+    init_states, target_states = state_endpoints
+    
     @eqx.filter_jit
     def loss_fn(states, controls, activities):
         # TODO: implementing `Loss` as a class would stop this from repeating the other cost function?
