@@ -414,17 +414,11 @@ plot_states_forces_2d(ee_states[0], ee_states[1], controls, pos_endpoints,
 plt.show()
 
 # %%
-eqx.tree_pprint(system_states)
-
-# %%
 # plot entire arm trajectory for an example direction
 # convert all joints to Cartesian since I only saved the EE state
 xy_pos = eqx.filter_vmap(trained.step.mechanics.system.forward_kinematics)(
     system_states[0].reshape(-1, 2), system_states[1].reshape(-1, 2)
-)[0].reshape(n_directions, -1, 2, 2)
-
-# %%
-eqx.tree_pprint(xy_pos)
+)[0].reshape(n_reaches, -1, 2, 2)
 
 # %%
 ax = plot_2D_joint_positions(xy_pos[0], add_root=True)

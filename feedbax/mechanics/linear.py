@@ -40,6 +40,7 @@ class LTISystem(eqx.Module):
     ) -> Float[Array, "state"]:
         u = args  
         d_y = self.A @ jnp.concatenate(y) + self.B @ u
+        # TODO: don't hardcode the split; define on instantiation
         d_pos, d_vel = d_y[:2], d_y[2:]
         return d_pos, d_vel
     

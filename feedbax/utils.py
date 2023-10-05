@@ -146,6 +146,31 @@ def tree_set_idx(tree, vals, idx: int):
     return eqx.combine(arrays_update, other_update)
 
 
+# def tree_set_idxs(tree, vals, idxs):
+#     """Update the `idx`-th element of each array leaf of `tree`.
+    
+#     Similar to `tree_set_idx` but takes a PyTree of indices.
+#     """
+#     arrays = eqx.filter(tree, eqx.is_array)
+#     vals_update, other_update = eqx.partition(
+#         vals, jax.tree_map(lambda x: x is not None, arrays)
+#     )
+#     arrays_update = jax.tree_map(
+#         lambda xs, x, idx: xs.at[idx].set(x), arrays, vals_update, idxs
+#     )
+#     return eqx.combine(arrays_update, other_update)
+
+def random_split_like_tree(rng_key, target=None, treedef=None):
+    """Generate a split of PRNG keys with a target PyTree structure.
+    
+    See https://github.com/google/jax/discussions/9508#discussioncomment-2144076
+    """
+    if treedef is None:
+        treedef = jax.tree_structure(target)
+    keys = jax.random.split(rng_key, treedef.num_leaves)
+    return jax.tree_unflatten(treedef, keys)
+
+
 def tree_stack(trees):
     """Stack the leaves of each tree in `trees`.
     
