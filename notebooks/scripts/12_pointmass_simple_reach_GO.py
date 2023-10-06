@@ -292,7 +292,7 @@ def get_model(dt, mass, n_hidden, n_steps, key, feedback_delay=0):
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt)
-    n_input = 1 + system.state_size * 2  # hold signal + feedback & target states
+    n_input = 1 + 1 + system.state_size * 2  # hold, target-on signals; feedback & target states
     net = RNN(n_input, system.control_size, n_hidden, key=key)
     body = SimpleFeedback(net, mechanics, delay=feedback_delay)
 
@@ -331,12 +331,15 @@ def loss_fn(
 
     # sum over xyz, apply temporal discount, sum over time
     position_loss = jnp.sum(discount * jnp.sum((states[0] - task_input[0][:, -1, None]) ** 2, axis=-1), axis=-1)
-    #fixation_position_loss = jnp.sum(jnp.squeeze(task_input[2]) * jnp.sum((states[0] - init_state[0][:, None, :]) ** 2, axis=-1), axis=-1)
-    fixation_control_loss = jnp.sum(jnp.squeeze(task_input[2]) * jnp.sum(controls ** 2, axis=-1), axis=-1)
+    init_position_mse = jnp.sum((states[0] - init_state[0][:, None, :]) ** 2, axis=-1)
+    init_velocity_mse = jnp.sum((states[1] - init_state[1][:, None, :]) ** 2, axis=-1)
+                                
+    fixation_state_loss = jnp.sum(jnp.squeeze(task_input[2]) * (init_position_mse + init_velocity_mse), axis=-1)
+    #fixation_control_loss = jnp.sum(jnp.squeeze(task_input[2]) * jnp.sum(controls ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
-        fixation=fixation_control_loss, 
+        fixation=fixation_state_loss, 
         position=position_loss,  
         final_velocity=jnp.sum((states[1][:, -1] - task_input[1][:, -1]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
@@ -368,8 +371,9 @@ def get_sequences(key, n_steps, epoch_len_ranges, target):
     epoch_lengths = gen_epoch_lengths(key, epoch_len_ranges)
     epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 1), constant_values=(0, -1))
     seqs = get_target_seqs(epoch_idxs, n_steps, target, target_epochs)
+    stim_on_seq = get_scalar_epoch_seq(epoch_idxs, n_steps, 1., target_epochs)
     hold_seq = get_scalar_epoch_seq(epoch_idxs, n_steps, 1., hold_epochs)
-    return seqs + (hold_seq,), epoch_idxs
+    return seqs + (hold_seq, stim_on_seq), epoch_idxs
 
 
 # %%
@@ -474,7 +478,7 @@ trained, losses, losses_terms = train(
     batch_size=500, 
     dt=0.1, 
     feedback_delay_steps=5,
-    n_batches=2000, 
+    n_batches=1000, 
     n_steps=n_steps,
     task_epoch_len_ranges=task_epoch_len_ranges, 
     hidden_size=50, 
@@ -483,8 +487,6 @@ trained, losses, losses_terms = train(
 )
 
 plot_loglog_losses(losses, losses_terms)
-
-# %%
 
 # %% [markdown]
 # Evaluate on a centre-out task
@@ -512,13 +514,27 @@ states = system_states
 # Plot speeds along with a line indicating the first availability of target information.
 
 # %%
+from matplotlib.ticker import FormatStrFormatter
+
 speeds = jnp.sum(states[1]**2, axis=-1)
 
-fig, ax = plt.subplots()
-p = ax.plot(speeds.T)
+fig, axs = plt.subplots(3, 1, height_ratios=(1, 1, 4), sharex=True, constrained_layout=True)
+
+axs[2].set_title('speed profiles')
+p = axs[2].plot(speeds.T)
 c = [l.get_color() for l in p]
-ax.vlines(epoch_idxs[:, 1], ymin=0, ymax=0.2, colors=c, linestyles='dotted', label='stim ON')
-ax.vlines(epoch_idxs[:, 3], ymin=0, ymax=0.2, colors=c, linestyles='dashed', linewidths=0.5, label='hold OFF')
+axs[2].vlines(epoch_idxs[:, 1], ymin=0, ymax=0.2, colors=c, linestyles='dotted', linewidths=1, label='target ON')
+axs[2].vlines(epoch_idxs[:, 3], ymin=0, ymax=0.2, colors=c, linestyles='dashed', linewidths=1, label='fixation OFF')
+axs[2].yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+
+axs[0].set_title('fixation signal')
+axs[0].set_ylim([-0.2, 1.2])
+axs[0].plot(jnp.squeeze(task_inputs[2].T))
+
+axs[1].set_title('target ON signal')
+axs[1].set_ylim([-0.2, 1.2])
+axs[1].plot(jnp.squeeze(task_inputs[3].T))
+
 plt.legend()
 
 # %%
