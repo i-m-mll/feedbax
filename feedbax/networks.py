@@ -7,6 +7,7 @@
 from functools import cached_property
 from itertools import zip_longest
 import logging
+import math
 from typing import Callable, Optional, Tuple
 
 import equinox as eqx
@@ -61,9 +62,103 @@ class SimpleMultiLayerNet(eqx.Module):
         return x
 
 
+class RNNCell(eqx.Module):
+    """
+    
+    Based on `eqx.nn.GRUCell` and the leaky RNN from
+    
+        [1] G. R. Yang, M. R. Joglekar, H. F. Song, W. T. Newsome, 
+            and X.-J. Wang, “Task representations in neural networks trained 
+            to perform many cognitive tasks,” Nat Neurosci, vol. 22, no. 2, 
+            pp. 297–306, Feb. 2019, doi: 10.1038/s41593-018-0310-2.
+
+    TODO: 
+    - If `diffrax` varies `dt`, then `dt` could be passed to update `alpha`.
+    """
+    weight_hh: jax.Array
+    weight_ih: jax.Array
+    bias: Optional[jax.Array]
+    input_size: int = eqx.field(static=True)
+    hidden_size: int = eqx.field(static=True)
+    use_bias: bool = eqx.field(static=True)
+    use_noise: bool = eqx.field(static=True)
+    noise_strength: float = eqx.field(static=True)
+    dt: float = eqx.field(static=True)
+    tau: float = eqx.field(static=True)
+    
+    def __init__(
+        self, 
+        input_size: int, 
+        hidden_size: int, 
+        use_bias: bool = True,
+        use_noise: bool = False,
+        noise_strength: float = 0.01,
+        dt: float = 1,
+        tau: float = 1,
+        *,  # this forces the user to pass the following as keyword arguments
+        key: jrandom.PRNGKeyArray,
+        **kwargs
+    ):
+        ihkey, hhkey, bkey = jrandom.split(key, 3)
+        lim = math.sqrt(1 / hidden_size)
+        
+        self.weight_ih = jrandom.uniform(
+            ihkey, (hidden_size, input_size), minval=-lim, maxval=lim,
+        )
+        self.weight_hh = jrandom.uniform(
+            hhkey, (hidden_size, hidden_size), minval=-lim, maxval=lim,
+        )
+        
+        if use_bias:
+            self.bias = jrandom.uniform(
+                bkey, (hidden_size,), minval=-lim, maxval=lim,
+            )
+        else:
+            self.bias = None  
+        
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.use_bias = use_bias
+        self.use_noise = use_noise
+        self.noise_strength = noise_strength
+        self.dt = dt
+        self.tau = tau
+        
+    def __call__(self, input: jax.Array, state: jax.Array, *, key=None):
+        """Vanilla RNN cell."""
+        if self.use_bias:
+            bias = self.bias
+        else:
+            bias = 0
+            
+        if self.use_noise:
+            noise = self.noise_std * jrandom.normal(key, state.shape) 
+        else:
+            noise = 0
+                
+        state = (1 - self.alpha) * state + self.alpha * jnp.tanh(
+            jnp.dot(self.weight_ih, input) 
+            + jnp.dot(self.weight_hh, state)
+            + bias 
+            + noise 
+        )
+        
+        return state  #! 0D PyTree
+    
+    @cached_property
+    def alpha(self):
+        return self.dt / self.tau
+    
+    @cached_property
+    def noise_std(self, noise_strength):
+        if self.use_noise:
+            return math.sqrt(2 / self.alpha) * noise_strength
+        else:
+            return None
+    
+
 class RNN(eqx.Module):
     """From https://docs.kidger.site/equinox/examples/train_rnn/"""
-    hidden_size: int = eqx.field(static=True)
     out_size: int = eqx.field(static=True)
     cell: eqx.Module
     linear: eqx.nn.Linear
@@ -72,19 +167,17 @@ class RNN(eqx.Module):
     noise_std: Optional[float]
 
     def __init__(
-            self, 
-            in_size, 
-            out_size, 
-            hidden_size, 
-            key, 
-            out_nonlinearity=lambda x: x,
-            noise_std=None,
-        ):
-        ckey, lkey = jrandom.split(key)
-        self.hidden_size = hidden_size
+        self, 
+        cell: eqx.Module,
+        out_size: int, 
+        out_nonlinearity=lambda x: x,
+        noise_std=None,
+        *,
+        key: jrandom.PRNGKeyArray, 
+    ):
         self.out_size = out_size
-        self.cell = eqx.nn.GRUCell(in_size, hidden_size, key=ckey)
-        self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
+        self.cell = cell
+        self.linear = eqx.nn.Linear(cell.hidden_size, out_size, use_bias=False, key=key)
         self.bias = jnp.zeros(out_size)
         self.out_nonlinearity = out_nonlinearity       
         self.noise_std = noise_std
@@ -93,7 +186,7 @@ class RNN(eqx.Module):
         self._add_noise  
 
     def __call__(self, input, state, key=None):
-        state = self.init_state()
+        # state = self.init()
         # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
         input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)
@@ -104,6 +197,8 @@ class RNN(eqx.Module):
     
     @cached_property
     def _add_noise(self):
+        #? this might be overkill; equinox uses simple conditionals in `__call__` for similar
+        # TODO: timeit the difference
         if self.noise_std is not None:
             return self.__add_noise
         else:
@@ -113,8 +208,8 @@ class RNN(eqx.Module):
         noise = self.noise_std * jrandom.normal(key, state.shape) 
         return state + noise
     
-    def init_state(self, state=None):
+    def init(self, state=None):
         if state is None:
-            return jnp.zeros(self.hidden_size)
+            return jnp.zeros(self.cell.hidden_size)
         else:
             return jnp.array(state)

@@ -9,9 +9,11 @@ from typing import Optional
 import jax
 
 import jax.numpy as jnp
+import jax.random as jrandom
 from jaxtyping import Float, Array
 import matplotlib as mpl
 from matplotlib import animation
+from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -173,6 +175,49 @@ def plot_activity_heatmap(
     return fig, ax
 
 
+def plot_activity_sample_units(activities, n_samples, cols=2, *, key):
+    """Plot activity of a random sample of units over time.
+    
+    TODO:
+    - Could generalize this to sampling any kind of time series. Depends
+      on if there is a standard way we shape our state arrays.
+    """
+    unit_idxs = jrandom.choice(
+        key, jnp.arange(activities.shape[-1]), (n_samples,), replace=False
+    )
+    x = activities[..., unit_idxs]
+
+    xlabel = 'time step'
+
+    cmap = plt.get_cmap('tab10')
+    colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
+
+    #if len(x.shape) == 3:
+    rows = int(np.ceil(x.shape[-1] / cols))
+    fig, axs = plt.subplots(rows, cols, sharey=True, sharex=True)
+    # else:
+    #     rows, cols = 1, 1
+    #     fig, axs = plt.subplots(rows, cols, figsize=(6, 6))
+    #     axs = [[axs]]
+    #     x = [x]
+
+    for i, unit_idx in enumerate(range(x.shape[-1])):
+        row = i // cols
+        col = i % cols
+        unit = x[..., unit_idx]
+        for j in range(unit.shape[0]):
+            axs[row][col].plot(unit[j], color=colors[j], lw=1.5)
+        axs[row][col].set_ylabel(
+            "Unit {} output".format(unit_idxs[i])
+        )
+        axs[row][col].hlines(
+            0, xmin=0, xmax=unit.shape[1], linewidths=1, linestyles='dotted'
+        )
+
+    for j in range(cols):
+        axs[-1][-j-1].set_xlabel(xlabel)
+        
+
 def plot_loglog_losses(losses, losses_terms: dict = None):
     """Log-log plot of losses and component loss terms."""
     if losses_terms is None:
@@ -192,6 +237,31 @@ def plot_loglog_losses(losses, losses_terms: dict = None):
     ax.legend(['Total', *losses_terms.keys()])
     
     return fig, ax
+
+
+def plot_task_and_speed_profiles(states, task_inputs, epoch_idxs=None):
+    speeds = jnp.sum(states[1]**2, axis=-1)
+
+    fig, axs = plt.subplots(3, 1, height_ratios=(1, 1, 4), sharex=True, constrained_layout=True)
+
+    axs[2].set_title('speed profiles')
+    p = axs[2].plot(speeds.T)
+    c = [l.get_color() for l in p]
+    ymax = 1.5 * jnp.max(speeds)
+    if epoch_idxs is not None:
+        axs[2].vlines(epoch_idxs[:, 1], ymin=0, ymax=ymax, colors=c, linestyles='dotted', linewidths=1, label='target ON')
+        axs[2].vlines(epoch_idxs[:, 3], ymin=0, ymax=ymax, colors=c, linestyles='dashed', linewidths=1, label='fixation OFF')
+    axs[2].yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+
+    axs[0].set_title('fixation signal')
+    axs[0].set_ylim([-0.2, 1.2])
+    axs[0].plot(jnp.squeeze(task_inputs[2].T))
+
+    axs[1].set_title('target ON signal')
+    axs[1].set_ylim([-0.2, 1.2])
+    axs[1].plot(jnp.squeeze(task_inputs[3].T))
+
+    plt.legend()
 
 
 def animate_arm2(xy):
