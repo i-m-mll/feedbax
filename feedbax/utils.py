@@ -205,6 +205,13 @@ def twolink_workspace_test(workspace: Float[Array, "xy=2 bounds=2"], twolink):
         return False 
     return True
 
+
+def padded_bounds(x, p=0.2):
+    """Return the lower and upper bounds of `x` with `p` percent padding."""
+    bounds = jnp.array([jnp.min(x), jnp.max(x)])
+    padding = (p * jnp.diff(bounds)).item()
+    return bounds + jnp.array([-padding, padding])
+    
 # 
 # jax.debug.print(''.join([f"{s.shape}\t{p}\n" 
 #                             for p, s in jax.tree_util.tree_leaves_with_path(state)]))

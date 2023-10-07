@@ -70,33 +70,46 @@ def gen_epoch_lengths(
     return jrandom.randint(key, (ranges.shape[0],), *ranges.T)
 
 
-def get_target_seqs(
-    epoch_idxs: Int[Array, "n_epochs-1"], 
-    n_steps: int, 
-    target: PyTree, 
-    target_epochs: Tuple[int, ...]
+def get_masks(length, idx_bounds):
+    """Get a 1D mask of length `length` with `False` values at `idxs`."""
+    idxs = jnp.arange(length)
+    #? could also use `arange` to get ranges of idxs
+    mask_fn = lambda e: (idxs < idx_bounds[e]) + (idxs > idx_bounds[e + 1] - 1)
+    return jnp.stack([mask_fn(e) for e in range(len(idx_bounds) - 1)])
+
+def get_masked_seqs(
+    arrays: PyTree, 
+    masks: Tuple[Int[Array, "n"], ...],
+    init_fn=jnp.zeros,
 ):
-    """Convert a static target to a sequence with a target epoch.
+    """Expand arrays with an initial axis of length `n`, and fill with 
+    original array values where the intersection of `masks` is `False`.
+    
+    That is, each expanded array will be filled with the values from `array`
+    for all indices where *any* of the masks is `False`.
     
     Returns a PyTree with the same structure as `target`, but where each
     array has an additional sequence dimension, and the original `target` 
     values are assigned only during the target epoch, as bounded by
     `target_idxs`.
     """
+    
     seqs = jax.tree_map(
-        lambda x: jnp.zeros((n_steps, *x.shape)),
-        target
+        lambda x: init_fn((masks.shape[1], *x.shape)),
+        arrays
     )
     # seqs = tree_set_idx(seqs, targets, slice(*epoch_idxs[target_epoch:target_epoch + 2]))
-    idxs = jnp.arange(n_steps)
-    mask_fn = lambda e: (idxs < epoch_idxs[e]) + (idxs > epoch_idxs[e + 1] - 1)
-    mask = jnp.prod(jnp.stack([mask_fn(e) for e in target_epochs]), axis=0)
+    mask = jnp.prod(masks, axis=0)
     seqs = jax.tree_map(
-        lambda x, y: jnp.where(jnp.expand_dims(mask, jnp.arange(y.ndim) + 1), x, y[None,:]), 
+        lambda x, y: jnp.where(
+            jnp.expand_dims(mask, jnp.arange(y.ndim) + 1), 
+            x, 
+            y[None,:]
+        ), 
         seqs, 
-        target
+        arrays
     )
-    return tree_set_idx(seqs, target, -1)
+    return seqs
 
 
 def get_scalar_epoch_seq(

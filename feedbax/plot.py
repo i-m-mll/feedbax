@@ -175,7 +175,7 @@ def plot_activity_heatmap(
     return fig, ax
 
 
-def plot_activity_sample_units(activities, n_samples, cols=2, *, key):
+def plot_activity_sample_units(activities, n_samples, cols=2, cmap='tab10', *, key):
     """Plot activity of a random sample of units over time.
     
     TODO:
@@ -189,7 +189,7 @@ def plot_activity_sample_units(activities, n_samples, cols=2, *, key):
 
     xlabel = 'time step'
 
-    cmap = plt.get_cmap('tab10')
+    cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
 
     #if len(x.shape) == 3:
@@ -239,29 +239,46 @@ def plot_loglog_losses(losses, losses_terms: dict = None):
     return fig, ax
 
 
-def plot_task_and_speed_profiles(states, task_inputs, epoch_idxs=None):
-    speeds = jnp.sum(states[1]**2, axis=-1)
+def plot_task_and_speed_profiles(
+    velocity: Float[Array, "batch time xy"], 
+    task_variables=None, 
+    epoch_idxs=None,
+    cmap='tab10',
+):
+    """For visualizing learned movements versus task structure.
+    
+    For example: does the network start moving before the go cue is given?
+    """
+    speeds = jnp.sqrt(jnp.sum(velocity**2, axis=-1))
 
-    fig, axs = plt.subplots(3, 1, height_ratios=(1, 1, 4), sharex=True, constrained_layout=True)
+    task_rows = len(task_variables)
+    height_ratios = (1,) * task_rows + (task_rows,)
 
-    axs[2].set_title('speed profiles')
-    p = axs[2].plot(speeds.T)
-    c = [l.get_color() for l in p]
+    cmap = plt.get_cmap(cmap)
+    colors = [cmap(i) for i in np.linspace(0, 1, speeds.shape[0])]
+
+    fig, axs = plt.subplots(1 + task_rows, 1, height_ratios=height_ratios, 
+                            sharex=True, constrained_layout=True)
+
+    axs[-1].set_title('speed profiles')
+    for i in range(speeds.shape[0]):
+        axs[-1].plot(speeds[i].T, color=colors[i])
+
     ymax = 1.5 * jnp.max(speeds)
     if epoch_idxs is not None:
-        axs[2].vlines(epoch_idxs[:, 1], ymin=0, ymax=ymax, colors=c, linestyles='dotted', linewidths=1, label='target ON')
-        axs[2].vlines(epoch_idxs[:, 3], ymin=0, ymax=ymax, colors=c, linestyles='dashed', linewidths=1, label='fixation OFF')
-    axs[2].yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+        axs[-1].vlines(epoch_idxs[:, 1], ymin=0, ymax=ymax, colors=colors, 
+                       linestyles='dotted', linewidths=1, label='target ON')
+        axs[-1].vlines(epoch_idxs[:, 3], ymin=0, ymax=ymax, colors=colors, 
+                       linestyles='dashed', linewidths=1, label='fixation OFF')
+        plt.legend()
+    axs[-1].yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
 
-    axs[0].set_title('fixation signal')
-    axs[0].set_ylim([-0.2, 1.2])
-    axs[0].plot(jnp.squeeze(task_inputs[2].T))
-
-    axs[1].set_title('target ON signal')
-    axs[1].set_ylim([-0.2, 1.2])
-    axs[1].plot(jnp.squeeze(task_inputs[3].T))
-
-    plt.legend()
+    for i, (label, arr) in enumerate(task_variables.items()):
+        arr = jnp.squeeze(arr)
+        axs[i].set_title(label)
+        for j in range(arr.shape[0]):
+            axs[i].plot(arr[j].T, color=colors[j])
+        axs[i].set_ylim(*utils.padded_bounds(arr))
 
 
 def animate_arm2(xy):
