@@ -339,7 +339,7 @@ def loss_fn(
     task_input, 
     key,
     term_weights=dict(
-        #fixation=1.,
+        fixation=1.,
         position=1., 
         final_velocity=1., 
         control=1e-5, 
@@ -362,20 +362,17 @@ def loss_fn(
     state = system_state
 
     # add fixation signal to the discount vector to make sure fixation is penalized
-    discount = discount + jnp.squeeze(task_input[2])
+    #discount = discount + jnp.squeeze(task_input[2])
 
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((state[0] - target_state[0]) ** 2, axis=-1), axis=-1)
-    init_position_mse = jnp.sum((state[0] - init_state[0][:, None, :]) ** 2, axis=-1)
-    init_velocity_mse = jnp.sum((state[1] - init_state[1][:, None, :]) ** 2, axis=-1)
-                                
-    #fixation_state_loss = jnp.sum(jnp.squeeze(task_input[2]) * (init_position_mse + init_velocity_mse), axis=-1)
+    position_error = jnp.sum((state[0] - target_state[0]) ** 2, axis=-1)
+    
     #fixation_control_loss = jnp.sum(jnp.squeeze(task_input[2]) * jnp.sum(controls ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
-        #fixation=fixation_state_loss, 
-        position=position_loss,  
+        fixation=jnp.sum(position_error * jnp.squeeze(task_input[2]), axis=-1),
+        position=jnp.sum(position_error * discount, axis=-1),  # apply temporal discount, sum over time
         final_velocity=jnp.sum((state[1][:, -1] - target_state[1][:, -1]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(activity ** 2, axis=(-1, -2)),  # over network units and time
@@ -450,7 +447,7 @@ def train(
     train_epochs=1,
     learning_rate=3e-4,
     term_weights=dict(
-        #fixation=0.1,
+        fixation=0.1,
         position=1., 
         final_velocity=1., 
         control=1e-5, 
@@ -544,11 +541,11 @@ trained, losses, losses_terms = train(
     learning_rate=0.01,
     log_step=250,
     term_weights=dict(
-        #fixation=0.1,
+        fixation=10.,
         position=1., 
         final_velocity=1., 
         control=1e-5, 
-        hidden=1e-5
+        hidden=1e-5,
     ),
 )
 
@@ -575,12 +572,6 @@ states = jax.vmap(trained, in_axes=(0, 0, None))(
 )
 (system_states, _), controls, activities = states
 states = system_states
-
-# %%
-import importlib as il
-from feedbax import plot, utils 
-from feedbax.plot import plot_task_and_speed_profiles
-il.reload(plot)
 
 # %% [markdown]
 # Plot speeds along with a line indicating the first availability of target information.

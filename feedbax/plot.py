@@ -175,19 +175,27 @@ def plot_activity_heatmap(
     return fig, ax
 
 
-def plot_activity_sample_units(activities, n_samples, cols=2, cmap='tab10', *, key):
+def plot_activity_sample_units(
+    activities: Float[Array, "batch time unit"],
+    n_samples: int, 
+    cols: int = 2, 
+    cmap: str = 'tab10', 
+    *, 
+    key: jrandom.PRNGKeyArray
+):
     """Plot activity of a random sample of units over time.
     
     TODO:
+    - optional vlines for epoch boundaries
     - Could generalize this to sampling any kind of time series. Depends
       on if there is a standard way we shape our state arrays.
     """
+    xlabel = 'time step'
+    
     unit_idxs = jrandom.choice(
         key, jnp.arange(activities.shape[-1]), (n_samples,), replace=False
     )
     x = activities[..., unit_idxs]
-
-    xlabel = 'time step'
 
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
