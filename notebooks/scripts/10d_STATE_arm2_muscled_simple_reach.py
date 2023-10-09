@@ -32,7 +32,10 @@ get_ipython().log.handlers[0].stream = stderr_log
 get_ipython().log.setLevel(logging.INFO)
 
 # %%
+import dataclasses
+from dataclasses import dataclass
 from datetime import datetime
+import functools
 import json
 import logging
 from pathlib import Path
@@ -45,6 +48,7 @@ import jax
 import jax.lax as lax
 import jax.numpy as jnp 
 import jax.random as jrandom
+from jaxtyping import Array, Float, PyTree
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -108,11 +112,76 @@ model_dir = Path("../models/")
 # %%
 NB_PREFIX = "nb10"
 
-
 # %% [markdown]
 # Define the model components.
 
 # %%
+from abc import ABCMeta
+
+
+class _StateMeta(ABCMeta): 
+    """Based on `eqx._module._ModuleMeta`."""
+    
+    def __new__(mcs, name, bases, dict_, **kwargs):
+        # #? I think this works to add slots for dataclass fields as long as no default values supplied
+        # TODO: test performance difference
+        dict_['__slots__'] = tuple(dict_['__annotations__'].keys())
+        
+        cls = super().__new__(mcs, name, bases, dict_, **kwargs)
+        
+        cls = dataclass(eq=False, repr=False)(
+            cls
+        )
+        
+        def datacls_flatten(datacls):
+            field_names, field_values = zip(*[
+                #(field_.name, datacls.__dict__[field_.name])
+                (field_.name, getattr(datacls, field_.name))
+                for field_ in dataclasses.fields(datacls)
+            ])
+            
+            # for field_ in dataclasses.fields(datacls):
+            #     field_names.append(field_.name)
+            #     field_values.append(datacls.__dict__[field_.name])
+                              
+            children, aux = tuple(field_values), tuple(field_names)
+            return children, aux
+        
+        def datacls_unflatten(cls, aux, children):
+            field_names, field_values = aux, children
+            datacls = object.__new__(cls)
+            for name, value in zip(field_names, field_values):
+                object.__setattr__(datacls, name, value)
+            return datacls 
+        
+        jax.tree_util.register_pytree_node(
+            cls, 
+            flatten_func=datacls_flatten,
+            unflatten_func=functools.partial(datacls_unflatten, cls),
+        )
+        
+        return cls
+        
+class AbstractState(metaclass=_StateMeta):
+    """Base class for state dataclasses.
+    
+    Automatically instantiated as a dataclass with slots.
+    
+    Based on 
+    """
+    __annotations__ = dict()
+    
+    def __hash__(self):
+        return hash(tuple(jax.tree_util.tree_leaves(self)))
+
+
+
+# %%
+class MechanicsState(AbstractState):
+    system: PyTree[Array]
+    solver: PyTree 
+
+
 class Mechanics(eqx.Module):
     system: System 
     dt: float = eqx.field(static=True)
@@ -128,23 +197,34 @@ class Mechanics(eqx.Module):
             self.solver = solver
         self.dt = dt        
     
-    def __call__(self, input, state):
-        system_state, solver_state = state
+    def __call__(self, input, state: MechanicsState):
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
         system_state, _, _, solver_state, _ = self.solver.step(
-            self.term, 0, self.dt, system_state, input, solver_state, made_jump=False
+            self.term, 
+            0, 
+            self.dt, 
+            state.system, 
+            input, 
+            state.solver, 
+            made_jump=False,
         )
         # # #! I don't even return solver state, so apparently it's not important
-        state = system_state, solver_state
-        return state
+        return MechanicsState(system_state, solver_state)
     
     def init(self, system_state, input=None, key=None):
         args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return (
+        return MechanicsState(
             system_state,  # self.system.init()
             self.solver.init(self.term, 0, self.dt, system_state, args),
         )
-    
+
+
+class SimpleFeedbackState(AbstractState):
+    mechanics: MechanicsState
+    ee: PyTree[Array]
+    control: Array
+    hidden: PyTree
+
 
 class SimpleFeedback(eqx.Module):
     """Simple feedback loop with a single RNN and single mechanical system."""
@@ -158,28 +238,33 @@ class SimpleFeedback(eqx.Module):
         self.mechanics = mechanics
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
-    def __call__(self, input, state, args, key):
-        mechanics_state, _, _, hidden= state
+    def __call__(
+        self, 
+        input, 
+        state: SimpleFeedbackState, 
+        args, 
+        key
+    ) -> SimpleFeedbackState:
+        
         feedback_state = args  #! part of feedback hack
         
         key1, key2 = jrandom.split(key)
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((input, feedback_state), hidden, key1)
+        control, hidden = self.net((input, feedback_state), state.hidden, key1)
         
         # TODO: construct pytree of controls + extra inputs
         # TODO: transform extra inputs to appropriate forces
         
-        mechanics_state = self.mechanics(control, mechanics_state)        
+        mechanics_state = self.mechanics(state.control, state.mechanics)        
         
         # TODO: could be replaced with a general call to a `Mechanics` method that knows about the operational space
-        system_state = mechanics_state[0]
         twolink = self.mechanics.system.twolink
         ee_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
-            system_state[0], system_state[1]
+            mechanics_state.system[0], mechanics_state.system[1]
         ))
         
-        return mechanics_state, ee_state, control, hidden
+        return SimpleFeedbackState(mechanics_state, ee_state, control, hidden)
     
     def init(self, ee_state): 
               
@@ -195,13 +280,13 @@ class SimpleFeedback(eqx.Module):
             jnp.zeros((self.mechanics.system.control_size,)),  # per-muscle activation
         )
 
-        return (
+        return SimpleFeedbackState(
             self.mechanics.init(system_state),
             ee_state,
             jnp.zeros((self.net.out_size,)),
             self.net.init(),
         )
-    
+
 
 class Recursion(eqx.Module):
     """"""
@@ -219,8 +304,8 @@ class Recursion(eqx.Module):
         
         # # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         feedback = (
-            tree_get_idx(states[0][0][:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states[1], i - self.step.delay),  # ee state
+            tree_get_idx(states.mechanics.system[:2], i - self.step.delay),  # omit muscle activation
+            tree_get_idx(states.ee, i - self.step.delay),  # ee state
         )
         args = feedback
         
@@ -233,10 +318,11 @@ class Recursion(eqx.Module):
     def __call__(self, input, system_state, key):
         key1, key2, key3 = jrandom.split(key, 3)
         
-        #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (state[0][0][:2], state[1]))
-        
         state = self.step.init(system_state) #! maybe this should be outside
+        
+        #! `args` is vestigial. part of the feedback hack
+        args = jax.tree_map(jnp.zeros_like, (state.mechanics.system[:2], state.ee))
+        
         states = self.init(input, state, args, key2)
         
         if DEBUG: 
@@ -284,6 +370,7 @@ def get_model(
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jrandom.PRNGKey(0)
+    key1, key2 = jrandom.split(key)
     
     system = TwoLinkMuscled(
         muscle_model=TodorovLiVirtualMuscle(), 
@@ -295,7 +382,8 @@ def get_model(
     mechanics = Mechanics(system, dt)
     # target state + feedback: angular pos & vel of joints & cartesian EE 
     n_input = system.twolink.state_size * 2 + N_DIM * 2  
-    net = RNN(n_input, system.control_size, n_hidden, key=key, out_nonlinearity=out_nonlinearity)
+    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
+    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
     body = SimpleFeedback(
         net, 
         mechanics, 
@@ -338,18 +426,18 @@ def loss_fn(
     states = batched_model(target_state, init_state, key)
     
     # #! stuff after this point is largely model-specific
-    (system_states, _), ee_states, controls, activities = states
-    states = ee_states  # operational space loss
+    # (system_states, _), ee_states, controls, activities = states
+    # states = ee_states  # operational space loss
   
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
+    position_loss = jnp.sum(discount * jnp.sum((states.ee[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
         position=position_loss,  
-        final_velocity=jnp.sum((states[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
-        control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
-        hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
+        final_velocity=jnp.sum((states.ee[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
+        control=jnp.sum(states.control ** 2, axis=(-1, -2)),  # over control variables and time
+        hidden=jnp.sum(states.hidden ** 2, axis=(-1, -2)),  # over network units and time
     )
     
     # #! stuff after this point isn't model-specific
@@ -394,16 +482,16 @@ def get_evaluate_func(
     init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
     
     @eqx.filter_jit
-    def loss_fn(states, controls, activities):
+    def loss_fn(states):
         # TODO: implementing `Loss` as a class would stop this from repeating the other cost function?
-        position_loss = jnp.sum(discount * jnp.sum((states[0] - pos_endpoints[1][:, None]) ** 2, axis=-1), axis=-1)
+        position_loss = jnp.sum(discount * jnp.sum((states.ee[0] - pos_endpoints[1][:, None]) ** 2, axis=-1), axis=-1)
     
         loss_terms = dict(
             #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
             position=position_loss,  
-            final_velocity=jnp.sum((states[1][:, -1] - vel_endpoints[1]) ** 2, axis=-1).squeeze(),  # over xyz
-            control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
-            hidden=jnp.sum(activities ** 2, axis=(-1, -2)),  # over network units and time
+            final_velocity=jnp.sum((states.ee[1][:, -1] - vel_endpoints[1]) ** 2, axis=-1).squeeze(),  # over xyz
+            control=jnp.sum(states.control ** 2, axis=(-1, -2)),  # over control variables and time
+            hidden=jnp.sum(states.hidden ** 2, axis=(-1, -2)),  # over network units and time
         )
     
         # mean over batch
@@ -422,7 +510,7 @@ def get_evaluate_func(
         with catchtime() as t:
             states = batched_model(target_states, init_states, key)
         
-        loss, loss_terms = loss_fn(states[1], states[2], states[3])
+        loss, loss_terms = loss_fn(states)
         
         return loss, loss_terms, states, t.time
 
@@ -530,7 +618,7 @@ def train(
         [jnp.empty((n_batches,)) for _ in term_weights]
     ))
     
-    def get_last_checkpoint():
+    def get_last_checkpoint(model):
         try:
             with open(chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
@@ -577,7 +665,7 @@ def train(
         
         if jnp.isnan(loss):
             print(f"\nNaN loss at batch {batch}!")
-            if (checkpoint := get_last_checkpoint()) is not None:
+            if (checkpoint := get_last_checkpoint(model)) is not None:
                 last_batch, model, losses, losses_terms = checkpoint
                 print(f"Returning checkpoint from batch {last_batch}.")
             else:
@@ -594,7 +682,7 @@ def train(
             
             # tensorboard
             loss_eval, loss_eval_terms, states, t = evaluate(model, key_eval)
-            fig = make_eval_fig(states[1], states[2], workspace)
+            fig = make_eval_fig(states.ee, states.control, workspace)
             writer.add_figure('Eval/centerout', fig, batch)
             writer.add_scalar('Loss/eval', loss_eval.item(), batch)
             writer.add_scalar('Loss/eval/time', t, batch)
@@ -629,7 +717,7 @@ def train(
     loss_eval, loss_eval_terms, states, _ = evaluate(model, key_eval)
     fig_funcs = dict(
         loss=lambda: plot_loglog_losses(losses, losses_terms)[0],
-        eval=lambda: make_eval_fig(states[1], states[2], workspace),
+        eval=lambda: make_eval_fig(states.ee, states.control, workspace),
     )
     hyperparams = dict(
         workspace=workspace.tolist(),

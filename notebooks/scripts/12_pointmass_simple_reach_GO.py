@@ -541,10 +541,10 @@ trained, losses, losses_terms = train(
     learning_rate=0.01,
     log_step=250,
     term_weights=dict(
-        fixation=10.,
+        fixation=1.,
         position=1., 
         final_velocity=1., 
-        control=1e-5, 
+        control=1e-4, 
         hidden=1e-5,
     ),
 )
