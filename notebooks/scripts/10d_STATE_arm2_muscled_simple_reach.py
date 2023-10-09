@@ -124,7 +124,6 @@ class _StateMeta(ABCMeta):
     
     def __new__(mcs, name, bases, dict_, **kwargs):
         # #? I think this works to add slots for dataclass fields as long as no default values supplied
-        # TODO: test performance difference
         dict_['__slots__'] = tuple(dict_['__annotations__'].keys())
         
         cls = super().__new__(mcs, name, bases, dict_, **kwargs)
@@ -135,14 +134,9 @@ class _StateMeta(ABCMeta):
         
         def datacls_flatten(datacls):
             field_names, field_values = zip(*[
-                #(field_.name, datacls.__dict__[field_.name])
                 (field_.name, getattr(datacls, field_.name))
                 for field_ in dataclasses.fields(datacls)
             ])
-            
-            # for field_ in dataclasses.fields(datacls):
-            #     field_names.append(field_.name)
-            #     field_values.append(datacls.__dict__[field_.name])
                               
             children, aux = tuple(field_values), tuple(field_names)
             return children, aux
@@ -167,14 +161,20 @@ class AbstractState(metaclass=_StateMeta):
     
     Automatically instantiated as a dataclass with slots.
     
-    Based on 
+    Based on `eqx.Module`. I could probably use `eqx.Module` instead; 
+    I wonder if there is a performance difference for instantiations?
     """
     __annotations__ = dict()
     
     def __hash__(self):
         return hash(tuple(jax.tree_util.tree_leaves(self)))
+    
+    # def __repr(self):
+    #     return 
 
 
+
+# %%
 
 # %%
 class MechanicsState(AbstractState):
