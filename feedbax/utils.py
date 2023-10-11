@@ -4,6 +4,7 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+import dataclasses
 from itertools import zip_longest, chain
 import logging 
 import math
@@ -45,6 +46,26 @@ class catchtime:
         self.readout = f'Time: {self.time:.3f} seconds'
         if self.printout:
             print(self.readout)
+
+
+def datacls_flatten(datacls):
+    """Flatten function for dataclasses as PyTrees."""
+    field_names, field_values = zip(*[
+        (field_.name, getattr(datacls, field_.name))
+        for field_ in dataclasses.fields(datacls)
+    ])
+                        
+    children, aux = tuple(field_values), tuple(field_names)
+    return children, aux
+
+
+def datacls_unflatten(cls, aux, children):
+    """Unflatten function for dataclasses as PyTrees."""
+    field_names, field_values = aux, children
+    datacls = object.__new__(cls)
+    for name, value in zip(field_names, field_values):
+        object.__setattr__(datacls, name, value)
+    return datacls 
 
 
 def delete_contents(path: Union[str, Path]):

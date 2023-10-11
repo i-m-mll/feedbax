@@ -81,11 +81,12 @@ from feedbax.utils import (
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
 
 # %%
-DEBUG = False
+DEBUG = False   # implies DEBUG_NaN
+DEBUG_NaN = True
 
 logging.getLogger("jax").setLevel(logging.INFO)
 
-jax.config.update("jax_debug_nans", DEBUG)
+jax.config.update("jax_debug_nans", DEBUG or DEBUG_NaN)
 jax.config.update("jax_enable_x64", False)
 
 # not sure if this will work or if I need to use the env variable version
@@ -162,10 +163,10 @@ class SimpleFeedback(eqx.Module):
         mechanics_state, _, _, hidden= state
         feedback_state = args  #! part of feedback hack
         
-        key1, key2 = jrandom.split(key)
+        #key1, key2 = jrandom.split(key)
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((input, feedback_state), hidden, key1)
+        control, hidden = self.net((input, feedback_state), hidden, key)
         
         # TODO: construct pytree of controls + extra inputs
         # TODO: transform extra inputs to appropriate forces
@@ -231,19 +232,17 @@ class Recursion(eqx.Module):
         return input, states, key2
     
     def __call__(self, input, system_state, key):
-        key1, key2, key3 = jrandom.split(key, 3)
-        
-        #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (state[0][0][:2], state[1]))
+        key1, key2 = jrandom.split(key)
         
         state = self.step.init(system_state) #! maybe this should be outside
-        states = self.init(input, state, args, key2)
+        args = jax.tree_map(jnp.zeros_like, (state[0][0][:2], state[1]))
+        states = self.init(input, state, args, key1)
         
         if DEBUG: 
             # this tqdm doesn't show except on an exception, which might be useful
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                input, states, key3 = self._body_func(i, (input, states, key3))
+                input, states, key2 = self._body_func(i, (input, states, key2))
                 
             return states
                  
@@ -251,7 +250,7 @@ class Recursion(eqx.Module):
             0, 
             self.n_steps, 
             self._body_func,
-            (input, states, key3),
+            (input, states, key2),
         )
         
         return states
@@ -284,6 +283,7 @@ def get_model(
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jrandom.PRNGKey(0)
+    key1, key2 = jrandom.split(key)
     
     system = TwoLinkMuscled(
         muscle_model=TodorovLiVirtualMuscle(), 
@@ -295,7 +295,8 @@ def get_model(
     mechanics = Mechanics(system, dt)
     # target state + feedback: angular pos & vel of joints & cartesian EE 
     n_input = system.twolink.state_size * 2 + N_DIM * 2  
-    net = RNN(n_input, system.control_size, n_hidden, key=key, out_nonlinearity=out_nonlinearity)
+    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
+    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
     body = SimpleFeedback(
         net, 
         mechanics, 
@@ -333,6 +334,7 @@ def loss_fn(
     """
     model = eqx.combine(diff_model, static_model)  
     
+    # #! all members of batch share the same noise? really?
     batched_model = jax.vmap(model, in_axes=(0, 0, None)) 
     
     states = batched_model(target_state, init_state, key)
@@ -530,7 +532,7 @@ def train(
         [jnp.empty((n_batches,)) for _ in term_weights]
     ))
     
-    def get_last_checkpoint():
+    def get_last_checkpoint(model, losses, losses_terms):
         try:
             with open(chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
@@ -559,8 +561,8 @@ def train(
     # batch is 1-indexed for printing and logging purposes (batch 100 is the 100th batch)
     for batch in tqdm(range(start_batch, n_batches + 1),
                       desc='batch', initial=start_batch, total=n_batches, file=sys.stdout):
-        key, key_train, key_eval = jrandom.split(key, 3)
-        # TODO: I think `init_state` isn't a tuple here but the old concatenated version...
+        key, key2 = jrandom.split(key)
+        key_train, key_eval = jrandom.split(key2)
         init_state, target_state = get_batch(batch_size, key)
         
         loss, loss_terms, model, opt_state = train_step(
@@ -577,7 +579,7 @@ def train(
         
         if jnp.isnan(loss):
             print(f"\nNaN loss at batch {batch}!")
-            if (checkpoint := get_last_checkpoint()) is not None:
+            if (checkpoint := get_last_checkpoint(model, losses, losses_terms)) is not None:
                 last_batch, model, losses, losses_terms = checkpoint
                 print(f"Returning checkpoint from batch {last_batch}.")
             else:

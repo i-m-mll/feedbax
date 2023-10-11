@@ -32,20 +32,15 @@ get_ipython().log.handlers[0].stream = stderr_log
 get_ipython().log.setLevel(logging.INFO)
 
 # %%
-import dataclasses
-from dataclasses import dataclass
 from datetime import datetime
-import functools
 import json
 import logging
 from pathlib import Path
 import sys
 from typing import Optional
 
-import diffrax as dfx
 import equinox as eqx
 import jax
-import jax.lax as lax
 import jax.numpy as jnp 
 import jax.random as jrandom
 from jaxtyping import Array, Float, PyTree
@@ -58,19 +53,22 @@ from tqdm.auto import tqdm
 
 from feedbax.mechanics.muscle import (
     ActivationFilter,
-    LillicrapScottVirtualMuscle,
     TodorovLiVirtualMuscle, 
 )    
+from feedbax.context import SimpleFeedback
+from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.mechanics.system import System
 from feedbax.networks import RNN
+from feedbax.recursion import Recursion
+from feedbax.task import centreout_endpoints, uniform_endpoints
+
 from feedbax.plot import (
     plot_loglog_losses, 
     plot_2D_joint_positions,
     plot_states_forces_2d,
     plot_activity_heatmap,
 )
-from feedbax.task import centreout_endpoints, uniform_endpoints
+
 from feedbax.utils import (
     catchtime,
     delete_contents,
@@ -85,17 +83,19 @@ from feedbax.utils import (
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
 
 # %%
+NB_PREFIX = "nb10"
+N_DIM = 2  # everything is 2D
 DEBUG = False
+ENABLE_X64 = False
 
+os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
 logging.getLogger("jax").setLevel(logging.INFO)
 
 jax.config.update("jax_debug_nans", DEBUG)
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", ENABLE_X64)
 
 # not sure if this will work or if I need to use the env variable version
 #jax.config.update("jax_traceback_filtering", DEBUG)  
-
-N_DIM = 2
 
 # %%
 # paths
@@ -109,253 +109,9 @@ tb_logdir = Path("runs")
 
 model_dir = Path("../models/")
 
-# %%
-NB_PREFIX = "nb10"
 
 # %% [markdown]
-# Define the model components.
-
-# %%
-from abc import ABCMeta
-
-
-class _StateMeta(ABCMeta): 
-    """Based on `eqx._module._ModuleMeta`."""
-    
-    def __new__(mcs, name, bases, dict_, **kwargs):
-        # #? I think this works to add slots for dataclass fields as long as no default values supplied
-        dict_['__slots__'] = tuple(dict_['__annotations__'].keys())
-        
-        cls = super().__new__(mcs, name, bases, dict_, **kwargs)
-        
-        cls = dataclass(eq=False, repr=False)(
-            cls
-        )
-        
-        def datacls_flatten(datacls):
-            field_names, field_values = zip(*[
-                (field_.name, getattr(datacls, field_.name))
-                for field_ in dataclasses.fields(datacls)
-            ])
-                              
-            children, aux = tuple(field_values), tuple(field_names)
-            return children, aux
-        
-        def datacls_unflatten(cls, aux, children):
-            field_names, field_values = aux, children
-            datacls = object.__new__(cls)
-            for name, value in zip(field_names, field_values):
-                object.__setattr__(datacls, name, value)
-            return datacls 
-        
-        jax.tree_util.register_pytree_node(
-            cls, 
-            flatten_func=datacls_flatten,
-            unflatten_func=functools.partial(datacls_unflatten, cls),
-        )
-        
-        return cls
-        
-class AbstractState(metaclass=_StateMeta):
-    """Base class for state dataclasses.
-    
-    Automatically instantiated as a dataclass with slots.
-    
-    Based on `eqx.Module`. I could probably use `eqx.Module` instead; 
-    I wonder if there is a performance difference for instantiations?
-    """
-    __annotations__ = dict()
-    
-    def __hash__(self):
-        return hash(tuple(jax.tree_util.tree_leaves(self)))
-    
-    # def __repr(self):
-    #     return 
-
-
-
-# %%
-
-# %%
-class MechanicsState(AbstractState):
-    system: PyTree[Array]
-    solver: PyTree 
-
-
-class Mechanics(eqx.Module):
-    system: System 
-    dt: float = eqx.field(static=True)
-    term: dfx.AbstractTerm = eqx.field(static=True)
-    solver: Optional[dfx.AbstractSolver] 
-    
-    def __init__(self, system, dt, solver=None):
-        self.system = system
-        self.term = dfx.ODETerm(self.system.vector_field)
-        if solver is None:
-            self.solver = dfx.Tsit5()
-        else:
-            self.solver = solver
-        self.dt = dt        
-    
-    def __call__(self, input, state: MechanicsState):
-        # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        system_state, _, _, solver_state, _ = self.solver.step(
-            self.term, 
-            0, 
-            self.dt, 
-            state.system, 
-            input, 
-            state.solver, 
-            made_jump=False,
-        )
-        # # #! I don't even return solver state, so apparently it's not important
-        return MechanicsState(system_state, solver_state)
-    
-    def init(self, system_state, input=None, key=None):
-        args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return MechanicsState(
-            system_state,  # self.system.init()
-            self.solver.init(self.term, 0, self.dt, system_state, args),
-        )
-
-
-class SimpleFeedbackState(AbstractState):
-    mechanics: MechanicsState
-    ee: PyTree[Array]
-    control: Array
-    hidden: PyTree
-
-
-class SimpleFeedback(eqx.Module):
-    """Simple feedback loop with a single RNN and single mechanical system."""
-    net: eqx.Module  
-    mechanics: Mechanics 
-    delay: int = eqx.field(static=True)
-    #perturbation: Optional[eqx.Module]
-    
-    def __init__(self, net, mechanics, delay=0):
-        self.net = net
-        self.mechanics = mechanics
-        self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
-    
-    def __call__(
-        self, 
-        input, 
-        state: SimpleFeedbackState, 
-        args, 
-        key
-    ) -> SimpleFeedbackState:
-        
-        feedback_state = args  #! part of feedback hack
-        
-        key1, key2 = jrandom.split(key)
-        
-        # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((input, feedback_state), state.hidden, key1)
-        
-        # TODO: construct pytree of controls + extra inputs
-        # TODO: transform extra inputs to appropriate forces
-        
-        mechanics_state = self.mechanics(state.control, state.mechanics)        
-        
-        # TODO: could be replaced with a general call to a `Mechanics` method that knows about the operational space
-        twolink = self.mechanics.system.twolink
-        ee_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
-            mechanics_state.system[0], mechanics_state.system[1]
-        ))
-        
-        return SimpleFeedbackState(mechanics_state, ee_state, control, hidden)
-    
-    def init(self, ee_state): 
-              
-        # dataset gives init state in terms of effector position, but we need joint angles
-        init_joints_pos = self.mechanics.system.twolink.inverse_kinematics(
-            ee_state[0]
-        )
-        # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
-        # #! assumes zero initial velocity; TODO convert initial velocity also
-        system_state = (
-            init_joints_pos, 
-            jnp.zeros_like(init_joints_pos),  
-            jnp.zeros((self.mechanics.system.control_size,)),  # per-muscle activation
-        )
-
-        return SimpleFeedbackState(
-            self.mechanics.init(system_state),
-            ee_state,
-            jnp.zeros((self.net.out_size,)),
-            self.net.init(),
-        )
-
-
-class Recursion(eqx.Module):
-    """"""
-    step: eqx.Module 
-    n_steps: int = eqx.field(static=True)
-    
-    def __init__(self, step, n_steps):
-        self.step = step
-        self.n_steps = n_steps        
-        
-    def _body_func(self, i, x):
-        input, states, key = x
-        
-        key1, key2 = jrandom.split(key)
-        
-        # # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        feedback = (
-            tree_get_idx(states.mechanics.system[:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states.ee, i - self.step.delay),  # ee state
-        )
-        args = feedback
-        
-        state = tree_get_idx(states, i)
-        state = self.step(input, state, args, key1)
-        states = tree_set_idx(states, state, i + 1)
-        
-        return input, states, key2
-    
-    def __call__(self, input, system_state, key):
-        key1, key2, key3 = jrandom.split(key, 3)
-        
-        state = self.step.init(system_state) #! maybe this should be outside
-        
-        #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (state.mechanics.system[:2], state.ee))
-        
-        states = self.init(input, state, args, key2)
-        
-        if DEBUG: 
-            # this tqdm doesn't show except on an exception, which might be useful
-            for i in tqdm(range(self.n_steps),
-                          desc="steps"):
-                input, states, key3 = self._body_func(i, (input, states, key3))
-                
-            return states
-                 
-        _, states, _ = lax.fori_loop(
-            0, 
-            self.n_steps, 
-            self._body_func,
-            (input, states, key3),
-        )
-        
-        return states
-    
-    def init(self, input, state, args, key):
-        # 1. generate empty trajectories of states 
-        outputs = eqx.filter_eval_shape(self.step, input, state, args, key)
-        # `eqx.is_array_like` is False for jax.ShapeDtypeSty
-        scalars, array_structs = eqx.partition(outputs, eqx.is_array_like)
-        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
-        states = jax.tree_map(
-            lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            asarrays,
-        )
-        # 2. initialize the first state
-        states = tree_set_idx(states, state, 0)
-        return states
-
+# Define the model.
 
 # %%
 def get_model(
@@ -573,7 +329,9 @@ def train(
         replace=(True, True, True)
     )     
     
+    # #! this shouldn't be here; put inside the loss class I think
     position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
+    
     evaluate, make_eval_fig = get_evaluate_func(
         model, 
         workspace, 
@@ -618,7 +376,7 @@ def train(
         [jnp.empty((n_batches,)) for _ in term_weights]
     ))
     
-    def get_last_checkpoint(model):
+    def get_last_checkpoint(model, losses, losses_terms):
         try:
             with open(chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
@@ -648,7 +406,6 @@ def train(
     for batch in tqdm(range(start_batch, n_batches + 1),
                       desc='batch', initial=start_batch, total=n_batches, file=sys.stdout):
         key, key_train, key_eval = jrandom.split(key, 3)
-        # TODO: I think `init_state` isn't a tuple here but the old concatenated version...
         init_state, target_state = get_batch(batch_size, key)
         
         loss, loss_terms, model, opt_state = train_step(
@@ -665,7 +422,9 @@ def train(
         
         if jnp.isnan(loss):
             print(f"\nNaN loss at batch {batch}!")
-            if (checkpoint := get_last_checkpoint(model)) is not None:
+            # #! dunno why I need to pass arguments to `get_last_checkpoint`; didn't need to in `10_arm2_...`
+            # #? shouldn't it be referencing the variables as they were initialized before the func def?
+            if (checkpoint := get_last_checkpoint(model, losses, losses_terms)) is not None:
                 last_batch, model, losses, losses_terms = checkpoint
                 print(f"Returning checkpoint from batch {last_batch}.")
             else:
