@@ -672,6 +672,26 @@ hidden_size = 50
 feedback_delay_steps = 0
 
 # %%
+jax.tree_util.tree_structure(model) == jax.tree_util.tree_structure(model2)
+
+# %%
+
+key1 = jrandom.PRNGKey(seed)
+key2, _ = jrandom.split(key1)
+
+model = get_model(key1, dt, hidden_size, 50, 
+                  feedback_delay=feedback_delay_steps)
+model2 = get_model(key2, dt, hidden_size, 50, 
+                   feedback_delay=feedback_delay_steps)
+
+eqx.tree_equal(model, model2)
+
+#jax.tree_map(lambda x, y: jnp.all(x == y), model, model2)
+
+# %%
+model
+
+# %%
 model, losses, losses_terms = train(
     batch_size=500, 
     dt=dt, 
