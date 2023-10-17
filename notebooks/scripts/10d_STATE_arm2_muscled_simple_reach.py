@@ -283,6 +283,42 @@ def get_evaluate_func(
 
 
 # %%
+workspace = jnp.array([[-0.2, 0.2], 
+                           [0.10, 0.50]])
+
+def get_batch(batch_size, key):
+        """Segment endpoints uniformly distributed in a rectangular workspace."""
+        pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        return init_states, target_states
+
+get_batch(2, jrandom.PRNGKey(0))
+
+
+# %%
+# %timeit get_batch(500, jrandom.PRNGKey(0))
+
+# %%
+def get_sample(key):
+    pos_endpoints = jrandom.uniform(key, (2, N_DIM), minval=workspace[:, 0], maxval=workspace[:, 1])
+    vel_endpoints = jnp.zeros_like(pos_endpoints)
+    init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+    return init_states, target_states
+
+get_sample_ = jax.vmap(get_sample)
+
+def get_batch_(key):
+    keys = jrandom.split(key, 5000)
+    return jax.vmap(get_sample)(keys)
+
+get_batch_(jrandom.PRNGKey(0))
+
+
+# %%
+# %timeit get_batch_(jrandom.PRNGKey(0))
+
+# %%
 def train(
     model=None,  # start from existing model
     n_steps=100,
@@ -499,6 +535,19 @@ def train(
 # Train the model.
 
 # %%
+import feedbax.loss as fbl
+
+loss_func = fbl.CompositeLoss(
+    (
+        fbl.EffectorPositionLoss(),
+        fbl.EffectorVelocityLoss(),
+        fbl.ControlLoss(),
+        fbl.NetworkActivityLoss(),
+    ),
+    (1, 0.1, 1e-4, 0.)
+)
+
+# %%
 workspace = jnp.array([[-0.15, 0.15], 
                        [0.20, 0.50]])
 
@@ -519,7 +568,7 @@ model, losses, losses_terms = train(
     hidden_size=50, 
     seed=5566,
     learning_rate=0.05,
-    log_step=100,
+    log_step=10,
     workspace=workspace,
     term_weights=term_weights,
     weight_decay=None,

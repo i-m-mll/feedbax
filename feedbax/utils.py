@@ -120,6 +120,19 @@ def internal_grid_points(bounds, n=2):
     return points
 
 
+def filter_spec_leaves(tree, leaf_func):
+    """Get a filter spec for tree leaves matching `leaf_func`.
+    
+    `leaf_func` should take `tree` and return leaves from `tree` to filter `True`.
+    """
+    filter_spec = jax.tree_util.tree_map(lambda _: False, tree)
+    replace = [True] * len(leaf_func(tree))
+    filter_spec = eqx.tree_at(
+        leaf_func, filter_spec, replace=replace 
+    )
+    return filter_spec
+
+
 def normalize(
     tree: PyTree,
     min: float = 0, 

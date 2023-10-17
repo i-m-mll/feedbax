@@ -10,6 +10,8 @@ TODO:
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from abc import abstractmethod, abstractproperty
+from functools import cached_property
 import logging 
 from typing import Tuple
 
@@ -20,10 +22,94 @@ import jax.random as jrandom
 from jaxtyping import Array, Float, Int, PyTree
 import numpy as np
 
-from feedbax.utils import tree_set_idx
+from feedbax.utils import internal_grid_points, tree_set_idx
 
 
 logger = logging.getLogger(__name__)
+
+
+class AbstractTask(eqx.Module):
+    """Abstract base class for tasks.
+    
+    Associates a trial generator with a loss function. Also provides methods
+    for evaluating a suitable model. 
+    
+    TODO: 
+    - Should allow for both dynamically generating trials, and predefined 
+      datasets of trials. Currently training is dynamic, and evaluation is 
+      static.
+    """
+    
+    
+    @abstractmethod
+    def get_trial(self, key):
+        """
+        Returns `init_state`, `target_state`, `task_inputs`.
+        """
+        ...  
+    
+    #? maybe this should be an instance of a `Loss` class, which would help with compositionality
+    def loss_func(self, states, targets):
+        ...
+        
+    @abstractproperty    
+    def trials_eval(self):
+        ...
+
+    def eval(self, model, key):
+        init_states, target_states, task_inputs = self.trials_eval
+        
+        states = jax.vmap(model, in_axes=(0, 0, None))(
+            target_states, init_states, task_inputs, key
+        ) 
+        
+        loss, loss_terms = self.loss_func(states, target_states)
+        
+        return loss, loss_terms, states
+
+
+class RandomReaches(AbstractTask):
+    loss_func: Union[AbstractLoss, CompositeLoss]
+    workspace: Float[Array, "ndim 2"]
+    eval_n_directions: int 
+    eval_reach_length: float
+    eval_grid_n: int  # e.g. 2 -> 2x2 grid of center-out reach sets
+    
+    N_DIM = 2
+    
+    def get_trial(self, key: jrandom.PRNGKeyArray):
+        """Random reach endpoints in a 2D rectangular workspace."""
+        pos_endpoints = jrandom.uniform(
+            key, 
+            (2, self.N_DIM), 
+            minval=self.workspace[:, 0], 
+            maxval=self.workspace[:, 1]
+        )
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
+        return init_state, target_state, None
+        
+    @cached_property
+    def trials_eval(self):
+        centers = internal_grid_points(self.workspace, self.eval_grid_n)
+        pos_endpoints = jnp.concatenate([
+            centreout_endpoints(
+                jnp.array(center), 
+                self.eval_n_directions, 
+                0, 
+                self.eval_reach_length,
+            ) for center in centers
+        ], axis=1)
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        return init_states, target_states, None
+    
+    def __call__(self, model, key):
+        ...        
+
+
+class RandomReachesGO(AbstractTask):
+    ...
 
 
 def uniform_endpoints(

@@ -51,6 +51,7 @@ from feedbax.utils import (
     tree_set_idx, 
     tree_sum_squares, 
     tree_get_idx,
+    filter_spec_leaves,
 )
 
 # %% [markdown]
@@ -473,14 +474,12 @@ def train(
                       feedback_delay=feedback_delay_steps)
     
     # only train the RNN layer (input weights & hidden weights and biases)
-    filter_spec = jax.tree_util.tree_map(lambda _: False, model)
-    filter_spec = eqx.tree_at(
+    filter_spec = filter_spec_leaves(
+        model, 
         lambda tree: (tree.step.net.cell.weight_hh, 
                       tree.step.net.cell.weight_ih, 
                       tree.step.net.cell.bias),
-        filter_spec,
-        replace=(True, True, True)
-    )     
+    )
     
     optim = optax.adam(learning_rate)
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
