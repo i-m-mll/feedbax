@@ -45,7 +45,7 @@ class TwoLinkMuscled(eqx.Module):
     activator: eqx.Module
     twolink: TwoLink
     moment_arms: Float[Array, "links=2 muscles"] = eqx.field(
-        static=True, converter=jnp.asarray)
+        static=True)
     theta0: Float[Array, "links=2 muscles"] = eqx.field(static=True)
     l0: Float[Array, "muscles"] = eqx.field(static=True)
     f0: Float[Array, "muscles"] = eqx.field(static=True)
@@ -55,8 +55,8 @@ class TwoLinkMuscled(eqx.Module):
         muscle_model, 
         activator,
         twolink=TwoLink(),
-        moment_arms=((2.0, -2.0, 0.0, 0.0, 1.50, -2.0),  # [cm]
-                     (0.0, 0.0, 2.0, -2.0, 2.0, -1.50)),
+        moment_arms=jnp.array(((2.0, -2.0, 0.0, 0.0, 1.50, -2.0),  # [cm]
+                               (0.0, 0.0, 2.0, -2.0, 2.0, -1.50))),
         theta0=2 * jnp.pi * jnp.array(((15.0, 4.88, 0.0, 0.0, 4.5, 2.12), # [rad]
                                        (0.0, 0.0, 80.86, 109.32, 92.96, 91.52))) / 360.,  
         l0=jnp.array((7.32, 3.26, 6.4, 4.26, 5.95, 4.04)),  # [cm]

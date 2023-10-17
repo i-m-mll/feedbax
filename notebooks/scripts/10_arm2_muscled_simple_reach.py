@@ -561,8 +561,7 @@ def train(
     # batch is 1-indexed for printing and logging purposes (batch 100 is the 100th batch)
     for batch in tqdm(range(start_batch, n_batches + 1),
                       desc='batch', initial=start_batch, total=n_batches, file=sys.stdout):
-        key, key2 = jrandom.split(key)
-        key_train, key_eval = jrandom.split(key2)
+        key, key_train, key_eval = jrandom.split(key, 3)
         init_state, target_state = get_batch(batch_size, key)
         
         loss, loss_terms, model, opt_state = train_step(
@@ -666,7 +665,7 @@ term_weights = dict(
     hidden=0., 
 )
 
-dt = 0.05
+dt = 0.025
 n_steps = 50
 hidden_size = 50
 feedback_delay_steps = 0
@@ -676,12 +675,12 @@ model, losses, losses_terms = train(
     batch_size=500, 
     dt=dt, 
     feedback_delay_steps=feedback_delay_steps,
-    n_batches=500, 
+    n_batches=5000, 
     n_steps=n_steps, 
     hidden_size=hidden_size, 
     seed=seed,
-    learning_rate=0.05,
-    log_step=100,
+    learning_rate=0.025,
+    log_step=250,
     workspace=workspace,
     term_weights=term_weights,
     weight_decay=None,
