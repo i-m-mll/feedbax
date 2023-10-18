@@ -49,10 +49,6 @@ class AbstractTask(eqx.Module):
         Returns `init_state`, `target_state`, `task_inputs`.
         """
         ...  
-    
-    #? maybe this should be an instance of a `Loss` class, which would help with compositionality
-    def loss_func(self, states, targets):
-        ...
         
     @abstractproperty    
     def trials_eval(self):

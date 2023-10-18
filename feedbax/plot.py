@@ -1,5 +1,8 @@
 """Plotting utilities.
 
+TODO:
+- Some vmap-like option for plotting batches of trials on a single axis?
+
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
@@ -310,3 +313,26 @@ def animate_arm2(xy):
     anim = animation.FuncAnimation(fig, animate, frames=len(xy),
                                 interval=1, blit=True)
     return anim
+
+
+def animate_3D_rotate(
+        fig, 
+        ax, 
+        azim_range=(0, 360), 
+        elev=10.,
+        interval=20,
+):
+    """Rotate a 3D plot by `degrees` about the z axis."""
+    def animate(i):
+        ax.view_init(elev=elev, azim=i)
+        return fig,
+
+    frames = azim_range[1] - azim_range[0]
+
+    return animation.FuncAnimation(
+        fig, 
+        animate, 
+        frames=frames,
+        interval=interval,
+        blit=True,
+    )

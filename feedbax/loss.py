@@ -2,8 +2,7 @@
 
 TODO:
 - Protocols for all the different `state` types/fields
-- Interface of `CompositeLoss` should match `AbstractLoss`
-  i.e. `AbstractLoss` concretes' `__call__` should also return a single-entry dict `loss_terms`
+- L2 by default, but should allow for other norms
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -82,7 +81,7 @@ class EffectorPositionLoss(AbstractLoss):
     
     TODO: do we handle the temporal discount here? or return the sequence of losses
     """
-    labels: Tuple[str] = ("ee_position",)
+    labels: Tuple[str, ...] = ("ee_position",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -101,7 +100,7 @@ class EffectorVelocityLoss(AbstractLoss):
     
     TODO: how do we handle calculating oss for a single timestep only?
     """
-    labels: Tuple[str] = ("ee_final_velocity",)
+    labels: Tuple[str, ...] = ("ee_final_velocity",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -117,7 +116,7 @@ class EffectorVelocityLoss(AbstractLoss):
 
 class ControlLoss(AbstractLoss):
     """"""
-    labels: Tuple[str] = ("control",)
+    labels: Tuple[str, ...] = ("control",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -130,7 +129,7 @@ class ControlLoss(AbstractLoss):
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    labels: Tuple[str] = ("activity",)
+    labels: Tuple[str, ...] = ("activity",)
 
     def __call__(
         self, states: PyTree, targets: PyTree

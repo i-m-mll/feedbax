@@ -14,6 +14,9 @@
 # ---
 
 # %%
+from datetime import datetime 
+import json
+from pathlib import Path 
 import sys
 from typing import Optional
 
@@ -33,6 +36,7 @@ from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.system import System
 from feedbax.networks import RNN, RNNCell
 from feedbax.plot import (
+    animate_3D_rotate,
     plot_activity_heatmap,
     plot_activity_sample_units,
     plot_loglog_losses, 
@@ -58,7 +62,18 @@ from feedbax.utils import (
 # Simple feedback model with a single-layer RNN controlling a point mass to reach from a starting position to a target position. The network should hold at the start position until a hold signal is switched off.
 
 # %%
+# %matplotlib widget
+
+# %%
+NB_PREFIX = '12_GO'
+
 DEBUG = False
+
+# gets set to True after a training run
+# to prevent accidentally loading a model over the trained one
+trained = False  
+
+model_dir = Path('../models')
 
 # %%
 N_DIM = 2
@@ -316,8 +331,19 @@ class Recursion(eqx.Module):
 
 
 # %%
-def get_model(dt, mass, n_hidden, tau_leak, n_steps, key, feedback_delay=0):
-    
+def get_model(
+    dt=0.1, 
+    mass=1., 
+    n_hidden=50, 
+    tau_leak=5, 
+    n_steps=100, 
+    key=None, 
+    feedback_delay=0
+):
+    if key is None:
+        # in case we just want a skeleton model, e.g. for deserializing
+        key = jrandom.PRNGKey(0)  
+        
     keyc, keyn = jrandom.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
@@ -527,7 +553,8 @@ task_epoch_len_ranges = ((5, 15),   # start
                          (10, 20),  # stim
                          (10, 25))  # hold
 
-trained, losses, losses_terms = train(
+# %%
+model, losses, losses_terms = train(
     batch_size=500, 
     dt=0.1, 
     tau_leak=5,
@@ -548,7 +575,59 @@ trained, losses, losses_terms = train(
     ),
 )
 
+trained = True 
+
 plot_loglog_losses(losses, losses_terms);
+
+
+# %%
+def save_model(
+        model, 
+        hyperparams: Optional[dict] = None, 
+        fig_funcs: Optional[dict]=None
+):
+    
+    timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
+    name = f"model_{timestr}_{NB_PREFIX}"
+    eqx.tree_serialise_leaves(model_dir / f'{name}.eqx', model)
+    if hyperparams is not None:
+        with open(model_dir / f'{name}.json', 'w') as f:
+            hyperparams_str = json.dumps(hyperparams, indent=4)
+            f.write(hyperparams_str)
+    if fig_funcs is not None:
+        for label, fig_func in fig_funcs.items():
+            fig = fig_func()
+            fig.savefig(model_dir / f'{name}_{label}.png')
+            plt.close(fig)
+
+save_model(model)
+
+# %%
+model_ = get_model() 
+model__ = eqx.tree_deserialise_leaves(
+    model_dir / 'model_20231018-150134_12_GO.eqx', 
+    model_
+)
+
+# %%
+model.step.delay
+
+# %%
+jax.tree_map(
+    lambda x, y: None,
+    model, 
+    model__,
+)
+
+# %% [markdown]
+# Optional: load pretrained model (if restarting notebook)
+
+# %%
+model_path = "../models/model_20231018-131339_12_GO.eqx"
+
+if not trained: 
+    model = get_model()
+    model = eqx.tree_deserialise_leaves(model_path, model)
 
 # %% [markdown]
 # Evaluate on a centre-out task
@@ -566,7 +645,7 @@ keys = jrandom.split(key, n_directions)
 task_inputs, target_states, epoch_idxs = jax.vmap(get_sequences, in_axes=(0, None, None, 0, 0))(
     keys, n_steps, task_epoch_len_ranges, init_states, target_states
 )
-states = jax.vmap(trained, in_axes=(0, 0, None))(
+states = jax.vmap(model, in_axes=(0, 0, None))(
     task_inputs, init_states, key
 )
 (system_states, _), controls, activities = states
@@ -605,4 +684,106 @@ key = jrandom.PRNGKey(seed)
 
 plot_activity_sample_units(activities, n_samples, key=key)
 
+
+# %% [markdown]
+# ## PCA
+
 # %%
+def pca(x):
+    X = x.reshape(-1, x.shape[-1])
+    X -= X.mean(axis=0)
+    U, S, Vt = jnp.linalg.svd(X, full_matrices=False)
+    L = S * 2 / (X.shape[0] - 1)
+    PCs = (U @ jnp.diag(S)).reshape(*x.shape)
+    return L, Vt, PCs 
+
+
+# %%
+L, Vt, PCs = pca(activities)
+
+# %%
+ts = slice(5, 17)
+
+cmap = 'tab10'
+cmap = plt.get_cmap(cmap)
+colors = [cmap(i) for i in np.linspace(0, 1, PCs.shape[0])]
+
+for i in range(PCs.shape[0]):
+    # TODO: time ranges based on epoch indices
+    plt.plot(PCs[i, ts, 0], PCs[i, ts, 1], color=colors[i])
+
+
+# %%
+epoch_idxs
+
+# %%
+from itertools import zip_longest
+from typing import Tuple
+from jaxtyping import Array, Float, Int
+
+pc_idxs = (0, 3, 4)
+
+def plot_3D_paths(
+    paths: Float[Array, "batch steps 3"], 
+    epoch_start_idxs: Int[Array, "batch epochs"],  
+    epoch_linestyles: Tuple[str, ...]  # epochs
+):
+
+    if not np.max(epoch_idxs) < paths.shape[1]:
+        raise IndexError("epoch indices out of bounds")
+    if not epoch_start_idxs.shape[1] == len(epoch_linestyles):
+        raise ValueError("TODO")
+
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(projection='3d')
+
+    for i in range(paths.shape[0]):
+        for idxs, ls in zip(
+            zip_longest(
+                epoch_start_idxs[i], 
+                epoch_start_idxs[i, 1:] + 1, 
+                fillvalue=None
+            ), 
+            epoch_linestyles
+        ):
+            ts = slice(*idxs)
+            ax.plot(*paths[i, ts, :].T, color=colors[i], lw=2, linestyle=ls)
+
+    return fig, ax 
+    
+fig, ax = plot_3D_paths(
+    PCs[:, :, pc_idxs], 
+    epoch_idxs, 
+    epoch_linestyles=('-', ':', '--', '-')
+)
+
+ax.set_xlabel(f'PC {pc_idxs[0]}')
+ax.set_ylabel(f'PC {pc_idxs[1]}')
+ax.set_zlabel(f'PC {pc_idxs[2]}')
+
+# %%
+PCs[:, :, pc_idxs].T.shape
+
+
+# %%
+def tt():
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(projection='3d')
+    for i in range(PCs.shape[0]):
+        for idxs, ls in zip(
+            zip_longest(epoch_idxs[i], epoch_idxs[i, 1:] + 1, fillvalue=None), 
+            epoch_linestyles
+        ):
+            ts = slice(*idxs)
+            ax.plot(PCs[i, ts, pc_idxs[0]], PCs[i, ts, pc_idxs[1]], PCs[i, ts, pc_idxs[2]], 
+                    color=colors[i], lw=2, linestyle=ls)
+    return fig, ax 
+
+fig, ax = tt()
+anim = animate_3D_rotate(fig, ax, azim_range=(0, 36))
+#anim.to_html5_video()
+anim.save('test2.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+
+
+# %%
+ax.azim

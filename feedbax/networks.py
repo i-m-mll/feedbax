@@ -186,7 +186,7 @@ class RNN(eqx.Module):
         self._add_noise  
 
     def __call__(self, input, state, key=None):
-        state = self.init()
+        #state = self.init()
         # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
         input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)
