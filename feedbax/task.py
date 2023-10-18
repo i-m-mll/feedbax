@@ -16,12 +16,14 @@ import logging
 from typing import Tuple
 
 import equinox as eqx
+from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array, Float, Int, PyTree
 import numpy as np
 
+from feedbax.loss import AbstractLoss
 from feedbax.utils import internal_grid_points, tree_set_idx
 
 
@@ -39,7 +41,7 @@ class AbstractTask(eqx.Module):
       datasets of trials. Currently training is dynamic, and evaluation is 
       static.
     """
-    
+    loss_func: AbstractVar[AbstractLoss]
     
     @abstractmethod
     def get_trial(self, key):
@@ -69,7 +71,7 @@ class AbstractTask(eqx.Module):
 
 
 class RandomReaches(AbstractTask):
-    loss_func: Union[AbstractLoss, CompositeLoss]
+    loss_func: AbstractLoss
     workspace: Float[Array, "ndim 2"]
     eval_n_directions: int 
     eval_reach_length: float

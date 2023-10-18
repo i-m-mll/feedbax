@@ -536,7 +536,23 @@ def train(
 
 # %%
 import feedbax.loss as fbl
+from feedbax.task import RandomReaches
+from feedbax.trainer import Trainer
 
+key = jrandom.PRNGKey(0)
+
+model = get_model(
+    key, 
+    dt=0.05,
+    n_hidden=50,
+    n_steps=50,
+    feedback_delay=0,
+    tau=0.01,
+    out_nonlinearity=jax.nn.sigmoid,
+)
+
+# #! these assume a particular PyTree structure to the states returned by the model
+# #! which is why we simply instantiate them 
 loss_func = fbl.CompositeLoss(
     (
         fbl.EffectorPositionLoss(),
@@ -545,6 +561,20 @@ loss_func = fbl.CompositeLoss(
         fbl.NetworkActivityLoss(),
     ),
     (1, 0.1, 1e-4, 0.)
+)
+
+task = RandomReaches(
+    loss_func=loss_func,
+    workspace=workspace, 
+    eval_grid_n=2,
+    eval_n_directions=8,
+    eval_reach_length=0.05,
+)
+
+trainer = Trainer(
+    task=task, 
+    model=model,
+    optimizer=optax.adam(learning_rate=0.05),
 )
 
 # %%

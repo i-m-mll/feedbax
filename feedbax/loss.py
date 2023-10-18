@@ -14,7 +14,7 @@ import logging
 from typing import ClassVar, Dict, Optional, Tuple
 
 import equinox as eqx
-from equinox import AbstractClassVar
+from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
 from jaxtyping import PyTree
@@ -32,7 +32,7 @@ class AbstractLoss(eqx.Module):
     - Should probably allow the user to override with their own label.
       Actually, 
     """
-    label: AbstractClassVar[str]
+    labels: AbstractVar[Tuple[str, ...]]
     
     @abstractmethod
     def __call__(
@@ -44,12 +44,15 @@ class AbstractLoss(eqx.Module):
 class CompositeLoss(AbstractLoss):
     terms: Tuple[AbstractLoss, ...]
     weights: Optional[Tuple[float, ...]]
+    labels: Tuple[str, ...]
     
     def __init__(self, terms, weights):
         assert len(terms) == len(weights)
-        labels = [term.LABEL for term in terms]
-        self.terms = dict(zip(labels, terms))
-        self.weights = dict(zip(labels, weights))
+        # TODO: flatten 
+        self.labels = [term.labels for term in terms]
+        self.terms = dict(zip(self.labels, terms))
+        self.weights = dict(zip(self.labels, weights))
+        
         
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -79,7 +82,7 @@ class EffectorPositionLoss(AbstractLoss):
     
     TODO: do we handle the temporal discount here? or return the sequence of losses
     """
-    LABEL: ClassVar[str] = "ee_position"
+    labels: Tuple[str] = ("ee_position",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -90,7 +93,7 @@ class EffectorPositionLoss(AbstractLoss):
             axis=-1
         )
         
-        return loss, {self.LABEL: loss}
+        return loss, {self.labels[0]: loss}
 
 
 class EffectorVelocityLoss(AbstractLoss):
@@ -98,7 +101,7 @@ class EffectorVelocityLoss(AbstractLoss):
     
     TODO: how do we handle calculating oss for a single timestep only?
     """
-    LABEL: ClassVar[str] = "ee_final_velocity"
+    labels: Tuple[str] = ("ee_final_velocity",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -109,12 +112,12 @@ class EffectorVelocityLoss(AbstractLoss):
             axis=-1
         )
         
-        return loss, {self.LABEL: loss}
+        return loss, {self.labels[0]: loss}
 
 
 class ControlLoss(AbstractLoss):
     """"""
-    LABEL: ClassVar[str] = "control"
+    labels: Tuple[str] = ("control",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -122,12 +125,12 @@ class ControlLoss(AbstractLoss):
         
         loss = jnp.sum(states.control ** 2, axis=-1)
         
-        return loss, {self.LABEL: loss}
+        return loss, {self.labels[0]: loss}
 
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    LABEL: ClassVar[str] = "activity"
+    labels: Tuple[str] = ("activity",)
 
     def __call__(
         self, states: PyTree, targets: PyTree
@@ -135,7 +138,7 @@ class NetworkActivityLoss(AbstractLoss):
         
         loss = jnp.sum(states.hidden ** 2, axis=-1)
         
-        return loss, {self.LABEL: loss}
+        return loss, {self.labels[0]: loss}
 
         
     
