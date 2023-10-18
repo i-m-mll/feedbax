@@ -7,13 +7,14 @@ TODO:
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from itertools import zip_longest
 import logging 
-from typing import Optional
+from typing import Optional, Tuple
 import jax
 
 import jax.numpy as jnp
 import jax.random as jrandom
-from jaxtyping import Float, Array
+from jaxtyping import Float, Array, Int
 import matplotlib as mpl
 from matplotlib import animation
 from matplotlib.ticker import FormatStrFormatter
@@ -92,6 +93,44 @@ def plot_2D_joint_positions(
     ax.margins(0.1, 0.2)
     ax.set_aspect('equal')
     return ax
+
+
+def plot_3D_paths(
+    paths: Float[Array, "batch steps 3"], 
+    epoch_start_idxs: Int[Array, "batch epochs"],  
+    epoch_linestyles: Tuple[str, ...],  # epochs
+    cmap: str = 'tab10',
+):
+    """Plot a set/batch of 3D trajectories over time.
+    
+    Linestyle can be specified for each epoch, where the starting
+    indices for the epochs are specified separately for each trajectory.
+    """
+    if not np.max(epoch_start_idxs) < paths.shape[1]:
+        # TODO: what if it's one of those cases where the delay period goes until trial end?
+        raise IndexError("epoch indices out of bounds")
+    if not epoch_start_idxs.shape[1] == len(epoch_linestyles):
+        raise ValueError("TODO")
+
+    cmap = plt.get_cmap(cmap)
+    colors = [cmap(i) for i in np.linspace(0, 1, paths.shape[0])]
+
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(projection='3d')
+
+    for i in range(paths.shape[0]):
+        for idxs, ls in zip(
+            zip_longest(
+                epoch_start_idxs[i], 
+                epoch_start_idxs[i, 1:] + 1, 
+                fillvalue=None
+            ), 
+            epoch_linestyles
+        ):
+            ts = slice(*idxs)
+            ax.plot(*paths[i, ts, :].T, color=colors[i], lw=2, linestyle=ls)
+
+    return fig, ax 
 
 
 def plot_states_forces_2d(
@@ -292,8 +331,16 @@ def plot_task_and_speed_profiles(
         axs[i].set_ylim(*utils.padded_bounds(arr))
 
 
-def animate_arm2(xy):
-    """xy: (n_seq, n_links, n_dim)"""
+def animate_arm2(
+    xy: Float[Array, "time joints xy"],
+    interval: int = 1,
+):
+    """Animated movement of a multi-segment arm.
+    
+    TODO:
+    - n-link arm
+    - don't hardcode the axes limits
+    """
     fig = plt.figure()
     ax = fig.add_subplot(111)
 
@@ -310,18 +357,23 @@ def animate_arm2(xy):
         traj_line.set_data(*xy[:i+1, :, 2].T)
         return fig,
 
-    anim = animation.FuncAnimation(fig, animate, frames=len(xy),
-                                interval=1, blit=True)
-    return anim
+    return animation.FuncAnimation(
+        fig, 
+        animate, 
+        frames=len(xy),
+        interval=interval, 
+        blit=True
+    )
+    
 
 
 def animate_3D_rotate(
         fig, 
         ax, 
-        azim_range=(0, 360), 
-        elev=10.,
-        interval=20,
-):
+        azim_range: Tuple[int, int] = (0, 360), 
+        elev: float = 10.,
+        interval: int = 20,
+) -> animation.FuncAnimation:
     """Rotate a 3D plot by `degrees` about the z axis."""
     def animate(i):
         ax.view_init(elev=elev, azim=i)
@@ -336,3 +388,16 @@ def animate_3D_rotate(
         interval=interval,
         blit=True,
     )
+
+
+def add_ax_labels(ax, labels):
+    """Convenience function for when we have an iterable of axis labels, so we 
+    don't have to call `set_xlabel`, `set_ylabel`, and maybe `set_zlabel`.
+    
+    Since `zip` is used, this will silently ignore any extra `labels`.
+    """
+    keys = ('xlabel', 'ylabel')
+    if ax.name == '3d':
+        keys = keys + ('zlabel',)
+    ax.update(dict(zip(keys, labels)))
+    return ax

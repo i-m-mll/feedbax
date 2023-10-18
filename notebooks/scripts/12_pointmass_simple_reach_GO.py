@@ -37,6 +37,7 @@ from feedbax.mechanics.system import System
 from feedbax.networks import RNN, RNNCell
 from feedbax.plot import (
     animate_3D_rotate,
+    plot_3D_paths,
     plot_activity_heatmap,
     plot_activity_sample_units,
     plot_loglog_losses, 
@@ -559,7 +560,7 @@ model, losses, losses_terms = train(
     dt=0.1, 
     tau_leak=5,
     feedback_delay_steps=5,
-    n_batches=10_000, 
+    n_batches=1_000, 
     n_steps=n_steps,
     task_epoch_len_ranges=task_epoch_len_ranges, 
     hidden_size=50, 
@@ -601,23 +602,6 @@ def save_model(
             plt.close(fig)
 
 save_model(model)
-
-# %%
-model_ = get_model() 
-model__ = eqx.tree_deserialise_leaves(
-    model_dir / 'model_20231018-150134_12_GO.eqx', 
-    model_
-)
-
-# %%
-model.step.delay
-
-# %%
-jax.tree_map(
-    lambda x, y: None,
-    model, 
-    model__,
-)
 
 # %% [markdown]
 # Optional: load pretrained model (if restarting notebook)
@@ -701,89 +685,33 @@ def pca(x):
 # %%
 L, Vt, PCs = pca(activities)
 
-# %%
-ts = slice(5, 17)
-
-cmap = 'tab10'
-cmap = plt.get_cmap(cmap)
-colors = [cmap(i) for i in np.linspace(0, 1, PCs.shape[0])]
-
-for i in range(PCs.shape[0]):
-    # TODO: time ranges based on epoch indices
-    plt.plot(PCs[i, ts, 0], PCs[i, ts, 1], color=colors[i])
-
+# %% [markdown]
+# Plot three of the PCs in 3D.
 
 # %%
-epoch_idxs
+ax = plt.figure().add_subplot()
+ax.plot(1,1)
+ax.update({'zlabel': "SMEE"})
 
 # %%
-from itertools import zip_longest
-from typing import Tuple
-from jaxtyping import Array, Float, Int
-
 pc_idxs = (0, 3, 4)
 
-def plot_3D_paths(
-    paths: Float[Array, "batch steps 3"], 
-    epoch_start_idxs: Int[Array, "batch epochs"],  
-    epoch_linestyles: Tuple[str, ...]  # epochs
-):
-
-    if not np.max(epoch_idxs) < paths.shape[1]:
-        raise IndexError("epoch indices out of bounds")
-    if not epoch_start_idxs.shape[1] == len(epoch_linestyles):
-        raise ValueError("TODO")
-
-    fig = plt.figure(figsize=(8,8))
-    ax = fig.add_subplot(projection='3d')
-
-    for i in range(paths.shape[0]):
-        for idxs, ls in zip(
-            zip_longest(
-                epoch_start_idxs[i], 
-                epoch_start_idxs[i, 1:] + 1, 
-                fillvalue=None
-            ), 
-            epoch_linestyles
-        ):
-            ts = slice(*idxs)
-            ax.plot(*paths[i, ts, :].T, color=colors[i], lw=2, linestyle=ls)
-
-    return fig, ax 
-    
 fig, ax = plot_3D_paths(
     PCs[:, :, pc_idxs], 
     epoch_idxs, 
     epoch_linestyles=('-', ':', '--', '-')
 )
 
-ax.set_xlabel(f'PC {pc_idxs[0]}')
-ax.set_ylabel(f'PC {pc_idxs[1]}')
-ax.set_zlabel(f'PC {pc_idxs[2]}')
+ax.update(dict(zip(
+    ('xlabel', 'ylabel', 'zlabel'), 
+    [f'PC {i}' for i in pc_idxs]
+)))
+
+# %% [markdown]
+# Save an animation of the plot, rotating.
 
 # %%
-PCs[:, :, pc_idxs].T.shape
-
-
-# %%
-def tt():
-    fig = plt.figure(figsize=(8,8))
-    ax = fig.add_subplot(projection='3d')
-    for i in range(PCs.shape[0]):
-        for idxs, ls in zip(
-            zip_longest(epoch_idxs[i], epoch_idxs[i, 1:] + 1, fillvalue=None), 
-            epoch_linestyles
-        ):
-            ts = slice(*idxs)
-            ax.plot(PCs[i, ts, pc_idxs[0]], PCs[i, ts, pc_idxs[1]], PCs[i, ts, pc_idxs[2]], 
-                    color=colors[i], lw=2, linestyle=ls)
-    return fig, ax 
-
-fig, ax = tt()
-anim = animate_3D_rotate(fig, ax, azim_range=(0, 36))
+anim = animate_3D_rotate(fig, ax, azim_range=(0, 360))
 #anim.to_html5_video()
-anim.save('test2.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+anim.save('test.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
 
-
-# %%
-ax.azim
