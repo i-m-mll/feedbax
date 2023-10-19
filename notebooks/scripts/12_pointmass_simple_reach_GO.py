@@ -37,6 +37,7 @@ from feedbax.mechanics.system import System
 from feedbax.networks import RNN, RNNCell
 from feedbax.plot import (
     animate_3D_rotate,
+    plot_planes,
     plot_3D_paths,
     plot_activity_heatmap,
     plot_activity_sample_units,
@@ -689,11 +690,6 @@ L, Vt, PCs = pca(activities)
 # Plot three of the PCs in 3D.
 
 # %%
-ax = plt.figure().add_subplot()
-ax.plot(1,1)
-ax.update({'zlabel': "SMEE"})
-
-# %%
 pc_idxs = (0, 3, 4)
 
 fig, ax = plot_3D_paths(
@@ -715,3 +711,16 @@ anim = animate_3D_rotate(fig, ax, azim_range=(0, 360))
 #anim.to_html5_video()
 anim.save('test.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
 
+
+# %% [markdown]
+# Plot multiple PC planes in 2D
+
+# %%
+plot_planes(
+    PCs[..., :6],
+    epoch_start_idxs=epoch_idxs,
+    epoch_linestyles=('-', ':', '--', '-'),    
+    lw=2,
+)
+
+# %%

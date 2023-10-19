@@ -109,6 +109,6 @@ L_jax / L_svd[::-1]
 # Not sure about the eigenvectors though... I think SVD returns the transpose (Hermitian, but it's not complex-valued so it's just the transpose) of the right singular matrix, but this doesn't seem right. If each column is a vector that points in the same direction as the same column from the other matrix, then dividing the matrices should at least lead to a constant value along each column. But I'd assume the vectors would be normal, and thus the matrix should be approximately ones. But nope... 
 
 # %%
-Vt_svd.T / Vt_jax
+Vt_svd / Vt_jax
 
 # %%

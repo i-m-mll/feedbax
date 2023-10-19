@@ -7,11 +7,12 @@ TODO:
 :license: Apache 2.0, see LICENSE for details.
 """
 
+import io
 from itertools import zip_longest
 import logging 
 from typing import Optional, Tuple
-import jax
 
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Float, Array, Int
@@ -131,6 +132,53 @@ def plot_3D_paths(
             ax.plot(*paths[i, ts, :].T, color=colors[i], lw=2, linestyle=ls)
 
     return fig, ax 
+
+
+def plot_planes(
+    x, 
+    epoch_start_idxs,  
+    epoch_linestyles,  # epochs
+    # marker='-o', 
+    lw=0.5, 
+    ms=1, 
+    cmap='tab10',
+    init_color='black',
+    label="PC",
+):
+    """Subplot for every consecutive pair of features (columns).
+    
+    TODO:
+    - Subplot columns (with argument)
+    """
+    
+    cmap = plt.get_cmap(cmap)
+    colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
+    
+    n_planes = x.shape[-1] // 2
+    fig, axs = plt.subplots(1, n_planes, figsize=(12, 5)) 
+    
+    for i, p in enumerate(range(0, x.shape[-1], 2)):
+        for j in range(x.shape[0]):
+            for k, (idxs, ls) in enumerate(zip(
+                zip_longest(
+                    epoch_start_idxs[j], 
+                    epoch_start_idxs[j, 1:], 
+                    fillvalue=None
+                ), 
+                epoch_linestyles
+            )):                   
+                if init_color is not None and k == 0:
+                    color = init_color
+                else:
+                    color = colors[j]
+                ts = slice(*idxs)
+                axs[i].plot(x[j, ts, p].T, x[j, ts, p+1].T, 
+                            lw=lw, ms=ms, linestyle=ls, color=color)
+                axs[i].set_xlabel(f"{label:}{p:}")
+                axs[i].set_ylabel(f"{label:}{p+1:}")
+
+    plt.tight_layout()
+    return axs,
 
 
 def plot_states_forces_2d(
@@ -390,6 +438,15 @@ def animate_3D_rotate(
     )
 
 
+def plot_complex(x, fig=None, marker='o'):
+    """Plot complex numbers as points in the complex plane."""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    ax.plot(x.real, x.imag, marker)
+    ax.axhline(c='grey')
+    ax.axvline(c='grey')
+    return fig, ax
+
+
 def add_ax_labels(ax, labels):
     """Convenience function for when we have an iterable of axis labels, so we 
     don't have to call `set_xlabel`, `set_ylabel`, and maybe `set_zlabel`.
@@ -401,3 +458,57 @@ def add_ax_labels(ax, labels):
         keys = keys + ('zlabel',)
     ax.update(dict(zip(keys, labels)))
     return ax
+
+
+def plot_hinton(matrix, max_weight=None, ax=None):
+    """Draw Hinton diagram for visualizing a weight matrix.
+
+    From https://matplotlib.org/3.1.0/gallery/specialty_plots/hinton_demo.html
+    """
+    ax = ax if ax is not None else plt.gca()
+
+    if not max_weight:
+        max_weight = 2 ** np.ceil(np.log(np.abs(matrix).max()) / np.log(2))
+
+    ax.patch.set_facecolor('gray')
+    ax.set_aspect('equal', 'box')
+    ax.xaxis.set_major_locator(plt.NullLocator())
+    ax.yaxis.set_major_locator(plt.NullLocator())
+
+    for (x, y), w in np.ndenumerate(matrix):
+        color = 'white' if w > 0 else 'black'
+        size = np.sqrt(np.abs(w) / max_weight)
+        rect = plt.Rectangle([x - size / 2, y - size / 2], size, size,
+                             facecolor=color, edgecolor=color)
+        ax.add_patch(rect)
+
+    ax.autoscale_view()
+    ax.invert_yaxis()
+
+    return ax
+    
+    
+def fig_to_img_arr(fig, norm=True):
+    """
+    Converts a matplotlib figure (given its handle) to an image represented
+    by a numpy array, then closes the figure.
+
+    Uses IO buffer for control over resolution etc.
+
+    Note:
+        Based on <https://stackoverflow.com/a/61443397>.
+    """
+
+    io_buf = io.BytesIO()
+    fig.savefig(io_buf, format='raw', facecolor='white', dpi=fig.dpi)
+    io_buf.seek(0)
+    img_arr = np.reshape(np.frombuffer(io_buf.getvalue(), dtype=np.uint8),
+                         newshape=(int(fig.bbox.bounds[3]), int(fig.bbox.bounds[2]), -1))
+    io_buf.close()
+
+    img_arr = np.swapaxes(img_arr, 0, 2)  # in TF+TB version >= 1.8, RGB channel is dim 0
+    img_arr = np.swapaxes(img_arr, 1, 2)  # rotate figure 90 deg
+
+    plt.close(fig)
+
+    return img_arr
