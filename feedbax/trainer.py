@@ -52,12 +52,16 @@ class TaskTrainer(eqx.Module):
       a smaller model during each step of a larger one.    
     """
     optimizer: optax.GradientTransformation
+    checkpointing: bool
+    chkpt_dir: Optional[Path]
     writer: Optional[SummaryWriter]
     _use_tb: bool
     
     def __init__(
         self,
         optimizer: optax.GradientTransformation,    
+        checkpointing=True,
+        chkpt_dir='.fbx-ckpts',
         tensorboard_logdir: Optional[str] = None,
     ):
         self.optimizer = optimizer 
@@ -78,6 +82,11 @@ class TaskTrainer(eqx.Module):
             # writer.add_custom_scalars(layout)    
         else:
             self.writer = None
+    
+        self.checkpointing = checkpointing
+        self.chkpt_dir = Path(chkpt_dir)
+        if self.checkpointing:
+            self.chkpt_dir.mkdir(exist_ok=True)
             
     def model_ensemble(
         self,
@@ -97,10 +106,19 @@ class TaskTrainer(eqx.Module):
         - Assumes the task (e.g. trials) are the same for all replicates.
         - The `jp.isnan(loss)` in `Trainer.__call__` will abort if even a single
           one of the replicates has a NaN loss.
+        - I'm not sure what to do about tensorboard/print statements. We could log all replicates 
+          (probably too messy), log a single replicate, or log some statistics.
+          But I'm not sure how to implement this from within the vmapped function...
         
         TODO: 
         - Allow variation in the task as well as the model.
         """
+        #! I haven't tested this yet, and it might be problematic because we
+        #! want more general, possibly non-vmappable, control flow in here.
+        #! we also want to print stuff and I'm not sure how to handle that.
+        
+        #! one option would be to hve an argument to `__call__` that enables
+        #! statistical transformations on the replicates dim of `loss` etc
         
         key1, key2 = jrandom.split(key)
         keys_model = jrandom.split(key1, n_model_replicates)
@@ -108,7 +126,7 @@ class TaskTrainer(eqx.Module):
         models = jax.vmap(get_model)(keys_model)
         return jax.vmap(
             self,
-            in_axes=(None, 0, None, None, None, None, None, None, None, 0)
+            in_axes=(None, 0, None, None, None, None, None, 0)
         )(
             task, models, key=keys_train, **kwargs
         )
@@ -125,13 +143,10 @@ class TaskTrainer(eqx.Module):
                                              tree.step.net.cell.bias),
         log_step=100, 
         restore_checkpoint=False,
-        checkpoints=True,
-        chkpt_dir='.ckpts',
         *,
         key,
     ):
-        chkpt_dir = Path(chkpt_dir)
-        
+
         filter_spec = filter_spec_leaves(model, trainable_leaves_func)
         
         losses = jnp.empty((n_batches,))
@@ -141,39 +156,39 @@ class TaskTrainer(eqx.Module):
         ))
         loss_func_wrapped = grad_wrap_loss_func(task.loss_func)
         
-        start_batch = 0  # except when we load a checkpoint
+        start_batch = 1  # except when we load a checkpoint
         
         if restore_checkpoint:
-            with open(chkpt_dir / "last_batch.txt", 'r') as f:
+            with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
                 
             start_batch = last_batch + 1
             
-            chkpt_path = chkpt_dir / f'model{last_batch}.eqx'
+            chkpt_path = self.chkpt_dir / f'model{last_batch}.eqx'
             model = eqx.tree_deserialise_leaves(chkpt_path, model)
             losses, losses_terms = eqx.tree_deserialise_leaves(
-                chkpt_dir / f'losses{last_batch}.eqx', 
+                self.chkpt_dir / f'losses{last_batch}.eqx', 
                 (losses, losses_terms),
             )
 
             logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}")
             
-        elif checkpoints:
-            chkpt_dir.mkdir(exist_ok=True)
-            delete_contents(chkpt_dir)  
+        elif self.checkpointing:
+            delete_contents(self.chkpt_dir)  
             
         # TODO: should also restore this from checkpoint
         opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))
         
-        keys = jrandom.split(key, n_batches)
+        keys = jrandom.split(key, n_batches - start_batch)
         get_batch = jax.vmap(task.get_trial)
         
         #for _ in range(epochs): #! assume 1 epoch (no fixed dataset)
         for batch in tqdm(range(start_batch, n_batches), 
                           desc='batch', initial=start_batch, total=n_batches):
-            trials_keys = jrandom.split(keys[batch], batch_size)
-            init_state, target_state, task_input = get_batch(trials_keys)
-            
+            key_train, key_eval, key_batch = jrandom.split(keys[batch], 3)
+            keys_trials = jrandom.split(key_batch, batch_size)
+            init_state, target_state, task_input = get_batch(keys_trials)
+
             loss, loss_terms, model, opt_state = self.train_step(
                 model, 
                 filter_spec, 
@@ -182,10 +197,10 @@ class TaskTrainer(eqx.Module):
                 task_input,
                 loss_func_wrapped, 
                 opt_state,
-                keys[batch], 
+                key_train, 
             )
             
-            losses = losses.at[batch].set(loss)
+            losses = losses.at[batch - 1].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             # tensorboard losses on every iteration
@@ -194,21 +209,23 @@ class TaskTrainer(eqx.Module):
                 self.writer.add_scalar('Loss/train', loss[0].item(), batch)
                 for term, loss_term in loss_terms.items():
                     self.writer.add_scalar(f'Loss/train/{term}', loss_term[0].item(), batch)
-            
+
             if jnp.isnan(loss):
+                eqx.tree_pprint(losses_terms, short_arrays=False)
                 raise ValueError(f"\nNaN loss at batch {batch}!")
-            
+
             # checkpointing and evaluation occasionally
             if (batch + 1) % log_step == 0:
                 # model checkpoint
-                eqx.tree_serialise_leaves(chkpt_dir / f'model{batch}.eqx', model)
-                eqx.tree_serialise_leaves(chkpt_dir / f'losses{batch}.eqx', 
-                                        (losses, losses_terms))
-                with open(chkpt_dir / "last_batch.txt", 'w') as f:
-                    f.write(str(batch)) 
+                if self.checkpointing:
+                    eqx.tree_serialise_leaves(self.chkpt_dir / f'model{batch}.eqx', model)
+                    eqx.tree_serialise_leaves(self.chkpt_dir / f'losses{batch}.eqx', 
+                                              (losses, losses_terms))
+                    with open(self.chkpt_dir / "last_batch.txt", 'w') as f:
+                        f.write(str(batch)) 
                 
                 # tensorboard
-                loss_eval, loss_eval_terms, states = task.evaluate(model)
+                loss_eval, loss_eval_terms, states = task.eval(model, key_eval)
                 
                 if self._use_tb:
                     # TODO: register plots
@@ -217,14 +234,15 @@ class TaskTrainer(eqx.Module):
                     #         cmap='plasma', workspace=workspace
                     # )
                     # self.writer.add_figure('Eval/centerout', fig, batch)
-                    self.writer.add_scalar('Loss/eval', loss_eval[0].item(), batch)
+                    self.writer.add_scalar('Loss/eval', loss_eval.item(), batch)
                     for term, loss_term in loss_eval_terms.items():
-                        self.writer.add_scalar(f'Loss/eval/{term}', loss_term[0].item(), batch)
+                        self.writer.add_scalar(f'Loss/eval/{term}', loss_term.item(), batch)
                     
                 # TODO: https://stackoverflow.com/a/69145493
-                tqdm.write(f"step: {batch}, training loss: {loss[0]:.4f}", file=sys.stderr)
-                tqdm.write(f"step: {batch}, center out loss: {loss_eval[0]:.4f}", file=sys.stderr)
-        
+                tqdm.write(f"step: {batch}", file=sys.stdout)
+                tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
+                tqdm.write(f"\tevaluation loss: {loss_eval:.4f}", file=sys.stdout)
+                
         return model, losses, loss_terms
     
     @eqx.filter_jit
@@ -280,6 +298,11 @@ def grad_wrap_loss_func(
          taken with respect to the first argument `diff_model` only, and the 
          `filter_spec` defines this split.
       2) Model modules will use a `target_state, init_state, key` signature.
+      
+    TODO: 
+    - This is specific to `TaskTrainer`. Could it be more general?
+      Note that the vmap here works the same as in `Task.eval`; perhaps if this
+      is a `TaskTrainer`-specific function, then `Task` could provide an interface
     """
     @wraps(loss_func)
     def wrapper(

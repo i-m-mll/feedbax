@@ -58,7 +58,7 @@ class AbstractTask(eqx.Module):
         init_states, target_states, task_inputs = self.trials_eval
         
         states = jax.vmap(model, in_axes=(0, 0, None))(
-            target_states, init_states, task_inputs, key
+            task_inputs, init_states, key
         ) 
         
         loss, loss_terms = self.loss_func(states, target_states)

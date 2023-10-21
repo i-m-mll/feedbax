@@ -138,16 +138,21 @@ def get_model(
 # Train the model.
 
 # %%
-key = jrandom.PRNGKey(0)
+seed = 5566
+key = jrandom.PRNGKey(seed)
 
-workspace = jnp.array([[-0.2, 0.2], 
-                       [0.10, 0.50]])
+n_steps = 50
+dt = 0.05 
+workspace = jnp.array([[-0.15, 0.15], 
+                       [0.20, 0.50]])
+n_hidden  = 50
+learning_rate = 0.05
 
 model = get_model(
     key, 
-    dt=0.05,
-    n_hidden=50,
-    n_steps=50,
+    dt=dt,
+    n_hidden=n_hidden,
+    n_steps=n_steps,
     feedback_delay=0,
     tau=0.01,
     out_nonlinearity=jax.nn.sigmoid,
@@ -155,10 +160,11 @@ model = get_model(
 
 # #! these assume a particular PyTree structure to the states returned by the model
 # #! which is why we simply instantiate them 
+discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
 loss_func = fbl.CompositeLoss(
     (
-        fbl.EffectorPositionLoss(),
-        fbl.EffectorVelocityLoss(),
+        fbl.EffectorPositionLoss(discount=discount),
+        fbl.EffectorFinalVelocityLoss(),
         fbl.ControlLoss(),
         fbl.NetworkActivityLoss(),
     ),
@@ -174,19 +180,19 @@ task = RandomReaches(
 )
 
 trainer = TaskTrainer(
-    optimizer=optax.adam(learning_rate=0.05),
+    optimizer=optax.adam(learning_rate=learning_rate),
+    chkpt_dir=chkpt_dir,
+    checkpointing=True,
 )
-
-# %%
-model.init()
 
 # %%
 model, losses, loss_terms = trainer(
     task=task, 
     model=model,
-    n_batches=10, 
+    n_batches=500, 
     batch_size=500, 
-    key=jrandom.PRNGKey(0)
+    log_step=100,
+    key=key,
 )
 
 # %%

@@ -348,12 +348,27 @@ def train(
         model = get_model(key, dt, hidden_size, n_steps, 
                           feedback_delay=feedback_delay_steps)
 
-    def get_batch(batch_size, key):
-        """Segment endpoints uniformly distributed in a rectangular workspace."""
-        pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)
+    # def get_batch(batch_size, key):
+    #     """Segment endpoints uniformly distributed in a rectangular workspace."""
+    #     pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)
+    #     vel_endpoints = jnp.zeros_like(pos_endpoints)
+    #     init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+    #     return init_states, target_states
+    
+    def get_trial(key: jrandom.PRNGKeyArray):
+        """Random reach endpoints in a 2D rectangular workspace."""
+        pos_endpoints = jrandom.uniform(
+            key, 
+            (2, N_DIM), 
+            minval=workspace[:, 0], 
+            maxval=workspace[:, 1]
+        )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
-        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
-        return init_states, target_states
+        init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
+        task_input = target_state
+        return init_state, target_state, task_input
+    
+    get_batch = jax.vmap(get_trial)
     
     # only train the RNN layer (input weights & hidden weights and biases)
     filter_spec = jax.tree_util.tree_map(lambda _: False, model)
@@ -437,15 +452,18 @@ def train(
     # TODO: should also restore this from checkpoint
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
+    keys = jrandom.split(key, n_batches - start_batch)
+    
     #for _ in range(epochs): #! assume 1 epoch (no fixed dataset)
     # batch is 1-indexed for printing and logging purposes (batch 100 is the 100th batch)
     for batch in tqdm(range(start_batch, n_batches + 1),
                       desc='batch', initial=start_batch, total=n_batches, file=sys.stdout):
-        key, key_train, key_eval = jrandom.split(key, 3)
-        init_state, target_state = get_batch(batch_size, key)
+        trials_keys = jrandom.split(keys[batch], batch_size)
+        key_eval, _ = jrandom.split(keys[batch])
+        init_state, target_state, task_inputs = get_batch(trials_keys)
         
         loss, loss_terms, model, opt_state = train_step(
-            model, init_state, target_state, opt_state, key_train
+            model, init_state, target_state, opt_state, keys[batch]
         )
         
         losses = losses.at[batch].set(loss)
@@ -455,7 +473,9 @@ def train(
         writer.add_scalar('Loss/train', loss.item(), batch)
         for term, loss_term in loss_terms.items():
             writer.add_scalar(f'Loss/train/{term}', loss_term.item(), batch)
-        
+            
+        if batch == 81:
+            return model, losses, loss_terms
         if jnp.isnan(loss):
             print(f"\nNaN loss at batch {batch}!")
             # #! dunno why I need to pass arguments to `get_last_checkpoint`; didn't need to in `10_arm2_...`
@@ -535,57 +555,6 @@ def train(
 # Train the model.
 
 # %%
-import feedbax.loss as fbl
-from feedbax.task import RandomReaches
-from feedbax.trainer import TaskTrainer
-
-key = jrandom.PRNGKey(0)
-
-model = get_model(
-    key, 
-    dt=0.05,
-    n_hidden=50,
-    n_steps=50,
-    feedback_delay=0,
-    tau=0.01,
-    out_nonlinearity=jax.nn.sigmoid,
-)
-
-# #! these assume a particular PyTree structure to the states returned by the model
-# #! which is why we simply instantiate them 
-loss_func = fbl.CompositeLoss(
-    (
-        fbl.EffectorPositionLoss(),
-        fbl.EffectorVelocityLoss(),
-        fbl.ControlLoss(),
-        fbl.NetworkActivityLoss(),
-    ),
-    (1, 0.1, 1e-4, 0.)
-)
-
-task = RandomReaches(
-    loss_func=loss_func,
-    workspace=workspace, 
-    eval_grid_n=2,
-    eval_n_directions=8,
-    eval_reach_length=0.05,
-)
-
-trainer = TaskTrainer(
-    optimizer=optax.adam(learning_rate=0.05),
-)
-
-# %%
-trainer(
-    task=task, 
-    model=model,
-    n_batches=10, 
-    batch_size=500, 
-    n_replicates=1, 
-    key=jrandom.PRNGKey(0)
-)
-
-# %%
 workspace = jnp.array([[-0.15, 0.15], 
                        [0.20, 0.50]])
 
@@ -606,7 +575,7 @@ model, losses, losses_terms = train(
     hidden_size=50, 
     seed=5566,
     learning_rate=0.05,
-    log_step=10,
+    log_step=100,
     workspace=workspace,
     term_weights=term_weights,
     weight_decay=None,
