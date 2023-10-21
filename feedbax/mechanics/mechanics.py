@@ -50,7 +50,6 @@ class Mechanics(eqx.Module):
             state.solver, 
             made_jump=False,
         )
-        # #! I don't even return solver state, so apparently it's not important
         return MechanicsState(system_state, solver_state)
     
     def init(self, system_state, input=None, key=None):

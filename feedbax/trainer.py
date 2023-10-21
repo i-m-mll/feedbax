@@ -4,9 +4,13 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from __future__ import annotations
+
+from functools import wraps
 import logging
+from pathlib import Path
 import sys
-from typing import Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -14,9 +18,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array, Float, PyTree
 import optax
-from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
+from feedbax.loss import AbstractLoss
 from feedbax.task import AbstractTask
 from feedbax.utils import (
     delete_contents,
@@ -24,32 +28,43 @@ from feedbax.utils import (
     tree_set_idx,
 )
 
+if TYPE_CHECKING:
+    # this is sloow so we'll actually import it only when needed
+    from torch.utils.tensorboard import SummaryWriter
+
 
 logger = logging.getLogger(__name__)
 
 
-class Trainer(eqx.Module):
-    """
+class TaskTrainer(eqx.Module):
+    """A class 
     
+    NOTE: 
+    I don't think it makes sense to use this to train (say) jPCA or linear
+    regressions, which might not use a `AbstractTask` but operate directly
+    on an entire dataset/single array at once. I should try writing another
+    training for those cases, and see if perhaps an `AbstractTrainer` makes
+    sense to capture the common aspects. 
     
+    TODO:
+    - Should be vmappable; i.e. for ensemble training.
+    - Should work as a component of a larger model; say, if we want to train
+      a smaller model during each step of a larger one.    
     """
-    task: AbstractTask 
-    model: eqx.Module
-    optimizer: optax.Optimizer
+    optimizer: optax.GradientTransformation
     writer: Optional[SummaryWriter]
+    _use_tb: bool
     
     def __init__(
         self,
-        task: AbstractTask,
-        model: eqx.Module,
-        optimizer: optax.Optimizer,    
+        optimizer: optax.GradientTransformation,    
         tensorboard_logdir: Optional[str] = None,
     ):
-        self.task = task
-        self.model = model 
         self.optimizer = optimizer 
         self._use_tb = tensorboard_logdir is not None
         if self._use_tb:
+            from torch.utils.tensorboard import SummaryWriter
+            
             self.writer = SummaryWriter(tensorboard_logdir)
             # display loss terms in the same figure under "Custom Scalars"
             # layout = {
@@ -61,28 +76,72 @@ class Trainer(eqx.Module):
             #     },
             # }
             # writer.add_custom_scalars(layout)    
+        else:
+            self.writer = None
+            
+    def model_ensemble(
+        self,
+        task: AbstractTask,
+        get_model: Callable[[jrandom.PRNGKeyArray], eqx.Module],
+        n_model_replicates: int, 
+        *, 
+        key,
+        **kwargs,
+    ):
+        """Trains an ensemble of models.
+        
+        Instead of taking a single model like `__call__`, this takes a function
+        that generates a model, given a random key. 
+        
+        NOTE: 
+        - Assumes the task (e.g. trials) are the same for all replicates.
+        - The `jp.isnan(loss)` in `Trainer.__call__` will abort if even a single
+          one of the replicates has a NaN loss.
+        
+        TODO: 
+        - Allow variation in the task as well as the model.
+        """
+        
+        key1, key2 = jrandom.split(key)
+        keys_model = jrandom.split(key1, n_model_replicates)
+        keys_train = jrandom.split(key2, n_model_replicates)
+        models = jax.vmap(get_model)(keys_model)
+        return jax.vmap(
+            self,
+            in_axes=(None, 0, None, None, None, None, None, None, None, 0)
+        )(
+            task, models, key=keys_train, **kwargs
+        )
+        
     
     def __call__(
         self, 
-        n_batches, 
-        n_replicates,  #?
-        batch_size, 
+        task: AbstractTask,
+        model: eqx.Module,
+        n_batches: int, 
+        batch_size: int, 
         trainable_leaves_func= lambda tree: (tree.step.net.cell.weight_hh, 
                                              tree.step.net.cell.weight_ih, 
                                              tree.step.net.cell.bias),
         log_step=100, 
         restore_checkpoint=False,
-        chkpt_dir=None,
+        checkpoints=True,
+        chkpt_dir='.ckpts',
         *,
         key,
     ):
-        filter_spec = filter_spec_leaves(models, trainable_leaves_func)
+        chkpt_dir = Path(chkpt_dir)
         
-        losses = jnp.empty((n_batches, n_replicates))
+        filter_spec = filter_spec_leaves(model, trainable_leaves_func)
+        
+        losses = jnp.empty((n_batches,))
         losses_terms = dict(zip(
-            self.task.term_weights.keys(), 
-            [jnp.empty((n_batches, n_replicates)) for _ in self.task.term_weights]
+            task.loss_func.weights.keys(), 
+            [jnp.empty((n_batches,)) for _ in task.loss_func.weights]
         ))
+        loss_func_wrapped = grad_wrap_loss_func(task.loss_func)
+        
+        start_batch = 0  # except when we load a checkpoint
         
         if restore_checkpoint:
             with open(chkpt_dir / "last_batch.txt", 'r') as f:
@@ -91,7 +150,7 @@ class Trainer(eqx.Module):
             start_batch = last_batch + 1
             
             chkpt_path = chkpt_dir / f'model{last_batch}.eqx'
-            models = eqx.tree_deserialise_leaves(chkpt_path, models)
+            model = eqx.tree_deserialise_leaves(chkpt_path, model)
             losses, losses_terms = eqx.tree_deserialise_leaves(
                 chkpt_dir / f'losses{last_batch}.eqx', 
                 (losses, losses_terms),
@@ -99,28 +158,31 @@ class Trainer(eqx.Module):
 
             logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}")
             
-        else:
-            start_batch = 0
+        elif checkpoints:
+            chkpt_dir.mkdir(exist_ok=True)
             delete_contents(chkpt_dir)  
             
         # TODO: should also restore this from checkpoint
-        opt_states = eqx.filter_vmap(
-            lambda model: self.optimizer.init(eqx.filter(model, eqx.is_array))
-        )(
-            models
-        )    
+        opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))
         
         keys = jrandom.split(key, n_batches)
-        get_batch = jax.vmap(self.task.get_trial)
+        get_batch = jax.vmap(task.get_trial)
         
         #for _ in range(epochs): #! assume 1 epoch (no fixed dataset)
         for batch in tqdm(range(start_batch, n_batches), 
                           desc='batch', initial=start_batch, total=n_batches):
             trials_keys = jrandom.split(keys[batch], batch_size)
-            init_state, target_state = get_batch(trials_keys)
+            init_state, target_state, task_input = get_batch(trials_keys)
             
-            loss, loss_terms, models, opt_states = self.train_step(
-                models, filter_spec, init_state, target_state, opt_states
+            loss, loss_terms, model, opt_state = self.train_step(
+                model, 
+                filter_spec, 
+                init_state, 
+                target_state, 
+                task_input,
+                loss_func_wrapped, 
+                opt_state,
+                keys[batch], 
             )
             
             losses = losses.at[batch].set(loss)
@@ -133,20 +195,20 @@ class Trainer(eqx.Module):
                 for term, loss_term in loss_terms.items():
                     self.writer.add_scalar(f'Loss/train/{term}', loss_term[0].item(), batch)
             
-            if jnp.sum(jnp.isnan(loss)) > n_replicates // 2:
-                raise ValueError(f"\nNaN loss on more than 50% of replicates at batch {batch}!")
+            if jnp.isnan(loss):
+                raise ValueError(f"\nNaN loss at batch {batch}!")
             
             # checkpointing and evaluation occasionally
             if (batch + 1) % log_step == 0:
                 # model checkpoint
-                eqx.tree_serialise_leaves(chkpt_dir / f'models{batch}.eqx', models)
+                eqx.tree_serialise_leaves(chkpt_dir / f'model{batch}.eqx', model)
                 eqx.tree_serialise_leaves(chkpt_dir / f'losses{batch}.eqx', 
                                         (losses, losses_terms))
                 with open(chkpt_dir / "last_batch.txt", 'w') as f:
                     f.write(str(batch)) 
                 
                 # tensorboard
-                loss_eval, loss_eval_terms, states = eqx.filter_vmap(self.task.evaluate)(models)
+                loss_eval, loss_eval_terms, states = task.evaluate(model)
                 
                 if self._use_tb:
                     # TODO: register plots
@@ -163,10 +225,10 @@ class Trainer(eqx.Module):
                 tqdm.write(f"step: {batch}, training loss: {loss[0]:.4f}", file=sys.stderr)
                 tqdm.write(f"step: {batch}, center out loss: {loss_eval[0]:.4f}", file=sys.stderr)
         
-        return models, losses, loss_terms
+        return model, losses, loss_terms
     
     @eqx.filter_jit
-    @eqx.filter_vmap(in_axes=(eqx.if_array(0), None, None, eqx.if_array(0)))
+    # @eqx.filter_vmap(in_axes=(eqx.if_array(0), None, None, eqx.if_array(0)))
     def train_step(
         self, 
         model, 
@@ -174,14 +236,68 @@ class Trainer(eqx.Module):
         init_state, 
         target_state, 
         task_input, 
+        loss_func_wrapped,
         opt_state, 
         key
     ):
+        """Executes a single training step of the model.
+        
+        This assumes that:
+        
+            - The (wrapped) loss function returns an auxiliary `loss_terms`,
+              which is intended to be a dictionary of the loss components 
+              prior to their final aggregation (i.e. already weighted).
+        """
         diff_model, static_model = eqx.partition(model, filter_spec)
-        (loss, loss_terms), grads = eqx.filter_value_and_grad(self.task.loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, task_input, key, 
-            term_weights=term_weights, # discount=position_error_discount
+        (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_func_wrapped, has_aux=True)(
+            diff_model, 
+            static_model, 
+            init_state, 
+            target_state, 
+            task_input, 
+            key
         )
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, loss_terms, model, opt_state
+    
+    
+def grad_wrap_loss_func(
+    loss_func: AbstractLoss
+):
+    """Wraps a loss function taking state to a `grad`-able one taking a model.
+    
+    It is convenient to first define the loss function in terms of a 
+    mapping from states to scalars, because sometimes we want to evaluate the 
+    loss on states without re-evaluating the model itself. It also helps to
+    separate the mathematical logic of the loss function from the training
+    logic of passing a model as an argument to a `grad`-able function.
+    
+    Note that we are assuming that
+    
+      1) `TaskTrainer` will manage a `filter_spec` on the trainable parameters. 
+         When `jax.grad` is applied to the wrapper, the gradient will be 
+         taken with respect to the first argument `diff_model` only, and the 
+         `filter_spec` defines this split.
+      2) Model modules will use a `target_state, init_state, key` signature.
+    """
+    @wraps(loss_func)
+    def wrapper(
+        diff_model, 
+        static_model, 
+        init_state, 
+        target_state, 
+        task_input, 
+        key: jrandom.PRNGKeyArray,
+    ):
+        model = eqx.combine(diff_model, static_model)
+        #? will `in_axes` ever change? currently assuming we will design it not to
+        batched_model = jax.vmap(model, in_axes=(0, 0, None))
+        states = batched_model(task_input, init_state, key)
+        
+        # TODO: loss_func should take task_input as well, probably
+        return loss_func(states, target_state)
+    
+    return wrapper 
+        
+        

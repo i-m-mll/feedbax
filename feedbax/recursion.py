@@ -37,7 +37,7 @@ class Recursion(eqx.Module):
         # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         feedback = (
             tree_get_idx(states.mechanics.system[:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states.ee, i - self.step.delay),  # ee state
+            tree_get_idx(states.effector, i - self.step.delay),  # ee state
         )
         args = feedback
         
@@ -53,9 +53,11 @@ class Recursion(eqx.Module):
         state = self.step.init(system_state) #! maybe this should be outside
         
         #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (state.mechanics.system[:2], state.ee))
+        args = jax.tree_map(jnp.zeros_like, (state.mechanics.system[:2], 
+                                             state.effector))
         
         states = self.init(input, state, args, key2)
+        
         
         if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
             # this tqdm doesn't show except on an exception, which might be useful

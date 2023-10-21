@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class SimpleFeedbackState(AbstractState):
     mechanics: MechanicsState
-    ee: PyTree[Array]
+    effector: PyTree[Array]
     control: Array
     hidden: PyTree
 
@@ -41,7 +41,7 @@ class SimpleFeedback(eqx.Module):
         self, 
         input, 
         state: SimpleFeedbackState, 
-        args, 
+        args, #! part of feedback hack
         key: jrandom.PRNGKeyArray,
     ) -> SimpleFeedbackState:
         
@@ -59,17 +59,17 @@ class SimpleFeedback(eqx.Module):
         
         # TODO: could be replaced with a general call to a `Mechanics` method that knows about the operational space
         twolink = self.mechanics.system.twolink
-        ee_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
+        effector_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
             mechanics_state.system[0], mechanics_state.system[1]
         ))
         
-        return SimpleFeedbackState(mechanics_state, ee_state, control, hidden)
+        return SimpleFeedbackState(mechanics_state, effector_state, control, hidden)
     
-    def init(self, ee_state): 
+    def init(self, effector_state): 
               
         # dataset gives init state in terms of effector position, but we need joint angles
         init_joints_pos = self.mechanics.system.twolink.inverse_kinematics(
-            ee_state[0]
+            effector_state[0]
         )
         # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
         #! assumes zero initial velocity; TODO convert initial velocity also
@@ -81,7 +81,7 @@ class SimpleFeedback(eqx.Module):
 
         return SimpleFeedbackState(
             self.mechanics.init(system_state),
-            ee_state,
+            effector_state,
             jnp.zeros((self.net.out_size,)),
             self.net.init(),
         )

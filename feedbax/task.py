@@ -85,7 +85,8 @@ class RandomReaches(AbstractTask):
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
         init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
-        return init_state, target_state, None
+        task_input = target_state
+        return init_state, target_state, task_input
         
     @cached_property
     def trials_eval(self):
@@ -100,7 +101,8 @@ class RandomReaches(AbstractTask):
         ], axis=1)
         vel_endpoints = jnp.zeros_like(pos_endpoints)
         init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
-        return init_states, target_states, None
+        task_inputs = target_states 
+        return init_states, target_states, task_inputs
     
     def __call__(self, model, key):
         ...        

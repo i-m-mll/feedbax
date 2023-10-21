@@ -47,14 +47,15 @@ class CompositeLoss(AbstractLoss):
     
     def __init__(self, terms, weights):
         assert len(terms) == len(weights)
-        # TODO: flatten 
-        self.labels = [term.labels for term in terms]
+        #! assumes all the components are simple losses, and `labels` is a one-tuple
+        self.labels = [term.labels[0] for term in terms]
         self.terms = dict(zip(self.labels, terms))
         self.weights = dict(zip(self.labels, weights))
         
         
     def __call__(
-        self, states: PyTree, targets: PyTree
+        self, states: PyTree, 
+        targets: PyTree
     ) -> Tuple[float, Dict[str, float]]:
         
         # evaluate loss terms
@@ -88,7 +89,7 @@ class EffectorPositionLoss(AbstractLoss):
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(
-            (states.ee.pos - targets.pos[:, None]) ** 2, 
+            (states.effector.pos - targets.pos[:, None]) ** 2, 
             axis=-1
         )
         
@@ -107,7 +108,7 @@ class EffectorVelocityLoss(AbstractLoss):
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(
-            (states.ee.vel - targets.vel) ** 2, 
+            (states.effector.vel - targets.vel) ** 2, 
             axis=-1
         )
         

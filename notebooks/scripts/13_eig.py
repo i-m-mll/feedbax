@@ -48,7 +48,7 @@ for i in range(features):
 def cov(x):
     # mean subtract
     X = x - jnp.mean(x, axis=0)
-    C = X.T @ X / (x.shape[0] - 1)
+    C = (X.T @ X) / (x.shape[0] - 1)
     return C
 
 C = cov(x)
@@ -98,17 +98,15 @@ def eig_svd(x):
 L_svd, Vt_svd, U_svd = eig_svd(x_mixed)
 
 # %%
-L_jax, Vt_jax = jnp.linalg.eigh(cov(x_mixed))
+L_jax, V_jax = jnp.linalg.eigh(cov(x_mixed))
 
 # %%
 L_jax / L_svd[::-1]
 
 # %% [markdown]
-# So the eigenvalues are in reverse order but otherwise can be treated as the same.
-#
-# Not sure about the eigenvectors though... I think SVD returns the transpose (Hermitian, but it's not complex-valued so it's just the transpose) of the right singular matrix, but this doesn't seem right. If each column is a vector that points in the same direction as the same column from the other matrix, then dividing the matrices should at least lead to a constant value along each column. But I'd assume the vectors would be normal, and thus the matrix should be approximately ones. But nope... 
+# We also have to reverse the columns of the eigenvector matrix to get them to match
 
 # %%
-Vt_svd / Vt_jax
+Vt_svd.T[:,::-1] / V_jax
 
 # %%

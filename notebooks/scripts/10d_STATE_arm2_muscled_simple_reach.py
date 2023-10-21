@@ -186,12 +186,12 @@ def loss_fn(
     # states = ee_states  # operational space loss
   
     # sum over xyz, apply temporal discount, sum over time
-    position_loss = jnp.sum(discount * jnp.sum((states.ee[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
+    position_loss = jnp.sum(discount * jnp.sum((states.effector[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
     
     loss_terms = dict(
         #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
         position=position_loss,  
-        final_velocity=jnp.sum((states.ee[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
+        final_velocity=jnp.sum((states.effector[1][:, -1] - target_state[1]) ** 2, axis=-1).squeeze(),  # over xyz
         control=jnp.sum(states.control ** 2, axis=(-1, -2)),  # over control variables and time
         hidden=jnp.sum(states.hidden ** 2, axis=(-1, -2)),  # over network units and time
     )
@@ -240,12 +240,12 @@ def get_evaluate_func(
     @eqx.filter_jit
     def loss_fn(states):
         # TODO: implementing `Loss` as a class would stop this from repeating the other cost function?
-        position_loss = jnp.sum(discount * jnp.sum((states.ee[0] - pos_endpoints[1][:, None]) ** 2, axis=-1), axis=-1)
+        position_loss = jnp.sum(discount * jnp.sum((states.effector[0] - pos_endpoints[1][:, None]) ** 2, axis=-1), axis=-1)
     
         loss_terms = dict(
             #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
             position=position_loss,  
-            final_velocity=jnp.sum((states.ee[1][:, -1] - vel_endpoints[1]) ** 2, axis=-1).squeeze(),  # over xyz
+            final_velocity=jnp.sum((states.effector[1][:, -1] - vel_endpoints[1]) ** 2, axis=-1).squeeze(),  # over xyz
             control=jnp.sum(states.control ** 2, axis=(-1, -2)),  # over control variables and time
             hidden=jnp.sum(states.hidden ** 2, axis=(-1, -2)),  # over network units and time
         )
@@ -297,7 +297,7 @@ get_batch(2, jrandom.PRNGKey(0))
 
 
 # %%
-# %timeit get_batch(500, jrandom.PRNGKey(0))
+# # %timeit get_batch(500, jrandom.PRNGKey(0))
 
 # %%
 def get_sample(key):
@@ -316,7 +316,7 @@ get_batch_(jrandom.PRNGKey(0))
 
 
 # %%
-# %timeit get_batch_(jrandom.PRNGKey(0))
+# # %timeit get_batch_(jrandom.PRNGKey(0))
 
 # %%
 def train(
@@ -477,7 +477,7 @@ def train(
             
             # tensorboard
             loss_eval, loss_eval_terms, states, t = evaluate(model, key_eval)
-            fig = make_eval_fig(states.ee, states.control, workspace)
+            fig = make_eval_fig(states.effector, states.control, workspace)
             writer.add_figure('Eval/centerout', fig, batch)
             writer.add_scalar('Loss/eval', loss_eval.item(), batch)
             writer.add_scalar('Loss/eval/time', t, batch)
@@ -512,7 +512,7 @@ def train(
     loss_eval, loss_eval_terms, states, _ = evaluate(model, key_eval)
     fig_funcs = dict(
         loss=lambda: plot_loglog_losses(losses, losses_terms)[0],
-        eval=lambda: make_eval_fig(states.ee, states.control, workspace),
+        eval=lambda: make_eval_fig(states.effector, states.control, workspace),
     )
     hyperparams = dict(
         workspace=workspace.tolist(),
@@ -537,7 +537,7 @@ def train(
 # %%
 import feedbax.loss as fbl
 from feedbax.task import RandomReaches
-from feedbax.trainer import Trainer
+from feedbax.trainer import TaskTrainer
 
 key = jrandom.PRNGKey(0)
 
@@ -571,10 +571,18 @@ task = RandomReaches(
     eval_reach_length=0.05,
 )
 
-trainer = Trainer(
+trainer = TaskTrainer(
+    optimizer=optax.adam(learning_rate=0.05),
+)
+
+# %%
+trainer(
     task=task, 
     model=model,
-    optimizer=optax.adam(learning_rate=0.05),
+    n_batches=10, 
+    batch_size=500, 
+    n_replicates=1, 
+    key=jrandom.PRNGKey(0)
 )
 
 # %%
