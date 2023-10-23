@@ -13,6 +13,22 @@
 #     name: python3
 # ---
 
+# %% [markdown]
+# Simple feedback model with a single-layer RNN controlling a point mass to reach from a starting position to a target position. The network should hold at the start position until a hold signal is switched off.
+
+# %%
+LOG_LEVEL = "INFO"
+NB_PREFIX = "nb12"
+DEBUG = False
+ENABLE_X64 = False
+N_DIM = 2  # TODO: not here
+
+# %%
+# %load_ext autoreload
+# %autoreload 2
+
+# %matplotlib widget
+
 # %%
 from datetime import datetime 
 import json
@@ -60,25 +76,12 @@ from feedbax.utils import (
     filter_spec_leaves,
 )
 
-# %% [markdown]
-# Simple feedback model with a single-layer RNN controlling a point mass to reach from a starting position to a target position. The network should hold at the start position until a hold signal is switched off.
-
 # %%
-# %matplotlib widget
-
-# %%
-NB_PREFIX = '12_GO'
-
-DEBUG = False
-
 # gets set to True after a training run
 # to prevent accidentally loading a model over the trained one
 trained = False  
 
 model_dir = Path('../models')
-
-# %%
-N_DIM = 2
 
 
 # %% [markdown]
@@ -164,7 +167,6 @@ def get_sequences(key, n_steps, epoch_len_ranges, init, target):
     epoch_lengths = gen_epoch_lengths(key, epoch_len_ranges)
     epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
     epoch_masks = get_masks(n_steps, epoch_idxs)
-    
     move_epoch_mask = jnp.logical_not(jnp.prod(epoch_masks, axis=0))[None, :]
     
     stim_seqs = get_masked_seqs(target, epoch_masks[stim_epochs])
@@ -184,7 +186,10 @@ def get_sequences(key, n_steps, epoch_len_ranges, init, target):
 #get_sequences = jax.jit(get_sequences, static_argnums=(1,2,))
 
 task_input, target, epoch_idxs = get_sequences(key, n_steps, epoch_len_ranges, init_state, target_state)
-target
+#target
+
+# %%
+task_input[0].shape
 
 # %% [markdown]
 # Try batching:
@@ -275,7 +280,7 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        input, states, key = x 
+        inputs, states, key = x 
         
         key1, key2 = jrandom.split(key)
         
@@ -285,7 +290,7 @@ class Recursion(eqx.Module):
         
         # this seems to work, but I'm worried it will break on non-array leaves later
         state = tree_get_idx(states, i)     
-        input_i = tree_get_idx(input, i)  
+        input_i = tree_get_idx(inputs, i)  
         state = self.step(input_i, state, args, key1)
         states = tree_set_idx(states, state, i + 1)
         

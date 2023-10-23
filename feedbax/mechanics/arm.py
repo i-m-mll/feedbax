@@ -19,6 +19,11 @@ from feedbax.utils import SINCOS_GRAD_SIGNS
 logger = logging.getLogger(__name__)
 
 
+class TwoLinkState(eqx.Module):
+    theta: Float[Array, "2"]
+    d_theta: Float[Array, "2"]
+
+
 class TwoLink(eqx.Module):
     l: Float[Array, "2"] = eqx.field(static=True, converter=jnp.asarray)  # [L] lengths of arm segments
     m: Float[Array, "2"] = eqx.field(static=True, converter=jnp.asarray)  # [M] masses of segments
@@ -69,6 +74,12 @@ class TwoLink(eqx.Module):
         dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
         
         return d_theta, dd_theta
+    
+    def init(self, effector_state):
+        theta = self.inverse_kinematics(
+            effector_state[0]
+        )        
+        return TwoLinkState(theta, jnp.zeros_like(theta))
 
     @cached_property
     def _a(self):
@@ -95,7 +106,6 @@ class TwoLink(eqx.Module):
     @property 
     def n_links(self) -> int:
         return 2
-    
 
     def inverse_kinematics(
             self,
@@ -131,7 +141,6 @@ class TwoLink(eqx.Module):
         angles = jnp.stack([theta0, theta1], axis=-1)
 
         return angles    
-
 
     def forward_kinematics(
             self,

@@ -25,9 +25,13 @@ class System(Protocol):
         args: PyTree,  # controls
 ) -> PyTree[T]:
         """Vector field of the system."""
-        pass
+        ...
 
     @property
     def control_size(self) -> int:
         """Number of control inputs."""
-        pass
+        ...
+    
+    def init(self) -> PyTree[T]:
+        """Initial state of the system."""
+        ...

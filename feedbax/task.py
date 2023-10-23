@@ -16,7 +16,7 @@ import logging
 from typing import Tuple
 
 import equinox as eqx
-from equinox import AbstractVar
+from equinox import AbstractVar, field
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -24,7 +24,7 @@ from jaxtyping import Array, Float, Int, PyTree
 import numpy as np
 
 from feedbax.loss import AbstractLoss
-from feedbax.utils import internal_grid_points, tree_set_idx
+from feedbax.utils import internal_grid_points
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ class AbstractTask(eqx.Module):
     def trials_eval(self):
         ...
 
+    # TODO: also try JIT on concrete `get_trial` methods
     @eqx.filter_jit
     def eval(self, model, key):
         init_states, target_states, task_inputs = self.trials_eval
@@ -62,7 +63,7 @@ class AbstractTask(eqx.Module):
             task_inputs, init_states, key
         ) 
         
-        loss, loss_terms = self.loss_func(states, target_states)
+        loss, loss_terms = self.loss_func(states, target_states, task_inputs)
         
         return loss, loss_terms, states
 
@@ -92,14 +93,13 @@ class RandomReaches(AbstractTask):
     @cached_property
     def trials_eval(self):
         centers = internal_grid_points(self.workspace, self.eval_grid_n)
-        pos_endpoints = jnp.concatenate([
-            centreout_endpoints(
-                jnp.array(center), 
-                self.eval_n_directions, 
-                0, 
-                self.eval_reach_length,
-            ) for center in centers
-        ], axis=1)
+        pos_endpoints = jax.vmap(
+            centreout_endpoints, 
+            in_axes=(0, None, None),
+            out_axes=1,
+        )(
+            centers, self.eval_n_directions, self.eval_reach_length
+        ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
         init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
         task_inputs = target_states 
@@ -109,10 +109,122 @@ class RandomReaches(AbstractTask):
         ...        
 
 
-class RandomReachesGO(AbstractTask):
-    ...
+class DelayTaskInput(eqx.Module):
+    stim: PyTree[Float[Array, "n_steps ..."]]
+    hold: Int[Array, "n_steps 1"]
+    stim_on: Int[Array, "n_steps 1"]
 
 
+class RandomReachesDelayed(AbstractTask):
+    """Random reaches with different task epochs.
+    
+    e.g. allows for a stimulus epoch, followed by a delay period, then movement.
+    """
+    loss_func: AbstractLoss 
+    workspace: Float[Array, "ndim 2"]
+    n_steps: int 
+    epoch_len_ranges: Tuple[Tuple[int, int], ...]
+    eval_n_directions: int
+    eval_reach_length: float
+    eval_grid_n: int  
+    stim_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
+    hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
+    key_eval: jrandom.PRNGKeyArray = field(default_factory=lambda: jrandom.PRNGKey(0))
+
+    N_DIM = 2
+
+    def get_trial(self, key: jrandom.PRNGKeyArray):
+        """Random reach endpoints in a 2D rectangular workspace."""
+        key1, key2 = jrandom.split(key)
+        pos_endpoints = jrandom.uniform(
+            key1, 
+            (2, self.N_DIM), 
+            minval=self.workspace[:, 0], 
+            maxval=self.workspace[:, 1]
+        )
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
+        task_inputs, target_states, _ = self.get_sequences(
+            init_state, target_state, key2
+        )      
+        return init_state, target_states, task_inputs
+        
+    @cached_property
+    def trials_eval(self):
+        centers = internal_grid_points(self.workspace, self.eval_grid_n)
+        pos_endpoints = jax.vmap(
+            centreout_endpoints, 
+            in_axes=(0, None, None),
+            out_axes=1,
+        )(
+            centers, self.eval_n_directions, self.eval_reach_length
+        ).reshape((2, -1, self.N_DIM))
+        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        
+        epochs_keys = jrandom.split(self.key_eval, init_states[0].shape[0])
+        task_inputs, target_states, _ = jax.vmap(self.get_sequences)(
+            init_states, target_states, epochs_keys
+        )    
+           
+        return init_states, target_states, task_inputs
+    
+    def get_sequences(
+        self,  
+        init_states, 
+        target_states, 
+        key,
+    ):
+        """Convert static task inputs to sequences, and make hold signal.
+        
+        TODO: 
+        - this could be part of a `Task` subclass
+        """        
+        epoch_lengths = gen_epoch_lengths(key, self.epoch_len_ranges)
+        epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
+        epoch_masks = get_masks(self.n_steps, epoch_idxs)
+        move_epoch_mask = jnp.logical_not(jnp.prod(epoch_masks, axis=0))[None, :]
+        
+        stim_seqs = get_masked_seqs(target_states, epoch_masks[self.stim_epochs])
+        target_seqs = jax.tree_map(
+            lambda x, y: x + y, 
+            get_masked_seqs(target_states, move_epoch_mask),
+            get_masked_seqs(init_states, epoch_masks[self.hold_epochs]),
+        )
+        stim_on_seq = get_scalar_epoch_seq(
+            epoch_idxs, self.n_steps, 1., self.stim_epochs
+        )
+        hold_seq = get_scalar_epoch_seq(
+            epoch_idxs, self.n_steps, 1., self.hold_epochs
+        )
+        
+        # TODO: catch trials: modify a proportion of hold_seq and target_seqs
+        
+        task_input = DelayTaskInput(stim_seqs, hold_seq, stim_on_seq)
+        target = target_seqs
+        
+        return task_input, target, epoch_idxs
+    
+    def __call__(self, model, key):
+        ...        
+
+
+def uniform_endpoints_new(
+    key: jrandom.PRNGKey,
+    ndim: int = 2, 
+    workspace: Float[Array, "ndim 2"] = jnp.array([[-1., 1.], 
+                                                   [-1., 1.]]),
+):
+    """Segment endpoints uniformly distributed in a rectangular workspace."""
+    return jrandom.uniform(
+        key, 
+        (2, ndim),   # (start/end, ...)
+        minval=workspace[:, 0], 
+        maxval=workspace[:, 1]
+    )
+
+
+#! retaining this for now in case I need it while converting the old notebooks
 def uniform_endpoints(
     key: jrandom.PRNGKey,
     batch_size: int, 
@@ -132,8 +244,8 @@ def uniform_endpoints(
 def centreout_endpoints(
     center: Float[Array, "2"], 
     n_directions: int, 
-    angle_offset: float, 
     length: float,
+    angle_offset: float = 0, 
 ): 
     ndim = 2  # TODO: generalize to sphere?
     """Segment endpoints starting in the centre and ending equally spaced on a circle."""
@@ -164,6 +276,7 @@ def get_masks(length, idx_bounds):
     mask_fn = lambda e: (idxs < idx_bounds[e]) + (idxs > idx_bounds[e + 1] - 1)
     return jnp.stack([mask_fn(e) for e in range(len(idx_bounds) - 1)])
 
+
 def get_masked_seqs(
     arrays: PyTree, 
     masks: Tuple[Int[Array, "n"], ...],
@@ -189,7 +302,7 @@ def get_masked_seqs(
     mask = jnp.prod(masks, axis=0)
     seqs = jax.tree_map(
         lambda x, y: jnp.where(
-            jnp.expand_dims(mask, jnp.arange(y.ndim) + 1), 
+            jnp.expand_dims(mask, np.arange(y.ndim) + 1), 
             x, 
             y[None,:]
         ), 

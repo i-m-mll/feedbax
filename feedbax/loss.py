@@ -47,7 +47,10 @@ class AbstractLoss(eqx.Module):
     
     @abstractmethod
     def __call__(
-        self, states: PyTree, targets: PyTree
+        self,
+        states: PyTree, 
+        targets: PyTree, 
+        task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         ...        
 
@@ -74,15 +77,16 @@ class CompositeLoss(AbstractLoss):
         self.terms = dict(zip(self.labels, terms))
         self.weights = dict(zip(self.labels, weights))
         
-        
     def __call__(
-        self, states: PyTree, 
-        targets: PyTree
+        self, 
+        states: PyTree, 
+        targets: PyTree,
+        task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
         # evaluate loss terms
         loss_terms = jax.tree_map(
-            lambda term: term(states, targets)[0], 
+            lambda term: term(states, targets, task_inputs)[0], 
             self.terms,
             is_leaf=lambda x: isinstance(x, AbstractLoss),
         )
@@ -104,14 +108,32 @@ class CompositeLoss(AbstractLoss):
         return loss, loss_terms
 
 
-@runtime_checkable
 class HasEffectorState(Protocol):
     effector: Tuple[Float[Array, "2"], Float[Array, "2"]]
+
+
+@runtime_checkable
+class HasMechanicsState(Protocol):
+    mechanics: HasEffectorState
     #? effector: CartesianState
 
 
 class EffectorPositionLoss(AbstractLoss):
     """
+    
+    Note that if discount is shaped such that it gives non-zero weight to the
+    position error during the fixation period of (say) a delayed reach task,
+    then typically the target will be specified as the fixation point during
+    that period, and `EffectorPositionLoss` will also act as a fixation loss.
+    However, when we are using certain kinds of goal error discounting (e.g.
+    exponential, favouring errors near the end of the trial) then the fixation
+    loss may not be weighed into `EffectorPositionLoss`, and it may be
+    appropriate to add `EffectorFixationLoss` to the composite loss. However,
+    in that case the same result could still be achieved using a single
+    instance of `EffectorPositionLoss`, by passing a `discount` that's the sum
+    of the goal error discount (say, non-zero only near the end of the trial)
+    and the hold signal (non-zero only during the fixation period) scaled by
+    the relative weights of the goal and fixation error losses.
     
     TODO: do we handle the temporal discount here? or return the sequence of losses
     """
@@ -133,10 +155,12 @@ class EffectorPositionLoss(AbstractLoss):
         self, 
         states: HasEffectorState, 
         targets: PyTree,
+        task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
+        # sum over xyz
         loss = jnp.sum(
-            (states.effector[0] - targets[0][:, None]) ** 2, 
+            (states.mechanics.effector[0] - targets[0]) ** 2, 
             axis=-1
         )
         
@@ -147,28 +171,26 @@ class EffectorPositionLoss(AbstractLoss):
         return loss, {self.labels[0]: loss}
 
 
-# class EffectorDiscountedPositionLoss(AbstractLoss):
-#     labels: Tuple[str, ...] = ("ee_position",)
-#     discount: 
+class EffectorFixationLoss(AbstractLoss):
+    """"""
+    labels: Tuple[str, ...] = ("ee_fixation",)
+    
+    def __call__(
+        self, 
+        states: PyTree, 
+        targets: PyTree,
+        task_inputs: PyTree,
+    ) -> Tuple[float, Dict[str, float]]:
+        
+        loss = jnp.sum(
+            (states.mechanics.effector[0] - targets[0]) ** 2, 
+            axis=-1
+        )
+        
+        loss = loss * jnp.squeeze(task_inputs.hold)
+        
+        return loss, {self.labels[0]: loss}
 
-#     def __call__(
-#         self, 
-#         states: PyTree, 
-#         targets: PyTree,
-#     ) -> Tuple[float, Dict[str, float]]:
-        
-#         loss = jnp.sum(
-#             (states.effector[0] - targets[0][:, None]) ** 2, 
-#             axis=-1
-#         )
-        
-#         # temporal discount
-#         loss = jnp.sum(
-#             loss * jnp.exp(-states.time[:, None]), 
-#             axis=0
-#         )
-        
-#         return loss, {self.labels[0]: loss}
 
 class EffectorFinalVelocityLoss(AbstractLoss):
     """
@@ -178,11 +200,14 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     labels: Tuple[str, ...] = ("ee_final_velocity",)
 
     def __call__(
-        self, states: PyTree, targets: PyTree
+        self, 
+        states: PyTree, 
+        targets: PyTree,
+        task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(
-            (states.effector[1][:, -1] - targets[1]) ** 2, 
+            (states.mechanics.effector[1][:, -1] - targets[1][:, -1]) ** 2, 
             axis=-1
         )
         
@@ -197,7 +222,11 @@ class ControlLoss(AbstractLoss):
     labels: Tuple[str, ...] = ("control",)
 
     def __call__(
-        self, states: PyTree, targets: PyTree
+        self, 
+        states: PyTree, 
+        #! **kwargs?
+        targets: PyTree,
+        task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(states.control ** 2, axis=-1)
@@ -210,7 +239,10 @@ class NetworkActivityLoss(AbstractLoss):
     labels: Tuple[str, ...] = ("activity",)
 
     def __call__(
-        self, states: PyTree, targets: PyTree
+        self, 
+        states: PyTree, 
+        targets: PyTree,
+        task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(states.hidden ** 2, axis=-1)

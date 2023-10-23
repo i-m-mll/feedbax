@@ -6,7 +6,7 @@
 
 from functools import cached_property
 import logging 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -17,6 +17,12 @@ from feedbax.mechanics.muscle import VirtualMuscle
 
 
 logger = logging.getLogger(__name__)
+
+
+class TwoLinkMuscledState(eqx.Module):
+    theta: Float[Array, "links=2"]
+    d_theta: Float[Array, "links=2"]
+    activation: Float[Array, "muscles"]
 
 
 class TwoLinkMuscled(eqx.Module):
@@ -50,6 +56,9 @@ class TwoLinkMuscled(eqx.Module):
     l0: Float[Array, "muscles"] = eqx.field(static=True)
     f0: Float[Array, "muscles"] = eqx.field(static=True)
     
+    forward_kinematics: Callable 
+    reverse_kinematics: Callable
+    
     def __init__(
         self, 
         muscle_model, 
@@ -69,6 +78,10 @@ class TwoLinkMuscled(eqx.Module):
         self.theta0 = theta0
         self.l0 = l0
         self.f0 = f0
+        
+        #! alias these so this class behaves like `Mechanics` expects
+        self.forward_kinematics = self.twolink.forward_kinematics
+        self.inverse_kinematics = self.twolink.inverse_kinematics
 
     def vector_field(self, t, y, args):
         theta, d_theta, activation = y 
@@ -96,11 +109,14 @@ class TwoLinkMuscled(eqx.Module):
         v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
         return v
     
-    def init(self, state):
-        return (
-            # joint angle, 
-            # joint angular velocity,
-            # muscle activation,
+    def init(self, effector_state):
+        theta = self.inverse_kinematics(
+            effector_state[0]
+        )        
+        return TwoLinkMuscledState(
+            theta, 
+            jnp.zeros_like(theta), 
+            jnp.zeros_like(self.control_size)
         )
     
     @property

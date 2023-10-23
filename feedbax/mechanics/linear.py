@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 import equinox as eqx
+from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -21,16 +22,16 @@ ORDER = 2  # maximum order of the state derivatives
 N_DIM = 2  # number of spatial dimensions
 
 
-class LTISystem(eqx.Module):
+class AbstractLTISystem(eqx.Module):
     """Linear time-invariant system.
     
     Note that the system is defined in continuous time.
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
     """
-    A: Float[Array, "state state"]  # state evolution matrix
-    B: Float[Array, "state input"]  # control matrix
-    C: Float[Array, "obs state"]  # observation matrix
+    A: AbstractVar[Float[Array, "state state"]]  # state evolution matrix
+    B: AbstractVar[Float[Array, "state input"]]  # control matrix
+    C: AbstractVar[Float[Array, "obs state"]]  # observation matrix
     
     def vector_field(
         self, 
@@ -51,13 +52,36 @@ class LTISystem(eqx.Module):
     @property 
     def state_size(self) -> int:
         return self.A.shape[1]
+
+
+class SimpleLTISystem(AbstractLTISystem):
+    """An LTI system where the effector is taken trivially as the state.
+    """
+    A: Float[Array, "state state"]  # state evolution matrix
+    B: Float[Array, "state input"]  # control matrix
+    C: Float[Array, "obs state"]  # observation matrix    
+    
+    def forward_kinematics(
+        self, 
+        state: Float[Array, "state"]
+    ) -> Float[Array, "state"]:
+        return state 
+    
+    def inverse_kinematics(
+        self, 
+        effector_state: Float[Array, "state"]
+    ) -> Float[Array, "state"]:
+        return effector_state
+    
+    def init(self, effector_state):
+        return effector_state
     
 
 def point_mass(
     mass: float = 1., 
     order: int = ORDER, 
     n_dim: int = N_DIM
-) -> LTISystem:
+) -> SimpleLTISystem:
     A = sum([jnp.diagflat(jnp.ones((order - i) * n_dim), 
                           i * n_dim)
              for i in range(1, order)])
@@ -67,4 +91,4 @@ def point_mass(
         axis=0
     )
     C = jnp.array(1)  # TODO 
-    return LTISystem(A, B, C)
+    return SimpleLTISystem(A, B, C)

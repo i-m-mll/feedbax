@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 class MechanicsState(AbstractState):
     system: PyTree[Array]
+    effector: PyTree[Array]
     solver: PyTree 
 
 
@@ -50,11 +51,20 @@ class Mechanics(eqx.Module):
             state.solver, 
             made_jump=False,
         )
-        return MechanicsState(system_state, solver_state)
+        effector_state = self.system.forward_kinematics(system_state)
+        return MechanicsState(system_state, effector_state, solver_state)
     
-    def init(self, system_state, input=None, key=None):
+    def init(self, effector_state, input=None, key=None):
+        # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
+        #! assumes zero initial velocity; TODO convert initial velocity also
+        system_state = self.system.init(effector_state)
         args = inputs_empty = jnp.zeros((self.system.control_size,))
+        
+        # eqx.tree_pprint(system_state)
+        # eqx.tree_pprint(args)
+        
         return MechanicsState(
             system_state,  # self.system.init()
+            effector_state, 
             self.solver.init(self.term, 0, self.dt, system_state, args),
         )

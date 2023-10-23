@@ -31,7 +31,7 @@ from tqdm.auto import tqdm
 
 from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.system import System
-from feedbax.networks import SimpleMultiLayerNet, RNN
+from feedbax.networks import RNN
 from feedbax.plot import plot_loglog_losses, plot_states_forces_2d
 from feedbax.task import centreout_endpoints, uniform_endpoints
 from feedbax.utils import tree_set_idx, tree_sum_squares, tree_get_idx
@@ -225,7 +225,7 @@ class SimpleFeedback(eqx.Module):
         return (
             self.mechanics.init(system_state),
             jnp.zeros((self.net.out_size,)),
-            jnp.zeros((self.net.hidden_size,)),
+            jnp.zeros((self.net.cell.hidden_size,)),
         )
     
     
@@ -295,13 +295,15 @@ class Recursion(eqx.Module):
 
 
 # %%
-def get_model(dt, mass, n_hidden, n_steps, key, feedback_delay=0):
+def get_model(dt, mass, n_hidden, n_steps, key, feedback_delay=0, out_nonlinearity=jax.nn.sigmoid):
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt)
     # #! in principle n_input is a function of mechanics state and task inputs
     n_input = system.state_size * 2  # feedback & target states
-    net = RNN(n_input, system.control_size, n_hidden, key=key)
+    key1, key2 = jrandom.split(key)
+    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
+    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
     body = SimpleFeedback(net, mechanics, delay=feedback_delay)
 
     return Recursion(body, n_steps)
@@ -336,8 +338,6 @@ def loss_fn(
     (system_states, _), controls, activities = states
     states = system_states
     # states = states[:, :, -1]  #! this was for the old delay solution with `SimpleFeedback`
-    
-    eqx.tree_pprint(states)
     
     # sum over xyz, apply temporal discount, sum over time
     position_loss = jnp.sum(discount * jnp.sum((states[0] - target_state[0][:, None]) ** 2, axis=-1), axis=-1)
@@ -487,149 +487,3 @@ plot_states_forces_2d(states[0], states[1], controls, endpoints=pos_endpoints)
 # %%
 plt.plot(jnp.sum(states[...,2:] ** 2, -1).T, '-')
 plt.show()
-
-
-# %% [markdown]
-# ### Single module
-#
-# Trying a single module that uses `dfx.diffeqsolve`...
-
-# %%
-class SimpleFeedback(eqx.Module):
-    net: eqx.Module
-    system: System 
-    dt: float = eqx.field(static=True)
-    t1: float = eqx.field(static=True)
-    term: dfx.AbstractTerm = eqx.field(static=True)
-    solver: dfx.AbstractSolver = eqx.field(static=True)
-    
-    def __init__(self, net, system, dt, t1):
-        self.net = net
-        self.system = system
-        self.dt = dt
-        self.t1 = t1
-        self.term = dfx.ODETerm(self.system.vector_field)
-        self.solver = dfx.Tsit5()
-    
-    def __call__(self, state, args):
-        inputs = args
-        
-        # #! how can we track the control and activity trajectory?
-        def control_callback(t, state, inputs):
-            net_inputs = jnp.concatenate([state.reshape(-1), inputs])
-            control, activity = self.net(net_inputs)
-            return control
-        
-        sol = dfx.diffeqsolve(
-            self.term, 
-            self.solver, 
-            0, 
-            self.t1, 
-            self.dt, 
-            state, 
-            args=(control_callback, inputs), 
-            saveat=dfx.SaveAt(dense=True)
-        )
-        
-        return sol
-
-
-# %%
-def get_model(dt, mass, n_input, n_hidden, t1, key):
-    system = point_mass(mass=mass, n_dim=N_DIM)
-  
-    net = SimpleMultiLayerNet(
-        (n_input, n_hidden, N_DIM),
-        layer_type=eqx.nn.GRUCell,
-        use_bias=True,
-        linear_final_layer=True,
-        key=key,
-    ) 
-        
-    return SimpleFeedback(net, system, dt, t1)
-
-
-
-# %%
-def loss_fn(diff_model, static_model, init_state, target_state, weights=(1., 1., 1e-5, 1e-5)):  
-    model = eqx.combine(diff_model, static_model)  
-    model = jax.vmap(model)
-
-    states, _ = model(init_state, target_state)
-    states, controls = states
-    
-    pos_cost = jnp.sum((states[..., :2] - target_state[..., :2]) ** 2, axis=-1)  # sum over xyz
-    vel_cost = jnp.sum((states[..., -1, 2:] - target_state[..., 2:]) ** 2, axis=-1)  # over xyz
-    control_cost = jnp.sum(controls ** 2, axis=-1)  # over control variables
-    #activity_cost = activities ** 2
-    
-    return jnp.sum(w * jnp.mean(cost, axis=0)  # mean over batch 
-                   for w, cost in zip(weights, 
-                                      [pos_cost, vel_cost, control_cost, activity_cost]))
-
-
-# %%
-def main(
-    mass=1.0,
-    n_steps=100,
-    dt=0.1,
-    workspace = jnp.array([[-1., 1.], [-1., 1.]]),
-    batch_size=100,
-    n_batches=1000,
-    epochs=1,
-    learning_rate=3e-4,
-    hidden_size=20,
-    seed=5566,
-):
-    key = jrandom.PRNGKey(seed)
-
-    def get_batch(batch_size, key):
-        pos_endpoints = jrandom.uniform(
-            key, 
-            (batch_size, N_DIM, 2),
-            minval=workspace[:, 0], 
-            maxval=workspace[:, 1]
-        )
-        # add 0 velocity to init and target state
-        state_endpoints = jnp.pad(pos_endpoints, ((0, 0), (0, 2), (0, 0)))
-        return state_endpoints
-    
-    n_input = N_DIM * 2 * 2  # 2D state (pos, vel) feedback & target state
-    
-    model = get_model(dt, mass, n_input, hidden_size, n_steps, key)
-    
-    # only train the hidden RNN layer 
-    filter_spec = jax.tree_util.tree_map(lambda _: False, model)
-    filter_spec = eqx.tree_at(
-        lambda tree: (tree.net.layers[0].weight_hh, 
-                      tree.net.layers[0].weight_ih, 
-                      tree.net.layers[0].bias),
-        filter_spec,
-        replace=(True, True, True)
-    )     
-    
-    optim = optax.adam(learning_rate)
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
-
-    def train_step(model, init_state, target_state, opt_state):
-        diff_model, static_model = eqx.partition(model, filter_spec)
-        loss, grads = eqx.filter_value_and_grad(loss_fn)(diff_model, static_model, init_state, target_state)
-        updates, opt_state = optim.update(grads, opt_state)
-        model = eqx.apply_updates(model, updates)
-        return loss, model, opt_state
-
-    for _ in range(epochs):
-        for batch in tqdm(range(n_batches)):
-            key = jrandom.split(key)[0]
-            state_endpoints = get_batch(batch_size, key)
-            state = init_state = state_endpoints[:, :, 0]
-            target_state = state_endpoints[:, :, 1]
-            
-            loss, model, opt_state = train_step(model, init_state, target_state, opt_state)
-            
-            if batch % 10 == 0:
-                print(f"step: {batch}, loss: {loss:.4f}")
-
-# %%
-
-# %%

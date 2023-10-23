@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class Recursion(eqx.Module):
-    """"""
+    """
+    
+    TODO:
+    - is there a way to avoid assuming the `input, state` argument structure of `step`?
+    """
     step: eqx.Module 
     n_steps: int = eqx.field(static=True)
     
@@ -30,38 +34,40 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps        
         
     def _body_func(self, i, x):
-        input, states, key = x
+        inputs, states, key = x
         
         key1, key2 = jrandom.split(key)
         
         # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         feedback = (
             tree_get_idx(states.mechanics.system[:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states.effector, i - self.step.delay),  # ee state
+            tree_get_idx(states.mechanics.effector, i - self.step.delay),  # ee state
         )
         args = feedback
         
         state = tree_get_idx(states, i)
+        input = tree_get_idx(inputs, i)  
         state = self.step(input, state, args, key1)
         states = tree_set_idx(states, state, i + 1)
         
-        return input, states, key2
+        return inputs, states, key2
     
-    def __call__(self, input, system_state, key):
+    def __call__(self, inputs, init_effector_state, key):
         key1, key2, key3 = jrandom.split(key, 3)
         
-        state = self.step.init(system_state) #! maybe this should be outside
+        init_state = self.step.init(init_effector_state) #! maybe this should be outside
         
         #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (state.mechanics.system[:2], 
-                                             state.effector))
+        args = jax.tree_map(jnp.zeros_like, (init_state.mechanics.system[:2], 
+                                             init_state.mechanics.effector))
         
-        states = self.init(input, state, args, key2)
+        init_input = tree_get_idx(inputs, 0)
+        states = self.init(init_input, init_state, args, key2)
         
         if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                input, states, key3 = self._body_func(i, (input, states, key3))
+                inputs, states, key3 = self._body_func(i, (inputs, states, key3))
                 
             return states
                  
@@ -69,7 +75,7 @@ class Recursion(eqx.Module):
             0, 
             self.n_steps, 
             self._body_func,
-            (input, states, key3),
+            (inputs, states, key3),
         )
         
         return states

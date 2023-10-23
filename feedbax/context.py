@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 class SimpleFeedbackState(AbstractState):
     mechanics: MechanicsState
-    effector: PyTree[Array]
     control: Array
     hidden: PyTree
 
@@ -35,6 +34,7 @@ class SimpleFeedback(eqx.Module):
     def __init__(self, net, mechanics, delay=0):
         self.net = net
         self.mechanics = mechanics
+        #! delay isn't implemented here yet
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
     
     def __call__(
@@ -57,31 +57,11 @@ class SimpleFeedback(eqx.Module):
         
         mechanics_state = self.mechanics(state.control, state.mechanics)        
         
-        # TODO: could be replaced with a general call to a `Mechanics` method that knows about the operational space
-        twolink = self.mechanics.system.twolink
-        effector_state = tuple(arr[:, -1] for arr in twolink.forward_kinematics(
-            mechanics_state.system[0], mechanics_state.system[1]
-        ))
-        
-        return SimpleFeedbackState(mechanics_state, effector_state, control, hidden)
+        return SimpleFeedbackState(mechanics_state, control, hidden)
     
     def init(self, effector_state): 
-              
-        # dataset gives init state in terms of effector position, but we need joint angles
-        init_joints_pos = self.mechanics.system.twolink.inverse_kinematics(
-            effector_state[0]
-        )
-        # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
-        #! assumes zero initial velocity; TODO convert initial velocity also
-        system_state = (
-            init_joints_pos, 
-            jnp.zeros_like(init_joints_pos),  
-            jnp.zeros((self.mechanics.system.control_size,)),  # per-muscle activation
-        )
-
         return SimpleFeedbackState(
-            self.mechanics.init(system_state),
-            effector_state,
-            jnp.zeros((self.net.out_size,)),
+            self.mechanics.init(effector_state),
+            jnp.zeros((self.mechanics.system.control_size,)),
             self.net.init(),
         )

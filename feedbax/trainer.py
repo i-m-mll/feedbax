@@ -362,7 +362,7 @@ def grad_wrap_loss_func(
         states = batched_model(task_input, init_state, key)
         
         # TODO: loss_func should take task_input as well, probably
-        return loss_func(states, target_state)
+        return loss_func(states, target_state, task_input)
     
     return wrapper 
 
