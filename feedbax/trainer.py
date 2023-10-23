@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from functools import wraps
+import json 
 import logging
 from pathlib import Path
 import sys
@@ -17,6 +19,7 @@ import jax
 import jax.numpy as jnp 
 import jax.random as jrandom
 from jaxtyping import Array, Float, PyTree
+import matplotlib.pyplot as plt
 import optax
 from tqdm.auto import tqdm
 
@@ -25,6 +28,7 @@ from feedbax.task import AbstractTask
 from feedbax.utils import (
     delete_contents,
     filter_spec_leaves, 
+    git_commit_id,
     tree_set_idx,
 )
 
@@ -61,7 +65,7 @@ class TaskTrainer(eqx.Module):
         self,
         optimizer: optax.GradientTransformation,    
         checkpointing=True,
-        chkpt_dir='.fbx-ckpts',
+        chkpt_dir='.ckpts',
         tensorboard_logdir: Optional[str] = None,
     ):
         self.optimizer = optimizer 
@@ -138,11 +142,12 @@ class TaskTrainer(eqx.Module):
         model: eqx.Module,
         n_batches: int, 
         batch_size: int, 
-        trainable_leaves_func= lambda tree: (tree.step.net.cell.weight_hh, 
-                                             tree.step.net.cell.weight_ih, 
-                                             tree.step.net.cell.bias),
+        trainable_leaves_func= lambda model: (model.step.net.cell.weight_hh, 
+                                              model.step.net.cell.weight_ih, 
+                                              model.step.net.cell.bias),
         log_step=100, 
         restore_checkpoint=False,
+        save_dir: Optional[str] = None,
         *,
         key,
     ):
@@ -156,24 +161,17 @@ class TaskTrainer(eqx.Module):
         ))
         loss_func_wrapped = grad_wrap_loss_func(task.loss_func)
         
-        start_batch = 1  # except when we load a checkpoint
+        start_batch = 0  # except when we load a checkpoint
         
         if restore_checkpoint:
-            with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
-                last_batch = int(f.read()) 
-                
+            chkpt_path, last_batch, model, losses, losses_terms = \
+                self._load_last_checkpoint(model, losses, losses_terms)
             start_batch = last_batch + 1
-            
-            chkpt_path = self.chkpt_dir / f'model{last_batch}.eqx'
-            model = eqx.tree_deserialise_leaves(chkpt_path, model)
-            losses, losses_terms = eqx.tree_deserialise_leaves(
-                self.chkpt_dir / f'losses{last_batch}.eqx', 
-                (losses, losses_terms),
-            )
-
-            logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}")
+            logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}.")
             
         elif self.checkpointing:
+            # delete old checkpoints if checkpointing is on
+            # TODO: keep old checkpoints for past N runs (env variable?)
             delete_contents(self.chkpt_dir)  
             
         # TODO: should also restore this from checkpoint
@@ -182,7 +180,7 @@ class TaskTrainer(eqx.Module):
         keys = jrandom.split(key, n_batches - start_batch)
         get_batch = jax.vmap(task.get_trial)
         
-        #for _ in range(epochs): #! assume 1 epoch (no fixed dataset)
+        # assume 1 epoch (i.e. batch iterations only; no fixed dataset)
         for batch in tqdm(range(start_batch, n_batches), 
                           desc='batch', initial=start_batch, total=n_batches):
             key_train, key_eval, key_batch = jrandom.split(keys[batch], 3)
@@ -200,7 +198,7 @@ class TaskTrainer(eqx.Module):
                 key_train, 
             )
             
-            losses = losses.at[batch - 1].set(loss)
+            losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
             # tensorboard losses on every iteration
@@ -211,8 +209,19 @@ class TaskTrainer(eqx.Module):
                     self.writer.add_scalar(f'Loss/train/{term}', loss_term[0].item(), batch)
 
             if jnp.isnan(loss):
-                eqx.tree_pprint(losses_terms, short_arrays=False)
-                raise ValueError(f"\nNaN loss at batch {batch}!")
+                msg = f"\nNaN loss at batch {batch}! "
+                if (checkpoint := self._load_last_checkpoint(
+                    model, losses, losses_terms
+                )) is not None:
+                    last_batch, model, losses, losses_terms = checkpoint
+                    msg += f"Returning checkpoint from batch {last_batch}."
+                else:
+                    msg += "No checkpoint found, returning model from final iteration."
+                
+                logger.warning(msg)
+                
+                return model, losses, losses_terms
+            
 
             # checkpointing and evaluation occasionally
             if (batch + 1) % log_step == 0:
@@ -229,10 +238,7 @@ class TaskTrainer(eqx.Module):
                 
                 if self._use_tb:
                     # TODO: register plots
-                    # fig, _ = plot_states_forces_2d(
-                    #         states[1][0][0], states[1][1][0], states[2][0], eval_endpoints[..., :2], 
-                    #         cmap='plasma', workspace=workspace
-                    # )
+                    # fig = make_eval_fig(states.effector, states.control, workspace)
                     # self.writer.add_figure('Eval/centerout', fig, batch)
                     self.writer.add_scalar('Loss/eval', loss_eval.item(), batch)
                     for term, loss_term in loss_eval_terms.items():
@@ -242,11 +248,32 @@ class TaskTrainer(eqx.Module):
                 tqdm.write(f"step: {batch}", file=sys.stdout)
                 tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
                 tqdm.write(f"\tevaluation loss: {loss_eval:.4f}", file=sys.stdout)
-                
-        return model, losses, loss_terms
+        
+
+        
+        if save_dir is not None:
+            # could probably just concatenate 
+            #   1) arguments to this method, 
+            #   2) optimizer hyperparameters,
+            #   3) `model` and `task pytrees, filtered of callables and jax arrays
+            hyperparams = dict(
+                commit_hash=git_commit_id(),
+                key=key.tolist(),
+                batch_size=batch_size,
+                n_batches=n_batches,
+                workspace=task.workspace.tolist(),
+                term_weights=task.loss_func.weights,
+                # epochs=n_epochs,
+                opt_hyperparams=opt_state.hyperparams,
+                # weight_decay=weight_decay,
+            )        
+            
+            save_model(model, hyperparams, Path(save_dir))
+         
+        return model, losses, losses_terms
     
     @eqx.filter_jit
-    # @eqx.filter_vmap(in_axes=(eqx.if_array(0), None, None, eqx.if_array(0)))
+    #? @eqx.filter_vmap(in_axes=(eqx.if_array(0), None, None, eqx.if_array(0)))
     def train_step(
         self, 
         model, 
@@ -273,11 +300,27 @@ class TaskTrainer(eqx.Module):
             init_state, 
             target_state, 
             task_input, 
-            key
+            key,
         )
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         return loss, loss_terms, model, opt_state
+
+    def _load_last_checkpoint(self, model, losses, losses_terms):
+        try:
+            with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
+                last_batch = int(f.read()) 
+        except FileNotFoundError:
+            #! this will just raise another error at checkpoint restore
+            return
+            
+        chkpt_path = self.chkpt_dir / f'model{last_batch}.eqx'
+        model = eqx.tree_deserialise_leaves(chkpt_path, model)
+        losses, losses_terms = eqx.tree_deserialise_leaves(
+            self.chkpt_dir / f'losses{last_batch}.eqx', 
+            (losses, losses_terms),
+        )
+        return chkpt_path, last_batch, model, losses, losses_terms
     
     
 def grad_wrap_loss_func(
@@ -322,5 +365,33 @@ def grad_wrap_loss_func(
         return loss_func(states, target_state)
     
     return wrapper 
+
+
+def save_model(
+            model, 
+            hyperparams: Optional[dict] = None, 
+            save_dir: Path = Path('.'),
+            # fig_funcs: Optional[dict]=None
+    ):
+    """Save a model to disk, along with hyperparameters and figures.
+    
+    TODO:
+    - Don't save figures in this function. Move to a different one
+      if we want this feature.
+    """
         
-        
+    timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
+    name = f"model_{timestr}"
+    hyperparam_str = json.dumps(hyperparams)
+    
+    eqx.tree_serialise_leaves(save_dir / f'{name}.eqx', model)
+    if hyperparams is not None:
+        with open(save_dir / f'{name}.json', 'w') as f:
+            hyperparams_str = json.dumps(hyperparams, indent=4)
+            f.write(hyperparams_str)
+    # if fig_funcs is not None:
+    #     for label, fig_func in fig_funcs.items():
+    #         fig = fig_func()
+    #         fig.savefig(model_dir / f'{name}_{label}.png')
+    #         plt.close(fig)    
+    

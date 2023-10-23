@@ -90,6 +90,8 @@ def solve(y0, dt0, args):
     t0 = 0
     t1 = 1
     saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
+    state = solver.init(term, t0, t1 + dt0, y0, args)
+    return state
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
@@ -99,6 +101,8 @@ args = None
 
 with jax.default_device(jax.devices('cpu')[0]):
     sol = solve(y0, dt0, args)      
+
+# %%
 
 # %%
 xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(

@@ -54,6 +54,7 @@ class AbstractTask(eqx.Module):
     def trials_eval(self):
         ...
 
+    @eqx.filter_jit
     def eval(self, model, key):
         init_states, target_states, task_inputs = self.trials_eval
         

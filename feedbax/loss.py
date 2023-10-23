@@ -2,6 +2,9 @@
 
 TODO:
 - Protocols for all the different `state` types/fields
+- Could use another dataclass instead of a dict for loss terms,
+  though if they're not referenced in transformations I don't 
+  know that it really matters.
 - L2 by default, but should allow for other norms
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
@@ -15,6 +18,7 @@ from typing import (
     Dict, 
     Optional, 
     Protocol, 
+    Sequence,
     Tuple,
     runtime_checkable,
 )
@@ -59,8 +63,8 @@ class CompositeLoss(AbstractLoss):
     - Perhaps change the labeling scheme; if we don't allow nesting then 
       it is inappropriate to just take the first label name from each component.
     """
-    terms: Tuple[AbstractLoss, ...]
-    weights: Optional[Tuple[float, ...]]
+    terms: Sequence[AbstractLoss]
+    weights: Optional[Sequence[float]]
     labels: Tuple[str, ...]
     
     def __init__(self, terms, weights):
@@ -103,7 +107,7 @@ class CompositeLoss(AbstractLoss):
 @runtime_checkable
 class HasEffectorState(Protocol):
     effector: Tuple[Float[Array, "2"], Float[Array, "2"]]
-    # effector: CartesianState
+    #? effector: CartesianState
 
 
 class EffectorPositionLoss(AbstractLoss):

@@ -58,9 +58,7 @@ class Recursion(eqx.Module):
         
         states = self.init(input, state, args, key2)
         
-        
         if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
-            # this tqdm doesn't show except on an exception, which might be useful
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
                 input, states, key3 = self._body_func(i, (input, states, key3))
