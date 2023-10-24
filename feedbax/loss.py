@@ -142,7 +142,7 @@ class EffectorPositionLoss(AbstractLoss):
 
     def __init__(
         self, 
-        labels=("ee_position",), 
+        labels=("effector_position",), 
         discount=None,
     ):
         self.labels = labels
@@ -173,7 +173,7 @@ class EffectorPositionLoss(AbstractLoss):
 
 class EffectorFixationLoss(AbstractLoss):
     """"""
-    labels: Tuple[str, ...] = ("ee_fixation",)
+    labels: Tuple[str, ...] = ("effector_fixation",)
     
     def __call__(
         self, 
@@ -197,7 +197,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     
     TODO: how do we handle calculating oss for a single timestep only?
     """
-    labels: Tuple[str, ...] = ("ee_final_velocity",)
+    labels: Tuple[str, ...] = ("effector_final_velocity",)
 
     def __call__(
         self, 

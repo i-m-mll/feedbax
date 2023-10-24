@@ -61,9 +61,14 @@ class TwoLink:
         return self.I[1]  # + m[1] * s[1] ** 2
 
 
+class State(eqx.Module):
+    theta: Float[Array, "2"]
+    dtheta: Float[Array, "2"]
+
+
 def twolink_field(twolink):
-    def field(t, y, args):
-        theta, dtheta = y 
+    def field(t, state, args):
+        theta, dtheta = state.theta, state.dtheta 
         
         # centripetal and coriolis forces 
         c_vec = jnp.array((
@@ -76,11 +81,11 @@ def twolink_field(twolink):
         inertia_mat = jnp.array(((twolink.a1 + 2 * twolink.a2 * cs1, tmp),
                                  (tmp, twolink.a3 * jnp.ones_like(cs1))))
         
-        net_torque = torque(t, y, args) - c_vec.T - jnp.matmul(dtheta, twolink.B.T) # - viscosity * state.dtheta
+        net_torque = torque(t, state, args) - c_vec.T - jnp.matmul(dtheta, twolink.B.T) # - viscosity * state.dtheta
         
         ddtheta = jnp.linalg.inv(inertia_mat) @ net_torque
         
-        return dtheta, ddtheta
+        return State(dtheta, ddtheta)
     
     return field
 
@@ -91,11 +96,10 @@ def solve(y0, dt0, args):
     t1 = 1
     saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
     state = solver.init(term, t0, t1 + dt0, y0, args)
-    return state
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
-y0 = (jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0., 0.]))
+y0 = State(jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0., 0.]))
 dt0 = 0.01  
 args = None
 
@@ -103,10 +107,8 @@ with jax.default_device(jax.devices('cpu')[0]):
     sol = solve(y0, dt0, args)      
 
 # %%
-
-# %%
 xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(
-    TwoLink(), sol.ys[0], sol.ys[1]
+    TwoLink(), sol.ys.theta, sol.ys.dtheta
 )
 
 # %% [markdown]

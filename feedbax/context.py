@@ -47,7 +47,7 @@ class SimpleFeedback(eqx.Module):
         
         feedback_state = args  #! part of feedback hack
         
-        key1, key2 = jrandom.split(key)
+        key1, _ = jrandom.split(key)
         
         # mechanics state feedback plus task inputs (e.g. target state)
         control, hidden = self.net((input, feedback_state), state.hidden, key1)

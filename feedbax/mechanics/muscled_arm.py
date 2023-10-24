@@ -57,7 +57,7 @@ class TwoLinkMuscled(eqx.Module):
     f0: Float[Array, "muscles"] = eqx.field(static=True)
     
     forward_kinematics: Callable 
-    reverse_kinematics: Callable
+    inverse_kinematics: Callable
     
     def __init__(
         self, 
@@ -83,21 +83,21 @@ class TwoLinkMuscled(eqx.Module):
         self.forward_kinematics = self.twolink.forward_kinematics
         self.inverse_kinematics = self.twolink.inverse_kinematics
 
-    def vector_field(self, t, y, args):
-        theta, d_theta, activation = y 
+    def vector_field(self, t, state, args):
         u = args 
 
-        muscle_length = self._muscle_length(theta)
-        muscle_velocity = self._muscle_velocity(d_theta)
+        muscle_length = self._muscle_length(state.theta)
+        muscle_velocity = self._muscle_velocity(state.d_theta)
         
-        d_activation = self.activator.vector_field(t, activation, u)
+        d_activation = self.activator.vector_field(t, state.activation, u)
         
         tension = self.muscle_model(muscle_length, muscle_velocity, u)
         torque = self.moment_arms @ (self.f0 * tension)
         
-        d_theta, dd_theta = self.twolink.vector_field(t, (theta, d_theta), torque)
-        
-        return d_theta, dd_theta, d_activation
+        d_joints = self.twolink.vector_field(t, state, torque)
+        d_theta, dd_theta = d_joints.theta, d_joints.d_theta
+                
+        return TwoLinkMuscledState(d_theta, dd_theta, d_activation)
 
     def _muscle_length(self, theta):
         moment_arms, l0, theta0 = self.theta0, self.l0, self.theta0
@@ -113,15 +113,16 @@ class TwoLinkMuscled(eqx.Module):
         theta = self.inverse_kinematics(
             effector_state[0]
         )        
-        return TwoLinkMuscledState(
+        a = TwoLinkMuscledState(
             theta, 
             jnp.zeros_like(theta), 
-            jnp.zeros_like(self.control_size)
+            jnp.zeros(self.control_size)
         )
+        return a
     
     @property
     def control_size(self):
-        return len(self.l0)
+        return self.l0.shape[0]
     
     @cached_property
     def state_size(self):

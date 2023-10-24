@@ -52,9 +52,8 @@ class TwoLink(eqx.Module):
         # otherwise their initialization is a side effect
         self._a  
         
-    def vector_field(self, t, y, args):
-        # TODO: pass y as a pytree (tuple)?
-        theta, d_theta = y
+    def vector_field(self, t, state, args):
+        theta, d_theta = state.theta, state.d_theta
         input_torque = args
 
         # centripetal and coriolis torques 
@@ -73,7 +72,7 @@ class TwoLink(eqx.Module):
         
         dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
         
-        return d_theta, dd_theta
+        return TwoLinkState(d_theta, dd_theta)
     
     def init(self, effector_state):
         theta = self.inverse_kinematics(
@@ -144,13 +143,11 @@ class TwoLink(eqx.Module):
 
     def forward_kinematics(
             self,
-            theta: Float[Array, "links"],
-            dtheta: Float[Array, "links"],
+            state: TwoLinkState
     ):
         """Convert angular state to Cartesian state.
         
         NOTE:
-        - This is the "forward kinematics" problem.
         - See https://robotics.stackexchange.com/a/6393; which suggests the 
         Denavit-Hartenberg method, which uses a matrix for each joint, 
         transforming its angle into a change in position relative to the 
@@ -159,13 +156,13 @@ class TwoLink(eqx.Module):
         TODO:
         - Any point to reducing memory by only calculating the last link?
         """
-        angle_sum = jnp.cumsum(theta)  # links
+        angle_sum = jnp.cumsum(state.theta)  # links
         length_components = self.l * jnp.array([jnp.cos(angle_sum),
                                                 jnp.sin(angle_sum)])  # xy, links
         xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
         
-        ang_vel_sum = jnp.cumsum(dtheta)  # links
+        ang_vel_sum = jnp.cumsum(state.d_theta)  # links
         xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
                                  * ang_vel_sum,
-                                 axis=1)
-        return xy_position, xy_velocity
+                                 axis=1)  # xy, links
+        return xy_position.T, xy_velocity.T

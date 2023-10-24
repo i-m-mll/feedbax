@@ -175,6 +175,7 @@ loss_func = fbl.CompositeLoss(
 task = RandomReaches(
     loss_func=loss_func,
     workspace=workspace, 
+    n_steps=n_steps,
     eval_grid_n=2,
     eval_n_directions=8,
     eval_reach_length=0.05,
@@ -198,10 +199,10 @@ trainable_leaves_func = lambda model: (
 model, losses, loss_terms = trainer(
     task=task, 
     model=model,
-    n_batches=10_000, 
+    n_batches=1000, 
     batch_size=500, 
-    log_step=250,
-    trainable_leaves_func=
+    log_step=100,
+    trainable_leaves_func=trainable_leaves_func,
     key=key,
 )
 
@@ -226,10 +227,11 @@ loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 # %%
 # fig = make_eval_plot(states[1], states[2], workspace)
 init_states, target_states, _ = task.trials_eval
-pos_endpoints = tuple(zip(init_states, target_states))[0]
+goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
+pos_endpoints = tuple(zip(init_states, goal_states))[0]
 plot_states_forces_2d(
-    states.effector[0], 
-    states.effector[1], 
+    states.mechanics.effector[0], 
+    states.mechanics.effector[1], 
     states.control[:, 2:, -2:], 
     pos_endpoints, 
     force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
@@ -245,9 +247,17 @@ idx = 0
 
 # %%
 # convert all joints to Cartesian since I only saved the EE state
-xy_pos = eqx.filter_vmap(nlink_angular_to_cartesian)(
-    model.step.mechanics.system.twolink, states[0][0].reshape(-1, 2), states[0][1].reshape(-1, 2)
-)[0].reshape(states[0][0].shape[0], -1, 2, 2)
+
+# vmap twice, over trials and time; `forward_kinematics` applies to single points
+forward_kinematics = model.step.mechanics.system.forward_kinematics
+xy_pos = jax.vmap(jax.vmap(forward_kinematics, in_axes=0), in_axes=1)(
+    states.mechanics.system
+)[0]
+
+# #? we can't just swap `in_axes` above; it causes a vmap shape error with 
+# axis 2 of the arrays in `states.mechanics.system`, which includes 
+# the (unused, in this case) muscle activation state
+xy_pos = jnp.swapaxes(xy_pos, 0, 1)
 
 # %%
 ax = plot_2D_joint_positions(xy_pos[idx], add_root=True)

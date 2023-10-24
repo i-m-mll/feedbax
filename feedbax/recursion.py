@@ -38,10 +38,11 @@ class Recursion(eqx.Module):
         
         key1, key2 = jrandom.split(key)
         
-        # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
+        #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
         feedback = (
-            tree_get_idx(states.mechanics.system[:2], i - self.step.delay),  # omit muscle activation
-            tree_get_idx(states.mechanics.effector, i - self.step.delay),  # ee state
+            tree_get_idx(states.mechanics.system.theta, i - self.step.delay),  
+            tree_get_idx(states.mechanics.system.d_theta, i - self.step.delay),  
+            tree_get_idx(states.mechanics.effector, i - self.step.delay),  
         )
         args = feedback
         
@@ -55,10 +56,11 @@ class Recursion(eqx.Module):
     def __call__(self, inputs, init_effector_state, key):
         key1, key2, key3 = jrandom.split(key, 3)
         
-        init_state = self.step.init(init_effector_state) #! maybe this should be outside
+        init_state = self.step.init(init_effector_state)  #! maybe this should be outside
         
         #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (init_state.mechanics.system[:2], 
+        args = jax.tree_map(jnp.zeros_like, (init_state.mechanics.system.theta,
+                                             init_state.mechanics.system.d_theta, 
                                              init_state.mechanics.effector))
         
         init_input = tree_get_idx(inputs, 0)

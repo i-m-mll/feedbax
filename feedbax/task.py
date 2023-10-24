@@ -71,6 +71,7 @@ class AbstractTask(eqx.Module):
 class RandomReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "ndim 2"]
+    n_steps: int
     eval_n_directions: int 
     eval_reach_length: float
     eval_grid_n: int  # e.g. 2 -> 2x2 grid of center-out reach sets
@@ -87,6 +88,10 @@ class RandomReaches(AbstractTask):
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
         init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
+        target_state = jax.tree_map(
+            lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+            target_state,
+        )
         task_input = target_state
         return init_state, target_state, task_input
         
@@ -102,6 +107,15 @@ class RandomReaches(AbstractTask):
         ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
         init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        # this is kind of annoying, but because the batch is explicit here, we
+        # need to swap axes as well as broadcast
+        target_states = jax.tree_map(
+            lambda x: jnp.swapaxes(
+                jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+                0, 1
+            ),
+            target_states,
+        )
         task_inputs = target_states 
         return init_states, target_states, task_inputs
     

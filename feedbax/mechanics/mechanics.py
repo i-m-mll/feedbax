@@ -14,6 +14,7 @@ from jaxtyping import Array, PyTree
 
 from feedbax.mechanics.system import System
 from feedbax.state import AbstractState
+from feedbax.utils import tree_get_idx
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,12 @@ class Mechanics(eqx.Module):
             state.solver, 
             made_jump=False,
         )
-        effector_state = self.system.forward_kinematics(system_state)
+        # TODO: this should be `self.system.effector(system_state)` or something,
+        # otherwise, `Mechanics` knows that effector = last link, which might not be true
+        effector_state = tree_get_idx(
+            self.system.forward_kinematics(system_state),
+            -1  # last link
+        )
         return MechanicsState(system_state, effector_state, solver_state)
     
     def init(self, effector_state, input=None, key=None):
@@ -59,10 +65,7 @@ class Mechanics(eqx.Module):
         #! assumes zero initial velocity; TODO convert initial velocity also
         system_state = self.system.init(effector_state)
         args = inputs_empty = jnp.zeros((self.system.control_size,))
-        
-        # eqx.tree_pprint(system_state)
-        # eqx.tree_pprint(args)
-        
+ 
         return MechanicsState(
             system_state,  # self.system.init()
             effector_state, 
