@@ -58,6 +58,7 @@ class TwoLinkMuscled(eqx.Module):
     
     forward_kinematics: Callable 
     inverse_kinematics: Callable
+    effector: Callable
     
     def __init__(
         self, 
@@ -82,6 +83,7 @@ class TwoLinkMuscled(eqx.Module):
         #! alias these so this class behaves like `Mechanics` expects
         self.forward_kinematics = self.twolink.forward_kinematics
         self.inverse_kinematics = self.twolink.inverse_kinematics
+        self.effector = self.twolink.effector
 
     def vector_field(self, t, state, args):
         u = args 

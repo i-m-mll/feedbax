@@ -122,6 +122,13 @@ def get_model(
         )
     )
     mechanics = Mechanics(system, dt)
+    
+    feedback_leaves_func = lambda mechanics_state: (
+        mechanics_state.system.theta,
+        mechanics_state.system.d_theta,
+        mechanics_state.effector,         
+    )
+    
     # joint state feedback + effector state + target state
     n_input = system.twolink.state_size + 2 * N_DIM + 2 * N_DIM
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
@@ -131,9 +138,16 @@ def get_model(
         mechanics, 
         delay=feedback_delay,  
     )
+    
 
-    return Recursion(body, n_steps)
 
+    model = Recursion(
+        body, 
+        n_steps,
+        feedback_leaves_func,
+    )
+    
+    return model 
 
 # %% [markdown]
 # Train the model.
@@ -148,16 +162,6 @@ workspace = jnp.array([[-0.15, 0.15],
                        [0.20, 0.50]])
 n_hidden  = 50
 learning_rate = 0.05
-
-model = get_model(
-    key, 
-    dt=dt,
-    n_hidden=n_hidden,
-    n_steps=n_steps,
-    feedback_delay=0,
-    tau=0.01,
-    out_nonlinearity=jax.nn.sigmoid,
-)
 
 # #! these assume a particular PyTree structure to the states returned by the model
 # #! which is why we simply instantiate them 
@@ -179,6 +183,16 @@ task = RandomReaches(
     eval_grid_n=2,
     eval_n_directions=8,
     eval_reach_length=0.05,
+)
+
+model = get_model(
+    key, 
+    dt=dt,
+    n_hidden=n_hidden,
+    n_steps=n_steps,
+    feedback_delay=0,
+    tau=0.01,
+    out_nonlinearity=jax.nn.sigmoid,
 )
 
 trainer = TaskTrainer(
@@ -232,7 +246,8 @@ pos_endpoints = tuple(zip(init_states, goal_states))[0]
 plot_states_forces_2d(
     states.mechanics.effector[0], 
     states.mechanics.effector[1], 
-    states.control[:, 2:, -2:], 
+    # leave out the first timestep of controls, since it jumps from (0,0)
+    states.control[:, 1:, -2:], 
     pos_endpoints, 
     force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
     cmap='plasma', 

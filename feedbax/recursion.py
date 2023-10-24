@@ -6,6 +6,7 @@
 
 import logging
 import os
+from typing import Callable
 
 import equinox as eqx
 import jax
@@ -28,10 +29,7 @@ class Recursion(eqx.Module):
     """
     step: eqx.Module 
     n_steps: int = eqx.field(static=True)
-    
-    def __init__(self, step, n_steps):
-        self.step = step
-        self.n_steps = n_steps        
+    feedback_leaves_func: Callable[[PyTree], PyTree]    
         
     def _body_func(self, i, x):
         inputs, states, key = x
@@ -39,15 +37,14 @@ class Recursion(eqx.Module):
         key1, key2 = jrandom.split(key)
         
         #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        feedback = (
-            tree_get_idx(states.mechanics.system.theta, i - self.step.delay),  
-            tree_get_idx(states.mechanics.system.d_theta, i - self.step.delay),  
-            tree_get_idx(states.mechanics.effector, i - self.step.delay),  
+        feedback = tree_get_idx(
+            self.feedback_leaves_func(states.mechanics),
+            i - self.step.delay,
         )
+            
         args = feedback
         
-        state = tree_get_idx(states, i)
-        input = tree_get_idx(inputs, i)  
+        state, input = tree_get_idx((states, inputs), i)
         state = self.step(input, state, args, key1)
         states = tree_set_idx(states, state, i + 1)
         
@@ -59,9 +56,10 @@ class Recursion(eqx.Module):
         init_state = self.step.init(init_effector_state)  #! maybe this should be outside
         
         #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(jnp.zeros_like, (init_state.mechanics.system.theta,
-                                             init_state.mechanics.system.d_theta, 
-                                             init_state.mechanics.effector))
+        args = jax.tree_map(
+            jnp.zeros_like, 
+            self.feedback_leaves_func(init_state.mechanics)
+        )
         
         init_input = tree_get_idx(inputs, 0)
         states = self.init(init_input, init_state, args, key2)

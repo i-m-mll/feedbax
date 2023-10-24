@@ -53,8 +53,6 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
-import tqdm
-from tqdm.auto import tqdm
 
 from feedbax.context import SimpleFeedback
 import feedbax.loss as fbl
@@ -63,10 +61,6 @@ from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNN
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReachesDelayed
-from feedbax.task import (
-    centreout_endpoints, 
-    uniform_endpoints,
-)
 from feedbax.trainer import TaskTrainer
 
 from feedbax.plot import (
@@ -111,7 +105,7 @@ def get_model(
     tau_leak=5, 
     n_steps=100, 
     feedback_delay=0,
-    out_nonlinearity=jax.nn.sigmoid,
+    out_nonlinearity=lambda x: x,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
@@ -121,15 +115,25 @@ def get_model(
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt)
+    
+    feedback_leaves_func = lambda mechanics_state: mechanics_state.system
+    
     # hold, target-on signals; feedback & target states
-    # NOTE: both "effector" and system state are fed back, redundantly, due to limitations with the feedback hack
-    n_input = 1 + 1 + system.state_size * 3  
+    n_input = 1 + 1 + system.state_size * 2 
     #cell = RNNCell(n_input, n_hidden, dt=dt, tau=tau_leak, key=keyc)t
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
     net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
-    body = SimpleFeedback(net, mechanics, delay=feedback_delay)
+    body = SimpleFeedback(
+        net, 
+        mechanics, 
+        delay=feedback_delay
+    )
 
-    return Recursion(body, n_steps)
+    return Recursion(
+        body, 
+        n_steps,
+        feedback_leaves_func=feedback_leaves_func,
+    )
 
 
 # %%
@@ -146,7 +150,7 @@ workspace = jnp.array([[-1., 1.],
 task_epoch_len_ranges = ((5, 15),   # start
                          (10, 20),  # stim
                          (10, 25))  # hold
-n_hidden  = 50
+n_hidden = 50
 learning_rate = 0.01
 
 model = get_model(
@@ -155,7 +159,6 @@ model = get_model(
     n_hidden=n_hidden,
     n_steps=n_steps,
     feedback_delay=feedback_delay_steps,
-    out_nonlinearity=jax.nn.sigmoid,
 )
 
 # #! these assume a particular PyTree structure to the states returned by the model
@@ -169,7 +172,7 @@ loss_func = fbl.CompositeLoss(
         fbl.ControlLoss(),
         fbl.NetworkActivityLoss(),
     ),
-    weights=(1, 1, 1, 1e-4, 1e-5)
+    weights=(1., 1., 1., 1e-4, 1e-5)
 )
 
 task = RandomReachesDelayed(
@@ -179,7 +182,7 @@ task = RandomReachesDelayed(
     epoch_len_ranges=task_epoch_len_ranges,
     eval_grid_n=2,
     eval_n_directions=8,
-    eval_reach_length=0.05,
+    eval_reach_length=0.5,
 )
 
 trainer = TaskTrainer(
@@ -188,22 +191,6 @@ trainer = TaskTrainer(
     ),
     chkpt_dir=chkpt_dir,
     checkpointing=True,
-)
-
-# %%
-init_states, target_states, task_inputs = task.trials_eval
-# assume the goal is the target state at the last time step
-goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
-pos_endpoints = tuple(zip(init_states, goal_states))[0]
-plot_task_and_speed_profiles(
-    velocity=jnp.zeros((32, n_steps, 2)), 
-    task_variables={
-        'target X': task_inputs.stim[0][..., 0],
-        'target Y': task_inputs.stim[0][..., 1],
-        'fixation signal': task_inputs.hold,
-        'target ON signal': task_inputs.stim_on,
-    }, 
-    #epoch_idxs=epoch_idxs
 )
 
 # %%

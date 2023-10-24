@@ -52,12 +52,7 @@ class Mechanics(eqx.Module):
             state.solver, 
             made_jump=False,
         )
-        # TODO: this should be `self.system.effector(system_state)` or something,
-        # otherwise, `Mechanics` knows that effector = last link, which might not be true
-        effector_state = tree_get_idx(
-            self.system.forward_kinematics(system_state),
-            -1  # last link
-        )
+        effector_state = self.system.effector(system_state)
         return MechanicsState(system_state, effector_state, solver_state)
     
     def init(self, effector_state, input=None, key=None):
@@ -71,3 +66,18 @@ class Mechanics(eqx.Module):
             effector_state, 
             self.solver.init(self.term, 0, self.dt, system_state, args),
         )
+    
+    def n_vars(self, leaves_func):
+        """
+        TODO: Given a function that returns a PyTree of leaves of `mechanics_state`,
+        return the sum of the sizes of the last dimensions of the leaves.
+        
+        Alternatively, just return an empty `mechanics_state`.
+        
+        This is useful to automatically determine the number of feedback inputs 
+        during model construction, when a `mechanics_state` instance isn't yet available.
+        
+        See `get_model` in notebook 8.
+        """
+        # utils.tree_sum_n_features
+        ...

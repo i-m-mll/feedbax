@@ -61,17 +61,20 @@ class SimpleLTISystem(AbstractLTISystem):
     B: Float[Array, "state input"]  # control matrix
     C: Float[Array, "obs state"]  # observation matrix    
     
-    def forward_kinematics(
-        self, 
-        state: Float[Array, "state"]
-    ) -> Float[Array, "state"]:
-        return state 
+    # def forward_kinematics(
+    #     self, 
+    #     state: Float[Array, "state"]
+    # ) -> Float[Array, "state"]:
+    #     return state 
     
     def inverse_kinematics(
         self, 
         effector_state: Float[Array, "state"]
     ) -> Float[Array, "state"]:
         return effector_state
+    
+    def effector(self, system_state):
+        return system_state
     
     def init(self, effector_state):
         return effector_state

@@ -225,6 +225,15 @@ def tree_sum_squares(tree):
         jax.tree_map(lambda x: jnp.sum(x ** 2), tree)
     )
 
+
+def tree_sum_n_features(tree):
+    """Sum the sizes of the last dimensions of all leaves."""
+    return jax.tree_util.tree_reduce(
+        lambda x, y: x + y, 
+        jax.tree_map(lambda x: x.shape[-1], tree)
+    )
+
+
 def corners_2d(bounds: Float[Array, "ndim=2 2"]):    
     """Generate the corners of a rectangle from its bounds."""
     xy = jax.tree_map(jnp.ravel, jnp.meshgrid(*bounds))

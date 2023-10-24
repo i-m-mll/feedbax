@@ -9,6 +9,7 @@ from functools import cached_property
 import logging
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 import numpy as np
@@ -166,3 +167,9 @@ class TwoLink(eqx.Module):
                                  * ang_vel_sum,
                                  axis=1)  # xy, links
         return xy_position.T, xy_velocity.T
+
+    def effector(self, state: TwoLinkState):
+        return jax.tree_map(
+            lambda x: x[-1],  # last link
+            self.forward_kinematics(state),
+        )

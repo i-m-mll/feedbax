@@ -7,6 +7,7 @@
 import logging
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array, PyTree
