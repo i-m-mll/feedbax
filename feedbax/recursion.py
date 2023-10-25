@@ -22,32 +22,35 @@ logger = logging.getLogger(__name__)
 
 
 class Recursion(eqx.Module):
-    """
+    """A model that recursively applies another model for `n_steps` steps.
     
     TODO:
     - is there a way to avoid assuming the `input, state` argument structure of `step`?
+    - with the new partitioning of states into memory and no-memory,
     """
     step: eqx.Module 
     n_steps: int 
-    feedback_leaves_func: Callable[[PyTree], PyTree]    
+    states_includes: PyTree[bool] = True
         
     def _body_func(self, i, x):
         inputs, states, key = x
         
         key1, key2 = jrandom.split(key)
         
-        #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        feedback = tree_get_idx(
-            self.feedback_leaves_func(states.mechanics),
-            i - self.step.delay,
-        )
-            
-        args = feedback
+        # since we optionally store the trajectories of only some of the states,
+        # as specified by `states_includes`, we need to partition these out 
+        # so we can index them, then recombine with the states for which only 
+        # the current step is stored
+        states_mem, state_nomem = eqx.partition(states, self.states_includes)
+        state_mem, input = tree_get_idx((states_mem, inputs), i)
+        state = eqx.combine(state_mem, state_nomem)
         
-        state, input = tree_get_idx((states, inputs), i)
-        state = self.step(input, state, args, key1)
-        states = tree_set_idx(states, state, i + 1)
+        state = self.step(input, state, key1)
         
+        state_mem, state_nomem = eqx.partition(state, self.states_includes)        
+        states_mem = tree_set_idx(states_mem, state_mem, i + 1)
+        states = eqx.combine(states_mem, state_nomem)
+                
         return inputs, states, key2
     
     def __call__(self, inputs, init_effector_state, key):
@@ -55,14 +58,8 @@ class Recursion(eqx.Module):
         
         init_state = self.step.init(init_effector_state)  #! maybe this should be outside
         
-        #! `args` is vestigial. part of the feedback hack
-        args = jax.tree_map(
-            jnp.zeros_like, 
-            self.feedback_leaves_func(init_state.mechanics)
-        )
-        
         init_input = tree_get_idx(inputs, 0)
-        states = self.init(init_input, init_state, args, key2)
+        states = self.init(init_input, init_state, key2)
         
         if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
             for i in tqdm(range(self.n_steps),
@@ -80,16 +77,36 @@ class Recursion(eqx.Module):
         
         return states
     
-    def init(self, input, state, args, key):
-        # 1. generate empty trajectories of states 
-        outputs = eqx.filter_eval_shape(self.step, input, state, args, key)
-        # `eqx.is_array_like` is False for jax.ShapeDtypeSty
-        scalars, array_structs = eqx.partition(outputs, eqx.is_array_like)
-        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
+    def init(self, input, init_state, key):
+        # get the shape of the state output by `self.step`
+        outputs = eqx.filter_eval_shape(
+            self.step, 
+            input, 
+            init_state, 
+            key,
+        )
+        
+        # generate empty trajectories for mem states
+        scalars, array_structs = eqx.partition(
+            eqx.filter(outputs, self.states_includes), 
+            eqx.is_array_like  # False for jax.ShapeDtypeStruct
+        )
+        asarrays = eqx.combine(
+            jax.tree_map(jnp.asarray, scalars), 
+            array_structs
+        )
         states = jax.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
             asarrays,
         )
-        # 2. initialize the first state
-        states = tree_set_idx(states, state, 0)
+    
+        # insert the init state for mem states; combine with no mem state
+        init_state_mem, init_state_nomem = eqx.partition(
+            init_state, self.states_includes
+        )
+        states = eqx.combine(
+            tree_set_idx(states, init_state_mem, 0), 
+            init_state_nomem
+        )
+        
         return states

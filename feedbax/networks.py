@@ -14,6 +14,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+from jaxtyping import Float
 
 from feedbax.utils import interleave_unequal
 
@@ -163,15 +164,17 @@ class RNN(eqx.Module):
     cell: eqx.Module
     linear: eqx.nn.Linear
     bias: jax.Array
-    out_nonlinearity: Callable 
+    out_nonlinearity: Callable[[Float], Float]
     noise_std: Optional[float]
+    persistence: bool
 
     def __init__(
         self, 
         cell: eqx.Module,
         out_size: int, 
-        out_nonlinearity=lambda x: x,
-        noise_std=None,
+        out_nonlinearity: Callable[[Float], Float] = lambda x: x,
+        noise_std: Optional[float] = None,
+        persistence: bool = True,
         *,
         key: jrandom.PRNGKeyArray, 
     ):
@@ -181,32 +184,20 @@ class RNN(eqx.Module):
         self.bias = jnp.zeros(out_size)
         self.out_nonlinearity = out_nonlinearity       
         self.noise_std = noise_std
+        self.persistence = persistence
         
-        # initialize cached properties
-        self._add_noise  
-
     def __call__(self, input, state, key=None):
-        #state = self.init()
+        if not self.persistence:
+            state = self.init()
         # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
         input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)
-        state = self._add_noise(state, key)
+        if self.noise_std is not None:
+            noise = self.noise_std * jrandom.normal(key, state.shape) 
+            state = state + noise
         output = self.out_nonlinearity(self.linear(state) + self.bias)
         
         return output, state
-    
-    @cached_property
-    def _add_noise(self):
-        #? this might be overkill; equinox uses simple conditionals in `__call__` for similar
-        # TODO: timeit the difference
-        if self.noise_std is not None:
-            return self.__add_noise
-        else:
-            return lambda state, _: state
-    
-    def __add_noise(self, state, key):
-        noise = self.noise_std * jrandom.normal(key, state.shape) 
-        return state + noise
     
     def init(self, state=None):
         if state is None:

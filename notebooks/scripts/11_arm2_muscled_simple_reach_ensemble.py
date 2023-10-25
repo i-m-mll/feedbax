@@ -50,7 +50,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.context import SimpleFeedback
+from feedbax.channel import ChannelState
+from feedbax.context import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.muscle import (
@@ -130,20 +131,27 @@ def get_model(
     # joint state feedback + effector state + target state
     n_input = system.twolink.state_size + 2 * N_DIM + 2 * N_DIM
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
-    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
+    net = RNN(
+        cell, 
+        system.control_size, 
+        out_nonlinearity=out_nonlinearity,
+        persistence=False, 
+        key=key2)
     body = SimpleFeedback(
         net, 
         mechanics, 
         delay=feedback_delay,  
-    )
-
-    model = Recursion(
-        body, 
-        n_steps,
-        feedback_leaves_func,
+        feedback_leaves_func=feedback_leaves_func,
     )
     
-    return model 
+    states_includes = SimpleFeedbackState(
+        mechanics=True, 
+        control=True, 
+        hidden=True, 
+        feedback=ChannelState(output=True, queue=False)
+    )
+
+    return Recursion(body, n_steps, states_includes=states_includes)
 
 
 # %% [markdown]
@@ -200,13 +208,6 @@ trainer = TaskTrainer(
     ),
     chkpt_dir=chkpt_dir,
     checkpointing=True,
-)
-
-# %%
-keys_model = jrandom.split(key, 3)
-models = eqx.filter_vmap(get_model)(keys_model)
-eqx.filter_vmap(lambda x, y: eqx.combine(x, y), in_axes=(0, None))(
-    *eqx.partition(models, eqx.is_array)
 )
 
 # %%

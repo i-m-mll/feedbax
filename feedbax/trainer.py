@@ -91,7 +91,36 @@ class TaskTrainer(eqx.Module):
         self.chkpt_dir = Path(chkpt_dir)
         if self.checkpointing:
             self.chkpt_dir.mkdir(exist_ok=True)
-            
+        
+    def __call__(
+        self, 
+        task: AbstractTask,
+        model: eqx.Module,
+        n_batches: int, 
+        batch_size: int, 
+        trainable_leaves_func: Callable = lambda model: model,
+        log_step: int = 100, 
+        restore_checkpoint: bool = False,
+        save_dir: Optional[str] = None,
+        *,
+        key: jrandom.PRNGKeyArray,
+    ):
+        """Train a model on a task for a fixed number of batches of trials."""
+        
+        return self._train(
+            task, 
+            model, 
+            model, 
+            n_batches, 
+            batch_size, 
+            trainable_leaves_func,
+            log_step,
+            restore_checkpoint,
+            save_dir,
+            key,
+            False,
+        )
+    
     def model_ensemble(
         self,
         task: AbstractTask,
@@ -142,36 +171,6 @@ class TaskTrainer(eqx.Module):
             save_dir,
             keys_train,
             True,
-        )
-        
-    
-    def __call__(
-        self, 
-        task: AbstractTask,
-        model: eqx.Module,
-        n_batches: int, 
-        batch_size: int, 
-        trainable_leaves_func: Callable = lambda model: model,
-        log_step: int = 100, 
-        restore_checkpoint: bool = False,
-        save_dir: Optional[str] = None,
-        *,
-        key: jrandom.PRNGKeyArray,
-    ):
-        """Train a model on a task for a fixed number of batches of trials."""
-        
-        return self._train(
-            task, 
-            model, 
-            model, 
-            n_batches, 
-            batch_size, 
-            trainable_leaves_func,
-            log_step,
-            restore_checkpoint,
-            save_dir,
-            key,
-            False,
         )
         
     def _train(

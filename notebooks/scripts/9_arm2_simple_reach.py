@@ -52,7 +52,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.context import SimpleFeedback
+
+from feedbax.context import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.arm import TwoLink
@@ -117,18 +118,28 @@ def get_model(
     # joint state feedback + effector state + target state
     n_input = system.state_size * 2 + 2 * N_DIM
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
-    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
+    net = RNN(
+        cell, 
+        system.control_size, 
+        out_nonlinearity=out_nonlinearity, 
+        persistence=True,
+        key=key2,
+    )
     body = SimpleFeedback(
         net, 
         mechanics, 
         delay=feedback_delay,  
+        feedback_leaves_func=feedback_leaves_func,
+    )
+    
+    states_includes = SimpleFeedbackState(
+        mechanics=True, 
+        control=True, 
+        hidden=True, 
+        feedback=ChannelState(output=True, queue=False)
     )
 
-    model = Recursion(
-        body, 
-        n_steps,
-        feedback_leaves_func,
-    )
+    model = Recursion(body, n_steps, states_includes=states_includes)
     
     return model 
 

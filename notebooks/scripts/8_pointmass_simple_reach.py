@@ -64,8 +64,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-
-from feedbax.context import SimpleFeedback
+from feedbax.channel import ChannelState
+from feedbax.context import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
@@ -132,14 +132,32 @@ def get_model(
     
     n_input = system.state_size * 2 # feedback & target states
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
-    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
-    body = SimpleFeedback(net, mechanics, delay=feedback_delay)
-
-    model = Recursion(
-        body, 
-        n_steps,
-        feedback_leaves_func,
+    net = RNN(
+        cell, 
+        system.control_size, 
+        out_nonlinearity=out_nonlinearity, 
+        persistence=False,
+        key=key2
     )
+    body = SimpleFeedback(
+        net, 
+        mechanics, 
+        delay=feedback_delay,
+        feedback_leaves_func=feedback_leaves_func,
+    )
+    
+    # this isn't strictly necessary, but keeps us from storing unnecessary states
+    # e.g. for a delay of 5 timesteps and a trial length of 100 timesteps, if we 
+    # store the feedback queue at every timestep then there'll be a lot of redundancy;
+    # and besides all the same info is available in `mechanics_state`
+    states_includes = SimpleFeedbackState(
+        mechanics=True, 
+        control=True, 
+        hidden=True, 
+        feedback=ChannelState(output=True, queue=False)
+    )
+    
+    model = Recursion(body, n_steps, states_includes=states_includes)
     
     return model
 
@@ -150,7 +168,7 @@ key = jrandom.PRNGKey(seed)
 
 n_steps = 100
 dt = 0.1
-feedback_delay = 0
+feedback_delay = 5
 workspace = jnp.array([[-1., 1.], 
                        [-1., 1.]])
 n_hidden  = 50
@@ -207,13 +225,16 @@ model, losses, losses_terms = trainer(
     model=model,
     n_batches=2000, 
     batch_size=500, 
-    log_step=1,
+    log_step=50,
     trainable_leaves_func=trainable_leaves_func,
     key=key,
 )
 
 # %%
 plot_loglog_losses(losses, losses_terms)
+
+# %%
+model
 
 # %% [markdown]
 # Evaluate on a centre-out task

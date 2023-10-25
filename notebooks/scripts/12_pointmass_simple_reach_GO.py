@@ -54,7 +54,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.context import SimpleFeedback
+from feedbax.channel import ChannelState
+from feedbax.context import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
@@ -122,18 +123,28 @@ def get_model(
     n_input = 1 + 1 + system.state_size * 2 
     #cell = RNNCell(n_input, n_hidden, dt=dt, tau=tau_leak, key=keyc)t
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
-    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
+    net = RNN(
+        cell, 
+        system.control_size, 
+        out_nonlinearity=out_nonlinearity,
+        persistence=True, 
+        key=key2
+    )
     body = SimpleFeedback(
         net, 
         mechanics, 
-        delay=feedback_delay
-    )
-
-    return Recursion(
-        body, 
-        n_steps,
+        delay=feedback_delay,
         feedback_leaves_func=feedback_leaves_func,
     )
+    
+    states_includes = SimpleFeedbackState(
+        mechanics=True, 
+        control=True, 
+        hidden=True, 
+        feedback=ChannelState(output=True, queue=False)
+    )
+
+    return Recursion(body, n_steps, states_includes=states_includes)
 
 
 # %%
