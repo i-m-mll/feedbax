@@ -97,19 +97,23 @@ class TaskTrainer(eqx.Module):
         task: AbstractTask,
         get_model: Callable[[jrandom.PRNGKeyArray], eqx.Module],
         n_model_replicates: int, 
-        *, 
-        key,
-        **kwargs,
+        n_batches: int, 
+        batch_size: int, 
+        trainable_leaves_func: Callable = lambda model: model,
+        log_step:int = 100, 
+        restore_checkpoint:bool = False,
+        save_dir: Optional[str] = None,
+        *,
+        key: jrandom.PRNGKeyArray,
     ):
         """Trains an ensemble of models.
         
         Instead of taking a single model like `__call__`, this takes a function
-        that generates a model, given a random key. 
+        that generates a single model from a random key, along with a single key.
+        It uses these to generate `n_model_replicates` models from different keys,
+        then trains them in parallel on the same task data.
         
         NOTE: 
-        - Assumes the task (e.g. trials) are the same for all replicates.
-        - The `jp.isnan(loss)` in `Trainer.__call__` will abort if even a single
-          one of the replicates has a NaN loss.
         - I'm not sure what to do about tensorboard/print statements. We could log all replicates 
           (probably too messy), log a single replicate, or log some statistics.
           But I'm not sure how to implement this from within the vmapped function...
@@ -117,22 +121,27 @@ class TaskTrainer(eqx.Module):
         TODO: 
         - Allow variation in the task as well as the model.
         """
-        #! I haven't tested this yet, and it might be problematic because we
-        #! want more general, possibly non-vmappable, control flow in here.
-        #! we also want to print stuff and I'm not sure how to handle that.
-        
-        #! one option would be to hve an argument to `__call__` that enables
-        #! statistical transformations on the replicates dim of `loss` etc
-        
         key1, key2 = jrandom.split(key)
         keys_model = jrandom.split(key1, n_model_replicates)
         keys_train = jrandom.split(key2, n_model_replicates)
-        models = jax.vmap(get_model)(keys_model)
-        return jax.vmap(
-            self,
-            in_axes=(None, 0, None, None, None, None, None, 0)
-        )(
-            task, models, key=keys_train, **kwargs
+        models = eqx.filter_vmap(get_model)(keys_model)
+        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        
+        # only map over model arrays and training keys
+        in_axes = (None, 0, None, None, None, None, None, None, None, 0, None)
+        
+        return eqx.filter_vmap(self._train, in_axes=in_axes)(
+            task, 
+            models_arrays, 
+            models_other,
+            n_batches, 
+            batch_size, 
+            trainable_leaves_func,
+            log_step,
+            restore_checkpoint,
+            save_dir,
+            keys_train,
+            True,
         )
         
     
@@ -142,16 +151,56 @@ class TaskTrainer(eqx.Module):
         model: eqx.Module,
         n_batches: int, 
         batch_size: int, 
-        trainable_leaves_func= lambda model: (model.step.net.cell.weight_hh, 
-                                              model.step.net.cell.weight_ih, 
-                                              model.step.net.cell.bias),
-        log_step=100, 
-        restore_checkpoint=False,
+        trainable_leaves_func: Callable = lambda model: model,
+        log_step: int = 100, 
+        restore_checkpoint: bool = False,
         save_dir: Optional[str] = None,
         *,
-        key,
+        key: jrandom.PRNGKeyArray,
     ):
-
+        """Train a model on a task for a fixed number of batches of trials."""
+        
+        return self._train(
+            task, 
+            model, 
+            model, 
+            n_batches, 
+            batch_size, 
+            trainable_leaves_func,
+            log_step,
+            restore_checkpoint,
+            save_dir,
+            key,
+            False,
+        )
+        
+    def _train(
+        self,
+        task,
+        model_arrays,
+        model_other,
+        n_batches,
+        batch_size,
+        trainable_leaves_func,
+        log_step,
+        restore_checkpoint,
+        save_dir,
+        key,
+        ensembled,
+    ):
+        """Implementation of the training procedure. 
+        
+        This is a private kwargless method for the purpose of vmapping, and
+        altering control flow based on whether the models are ensembled. 
+        
+        TODO:
+        - Try a different approach to ensembling, where the vmapping
+        is only performed on appropriate subsets of the training procedure,
+        and other stuff (e.g. logging, NaN control flow) is handled outside 
+        of JAX transformations.
+        """
+        model = eqx.combine(model_arrays, model_other)
+        
         filter_spec = filter_spec_leaves(model, trainable_leaves_func)
         
         losses = jnp.empty((n_batches,))
@@ -201,19 +250,23 @@ class TaskTrainer(eqx.Module):
             losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             
+            if ensembled: 
+                # ensemble training skips the logging and NaN control flow stuff
+                continue
+            
             # tensorboard losses on every iteration
             #! just report for one of the replicates
             if self._use_tb:
                 self.writer.add_scalar('Loss/train', loss[0].item(), batch)
                 for term, loss_term in loss_terms.items():
                     self.writer.add_scalar(f'Loss/train/{term}', loss_term[0].item(), batch)
-
+        
             if jnp.isnan(loss):
-                msg = f"\nNaN loss at batch {batch}! "
+                msg = f"NaN loss at batch {batch}! "
                 if (checkpoint := self._load_last_checkpoint(
                     model, losses, losses_terms
                 )) is not None:
-                    last_batch, model, losses, losses_terms = checkpoint
+                    _, last_batch, model, losses, losses_terms = checkpoint
                     msg += f"Returning checkpoint from batch {last_batch}."
                 else:
                     msg += "No checkpoint found, returning model from final iteration."
@@ -248,8 +301,6 @@ class TaskTrainer(eqx.Module):
                 tqdm.write(f"step: {batch}", file=sys.stdout)
                 tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
                 tqdm.write(f"\tevaluation loss: {loss_eval:.4f}", file=sys.stdout)
-        
-
         
         if save_dir is not None:
             # could probably just concatenate 

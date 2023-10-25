@@ -80,9 +80,7 @@ class TwoLink(eqx.Module):
         self, 
         effector_state: CartesianState2D,
     ):
-        theta = self.inverse_kinematics(
-            effector_state[0]
-        )        
+        theta = self.inverse_kinematics(effector_state)        
         return TwoLinkState(theta, jnp.zeros_like(theta))
 
     @cached_property

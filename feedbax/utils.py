@@ -126,9 +126,8 @@ def filter_spec_leaves(tree, leaf_func):
     `leaf_func` should take `tree` and return leaves from `tree` to filter `True`.
     """
     filter_spec = jax.tree_util.tree_map(lambda _: False, tree)
-    replace = [True] * len(leaf_func(tree))
     filter_spec = eqx.tree_at(
-        leaf_func, filter_spec, replace=replace 
+        leaf_func, filter_spec, replace_fn=lambda x: True 
     )
     return filter_spec
 
