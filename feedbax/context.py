@@ -29,7 +29,7 @@ class SimpleFeedback(eqx.Module):
     """Simple feedback loop with a single RNN and single mechanical system."""
     net: eqx.Module  
     mechanics: Mechanics 
-    delay: int = eqx.field(static=True)
+    delay: int 
     #perturbation: Optional[eqx.Module]
     
     def __init__(self, net, mechanics, delay=0):
@@ -60,7 +60,10 @@ class SimpleFeedback(eqx.Module):
         
         return SimpleFeedbackState(mechanics_state, control, hidden)
     
-    def init(self, effector_state): 
+    def init(
+        self, 
+        effector_state,
+    ): 
         return SimpleFeedbackState(
             self.mechanics.init(effector_state),
             jnp.zeros((self.mechanics.system.control_size,)),

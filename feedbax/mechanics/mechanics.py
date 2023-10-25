@@ -28,8 +28,8 @@ class MechanicsState(AbstractState):
 
 class Mechanics(eqx.Module):
     system: System 
-    dt: float = eqx.field(static=True)
-    term: dfx.AbstractTerm = eqx.field(static=True)
+    dt: float 
+    term: dfx.AbstractTerm 
     solver: Optional[dfx.AbstractSolver] 
     
     def __init__(self, system, dt, solver=None):

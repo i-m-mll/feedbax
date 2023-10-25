@@ -224,7 +224,7 @@ class TaskTrainer(eqx.Module):
             
 
             # checkpointing and evaluation occasionally
-            if (batch + 1) % log_step == 0:
+            if batch % log_step == 0:
                 # model checkpoint
                 if self.checkpointing:
                     eqx.tree_serialise_leaves(self.chkpt_dir / f'model{batch}.eqx', model)

@@ -29,6 +29,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 
+from feedbax.types import CartesianState2D
+
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +110,14 @@ class CompositeLoss(AbstractLoss):
         return loss, loss_terms
 
 
+@runtime_checkable
 class HasEffectorState(Protocol):
-    effector: Tuple[Float[Array, "2"], Float[Array, "2"]]
+    effector: CartesianState2D
 
 
 @runtime_checkable
 class HasMechanicsState(Protocol):
     mechanics: HasEffectorState
-    #? effector: CartesianState
 
 
 class EffectorPositionLoss(AbstractLoss):
@@ -160,7 +162,7 @@ class EffectorPositionLoss(AbstractLoss):
         
         # sum over xyz
         loss = jnp.sum(
-            (states.mechanics.effector[0] - targets[0]) ** 2, 
+            (states.mechanics.effector.pos - targets.pos) ** 2, 
             axis=-1
         )
         
@@ -183,7 +185,7 @@ class EffectorFixationLoss(AbstractLoss):
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(
-            (states.mechanics.effector[0] - targets[0]) ** 2, 
+            (states.mechanics.effector.pos - targets.pos) ** 2, 
             axis=-1
         )
         
@@ -207,7 +209,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     ) -> Tuple[float, Dict[str, float]]:
         
         loss = jnp.sum(
-            (states.mechanics.effector[1][:, -1] - targets[1][:, -1]) ** 2, 
+            (states.mechanics.effector.vel[:, -1] - targets.vel[:, -1]) ** 2, 
             axis=-1
         )
         

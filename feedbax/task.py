@@ -24,6 +24,7 @@ from jaxtyping import Array, Float, Int, PyTree
 import numpy as np
 
 from feedbax.loss import AbstractLoss
+from feedbax.types import CartesianState2D
 from feedbax.utils import internal_grid_points
 
 
@@ -87,7 +88,12 @@ class RandomReaches(AbstractTask):
             maxval=self.workspace[:, 1]
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
-        init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
+        init_state, target_state = jax.tree_map(
+            lambda x: CartesianState2D(*x),
+            list(zip(pos_endpoints, vel_endpoints)),
+            is_leaf=lambda x: isinstance(x, tuple)
+        )
+        # make targets as sequences, because `Recursion` and `Loss` want that
         target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             target_state,
@@ -106,7 +112,11 @@ class RandomReaches(AbstractTask):
             centers, self.eval_n_directions, self.eval_reach_length
         ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
-        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
+        init_states, target_states = jax.tree_map(
+            lambda x: CartesianState2D(*x),
+            list(zip(pos_endpoints, vel_endpoints)),
+            is_leaf=lambda x: isinstance(x, tuple)
+        )
         # this is kind of annoying, but because the batch is explicit here, we
         # need to swap axes as well as broadcast
         target_states = jax.tree_map(
@@ -157,7 +167,11 @@ class RandomReachesDelayed(AbstractTask):
             maxval=self.workspace[:, 1]
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
-        init_state, target_state = tuple(zip(pos_endpoints, vel_endpoints))
+        init_state, target_state = jax.tree_map(
+            lambda x: CartesianState2D(*x),
+            list(zip(pos_endpoints, vel_endpoints)),
+            is_leaf=lambda x: isinstance(x, tuple)
+        )
         task_inputs, target_states, _ = self.get_sequences(
             init_state, target_state, key2
         )      
@@ -174,9 +188,12 @@ class RandomReachesDelayed(AbstractTask):
             centers, self.eval_n_directions, self.eval_reach_length
         ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
-        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
-        
-        epochs_keys = jrandom.split(self.key_eval, init_states[0].shape[0])
+        init_states, target_states = jax.tree_map(
+            lambda x: CartesianState2D(*x),
+            list(zip(pos_endpoints, vel_endpoints)),
+            is_leaf=lambda x: isinstance(x, tuple)
+        )        
+        epochs_keys = jrandom.split(self.key_eval, init_states.pos.shape[0])
         task_inputs, target_states, _ = jax.vmap(self.get_sequences)(
             init_states, target_states, epochs_keys
         )    

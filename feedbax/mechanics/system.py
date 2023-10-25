@@ -17,12 +17,6 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class CartesianState2D(eqx.Module):
-    """Cartesian state of a system."""
-    pos: Float[Array, "... 2"]
-    vel: Float[Array, "... 2"]
-
-
 # TODO maybe this should be `AbstractSystem(eqx.Module)` instead
 class System(Protocol):
     def vector_field(

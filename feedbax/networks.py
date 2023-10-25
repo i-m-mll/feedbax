@@ -78,13 +78,13 @@ class RNNCell(eqx.Module):
     weight_hh: jax.Array
     weight_ih: jax.Array
     bias: Optional[jax.Array]
-    input_size: int = eqx.field(static=True)
-    hidden_size: int = eqx.field(static=True)
-    use_bias: bool = eqx.field(static=True)
-    use_noise: bool = eqx.field(static=True)
-    noise_strength: float = eqx.field(static=True)
-    dt: float = eqx.field(static=True)
-    tau: float = eqx.field(static=True)
+    input_size: int 
+    hidden_size: int 
+    use_bias: bool 
+    use_noise: bool 
+    noise_strength: float 
+    dt: float 
+    tau: float 
     
     def __init__(
         self, 
@@ -159,7 +159,7 @@ class RNNCell(eqx.Module):
 
 class RNN(eqx.Module):
     """From https://docs.kidger.site/equinox/examples/train_rnn/"""
-    out_size: int = eqx.field(static=True)
+    out_size: int 
     cell: eqx.Module
     linear: eqx.nn.Linear
     bias: jax.Array
@@ -186,7 +186,7 @@ class RNN(eqx.Module):
         self._add_noise  
 
     def __call__(self, input, state, key=None):
-        state = self.init()
+        #state = self.init()
         # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
         input = jnp.concatenate(jax.tree_leaves(input))
         state = self.cell(input, state)

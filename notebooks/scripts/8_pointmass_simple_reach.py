@@ -207,7 +207,7 @@ model, losses, losses_terms = trainer(
     model=model,
     n_batches=2000, 
     batch_size=500, 
-    log_step=100,
+    log_step=1,
     trainable_leaves_func=trainable_leaves_func,
     key=key,
 )
@@ -224,16 +224,15 @@ loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 # %%
 init_states, target_states, _ = task.trials_eval
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
-pos_endpoints = tuple(zip(init_states, goal_states))[0]
 plot_states_forces_2d(
-    states.mechanics.system[0], 
-    states.mechanics.system[1], 
+    states.mechanics.system.pos, 
+    states.mechanics.system.vel, 
     states.control, 
-    endpoints=pos_endpoints
+    endpoints=(init_states.pos, goal_states.pos),
 )
 
 # %%
-plt.plot(jnp.sum(states.mechanics.system[1] ** 2, -1).T, '-')
+plt.plot(jnp.sum(states.mechanics.system.vel ** 2, -1).T, '-')
 plt.show()
 
 # %%

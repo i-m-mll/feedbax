@@ -50,11 +50,10 @@ class TwoLinkMuscled(eqx.Module):
     muscle_model: VirtualMuscle  
     activator: eqx.Module
     twolink: TwoLink
-    moment_arms: Float[Array, "links=2 muscles"] = eqx.field(
-        static=True)
-    theta0: Float[Array, "links=2 muscles"] = eqx.field(static=True)
-    l0: Float[Array, "muscles"] = eqx.field(static=True)
-    f0: Float[Array, "muscles"] = eqx.field(static=True)
+    moment_arms: Float[Array, "links=2 muscles"]
+    theta0: Float[Array, "links=2 muscles"] 
+    l0: Float[Array, "muscles"] 
+    f0: Float[Array, "muscles"] 
     
     forward_kinematics: Callable 
     inverse_kinematics: Callable
@@ -112,9 +111,7 @@ class TwoLinkMuscled(eqx.Module):
         return v
     
     def init(self, effector_state):
-        theta = self.inverse_kinematics(
-            effector_state[0]
-        )        
+        theta = self.inverse_kinematics(effector_state)        
         a = TwoLinkMuscledState(
             theta, 
             jnp.zeros_like(theta), 

@@ -212,12 +212,12 @@ loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 # %%
 init_states, target_states, _ = task.trials_eval
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
-pos_endpoints = tuple(zip(init_states, goal_states))[0]
+
 plot_states_forces_2d(
-    states.mechanics.effector[0], 
-    states.mechanics.effector[1], 
+    states.mechanics.effector.pos, 
+    states.mechanics.effector.pos, 
     states.control, 
-    endpoints=pos_endpoints
+    endpoints=(init_states.pos, goal_states.pos)
 )
 
 # %% [markdown]
@@ -233,7 +233,7 @@ idx = 0
 forward_kinematics = model.step.mechanics.system.forward_kinematics
 xy_pos = jax.vmap(jax.vmap(forward_kinematics, in_axes=0), in_axes=1)(
     states.mechanics.system
-)[0]
+).pos
 
 # #? we can't just swap `in_axes` above; it causes a vmap shape error with 
 # axis 2 of the arrays in `states.mechanics.system`, which includes 
@@ -243,5 +243,3 @@ xy_pos = jnp.swapaxes(xy_pos, 0, 1)
 # %%
 ax = plot_2D_joint_positions(xy_pos[idx], add_root=True)
 plt.show()
-
-# %%

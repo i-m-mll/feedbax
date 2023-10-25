@@ -30,27 +30,39 @@ N_DIM = 2  # TODO: not here
 # %matplotlib widget
 
 # %%
-from datetime import datetime 
-import json
-from pathlib import Path 
+import os
+import logging
 import sys
-from typing import Optional
 
-import diffrax as dfx
+from IPython import get_ipython
+
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+
+# redirect stderr (e.g. warnings) to file
+stderr_log = sys.stderr = open(f'log/stderr_{NB_PREFIX}.log', 'w')
+get_ipython().log.handlers[0].stream = stderr_log 
+get_ipython().log.setLevel(LOG_LEVEL)
+
+# %%
+from pathlib import Path 
+
 import equinox as eqx
 import jax
-import jax.lax as lax
 import jax.numpy as jnp 
 import jax.random as jrandom
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
-import tqdm
-from tqdm.auto import tqdm
 
+from feedbax.context import SimpleFeedback
+import feedbax.loss as fbl
+from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.mechanics.system import System
-from feedbax.networks import RNN, RNNCell
+from feedbax.networks import RNN
+from feedbax.recursion import Recursion
+from feedbax.task import RandomReachesDelayed
+from feedbax.trainer import TaskTrainer
+
 from feedbax.plot import (
     animate_3D_rotate,
     plot_planes,
@@ -61,553 +73,139 @@ from feedbax.plot import (
     plot_states_forces_2d,
     plot_task_and_speed_profiles,
 )
-from feedbax.task import (
-    centreout_endpoints, 
-    uniform_endpoints,
-    gen_epoch_lengths,
-    get_masked_seqs,
-    get_scalar_epoch_seq,
-    get_masks, 
-)
-from feedbax.utils import (
-    tree_set_idx, 
-    tree_sum_squares, 
-    tree_get_idx,
-    filter_spec_leaves,
-)
 
 # %%
-# gets set to True after a training run
-# to prevent accidentally loading a model over the trained one
-trained = False  
+os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
+logging.getLogger("jax").setLevel(logging.INFO)
 
-model_dir = Path('../models')
+jax.config.update("jax_debug_nans", DEBUG)
+jax.config.update("jax_enable_x64", ENABLE_X64)
 
-
-# %% [markdown]
-# Constructing task input signals. 
-#
-# Inputs: 
-#
-# - a pytree `x` giving the static (single-timestep) task input arrays
-# - an ndarray `l` giving the integer ranges for uniform sampling of epoch lengths
-#     - shape `(epochs, 2)`; typically should omit the final epoch and constrain the sequence length to be constant
-#     
-# Outputs:
-#
-# - a pytree `xs` with the same structure as `x`, where each array has an additional sequence dimension and has zeros (or some other fill value) everywhere, except for epochs filled with the static task input values from `x`
-# - additional pytrees for other signals (e.g. hold signal) that require the same epoch structure but are not dependent on `x`
-#
-# Comments: 
-#
-# - Presumably a distinct function should do the epoch length sampling, and the returned values may be re-used.
-#     - `jrandom.randint` can take arrays for `min` and `max` that broadcast with `shape`
-# - Use `jnp.cumsum` on the epoch lengths to get the indices 
-# - Tree map `jnp.zeros` onto `x` to give whole sequences (shape `(n_steps, *leaf.shape)`)
-#     - don't concatenate epochs since this requires dynamic array sizing and doesn't play well with jit/vmap
-# - Insert values from `x` into `xs` during the appropriate epochs
-# - Construct other signals (e.g. fixation/hold) as full sequences and insert values in appropriate epochs
-#     - Possibly append these signals to `xs`
-#
+# not sure if this will work or if I need to use the env variable version
+#jax.config.update("jax_traceback_filtering", DEBUG)  
 
 # %%
-# for experimenting
+# paths
+# training checkpoints
+chkpt_dir = Path("/tmp/feedbax-checkpoints")
+chkpt_dir.mkdir(exist_ok=True)
 
-def get_batch(
-    workspace = jnp.array([[-1., 1.], 
-                           [-1., 1.]]),
-    batch_size=5, 
-    key=jrandom.PRNGKey(0),
-):
-    """Segment endpoints uniformly distributed in a rectangular workspace."""
-    pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)  # (start, end)
-    vel_endpoints = jnp.zeros_like(pos_endpoints)
-    init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))  # ((pos, vel), (pos, vel))
-    
-    return init_states, target_states
+# tensorboard
+tb_logdir = Path("runs")
 
-
-
-# %% [markdown]
-# Generate an example batch:
-
-# %%
-seed = 0
-batch_size = 500
-n_steps = 100
-epoch_len_ranges = ((5, 15),   # start
-                    (10, 15),  # stim
-                    (10, 30))  # hold
-
-key = jrandom.PRNGKey(seed)
-init_states, target_states = get_batch(batch_size=batch_size)
-
-# %% [markdown]
-# For a single trial, no batching:
-
-# %%
-# epoch_idxs = [0, 3, 4, None]
-# idxs = jnp.r_[*[(i, slice(idx0, idx1)) 
-#                 for i, (idx0, idx1) in enumerate(zip(epoch_idxs[:-1], epoch_idxs[1:]))]]
-# jnp.ones((5,4), dtype=bool).at[idxs].set(False)
-
-# %%
-init_state = tree_get_idx(init_states, 0)
-target_state = tree_get_idx(target_states, 0)
-
-def get_sequences(key, n_steps, epoch_len_ranges, init, target):
-    """Convert static task inputs to sequences, and make hold signal.
-    
-    TODO: 
-    - this could be part of a `Task` subclass
-    """
-    stim_epochs = jnp.array((1,))
-    hold_epochs = jnp.array((0, 1, 2))
-    
-    epoch_lengths = gen_epoch_lengths(key, epoch_len_ranges)
-    epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
-    epoch_masks = get_masks(n_steps, epoch_idxs)
-    move_epoch_mask = jnp.logical_not(jnp.prod(epoch_masks, axis=0))[None, :]
-    
-    stim_seqs = get_masked_seqs(target, epoch_masks[stim_epochs])
-    target_seqs = jax.tree_map(
-        lambda x, y: x + y, 
-        get_masked_seqs(target, move_epoch_mask),
-        get_masked_seqs(init, epoch_masks[hold_epochs]),
-    )
-    stim_on_seq = get_scalar_epoch_seq(epoch_idxs, n_steps, 1., stim_epochs)
-    hold_seq = get_scalar_epoch_seq(epoch_idxs, n_steps, 1., hold_epochs)
-    
-    task_input = stim_seqs + (hold_seq, stim_on_seq)
-    target = target_seqs
-    
-    return task_input, target, epoch_idxs
-
-#get_sequences = jax.jit(get_sequences, static_argnums=(1,2,))
-
-task_input, target, epoch_idxs = get_sequences(key, n_steps, epoch_len_ranges, init_state, target_state)
-#target
-
-# %%
-task_input[0].shape
-
-# %% [markdown]
-# Try batching:
-
-# %%
-key = jrandom.PRNGKey(131254)
-keys = jrandom.split(key, batch_size)
-
-jax.vmap(get_sequences, in_axes=(0, None, None, 0, 0))(
-    keys, n_steps, epoch_len_ranges, init_states, target_states
-)
-
-
-# %%
-class Mechanics(eqx.Module):
-    system: System 
-    dt: float = eqx.field(static=True)
-    term: dfx.AbstractTerm = eqx.field(static=True)
-    solver: Optional[dfx.AbstractSolver] #= eqx.field(static=True)
-    
-    def __init__(self, system, dt, solver=None):
-        self.system = system
-        self.term = dfx.ODETerm(self.system.vector_field)
-        if solver is None:
-            self.solver = dfx.Tsit5()
-        else:
-            self.solver = solver
-        self.dt = dt        
-    
-    def __call__(self, input, state):
-        # TODO: optional multiple timesteps per call
-        system_state, solver_state = state 
-        # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        system_state, _, _, solver_state, _ = self.solver.step(
-            self.term, 0, self.dt, system_state, input, solver_state, made_jump=False
-        )
-        state = system_state, solver_state
-        return state
-    
-    def init(self, system_state, input=None, key=None):
-        args = inputs_empty = jnp.zeros((self.system.control_size,))
-        return (
-            system_state,
-            self.solver.init(self.term, 0, self.dt, system_state, args),
-        )
-
-
-# %%
-class SimpleFeedback(eqx.Module):
-    """Simple feedback loop with a single RNN and single mechanical system."""
-    net: eqx.Module  
-    mechanics: Mechanics 
-    delay: int = eqx.field(static=True)
-    
-    def __init__(self, net, mechanics, delay=0):
-        self.net = net
-        self.mechanics = mechanics
-        self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
-    
-    def __call__(self, input, state, args, key):
-        mechanics_state, _, hidden = state
-        feedback_state = args
-        
-        key1, key2 = jrandom.split(key)
-        
-        # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((input, feedback_state), hidden, key1)
-        
-        mechanics_state = self.mechanics(control, mechanics_state)
-        
-        return mechanics_state, control, hidden
-    
-    def init(self, system_state):
-        return (
-            self.mechanics.init(system_state),
-            jnp.zeros((self.net.out_size,)),
-            self.net.init(),
-        )
-    
-    
-class Recursion(eqx.Module):
-    """"""
-    step: eqx.Module 
-    n_steps: int = eqx.field(static=True)
-    
-    def __init__(self, step, n_steps):
-        self.step = step
-        self.n_steps = n_steps        
-        
-    def _body_func(self, i, x):
-        inputs, states, key = x 
-        
-        key1, key2 = jrandom.split(key)
-        
-        # #! this ultimately shouldn't be here, but costs less memory than a `SimpleFeedback`-based storage hack:
-        feedback = tree_get_idx(states[0][0], i - self.step.delay)
-        args = feedback 
-        
-        # this seems to work, but I'm worried it will break on non-array leaves later
-        state = tree_get_idx(states, i)     
-        input_i = tree_get_idx(inputs, i)  
-        state = self.step(input_i, state, args, key1)
-        states = tree_set_idx(states, state, i + 1)
-        
-        return input, states, key2
-    
-    def __call__(self, input, system_state, key):
-        
-        # #! vestigial; part of the feedback_state hack: stand in target_state for feedback_state
-        args = jax.tree_map(jnp.zeros_like, system_state)
-        
-        key1, key2, key3 = jrandom.split(key, 3)
-        
-        state = self.step.init(system_state)
-        states = self.init(input, state, args, key2)
-        
-        if DEBUG: #! jax.debug doesn't work inside of lax loops  
-            for i in range(self.n_steps):
-                states, args = self._body_func(i, (states, args))
-                
-            return states, args    
-        
-        _, states, _ = lax.fori_loop(
-            0, 
-            self.n_steps, 
-            self._body_func,
-            (input, states, key3),
-        )
-        
-        return states
-    
-    def init(self, input, state, args, key):
-        # 1. generate empty trajectories of states 
-        input = tree_get_idx(input, 0)  # sequence of inputs
-        outputs = eqx.filter_eval_shape(self.step, input, state, args, key)
-        # `eqx.is_array_like` is False for jax.ShapeDtypeSty
-        scalars, array_structs = eqx.partition(outputs, eqx.is_array_like)
-        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
-        states = jax.tree_map(
-            lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
-            asarrays,
-        )
-        # 2. initialize the first state
-        states = tree_set_idx(states, state, 0)
-        return states
+model_dir = Path("../models/")
 
 
 # %%
 def get_model(
+    key=None, 
     dt=0.1, 
     mass=1., 
     n_hidden=50, 
-    tau_leak=5, 
+    # tau_leak=5, 
     n_steps=100, 
-    key=None, 
-    feedback_delay=0
+    feedback_delay=0,
+    out_nonlinearity=lambda x: x,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jrandom.PRNGKey(0)  
         
-    keyc, keyn = jrandom.split(key)
+    key1, key2 = jrandom.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt)
-    n_input = 1 + 1 + system.state_size * 2  # hold, target-on signals; feedback & target states
-    #cell = RNNCell(n_input, n_hidden, dt=dt, tau=tau_leak, key=keyc)
-    cell = eqx.nn.GRUCell(n_input, n_hidden, key=keyc)
-    net = RNN(cell, system.control_size, key=keyn)
-    body = SimpleFeedback(net, mechanics, delay=feedback_delay)
-
-    return Recursion(body, n_steps)
-
-
-# %%
-def loss_fn(
-    diff_model, 
-    static_model, 
-    init_state, 
-    target_state,
-    task_input, 
-    key,
-    term_weights=dict(
-        fixation=1.,
-        position=1., 
-        final_velocity=1., 
-        control=1e-5, 
-        hidden=1e-5
-    ),
-    discount=1.,
-    weight_decay=None,
-):  
-    """Quadratic in states, controls, and hidden activities.
     
-    Assumes the `target_state` is fixed; i.e. this is not a tracking task.
+    feedback_leaves_func = lambda mechanics_state: mechanics_state.system
     
-    User can apply a temporal discount broadcastable by elementwise multiplication with `(n_batch, n_steps)`.
-    """
-    model = eqx.combine(diff_model, static_model)  
-    batched_model = jax.vmap(model, in_axes=(0, 0, None))  # don't batch random key
-
-    state = batched_model(task_input, init_state, key)
-    (system_state, _), controls, activity = state
-    state = system_state
-
-    # add fixation signal to the discount vector to make sure fixation is penalized
-    #discount = discount + jnp.squeeze(task_input[2])
-
-    # sum over xyz, apply temporal discount, sum over time
-    position_error = jnp.sum((state[0] - target_state[0]) ** 2, axis=-1)
-    
-    #fixation_control_loss = jnp.sum(jnp.squeeze(task_input[2]) * jnp.sum(controls ** 2, axis=-1), axis=-1)
-    
-    loss_terms = dict(
-        #final_position=jnp.sum((states[..., -1, :2] - target_state[..., :2]) ** 2, axis=-1).squeeze(),  # sum over xyz
-        fixation=jnp.sum(position_error * jnp.squeeze(task_input[2]), axis=-1),
-        position=jnp.sum(position_error * discount, axis=-1),  # apply temporal discount, sum over time
-        final_velocity=jnp.sum((state[1][:, -1] - target_state[1][:, -1]) ** 2, axis=-1).squeeze(),  # over xyz
-        control=jnp.sum(controls ** 2, axis=(-1, -2)),  # over control variables and time
-        hidden=jnp.sum(activity ** 2, axis=(-1, -2)),  # over network units and time
+    # hold, target-on signals; feedback & target states
+    n_input = 1 + 1 + system.state_size * 2 
+    #cell = RNNCell(n_input, n_hidden, dt=dt, tau=tau_leak, key=keyc)t
+    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
+    net = RNN(cell, system.control_size, out_nonlinearity=out_nonlinearity, key=key2)
+    body = SimpleFeedback(
+        net, 
+        mechanics, 
+        delay=feedback_delay
     )
 
-    # mean over batch
-    loss_terms = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_terms)
-    # term scaling
-    loss_terms = jax.tree_map(lambda term, weight: term * weight, loss_terms, term_weights) 
-    
-    # NOTE: optax also gives optimizers that implement weight decay
-    if weight_decay is not None:
-        # this is separate because the tree map of `jnp.mean` doesn't like floats
-        # and it doesn't make sense to batch-mean the model parameters anyway
-        loss_terms['weight_decay'] = weight_decay * tree_sum_squares(diff_model)
-        
-    # sum over terms
-    loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
-    
-    return loss, loss_terms
-
-
-# %%
-def get_sequences(key, n_steps, epoch_len_ranges, init, target):
-    """Convert static task inputs to sequences, and make hold signal.
-    
-    TODO: 
-    - this could be part of a `Task` subclass
-    """
-    stim_epochs = jnp.array((1,))
-    hold_epochs = jnp.array((0, 1, 2)) 
-    
-    epoch_lengths = gen_epoch_lengths(key, epoch_len_ranges)
-    epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
-
-    epoch_masks = get_masks(n_steps, epoch_idxs)
-    
-    move_epoch_mask = jnp.logical_not(jnp.prod(epoch_masks, axis=0))[None, :]
-    
-    stim_seqs = get_masked_seqs(target, epoch_masks[stim_epochs])
-    target_seqs = jax.tree_map(
-        lambda x, y: x + y, 
-        get_masked_seqs(target, move_epoch_mask),
-        get_masked_seqs(init, epoch_masks[hold_epochs]),
+    return Recursion(
+        body, 
+        n_steps,
+        feedback_leaves_func=feedback_leaves_func,
     )
-    stim_on_seq = get_scalar_epoch_seq(epoch_idxs, n_steps, 1., stim_epochs)
-    hold_seq = get_scalar_epoch_seq(epoch_idxs, n_steps, 1., hold_epochs)
-    
-    # TODO: catch trials: modify a proportion of hold_seq and target_seqs
-    
-    task_input = stim_seqs + (hold_seq, stim_on_seq)
-    target = target_seqs
-    
-    return task_input, target, epoch_idxs
 
 
 # %%
-def train(
-    mass=1.0,
-    n_steps=100,
-    dt=0.1,
-    hidden_size=20,
-    tau_leak=10,
-    feedback_delay_steps=0,
-    workspace = jnp.array([[-1., 1.], 
-                           [-1., 1.]]),
-    batch_size=100,
-    n_batches=50,
-    task_epoch_len_ranges = ((5, 15),   # start
-                             (10, 15),  # stim
-                             (5, 10)),  # hold
-    train_epochs=1,
-    learning_rate=3e-4,
-    term_weights=dict(
-        fixation=0.1,
-        position=1., 
-        final_velocity=1., 
-        control=1e-5, 
-        hidden=1e-5
-    ),
-    seed=5566,
-    log_step=50,
-):
-    key = jrandom.PRNGKey(seed)
+seed = 5566
+key = jrandom.PRNGKey(seed)
 
-    def get_batch(batch_size, key):
-        """Segment endpoints uniformly distributed in a rectangular workspace."""
-        pos_endpoints = uniform_endpoints(key, batch_size, N_DIM, workspace)  # (start, end)
-        vel_endpoints = jnp.zeros_like(pos_endpoints)
-        init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))  # ((pos, vel), (pos, vel))
-        keys = jrandom.split(key, batch_size)
-        task_inputs, target_states, _ = jax.vmap(get_sequences, in_axes=(0, None, None, 0, 0))(
-            keys, n_steps, task_epoch_len_ranges, init_states, target_states
-        )
-        return init_states, target_states, task_inputs
-    
-    model = get_model(dt, mass, hidden_size, tau_leak, n_steps, key=key, 
-                      feedback_delay=feedback_delay_steps)
-    
-    # only train the RNN layer (input weights & hidden weights and biases)
-    filter_spec = filter_spec_leaves(
-        model, 
-        lambda tree: (tree.step.net.cell.weight_hh, 
-                      tree.step.net.cell.weight_ih, 
-                      tree.step.net.cell.bias),
-    )
-    
-    optim = optax.adam(learning_rate)
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
-    position_error_discount = jnp.linspace(1./n_steps, 1., n_steps) ** 6
-    
-    @eqx.filter_jit
-    def train_step(model, init_state, target_state, task_input, opt_state, key):
-        diff_model, static_model = eqx.partition(model, filter_spec)
-        (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-            diff_model, static_model, init_state, target_state, task_input, key, 
-            term_weights=term_weights, discount=position_error_discount
-        )
-        updates, opt_state = optim.update(grads, opt_state)
-        model = eqx.apply_updates(model, updates)
-        return loss, loss_terms, model, opt_state
-
-    losses = jnp.empty((n_batches,))
-    losses_terms = dict(zip(
-        term_weights.keys(), 
-        [jnp.empty((n_batches,)) for _ in term_weights]
-    ))
-
-    for _ in range(train_epochs):
-        for batch in tqdm(range(n_batches)):
-            key, key_train = jrandom.split(key)
-            init_state, target_state, task_input = get_batch(batch_size, key)
-            
-            loss, loss_terms, model, opt_state = train_step(
-                model, init_state, target_state, task_input, opt_state, key_train
-            )
-            
-            # #! slow
-            losses = losses.at[batch].set(loss)
-            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
-            
-            if batch % log_step == 0:
-                tqdm.write(f"step: {batch}, loss: {loss:.4f}", file=sys.stderr)
-    
-    return model, losses, losses_terms
-
-
-# %%
 n_steps = 100
+dt = 0.1
+feedback_delay_steps = 5
+workspace = jnp.array([[-1., 1.], 
+                       [-1., 1.]])
+# epoch lengths (in steps) will be sampled uniformly from these ranges
+# the movement epoch will last the remainder until `n_steps`
 task_epoch_len_ranges = ((5, 15),   # start
                          (10, 20),  # stim
                          (10, 25))  # hold
+n_hidden = 50
+learning_rate = 0.01
+
+model = get_model(
+    key, 
+    dt=dt,
+    n_hidden=n_hidden,
+    n_steps=n_steps,
+    feedback_delay=feedback_delay_steps,
+)
+
+discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
+loss_func = fbl.CompositeLoss(
+    (
+        # these assume a particular PyTree structure to the states returned by the model
+        # which is why we simply instantiate them 
+        fbl.EffectorFixationLoss(),
+        fbl.EffectorPositionLoss(discount=discount),
+        fbl.EffectorFinalVelocityLoss(),
+        fbl.ControlLoss(),
+        fbl.NetworkActivityLoss(),
+    ),
+    weights=(1., 1., 1., 1e-4, 1e-5)
+)
+
+task = RandomReachesDelayed(
+    loss_func=loss_func,
+    workspace=workspace, 
+    n_steps=n_steps,
+    epoch_len_ranges=task_epoch_len_ranges,
+    eval_grid_n=1,
+    eval_n_directions=8,
+    eval_reach_length=0.5,
+)
+
+trainer = TaskTrainer(
+    optimizer=optax.inject_hyperparams(optax.adam)(
+        learning_rate=learning_rate
+    ),
+    chkpt_dir=chkpt_dir,
+    checkpointing=True,
+)
 
 # %%
-model, losses, losses_terms = train(
+model, losses, losses_terms = trainer(
+    task=task,
+    model=model,
     batch_size=500, 
-    dt=0.1, 
-    tau_leak=5,
-    feedback_delay_steps=5,
-    n_batches=1_000, 
-    n_steps=n_steps,
-    task_epoch_len_ranges=task_epoch_len_ranges, 
-    hidden_size=50, 
-    seed=5566,
-    learning_rate=0.01,
-    log_step=250,
-    term_weights=dict(
-        fixation=1.,
-        position=1., 
-        final_velocity=1., 
-        control=1e-4, 
-        hidden=1e-5,
-    ),
+    n_batches=10_000, 
+    log_step=100,
+    key=key,
 )
 
 trained = True 
 
 plot_loglog_losses(losses, losses_terms);
-
-
-# %%
-def save_model(
-        model, 
-        hyperparams: Optional[dict] = None, 
-        fig_funcs: Optional[dict]=None
-):
-    
-    timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
-    name = f"model_{timestr}_{NB_PREFIX}"
-    eqx.tree_serialise_leaves(model_dir / f'{name}.eqx', model)
-    if hyperparams is not None:
-        with open(model_dir / f'{name}.json', 'w') as f:
-            hyperparams_str = json.dumps(hyperparams, indent=4)
-            f.write(hyperparams_str)
-    if fig_funcs is not None:
-        for label, fig_func in fig_funcs.items():
-            fig = fig_func()
-            fig.savefig(model_dir / f'{name}_{label}.png')
-            plt.close(fig)
-
-save_model(model)
 
 # %% [markdown]
 # Optional: load pretrained model (if restarting notebook)
@@ -623,48 +221,51 @@ if not trained:
 # Evaluate on a centre-out task
 
 # %%
-n_directions = 8
-reach_length = 1.
-
-key = jrandom.PRNGKey(5566)
-pos_endpoints = centreout_endpoints(jnp.array([0., 0.]), n_directions, 0, reach_length)
-vel_endpoints = jnp.zeros_like(pos_endpoints)   
-init_states, target_states = tuple(zip(pos_endpoints, vel_endpoints))
-
-keys = jrandom.split(key, n_directions)
-task_inputs, target_states, epoch_idxs = jax.vmap(get_sequences, in_axes=(0, None, None, 0, 0))(
-    keys, n_steps, task_epoch_len_ranges, init_states, target_states
+task = RandomReachesDelayed(
+    loss_func=loss_func,
+    workspace=workspace, 
+    n_steps=n_steps,
+    epoch_len_ranges=task_epoch_len_ranges,
+    eval_grid_n=1,
+    eval_n_directions=8,
+    eval_reach_length=0.5,
 )
-states = jax.vmap(model, in_axes=(0, 0, None))(
-    task_inputs, init_states, key
-)
-(system_states, _), controls, activities = states
-states = system_states
+
+# %%
+loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 
 # %% [markdown]
 # Plot speeds along with a line indicating the first availability of target information.
 
 # %%
+init_states, target_states, task_inputs = task.trials_eval
+# assume the goal is the target state at the last time step
+goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
 plot_task_and_speed_profiles(
-    velocity=states[1], 
+    velocity=states.mechanics.effector.vel, 
     task_variables={
-        'target X': target_states[0][..., 0],
-        'target Y': target_states[0][..., 1],
-        'fixation signal': task_inputs[2],
-        'target ON signal': task_inputs[3],
+        'target X': task_inputs.stim.pos[..., 0],
+        'target Y': task_inputs.stim.pos[..., 1],
+        'fixation signal': task_inputs.hold,
+        'target ON signal': task_inputs.stim_on,
     }, 
-    epoch_idxs=epoch_idxs
+    #epoch_idxs=epoch_idxs
 )
 
 # %%
-plot_states_forces_2d(states[0], states[1], controls, endpoints=pos_endpoints)
+plot_states_forces_2d(
+    states.mechanics.system.pos, 
+    states.mechanics.system.vel, 
+    states.control, 
+    endpoints=(init_states.pos, goal_states.pos),
+)
 plt.show()
 
 # %% [markdown]
 # Plot network activity. Heatmap of all units, and a sample of six units.
 
 # %%
-plot_activity_heatmap(activities[0])
+plot_activity_heatmap(states.hidden[0])
 plt.show()
 
 # %%
@@ -672,7 +273,7 @@ seed = 5566
 n_samples = 6
 key = jrandom.PRNGKey(seed)
 
-plot_activity_sample_units(activities, n_samples, key=key)
+plot_activity_sample_units(states.hidden, n_samples, key=key)
 
 
 # %% [markdown]
@@ -689,7 +290,7 @@ def pca(x):
 
 
 # %%
-L, Vt, PCs = pca(activities)
+L, Vt, PCs = pca(states.hidden)
 
 # %% [markdown]
 # Plot three of the PCs in 3D.

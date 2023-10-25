@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 import numpy as np
+from feedbax.types import CartesianState2D
 
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
@@ -26,12 +27,12 @@ class TwoLinkState(eqx.Module):
 
 
 class TwoLink(eqx.Module):
-    l: Float[Array, "2"] = eqx.field(static=True, converter=jnp.asarray)  # [L] lengths of arm segments
-    m: Float[Array, "2"] = eqx.field(static=True, converter=jnp.asarray)  # [M] masses of segments
-    I: Float[Array, "2"] = eqx.field(static=True, converter=jnp.asarray)  # [M L^2] moments of inertia of segments
-    s: Float[Array, "2"] = eqx.field(static=True, converter=jnp.asarray)  # [L] distance from joint center to segment COM
-    B: Float[Array, "2 2"] = eqx.field(static=True, converter=jnp.asarray)  # [M L^2 T^-1] joint friction matrix
-    inertia_gain: float = eqx.field(static=True)  
+    l: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [L] lengths of arm segments
+    m: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [M] masses of segments
+    I: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
+    s: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [L] distance from joint center to segment COM
+    B: Float[Array, "2 2"] = eqx.field(converter=jnp.asarray)  # [M L^2 T^-1] joint friction matrix
+    inertia_gain: float   
     
     def __init__(
             self,
@@ -75,7 +76,10 @@ class TwoLink(eqx.Module):
         
         return TwoLinkState(d_theta, dd_theta)
     
-    def init(self, effector_state):
+    def init(
+        self, 
+        effector_state: CartesianState2D,
+    ):
         theta = self.inverse_kinematics(
             effector_state[0]
         )        
@@ -109,8 +113,8 @@ class TwoLink(eqx.Module):
 
     def inverse_kinematics(
             self,
-            pos: Float[Array, "2"]
-    ) -> Float[Array, "2"]:
+            effector_state: CartesianState2D
+    ) -> Float[Array, "2"]: # TwoLinkState
         """Convert Cartesian effector position to joint angles for a two-link arm.
         
         NOTE: 
@@ -128,6 +132,7 @@ class TwoLink(eqx.Module):
         - Try to generalize to n-link arm using Jacobian of forward kinematics?
         - Unit test round trip with `nlink_angular_to_cartesian`.
         """
+        pos = effector_state.pos
         l, lsqpm = self.l, self._lsqpm
         dsq = jnp.sum(pos ** 2)
 
@@ -145,7 +150,7 @@ class TwoLink(eqx.Module):
     def forward_kinematics(
             self,
             state: TwoLinkState
-    ):
+    ) -> CartesianState2D:
         """Convert angular state to Cartesian state.
         
         NOTE:
@@ -166,7 +171,7 @@ class TwoLink(eqx.Module):
         xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
                                  * ang_vel_sum,
                                  axis=1)  # xy, links
-        return xy_position.T, xy_velocity.T
+        return CartesianState2D(xy_position.T, xy_velocity.T)
 
     def effector(self, state: TwoLinkState):
         return jax.tree_map(

@@ -28,7 +28,7 @@ class Recursion(eqx.Module):
     - is there a way to avoid assuming the `input, state` argument structure of `step`?
     """
     step: eqx.Module 
-    n_steps: int = eqx.field(static=True)
+    n_steps: int 
     feedback_leaves_func: Callable[[PyTree], PyTree]    
         
     def _body_func(self, i, x):

@@ -384,8 +384,8 @@ _BROWN_SLOWFAST_AVG_PARAMS = jax.tree_map(
 class ActivationFilter(eqx.Module):
     """First-order filter to model calcium dynamics of muscle activation.
     """
-    tau_act: float = eqx.field(static=True)
-    tau_deact: float = eqx.field(static=True)
+    tau_act: float 
+    tau_deact: float 
     
     def __init__(self, tau_act=50, tau_deact=66): # [ms]
         self.tau_act = tau_act

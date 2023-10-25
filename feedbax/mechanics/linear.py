@@ -13,6 +13,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from feedbax.types import CartesianState2D
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +38,15 @@ class AbstractLTISystem(eqx.Module):
     def vector_field(
         self, 
         t: float, 
-        y: Float[Array, "state"],
+        state: CartesianState2D,
         args: Float[Array, "input"]
     ) -> Float[Array, "state"]:
-        u = args  
-        d_y = self.A @ jnp.concatenate(y) + self.B @ u
+        input = args  
+        state_ = jnp.concatenate([state.pos, state.vel])
+        d_y = self.A @ state_ + self.B @ input
         # TODO: don't hardcode the split; define on instantiation
         d_pos, d_vel = d_y[:2], d_y[2:]
-        return d_pos, d_vel
+        return CartesianState2D(d_pos, d_vel)
     
     @property
     def control_size(self) -> int:
@@ -69,8 +72,8 @@ class SimpleLTISystem(AbstractLTISystem):
     
     def inverse_kinematics(
         self, 
-        effector_state: Float[Array, "state"]
-    ) -> Float[Array, "state"]:
+        effector_state: CartesianState2D
+    ) -> CartesianState2D:
         return effector_state
     
     def effector(self, system_state):
