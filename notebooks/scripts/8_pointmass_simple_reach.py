@@ -233,9 +233,6 @@ model, losses, losses_terms = trainer(
 # %%
 plot_loglog_losses(losses, losses_terms)
 
-# %%
-model
-
 # %% [markdown]
 # Evaluate on a centre-out task
 
@@ -251,6 +248,7 @@ plot_states_forces_2d(
     states.control, 
     endpoints=(init_states.pos, goal_states.pos),
 )
+plt.show()
 
 # %%
 plt.plot(jnp.sum(states.mechanics.system.vel ** 2, -1).T, '-')

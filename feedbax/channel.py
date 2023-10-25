@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import List, Optional
+from typing import Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -19,16 +19,16 @@ logger = logging.getLogger(__name__)
 
 class ChannelState(eqx.Module):
     output: PyTree[Array]
-    queue: List[PyTree[Array]]
+    queue: Tuple[PyTree[Array], ...]
     
 
 class Channel(eqx.Module):
-    """Distant connection implemented as a queue, with added noise.
+    """Distant connection implemented as a queue, with optional added noise.
     
     For example, for modeling an axon, tract, or wire.
     
-    NOTE:
-    - A list implementation is faster than modifying a JAX array.
+    This uses a tuple implementation since this is significantly faster than
+    using `jnp.roll` and `.at` to shift and update a JAX array.
     
     TODO: 
     - Infer delay steps from time.
@@ -40,18 +40,16 @@ class Channel(eqx.Module):
         self.delay = delay
         self.noise_std = noise_std
     
-    def __call__(self, input, state, key):
-        # this is an in-place operation but it doesn't affect anything that
-        # doesn't get returned
-        state.queue.append(input)
-        output = state.queue.pop(0)
+    def __call__(self, input, state, key):      
+        queue = state.queue[1:] + (input,)
+        output = state.queue[0]
         if self.noise_std is not None:
             output = output + self.noise_std * jrandom.normal(key, output.shape) 
-        return ChannelState(output, state.queue)
+        return ChannelState(output, queue)
     
     def init(self, input):
         input_zeros = jax.tree_map(jnp.zeros_like, input)
         return ChannelState(
             input_zeros, 
-            (self.delay - 1) * [input_zeros] + [input],
+            (self.delay - 1) * (input_zeros,) + (input,),
         )

@@ -6,7 +6,6 @@
 
 import logging
 import os
-from typing import Callable
 
 import equinox as eqx
 import jax
@@ -22,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 class Recursion(eqx.Module):
-    """A model that recursively applies another model for `n_steps` steps.
+    """A module that recursively applies another module for `n_steps` steps.
+    
+    We automatically determine the shape of the arrays in the PyTree(s) 
+    returned by `step`, and use this to initialize empty trajectory arrays in 
+    which to store the states across all steps; `states_includes` can be used
+    to specify which states to store. By default, all are stored.
     
     TODO:
     - is there a way to avoid assuming the `input, state` argument structure of `step`?
