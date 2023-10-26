@@ -195,9 +195,11 @@ class TaskTrainer(eqx.Module):
         
         TODO:
         - Try a different approach to ensembling, where the vmapping
-        is only performed on appropriate subsets of the training procedure,
-        and other stuff (e.g. logging, NaN control flow) is handled outside 
-        of JAX transformations.
+          is only performed on appropriate subsets of the training procedure,
+          and other stuff (e.g. logging, NaN control flow) is handled outside 
+          of JAX transformations.
+        - Improve the handling of the flatten/unflatten operations around 
+          `train_step`. See its docstring for details.
         """
         model = eqx.combine(model_arrays, model_other)
         
@@ -221,7 +223,7 @@ class TaskTrainer(eqx.Module):
             logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}.")
             
         elif self.checkpointing:
-            # delete old checkpoints if checkpointing is on
+            # Delete old checkpoints if checkpointing is on.
             # TODO: keep old checkpoints for past N runs (env variable?)
             delete_contents(self.chkpt_dir)  
             
@@ -231,23 +233,35 @@ class TaskTrainer(eqx.Module):
         keys = jrandom.split(key, n_batches - start_batch)
         get_batch = jax.vmap(task.get_trial)
         
-        # assume 1 epoch (i.e. batch iterations only; no fixed dataset)
-        for batch in tqdm(range(start_batch, n_batches), 
-                          desc='batch', initial=start_batch, total=n_batches):
+        # Passing the flattened pytrees through `train_step` gives a slight
+        # performance improvement. See the docstring of `train_step`.
+        flat_model, treedef_model = jax.tree_util.tree_flatten(model)
+        flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
+        
+        # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
+        for batch in tqdm(
+            range(start_batch, n_batches), 
+            desc='batch', 
+            initial=start_batch, 
+            total=n_batches,
+            smoothing=0.1,
+        ):
             key_train, key_eval, key_batch = jrandom.split(keys[batch], 3)
             keys_trials = jrandom.split(key_batch, batch_size)
             init_state, target_state, task_input = get_batch(keys_trials)
 
-            loss, loss_terms, model, opt_state = self.train_step(
-                model, 
+            loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state = self.train_step(
+                flat_model, 
+                treedef_model,
                 filter_spec, 
                 init_state, 
                 target_state, 
                 task_input,
                 loss_func_wrapped, 
-                opt_state,
+                flat_opt_state,
+                treedef_opt_state,
                 key_train, 
-            )
+            )           
             
             losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
@@ -265,11 +279,13 @@ class TaskTrainer(eqx.Module):
             # tensorboard losses on every iteration
             #! just report for one of the replicates
             if self._use_tb:
-                self.writer.add_scalar('Loss/train', loss[0].item(), batch)
+                self.writer.add_scalar('Loss/train', loss.item(), batch)
                 for term, loss_term in loss_terms.items():
-                    self.writer.add_scalar(f'Loss/train/{term}', loss_term[0].item(), batch)
+                    self.writer.add_scalar(f'Loss/train/{term}', loss_term.item(), batch)
         
             if jnp.isnan(loss):
+                model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+                
                 msg = f"NaN loss at batch {batch}! "
                 if (checkpoint := self._load_last_checkpoint(
                     model, losses, losses_terms
@@ -286,6 +302,8 @@ class TaskTrainer(eqx.Module):
 
             # checkpointing and evaluation occasionally
             if batch % log_step == 0:
+                model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+                
                 # model checkpoint
                 if self.checkpointing:
                     eqx.tree_serialise_leaves(self.chkpt_dir / f'model{batch}.eqx', model)
@@ -312,28 +330,46 @@ class TaskTrainer(eqx.Module):
                 if learning_rate is not None:                    
                     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
          
+        model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+         
         return model, losses, losses_terms, learning_rates
     
     @eqx.filter_jit
     def train_step(
         self, 
-        model, 
+        flat_model, 
+        treedef_model,
         filter_spec, 
         init_state, 
         target_state, 
         task_input, 
         loss_func_wrapped,
-        opt_state, 
-        key
+        flat_opt_state, 
+        treedef_opt_state,
+        key,
     ):
         """Executes a single training step of the model.
         
-        This assumes that:
+        This assumes that the (wrapped) loss function returns an auxiliary
+        `loss_terms`, which is intended to be a dictionary of the loss
+        components prior to their final aggregation (i.e. already weighted).
+              
+        The wrapping calls to `tree_unflatten` and `tree_leaves`, and passing
+        flattened versions of `model` and `opt_state`, bring slight performance
+        improvements because they cancel out the inverse tree operations that 
+        are performed by JIT compilation. 
         
-            - The (wrapped) loss function returns an auxiliary `loss_terms`,
-              which is intended to be a dictionary of the loss components 
-              prior to their final aggregation (i.e. already weighted).
+        TODO: 
+        - Use a wrapper to make the flatten/unflatten stuff less ugly.
+        - Try applying the flatten/unflatten logic to all pytree inputs, 
+          not just `model` and `opt_state`.
+        - The shape of `opt_state` changes due to `optimizer.update` on the 
+          first step only.
         """
+        
+        model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+        opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, flat_opt_state)
+        
         diff_model, static_model = eqx.partition(model, filter_spec)
         (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_func_wrapped, has_aux=True)(
             diff_model, 
@@ -345,7 +381,11 @@ class TaskTrainer(eqx.Module):
         )
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
-        return loss, loss_terms, model, opt_state
+
+        flat_model = jax.tree_util.tree_leaves(model)
+        flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
+        
+        return loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state
 
     def _load_last_checkpoint(self, model, losses, losses_terms):
         try:

@@ -33,6 +33,7 @@
 LOG_LEVEL = "INFO"
 NB_PREFIX = "nb8"
 DEBUG = False
+DISABLE_JIT = False
 ENABLE_X64 = False
 N_DIM = 2  # TODO: not here
 
@@ -56,6 +57,7 @@ get_ipython().log.handlers[0].stream = stderr_log
 get_ipython().log.setLevel(LOG_LEVEL)
 
 # %%
+import diffrax
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
@@ -80,6 +82,7 @@ os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
 logging.getLogger("jax").setLevel(logging.INFO)
 
 jax.config.update("jax_debug_nans", DEBUG)
+jax.config.update('jax_disable_jit', DISABLE_JIT)
 jax.config.update("jax_enable_x64", ENABLE_X64)
 
 # not sure if this will work or if I need to use the env variable version
@@ -118,7 +121,7 @@ def get_model(
     key1, key2 = jrandom.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
-    mechanics = Mechanics(system, dt)
+    mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
     feedback_leaves_func = lambda mechanics_state: mechanics_state.system
      
@@ -282,6 +285,7 @@ model_path = save(
     save_dir=model_dir, 
     suffix=NB_PREFIX,
 )
+model_path
 
 # %% [markdown]
 # If we didn't just save a model, we can try to load one
@@ -291,7 +295,7 @@ try:
     model_path
     model, task
 except NameError:
-    model_path = '../models/model_20231026-103421_b4a92ad_nb8.eqx'
+    model_path = '../models/model_20231026-165045_2fbb446_nb8.eqx'
     model, task = load(model_path, setup)
 
 # %% [markdown]

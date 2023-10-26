@@ -84,6 +84,8 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 # not sure if this will work or if I need to use the env variable version
 #jax.config.update("jax_traceback_filtering", DEBUG)  
 
+plt.style.use('dark_background')
+
 # %%
 # paths
 
@@ -254,18 +256,16 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-model, losses, loss_terms = trainer(
+model, losses, loss_terms, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=1000, 
+    n_batches=10_000, 
     batch_size=500, 
-    log_step=100,
+    log_step=250,
     trainable_leaves_func=trainable_leaves_func,
     key=jrandom.PRNGKey(seed + 1),
 )
 
-# %%
-plt.style.use('dark_background')
 plot_loglog_losses(losses, loss_terms)
 plt.show()
 
@@ -317,7 +317,7 @@ plot_states_forces_2d(
     endpoints=(init_states.pos, goal_states.pos), 
     force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
     cmap='plasma', 
-    workspace=workspace,
+    workspace=task.workspace,
 );
 
 # %% [markdown]

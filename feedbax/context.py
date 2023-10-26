@@ -93,3 +93,11 @@ class SimpleFeedback(eqx.Module):
                 self.feedback_leaves_func(mechanics_state)
             ),
         )
+    
+    # def states_include(self):
+    #     return SimpleFeedbackState(
+    #         mechanics=True, 
+    #         control=True, 
+    #         hidden=True, 
+    #         feedback=ChannelState(output=True, queue=False)
+    #     )

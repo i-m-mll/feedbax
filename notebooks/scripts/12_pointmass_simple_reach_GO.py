@@ -162,7 +162,7 @@ task_epoch_len_ranges = ((5, 15),   # start
                          (10, 25))  # hold
 n_hidden = 50
 
-n_batches = 100
+n_batches = 10_000
 batch_size = 500
 learning_rate = 0.01
 log_step = 100
@@ -222,7 +222,7 @@ def setup(
         workspace=workspace, 
         n_steps=n_steps,
         epoch_len_ranges=task_epoch_len_ranges,
-        eval_grid_n=2,
+        eval_grid_n=1,
         eval_n_directions=8,
         eval_reach_length=0.5,
     )
@@ -246,8 +246,8 @@ trainer = TaskTrainer(
         learning_rate=optax.linear_schedule(
             init_value=0.025, 
             end_value=1e-4,
-            transition_steps=n_batches - 200,
-            transition_begin=200,
+            transition_steps=n_batches,
+            #transition_begin=200,
         )
     ),
     chkpt_dir=chkpt_dir,
@@ -266,8 +266,10 @@ model, losses, losses_terms, learning_rates = trainer(
     key=key,
 )
 
-trained = True 
+plot_loglog_losses(losses, losses_terms);
 
+# %%
+plt.style.use('dark_background')
 plot_loglog_losses(losses, losses_terms);
 
 # %%
@@ -284,6 +286,7 @@ model_path = save(
 # %%
 try:
     model_path
+    model, task
 except NameError:
     model_path = "../models/model_20231026-100544_b4a92ad_nb12.eqx"
     model, task = load(model_path, setup)
@@ -298,18 +301,19 @@ loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 # Plot speeds along with a line indicating the first availability of target information.
 
 # %%
-init_states, target_states, task_inputs = task.trials_eval
+init_states, target_states, task_inputs, epoch_start_idxs = \
+    task.trials_eval
 # assume the goal is the target state at the last time step
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
 plot_task_and_speed_profiles(
     velocity=states.mechanics.effector.vel, 
     task_variables={
-        'target X': task_inputs.stim.pos[..., 0],
-        'target Y': task_inputs.stim.pos[..., 1],
+        'stim X': task_inputs.stim.pos[..., 0],
+        'stim Y': task_inputs.stim.pos[..., 1],
         'fixation signal': task_inputs.hold,
         'target ON signal': task_inputs.stim_on,
     }, 
-    #epoch_idxs=epoch_idxs
+    epoch_start_idxs=epoch_start_idxs
 )
 
 # %%

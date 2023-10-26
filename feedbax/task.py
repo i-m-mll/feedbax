@@ -172,10 +172,10 @@ class RandomReachesDelayed(AbstractTask):
             list(zip(pos_endpoints, vel_endpoints)),
             is_leaf=lambda x: isinstance(x, tuple)
         )
-        task_inputs, target_states, _ = self.get_sequences(
+        task_inputs, target_states, epoch_start_idxs = self.get_sequences(
             init_state, target_state, key2
         )      
-        return init_state, target_states, task_inputs
+        return init_state, target_states, task_inputs, epoch_start_idxs
         
     @cached_property
     def trials_eval(self):
@@ -194,11 +194,11 @@ class RandomReachesDelayed(AbstractTask):
             is_leaf=lambda x: isinstance(x, tuple)
         )        
         epochs_keys = jrandom.split(self.key_eval, init_states.pos.shape[0])
-        task_inputs, target_states, _ = jax.vmap(self.get_sequences)(
+        task_inputs, target_states, epoch_start_idxs = jax.vmap(self.get_sequences)(
             init_states, target_states, epochs_keys
         )    
            
-        return init_states, target_states, task_inputs
+        return init_states, target_states, task_inputs, epoch_start_idxs
     
     def get_sequences(
         self,  

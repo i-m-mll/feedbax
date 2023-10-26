@@ -30,15 +30,12 @@ class Mechanics(eqx.Module):
     system: System 
     dt: float 
     term: dfx.AbstractTerm 
-    solver: Optional[dfx.AbstractSolver] 
+    solver: dfx.AbstractSolver
     
-    def __init__(self, system, dt, solver=None):
+    def __init__(self, system, dt, solver=dfx.Euler):
         self.system = system
         self.term = dfx.ODETerm(self.system.vector_field)
-        if solver is None:
-            self.solver = dfx.Tsit5()
-        else:
-            self.solver = solver
+        self.solver = solver()
         self.dt = dt        
     
     def __call__(self, input, state: MechanicsState):
