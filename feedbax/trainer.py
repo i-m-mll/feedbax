@@ -300,6 +300,11 @@ class TaskTrainer(eqx.Module):
                 tqdm.write(f"step: {batch}", file=sys.stdout)
                 tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
                 tqdm.write(f"\tevaluation loss: {loss_eval:.4f}", file=sys.stdout)
+                try:
+                    learning_rate = opt_state.hyperparams['learning_rate']
+                    tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
+                except (AttributeError, KeyError):
+                    pass
         
         if save_dir is not None:
             # could probably just concatenate 

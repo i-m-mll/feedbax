@@ -27,7 +27,7 @@ N_DIM = 2  # TODO: not here
 # %load_ext autoreload
 # %autoreload 2
 
-# %matplotlib widget
+# #%matplotlib widget
 
 # %%
 import os
@@ -162,7 +162,11 @@ task_epoch_len_ranges = ((5, 15),   # start
                          (10, 20),  # stim
                          (10, 25))  # hold
 n_hidden = 50
+
+n_batches = 10_000
+batch_size = 500
 learning_rate = 0.01
+log_step = 100
 
 model = get_model(
     key, 
@@ -198,7 +202,12 @@ task = RandomReachesDelayed(
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
-        learning_rate=learning_rate
+        learning_rate=optax.linear_schedule(
+            init_value=0.025, 
+            end_value=1e-4,
+            transition_steps=n_batches - 200,
+            transition_begin=200,
+        )
     ),
     chkpt_dir=chkpt_dir,
     checkpointing=True,
@@ -208,9 +217,9 @@ trainer = TaskTrainer(
 model, losses, losses_terms = trainer(
     task=task,
     model=model,
-    batch_size=500, 
-    n_batches=10_000, 
-    log_step=100,
+    batch_size=batch_size, 
+    n_batches=n_batches, 
+    log_step=log_step,
     key=key,
 )
 
