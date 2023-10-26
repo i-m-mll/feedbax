@@ -125,15 +125,15 @@ class TaskTrainer(eqx.Module):
             False,
         )
     
-    def model_ensemble(
+    def train_ensemble(
         self,
         task: AbstractTask,
-        get_model: Callable[[jrandom.PRNGKeyArray], eqx.Module],
-        n_model_replicates: int, 
+        models: eqx.Module,
+        n_replicates: int,
         n_batches: int, 
         batch_size: int, 
         trainable_leaves_func: Callable = lambda model: model,
-        log_step:int = 100, 
+        log_step: int = 100, 
         restore_checkpoint:bool = False,
         save_dir: Optional[str] = None,
         *,
@@ -141,10 +141,8 @@ class TaskTrainer(eqx.Module):
     ):
         """Trains an ensemble of models.
         
-        Instead of taking a single model like `__call__`, this takes a function
-        that generates a single model from a random key, along with a single key.
-        It uses these to generate `n_model_replicates` models from different keys,
-        then trains them in parallel on the same task data.
+        This is essentially a helper that vmaps training over the first 
+        dimension of `models`.
         
         NOTE: 
         - I'm not sure what to do about tensorboard/print statements. We could log all replicates 
@@ -153,13 +151,10 @@ class TaskTrainer(eqx.Module):
         
         TODO: 
         - Allow variation in the task as well as the model.
-        - Maybe we shouldn't generate the model replicates here. What about 
-          setting up a model from loaded hyperparameters?
+        - In principle we could infer `n_replicates` from `models`, or else 
+          have the user pass `keys` instead of `key`.
         """
-        key1, key2 = jrandom.split(key)
-        keys_model = jrandom.split(key1, n_model_replicates)
-        keys_train = jrandom.split(key2, n_model_replicates)
-        models = eqx.filter_vmap(get_model)(keys_model)
+        keys_train = jrandom.split(key, n_replicates)
         models_arrays, models_other = eqx.partition(models, eqx.is_array)
         
         # only map over model arrays and training keys

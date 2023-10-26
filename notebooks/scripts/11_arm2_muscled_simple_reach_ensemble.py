@@ -26,7 +26,6 @@ N_DIM = 2  # TODO: not here
 # %autoreload 2
 
 # %%
-from functools import partial
 import logging
 import os
 from pathlib import Path
@@ -49,6 +48,8 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
+import pandas as pd
+import seaborn as sns
 
 from feedbax.channel import ChannelState
 from feedbax.context import SimpleFeedback, SimpleFeedbackState
@@ -62,15 +63,16 @@ from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import RNN
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
-from feedbax.trainer import TaskTrainer
-
+from feedbax.trainer import TaskTrainer, save, load
 
 from feedbax.plot import (
-    plot_loglog_losses, 
+    plot_mean_losses,
     plot_2D_joint_positions,
     plot_states_forces_2d,
     plot_activity_heatmap,
 )
+
+from feedbax.utils import get_model_ensemble
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -136,7 +138,8 @@ def get_model(
         system.control_size, 
         out_nonlinearity=out_nonlinearity,
         persistence=False, 
-        key=key2)
+        key=key2
+    )
     body = SimpleFeedback(
         net, 
         mechanics, 
@@ -158,49 +161,93 @@ def get_model(
 # Train the model.
 
 # %%
-seed = 5566
-key = jrandom.PRNGKey(seed)
+seed = 5567
+
+n_replicates = 3
 
 n_steps = 50
 dt = 0.05 
-feedback_delay = 0
-workspace = jnp.array([[-0.15, 0.15], 
-                       [0.20, 0.50]])
+feedback_delay_steps = 0
+workspace = ((-0.15, 0.15), 
+             (0.20, 0.50))
 n_hidden  = 50
 out_nonlinearity = jax.nn.sigmoid
 learning_rate = 0.05
 
-# #! these assume a particular PyTree structure to the states returned by the model
-# #! which is why we simply instantiate them 
-discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
-loss_func = fbl.CompositeLoss(
-    (
-        fbl.EffectorPositionLoss(discount=discount),
-        fbl.EffectorFinalVelocityLoss(),
-        fbl.ControlLoss(),
-        fbl.NetworkActivityLoss(),
-    ),
-    weights=(1, 0.1, 1e-4, 0.)
+loss_term_weights = dict(
+    effector_position=1.,
+    effector_final_velocity=0.1,
+    control=1e-4,
+    activity=0.,
 )
 
-task = RandomReaches(
-    loss_func=loss_func,
-    workspace=workspace, 
+hyperparams = dict(
+    seed=seed,
+    n_replicates=n_replicates,
     n_steps=n_steps,
-    eval_grid_n=2,
-    eval_n_directions=8,
-    eval_reach_length=0.05,
-)
-
-get_model = partial(
-    get_model,
+    workspace=workspace,
+    loss_term_weights=loss_term_weights,
     dt=dt,
     n_hidden=n_hidden,
-    n_steps=n_steps,
-    feedback_delay=feedback_delay,
-    tau=0.01,
-    out_nonlinearity=out_nonlinearity,
+    feedback_delay_steps=feedback_delay_steps,
 )
+
+
+# %%
+def setup(
+    seed, 
+    n_replicates,
+    n_steps, 
+    workspace,
+    loss_term_weights,
+    dt, 
+    n_hidden,
+    feedback_delay_steps,    
+):
+    
+    key = jrandom.PRNGKey(seed)
+
+    # #! these assume a particular PyTree structure to the states returned by the model
+    # #! which is why we simply instantiate them 
+    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
+    loss_func = fbl.CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them 
+            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+            control=fbl.ControlLoss(),
+            activity=fbl.NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
+    )
+
+    task = RandomReaches(
+        loss_func=loss_func,
+        workspace=workspace, 
+        n_steps=n_steps,
+        eval_grid_n=2,
+        eval_n_directions=8,
+        eval_reach_length=0.05,
+    )
+    
+    models = get_model_ensemble(
+        get_model, 
+        n_replicates,
+        key=key,
+        dt=dt,
+        n_hidden=n_hidden,
+        n_steps=n_steps,
+        feedback_delay=feedback_delay_steps,
+        tau=0.01,
+        out_nonlinearity=out_nonlinearity,
+    )
+    
+    return models, task 
+
+
+# %%
+models, task = setup(**hyperparams)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
@@ -217,45 +264,55 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-model, losses, losses_terms = trainer.model_ensemble(
+model, losses, losses_terms, learning_rates = trainer.train_ensemble(
     task=task, 
-    get_model=get_model,
-    n_model_replicates=3,
+    models=models,
+    n_replicates=n_replicates,
     n_batches=1000, 
     batch_size=500, 
     log_step=1,
     trainable_leaves_func=trainable_leaves_func,
-    key=key,
+    key=jrandom.PRNGKey(seed + 1),
 )
 
 # %%
 plt.loglog(losses.T)
 
 # %%
-losses_terms_df = jax.tree_map(
-    lambda losses: pd.DataFrame(losses.T, index=range(n_replicates)).melt(
-        var_name='Time step', 
-        value_name='Loss'
-    ),
-    dict(losses_terms, total=losses),
-)
-
-fig, ax = plt.subplots()
-ax.set(xscale='log', yscale='log')
-for label, df in losses_terms_df.items():
-    sns.lineplot(data=df, x='Time step', y='Loss', errorbar='sd', label=label, ax=ax)
+plot_mean_losses(losses, losses_terms)
 plt.show()
+
+# %% [markdown]
+# Save the trained model to file
 
 # %%
-plot_loglog_losses(losses, losses_terms)
-plt.show()
+model_path = save(
+    (model, task),
+    hyperparams, 
+    save_dir=model_dir, 
+    suffix=NB_PREFIX,
+)
+
+# %% [markdown]
+# If we didn't just save a model, we can try to load one
+
+# %%
+try:
+    model_path
+    model, task
+except NameError:
+    model_path = ''
+    model, task = load(model_path, setup)
 
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
-evaluate, eval_endpoints = get_evaluate_func(models, workspace, term_weights=term_weights)
-loss, loss_terms, states = eqx.filter_vmap(evaluate)(models)
+keys_eval = jrandom.split(jrandom.PRNGKey(seed + 2), n_replicates)
+
+loss, loss_terms, states = eqx.filter_vmap(task.eval)(
+    models, keys_eval
+)
 
 # %%
 fig, _ = plot_states_forces_2d(

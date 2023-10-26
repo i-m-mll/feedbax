@@ -10,7 +10,7 @@ TODO:
 import io
 from itertools import zip_longest
 import logging 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +21,7 @@ from matplotlib import animation
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
 from feedbax import utils
@@ -316,7 +317,10 @@ def plot_activity_sample_units(
         axs[-1][-j-1].set_xlabel(xlabel)
         
 
-def plot_loglog_losses(losses, losses_terms: dict = None):
+def plot_loglog_losses(
+    losses: Float[Array, "trainstep"], 
+    losses_terms: Optional[Dict[str, Float[Array, "trainstep"]]] = None
+):
     """Log-log plot of losses and component loss terms."""
     if losses_terms is None:
         losses_terms = dict()
@@ -337,11 +341,38 @@ def plot_loglog_losses(losses, losses_terms: dict = None):
     return fig, ax
 
 
+def plot_mean_losses(
+    losses: Float[Array, "rep trainstep"], 
+    losses_terms: Dict[str, Float[Array, "rep trainstep"]]
+):
+    """Similar to `plot_loglog_losses`, with mean-std over a batch dimension.
+    """
+    losses_terms_df = jax.tree_map(
+        lambda losses: pd.DataFrame(losses, index=range(losses.shape[0])).melt(
+            var_name='Time step', 
+            value_name='Loss'
+        ),
+        dict(losses_terms, total=losses),
+    )
+    fig, ax = plt.subplots()
+    ax.set(xscale='log', yscale='log')
+    for label, df in losses_terms_df.items():
+        sns.lineplot(
+            data=df, 
+            x='Time step', 
+            y='Loss', 
+            errorbar='sd', 
+            label=label, 
+            ax=ax
+        )
+    return fig, ax
+
+
 def plot_task_and_speed_profiles(
     velocity: Float[Array, "batch time xy"], 
-    task_variables=None, 
-    epoch_idxs=None,
-    cmap='tab10',
+    task_variables = Dict[str, Float[Array, "batch time"]], 
+    epoch_start_idxs: Optional[Int[Array, "batch epoch"]] = None,
+    cmap: str = 'tab10',
 ):
     """For visualizing learned movements versus task structure.
     
@@ -363,10 +394,10 @@ def plot_task_and_speed_profiles(
         axs[-1].plot(speeds[i].T, color=colors[i])
 
     ymax = 1.5 * jnp.max(speeds)
-    if epoch_idxs is not None:
-        axs[-1].vlines(epoch_idxs[:, 1], ymin=0, ymax=ymax, colors=colors, 
+    if epoch_start_idxs is not None:
+        axs[-1].vlines(epoch_start_idxs[:, 1], ymin=0, ymax=ymax, colors=colors, 
                        linestyles='dotted', linewidths=1, label='target ON')
-        axs[-1].vlines(epoch_idxs[:, 3], ymin=0, ymax=ymax, colors=colors, 
+        axs[-1].vlines(epoch_start_idxs[:, 3], ymin=0, ymax=ymax, colors=colors, 
                        linestyles='dashed', linewidths=1, label='fixation OFF')
         plt.legend()
     axs[-1].yaxis.set_major_formatter(FormatStrFormatter('%.2f'))

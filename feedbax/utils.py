@@ -6,6 +6,7 @@
 
 import dataclasses
 from itertools import zip_longest, chain
+from functools import partial
 import logging 
 import math
 import os
@@ -13,11 +14,12 @@ from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
 from time import perf_counter
-from typing import Optional, Union 
+from typing import Callable, Concatenate, Dict, Optional, Union, ParamSpec
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jrandom
 from jaxtyping import Float, Array, PyTree
 
 
@@ -29,6 +31,9 @@ logger = logging.getLogger(__name__)
 TODO: infinite cycle
 """
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
+
+
+P = ParamSpec('P')
 
 
 class catchtime:
@@ -84,6 +89,19 @@ def dirname_of_this_module():
 def exp_taylor(x: float, n: int):
     """First `n` terms of the Taylor series for `exp` at the origin."""
     return [(x ** i) / math.factorial(i) for i in range(n)]
+
+
+def get_model_ensemble(
+    get_model: Callable[Concatenate[jrandom.PRNGKeyArray, P], eqx.Module], 
+    n_replicates: int, 
+    *, 
+    key: jrandom.PRNGKeyArray, 
+    **kwargs,  # can't type this with P 
+) -> eqx.Module:
+    """Helper to vmap model generation over a set of PRNG keys."""
+    keys = jrandom.split(key, n_replicates)
+    get_model_ = partial(get_model, **kwargs)
+    return eqx.filter_vmap(get_model_)(keys)
 
 
 def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
@@ -150,7 +168,7 @@ def normalize(
     return jax.tree_map(arr_norm, tree)
 
 
-def tree_get_idx(tree, idx: int):
+def tree_get_idx(tree: PyTree, idx: int):
     """Retrieve the `idx`-th element of each array leaf of `tree`.
     
     Any non-array leaves are returned unchanged.
@@ -160,7 +178,11 @@ def tree_get_idx(tree, idx: int):
     return eqx.combine(values, other)
 
 
-def tree_set_idx(tree, vals, idx: int):
+def tree_set_idx(
+    tree: PyTree, 
+    vals, 
+    idx: int
+):
     """Update the `idx`-th element of each array leaf of `tree`.
     
     `vals` should be a pytree with the same structure as `tree`,

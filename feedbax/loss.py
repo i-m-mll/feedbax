@@ -73,7 +73,8 @@ class CompositeLoss(AbstractLoss):
     labels: Tuple[str, ...]
     
     def __init__(self, terms, weights):
-        assert len(terms) == len(weights)
+        if not len(terms) == len(weights):
+            raise ValueError("Mismatch between number of loss terms and term weights")
         #! assumes all the components are simple losses, and `labels` is a one-tuple
         if isinstance(terms, dict):
             self.labels = tuple(terms.keys())
