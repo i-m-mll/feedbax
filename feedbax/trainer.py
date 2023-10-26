@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -44,16 +44,11 @@ class TaskTrainer(eqx.Module):
     """A class 
     
     NOTE: 
-    I don't think it makes sense to use this to train (say) jPCA or linear
-    regressions, which might not use a `AbstractTask` but operate directly
-    on an entire dataset/single array at once. I should try writing another
-    training for those cases, and see if perhaps an `AbstractTrainer` makes
-    sense to capture the common aspects. 
-    
-    TODO:
-    - Should be vmappable; i.e. for ensemble training.
-    - Should work as a component of a larger model; say, if we want to train
-      a smaller model during each step of a larger one.    
+    - I don't think it makes sense to use this to train (say) jPCA or linear
+      regressions, which might not use a `AbstractTask` but operate directly
+      on an entire dataset/single array at once. I should try writing another
+      training for those cases, and see if perhaps an `AbstractTrainer` makes
+      sense to capture the common aspects.  
     """
     optimizer: optax.GradientTransformation
     checkpointing: bool
@@ -105,7 +100,16 @@ class TaskTrainer(eqx.Module):
         *,
         key: jrandom.PRNGKeyArray,
     ):
-        """Train a model on a task for a fixed number of batches of trials."""
+        """Train a model on a task for a fixed number of batches of trials.
+        
+        NOTE:
+        - Model checkpointing only saves model state, not the task or 
+          hyperparameters. That is, it assumes that the model and task passed 
+          to this method are, aside from their trainable state, identical to 
+          those from the time of checkpointing. This is typically the case 
+          when a checkpoint is used locally to resume training. However, trying
+          to load a checkpoint as a model later may fail. Use `save` and `load`.
+        """
         
         return self._train(
             task, 
@@ -149,6 +153,8 @@ class TaskTrainer(eqx.Module):
         
         TODO: 
         - Allow variation in the task as well as the model.
+        - Maybe we shouldn't generate the model replicates here. What about 
+          setting up a model from loaded hyperparameters?
         """
         key1, key2 = jrandom.split(key)
         keys_model = jrandom.split(key1, n_model_replicates)
@@ -207,6 +213,8 @@ class TaskTrainer(eqx.Module):
             task.loss_func.weights.keys(), 
             [jnp.empty((n_batches,)) for _ in task.loss_func.weights]
         ))
+        learning_rates = jnp.empty((n_batches,))
+        
         loss_func_wrapped = grad_wrap_loss_func(task.loss_func)
         
         start_batch = 0  # except when we load a checkpoint
@@ -248,6 +256,12 @@ class TaskTrainer(eqx.Module):
             
             losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
+            try:
+                # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
+                learning_rate = opt_state.hyperparams['learning_rate']
+                learning_rates = learning_rates.at[batch].set(learning_rate)
+            except (AttributeError, KeyError):
+                learning_rate = None 
             
             if ensembled: 
                 # ensemble training skips the logging and NaN control flow stuff
@@ -300,35 +314,12 @@ class TaskTrainer(eqx.Module):
                 tqdm.write(f"step: {batch}", file=sys.stdout)
                 tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
                 tqdm.write(f"\tevaluation loss: {loss_eval:.4f}", file=sys.stdout)
-                try:
-                    learning_rate = opt_state.hyperparams['learning_rate']
+                if learning_rate is not None:                    
                     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
-                except (AttributeError, KeyError):
-                    pass
-        
-        if save_dir is not None:
-            # could probably just concatenate 
-            #   1) arguments to this method, 
-            #   2) optimizer hyperparameters,
-            #   3) `model` and `task pytrees, filtered of callables and jax arrays
-            hyperparams = dict(
-                commit_hash=git_commit_id(),
-                key=key.tolist(),
-                batch_size=batch_size,
-                n_batches=n_batches,
-                workspace=task.workspace.tolist(),
-                term_weights=task.loss_func.weights,
-                # epochs=n_epochs,
-                opt_hyperparams=opt_state.hyperparams,
-                # weight_decay=weight_decay,
-            )        
-            
-            save_model(model, hyperparams, Path(save_dir))
          
-        return model, losses, losses_terms
+        return model, losses, losses_terms, learning_rates
     
     @eqx.filter_jit
-    #? @eqx.filter_vmap(in_axes=(eqx.if_array(0), None, None, eqx.if_array(0)))
     def train_step(
         self, 
         model, 
@@ -422,31 +413,58 @@ def grad_wrap_loss_func(
     return wrapper 
 
 
-def save_model(
-            model, 
+def save(
+            tree: PyTree[eqx.Module],
             hyperparams: Optional[dict] = None, 
+            path: Optional[Path] = None,
             save_dir: Path = Path('.'),
-            # fig_funcs: Optional[dict]=None
+            suffix: Optional[str] = None,
     ):
-    """Save a model to disk, along with hyperparameters and figures.
+    """Save a PyTree to disk along with hyperparameters.
     
-    TODO:
-    - Don't save figures in this function. Move to a different one
-      if we want this feature.
+    If a path is not specified, a filename will be generated from the current 
+    time and the commit ID of the `feedbax` repository, and the file will be 
+    saved in `save_dir`, which defaults to the current working directory.
+    
+    Assumes none of the hyperparameters are JAX arrays, as these are not 
+    JSON serializable.
+    
+    Based on https://docs.kidger.site/equinox/examples/serialisation/
+    
+    TODO: 
+    - If we leave in the git hash label, allow the user to specify the directory.
     """
-        
-    timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
-    name = f"model_{timestr}"
-    hyperparam_str = json.dumps(hyperparams)
+    if path is None:      
+        # TODO: move to separate function maybe
+        timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
+        commit_id = git_commit_id()
+        name = f"model_{timestr}_{commit_id}"
+        if suffix is not None:
+            name += f"_{suffix}"
+        path = save_dir / f'{name}.eqx'
     
-    eqx.tree_serialise_leaves(save_dir / f'{name}.eqx', model)
-    if hyperparams is not None:
-        with open(save_dir / f'{name}.json', 'w') as f:
-            hyperparams_str = json.dumps(hyperparams, indent=4)
-            f.write(hyperparams_str)
-    # if fig_funcs is not None:
-    #     for label, fig_func in fig_funcs.items():
-    #         fig = fig_func()
-    #         fig.savefig(model_dir / f'{name}_{label}.png')
-    #         plt.close(fig)    
+    with open(path, 'wb') as f:
+        hyperparam_str = json.dumps(hyperparams)
+        f.write((hyperparam_str + '\n').encode())
+        eqx.tree_serialise_leaves(f, tree)
+    
+    return path
+    
+
+def load(
+    filename: Path | str, 
+    setup_func: Callable[[Any], PyTree[eqx.Module]],
+) -> PyTree[eqx.Module]:
+    """Setup a PyTree of equinox modules from stored state and hyperparameters.
+    
+    TODO: 
+    - Could provide a simple interface to show the most recently saved files in 
+      a directory, according to the default naming rules from `save`.
+    """
+    with open(filename, "rb") as f:
+        hyperparams = json.loads(f.readline().decode())
+        tree = setup_func(**hyperparams)
+        tree = eqx.tree_deserialise_leaves(f, tree)
+    
+    return tree
     

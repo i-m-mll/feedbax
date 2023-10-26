@@ -71,7 +71,7 @@ class AbstractTask(eqx.Module):
 
 class RandomReaches(AbstractTask):
     loss_func: AbstractLoss
-    workspace: Float[Array, "ndim 2"]
+    workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
     n_steps: int
     eval_n_directions: int 
     eval_reach_length: float
@@ -145,7 +145,7 @@ class RandomReachesDelayed(AbstractTask):
     e.g. allows for a stimulus epoch, followed by a delay period, then movement.
     """
     loss_func: AbstractLoss 
-    workspace: Float[Array, "ndim 2"]
+    workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
     n_steps: int 
     epoch_len_ranges: Tuple[Tuple[int, int], ...]
     eval_n_directions: int

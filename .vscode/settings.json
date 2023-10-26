@@ -1,3 +1,8 @@
 {
-    "python.useIsolation": false
+    "python.useIsolation": false,
+    "workbench.colorCustomizations": {
+        "statusBar.background" : "#2F2F2F",
+        "statusBar.noFolderBackground" : "#212121",
+        "statusBar.debuggingBackground": "#263238"
+    }
 }

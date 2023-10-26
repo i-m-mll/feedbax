@@ -52,7 +52,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-
+from feedbax.channel import ChannelState
 from feedbax.context import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
@@ -60,7 +60,7 @@ from feedbax.mechanics.arm import TwoLink
 from feedbax.networks import RNN
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
-from feedbax.trainer import TaskTrainer
+from feedbax.trainer import TaskTrainer, save, load
 
 from feedbax.plot import (
     plot_loglog_losses, 
@@ -146,49 +146,86 @@ def get_model(
 
 # %%
 seed = 5566
-key = jrandom.PRNGKey(seed)
 
 n_steps = 50
 dt = 0.05 
-feedback_delay = 0
-workspace = jnp.array([[-0.15, 0.15], 
-                       [0.20, 0.50]])
+feedback_delay_steps = 0
+workspace = ((-0.15, 0.15), 
+             (0.20, 0.50))
 n_hidden  = 50
-learning_rate = 2e-2
 
-# #! these assume a particular PyTree structure to the states returned by the model
-# #! which is why we simply instantiate them 
-discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
-loss_func = fbl.CompositeLoss(
-    (
-        fbl.EffectorPositionLoss(discount=discount),
-        fbl.EffectorFinalVelocityLoss(),
-        fbl.ControlLoss(),
-        fbl.NetworkActivityLoss(),
-    ),
-    weights=(1., 1., 1e-5, 1e-6)
+loss_term_weights = dict(
+    effector_position=1.,
+    effector_final_velocity=1.,
+    control=1e-5,
+    activity=1e-6,
 )
 
-task = RandomReaches(
-    loss_func=loss_func,
-    workspace=workspace, 
+hyperparams = dict(
+    seed=seed,
     n_steps=n_steps,
-    eval_grid_n=2,
-    eval_n_directions=8,
-    eval_reach_length=0.05,
-)
-
-model = get_model(
-    key, 
+    workspace=workspace,
+    loss_term_weights=loss_term_weights,
     dt=dt,
     n_hidden=n_hidden,
-    n_steps=n_steps,
-    feedback_delay=feedback_delay,
+    feedback_delay_steps=feedback_delay_steps,
 )
+
+
+# %%
+def setup(
+    seed, 
+    n_steps, 
+    workspace,
+    loss_term_weights,
+    dt,
+    n_hidden,
+    feedback_delay_steps,
+):
+
+    key = jrandom.PRNGKey(seed)
+
+    # #! these assume a particular PyTree structure to the states returned by the model
+    # #! which is why we simply instantiate them 
+    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
+    loss_func = fbl.CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them 
+            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+            control=fbl.ControlLoss(),
+            activity=fbl.NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
+    )
+
+    task = RandomReaches(
+        loss_func=loss_func,
+        workspace=workspace, 
+        n_steps=n_steps,
+        eval_grid_n=2,
+        eval_n_directions=8,
+        eval_reach_length=0.05,
+    )
+
+    model = get_model(
+        key, 
+        dt=dt,
+        n_hidden=n_hidden,
+        n_steps=n_steps,
+        feedback_delay=feedback_delay_steps,
+    )
+    
+    return model, task
+
+
+# %%
+model, task = setup(**hyperparams)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
-        learning_rate=learning_rate
+        learning_rate=2e-2
     ),
     chkpt_dir=chkpt_dir,
     checkpointing=True,
@@ -201,18 +238,40 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-model, losses, losses_terms = trainer(
+model, losses, losses_terms, learning_rates = trainer(
     task=task, 
     model=model,
     n_batches=1000, 
     batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
-    key=key,
+    key=jrandom.PRNGKey(seed + 1),
 )
 
 plot_loglog_losses(losses, losses_terms)
 plt.show()
+
+# %% [markdown]
+# Save the model and task to file along with the hyperparameters needed to set them up again on loading
+
+# %%
+model_path = save(
+    (model, task),
+    hyperparams, 
+    save_dir=model_dir, 
+    suffix=NB_PREFIX
+)
+
+# %% [markdown]
+# If we didn't just save a model, we can try to load one. Note that this depends on `setup` being the same.
+
+# %%
+try:
+    model_path
+    model, task
+except NameError:
+    model_path = "../models/model_20231026-100544_b4a92ad_nb12.eqx"
+    model, task = load(model_path, setup)
 
 # %% [markdown]
 # Evaluate on a centre-out task

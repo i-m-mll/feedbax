@@ -75,9 +75,16 @@ class CompositeLoss(AbstractLoss):
     def __init__(self, terms, weights):
         assert len(terms) == len(weights)
         #! assumes all the components are simple losses, and `labels` is a one-tuple
-        self.labels = [term.labels[0] for term in terms]
-        self.terms = dict(zip(self.labels, terms))
-        self.weights = dict(zip(self.labels, weights))
+        if isinstance(terms, dict):
+            self.labels = tuple(terms.keys())
+            self.terms = terms 
+        else:
+            self.labels = [term.labels[0] for term in terms]
+            self.terms = dict(zip(self.labels, terms))
+        if not isinstance(weights, dict):
+            self.weights = dict(zip(self.labels, weights))
+        else:
+            self.weights = weights
         
     def __call__(
         self, 

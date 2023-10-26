@@ -64,7 +64,7 @@ from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import RNN
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
-from feedbax.trainer import TaskTrainer
+from feedbax.trainer import TaskTrainer, save, load
 
 
 from feedbax.plot import (
@@ -157,51 +157,87 @@ def get_model(
     return Recursion(body, n_steps, states_includes=states_includes)
 
 
-# %% [markdown]
-# Train the model.
-
 # %%
 seed = 5566
-key = jrandom.PRNGKey(seed)
 
 n_steps = 50
 dt = 0.05 
-workspace = jnp.array([[-0.15, 0.15], 
-                       [0.20, 0.50]])
+feedback_delay_steps = 0
+workspace = ((-0.15, 0.15), 
+             (0.20, 0.50))
 n_hidden  = 50
 learning_rate = 0.05
 
-# #! these assume a particular PyTree structure to the states returned by the model
-# #! which is why we simply instantiate them 
-discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
-loss_func = fbl.CompositeLoss(
-    (
-        fbl.EffectorPositionLoss(discount=discount),
-        fbl.EffectorFinalVelocityLoss(),
-        fbl.ControlLoss(),
-        fbl.NetworkActivityLoss(),
-    ),
-    weights=(1, 0.1, 1e-4, 0.)
+loss_term_weights = dict(
+    effector_position=1.,
+    effector_final_velocity=0.1,
+    control=1e-4,
+    activity=0.,
 )
 
-task = RandomReaches(
-    loss_func=loss_func,
-    workspace=workspace, 
+hyperparams = dict(
+    seed=seed,
     n_steps=n_steps,
-    eval_grid_n=2,
-    eval_n_directions=8,
-    eval_reach_length=0.05,
-)
-
-model = get_model(
-    key, 
+    workspace=workspace,
+    loss_term_weights=loss_term_weights,
     dt=dt,
     n_hidden=n_hidden,
-    n_steps=n_steps,
-    feedback_delay=0,
-    tau=0.01,
-    out_nonlinearity=jax.nn.sigmoid,
+    feedback_delay_steps=feedback_delay_steps,
 )
+
+
+# %%
+def setup(
+    seed, 
+    n_steps, 
+    workspace,
+    loss_term_weights,
+    dt, 
+    n_hidden,
+    feedback_delay_steps,    
+):
+
+    key = jrandom.PRNGKey(seed)
+
+    # #! these assume a particular PyTree structure to the states returned by the model
+    # #! which is why we simply instantiate them 
+    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
+    loss_func = fbl.CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them 
+            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+            control=fbl.ControlLoss(),
+            activity=fbl.NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
+    )
+
+    task = RandomReaches(
+        loss_func=loss_func,
+        workspace=workspace, 
+        n_steps=n_steps,
+        eval_grid_n=2,
+        eval_n_directions=8,
+        eval_reach_length=0.05,
+    )
+
+    model = get_model(
+        key, 
+        dt=dt,
+        n_hidden=n_hidden,
+        n_steps=n_steps,
+        feedback_delay=feedback_delay_steps,
+        tau=0.01,
+        out_nonlinearity=jax.nn.sigmoid,
+    )
+    
+    return model, task
+
+
+# %%
+model, task = setup(**hyperparams)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
@@ -225,13 +261,35 @@ model, losses, loss_terms = trainer(
     batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
-    key=key,
+    key=jrandom.PRNGKey(seed + 1),
 )
 
 # %%
 plt.style.use('dark_background')
 plot_loglog_losses(losses, loss_terms)
 plt.show()
+
+# %% [markdown]
+# Save the trained model to file
+
+# %%
+model_path = save(
+    (model, task),
+    hyperparams, 
+    save_dir=model_dir, 
+    suffix=NB_PREFIX,
+)
+
+# %% [markdown]
+# If we didn't just save a model, we can try to load one
+
+# %%
+try:
+    model_path
+    model, task
+except NameError:
+    model_path = '../models/model_20231026-103421_b4a92ad_nb8.eqx'
+    model, task = load(model_path, setup)
 
 # %% [markdown]
 # Optionally, load an existing model

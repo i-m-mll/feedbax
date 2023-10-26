@@ -62,7 +62,7 @@ from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNN
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReachesDelayed
-from feedbax.trainer import TaskTrainer
+from feedbax.trainer import TaskTrainer, save, load
 
 from feedbax.plot import (
     animate_3D_rotate,
@@ -149,13 +149,12 @@ def get_model(
 
 # %%
 seed = 5566
-key = jrandom.PRNGKey(seed)
 
 n_steps = 100
 dt = 0.1
 feedback_delay_steps = 5
-workspace = jnp.array([[-1., 1.], 
-                       [-1., 1.]])
+workspace = ((-1., 1.), 
+             (-1., 1.))
 # epoch lengths (in steps) will be sampled uniformly from these ranges
 # the movement epoch will last the remainder until `n_steps`
 task_epoch_len_ranges = ((5, 15),   # start
@@ -163,42 +162,84 @@ task_epoch_len_ranges = ((5, 15),   # start
                          (10, 25))  # hold
 n_hidden = 50
 
-n_batches = 10_000
+n_batches = 100
 batch_size = 500
 learning_rate = 0.01
 log_step = 100
 
-model = get_model(
-    key, 
-    dt=dt,
-    n_hidden=n_hidden,
-    n_steps=n_steps,
-    feedback_delay=feedback_delay_steps,
+# the keys need to match 
+loss_term_weights = dict(
+    effector_fixation=1.,
+    effector_position=1.,
+    effector_final_velocity=1.,
+    control=1e-4,
+    activity=1e-5,
 )
 
-discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
-loss_func = fbl.CompositeLoss(
-    (
-        # these assume a particular PyTree structure to the states returned by the model
-        # which is why we simply instantiate them 
-        fbl.EffectorFixationLoss(),
-        fbl.EffectorPositionLoss(discount=discount),
-        fbl.EffectorFinalVelocityLoss(),
-        fbl.ControlLoss(),
-        fbl.NetworkActivityLoss(),
-    ),
-    weights=(1., 1., 1., 1e-4, 1e-5)
-)
-
-task = RandomReachesDelayed(
-    loss_func=loss_func,
+# %%
+# hyperparams dict + setup function isn't strictly necessary,
+# but it makes model saving and loading more sensible
+hyperparams = dict(
+    seed=seed,
+    n_steps=n_steps, 
+    feedback_delay_steps=feedback_delay_steps, 
+    loss_term_weights=loss_term_weights, 
     workspace=workspace, 
-    n_steps=n_steps,
-    epoch_len_ranges=task_epoch_len_ranges,
-    eval_grid_n=1,
-    eval_n_directions=8,
-    eval_reach_length=0.5,
+    task_epoch_len_ranges=task_epoch_len_ranges,
+    dt=dt, 
+    n_hidden=n_hidden, 
 )
+
+def setup(
+    seed, 
+    n_steps, 
+    feedback_delay_steps, 
+    loss_term_weights, 
+    workspace, 
+    task_epoch_len_ranges,
+    dt, 
+    n_hidden, 
+    **kwargs,
+):
+    key = jrandom.PRNGKey(seed)
+
+    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
+    loss_func = fbl.CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them 
+            effector_fixation=fbl.EffectorFixationLoss(),
+            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+            control=fbl.ControlLoss(),
+            activity=fbl.NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
+    )
+
+    task = RandomReachesDelayed(
+        loss_func=loss_func,
+        workspace=workspace, 
+        n_steps=n_steps,
+        epoch_len_ranges=task_epoch_len_ranges,
+        eval_grid_n=2,
+        eval_n_directions=8,
+        eval_reach_length=0.5,
+    )
+    
+    model = get_model(
+        key, 
+        dt=dt,
+        n_hidden=n_hidden,
+        n_steps=n_steps,
+        feedback_delay=feedback_delay_steps,
+    )
+    
+    return model, task
+
+
+# %%
+model, task = setup(**hyperparams)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
@@ -214,7 +255,9 @@ trainer = TaskTrainer(
 )
 
 # %%
-model, losses, losses_terms = trainer(
+key = jrandom.PRNGKey(seed + 1)
+
+model, losses, losses_terms, learning_rates = trainer(
     task=task,
     model=model,
     batch_size=batch_size, 
@@ -227,29 +270,26 @@ trained = True
 
 plot_loglog_losses(losses, losses_terms);
 
+# %%
+model_path = save(
+    (model, task),
+    hyperparams, 
+    save_dir=model_dir, 
+    suffix=NB_PREFIX
+)
+
 # %% [markdown]
-# Optional: load pretrained model (if restarting notebook)
+# If we didn't just save a model, we can try to load one
 
 # %%
-model_path = "../models/model_20231018-131339_12_GO.eqx"
-
-if not trained: 
-    model = get_model()
-    model = eqx.tree_deserialise_leaves(model_path, model)
+try:
+    model_path
+except NameError:
+    model_path = "../models/model_20231026-100544_b4a92ad_nb12.eqx"
+    model, task = load(model_path, setup)
 
 # %% [markdown]
 # Evaluate on a centre-out task
-
-# %%
-task = RandomReachesDelayed(
-    loss_func=loss_func,
-    workspace=workspace, 
-    n_steps=n_steps,
-    epoch_len_ranges=task_epoch_len_ranges,
-    eval_grid_n=1,
-    eval_n_directions=8,
-    eval_reach_length=0.5,
-)
 
 # %%
 loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
