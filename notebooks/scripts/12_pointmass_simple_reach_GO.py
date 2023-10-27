@@ -71,7 +71,7 @@ from feedbax.plot import (
     plot_activity_heatmap,
     plot_activity_sample_units,
     plot_loglog_losses, 
-    plot_states_forces_2d,
+    plot_pos_vel_force_2D,
     plot_task_and_speed_profiles,
 )
 
@@ -84,6 +84,8 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 
 # not sure if this will work or if I need to use the env variable version
 #jax.config.update("jax_traceback_filtering", DEBUG)  
+
+plt.style.use('dark_background')
 
 # %%
 # paths
@@ -136,15 +138,8 @@ def get_model(
         delay=feedback_delay,
         feedback_leaves_func=feedback_leaves_func,
     )
-    
-    states_includes = SimpleFeedbackState(
-        mechanics=True, 
-        control=True, 
-        hidden=True, 
-        feedback=ChannelState(output=True, queue=False)
-    )
 
-    return Recursion(body, n_steps, states_includes=states_includes)
+    return Recursion(body, n_steps)
 
 
 # %%
@@ -172,8 +167,8 @@ loss_term_weights = dict(
     effector_fixation=1.,
     effector_position=1.,
     effector_final_velocity=1.,
-    control=1e-4,
-    activity=1e-5,
+    nn_output=1e-4,
+    nn_activity=1e-5,
 )
 
 # %%
@@ -211,11 +206,17 @@ def setup(
             effector_fixation=fbl.EffectorFixationLoss(),
             effector_position=fbl.EffectorPositionLoss(discount=discount),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            control=fbl.ControlLoss(),
-            activity=fbl.NetworkActivityLoss(),
+            nn_output=fbl.NetworkOutputLoss(),
+            nn_activity=fbl.NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )
+    
+    # TODO: add a term onto an existing loss
+    # loss_func = fbl.simple_reach_loss(
+    #     n_steps=n_steps,
+    #     loss_term_weights=loss_term_weights,
+    # ) + fbl.EffectorFixationLoss()
 
     task = RandomReachesDelayed(
         loss_func=loss_func,
@@ -320,7 +321,7 @@ plot_task_and_speed_profiles(
 plot_states_forces_2d(
     states.mechanics.system.pos, 
     states.mechanics.system.vel, 
-    states.control, 
+    states.network.output, 
     endpoints=(init_states.pos, goal_states.pos),
 )
 plt.show()

@@ -6,15 +6,17 @@
 
 import logging
 import os
+from typing import Optional
 
 import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Array, PyTree
 from tqdm.auto import tqdm
 
+from feedbax.context import AbstractContext
 from feedbax.utils import tree_get_idx, tree_set_idx
 
 logger = logging.getLogger(__name__)
@@ -32,15 +34,27 @@ class Recursion(eqx.Module):
     - is there a way to avoid assuming the `input, state` argument structure of `step`?
     - with the new partitioning of states into memory and no-memory,
     """
-    step: eqx.Module 
+    step: AbstractContext
     n_steps: int 
-    states_includes: PyTree[bool] = True
+    states_includes: PyTree[bool]
+    
+    def __init__(
+        self,
+        step: eqx.Module,
+        n_steps: int,
+        states_includes: Optional[PyTree[bool]] = None,
+    ):
+        if states_includes is None:
+            states_includes = step.memory_spec
+        self.step = step
+        self.n_steps = n_steps
+        self.states_includes = states_includes
     
     @jax.named_scope("fbx.Recursion._body_func")
     def _body_func(self, i, x):
         inputs, states, key = x
         
-        key1, key2 = jrandom.split(key)
+        key1, key2 = jr.split(key)
         
         # since we optionally store the trajectories of only some of the states,
         # as specified by `states_includes`, we need to partition these out 
@@ -60,7 +74,7 @@ class Recursion(eqx.Module):
     
     @jax.named_scope("fbx.Recursion")
     def __call__(self, inputs, init_effector_state, key):
-        key1, key2, key3 = jrandom.split(key, 3)
+        key1, key2, key3 = jr.split(key, 3)
         
         init_state = self.step.init(init_effector_state)  #! maybe this should be outside
         

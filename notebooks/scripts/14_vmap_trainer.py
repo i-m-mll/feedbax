@@ -13,9 +13,6 @@
 #     name: python3
 # ---
 
-# %% [markdown]
-# Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
-
 # %%
 LOG_LEVEL = "INFO"
 NB_PREFIX = "nb10"
@@ -29,8 +26,8 @@ N_DIM = 2  # TODO: not here
 # %autoreload 2
 
 # %%
-import os
 import logging
+import os
 from pathlib import Path
 import sys
 
@@ -51,6 +48,8 @@ import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
+import pandas as pd
+import seaborn as sns
 
 from feedbax.channel import ChannelState
 from feedbax.context import SimpleFeedback, SimpleFeedbackState
@@ -66,13 +65,14 @@ from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 
-
 from feedbax.plot import (
-    plot_loglog_losses, 
+    plot_mean_losses,
     plot_2D_joint_positions,
     plot_pos_vel_force_2D,
     plot_activity_heatmap,
 )
+
+from feedbax.utils import get_model_ensemble, tree_get_idx
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -138,22 +138,32 @@ def get_model(
     net = RNN(
         cell, 
         system.control_size, 
-        out_nonlinearity=out_nonlinearity, 
-        persistence=False,
+        out_nonlinearity=out_nonlinearity,
+        persistence=False, 
         key=key2
     )
     body = SimpleFeedback(
         net, 
         mechanics, 
-        delay=feedback_delay, 
-        feedback_leaves_func=feedback_leaves_func, 
+        delay=feedback_delay,  
+        feedback_leaves_func=feedback_leaves_func,
+    )
+    
+    states_includes = SimpleFeedbackState(
+        mechanics=True, 
+        nn_output=True, 
+        hidden=True, 
+        feedback=ChannelState(output=True, queue=False)
     )
 
-    return Recursion(body, n_steps)
+    return Recursion(body, n_steps, states_includes=states_includes)
 
+
+# %% [markdown]
+# Train the model.
 
 # %%
-seed = 5566
+seed = 5567
 
 n_steps = 50
 dt = 0.05 
@@ -161,6 +171,7 @@ feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
              (0.20, 0.50))
 n_hidden  = 50
+out_nonlinearity = jax.nn.sigmoid
 learning_rate = 0.05
 
 loss_term_weights = dict(
@@ -191,12 +202,22 @@ def setup(
     n_hidden,
     feedback_delay_steps,    
 ):
-
+    
     key = jr.PRNGKey(seed)
 
-    loss_func = fbl.simple_reach_loss(
-        n_steps, 
-        loss_term_weights,
+    # #! these assume a particular PyTree structure to the states returned by the model
+    # #! which is why we simply instantiate them 
+    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
+    loss_func = fbl.CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them 
+            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+            nn_output=fbl.NetworkOutputLoss(),
+            nn_activity=fbl.NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
     )
 
     task = RandomReaches(
@@ -207,7 +228,7 @@ def setup(
         eval_n_directions=8,
         eval_reach_length=0.05,
     )
-
+    
     model = get_model(
         key, 
         dt=dt,
@@ -218,11 +239,11 @@ def setup(
         out_nonlinearity=jax.nn.sigmoid,
     )
     
-    return model, task
+    return model, task 
 
 
 # %%
-model, task = setup(**hyperparams)
+models, task = setup(**hyperparams)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
@@ -233,23 +254,45 @@ trainer = TaskTrainer(
 )
 
 # %%
+x = jnp.array([1, 3, 10, 50, 100, 300, 500, 600])
+y = jnp.array([23.5, 22, 21.5, 15, 8, 3.2, 2, 1.7])
+
+fig, ax = plt.subplots()
+ax.scatter(x, (10000/y)/60, edgecolors="white")
+ax.set_xscale("log")
+#ax.set_yscale("log")
+ax.set_xlim(0.5, 1000)
+ax.hlines([8], xmin=0.5, xmax=1000, linestyles=':', lw=0.5)
+#ax.set_ylim(0, 25)
+ax.set_xlabel("Number of replicates")
+ax.set_ylabel("Training time (min)")
+
+# %%
+batch_size = 500
+n_batches = 500
+key_train = jr.PRNGKey(seed + 1)
+
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
     model.step.net.cell.bias
 )
 
-model, losses, loss_terms, learning_rates = trainer(
+model, losses, losses_terms, learning_rates = trainer.train_ensemble(
     task=task, 
-    model=model,
-    n_batches=1_000, 
-    batch_size=500, 
-    log_step=250,
+    models=models,
+    n_replicates=n_replicates,
+    n_batches=n_batches, 
+    batch_size=batch_size, 
+    log_step=10,
     trainable_leaves_func=trainable_leaves_func,
-    key=jr.PRNGKey(seed + 1),
+    key=key_train,
 )
 
-plot_loglog_losses(losses, loss_terms)
+plt.loglog(losses.T)
+
+# %%
+plot_mean_losses(losses, losses_terms)
 plt.show()
 
 # %% [markdown]
@@ -271,78 +314,65 @@ try:
     model_path
     model, task
 except NameError:
-    model_path = '../models/model_20231026-103421_b4a92ad_nb8.eqx'
+    model_path = ''
     model, task = load(model_path, setup)
-
-# %% [markdown]
-# Optionally, load an existing model
-
-# %%
-model = get_model()
-model = eqx.tree_deserialise_leaves("../models/model_20230926-093821_nb10.eqx", model)
 
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
+keys_eval = jr.split(jr.PRNGKey(seed + 2), n_replicates)
+
+loss, loss_terms, states = eqx.filter_vmap(task.eval)(
+    models, keys_eval
+)
 
 # %%
-# fig = make_eval_plot(states[1], states[2], workspace)
-init_states, target_states, _ = task.trials_eval
-goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
-
-plot_states_forces_2d(
-    states.mechanics.effector.pos, 
-    states.mechanics.effector.vel, 
-    # leave out the first timestep of controls, since it jumps from (0, 0)
-    states.network.output[:, 1:, -2:], 
-    endpoints=(init_states.pos, goal_states.pos), 
-    force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
-    cmap='plasma', 
-    workspace=task.workspace,
-);
-
-# %% [markdown]
-# Plot entire arm trajectory for an example direction
+fig, _ = plot_pos_vel_force_2D(
+                    states[1][0][0], states[1][1][0], states[2][0], eval_endpoints[..., :2], 
+                    cmap='plasma', workspace=workspace
+)
 
 # %%
-idx = 0
-
-# %%
+# plot entire arm trajectory for an example direction
 # convert all joints to Cartesian since I only saved the EE state
-
-# vmap twice, over trials and time; `forward_kinematics` applies to single points
-forward_kinematics = model.step.mechanics.system.forward_kinematics
-xy_pos = jax.vmap(jax.vmap(forward_kinematics, in_axes=0), in_axes=1)(
-    states.mechanics.system
-).pos
-
-# #? we can't just swap `in_axes` above; it causes a vmap shape error with 
-# axis 2 of the arrays in `states.mechanics.system`, which includes 
-# the (unused, in this case) muscle activation state
-xy_pos = jnp.swapaxes(xy_pos, 0, 1)
+xy_pos = eqx.filter_vmap(nlink_angular_to_cartesian)(
+    models.step.mechanics.system.twolink, 
+    states[0].reshape(-1, 2), 
+    states[1].reshape(-1, 2)
+)[0].reshape(states[0].shape[0], -1, 2, 2)
 
 # %%
-ax = plot_2D_joint_positions(xy_pos[idx], add_root=True)
+ax = plot_2D_joint_positions(xy_pos[0], add_root=True)
 plt.show()
 
 # %% [markdown]
-# Network hidden activities over time for the same example reach direction
-
-# %%
-# semilogx is interesting in this case without a GO cue
-# ...helps to visualize the initial activity
-fig, ax = plt.subplots(1, 1)
-ax.semilogx(states.hidden[idx])
-ax.set_xlabel('Time step')
-ax.set_ylabel('Hidden unit activity')
-plt.show()
+# ## Debugging stuff
 
 # %% [markdown]
-# Heatmap of network activity over time for an example direction
+# ### Get jaxpr for the loss function
 
 # %%
-plot_activity_heatmap(states.hidden[2], cmap='viridis')
+key = jr.PRNGKey(5566)
+batch_size = 10
+init_state, target_state = uniform_endpoints(key, batch_size, N_DIM, workspace)
+
+filter_spec = jax.tree_util.tree_map(lambda _: False, trained)
+filter_spec = eqx.tree_at(
+    lambda tree: (tree.step.net.cell.weight_hh, 
+                    tree.step.net.cell.weight_ih, 
+                    tree.step.net.cell.bias),
+    filter_spec,
+    replace=(True, True, True)
+)     
+
+diff_model, static_model = eqx.partition(trained, filter_spec)
+
+grad_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss_fn, has_aux=True))
+jaxpr, _, _ = eqx.filter_make_jaxpr(grad_fn)(diff_model, static_model, init_state, target_state)
+
+# %% [markdown]
+# The result is absolutely huge. I guess I should try to repeat this for the un-vmapped model.
 
 # %%
+jaxpr

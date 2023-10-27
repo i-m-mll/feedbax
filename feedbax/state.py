@@ -2,13 +2,15 @@
 
 We could just use `eqx.Module` for state dataclasses, but it has some
 significant overhead related to verification of occupancy of dataclass fields.
-The classes in this module are more or less reductions of classes from 
-`eqx._module` that retain a subset of their features.
+The classes in this module are more or less reductions of classes from
+`eqx._module`, that retain a subset of features.
 """
 
 from abc import ABCMeta
 from dataclasses import dataclass
+import dataclasses
 import functools as ft
+from typing import TYPE_CHECKING, dataclass_transform
 
 import equinox as eqx
 import jax 
@@ -16,6 +18,7 @@ import jax
 from feedbax.utils import datacls_flatten, datacls_unflatten
 
 
+@dataclass_transform(field_specifiers=(dataclasses.field, eqx.field))
 class _StateMeta(ABCMeta): 
     """Based on `eqx._module._ModuleMeta`."""
     
@@ -43,8 +46,7 @@ class AbstractState(metaclass=_StateMeta):
     
     Automatically instantiated as a dataclass with slots.
     
-    Based on `eqx.Module`. I could probably use `eqx.Module` instead; 
-    I wonder if there is a performance difference for instantiations?
+    Based on `eqx.Module`.
     """
     # 
     __annotations__ = dict()
@@ -54,5 +56,6 @@ class AbstractState(metaclass=_StateMeta):
     
     def __repr__(self):
         return eqx.tree_pformat(self)
+    
     
     

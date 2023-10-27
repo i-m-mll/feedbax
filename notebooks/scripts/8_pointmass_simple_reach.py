@@ -61,7 +61,7 @@ import diffrax
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -87,6 +87,8 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 
 # not sure if this will work or if I need to use the env variable version
 #jax.config.update("jax_traceback_filtering", DEBUG)  
+
+plt.style.use('dark_background')
 
 # %%
 # paths
@@ -116,20 +118,21 @@ def get_model(
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
     
-    key1, key2 = jrandom.split(key)
+    key1, key2 = jr.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
+    # TODO: by default we should use the entire system state as feedback
     feedback_leaves_func = lambda mechanics_state: mechanics_state.system
      
     # TODO: automatically calculate `n_input` from task and mechanics
     # unfortunately the following doesn't work because we don't have access 
     # to a `mechanics_state` instance here; but `Mechanics` could provide this info
     # based on `feedback_leaves_func`
-    # n_feedback = tree_sum_n_features(feedback_leaves_func(mechanics_state))
+    # n_feedback = tree_sum_n_features(feedback_leaves_func(mechanics.init()))
     # n_task_inputs = tree_sum_n_features(task.get_train_trial(key)[2])
     # n_input = n_task_inputs + n_feedback
     
@@ -149,18 +152,7 @@ def get_model(
         feedback_leaves_func=feedback_leaves_func,
     )
     
-    # this isn't strictly necessary, but keeps us from storing unnecessary states
-    # e.g. for a delay of 5 timesteps and a trial length of 100 timesteps, if we 
-    # store the feedback queue at every timestep then there'll be a lot of redundancy;
-    # and besides all the same info is available in `mechanics_state`
-    states_includes = SimpleFeedbackState(
-        mechanics=True, 
-        control=True, 
-        hidden=True, 
-        feedback=ChannelState(output=True, queue=False)
-    )
-    
-    model = Recursion(body, n_steps, states_includes=states_includes)
+    model = Recursion(body, n_steps)
     
     return model
 
@@ -179,8 +171,8 @@ learning_rate = 0.01
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
-    control=1e-5,
-    activity=1e-5,
+    nn_output=1e-5,
+    nn_activity=1e-5,
 )
 
 # hyperparams dict + setup function isn't strictly necessary,
@@ -207,7 +199,7 @@ def setup(
     feedback_delay_steps,
 ):
     """Set up the model and the task."""
-    key = jrandom.PRNGKey(seed)
+    key = jr.PRNGKey(seed)
 
     # these assume a particular PyTree structure to the states returned by the model
     # which is why we simply instantiate them 
@@ -218,8 +210,8 @@ def setup(
             # which is why we simply instantiate them 
             effector_position=fbl.EffectorPositionLoss(discount=discount),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            control=fbl.ControlLoss(),
-            activity=fbl.NetworkActivityLoss(),
+            nn_output=fbl.NetworkOutputLoss(),
+            nn_activity=fbl.NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )
@@ -259,7 +251,7 @@ trainer = TaskTrainer(
 # %%
 n_batches = 1_000
 batch_size = 500
-key_train = jrandom.PRNGKey(seed + 1)
+key_train = jr.PRNGKey(seed + 1)
 
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
@@ -306,7 +298,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
+loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 init_states, target_states, _ = task.trials_validation
@@ -321,7 +313,7 @@ plt.show()
 (loss, loss_terms, states), trials = task.eval_batch(
     model, 
     batch_size=10,
-    key=jrandom.PRNGKey(0), 
+    key=jr.PRNGKey(0), 
 )
 
 # %%

@@ -34,4 +34,4 @@ class Wire(eqx.Module):
             return self.__add_noise 
     
     def __add_noise(self, x, key):
-        return x + self.noise_std * jrandom.normal(key, x.shape) 
+        return x + self.noise_std * jr.normal(key, x.shape) 

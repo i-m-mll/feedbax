@@ -2,7 +2,7 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 
 class Test(eqx.Module):
     weights: dict
@@ -15,10 +15,10 @@ class Test(eqx.Module):
         ))
         return losses, losses_terms 
 
-key = jrandom.PRNGKey(0)
+key = jr.PRNGKey(0)
 
 tt = Test(dict(a=1, b=2))
 eqx.tree_pprint(tt(5, key))
 
-jax.vmap(tt, in_axes=(None, 0))(5, jrandom.split(key, 5))
+jax.vmap(tt, in_axes=(None, 0))(5, jr.split(key, 5))
     

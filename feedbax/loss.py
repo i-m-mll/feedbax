@@ -72,8 +72,14 @@ class CompositeLoss(AbstractLoss):
     weights: Optional[Sequence[float]]
     labels: Tuple[str, ...]
     
-    def __init__(self, terms, weights):
-        if not len(terms) == len(weights):
+    def __init__(
+        self, 
+        terms: Sequence[AbstractLoss], 
+        weights: Optional[Sequence[float]] = None,
+    ):
+        if weights is None:
+            weights = [1.] * len(terms)
+        elif not len(terms) == len(weights):
             raise ValueError("Mismatch between number of loss terms and term weights")
         #! assumes all the components are simple losses, and `labels` is a one-tuple
         if isinstance(terms, dict):
@@ -228,9 +234,9 @@ class EffectorFinalVelocityLoss(AbstractLoss):
         return loss, {self.labels[0]: loss}
 
 
-class ControlLoss(AbstractLoss):
+class NetworkOutputLoss(AbstractLoss):
     """"""
-    labels: Tuple[str, ...] = ("control",)
+    labels: Tuple[str, ...] = ("nn_output",)
 
     def __call__(
         self, 
@@ -240,14 +246,14 @@ class ControlLoss(AbstractLoss):
         task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
-        loss = jnp.sum(states.control ** 2, axis=-1)
+        loss = jnp.sum(states.network.output ** 2, axis=-1)
         
         return loss, {self.labels[0]: loss}
 
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    labels: Tuple[str, ...] = ("activity",)
+    labels: Tuple[str, ...] = ("nn_activity",)
 
     def __call__(
         self, 
@@ -256,9 +262,37 @@ class NetworkActivityLoss(AbstractLoss):
         task_inputs: Optional[PyTree] = None,
     ) -> Tuple[float, Dict[str, float]]:
         
-        loss = jnp.sum(states.hidden ** 2, axis=-1)
+        loss = jnp.sum(states.network.activity ** 2, axis=-1)
         
         return loss, {self.labels[0]: loss}
 
         
+def simple_reach_loss(
+    n_steps: int, 
+    loss_term_weights: Optional[Dict[str, float]] = None,
+    discount_exp: int = 6,
+):
+    """A typical loss function for a simple reach task.
     
+    Includes power function discounting of position error, back in time from
+    the end of trials. If the exponent `discount_exp` is zero, there is no
+    discounting.
+    
+    TODO: 
+    - Maybe activity loss shouldn't be included by default.
+    """
+    if discount_exp == 0:
+        discount = 1.
+    else: 
+        discount = jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp
+    return CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them 
+            effector_position=EffectorPositionLoss(discount=discount),
+            effector_final_velocity=EffectorFinalVelocityLoss(),
+            nn_output=NetworkOutputLoss(),  # the "control" loss
+            nn_activity=NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
+    )

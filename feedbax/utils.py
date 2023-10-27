@@ -19,7 +19,7 @@ from typing import Callable, Concatenate, Dict, Optional, Union, ParamSpec
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Float, Array, PyTree
 
 
@@ -92,14 +92,14 @@ def exp_taylor(x: float, n: int):
 
 
 def get_model_ensemble(
-    get_model: Callable[Concatenate[jrandom.PRNGKeyArray, P], eqx.Module], 
+    get_model: Callable[Concatenate[jr.PRNGKeyArray, P], eqx.Module], 
     n_replicates: int, 
     *, 
-    key: jrandom.PRNGKeyArray, 
+    key: jr.PRNGKeyArray, 
     **kwargs,  # can't type this with P 
 ) -> eqx.Module:
     """Helper to vmap model generation over a set of PRNG keys."""
-    keys = jrandom.split(key, n_replicates)
+    keys = jr.split(key, n_replicates)
     get_model_ = partial(get_model, **kwargs)
     return eqx.filter_vmap(get_model_)(keys)
 

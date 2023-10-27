@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 import matplotlib.pyplot as plt
 import optax
@@ -99,7 +99,7 @@ class TaskTrainer(eqx.Module):
         restore_checkpoint: bool = False,
         save_dir: Optional[str] = None,
         *,
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ):
         """Train a model on a task for a fixed number of batches of trials.
         
@@ -138,7 +138,7 @@ class TaskTrainer(eqx.Module):
         restore_checkpoint:bool = False,
         save_dir: Optional[str] = None,
         *,
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ):
         """Trains an ensemble of models.
         
@@ -155,7 +155,7 @@ class TaskTrainer(eqx.Module):
         - In principle we could infer `n_replicates` from `models`, or else 
           have the user pass `keys` instead of `key`.
         """
-        keys_train = jrandom.split(key, n_replicates)
+        keys_train = jr.split(key, n_replicates)
         models_arrays, models_other = eqx.partition(models, eqx.is_array)
         
         # only map over model arrays and training keys
@@ -248,7 +248,7 @@ class TaskTrainer(eqx.Module):
         # Finish the JIT compilation before the first training iteration,
         # so the user will see it timed.
         for _ in tqdm(range(1), desc='compile'):
-            keys = jrandom.split(key, batch_size)
+            keys = jr.split(key, batch_size)
             init_state, target_state, task_input = get_batch(keys)
             self.train_step(  # doesn't alter model or opt_state
                 flat_model, 
@@ -266,7 +266,7 @@ class TaskTrainer(eqx.Module):
             task.eval(model, key)
             tqdm.write(f"Validation step compiled.", file=sys.stdout)
 
-        keys = jrandom.split(key, n_batches - start_batch)
+        keys = jr.split(key, n_batches - start_batch)
         
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
         for batch in tqdm(
@@ -276,8 +276,8 @@ class TaskTrainer(eqx.Module):
             total=n_batches,
             smoothing=0.1,
         ):
-            key_train, key_eval, key_batch = jrandom.split(keys[batch], 3)
-            keys_trials = jrandom.split(key_batch, batch_size)
+            key_train, key_eval, key_batch = jr.split(keys[batch], 3)
+            keys_trials = jr.split(key_batch, batch_size)
             init_state, target_state, task_input = get_batch(keys_trials)
             
             #! temporary
@@ -354,7 +354,7 @@ class TaskTrainer(eqx.Module):
                 
                 if self._use_tb:
                     # TODO: register plots
-                    # fig = make_eval_fig(states.effector, states.control, workspace)
+                    # fig = make_eval_fig(states.effector, states.network.output, workspace)
                     # self.writer.add_figure('Eval/centerout', fig, batch)
                     self.writer.add_scalar('Loss/eval', loss_eval.item(), batch)
                     for term, loss_term in loss_eval_terms.items():
@@ -479,7 +479,7 @@ def grad_wrap_loss_func(
         init_state, 
         target_state, 
         task_input, 
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ):
         model = eqx.combine(diff_model, static_model)
         #? will `in_axes` ever change? currently assuming we will design it not to

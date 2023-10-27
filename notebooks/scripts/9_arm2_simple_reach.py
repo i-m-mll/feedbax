@@ -65,7 +65,7 @@ from feedbax.trainer import TaskTrainer, save, load
 from feedbax.plot import (
     plot_loglog_losses, 
     plot_2D_joint_positions,
-    plot_states_forces_2d,
+    plot_pos_vel_force_2D,
     plot_activity_heatmap,
 )
 
@@ -78,6 +78,8 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 
 # not sure if this will work or if I need to use the env variable version
 #jax.config.update("jax_traceback_filtering", DEBUG)  
+
+plt.style.use('dark_background')
 
 # %%
 # paths
@@ -132,14 +134,7 @@ def get_model(
         feedback_leaves_func=feedback_leaves_func,
     )
     
-    states_includes = SimpleFeedbackState(
-        mechanics=True, 
-        control=True, 
-        hidden=True, 
-        feedback=ChannelState(output=True, queue=False)
-    )
-
-    model = Recursion(body, n_steps, states_includes=states_includes)
+    model = Recursion(body, n_steps)
     
     return model 
 
@@ -157,8 +152,8 @@ n_hidden  = 50
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
-    control=1e-5,
-    activity=1e-6,
+    nn_output=1e-5,
+    nn_activity=1e-6,
 )
 
 hyperparams = dict(
@@ -185,19 +180,9 @@ def setup(
 
     key = jrandom.PRNGKey(seed)
 
-    # #! these assume a particular PyTree structure to the states returned by the model
-    # #! which is why we simply instantiate them 
-    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
-    loss_func = fbl.CompositeLoss(
-        dict(
-            # these assume a particular PyTree structure to the states returned by the model
-            # which is why we simply instantiate them 
-            effector_position=fbl.EffectorPositionLoss(discount=discount),
-            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            control=fbl.ControlLoss(),
-            activity=fbl.NetworkActivityLoss(),
-        ),
-        weights=loss_term_weights,
+    loss_func = fbl.simple_reach_loss(
+        n_steps, 
+        loss_term_weights,
     )
 
     task = RandomReaches(
@@ -283,10 +268,8 @@ loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 init_states, target_states, _ = task.trials_eval
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
 
-plot_states_forces_2d(
-    states.mechanics.effector.pos, 
-    states.mechanics.effector.pos, 
-    states.control, 
+plot_pos_vel_force_2D(
+    states,
     endpoints=(init_states.pos, goal_states.pos)
 )
 

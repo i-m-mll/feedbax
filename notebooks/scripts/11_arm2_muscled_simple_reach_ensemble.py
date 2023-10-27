@@ -44,7 +44,7 @@ get_ipython().log.setLevel(LOG_LEVEL)
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -84,6 +84,8 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 # not sure if this will work or if I need to use the env variable version
 #jax.config.update("jax_traceback_filtering", DEBUG)  
 
+plt.style.use('dark_background')
+
 # %%
 # paths
 
@@ -112,8 +114,8 @@ def get_model(
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
-        key = jrandom.PRNGKey(0)
-    key1, key2 = jrandom.split(key)
+        key = jr.PRNGKey(0)
+    key1, key2 = jr.split(key)
     
     system = TwoLinkMuscled(
         muscle_model=TodorovLiVirtualMuscle(), 
@@ -146,15 +148,8 @@ def get_model(
         delay=feedback_delay,  
         feedback_leaves_func=feedback_leaves_func,
     )
-    
-    states_includes = SimpleFeedbackState(
-        mechanics=True, 
-        control=True, 
-        hidden=True, 
-        feedback=ChannelState(output=True, queue=False)
-    )
 
-    return Recursion(body, n_steps, states_includes=states_includes)
+    return Recursion(body, n_steps)
 
 
 # %% [markdown]
@@ -163,9 +158,9 @@ def get_model(
 # %%
 seed = 5567
 
-n_replicates = 3
+n_replicates = 1
 
-n_steps = 10
+n_steps = 50
 dt = 0.05 
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
@@ -177,8 +172,8 @@ learning_rate = 0.05
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=0.1,
-    control=1e-4,
-    activity=0.,
+    nn_output=1e-4,
+    nn_activity=0.,
 )
 
 hyperparams = dict(
@@ -205,21 +200,11 @@ def setup(
     feedback_delay_steps,    
 ):
     
-    key = jrandom.PRNGKey(seed)
+    key = jr.PRNGKey(seed)
 
-    # #! these assume a particular PyTree structure to the states returned by the model
-    # #! which is why we simply instantiate them 
-    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
-    loss_func = fbl.CompositeLoss(
-        dict(
-            # these assume a particular PyTree structure to the states returned by the model
-            # which is why we simply instantiate them 
-            effector_position=fbl.EffectorPositionLoss(discount=discount),
-            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            control=fbl.ControlLoss(),
-            activity=fbl.NetworkActivityLoss(),
-        ),
-        weights=loss_term_weights,
+    loss_func = fbl.simple_reach_loss(
+        n_steps, 
+        loss_term_weights,
     )
 
     task = RandomReaches(
@@ -258,9 +243,23 @@ trainer = TaskTrainer(
 )
 
 # %%
+x = jnp.array([1, 3, 10, 50, 100, 300, 500, 600])
+y = jnp.array([23.5, 22, 21.5, 15, 8, 3.2, 2, 1.7])
+
+fig, ax = plt.subplots()
+ax.scatter(x, (10000/y)/60, edgecolors="white")
+ax.set_xscale("log")
+#ax.set_yscale("log")
+ax.set_xlim(0.5, 1000)
+ax.hlines([8], xmin=0.5, xmax=1000, linestyles=':', lw=0.5)
+#ax.set_ylim(0, 25)
+ax.set_xlabel("Number of replicates")
+ax.set_ylabel("Training time (min)")
+
+# %%
 batch_size = 500
-n_batches = 5
-key_train = jrandom.PRNGKey(seed + 1)
+n_batches = 500
+key_train = jr.PRNGKey(seed + 1)
 
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
@@ -279,7 +278,6 @@ model, losses, losses_terms, learning_rates = trainer.train_ensemble(
     key=key_train,
 )
 
-# %%
 plt.loglog(losses.T)
 
 # %%
@@ -312,7 +310,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-keys_eval = jrandom.split(jrandom.PRNGKey(seed + 2), n_replicates)
+keys_eval = jr.split(jr.PRNGKey(seed + 2), n_replicates)
 
 loss, loss_terms, states = eqx.filter_vmap(task.eval)(
     models, keys_eval
@@ -344,7 +342,7 @@ plt.show()
 # ### Get jaxpr for the loss function
 
 # %%
-key = jrandom.PRNGKey(5566)
+key = jr.PRNGKey(5566)
 batch_size = 10
 init_state, target_state = uniform_endpoints(key, batch_size, N_DIM, workspace)
 

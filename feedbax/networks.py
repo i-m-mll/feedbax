@@ -13,13 +13,20 @@ from typing import Callable, Optional, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
-from jaxtyping import Float
+import jax.random as jr
+from jaxtyping import Array, Float, PyTree
 
+from feedbax.state import AbstractState
 from feedbax.utils import interleave_unequal
 
 
 logger = logging.getLogger(__name__)
+
+
+class NetworkState(AbstractState):
+    """State of a neural network."""
+    activity: PyTree[Float[Array, "unit"]]
+    output: PyTree
 
 
 class SimpleMultiLayerNet(eqx.Module):
@@ -39,7 +46,7 @@ class SimpleMultiLayerNet(eqx.Module):
         output_nonlinearity=None, 
         linear_final_layer=False,  # replace the final layer with a linear layer
     ):
-        keys = jrandom.split(key, len(sizes) - 1)
+        keys = jr.split(key, len(sizes) - 1)
         
         if bool(use_bias) is use_bias:
             use_bias = (use_bias,) * (len(sizes) - 1)
@@ -98,21 +105,21 @@ class RNNCell(eqx.Module):
         dt: float = 1,
         tau: float = 1,
         *,  # this forces the user to pass the following as keyword arguments
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
         **kwargs
     ):
-        ihkey, hhkey, bkey = jrandom.split(key, 3)
+        ihkey, hhkey, bkey = jr.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
         
-        self.weight_ih = jrandom.uniform(
+        self.weight_ih = jr.uniform(
             ihkey, (hidden_size, input_size), minval=-lim, maxval=lim,
         )
-        self.weight_hh = jrandom.uniform(
+        self.weight_hh = jr.uniform(
             hhkey, (hidden_size, hidden_size), minval=-lim, maxval=lim,
         )
         
         if use_bias:
-            self.bias = jrandom.uniform(
+            self.bias = jr.uniform(
                 bkey, (hidden_size,), minval=-lim, maxval=lim,
             )
         else:
@@ -126,7 +133,13 @@ class RNNCell(eqx.Module):
         self.dt = dt
         self.tau = tau
         
-    def __call__(self, input: jax.Array, state: jax.Array, *, key=None):
+    def __call__(
+        self, 
+        input: jax.Array, 
+        state: jax.Array,
+        *, 
+        key: jr.PRNGKeyArray
+    ):
         """Vanilla RNN cell."""
         if self.use_bias:
             bias = self.bias
@@ -134,7 +147,7 @@ class RNNCell(eqx.Module):
             bias = 0
             
         if self.use_noise:
-            noise = self.noise_std * jrandom.normal(key, state.shape) 
+            noise = self.noise_std * jr.normal(key, state.shape) 
         else:
             noise = 0
                 
@@ -179,7 +192,7 @@ class RNN(eqx.Module):
         noise_std: Optional[float] = None,
         persistence: bool = True,
         *,
-        key: jrandom.PRNGKeyArray, 
+        key: jr.PRNGKeyArray, 
     ):
         self.out_size = out_size
         self.cell = cell
@@ -190,21 +203,37 @@ class RNN(eqx.Module):
         self.persistence = persistence
     
     @jax.named_scope("fbx.RNN")
-    def __call__(self, input, state, key=None):
+    def __call__(
+        self, 
+        input, 
+        state: NetworkState, 
+        key: jr.PRNGKeyArray,
+    ) -> NetworkState:
         if not self.persistence:
             state = self.init()
         # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
         input = jnp.concatenate(jax.tree_leaves(input))
-        state = self.cell(input, state)
+        activity = self.cell(input, state.activity)
         if self.noise_std is not None:
-            noise = self.noise_std * jrandom.normal(key, state.shape) 
-            state = state + noise
-        output = self.out_nonlinearity(self.linear(state) + self.bias)
+            noise = self.noise_std * jr.normal(key, activity.shape) 
+            activity = activity + noise
         
-        return output, state
+        return NetworkState(activity, self._output(activity))
     
-    def init(self, state=None):
-        if state is None:
-            return jnp.zeros(self.cell.hidden_size)
+    def _output(self, activity):
+        return self.out_nonlinearity(self.linear(activity) + self.bias)
+    
+    def init(self, activity=None, output=None):
+        if activity is None:
+            activity = jnp.zeros(self.cell.hidden_size)
         else:
-            return jnp.array(state)
+            activity = jnp.array(activity)
+            
+        if output is None:
+            output = self._output(activity)
+        else:
+            output = jnp.array(activity)
+        
+        return NetworkState(activity, output)
+            
+            

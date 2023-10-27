@@ -14,7 +14,7 @@ from typing import Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Float, Array, Int, PyTree
 import matplotlib as mpl
 from matplotlib import animation
@@ -205,7 +205,7 @@ def plot_pos_vel_force_2D(
     """
     positions = states.mechanics.system.pos
     velocities = states.mechanics.system.vel
-    controls = states.control 
+    controls = states.network.output 
     endpoints = jnp.asarray(endpoints)
     
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
@@ -274,7 +274,7 @@ def plot_activity_sample_units(
     cols: int = 2, 
     cmap: str = 'tab10', 
     *, 
-    key: jrandom.PRNGKeyArray
+    key: jr.PRNGKeyArray
 ):
     """Plot activity of a random sample of units over time.
     
@@ -285,7 +285,7 @@ def plot_activity_sample_units(
     """
     xlabel = 'time step'
     
-    unit_idxs = jrandom.choice(
+    unit_idxs = jr.choice(
         key, jnp.arange(activities.shape[-1]), (n_samples,), replace=False
     )
     x = activities[..., unit_idxs]

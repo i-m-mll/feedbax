@@ -7,31 +7,58 @@ loop, a body, or (perhaps) multiple interacting bodies.
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from abc import abstractmethod, abstractproperty
 import logging
-from typing import Callable
+from typing import Callable, Generic, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Array, PyTree
 
 from feedbax.channel import Channel, ChannelState
 from feedbax.mechanics import Mechanics, MechanicsState
+from feedbax.networks import NetworkState 
 from feedbax.state import AbstractState
 from feedbax.types import CartesianState2D
 
 logger = logging.getLogger(__name__)
 
 
+State = TypeVar("State", bound=ChannelState)
+
+
+class AbstractContext(eqx.Module, Generic[State]):
+    @abstractmethod
+    def __call__(
+        self, 
+        input, 
+        state: State, 
+        key: jr.PRNGKeyArray,
+    ) -> State:
+        ...
+        
+    # @abstractmethod
+    # def init(
+    #     self,
+    #     state, 
+    # ) -> State:
+    #     ...
+        
+    @abstractproperty
+    def memory_spec(self) -> PyTree[bool]:
+        """Specifies which states should typically be remembered by callers."""
+        ...
+
+
 class SimpleFeedbackState(AbstractState):
     mechanics: MechanicsState
-    control: Array
-    hidden: PyTree
+    network: NetworkState
     feedback: ChannelState
 
 
-class SimpleFeedback(eqx.Module):
+class SimpleFeedback(AbstractContext):
     """Simple feedback loop with a single RNN and single mechanical system.
     
     TODO:
@@ -63,42 +90,69 @@ class SimpleFeedback(eqx.Module):
         self, 
         input,  # AbstractTaskInput 
         state: SimpleFeedbackState, 
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ) -> SimpleFeedbackState:
         
-        key1, key2 = jrandom.split(key)
+        key1, key2 = jr.split(key)
         
-        feedback = self.feedback_channel(
+        feedback_state = self.feedback_channel(
             self.feedback_leaves_func(state.mechanics),
             state.feedback,
             key1,
         )
         
         # mechanics state feedback plus task inputs (e.g. target state)
-        control, hidden = self.net((input, feedback.output), state.hidden, key2)
+        network_state = self.net(
+            (input, feedback_state.output), 
+            state.network.activity, 
+            key2
+        )
         
-        mechanics_state = self.mechanics(state.control, state.mechanics)        
+        mechanics_state = self.mechanics(
+            network_state.output, 
+            state.mechanics
+        )        
         
-        return SimpleFeedbackState(mechanics_state, control, hidden, feedback)
+        return SimpleFeedbackState(
+            mechanics_state, 
+            network_state,
+            feedback_state,
+        )
     
     def init(
         self, 
         effector_state: CartesianState2D,
+        # TODO:
+        mechanics_state: MechanicsState = None, 
+        network_state: NetworkState = None, 
+        feedback_state: ChannelState = None,
     ): 
-        mechanics_state = self.mechanics.init(effector_state)
+        mechanics_state = self.mechanics.init(effector_state=effector_state)
         return SimpleFeedbackState(
             mechanics=mechanics_state,
-            control=jnp.zeros((self.mechanics.system.control_size,)),
-            hidden=self.net.init(),
+            network=self.net.init(),
             feedback=self.feedback_channel.init(
                 self.feedback_leaves_func(mechanics_state)
             ),
         )
     
-    # def states_include(self):
-    #     return SimpleFeedbackState(
-    #         mechanics=True, 
-    #         control=True, 
-    #         hidden=True, 
-    #         feedback=ChannelState(output=True, queue=False)
-    #     )
+    @property
+    def memory_spec(self):
+        """Specifies which states should typically be remembered by callers.
+        
+        For example, `fbx.Recursion` stores trajectories of states, however it
+        doesn't usually make sense to store `states.feedback.queue` for every
+        timestep, because it contains info that is already available to
+        `Recursion` if `states.mechanics` is stored at every timestep. If the
+        feedback delay is 5 steps, `Recursion` will end up with 5 extra copies
+        of all the parts of `states.mechanics` that are part of the feedback.
+        
+        NOTE: It makes sense for this to be here since it has to do with the
+        logic of the feedback loop, i.e. that queue is just transient internal 
+        memory of another variable in the loop. 
+        """
+        return SimpleFeedbackState(
+            mechanics=True, 
+            network=True,
+            feedback=ChannelState(output=True, queue=False)
+        )

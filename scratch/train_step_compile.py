@@ -37,7 +37,7 @@ def _train_step_compile(
     flat_model, treedef_model = jax.tree_util.tree_flatten(model)
     flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
     
-    keys = jrandom.split(key, batch_size)
+    keys = jr.split(key, batch_size)
     init_state, target_state, task_input = get_batch(keys)
     
     for _ in range(2):

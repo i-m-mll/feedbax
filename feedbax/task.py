@@ -20,11 +20,12 @@ import equinox as eqx
 from equinox import AbstractVar, field
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Array, Float, Int, PyTree
 import numpy as np
 
 from feedbax.loss import AbstractLoss
+from feedbax.state import AbstractState
 from feedbax.types import CartesianState2D
 from feedbax.utils import internal_grid_points
 
@@ -32,7 +33,7 @@ from feedbax.utils import internal_grid_points
 logger = logging.getLogger(__name__)
 
 
-class TaskInput(eqx.Module):
+class TaskInput(AbstractState):
     init_state: PyTree
     target_state: PyTree
     task_input: PyTree
@@ -45,7 +46,7 @@ class AbstractTask(eqx.Module):
     for evaluating a suitable model. 
     
     TODO: 
-    - Could use `__call__` instead of `eval`.
+    - Could use `__call__` instead of `eval_trials`.
     - Should allow for both dynamically generating trials, and predefined 
       datasets of trials. Currently training is dynamic, and evaluation is 
       static.
@@ -66,7 +67,7 @@ class AbstractTask(eqx.Module):
     def eval(
         self, 
         model: eqx.Module, 
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
         """Evaluate a model on the task's validation set of trials."""
         return self.eval_trials(model, self.trials_validation, key)
@@ -75,10 +76,10 @@ class AbstractTask(eqx.Module):
         self, 
         model: eqx.Module, 
         batch_size: int, 
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ) -> Tuple[Tuple[Float[Array, ""], PyTree, PyTree], PyTree]:
         """Evaluate a model on a single batch of training trials."""
-        keys = jrandom.split(key, batch_size)
+        keys = jr.split(key, batch_size)
         trials = jax.vmap(self.get_train_trial)(keys)
         return self.eval_trials(model, trials, key), trials
 
@@ -88,7 +89,7 @@ class AbstractTask(eqx.Module):
         self, 
         model: eqx.Module, 
         trials: TaskInput, 
-        key: jrandom.PRNGKeyArray,
+        key: jr.PRNGKeyArray,
     ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
         """Evaluate a model on a set of trials.
         """      
@@ -107,6 +108,10 @@ class RandomReaches(AbstractTask):
     """Train on random reach endpoints in rectangular workspace.
     
     Validation set is center-out reaches. 
+    
+    TODO:
+    - Could assume a default loss function (e.g. `loss.simple_reach_loss`)
+      and allow the user to pass just `loss_term_weights`.
     """
     loss_func: AbstractLoss
     workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
@@ -120,14 +125,14 @@ class RandomReaches(AbstractTask):
     @jax.named_scope("fbx.RandomReaches.get_train_trial")
     def get_train_trial(
         self, 
-        key: jrandom.PRNGKeyArray
+        key: jr.PRNGKeyArray
     ) -> TaskInput:
         """Random reach endpoints in a 2D rectangular workspace.
         
         TODO:
         - Try JIT.
         """
-        pos_endpoints = jrandom.uniform(
+        pos_endpoints = jr.uniform(
             key, 
             (2, self.N_DIM), 
             minval=self.workspace[:, 0], 
@@ -201,15 +206,15 @@ class RandomReachesDelayed(AbstractTask):
     eval_grid_n: int  
     stim_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
     hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
-    key_eval: jrandom.PRNGKeyArray = field(default_factory=lambda: jrandom.PRNGKey(0))
+    key_eval: jr.PRNGKeyArray = field(default_factory=lambda: jr.PRNGKey(0))
 
     N_DIM = 2
 
     @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
-    def get_train_trial(self, key: jrandom.PRNGKeyArray):
+    def get_train_trial(self, key: jr.PRNGKeyArray):
         """Random reach endpoints in a 2D rectangular workspace."""
-        key1, key2 = jrandom.split(key)
-        pos_endpoints = jrandom.uniform(
+        key1, key2 = jr.split(key)
+        pos_endpoints = jr.uniform(
             key1, 
             (2, self.N_DIM), 
             minval=self.workspace[:, 0], 
@@ -242,7 +247,7 @@ class RandomReachesDelayed(AbstractTask):
             list(zip(pos_endpoints, vel_endpoints)),
             is_leaf=lambda x: isinstance(x, tuple)
         )        
-        epochs_keys = jrandom.split(self.key_eval, init_states.pos.shape[0])
+        epochs_keys = jr.split(self.key_eval, init_states.pos.shape[0])
         task_inputs, target_states, epoch_start_idxs = jax.vmap(self.get_sequences)(
             init_states, target_states, epochs_keys
         )    
@@ -285,13 +290,13 @@ class RandomReachesDelayed(AbstractTask):
 
 
 def uniform_endpoints(
-    key: jrandom.PRNGKey,
+    key: jr.PRNGKey,
     ndim: int = 2, 
     workspace: Float[Array, "ndim 2"] = jnp.array([[-1., 1.], 
                                                    [-1., 1.]]),
 ):
     """Segment endpoints uniformly distributed in a rectangular workspace."""
-    return jrandom.uniform(
+    return jr.uniform(
         key, 
         (2, ndim),   # (start/end, ...)
         minval=workspace[:, 0], 
@@ -317,14 +322,14 @@ def centreout_endpoints(
 
 
 def gen_epoch_lengths(
-    key: jrandom.PRNGKey,
+    key: jr.PRNGKey,
     ranges: Tuple[Tuple[int, int], ...]=((1, 3),  # (min, max) for first epoch
                                          (2, 5),  # second epoch
                                          (1, 3)),  
 ):
     """Generate a random integer in each given ranges."""
     ranges = jnp.array(ranges, dtype=int)
-    return jrandom.randint(key, (ranges.shape[0],), *ranges.T)
+    return jr.randint(key, (ranges.shape[0],), *ranges.T)
 
 
 def get_masks(length, idx_bounds):

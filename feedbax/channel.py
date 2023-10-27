@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Array, PyTree 
 
 
@@ -45,7 +45,7 @@ class Channel(eqx.Module):
         queue = state.queue[1:] + (input,)
         output = state.queue[0]
         if self.noise_std is not None:
-            output = output + self.noise_std * jrandom.normal(key, output.shape) 
+            output = output + self.noise_std * jr.normal(key, output.shape) 
         return ChannelState(output, queue)
     
     def init(self, input):

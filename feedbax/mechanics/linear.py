@@ -5,7 +5,7 @@
 """
 
 import logging 
-from typing import Any
+from typing import Any, Optional
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -80,7 +80,15 @@ class SimpleLTISystem(AbstractLTISystem):
     def effector(self, system_state):
         return system_state
     
-    def init(self, effector_state):
+    def init(
+        self, 
+        effector_state: Optional[CartesianState2D] = None
+    ):
+        if effector_state is None:
+            effector_state = CartesianState2D(
+                jnp.zeros(N_DIM), 
+                jnp.zeros(N_DIM),
+            )
         return effector_state
     
 

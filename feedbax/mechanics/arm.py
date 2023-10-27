@@ -7,6 +7,7 @@
 
 from functools import cached_property
 import logging
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -79,7 +80,7 @@ class TwoLink(eqx.Module):
     
     def init(
         self, 
-        effector_state: CartesianState2D,
+        effector_state: Optional[CartesianState2D] = None,
     ):
         theta = self.inverse_kinematics(effector_state)        
         return TwoLinkState(theta, jnp.zeros_like(theta))

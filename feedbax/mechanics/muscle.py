@@ -30,7 +30,7 @@ from typing import Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.random as jrandom
+import jax.random as jr
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 
@@ -191,7 +191,7 @@ class VirtualMuscle(eqx.Module):
         return A_f
     
     def noise(self, force, activation, key):
-        noise = jrandom.normal(key, shape=force.shape, dtype=force.dtype)
+        noise = jr.normal(key, shape=force.shape, dtype=force.dtype)
         return self.noise_std * noise
 
     def _Y_field(self, t, y, args):
