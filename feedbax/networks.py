@@ -87,6 +87,7 @@ class RNNCell(eqx.Module):
     dt: float 
     tau: float 
     
+    @jax.named_scope("fbx.RNNCell")
     def __init__(
         self, 
         input_size: int, 
@@ -159,7 +160,9 @@ class RNNCell(eqx.Module):
     
 
 class RNN(eqx.Module):
-    """From https://docs.kidger.site/equinox/examples/train_rnn/"""
+    """
+    
+    Derived from https://docs.kidger.site/equinox/examples/train_rnn/"""
     out_size: int 
     cell: eqx.Module
     linear: eqx.nn.Linear
@@ -185,7 +188,8 @@ class RNN(eqx.Module):
         self.out_nonlinearity = out_nonlinearity       
         self.noise_std = noise_std
         self.persistence = persistence
-        
+    
+    @jax.named_scope("fbx.RNN")
     def __call__(self, input, state, key=None):
         if not self.persistence:
             state = self.init()

@@ -9,6 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
@@ -84,6 +85,7 @@ class TwoLinkMuscled(eqx.Module):
         self.inverse_kinematics = self.twolink.inverse_kinematics
         self.effector = self.twolink.effector
 
+    @jax.named_scope("fbx.TwoLinkMuscled.vector_field")
     def vector_field(self, t, state, args):
         u = args 
 

@@ -53,7 +53,8 @@ class TwoLink(eqx.Module):
         #! initialize cached properties used by JAX operations
         # otherwise their initialization is a side effect
         self._a  
-        
+    
+    @jax.named_scope("fbx.TwoLink.vector_field")
     def vector_field(self, t, state, args):
         theta, d_theta = state.theta, state.d_theta
         input_torque = args
@@ -109,6 +110,7 @@ class TwoLink(eqx.Module):
     def n_links(self) -> int:
         return 2
 
+    @jax.named_scope("fbx.TwoLink.inverse_kinematics")
     def inverse_kinematics(
             self,
             effector_state: CartesianState2D
@@ -145,6 +147,7 @@ class TwoLink(eqx.Module):
 
         return angles    
 
+    @jax.named_scope("fbx.TwoLink.forward_kinematics")
     def forward_kinematics(
             self,
             state: TwoLinkState

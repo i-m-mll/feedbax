@@ -40,6 +40,7 @@ class Channel(eqx.Module):
         self.delay = delay
         self.noise_std = noise_std
     
+    @jax.named_scope("fbx.Channel")
     def __call__(self, input, state, key):      
         queue = state.queue[1:] + (input,)
         output = state.queue[0]

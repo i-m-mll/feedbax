@@ -58,6 +58,7 @@ class SimpleFeedback(eqx.Module):
         self.feedback_channel = Channel(delay)
         self.feedback_leaves_func = feedback_leaves_func
     
+    @jax.named_scope("fbx.SimpleFeedback")
     def __call__(
         self, 
         input,  # AbstractTaskInput 

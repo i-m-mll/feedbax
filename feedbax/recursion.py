@@ -35,7 +35,8 @@ class Recursion(eqx.Module):
     step: eqx.Module 
     n_steps: int 
     states_includes: PyTree[bool] = True
-        
+    
+    @jax.named_scope("fbx.Recursion._body_func")
     def _body_func(self, i, x):
         inputs, states, key = x
         
@@ -57,6 +58,7 @@ class Recursion(eqx.Module):
                 
         return inputs, states, key2
     
+    @jax.named_scope("fbx.Recursion")
     def __call__(self, inputs, init_effector_state, key):
         key1, key2, key3 = jrandom.split(key, 3)
         

@@ -168,6 +168,7 @@ def normalize(
     return jax.tree_map(arr_norm, tree)
 
 
+@jax.named_scope("fbx.tree_get_idx")
 def tree_get_idx(tree: PyTree, idx: int):
     """Retrieve the `idx`-th element of each array leaf of `tree`.
     
@@ -178,6 +179,7 @@ def tree_get_idx(tree: PyTree, idx: int):
     return eqx.combine(values, other)
 
 
+@jax.named_scope("fbx.tree_set_idx")
 def tree_set_idx(
     tree: PyTree, 
     vals, 

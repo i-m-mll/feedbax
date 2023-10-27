@@ -35,6 +35,7 @@ class AbstractLTISystem(eqx.Module):
     B: AbstractVar[Float[Array, "state input"]]  # control matrix
     C: AbstractVar[Float[Array, "obs state"]]  # observation matrix
     
+    @jax.named_scope("fbx.AbstractLTISystem.vector_field")
     def vector_field(
         self, 
         t: float, 

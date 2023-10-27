@@ -86,7 +86,8 @@ class CompositeLoss(AbstractLoss):
             self.weights = dict(zip(self.labels, weights))
         else:
             self.weights = weights
-        
+    
+    @jax.named_scope("fbx.CompositeLoss")
     def __call__(
         self, 
         states: PyTree, 

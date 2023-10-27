@@ -9,6 +9,7 @@ from typing import Optional
 
 import diffrax as dfx
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PyTree
 
@@ -38,6 +39,7 @@ class Mechanics(eqx.Module):
         self.solver = solver()
         self.dt = dt        
     
+    @jax.named_scope("fbx.Mechanics")
     def __call__(self, input, state: MechanicsState):
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
         system_state, _, _, solver_state, _ = self.solver.step(

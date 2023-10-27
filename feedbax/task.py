@@ -1,10 +1,11 @@
-""" 
+"""Tasks on which models are trained and evaluated.
 
 TODO:
-- `get_target_seq` and `get_scalar_epoch_seq` are similar. 
-   Get rid of repetition.
+- `RandomReaches` and `RandomReachesDelayed` are similar. 
+   See what can be abstracted.
+- Ditto `get_target_seq` and `get_scalar_epoch_seq`.
     - Also, the way `seq` and `seqs` are generated is similar to `states` in 
-      `Recursion.init`
+      `Recursion.init`...
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -38,6 +39,7 @@ class AbstractTask(eqx.Module):
     for evaluating a suitable model. 
     
     TODO: 
+    - Could use `__call__` instead of `eval`.
     - Should allow for both dynamically generating trials, and predefined 
       datasets of trials. Currently training is dynamic, and evaluation is 
       static.
@@ -55,8 +57,8 @@ class AbstractTask(eqx.Module):
     def trials_eval(self):
         ...
 
-    # TODO: also try JIT on concrete `get_trial` methods
     @eqx.filter_jit
+    @jax.named_scope("fbx.AbstractTask.eval")
     def eval(self, model, key):
         init_states, target_states, task_inputs = self.trials_eval
         
@@ -70,6 +72,10 @@ class AbstractTask(eqx.Module):
 
 
 class RandomReaches(AbstractTask):
+    """Train on random reach endpoints in rectangular workspace.
+    
+    Evaluates on center-out reaches. 
+    """
     loss_func: AbstractLoss
     workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
     n_steps: int
@@ -79,8 +85,13 @@ class RandomReaches(AbstractTask):
     
     N_DIM = 2
     
+    @jax.named_scope("fbx.RandomReaches.get_trial")
     def get_trial(self, key: jrandom.PRNGKeyArray):
-        """Random reach endpoints in a 2D rectangular workspace."""
+        """Random reach endpoints in a 2D rectangular workspace.
+        
+        TODO:
+        - Try JIT.
+        """
         pos_endpoints = jrandom.uniform(
             key, 
             (2, self.N_DIM), 
@@ -140,9 +151,11 @@ class DelayTaskInput(eqx.Module):
 
 
 class RandomReachesDelayed(AbstractTask):
-    """Random reaches with different task epochs.
+    """Uniform random endpoints in a rectangular workspace.
     
     e.g. allows for a stimulus epoch, followed by a delay period, then movement.
+    
+    TODO: 
     """
     loss_func: AbstractLoss 
     workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
@@ -157,6 +170,7 @@ class RandomReachesDelayed(AbstractTask):
 
     N_DIM = 2
 
+    @jax.named_scope("fbx.RandomReachesDelayed.get_trial")
     def get_trial(self, key: jrandom.PRNGKeyArray):
         """Random reach endpoints in a 2D rectangular workspace."""
         key1, key2 = jrandom.split(key)
@@ -207,9 +221,6 @@ class RandomReachesDelayed(AbstractTask):
         key,
     ):
         """Convert static task inputs to sequences, and make hold signal.
-        
-        TODO: 
-        - this could be part of a `Task` subclass
         """        
         epoch_lengths = gen_epoch_lengths(key, self.epoch_len_ranges)
         epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
@@ -229,8 +240,6 @@ class RandomReachesDelayed(AbstractTask):
             epoch_idxs, self.n_steps, 1., self.hold_epochs
         )
         
-        # TODO: catch trials: modify a proportion of hold_seq and target_seqs
-        
         task_input = DelayTaskInput(stim_seqs, hold_seq, stim_on_seq)
         target = target_seqs
         
@@ -240,7 +249,7 @@ class RandomReachesDelayed(AbstractTask):
         ...        
 
 
-def uniform_endpoints_new(
+def uniform_endpoints(
     key: jrandom.PRNGKey,
     ndim: int = 2, 
     workspace: Float[Array, "ndim 2"] = jnp.array([[-1., 1.], 
@@ -250,23 +259,6 @@ def uniform_endpoints_new(
     return jrandom.uniform(
         key, 
         (2, ndim),   # (start/end, ...)
-        minval=workspace[:, 0], 
-        maxval=workspace[:, 1]
-    )
-
-
-#! retaining this for now in case I need it while converting the old notebooks
-def uniform_endpoints(
-    key: jrandom.PRNGKey,
-    batch_size: int, 
-    ndim: int = 2, 
-    workspace: Float[Array, "ndim 2"] = jnp.array([[-1., 1.], 
-                                                   [-1., 1.]]),
-):
-    """Segment endpoints uniformly distributed in a rectangular workspace."""
-    return jrandom.uniform(
-        key, 
-        (2, batch_size, ndim),   # (start/end, ...)
         minval=workspace[:, 0], 
         maxval=workspace[:, 1]
     )

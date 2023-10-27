@@ -86,7 +86,7 @@ class TaskTrainer(eqx.Module):
         self.chkpt_dir = Path(chkpt_dir)
         if self.checkpointing:
             self.chkpt_dir.mkdir(exist_ok=True)
-        
+    
     def __call__(
         self, 
         task: AbstractTask,
@@ -173,7 +173,8 @@ class TaskTrainer(eqx.Module):
             keys_train,
             True,
         )
-        
+    
+    @jax.named_scope("fbx.TaskTrainer")
     def _train(
         self,
         task,
@@ -199,7 +200,13 @@ class TaskTrainer(eqx.Module):
           and other stuff (e.g. logging, NaN control flow) is handled outside 
           of JAX transformations.
         - Improve the handling of the flatten/unflatten operations around 
-          `train_step`. See its docstring for details.
+          `train_step`. See its docstring for details. 
+        - The first iteration (or two) are much slower due to JIT compilation
+          of `train_step`, which distorts the smoothed it/s estimate of tqdm. 
+          Also, `opt_state` seems to change shape only on the first step call 
+          to `optimizer.update`, which is why we need to recompute and return 
+          `treedef_opt_state` from `train_step`. So maybe the first call 
+          should be separated out from the loop.
         """
         model = eqx.combine(model_arrays, model_other)
         
@@ -249,19 +256,27 @@ class TaskTrainer(eqx.Module):
             key_train, key_eval, key_batch = jrandom.split(keys[batch], 3)
             keys_trials = jrandom.split(key_batch, batch_size)
             init_state, target_state, task_input = get_batch(keys_trials)
+            
+            #! temporary
+            if batch == 4:
+                jax.profiler.start_trace("/tmp/tensorboard")
 
             loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state = self.train_step(
                 flat_model, 
                 treedef_model,
+                flat_opt_state,
+                treedef_opt_state,
                 filter_spec, 
                 init_state, 
                 target_state, 
                 task_input,
-                loss_func_wrapped, 
-                flat_opt_state,
-                treedef_opt_state,
+                loss_func_wrapped,
                 key_train, 
             )           
+            
+            if batch == 4:
+                loss.block_until_ready()
+                jax.profiler.stop_trace()
             
             losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
@@ -298,7 +313,6 @@ class TaskTrainer(eqx.Module):
                 logger.warning(msg)
                 
                 return model, losses, losses_terms
-            
 
             # checkpointing and evaluation occasionally
             if batch % log_step == 0:
@@ -335,17 +349,18 @@ class TaskTrainer(eqx.Module):
         return model, losses, losses_terms, learning_rates
     
     @eqx.filter_jit
+    @jax.named_scope("fbx.TaskTrainer.train_step")
     def train_step(
         self, 
         flat_model, 
         treedef_model,
+        flat_opt_state, 
+        treedef_opt_state,
         filter_spec, 
         init_state, 
         target_state, 
         task_input, 
         loss_func_wrapped,
-        flat_opt_state, 
-        treedef_opt_state,
         key,
     ):
         """Executes a single training step of the model.
@@ -355,23 +370,28 @@ class TaskTrainer(eqx.Module):
         components prior to their final aggregation (i.e. already weighted).
               
         The wrapping calls to `tree_unflatten` and `tree_leaves`, and passing
-        flattened versions of `model` and `opt_state`, bring slight performance
-        improvements because they cancel out the inverse tree operations that 
-        are performed by JIT compilation. 
+        of flattened versions of `model` and `opt_state`, bring slight
+        performance improvements because they cancel out the inverse tree
+        operations that are performed by JIT compilation. 
+        
+        See https://docs.kidger.site/equinox/tricks/#low-overhead-training-loops
         
         TODO: 
         - Use a wrapper to make the flatten/unflatten stuff less ugly.
-        - Try applying the flatten/unflatten logic to all pytree inputs, 
-          not just `model` and `opt_state`.
         - The shape of `opt_state` changes due to `optimizer.update` on the 
-          first step only.
+          first step only. Why? 
         """
         
-        model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
-        opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, flat_opt_state)
+        model = jax.tree_util.tree_unflatten(treedef_model, 
+                                             flat_model)
+        opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, 
+                                                 flat_opt_state)
         
         diff_model, static_model = eqx.partition(model, filter_spec)
-        (loss, loss_terms), grads = eqx.filter_value_and_grad(loss_func_wrapped, has_aux=True)(
+        
+        (loss, loss_terms), grads = eqx.filter_value_and_grad(
+            loss_func_wrapped, has_aux=True
+        )(
             diff_model, 
             static_model, 
             init_state, 
@@ -379,6 +399,7 @@ class TaskTrainer(eqx.Module):
             task_input, 
             key,
         )
+        
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
 
