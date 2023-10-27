@@ -70,7 +70,7 @@ from feedbax.trainer import TaskTrainer, save, load
 from feedbax.plot import (
     plot_loglog_losses, 
     plot_2D_joint_positions,
-    plot_states_forces_2d,
+    plot_pos_vel_force_2D,
     plot_activity_heatmap,
 )
 
@@ -259,7 +259,7 @@ trainable_leaves_func = lambda model: (
 model, losses, loss_terms, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=10_000, 
+    n_batches=2_000, 
     batch_size=500, 
     log_step=250,
     trainable_leaves_func=trainable_leaves_func,

@@ -168,6 +168,19 @@ def normalize(
     return jax.tree_map(arr_norm, tree)
 
 
+def device_put_all(tree: PyTree, device=jax.devices()[0]):
+    """Put all array leaves of `tree` on the default device.
+    
+    TODO: I'm not sure this is actually useful for anything.
+    """
+    arrays, other = eqx.partition(tree, eqx.is_array)
+    committed = jax.tree_map(
+        lambda x: jax.device_put(x, device), 
+        arrays,
+    )
+    return eqx.combine(committed, other)
+
+
 @jax.named_scope("fbx.tree_get_idx")
 def tree_get_idx(tree: PyTree, idx: int):
     """Retrieve the `idx`-th element of each array leaf of `tree`.
@@ -257,7 +270,7 @@ def tree_sum_n_features(tree):
     )
 
 
-def corners_2d(bounds: Float[Array, "ndim=2 2"]):    
+def corners_2d(bounds: Float[Array, "xy=2 2"]):    
     """Generate the corners of a rectangle from its bounds."""
     xy = jax.tree_map(jnp.ravel, jnp.meshgrid(*bounds))
     return jnp.vstack(xy)

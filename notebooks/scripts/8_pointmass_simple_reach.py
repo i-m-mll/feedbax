@@ -72,7 +72,7 @@ import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNN
-from feedbax.plot import plot_loglog_losses, plot_states_forces_2d
+from feedbax.plot import plot_loglog_losses, plot_pos_vel_force_2D
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -130,7 +130,7 @@ def get_model(
     # to a `mechanics_state` instance here; but `Mechanics` could provide this info
     # based on `feedback_leaves_func`
     # n_feedback = tree_sum_n_features(feedback_leaves_func(mechanics_state))
-    # n_task_inputs = tree_sum_n_features(task.get_trial(key)[2])
+    # n_task_inputs = tree_sum_n_features(task.get_train_trial(key)[2])
     # n_input = n_task_inputs + n_feedback
     
     n_input = system.state_size * 2 # feedback & target states
@@ -257,6 +257,10 @@ trainer = TaskTrainer(
 )
 
 # %%
+n_batches = 1_000
+batch_size = 500
+key_train = jrandom.PRNGKey(seed + 1)
+
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
@@ -266,11 +270,11 @@ trainable_leaves_func = lambda model: (
 model, losses, losses_terms, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=5, 
-    batch_size=500, 
-    log_step=50,
+    n_batches=n_batches, 
+    batch_size=batch_size, 
+    log_step=200,
     trainable_leaves_func=trainable_leaves_func,
-    key=jrandom.PRNGKey(seed + 1),
+    key=key_train,
 )
 
 plot_loglog_losses(losses, losses_terms)
@@ -305,12 +309,26 @@ except NameError:
 loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 
 # %%
-init_states, target_states, _ = task.trials_eval
+init_states, target_states, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
-plot_states_forces_2d(
-    states.mechanics.system.pos, 
-    states.mechanics.system.vel, 
-    states.control, 
+plot_pos_vel_force_2D(
+    states,
+    endpoints=(init_states.pos, goal_states.pos),
+)
+plt.show()
+
+# %%
+(loss, loss_terms, states), trials = task.eval_batch(
+    model, 
+    batch_size=10,
+    key=jrandom.PRNGKey(0), 
+)
+
+# %%
+init_states, target_states, _ = trials
+goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
+plot_pos_vel_force_2D(
+    states,
     endpoints=(init_states.pos, goal_states.pos),
 )
 plt.show()

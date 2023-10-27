@@ -30,6 +30,7 @@ from feedbax.utils import (
     filter_spec_leaves, 
     git_commit_id,
     tree_set_idx,
+    device_put_all,
 )
 
 if TYPE_CHECKING:
@@ -221,6 +222,8 @@ class TaskTrainer(eqx.Module):
         
         loss_func_wrapped = grad_wrap_loss_func(task.loss_func)
         
+        get_batch = jax.vmap(task.get_train_trial)
+        
         start_batch = 0  # except when we load a checkpoint
         
         if restore_checkpoint:
@@ -235,20 +238,40 @@ class TaskTrainer(eqx.Module):
             delete_contents(self.chkpt_dir)  
             
         # TODO: should also restore this from checkpoint
-        opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))
-        
-        keys = jrandom.split(key, n_batches - start_batch)
-        get_batch = jax.vmap(task.get_trial)
-        
+        opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))        
+
         # Passing the flattened pytrees through `train_step` gives a slight
         # performance improvement. See the docstring of `train_step`.
         flat_model, treedef_model = jax.tree_util.tree_flatten(model)
         flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
+         
+        # Finish the JIT compilation before the first training iteration,
+        # so the user will see it timed.
+        for _ in tqdm(range(1), desc='compile'):
+            keys = jrandom.split(key, batch_size)
+            init_state, target_state, task_input = get_batch(keys)
+            self.train_step(  # doesn't alter model or opt_state
+                flat_model, 
+                treedef_model,
+                flat_opt_state,
+                treedef_opt_state,
+                filter_spec, 
+                init_state, 
+                target_state, 
+                task_input,
+                loss_func_wrapped,
+                key, 
+            )  
+            tqdm.write(f"Training step compiled.", file=sys.stdout)
+            task.eval(model, key)
+            tqdm.write(f"Validation step compiled.", file=sys.stdout)
+
+        keys = jrandom.split(key, n_batches - start_batch)
         
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
         for batch in tqdm(
             range(start_batch, n_batches), 
-            desc='batch', 
+            desc='train batch', 
             initial=start_batch, 
             total=n_batches,
             smoothing=0.1,
@@ -258,7 +281,7 @@ class TaskTrainer(eqx.Module):
             init_state, target_state, task_input = get_batch(keys_trials)
             
             #! temporary
-            if batch == 4:
+            if batch == 1e10:
                 jax.profiler.start_trace("/tmp/tensorboard")
 
             loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state = self.train_step(
@@ -274,7 +297,7 @@ class TaskTrainer(eqx.Module):
                 key_train, 
             )           
             
-            if batch == 4:
+            if batch == 1e10:
                 loss.block_until_ready()
                 jax.profiler.stop_trace()
             

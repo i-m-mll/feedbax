@@ -31,7 +31,7 @@ from feedbax.networks import RNN
 from feedbax.plot import (
     plot_loglog_losses, 
     plot_2D_joint_positions,
-    plot_states_forces_2d,
+    plot_pos_vel_force_2D,
     plot_activity_heatmap,
 )
 from feedbax.task import centreout_endpoints, uniform_endpoints

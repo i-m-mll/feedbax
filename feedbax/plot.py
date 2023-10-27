@@ -15,7 +15,7 @@ from typing import Dict, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from jaxtyping import Float, Array, Int
+from jaxtyping import Float, Array, Int, PyTree
 import matplotlib as mpl
 from matplotlib import animation
 from matplotlib.ticker import FormatStrFormatter
@@ -136,7 +136,7 @@ def plot_3D_paths(
 
 
 def plot_planes(
-    x, 
+    x: Float[Array, "batch time components"],
     epoch_start_idxs,  
     epoch_linestyles,  # epochs
     # marker='-o', 
@@ -182,20 +182,19 @@ def plot_planes(
     return axs,
 
 
-def plot_states_forces_2d(
-        positions: Float[Array, "batch time xy"], 
-        velocities: Float[Array, "batch time xy"],
-        forces: Float[Array, "batch time control"],
-        endpoints: Optional[Float[Array, "startend batch xy"]] = None, 
-        straight_guides=False,
-        force_labels=None,
-        force_label_type='linear',
-        cmap='tab10',
-        workspace=None,
-        fig=None, 
-        ms=3, 
-        ms_source=6, 
-        ms_target=7,
+def plot_pos_vel_force_2D(
+    states: PyTree[Float[Array, "batch time ..."]],
+    endpoints: Optional[Tuple[Float[Array, "batch xy"],
+                              Float[Array, "batch xy"]]] = None, 
+    straight_guides: bool = False,
+    force_labels: Optional[Tuple[str, str, str]] = None,
+    force_label_type: str = 'linear',
+    cmap: str = 'tab10',
+    workspace: Optional[Float[Array, "xy=2 2"]] = None,
+    fig=None, 
+    ms: int = 3, 
+    ms_source: int = 6, 
+    ms_target: int = 7,
 ):
     """Plot trajectories of position, velocity, force in 2D subplots.
     
@@ -204,6 +203,9 @@ def plot_states_forces_2d(
     - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
     - First dim is batch, second dim is time step.
     """
+    positions = states.mechanics.system.pos
+    velocities = states.mechanics.system.vel
+    controls = states.control 
     endpoints = jnp.asarray(endpoints)
     
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
@@ -226,7 +228,7 @@ def plot_states_forces_2d(
         axs[1].plot(velocities[i, :, 0], velocities[i, :, 1], '-o', color=colors[i], ms=ms)
         
         # force 
-        axs[2].plot(forces[i, :, 0], forces[i, :, 1], '-o', color=colors[i], ms=ms)
+        axs[2].plot(controls[i, :, 0], controls[i, :, 1], '-o', color=colors[i], ms=ms)
 
     if force_labels is None:
         if force_label_type == 'linear':
@@ -411,7 +413,7 @@ def plot_task_and_speed_profiles(
 
 
 def animate_arm2(
-    xy: Float[Array, "time joints xy"],
+    cartesian_state: Float[Array, "time joints xy"],
     interval: int = 1,
 ):
     """Animated movement of a multi-segment arm.
@@ -428,12 +430,12 @@ def animate_arm2(
     ax.set_xlim([-0.4, 0.75])
     ax.set_ylim([-0.35, 0.65])
 
-    arm_line, = ax.plot(*xy[0].T, 'k-')
-    traj_line, = ax.plot(*xy[0, :, 2].T, 'g-')
+    arm_line, = ax.plot(*cartesian_state[0].T, 'k-')
+    traj_line, = ax.plot(*cartesian_state[0, :, 2].T, 'g-')
 
     def animate(i):
-        arm_line.set_data(*xy[i].T)
-        traj_line.set_data(*xy[:i+1, :, 2].T)
+        arm_line.set_data(*cartesian_state[i].T)
+        traj_line.set_data(*cartesian_state[:i+1, :, 2].T)
         return fig,
 
     return animation.FuncAnimation(

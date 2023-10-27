@@ -68,11 +68,11 @@ from feedbax.trainer import TaskTrainer, save, load
 from feedbax.plot import (
     plot_mean_losses,
     plot_2D_joint_positions,
-    plot_states_forces_2d,
+    plot_pos_vel_force_2D,
     plot_activity_heatmap,
 )
 
-from feedbax.utils import get_model_ensemble
+from feedbax.utils import get_model_ensemble, tree_get_idx
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -165,7 +165,7 @@ seed = 5567
 
 n_replicates = 3
 
-n_steps = 50
+n_steps = 10
 dt = 0.05 
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
@@ -258,6 +258,10 @@ trainer = TaskTrainer(
 )
 
 # %%
+batch_size = 500
+n_batches = 5
+key_train = jrandom.PRNGKey(seed + 1)
+
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
@@ -268,11 +272,11 @@ model, losses, losses_terms, learning_rates = trainer.train_ensemble(
     task=task, 
     models=models,
     n_replicates=n_replicates,
-    n_batches=1000, 
-    batch_size=500, 
-    log_step=1,
+    n_batches=n_batches, 
+    batch_size=batch_size, 
+    log_step=10,
     trainable_leaves_func=trainable_leaves_func,
-    key=jrandom.PRNGKey(seed + 1),
+    key=key_train,
 )
 
 # %%
@@ -315,7 +319,7 @@ loss, loss_terms, states = eqx.filter_vmap(task.eval)(
 )
 
 # %%
-fig, _ = plot_states_forces_2d(
+fig, _ = plot_pos_vel_force_2D(
                     states[1][0][0], states[1][1][0], states[2][0], eval_endpoints[..., :2], 
                     cmap='plasma', workspace=workspace
 )

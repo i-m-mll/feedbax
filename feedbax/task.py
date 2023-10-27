@@ -32,10 +32,16 @@ from feedbax.utils import internal_grid_points
 logger = logging.getLogger(__name__)
 
 
+class TaskInput(eqx.Module):
+    init_state: PyTree
+    target_state: PyTree
+    task_input: PyTree
+
+
 class AbstractTask(eqx.Module):
     """Abstract base class for tasks.
     
-    Associates a trial generator with a loss function. Also provides methods
+    Associates a trial generator with a loss function and a set of . Also provides methods
     for evaluating a suitable model. 
     
     TODO: 
@@ -47,20 +53,46 @@ class AbstractTask(eqx.Module):
     loss_func: AbstractVar[AbstractLoss]
     
     @abstractmethod
-    def get_trial(self, key):
-        """
-        Returns `init_state`, `target_state`, `task_inputs`.
+    def get_train_trial(self, key) -> TaskInput:
+        """Returns a single training trial for the task.
         """
         ...  
         
     @abstractproperty    
-    def trials_eval(self):
+    def trials_validation(self) -> TaskInput:
+        """Returns the batch of validation trials associated with the task."""
         ...
 
+    def eval(
+        self, 
+        model: eqx.Module, 
+        key: jrandom.PRNGKeyArray,
+    ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
+        """Evaluate a model on the task's validation set of trials."""
+        return self.eval_trials(model, self.trials_validation, key)
+    
+    def eval_train_batch(
+        self, 
+        model: eqx.Module, 
+        batch_size: int, 
+        key: jrandom.PRNGKeyArray,
+    ) -> Tuple[Tuple[Float[Array, ""], PyTree, PyTree], PyTree]:
+        """Evaluate a model on a single batch of training trials."""
+        keys = jrandom.split(key, batch_size)
+        trials = jax.vmap(self.get_train_trial)(keys)
+        return self.eval_trials(model, trials, key), trials
+
     @eqx.filter_jit
-    @jax.named_scope("fbx.AbstractTask.eval")
-    def eval(self, model, key):
-        init_states, target_states, task_inputs = self.trials_eval
+    @jax.named_scope("fbx.AbstractTask.eval_trials")
+    def eval_trials(
+        self, 
+        model: eqx.Module, 
+        trials: TaskInput, 
+        key: jrandom.PRNGKeyArray,
+    ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
+        """Evaluate a model on a set of trials.
+        """      
+        init_states, target_states, task_inputs = trials 
         
         states = jax.vmap(model, in_axes=(0, 0, None))(
             task_inputs, init_states, key
@@ -74,7 +106,7 @@ class AbstractTask(eqx.Module):
 class RandomReaches(AbstractTask):
     """Train on random reach endpoints in rectangular workspace.
     
-    Evaluates on center-out reaches. 
+    Validation set is center-out reaches. 
     """
     loss_func: AbstractLoss
     workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
@@ -85,8 +117,11 @@ class RandomReaches(AbstractTask):
     
     N_DIM = 2
     
-    @jax.named_scope("fbx.RandomReaches.get_trial")
-    def get_trial(self, key: jrandom.PRNGKeyArray):
+    @jax.named_scope("fbx.RandomReaches.get_train_trial")
+    def get_train_trial(
+        self, 
+        key: jrandom.PRNGKeyArray
+    ) -> TaskInput:
         """Random reach endpoints in a 2D rectangular workspace.
         
         TODO:
@@ -113,7 +148,7 @@ class RandomReaches(AbstractTask):
         return init_state, target_state, task_input
         
     @cached_property
-    def trials_eval(self):
+    def trials_validation(self) -> TaskInput:
         centers = internal_grid_points(self.workspace, self.eval_grid_n)
         pos_endpoints = jax.vmap(
             centreout_endpoints, 
@@ -170,8 +205,8 @@ class RandomReachesDelayed(AbstractTask):
 
     N_DIM = 2
 
-    @jax.named_scope("fbx.RandomReachesDelayed.get_trial")
-    def get_trial(self, key: jrandom.PRNGKeyArray):
+    @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
+    def get_train_trial(self, key: jrandom.PRNGKeyArray):
         """Random reach endpoints in a 2D rectangular workspace."""
         key1, key2 = jrandom.split(key)
         pos_endpoints = jrandom.uniform(
@@ -192,7 +227,7 @@ class RandomReachesDelayed(AbstractTask):
         return init_state, target_states, task_inputs, epoch_start_idxs
         
     @cached_property
-    def trials_eval(self):
+    def trials_validation(self):
         centers = internal_grid_points(self.workspace, self.eval_grid_n)
         pos_endpoints = jax.vmap(
             centreout_endpoints, 
