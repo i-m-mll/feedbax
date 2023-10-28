@@ -14,14 +14,14 @@ TODO:
 from abc import abstractmethod, abstractproperty
 from functools import cached_property
 import logging 
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 import equinox as eqx
 from equinox import AbstractVar, field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, Float, Int, PyTree
+from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
 
 from feedbax.loss import AbstractLoss
@@ -33,10 +33,23 @@ from feedbax.utils import internal_grid_points
 logger = logging.getLogger(__name__)
 
 
-class TaskInput(AbstractState):
-    init_state: PyTree
-    target_state: PyTree
-    task_input: PyTree
+N_DIM = 2
+
+
+class AbstractTaskInputs(AbstractState):
+    stim: PyTree  #?
+
+
+class AbstractTaskTrialSpec(AbstractState):
+    init: PyTree
+    input: AbstractTaskInputs
+    target: PyTree
+    
+
+class ReachTrialSpec(AbstractTaskTrialSpec):
+    init: CartesianState2D 
+    input: AbstractTaskInputs
+    target: CartesianState2D
 
 
 class AbstractTask(eqx.Module):
@@ -54,14 +67,29 @@ class AbstractTask(eqx.Module):
     loss_func: AbstractVar[AbstractLoss]
     
     @abstractmethod
-    def get_train_trial(self, key) -> TaskInput:
-        """Returns a single training trial for the task.
+    def get_train_trial(
+        self, 
+        key: jr.PRNGKeyArray,
+    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+        """Return a single training trial for the task.
+        
+        May also return a pytree of auxiliary data, e.g. that would be 
+        useful for plotting or analysis but not for model training or
+        evaluation.
         """
+        
         ...  
         
     @abstractproperty    
-    def trials_validation(self) -> TaskInput:
-        """Returns the batch of validation trials associated with the task."""
+    def trials_validation(
+        self
+    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+        """Return the batch of validation trials associated with the task.
+        
+        May also return a pytree of auxiliary data, e.g. that would be 
+        useful for plotting or analysis but not for model evaluation.
+        """
+        
         ...
 
     def eval(
@@ -70,36 +98,44 @@ class AbstractTask(eqx.Module):
         key: jr.PRNGKeyArray,
     ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
         """Evaluate a model on the task's validation set of trials."""
-        return self.eval_trials(model, self.trials_validation, key)
+        
+        return self.eval_trials(model, self.trials_validation[0], key)
     
     def eval_train_batch(
         self, 
         model: eqx.Module, 
         batch_size: int, 
         key: jr.PRNGKeyArray,
-    ) -> Tuple[Tuple[Float[Array, ""], PyTree, PyTree], PyTree]:
+    ) -> Tuple[Tuple[Float[Array, ""], PyTree, PyTree], 
+               AbstractTaskTrialSpec, 
+               PyTree]:
         """Evaluate a model on a single batch of training trials."""
+        
         keys = jr.split(key, batch_size)
-        trials = jax.vmap(self.get_train_trial)(keys)
-        return self.eval_trials(model, trials, key), trials
+        trials, aux = jax.vmap(self.get_train_trial)(keys)
+        
+        return self.eval_trials(model, trials, key), trials, aux
 
     @eqx.filter_jit
     @jax.named_scope("fbx.AbstractTask.eval_trials")
     def eval_trials(
         self, 
         model: eqx.Module, 
-        trials: TaskInput, 
+        trial_specs: AbstractTaskTrialSpec, 
         key: jr.PRNGKeyArray,
     ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
         """Evaluate a model on a set of trials.
         """      
-        init_states, target_states, task_inputs = trials 
         
         states = jax.vmap(model, in_axes=(0, 0, None))(
-            task_inputs, init_states, key
+            trial_specs.input, trial_specs.init, key
         ) 
         
-        loss, loss_terms = self.loss_func(states, target_states, task_inputs)
+        loss, loss_terms = self.loss_func(
+            states, 
+            trial_specs.target, 
+            trial_specs.input
+        )
         
         return loss, loss_terms, states
 
@@ -126,12 +162,13 @@ class RandomReaches(AbstractTask):
     def get_train_trial(
         self, 
         key: jr.PRNGKeyArray
-    ) -> TaskInput:
+    ) -> [ReachTrialSpec, None]:
         """Random reach endpoints in a 2D rectangular workspace.
         
         TODO:
         - Try JIT.
         """
+        
         pos_endpoints = jr.uniform(
             key, 
             (2, self.N_DIM), 
@@ -139,6 +176,7 @@ class RandomReaches(AbstractTask):
             maxval=self.workspace[:, 1]
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
+        
         init_state, target_state = jax.tree_map(
             lambda x: CartesianState2D(*x),
             list(zip(pos_endpoints, vel_endpoints)),
@@ -150,10 +188,13 @@ class RandomReaches(AbstractTask):
             target_state,
         )
         task_input = target_state
-        return init_state, target_state, task_input
+        
+        return ReachTrialSpec(init_state, task_input, target_state), None
         
     @cached_property
-    def trials_validation(self) -> TaskInput:
+    def trials_validation(self) -> [ReachTrialSpec, None]:
+        """Center-out reaches across a regular workspace grid."""
+        
         centers = internal_grid_points(self.workspace, self.eval_grid_n)
         pos_endpoints = jax.vmap(
             centreout_endpoints, 
@@ -163,6 +204,7 @@ class RandomReaches(AbstractTask):
             centers, self.eval_n_directions, self.eval_reach_length
         ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
+        
         init_states, target_states = jax.tree_map(
             lambda x: CartesianState2D(*x),
             list(zip(pos_endpoints, vel_endpoints)),
@@ -178,10 +220,8 @@ class RandomReaches(AbstractTask):
             target_states,
         )
         task_inputs = target_states 
-        return init_states, target_states, task_inputs
-    
-    def __call__(self, model, key):
-        ...        
+        
+        return ReachTrialSpec(init_states, task_inputs, target_states), None
 
 
 class DelayTaskInput(eqx.Module):
@@ -208,19 +248,22 @@ class RandomReachesDelayed(AbstractTask):
     hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
     key_eval: jr.PRNGKeyArray = field(default_factory=lambda: jr.PRNGKey(0))
 
-    N_DIM = 2
-
     @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
-    def get_train_trial(self, key: jr.PRNGKeyArray):
+    def get_train_trial(
+        self, 
+        key: jr.PRNGKeyArray
+    ) -> [ReachTrialSpec, Int[Array, "n_epochs"]]:
         """Random reach endpoints in a 2D rectangular workspace."""
+        
         key1, key2 = jr.split(key)
         pos_endpoints = jr.uniform(
             key1, 
-            (2, self.N_DIM), 
+            (2, N_DIM), 
             minval=self.workspace[:, 0], 
             maxval=self.workspace[:, 1]
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
+        
         init_state, target_state = jax.tree_map(
             lambda x: CartesianState2D(*x),
             list(zip(pos_endpoints, vel_endpoints)),
@@ -229,10 +272,16 @@ class RandomReachesDelayed(AbstractTask):
         task_inputs, target_states, epoch_start_idxs = self.get_sequences(
             init_state, target_state, key2
         )      
-        return init_state, target_states, task_inputs, epoch_start_idxs
+        
+        return (
+            ReachTrialSpec(init_state, task_inputs, target_states), 
+            epoch_start_idxs,
+        )
         
     @cached_property
     def trials_validation(self):
+        """Center-out reaches across a regular workspace grid."""
+        
         centers = internal_grid_points(self.workspace, self.eval_grid_n)
         pos_endpoints = jax.vmap(
             centreout_endpoints, 
@@ -242,6 +291,7 @@ class RandomReachesDelayed(AbstractTask):
             centers, self.eval_n_directions, self.eval_reach_length
         ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
+        
         init_states, target_states = jax.tree_map(
             lambda x: CartesianState2D(*x),
             list(zip(pos_endpoints, vel_endpoints)),
@@ -252,41 +302,50 @@ class RandomReachesDelayed(AbstractTask):
             init_states, target_states, epochs_keys
         )    
            
-        return init_states, target_states, task_inputs, epoch_start_idxs
+        return (
+            ReachTrialSpec(init_states, task_inputs, target_states), 
+            epoch_start_idxs,
+        )
     
     def get_sequences(
         self,  
-        init_states, 
-        target_states, 
-        key,
-    ):
+        init_states: CartesianState2D, 
+        target_states: CartesianState2D, 
+        key: jr.PRNGKeyArray,
+    ) -> Tuple[DelayTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
         """        
         epoch_lengths = gen_epoch_lengths(key, self.epoch_len_ranges)
-        epoch_idxs = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
-        epoch_masks = get_masks(self.n_steps, epoch_idxs)
-        move_epoch_mask = jnp.logical_not(jnp.prod(epoch_masks, axis=0))[None, :]
+        epoch_start_idxs = jnp.pad(
+            jnp.cumsum(epoch_lengths), 
+            (1, 0), 
+            constant_values=(0, -1)
+        )
+        epoch_masks = get_masks(self.n_steps, epoch_start_idxs)
+        move_epoch_mask = jnp.logical_not(
+            jnp.prod(epoch_masks, axis=0)
+        )[None, :]
         
-        stim_seqs = get_masked_seqs(target_states, epoch_masks[self.stim_epochs])
+        stim_seqs = get_masked_seqs(
+            target_states, 
+            epoch_masks[self.stim_epochs]
+        )
         target_seqs = jax.tree_map(
             lambda x, y: x + y, 
             get_masked_seqs(target_states, move_epoch_mask),
             get_masked_seqs(init_states, epoch_masks[self.hold_epochs]),
         )
         stim_on_seq = get_scalar_epoch_seq(
-            epoch_idxs, self.n_steps, 1., self.stim_epochs
+            epoch_start_idxs, self.n_steps, 1., self.stim_epochs
         )
         hold_seq = get_scalar_epoch_seq(
-            epoch_idxs, self.n_steps, 1., self.hold_epochs
+            epoch_start_idxs, self.n_steps, 1., self.hold_epochs
         )
         
         task_input = DelayTaskInput(stim_seqs, hold_seq, stim_on_seq)
-        target = target_seqs
+        target_states = target_seqs
         
-        return task_input, target, epoch_idxs
-    
-    def __call__(self, model, key):
-        ...        
+        return task_input, target_states, epoch_start_idxs  
 
 
 def uniform_endpoints(
@@ -294,7 +353,7 @@ def uniform_endpoints(
     ndim: int = 2, 
     workspace: Float[Array, "ndim 2"] = jnp.array([[-1., 1.], 
                                                    [-1., 1.]]),
-):
+) -> Float[Array, "2 ndim"]:
     """Segment endpoints uniformly distributed in a rectangular workspace."""
     return jr.uniform(
         key, 
@@ -309,8 +368,7 @@ def centreout_endpoints(
     n_directions: int, 
     length: float,
     angle_offset: float = 0, 
-): 
-    ndim = 2  # TODO: generalize to sphere?
+) -> Float[Array, "2 n_directions 2"]: 
     """Segment endpoints starting in the centre and ending equally spaced on a circle."""
     angles = jnp.linspace(0, 2 * np.pi, n_directions + 1)[:-1]
     angles = angles + angle_offset
@@ -326,13 +384,16 @@ def gen_epoch_lengths(
     ranges: Tuple[Tuple[int, int], ...]=((1, 3),  # (min, max) for first epoch
                                          (2, 5),  # second epoch
                                          (1, 3)),  
-):
+) -> Int[Array, "n_epochs"]:
     """Generate a random integer in each given ranges."""
     ranges = jnp.array(ranges, dtype=int)
     return jr.randint(key, (ranges.shape[0],), *ranges.T)
 
 
-def get_masks(length, idx_bounds):
+def get_masks(
+    length: int, 
+    idx_bounds: Int[Array, "_"],
+):
     """Get a 1D mask of length `length` with `False` values at `idxs`."""
     idxs = jnp.arange(length)
     #? could also use `arange` to get ranges of idxs
@@ -343,8 +404,8 @@ def get_masks(length, idx_bounds):
 def get_masked_seqs(
     arrays: PyTree, 
     masks: Tuple[Int[Array, "n"], ...],
-    init_fn=jnp.zeros,
-):
+    init_fn: Callable[[Tuple[int, ...]], Shaped[Array, "..."]] = jnp.zeros,
+) -> PyTree:
     """Expand arrays with an initial axis of length `n`, and fill with 
     original array values where the intersection of `masks` is `False`.
     
@@ -355,6 +416,9 @@ def get_masked_seqs(
     array has an additional sequence dimension, and the original `target` 
     values are assigned only during the target epoch, as bounded by
     `target_idxs`.
+    
+    TODO:
+    - Find a better name.
     """
     
     seqs = jax.tree_map(

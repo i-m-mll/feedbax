@@ -46,7 +46,7 @@ class catchtime:
         self.printout = printout
         return self
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, *args, **kwargs):
         self.time = perf_counter() - self.start
         self.readout = f'Time: {self.time:.3f} seconds'
         if self.printout:

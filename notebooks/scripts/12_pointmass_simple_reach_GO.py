@@ -158,12 +158,31 @@ log_step = 100
 
 # the keys need to match 
 loss_term_weights = dict(
-    effector_fixation=1.,
+   # effector_fixation=1.,
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-4,
     nn_activity=1e-5,
 )
+
+# %%
+loss_func = fbl.simple_reach_loss(
+    n_steps=n_steps,
+    loss_term_weights=loss_term_weights,
+)
+task = RandomReachesDelayed(
+        loss_func=loss_func,
+        workspace=workspace, 
+        n_steps=n_steps,
+        epoch_len_ranges=task_epoch_len_ranges,
+        eval_grid_n=1,
+        eval_n_directions=8,
+        eval_reach_length=0.5,
+)
+
+task.get_train_trial(jr.PRNGKey(seed))
+
+# %%
 
 # %%
 # hyperparams dict + setup function isn't strictly necessary,
@@ -249,6 +268,8 @@ trainer = TaskTrainer(
     chkpt_dir=chkpt_dir,
     checkpointing=True,
 )
+
+# %%
 
 # %%
 key = jr.PRNGKey(seed + 1)

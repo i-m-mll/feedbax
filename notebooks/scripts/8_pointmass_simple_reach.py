@@ -237,6 +237,9 @@ trainer = TaskTrainer(
 )
 
 # %%
+from feedbax.utils import catchtime
+
+
 n_batches = 1_000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
@@ -247,6 +250,15 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
+timer = catchtime()
+
+batch_callbacks = {
+    100: (lambda: timer.__enter__(), 
+          lambda: jax.profiler.start_trace("/tmp/tensorboard")),
+    103: (lambda: jax.profiler.stop_trace(),),
+    200: (lambda: timer.__exit__(),),
+}
+
 model, losses, losses_terms, learning_rates = trainer(
     task=task, 
     model=model,
@@ -254,8 +266,12 @@ model, losses, losses_terms, learning_rates = trainer(
     batch_size=batch_size, 
     log_step=200,
     trainable_leaves_func=trainable_leaves_func,
+    batch_callbacks=batch_callbacks,
     key=key_train,
 )
+    
+avg_rate = n_batches / timer.time
+print(f"\n Training took {timer.time:.2f} s, at an average rate of {avg_rate:.2f} it/s.")
 
 plot_loglog_losses(losses, losses_terms)
 
@@ -298,7 +314,7 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
-(loss, loss_terms, states), trials = task.eval_batch(
+(loss, loss_terms, states), trials, aux = task.eval_train_batch(
     model, 
     batch_size=10,
     key=jr.PRNGKey(0), 

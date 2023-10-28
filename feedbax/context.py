@@ -21,6 +21,7 @@ from feedbax.channel import Channel, ChannelState
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState 
 from feedbax.state import AbstractState
+from feedbax.task import AbstractTask
 from feedbax.types import CartesianState2D
 from feedbax.utils import tree_sum_n_features
 
@@ -164,8 +165,8 @@ class SimpleFeedback(AbstractContext):
 
     @staticmethod
     def get_nn_input_size(
-        task, 
-        mechanics, 
+        task: AbstractTask, 
+        mechanics: Mechanics, 
         feedback_leaves_func=lambda mechanics_state: mechanics_state.system,
     ) -> int:
         """Determine how many scalar input features the neural network needs.
@@ -178,7 +179,7 @@ class SimpleFeedback(AbstractContext):
         """
         example_feedback = feedback_leaves_func(mechanics.init())
         n_feedback = tree_sum_n_features(example_feedback)
-        example_trial = task.get_train_trial(jr.PRNGKey(0))[2]
-        n_task_inputs = tree_sum_n_features(example_trial)
+        example_trial_spec = task.get_train_trial(jr.PRNGKey(0))[0]
+        n_task_inputs = tree_sum_n_features(example_trial_spec.input)
     
         return n_feedback + n_task_inputs

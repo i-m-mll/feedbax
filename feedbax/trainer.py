@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence
 
 import equinox as eqx
 import jax
@@ -24,7 +24,7 @@ import optax
 from tqdm.auto import tqdm
 
 from feedbax.loss import AbstractLoss
-from feedbax.task import AbstractTask
+from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.utils import (
     delete_contents,
     filter_spec_leaves, 
@@ -95,6 +95,7 @@ class TaskTrainer(eqx.Module):
         n_batches: int, 
         batch_size: int, 
         trainable_leaves_func: Callable = lambda model: model,
+        batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint: bool = False,
         save_dir: Optional[str] = None,
@@ -119,6 +120,7 @@ class TaskTrainer(eqx.Module):
             n_batches, 
             batch_size, 
             trainable_leaves_func,
+            batch_callbacks,
             log_step,
             restore_checkpoint,
             save_dir,
@@ -134,6 +136,7 @@ class TaskTrainer(eqx.Module):
         n_batches: int, 
         batch_size: int, 
         trainable_leaves_func: Callable = lambda model: model,
+        batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint:bool = False,
         save_dir: Optional[str] = None,
@@ -168,6 +171,7 @@ class TaskTrainer(eqx.Module):
             n_batches, 
             batch_size, 
             trainable_leaves_func,
+            batch_callbacks,
             log_step,
             restore_checkpoint,
             save_dir,
@@ -184,6 +188,7 @@ class TaskTrainer(eqx.Module):
         n_batches,
         batch_size,
         trainable_leaves_func,
+        batch_callbacks,
         log_step,
         restore_checkpoint,
         save_dir,
@@ -249,16 +254,14 @@ class TaskTrainer(eqx.Module):
         # so the user will see it timed.
         for _ in tqdm(range(1), desc='compile'):
             keys = jr.split(key, batch_size)
-            init_state, target_state, task_input = get_batch(keys)
+            trial_specs, _ = get_batch(keys)
             self.train_step(  # doesn't alter model or opt_state
                 flat_model, 
                 treedef_model,
                 flat_opt_state,
                 treedef_opt_state,
                 filter_spec, 
-                init_state, 
-                target_state, 
-                task_input,
+                trial_specs,
                 loss_func_wrapped,
                 key, 
             )  
@@ -266,7 +269,7 @@ class TaskTrainer(eqx.Module):
             task.eval(model, key)
             tqdm.write(f"Validation step compiled.", file=sys.stdout)
 
-        keys = jr.split(key, n_batches - start_batch)
+        keys = jr.split(key, n_batches)
         
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
         for batch in tqdm(
@@ -275,14 +278,10 @@ class TaskTrainer(eqx.Module):
             initial=start_batch, 
             total=n_batches,
             smoothing=0.1,
-        ):
+        ):            
             key_train, key_eval, key_batch = jr.split(keys[batch], 3)
             keys_trials = jr.split(key_batch, batch_size)
-            init_state, target_state, task_input = get_batch(keys_trials)
-            
-            #! temporary
-            if batch == 1e10:
-                jax.profiler.start_trace("/tmp/tensorboard")
+            trial_specs, _ = get_batch(keys_trials)
 
             loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state = self.train_step(
                 flat_model, 
@@ -290,16 +289,14 @@ class TaskTrainer(eqx.Module):
                 flat_opt_state,
                 treedef_opt_state,
                 filter_spec, 
-                init_state, 
-                target_state, 
-                task_input,
+                trial_specs,
                 loss_func_wrapped,
                 key_train, 
             )           
             
-            if batch == 1e10:
-                loss.block_until_ready()
-                jax.profiler.stop_trace()
+            if batch in batch_callbacks:
+                for func in batch_callbacks[batch]:
+                    func()
             
             losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
@@ -380,9 +377,7 @@ class TaskTrainer(eqx.Module):
         flat_opt_state, 
         treedef_opt_state,
         filter_spec, 
-        init_state, 
-        target_state, 
-        task_input, 
+        trial_specs: AbstractTaskTrialSpec,
         loss_func_wrapped,
         key,
     ):
@@ -403,6 +398,7 @@ class TaskTrainer(eqx.Module):
         - Use a wrapper to make the flatten/unflatten stuff less ugly.
         - The shape of `opt_state` changes due to `optimizer.update` on the 
           first step only. Why? 
+        - Typing
         """
         
         model = jax.tree_util.tree_unflatten(treedef_model, 
@@ -417,9 +413,7 @@ class TaskTrainer(eqx.Module):
         )(
             diff_model, 
             static_model, 
-            init_state, 
-            target_state, 
-            task_input, 
+            trial_specs,
             key,
         )
         
@@ -468,6 +462,7 @@ def grad_wrap_loss_func(
       2) Model modules will use a `target_state, init_state, key` signature.
       
     TODO: 
+    - Typing
     - This is specific to `TaskTrainer`. Could it be more general?
       Note that the vmap here works the same as in `Task.eval`; perhaps if this
       is a `TaskTrainer`-specific function, then `Task` could provide an interface
@@ -476,29 +471,27 @@ def grad_wrap_loss_func(
     def wrapper(
         diff_model, 
         static_model, 
-        init_state, 
-        target_state, 
-        task_input, 
+        trial_specs: AbstractTaskTrialSpec,
         key: jr.PRNGKeyArray,
     ):
         model = eqx.combine(diff_model, static_model)
         #? will `in_axes` ever change? currently assuming we will design it not to
         batched_model = jax.vmap(model, in_axes=(0, 0, None))
-        states = batched_model(task_input, init_state, key)
+        states = batched_model(trial_specs.input, trial_specs.init, key)
         
         # TODO: loss_func should take task_input as well, probably
-        return loss_func(states, target_state, task_input)
+        return loss_func(states, trial_specs.target, trial_specs.input)
     
     return wrapper 
 
 
 def save(
-            tree: PyTree[eqx.Module],
-            hyperparams: Optional[dict] = None, 
-            path: Optional[Path] = None,
-            save_dir: Path = Path('.'),
-            suffix: Optional[str] = None,
-    ):
+    tree: PyTree[eqx.Module],
+    hyperparams: Optional[dict] = None, 
+    path: Optional[Path] = None,
+    save_dir: Path = Path('.'),
+    suffix: Optional[str] = None,
+):
     """Save a PyTree to disk along with hyperparameters.
     
     If a path is not specified, a filename will be generated from the current 
