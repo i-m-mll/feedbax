@@ -14,12 +14,15 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 import numpy as np
-from feedbax.types import CartesianState2D
 
+from feedbax.types import CartesianState2D
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
 
 logger = logging.getLogger(__name__)
+
+
+N_DIM = 2
 
 
 class TwoLinkState(eqx.Module):
@@ -82,6 +85,11 @@ class TwoLink(eqx.Module):
         self, 
         effector_state: Optional[CartesianState2D] = None,
     ):
+        if effector_state is None:
+            effector_state = CartesianState2D(
+                jnp.zeros(N_DIM), 
+                jnp.zeros(N_DIM)
+            )
         theta = self.inverse_kinematics(effector_state)        
         return TwoLinkState(theta, jnp.zeros_like(theta))
 

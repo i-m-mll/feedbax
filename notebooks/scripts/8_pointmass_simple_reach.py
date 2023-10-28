@@ -66,8 +66,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.channel import ChannelState
-from feedbax.context import SimpleFeedback, SimpleFeedbackState
+from feedbax.context import SimpleFeedback
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
@@ -125,18 +124,12 @@ def get_model(
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
-    # TODO: by default we should use the entire system state as feedback
-    feedback_leaves_func = lambda mechanics_state: mechanics_state.system
-     
-    # TODO: automatically calculate `n_input` from task and mechanics
-    # unfortunately the following doesn't work because we don't have access 
-    # to a `mechanics_state` instance here; but `Mechanics` could provide this info
-    # based on `feedback_leaves_func`
-    # n_feedback = tree_sum_n_features(feedback_leaves_func(mechanics.init()))
-    # n_task_inputs = tree_sum_n_features(task.get_train_trial(key)[2])
-    # n_input = n_task_inputs + n_feedback
+    # automatically determine network input size
+    n_input = SimpleFeedback.get_nn_input_size(
+        task, mechanics
+    )
     
-    n_input = system.state_size * 2 # feedback & target states
+    # the cell determines what kind of RNN layer to use
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
     net = RNN(
         cell, 
@@ -145,12 +138,7 @@ def get_model(
         persistence=False,
         key=key2
     )
-    body = SimpleFeedback(
-        net, 
-        mechanics, 
-        delay=feedback_delay,
-        feedback_leaves_func=feedback_leaves_func,
-    )
+    body = SimpleFeedback(net, mechanics, feedback_delay)
     
     model = Recursion(body, n_steps)
     

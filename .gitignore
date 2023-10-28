@@ -1,4 +1,5 @@
 .gitmessage
+COMMIT_MSG.txt
 
 # data and media
 *.wav

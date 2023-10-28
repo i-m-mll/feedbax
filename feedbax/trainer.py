@@ -75,7 +75,7 @@ class TaskTrainer(eqx.Module):
             #     "Loss terms": {
             #         "Training loss": ["Multiline", ["Loss/train"] + [f'Loss/train/{term}'
             #                                         for term in term_weights.keys()]],
-            #         "Evaluation loss": ["Multiline", ["Loss/eval"] + [f'Loss/eval/{term}'
+            #         "Evaluation loss": ["Multiline", ["Loss/validation"] + [f'Loss/validation/{term}'
             #                                         for term in term_weights.keys()]],
             #     },
             # }
@@ -337,7 +337,7 @@ class TaskTrainer(eqx.Module):
                 
                 return model, losses, losses_terms
 
-            # checkpointing and evaluation occasionally
+            # checkpointing and validation occasionally
             if batch % log_step == 0:
                 model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
                 
@@ -350,20 +350,20 @@ class TaskTrainer(eqx.Module):
                         f.write(str(batch)) 
                 
                 # tensorboard
-                loss_eval, loss_eval_terms, states = task.eval(model, key_eval)
+                loss_val, loss_val_terms, states = task.eval(model, key_eval)
                 
                 if self._use_tb:
                     # TODO: register plots
                     # fig = make_eval_fig(states.effector, states.network.output, workspace)
                     # self.writer.add_figure('Eval/centerout', fig, batch)
-                    self.writer.add_scalar('Loss/eval', loss_eval.item(), batch)
-                    for term, loss_term in loss_eval_terms.items():
-                        self.writer.add_scalar(f'Loss/eval/{term}', loss_term.item(), batch)
+                    self.writer.add_scalar('Loss/validation', loss_val.item(), batch)
+                    for term, loss_term in loss_val_terms.items():
+                        self.writer.add_scalar(f'Loss/validation/{term}', loss_term.item(), batch)
                     
                 # TODO: https://stackoverflow.com/a/69145493
                 tqdm.write(f"step: {batch}", file=sys.stdout)
                 tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
-                tqdm.write(f"\tevaluation loss: {loss_eval:.4f}", file=sys.stdout)
+                tqdm.write(f"\tvalidation loss: {loss_val:.4f}", file=sys.stdout)
                 if learning_rate is not None:                    
                     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
          

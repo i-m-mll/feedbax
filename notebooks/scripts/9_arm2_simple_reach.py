@@ -96,12 +96,13 @@ model_dir = Path("../models/")
 
 # %%
 def get_model(
-        key=None,
-        dt=0.05, 
-        n_hidden=50, 
-        n_steps=50, 
-        feedback_delay=0, 
-        out_nonlinearity=lambda x: x,
+    task,
+    key=None,
+    dt=0.05, 
+    n_hidden=50, 
+    n_steps=50, 
+    feedback_delay=0, 
+    out_nonlinearity=lambda x: x,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
@@ -111,17 +112,20 @@ def get_model(
     system = TwoLink()  
     mechanics = Mechanics(system, dt)
     
+    # unlike in the pointmass example, the effector is different
+    # from the system configuration, so we include both 
+    # (by default only `mechanics_state.system` is included)
     feedback_leaves_func = lambda mechanics_state: (
-        mechanics_state.system.theta,
-        mechanics_state.system.d_theta,
+        mechanics_state.system,
         mechanics_state.effector,         
     )
     
-    # joint state feedback + effector state + target state
-    n_input = system.state_size * 2 + 2 * N_DIM
-    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
+    n_input = SimpleFeedback.get_nn_input_size(
+        task, mechanics, feedback_leaves_func
+    )
+    
     net = RNN(
-        cell, 
+        eqx.nn.GRUCell(n_input, n_hidden, key=key1), 
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
         persistence=True,
@@ -134,9 +138,7 @@ def get_model(
         feedback_leaves_func=feedback_leaves_func,
     )
     
-    model = Recursion(body, n_steps)
-    
-    return model 
+    return Recursion(body, n_steps)
 
 
 # %%
@@ -195,6 +197,7 @@ def setup(
     )
 
     model = get_model(
+        task,
         key, 
         dt=dt,
         n_hidden=n_hidden,
@@ -265,7 +268,7 @@ except NameError:
 loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
 
 # %%
-init_states, target_states, _ = task.trials_eval
+init_states, target_states, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
 
 plot_pos_vel_force_2D(

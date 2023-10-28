@@ -114,12 +114,11 @@ class TwoLinkMuscled(eqx.Module):
     
     def init(self, effector_state):
         theta = self.inverse_kinematics(effector_state)        
-        a = TwoLinkMuscledState(
+        return TwoLinkMuscledState(
             theta, 
             jnp.zeros_like(theta), 
             jnp.zeros(self.control_size)
         )
-        return a
     
     @property
     def control_size(self):

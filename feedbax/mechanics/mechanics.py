@@ -20,6 +20,9 @@ from feedbax.types import CartesianState2D
 logger = logging.getLogger(__name__)
 
 
+N_DIM = 2
+
+
 class MechanicsState(AbstractState):
     system: PyTree[Array]
     effector: CartesianState2D
@@ -79,6 +82,11 @@ class Mechanics(eqx.Module):
         TODO:
         - Should we allow the user to pass input for constructing `solver_state`?
         """
+        if effector_state is None:
+            effector_state = CartesianState2D(
+                jnp.zeros(N_DIM), 
+                jnp.zeros(N_DIM)
+            )
         #! assumes zero initial velocity; TODO convert initial velocity also
         system_state = self.system.init(effector_state)
         init_input = jnp.zeros((self.system.control_size,))

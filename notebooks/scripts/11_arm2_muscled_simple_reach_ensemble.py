@@ -30,6 +30,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import Optional
 
 from IPython import get_ipython
 
@@ -104,13 +105,14 @@ model_dir = Path("../models/")
 
 # %%
 def get_model(
-        key=None,
-        dt=0.05, 
-        n_hidden=50, 
-        n_steps=50, 
-        feedback_delay=0, 
-        tau=0.01, 
-        out_nonlinearity=jax.nn.sigmoid,
+    task,
+    dt: float = 0.05, 
+    n_hidden: int = 50, 
+    n_steps: int = 50, 
+    feedback_delay: int = 0, 
+    tau: float = 0.01, 
+    out_nonlinearity=jax.nn.sigmoid,
+    key: Optional[jr.PRNGKeyArray] = None,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
@@ -132,8 +134,11 @@ def get_model(
         mechanics_state.effector,         
     )
     
-    # joint state feedback + effector state + target state
-    n_input = system.twolink.state_size + 2 * N_DIM + 2 * N_DIM
+    # automatically determine network input size
+    n_input = SimpleFeedback.get_nn_input_size(
+        task, mechanics, feedback_leaves_func
+    )
+    
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
     net = RNN(
         cell, 
@@ -216,16 +221,18 @@ def setup(
         eval_reach_length=0.05,
     )
     
+    tau = 0.01
     models = get_model_ensemble(
         get_model, 
         n_replicates,
-        key=key,
-        dt=dt,
-        n_hidden=n_hidden,
-        n_steps=n_steps,
-        feedback_delay=feedback_delay_steps,
-        tau=0.01,
-        out_nonlinearity=out_nonlinearity,
+        task,
+        dt,
+        n_hidden,
+        n_steps,
+        feedback_delay_steps,
+        tau,
+        out_nonlinearity,
+        key=key
     )
     
     return models, task 
@@ -241,20 +248,6 @@ trainer = TaskTrainer(
     chkpt_dir=chkpt_dir,
     checkpointing=True,
 )
-
-# %%
-x = jnp.array([1, 3, 10, 50, 100, 300, 500, 600])
-y = jnp.array([23.5, 22, 21.5, 15, 8, 3.2, 2, 1.7])
-
-fig, ax = plt.subplots()
-ax.scatter(x, (10000/y)/60, edgecolors="white")
-ax.set_xscale("log")
-#ax.set_yscale("log")
-ax.set_xlim(0.5, 1000)
-ax.hlines([8], xmin=0.5, xmax=1000, linestyles=':', lw=0.5)
-#ax.set_ylim(0, 25)
-ax.set_xlabel("Number of replicates")
-ax.set_ylabel("Training time (min)")
 
 # %%
 batch_size = 500

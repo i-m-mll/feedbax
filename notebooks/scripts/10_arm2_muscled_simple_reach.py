@@ -33,6 +33,7 @@ import os
 import logging
 from pathlib import Path
 import sys
+from typing import Optional
 
 from IPython import get_ipython
 
@@ -104,13 +105,14 @@ model_dir = Path("../models/")
 
 # %%
 def get_model(
-        key=None,
-        dt=0.05, 
-        n_hidden=50, 
-        n_steps=50, 
-        feedback_delay=0, 
-        tau=0.01, 
-        out_nonlinearity=jax.nn.sigmoid,
+    task,
+    key: Optional[jr.PRNGKeyArray] = None,
+    dt: float = 0.05, 
+    n_hidden: int = 50, 
+    n_steps: int = 50, 
+    feedback_delay: int = 0, 
+    tau: float = 0.01, 
+    out_nonlinearity=jax.nn.sigmoid,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
@@ -126,17 +128,21 @@ def get_model(
     )
     mechanics = Mechanics(system, dt)
     
+    # this time we need to specifically request joint angles
+    # and angular velocities, and not muscle activations
     feedback_leaves_func = lambda mechanics_state: (
         mechanics_state.system.theta,
         mechanics_state.system.d_theta,
         mechanics_state.effector,         
     )
     
-    # joint state feedback + effector state + target state
-    n_input = system.twolink.state_size + 2 * N_DIM + 2 * N_DIM
-    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
+    # automatically determine network input size
+    n_input = SimpleFeedback.get_nn_input_size(
+        task, mechanics, feedback_leaves_func
+    )
+    
     net = RNN(
-        cell, 
+        eqx.nn.GRUCell(n_input, n_hidden, key=key1), 
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
         persistence=False,
@@ -209,6 +215,7 @@ def setup(
     )
 
     model = get_model(
+        task,
         key, 
         dt=dt,
         n_hidden=n_hidden,
@@ -289,10 +296,10 @@ loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 # fig = make_eval_plot(states[1], states[2], workspace)
-init_states, target_states, _ = task.trials_eval
+init_states, target_states, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
 
-plot_states_forces_2d(
+plot_pos_vel_force_2D(
     states.mechanics.effector.pos, 
     states.mechanics.effector.vel, 
     # leave out the first timestep of controls, since it jumps from (0, 0)

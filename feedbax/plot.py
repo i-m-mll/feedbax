@@ -203,8 +203,8 @@ def plot_pos_vel_force_2D(
     - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
     - First dim is batch, second dim is time step.
     """
-    positions = states.mechanics.system.pos
-    velocities = states.mechanics.system.vel
+    positions = states.mechanics.effector.pos
+    velocities = states.mechanics.effector.vel
     controls = states.network.output 
     endpoints = jnp.asarray(endpoints)
     

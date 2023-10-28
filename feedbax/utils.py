@@ -14,7 +14,7 @@ from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
 from time import perf_counter
-from typing import Callable, Concatenate, Dict, Optional, Union, ParamSpec
+from typing import Callable, Concatenate, Dict, Optional, TypeVarTuple, Union
 
 import equinox as eqx
 import jax
@@ -33,7 +33,7 @@ TODO: infinite cycle
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
 
-P = ParamSpec('P')
+Ts = TypeVarTuple("Ts")
 
 
 class catchtime:
@@ -92,15 +92,14 @@ def exp_taylor(x: float, n: int):
 
 
 def get_model_ensemble(
-    get_model: Callable[Concatenate[jr.PRNGKeyArray, P], eqx.Module], 
+    get_model: Callable[[jr.PRNGKeyArray, *Ts], eqx.Module], 
     n_replicates: int, 
-    *, 
-    key: jr.PRNGKeyArray, 
-    **kwargs,  # can't type this with P 
+    *args: *Ts, 
+    key: jr.PRNGKeyArray
 ) -> eqx.Module:
     """Helper to vmap model generation over a set of PRNG keys."""
     keys = jr.split(key, n_replicates)
-    get_model_ = partial(get_model, **kwargs)
+    get_model_ = partial(get_model, *args)
     return eqx.filter_vmap(get_model_)(keys)
 
 

@@ -49,7 +49,7 @@ from pathlib import Path
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -101,43 +101,37 @@ model_dir = Path("../models/")
 
 # %%
 def get_model(
-    key=None, 
-    dt=0.1, 
-    mass=1., 
-    n_hidden=50, 
-    # tau_leak=5, 
-    n_steps=100, 
-    feedback_delay=0,
+    task,
+    dt: float = 0.1, 
+    mass: float = 1., 
+    n_hidden: int = 50,  
+    n_steps: int = 100, 
+    feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
+    key: jr=None, 
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
-        key = jrandom.PRNGKey(0)  
+        key = jr.PRNGKey(0)  
         
-    key1, key2 = jrandom.split(key)
+    key1, key2 = jr.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt)
     
-    feedback_leaves_func = lambda mechanics_state: mechanics_state.system
+    # automatically determine network input size
+    n_input = SimpleFeedback.get_nn_input_size(
+        task, mechanics
+    )
     
-    # hold, target-on signals; feedback & target states
-    n_input = 1 + 1 + system.state_size * 2 
-    #cell = RNNCell(n_input, n_hidden, dt=dt, tau=tau_leak, key=keyc)t
-    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
     net = RNN(
-        cell, 
+        eqx.nn.GRUCell(n_input, n_hidden, key=key1), 
         system.control_size, 
         out_nonlinearity=out_nonlinearity,
         persistence=True, 
         key=key2
     )
-    body = SimpleFeedback(
-        net, 
-        mechanics, 
-        delay=feedback_delay,
-        feedback_leaves_func=feedback_leaves_func,
-    )
+    body = SimpleFeedback(net, mechanics, feedback_delay)
 
     return Recursion(body, n_steps)
 
@@ -196,7 +190,7 @@ def setup(
     n_hidden, 
     **kwargs,
 ):
-    key = jrandom.PRNGKey(seed)
+    key = jr.PRNGKey(seed)
 
     discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
     loss_func = fbl.CompositeLoss(
@@ -229,11 +223,12 @@ def setup(
     )
     
     model = get_model(
-        key, 
+        task,
         dt=dt,
         n_hidden=n_hidden,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
+        key=key,
     )
     
     return model, task
@@ -256,7 +251,7 @@ trainer = TaskTrainer(
 )
 
 # %%
-key = jrandom.PRNGKey(seed + 1)
+key = jr.PRNGKey(seed + 1)
 
 model, losses, losses_terms, learning_rates = trainer(
     task=task,
@@ -296,14 +291,14 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
+loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %% [markdown]
 # Plot speeds along with a line indicating the first availability of target information.
 
 # %%
 init_states, target_states, task_inputs, epoch_start_idxs = \
-    task.trials_eval
+    task.trials_validation
 # assume the goal is the target state at the last time step
 goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
 plot_task_and_speed_profiles(
@@ -336,7 +331,7 @@ plt.show()
 # %%
 seed = 5566
 n_samples = 6
-key = jrandom.PRNGKey(seed)
+key = jr.PRNGKey(seed)
 
 plot_activity_sample_units(states.hidden, n_samples, key=key)
 

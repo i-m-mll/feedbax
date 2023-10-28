@@ -22,8 +22,13 @@ from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState 
 from feedbax.state import AbstractState
 from feedbax.types import CartesianState2D
+from feedbax.utils import tree_sum_n_features
+
 
 logger = logging.getLogger(__name__)
+
+
+N_DIM = 2
 
 
 State = TypeVar("State", bound=ChannelState)
@@ -76,7 +81,7 @@ class SimpleFeedback(AbstractContext):
         net: eqx.Module, 
         mechanics: Mechanics, 
         delay: int = 0, 
-        feedback_leaves_func: Callable = \
+        feedback_leaves_func: Callable[[MechanicsState], PyTree] = \
             lambda mechanics_state: mechanics_state.system
     ):
         self.net = net
@@ -104,7 +109,7 @@ class SimpleFeedback(AbstractContext):
         # mechanics state feedback plus task inputs (e.g. target state)
         network_state = self.net(
             (input, feedback_state.output), 
-            state.network.activity, 
+            state.network, 
             key2
         )
         
@@ -156,3 +161,24 @@ class SimpleFeedback(AbstractContext):
             network=True,
             feedback=ChannelState(output=True, queue=False)
         )
+
+    @staticmethod
+    def get_nn_input_size(
+        task, 
+        mechanics, 
+        feedback_leaves_func=lambda mechanics_state: mechanics_state.system,
+    ) -> int:
+        """Determine how many scalar input features the neural network needs.
+        
+        This is a static method because its logic (number of network inputs =
+        number of task inputs + number of feedback inputs from `mechanics`) 
+        is related to the structure of `SimpleFeedback`. However, it is 
+        not an instance method because we want to construct the network
+        before we construct `SimpleFeedback`.
+        """
+        example_feedback = feedback_leaves_func(mechanics.init())
+        n_feedback = tree_sum_n_features(example_feedback)
+        example_trial = task.get_train_trial(jr.PRNGKey(0))[2]
+        n_task_inputs = tree_sum_n_features(example_trial)
+    
+        return n_feedback + n_task_inputs
