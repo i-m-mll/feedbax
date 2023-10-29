@@ -5,7 +5,7 @@ TODO:
    See what can be abstracted.
 - Ditto `get_target_seq` and `get_scalar_epoch_seq`.
     - Also, the way `seq` and `seqs` are generated is similar to `states` in 
-      `Recursion.init`...
+      `Iterator.init`...
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -25,7 +25,6 @@ from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
 
 from feedbax.loss import AbstractLoss
-from feedbax.state import AbstractState
 from feedbax.types import CartesianState2D
 from feedbax.utils import internal_grid_points
 
@@ -36,11 +35,11 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class AbstractTaskInputs(AbstractState):
+class AbstractTaskInputs(eqx.Module):
     stim: PyTree  #?
 
 
-class AbstractTaskTrialSpec(AbstractState):
+class AbstractTaskTrialSpec(eqx.Module):
     init: PyTree
     input: AbstractTaskInputs
     target: PyTree
@@ -69,7 +68,7 @@ class AbstractTask(eqx.Module):
     @abstractmethod
     def get_train_trial(
         self, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
         """Return a single training trial for the task.
         
@@ -95,7 +94,7 @@ class AbstractTask(eqx.Module):
     def eval(
         self, 
         model: eqx.Module, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
         """Evaluate a model on the task's validation set of trials."""
         
@@ -105,7 +104,7 @@ class AbstractTask(eqx.Module):
         self, 
         model: eqx.Module, 
         batch_size: int, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> Tuple[Tuple[Float[Array, ""], PyTree, PyTree], 
                AbstractTaskTrialSpec, 
                PyTree]:
@@ -122,7 +121,7 @@ class AbstractTask(eqx.Module):
         self, 
         model: eqx.Module, 
         trial_specs: AbstractTaskTrialSpec, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
         """Evaluate a model on a set of trials.
         """      
@@ -161,7 +160,7 @@ class RandomReaches(AbstractTask):
     @jax.named_scope("fbx.RandomReaches.get_train_trial")
     def get_train_trial(
         self, 
-        key: jr.PRNGKeyArray
+        key: jax.Array
     ) -> [ReachTrialSpec, None]:
         """Random reach endpoints in a 2D rectangular workspace.
         
@@ -182,7 +181,7 @@ class RandomReaches(AbstractTask):
             list(zip(pos_endpoints, vel_endpoints)),
             is_leaf=lambda x: isinstance(x, tuple)
         )
-        # make targets as sequences, because `Recursion` and `Loss` want that
+        # make targets as sequences, because `Iterator` and `Loss` want that
         target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             target_state,
@@ -246,12 +245,12 @@ class RandomReachesDelayed(AbstractTask):
     eval_grid_n: int  
     stim_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
     hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
-    key_eval: jr.PRNGKeyArray = field(default_factory=lambda: jr.PRNGKey(0))
+    key_eval: jax.Array = field(default_factory=lambda: jr.PRNGKey(0))
 
     @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
     def get_train_trial(
         self, 
-        key: jr.PRNGKeyArray
+        key: jax.Array
     ) -> [ReachTrialSpec, Int[Array, "n_epochs"]]:
         """Random reach endpoints in a 2D rectangular workspace."""
         
@@ -311,7 +310,7 @@ class RandomReachesDelayed(AbstractTask):
         self,  
         init_states: CartesianState2D, 
         target_states: CartesianState2D, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> Tuple[DelayTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
         """        

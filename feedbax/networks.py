@@ -16,14 +16,13 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.state import AbstractState
 from feedbax.utils import interleave_unequal
 
 
 logger = logging.getLogger(__name__)
 
 
-class NetworkState(AbstractState):
+class NetworkState(eqx.Module):
     """State of a neural network."""
     activity: PyTree[Float[Array, "unit"]]
     output: PyTree
@@ -39,20 +38,21 @@ class SimpleMultiLayerNet(eqx.Module):
     def __init__(
         self, 
         sizes: Tuple[int, ...], 
-        key,
         layer_type: eqx.Module = eqx.nn.Linear,
         use_bias=(), 
-        nonlinearity=jnp.tanh, 
-        output_nonlinearity=None, 
-        linear_final_layer=False,  # replace the final layer with a linear layer
+        nonlinearity: Callable[[Float], Float] = jnp.tanh, 
+        output_nonlinearity: Optional[Callable[[Float], Float]] = None, 
+        linear_final_layer: bool = False,  # replace the final layer with a linear layer
+        *,
+        key: jax.Array,
     ):
         keys = jr.split(key, len(sizes) - 1)
         
         if bool(use_bias) is use_bias:
             use_bias = (use_bias,) * (len(sizes) - 1)
             
-        layers = [layer_type(m, n, key=k, use_bias=b) 
-                  for m, n, k, b in zip(sizes[:-1], sizes[1:], keys, use_bias)]
+        layers = [layer_type(m, n, key=key, use_bias=b) 
+                  for m, n, key, b in zip(sizes[:-1], sizes[1:], keys, use_bias)]
         
         nonlinearities = [nonlinearity] * (len(sizes) - 2) 
         if output_nonlinearity is not None:
@@ -105,7 +105,7 @@ class RNNCell(eqx.Module):
         dt: float = 1,
         tau: float = 1,
         *,  # this forces the user to pass the following as keyword arguments
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
         **kwargs
     ):
         ihkey, hhkey, bkey = jr.split(key, 3)
@@ -137,8 +137,7 @@ class RNNCell(eqx.Module):
         self, 
         input: jax.Array, 
         state: jax.Array,
-        *, 
-        key: jr.PRNGKeyArray
+        key: jax.Array
     ):
         """Vanilla RNN cell."""
         if self.use_bias:
@@ -192,7 +191,7 @@ class RNN(eqx.Module):
         noise_std: Optional[float] = None,
         persistence: bool = True,
         *,
-        key: jr.PRNGKeyArray, 
+        key: jax.Array, 
     ):
         self.out_size = out_size
         self.cell = cell
@@ -207,7 +206,7 @@ class RNN(eqx.Module):
         self, 
         input, 
         state: NetworkState, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> NetworkState:
         if not self.persistence:
             state = self.init()

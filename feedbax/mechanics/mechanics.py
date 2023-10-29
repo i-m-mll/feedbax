@@ -13,7 +13,6 @@ import jax.numpy as jnp
 from jaxtyping import Array, PyTree
 
 from feedbax.mechanics.system import System
-from feedbax.state import AbstractState
 from feedbax.types import CartesianState2D
 
 
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class MechanicsState(AbstractState):
+class MechanicsState(eqx.Module):
     system: PyTree[Array]
     effector: CartesianState2D
     solver: PyTree 

@@ -43,6 +43,7 @@ import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 # %%
+import equinox as eqx
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
@@ -50,11 +51,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.loss import simple_reach_loss
+from feedbax.xabdeef.losses import simple_reach_loss
+from feedbax.xabdeef import point_mass_RNN
+
 from feedbax.plot import plot_loss, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer
-from feedbax.xabdeef import point_mass_RNN_loop
 from feedbax.utils import Timer
 
 # %%
@@ -84,7 +86,7 @@ task = RandomReaches(
     eval_reach_length=0.5,
 )
 
-model = point_mass_RNN_loop(
+model = point_mass_RNN(
     task,
     dt=dt,
     mass=mass,
@@ -105,7 +107,7 @@ trainer = TaskTrainer(
 # Define our training hyperparameters like usual
 
 # %%
-n_batches = 200
+n_batches = 410
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
@@ -118,20 +120,21 @@ trainable_leaves_func = lambda model: (
 # %% [markdown]
 # However, this time we'll also define some functions for `TaskTrainer` to call on certain iterations of the training loop. 
 #
-# In particular, we'll ask it to profile iterations 100-103, and to start a timer on iteration 100 and end it on 200. 
+# In particular, we'll ask it to profile iterations 50-52, and to start a timer on iteration 300 and end it on 400. Note that the functions will be run immediately after the call to `train_step` on the respective iteration.
 #
 # To do this, we pass a dictionary where a key gives the index of the iteration, and the respective value is a sequence (e.g. tuple) of functions to be called.
-#
-# TODO: don't let the profiling and the timer overlap, otherwise the time is longer than it would be due to the profiling overhead
 
 # %%
 timer = Timer()
 
+batch_timer_start = 300
+batch_timer_stop = 400
+
 batch_callbacks = {
-    50: (lambda: timer.start(), 
-          lambda: jax.profiler.start_trace("/tmp/tensorboard")),
+    50: (lambda: jax.profiler.start_trace("/tmp/tensorboard"),),
     52: (lambda: jax.profiler.stop_trace(),),
-    100: (lambda: timer.stop(),),
+    batch_timer_start: (lambda: timer.start(),),
+    batch_timer_stop: (lambda: timer.stop(),),
 }
 
 model, losses, losses_terms, learning_rates = trainer(
@@ -139,13 +142,13 @@ model, losses, losses_terms, learning_rates = trainer(
     model=model,
     n_batches=n_batches, 
     batch_size=batch_size, 
+    key=key_train,
     log_step=200,
     trainable_leaves_func=trainable_leaves_func,
     batch_callbacks=batch_callbacks,
-    key=key_train,
 )
 
-avg_rate = (100 - 50) / timer.time
+avg_rate = (batch_timer_stop - batch_timer_start) / timer.time
 print(f"\n The timed iterations took {timer.time:.2f} s, "
       + f"at an average rate of {avg_rate:.2f} it/s.")
 
@@ -153,16 +156,52 @@ print(f"\n The timed iterations took {timer.time:.2f} s, "
 plot_loss(losses, losses_terms)
 
 # %% [markdown]
-# Evaluate on a centre-out task
+# Time multiple runs to get some statistics
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
+n_runs = 3
+n_batches = 610
+
+batch_callbacks = lambda timer: {
+    300: (lambda: timer.start(),),
+    400: (lambda: timer.stop(), lambda: timer.start()),
+    500: (lambda: timer.stop(), lambda: timer.start()),
+    600: (lambda: timer.stop(),),
+}
+
+timers = [Timer() for _ in range(n_runs)]
+
+for i in range(n_runs):
+    model, losses, losses_terms, learning_rates = trainer(
+        task=task, 
+        model=model,
+        n_batches=n_batches, 
+        batch_size=batch_size, 
+        key=key_train,
+        log_step=200,
+        trainable_leaves_func=trainable_leaves_func,
+        batch_callbacks=batch_callbacks(timers[i]),
+    )
+
+# %% [markdown]
+# Calculate two timing statistics:
+#
+# 1) Within-run mean and std
+# 2) Between-run mean and std
+#
+# TODO: Not sure if there is another way to do the between-run mean and std. Here I do a mean-of-means.
 
 # %%
-init_states, target_states, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
-plot_pos_vel_force_2D(
-    states,
-    endpoints=(init_states.pos, goal_states.pos),
-)
-plt.show()
+within = [dict(mean=np.mean(timer.times),
+               std=np.std(timer.times)) 
+          for timer in timers]
+within_means = np.array([d["mean"] for d in within])
+between = dict(mean=np.mean(within_means),
+               std=np.std(within_means))
+    
+eqx.tree_pprint(within)
+print(between)
+
+# %%
+# average rate, given we're timing intervals of 100 iterations
+100 / between['mean']

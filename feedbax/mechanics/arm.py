@@ -139,7 +139,7 @@ class TwoLink(eqx.Module):
         TODO:
         - Convert velocity using the effector Jacobian.
         - Try to generalize to n-link arm using Jacobian of forward kinematics?
-        - Unit test round trip with `nlink_angular_to_cartesian`.
+        - Unit test round trip with `forward_kinematics`.
         """
         pos = effector_state.pos
         l, lsqpm = self.l, self._lsqpm
@@ -183,7 +183,8 @@ class TwoLink(eqx.Module):
                                  axis=1)  # xy, links
         return CartesianState2D(xy_position.T, xy_velocity.T)
 
-    def effector(self, state: TwoLinkState):
+    def effector(self, state: TwoLinkState) -> CartesianState2D:
+        """Return the Cartesian state of the end of the arm."""
         return jax.tree_map(
             lambda x: x[-1],  # last link
             self.forward_kinematics(state),

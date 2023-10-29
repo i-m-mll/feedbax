@@ -3,6 +3,10 @@
 For example, classes defined here could be used to to model a sensorimotor 
 loop, a body, or (perhaps) multiple interacting bodies. 
 
+TODO:
+- Maybe this should be renamed... mainly because it might be confused with 
+`AbstractTask` in terms of its purpose.
+
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
@@ -20,7 +24,6 @@ from jaxtyping import Array, PyTree
 from feedbax.channel import Channel, ChannelState
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState 
-from feedbax.state import AbstractState
 from feedbax.task import AbstractTask
 from feedbax.types import CartesianState2D
 from feedbax.utils import tree_sum_n_features
@@ -35,13 +38,13 @@ N_DIM = 2
 State = TypeVar("State", bound=ChannelState)
 
 
-class AbstractContext(eqx.Module, Generic[State]):
+class AbstractModel(eqx.Module, Generic[State]):
     @abstractmethod
     def __call__(
         self, 
         input, 
         state: State, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> State:
         ...
         
@@ -58,13 +61,13 @@ class AbstractContext(eqx.Module, Generic[State]):
         ...
 
 
-class SimpleFeedbackState(AbstractState):
+class SimpleFeedbackState(eqx.Module):
     mechanics: MechanicsState
     network: NetworkState
     feedback: ChannelState
 
 
-class SimpleFeedback(AbstractContext):
+class SimpleFeedback(AbstractModel):
     """Simple feedback loop with a single RNN and single mechanical system.
     
     TODO:
@@ -96,7 +99,7 @@ class SimpleFeedback(AbstractContext):
         self, 
         input,  # AbstractTaskInput 
         state: SimpleFeedbackState, 
-        key: jr.PRNGKeyArray,
+        key: jax.Array,
     ) -> SimpleFeedbackState:
         
         key1, key2 = jr.split(key)
@@ -146,11 +149,11 @@ class SimpleFeedback(AbstractContext):
     def memory_spec(self):
         """Specifies which states should typically be remembered by callers.
         
-        For example, `fbx.Recursion` stores trajectories of states, however it
+        For example, `fbx.Iterator` stores trajectories of states, however it
         doesn't usually make sense to store `states.feedback.queue` for every
         timestep, because it contains info that is already available to
-        `Recursion` if `states.mechanics` is stored at every timestep. If the
-        feedback delay is 5 steps, `Recursion` will end up with 5 extra copies
+        `Iterator` if `states.mechanics` is stored at every timestep. If the
+        feedback delay is 5 steps, `Iterator` will end up with 5 extra copies
         of all the parts of `states.mechanics` that are part of the feedback.
         
         NOTE: It makes sense for this to be here since it has to do with the
@@ -179,7 +182,7 @@ class SimpleFeedback(AbstractContext):
         """
         example_feedback = feedback_leaves_func(mechanics.init())
         n_feedback = tree_sum_n_features(example_feedback)
-        example_trial_spec = task.get_train_trial(jr.PRNGKey(0))[0]
+        example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))[0]
         n_task_inputs = tree_sum_n_features(example_trial_spec.input)
     
         return n_feedback + n_task_inputs

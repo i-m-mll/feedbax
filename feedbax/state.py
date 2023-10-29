@@ -1,9 +1,23 @@
 """Dataclass PyTree containers.
 
-We could just use `eqx.Module` for state dataclasses, but it has some
-significant overhead related to verification of occupancy of dataclass fields.
 The classes in this module are more or less reductions of classes from
-`eqx._module`, that retain a subset of features.
+    `eqx._module`, that retain a subset of features.
+
+NOTE: 
+    This is currently unused, since it doesn't offer an advantage over
+    `eqx.Module`, according to a simple benchmark of 3 runs as performed in
+    notebook 15, in one case monkey patching `AbstractState = eqx.Module` from
+    inside this module.
+    
+    However, in the future we might want to use `AbstractState` as a subclass
+    of `eqx.Module` to add certain features.
+
+    The original concern was that `eqx.Module` has some (relatively)
+    significant overhead related to verification of occupancy of dataclass
+    fields. This takes up a lot of the instantiation time for `eqx.Module`
+    but in practice it doesn't seem to make a difference to `feedbax`, 
+    probably because we don't instantiate enough module objects for it to 
+    matter.    
 """
 
 from abc import ABCMeta
@@ -41,6 +55,10 @@ class _StateMeta(ABCMeta):
         return cls
         
 
+#! this was the patch used to test performance of `eqx.Module` vs. `AbstractState`
+# AbstractState = eqx.Module
+
+
 class AbstractState(metaclass=_StateMeta):
     """Base class for state dataclasses.
     
@@ -56,6 +74,8 @@ class AbstractState(metaclass=_StateMeta):
     
     def __repr__(self):
         return eqx.tree_pformat(self)
-    
+
+
+
     
     

@@ -274,7 +274,7 @@ def plot_activity_sample_units(
     cols: int = 2, 
     cmap: str = 'tab10', 
     *, 
-    key: jr.PRNGKeyArray
+    key: jax.Array
 ):
     """Plot activity of a random sample of units over time.
     

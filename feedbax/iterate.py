@@ -16,13 +16,13 @@ import jax.random as jr
 from jaxtyping import Array, PyTree
 from tqdm.auto import tqdm
 
-from feedbax.context import AbstractContext
+from feedbax.context import AbstractModel
 from feedbax.utils import tree_get_idx, tree_set_idx
 
 logger = logging.getLogger(__name__)
 
 
-class Recursion(eqx.Module):
+class Iterator(eqx.Module):
     """A module that recursively applies another module for `n_steps` steps.
     
     We automatically determine the shape of the arrays in the PyTree(s) 
@@ -34,7 +34,7 @@ class Recursion(eqx.Module):
     - is there a way to avoid assuming the `input, state` argument structure of `step`?
     - with the new partitioning of states into memory and no-memory,
     """
-    step: AbstractContext
+    step: AbstractModel
     n_steps: int 
     states_includes: PyTree[bool]
     
@@ -50,7 +50,7 @@ class Recursion(eqx.Module):
         self.n_steps = n_steps
         self.states_includes = states_includes
     
-    @jax.named_scope("fbx.Recursion._body_func")
+    @jax.named_scope("fbx.Iterator._body_func")
     def _body_func(self, i, x):
         inputs, states, key = x
         
@@ -72,7 +72,7 @@ class Recursion(eqx.Module):
                 
         return inputs, states, key2
     
-    @jax.named_scope("fbx.Recursion")
+    @jax.named_scope("fbx.Iterator")
     def __call__(self, inputs, init_effector_state, key):
         key1, key2, key3 = jr.split(key, 3)
         
@@ -103,7 +103,7 @@ class Recursion(eqx.Module):
             self.step, 
             input, 
             init_state, 
-            key,
+            key=key,
         )
         
         # generate empty trajectories for mem states

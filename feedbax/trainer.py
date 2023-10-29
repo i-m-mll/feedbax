@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -93,12 +93,12 @@ class TaskTrainer(eqx.Module):
         model: eqx.Module,
         n_batches: int, 
         batch_size: int, 
+        key: jax.Array,
         trainable_leaves_func: Callable = lambda model: model,
         batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint: bool = False,
-        *,
-        key: jr.PRNGKeyArray,
+        disable_tqdm=False,
     ):
         """Train a model on a task for a fixed number of batches of trials.
         
@@ -123,6 +123,7 @@ class TaskTrainer(eqx.Module):
             restore_checkpoint,
             key,
             False,
+            disable_tqdm,
         )
     
     def train_ensemble(
@@ -132,12 +133,12 @@ class TaskTrainer(eqx.Module):
         n_replicates: int,
         n_batches: int, 
         batch_size: int, 
+        key: jax.Array,
         trainable_leaves_func: Callable = lambda model: model,
         batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint:bool = False,
-        *,
-        key: jr.PRNGKeyArray,
+        disable_tqdm=False,
     ):
         """Trains an ensemble of models.
         
@@ -172,6 +173,7 @@ class TaskTrainer(eqx.Module):
             restore_checkpoint,
             keys_train,
             True,
+            disable_tqdm,
         )
     
     @jax.named_scope("fbx.TaskTrainer")
@@ -188,6 +190,7 @@ class TaskTrainer(eqx.Module):
         restore_checkpoint,
         key,
         ensembled,
+        disable_tqdm,
     ):
         """Implementation of the training procedure. 
         
@@ -246,9 +249,9 @@ class TaskTrainer(eqx.Module):
          
         # Finish the JIT compilation before the first training iteration,
         # so the user will see it timed.
-        for _ in tqdm(range(1), desc='compile'):
+        for _ in tqdm(range(1), desc='compile', disable=disable_tqdm):
             keys = jr.split(key, batch_size)
-            trial_specs, _ = get_batch(keys)
+            trial_specs, _ = get_batch(key=keys)
             self.train_step(  # doesn't alter model or opt_state
                 flat_model, 
                 treedef_model,
@@ -257,7 +260,7 @@ class TaskTrainer(eqx.Module):
                 filter_spec, 
                 trial_specs,
                 loss_func_wrapped,
-                key, 
+                keys, 
             )  
             tqdm.write(f"Training step compiled.", file=sys.stdout)
             task.eval(model, key)
@@ -272,9 +275,13 @@ class TaskTrainer(eqx.Module):
             initial=start_batch, 
             total=n_batches,
             smoothing=0.1,
+            disable=disable_tqdm,
         ):            
             key_train, key_eval, key_batch = jr.split(keys[batch], 3)
-            keys_trials = jr.split(key_batch, batch_size)
+            # Sample 1) different model noise per trial, 2) different trials
+            keys_train = jr.split(key_train, batch_size)  
+            keys_trials = jr.split(key_batch, batch_size)  
+            
             trial_specs, _ = get_batch(keys_trials)
 
             loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state = self.train_step(
@@ -285,7 +292,7 @@ class TaskTrainer(eqx.Module):
                 filter_spec, 
                 trial_specs,
                 loss_func_wrapped,
-                key_train, 
+                keys_train, 
             )           
             
             if batch_callbacks is not None and batch in batch_callbacks:
@@ -373,7 +380,7 @@ class TaskTrainer(eqx.Module):
         filter_spec, 
         trial_specs: AbstractTaskTrialSpec,
         loss_func_wrapped,
-        key,
+        keys: jax.Array,
     ):
         """Executes a single training step of the model.
         
@@ -408,7 +415,7 @@ class TaskTrainer(eqx.Module):
             diff_model, 
             static_model, 
             trial_specs,
-            key,
+            keys,
         )
         
         updates, opt_state = self.optimizer.update(grads, opt_state)
@@ -466,12 +473,11 @@ def grad_wrap_loss_func(
         diff_model, 
         static_model, 
         trial_specs: AbstractTaskTrialSpec,
-        key: jr.PRNGKeyArray,
+        keys: jax.Array,
     ):
         model = eqx.combine(diff_model, static_model)
-        #? will `in_axes` ever change? currently assuming we will design it not to
-        batched_model = jax.vmap(model, in_axes=(0, 0, None))
-        states = batched_model(trial_specs.input, trial_specs.init, key)
+        #? will `in_axes` ever change? 
+        states = jax.vmap(model)(trial_specs.input, trial_specs.init, keys)
         
         # TODO: loss_func should take task_input as well, probably
         return loss_func(states, trial_specs.target, trial_specs.input)

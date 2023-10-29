@@ -41,6 +41,9 @@ class Timer:
     
     From https://stackoverflow.com/a/69156219
     """
+    def __init__(self):
+        self.times = []
+    
     def __enter__(self, printout=False):
         self.start_time = perf_counter()
         self.printout = printout
@@ -48,6 +51,7 @@ class Timer:
 
     def __exit__(self, *args, **kwargs):
         self.time = perf_counter() - self.start_time
+        self.times.append(self.time)
         self.readout = f'Time: {self.time:.3f} seconds'
         if self.printout:
             print(self.readout)
@@ -95,12 +99,17 @@ def exp_taylor(x: float, n: int):
 
 
 def get_model_ensemble(
-    get_model: Callable[[jr.PRNGKeyArray, *Ts], eqx.Module], 
+    get_model: Callable[[jax.Array, *Ts], eqx.Module], 
     n_replicates: int, 
     *args: *Ts, 
-    key: jr.PRNGKeyArray
+    key: jax.Array
 ) -> eqx.Module:
-    """Helper to vmap model generation over a set of PRNG keys."""
+    """Helper to vmap model generation over a set of PRNG keys.
+    
+    TODO: 
+    - Rename. This works for stuff other than `get_model`. It's basically
+      a helper to split key, then vmap function.
+    """
     keys = jr.split(key, n_replicates)
     get_model_ = partial(get_model, *args)
     return eqx.filter_vmap(get_model_)(keys)
