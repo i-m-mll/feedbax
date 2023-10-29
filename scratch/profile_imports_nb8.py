@@ -13,7 +13,7 @@ import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNN
-from feedbax.plot import plot_loglog_losses, plot_pos_vel_force_2D
+from feedbax.plot import plot_loss, plot_pos_vel_force_2D
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load

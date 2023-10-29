@@ -88,15 +88,6 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 plt.style.use('dark_background')
 
 # %%
-# paths
-
-# training checkpoints
-chkpt_dir = Path("/tmp/feedbax-checkpoints")
-chkpt_dir.mkdir(exist_ok=True)
-
-# tensorboard
-tb_logdir = Path("runs")
-
 model_dir = Path("../models/")
 
 
@@ -106,13 +97,13 @@ model_dir = Path("../models/")
 # %%
 def get_model(
     task,
-    key: Optional[jr.PRNGKeyArray] = None,
     dt: float = 0.05, 
     n_hidden: int = 50, 
     n_steps: int = 50, 
     feedback_delay: int = 0, 
     tau: float = 0.01, 
     out_nonlinearity=jax.nn.sigmoid,
+    key: Optional[jr.PRNGKeyArray] = None,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
@@ -216,13 +207,13 @@ def setup(
 
     model = get_model(
         task,
-        key, 
         dt=dt,
         n_hidden=n_hidden,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
         tau=0.01,
         out_nonlinearity=jax.nn.sigmoid,
+        key=key, 
     )
     
     return model, task
@@ -235,7 +226,6 @@ trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
         learning_rate=learning_rate
     ),
-    chkpt_dir=chkpt_dir,
     checkpointing=True,
 )
 

@@ -19,7 +19,6 @@ import jax
 import jax.numpy as jnp 
 import jax.random as jr
 from jaxtyping import Array, Float, PyTree
-import matplotlib.pyplot as plt
 import optax
 from tqdm.auto import tqdm
 
@@ -30,11 +29,10 @@ from feedbax.utils import (
     filter_spec_leaves, 
     git_commit_id,
     tree_set_idx,
-    device_put_all,
 )
 
 if TYPE_CHECKING:
-    # this is sloow so we'll actually import it only when needed
+    # This is sloow so we'll actually import it only when needed.
     from torch.utils.tensorboard import SummaryWriter
 
 
@@ -60,12 +58,13 @@ class TaskTrainer(eqx.Module):
     def __init__(
         self,
         optimizer: optax.GradientTransformation,    
-        checkpointing=True,
-        chkpt_dir='.ckpts',
-        tensorboard_logdir: Optional[str] = None,
+        checkpointing: bool = True,
+        chkpt_dir: str | Path ="/tmp/fbx-checkpoints",
+        enable_tensorboard: bool = False,
+        tensorboard_logdir: str | Path = "/tmp/fbx-tensorboard",
     ):
         self.optimizer = optimizer 
-        self._use_tb = tensorboard_logdir is not None
+        self._use_tb = enable_tensorboard
         if self._use_tb:
             from torch.utils.tensorboard import SummaryWriter
             
@@ -98,7 +97,6 @@ class TaskTrainer(eqx.Module):
         batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint: bool = False,
-        save_dir: Optional[str] = None,
         *,
         key: jr.PRNGKeyArray,
     ):
@@ -123,7 +121,6 @@ class TaskTrainer(eqx.Module):
             batch_callbacks,
             log_step,
             restore_checkpoint,
-            save_dir,
             key,
             False,
         )
@@ -139,7 +136,6 @@ class TaskTrainer(eqx.Module):
         batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint:bool = False,
-        save_dir: Optional[str] = None,
         *,
         key: jr.PRNGKeyArray,
     ):
@@ -174,7 +170,6 @@ class TaskTrainer(eqx.Module):
             batch_callbacks,
             log_step,
             restore_checkpoint,
-            save_dir,
             keys_train,
             True,
         )
@@ -191,7 +186,6 @@ class TaskTrainer(eqx.Module):
         batch_callbacks,
         log_step,
         restore_checkpoint,
-        save_dir,
         key,
         ensembled,
     ):
@@ -294,7 +288,7 @@ class TaskTrainer(eqx.Module):
                 key_train, 
             )           
             
-            if batch in batch_callbacks:
+            if batch_callbacks is not None and batch in batch_callbacks:
                 for func in batch_callbacks[batch]:
                     func()
             

@@ -88,14 +88,6 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 plt.style.use('dark_background')
 
 # %%
-# paths
-# training checkpoints
-chkpt_dir = Path("/tmp/feedbax-checkpoints")
-chkpt_dir.mkdir(exist_ok=True)
-
-# tensorboard
-tb_logdir = Path("runs")
-
 model_dir = Path("../models/")
 
 
@@ -265,7 +257,6 @@ trainer = TaskTrainer(
             #transition_begin=200,
         )
     ),
-    chkpt_dir=chkpt_dir,
     checkpointing=True,
 )
 

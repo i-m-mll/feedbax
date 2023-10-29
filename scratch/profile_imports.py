@@ -29,7 +29,7 @@ from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.mechanics.system import System
 from feedbax.networks import RNN
 from feedbax.plot import (
-    plot_loglog_losses, 
+    plot_loss, 
     plot_2D_joint_positions,
     plot_pos_vel_force_2D,
     plot_activity_heatmap,

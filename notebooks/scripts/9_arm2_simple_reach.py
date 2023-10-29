@@ -142,6 +142,9 @@ def get_model(
 
 
 # %%
+2 + "goats"
+
+# %%
 seed = 5566
 
 n_steps = 50

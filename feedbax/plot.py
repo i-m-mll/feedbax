@@ -319,9 +319,11 @@ def plot_activity_sample_units(
         axs[-1][-j-1].set_xlabel(xlabel)
         
 
-def plot_loglog_losses(
+def plot_loss(
     losses: Float[Array, "trainstep"], 
-    losses_terms: Optional[Dict[str, Float[Array, "trainstep"]]] = None
+    losses_terms: Optional[Dict[str, Float[Array, "trainstep"]]] = None,
+    xscale: str = 'log',
+    yscale: str = 'log',
 ):
     """Log-log plot of losses and component loss terms."""
     if losses_terms is None:
@@ -329,7 +331,10 @@ def plot_loglog_losses(
     
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
-    ax.loglog(losses, 'white', lw=3)
+    ax.plot(losses, 'white', lw=3)
+    
+    ax.set_xscale(xscale)
+    ax.set_yscale(yscale)
     
     if losses_terms is not None:
         for loss_term in losses_terms.values():
@@ -347,7 +352,7 @@ def plot_mean_losses(
     losses: Float[Array, "rep trainstep"], 
     losses_terms: Dict[str, Float[Array, "rep trainstep"]]
 ):
-    """Similar to `plot_loglog_losses`, with mean-std over a batch dimension.
+    """Similar to `plot_loss`, with mean-std over a batch dimension.
     """
     losses_terms_df = jax.tree_map(
         lambda losses: pd.DataFrame(losses, index=range(losses.shape[0])).melt(

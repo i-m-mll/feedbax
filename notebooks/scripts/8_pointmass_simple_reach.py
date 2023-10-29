@@ -46,6 +46,7 @@ import os
 import logging
 from pathlib import Path
 import sys
+from typing import Optional
 
 from IPython import get_ipython
 
@@ -71,7 +72,7 @@ import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNN
-from feedbax.plot import plot_loglog_losses, plot_pos_vel_force_2D
+from feedbax.plot import plot_loss, plot_pos_vel_force_2D
 from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -90,15 +91,6 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 plt.style.use('dark_background')
 
 # %%
-# paths
-
-# training checkpoints
-chkpt_dir = Path("/tmp/feedbax-checkpoints")
-chkpt_dir.mkdir(exist_ok=True)
-
-# tensorboard
-tb_logdir = Path("runs")
-
 model_dir = Path("../models/")
 
 # %%
@@ -107,13 +99,14 @@ from feedbax.utils import tree_sum_n_features
 
 def get_model(
     task,
-    key=None,
-    dt=0.05, 
-    mass=1., 
-    n_hidden=50, 
-    n_steps=100, 
-    feedback_delay=0,
+    
+    dt: float = 0.05, 
+    mass: float = 1., 
+    n_hidden: int = 50, 
+    n_steps: int = 100, 
+    feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
+    key: Optional[jr.PRNGKeyArray] = None,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
@@ -215,11 +208,11 @@ def setup(
 
     model = get_model(
         task,
-        key, 
         dt=dt,
         n_hidden=n_hidden,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
+        key=key, 
     )
     
     return model, task
@@ -232,14 +225,10 @@ trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
         learning_rate=learning_rate
     ),
-    chkpt_dir=chkpt_dir,
     checkpointing=True,
 )
 
 # %%
-from feedbax.utils import catchtime
-
-
 n_batches = 1_000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
@@ -250,15 +239,6 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-timer = catchtime()
-
-batch_callbacks = {
-    100: (lambda: timer.__enter__(), 
-          lambda: jax.profiler.start_trace("/tmp/tensorboard")),
-    103: (lambda: jax.profiler.stop_trace(),),
-    200: (lambda: timer.__exit__(),),
-}
-
 model, losses, losses_terms, learning_rates = trainer(
     task=task, 
     model=model,
@@ -266,14 +246,10 @@ model, losses, losses_terms, learning_rates = trainer(
     batch_size=batch_size, 
     log_step=200,
     trainable_leaves_func=trainable_leaves_func,
-    batch_callbacks=batch_callbacks,
     key=key_train,
 )
-    
-avg_rate = n_batches / timer.time
-print(f"\n Training took {timer.time:.2f} s, at an average rate of {avg_rate:.2f} it/s.")
 
-plot_loglog_losses(losses, losses_terms)
+plot_loss(losses, losses_terms)
 
 # %% [markdown]
 # Save the trained model to file, along with the task and the hyperparams needed to set them up again

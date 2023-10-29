@@ -281,6 +281,14 @@ def simple_reach_loss(
     TODO: 
     - Maybe activity loss shouldn't be included by default.
     """
+    if loss_term_weights is None:
+        # TODO: maybe move this to a common area for default parameters
+        loss_term_weights = dict(
+            effector_position=1.,
+            effector_final_velocity=1.,
+            nn_output=1e-5,
+            nn_activity=1e-5,
+        )
     if discount_exp == 0:
         discount = 1.
     else: 

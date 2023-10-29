@@ -36,21 +36,24 @@ SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 Ts = TypeVarTuple("Ts")
 
 
-class catchtime:
+class Timer:
     """Context manager for timing code blocks.
     
     From https://stackoverflow.com/a/69156219
     """
     def __enter__(self, printout=False):
-        self.start = perf_counter()
+        self.start_time = perf_counter()
         self.printout = printout
         return self
 
     def __exit__(self, *args, **kwargs):
-        self.time = perf_counter() - self.start
+        self.time = perf_counter() - self.start_time
         self.readout = f'Time: {self.time:.3f} seconds'
         if self.printout:
             print(self.readout)
+            
+    start = __enter__
+    stop = __exit__
 
 
 def datacls_flatten(datacls):
