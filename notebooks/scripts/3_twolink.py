@@ -30,8 +30,8 @@ import optax
 import seaborn as sns
 from tqdm import tqdm
 
-from feedbax.mechanics.arm import nlink_angular_to_cartesian
-from feedbax.plot import plot_2D_joint_positions, plot_states_forces_2d
+from feedbax.mechanics.arm import TwoLink
+from feedbax.plot import plot_2D_joint_positions, plot_pos_vel_force_2D
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
 

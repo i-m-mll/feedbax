@@ -30,7 +30,7 @@
 #     - i.i.d. start and end (variable magnitude)
 
 # %%
-NB_PREFIX = "nb8"
+NB_PREFIX = "nb14"
 N_DIM = 2  # TODO: not here
 
 # %%
@@ -156,7 +156,7 @@ print(f"\n The timed iterations took {timer.time:.2f} s, "
 plot_loss(losses, losses_terms)
 
 # %% [markdown]
-# Time multiple runs to get some statistics
+# Time multiple intervals and multiple runs to get some statistics
 
 # %%
 n_runs = 3

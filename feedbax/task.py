@@ -100,6 +100,7 @@ class AbstractTask(eqx.Module):
         
         return self.eval_trials(model, self.trials_validation[0], key)
     
+    @eqx.filter_jit
     def eval_train_batch(
         self, 
         model: eqx.Module, 
@@ -109,11 +110,34 @@ class AbstractTask(eqx.Module):
                AbstractTaskTrialSpec, 
                PyTree]:
         """Evaluate a model on a single batch of training trials."""
-        
         keys = jr.split(key, batch_size)
         trials, aux = jax.vmap(self.get_train_trial)(keys)
         
         return self.eval_trials(model, trials, key), trials, aux
+    
+    @eqx.filter_jit
+    def eval_ensemble_train_batch(
+        self,
+        models,
+        n_replicates,  # TODO: infer from `models`
+        batch_size,
+        key,
+    ):
+        """Evaluate an ensemble of models on training batches.
+        
+        TODO: 
+        - Allow user to control whether they are evaluated on the same batch,
+          or different ones (as is currently the case).
+        - Similar functions for evaluating arbitrary trials, and validation set
+        """
+        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        def evaluate_single(model_arrays, model_other, batch_size, key):
+            model = eqx.combine(model_arrays, model_other)
+            return self.eval_train_batch(model, batch_size, key)  
+        keys_eval = jr.split(key, n_replicates)
+        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
+            models_arrays, models_other, batch_size, keys_eval
+        )
 
     @eqx.filter_jit
     @jax.named_scope("fbx.AbstractTask.eval_trials")
@@ -157,6 +181,7 @@ class RandomReaches(AbstractTask):
     
     N_DIM = 2
     
+    @eqx.filter_jit
     @jax.named_scope("fbx.RandomReaches.get_train_trial")
     def get_train_trial(
         self, 
@@ -247,6 +272,7 @@ class RandomReachesDelayed(AbstractTask):
     hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
     key_eval: jax.Array = field(default_factory=lambda: jr.PRNGKey(0))
 
+    @eqx.filter_jit
     @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
     def get_train_trial(
         self, 

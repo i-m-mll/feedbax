@@ -97,14 +97,16 @@ def point_mass_RNN(
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
     # automatically determine network input size
-    n_input = SimpleFeedback.get_nn_input_size(
+    input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics
     )
     
     # the cell determines what kind of RNN layer to use
     cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
-    net = RNN(
-        cell, 
+    net = RNNCellWithReadout(
+        input_size,
+        hidden_size,
+        out_size,
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
         persistence=False,

@@ -30,7 +30,7 @@
 #     - i.i.d. start and end (variable magnitude)
 
 # %%
-NB_PREFIX = "nb8"
+NB_PREFIX = "nb15"
 N_DIM = 2  # TODO: not here
 
 # %%
@@ -85,6 +85,29 @@ trainer = TaskTrainer(
     checkpointing=True,
 )
 
+get_task = lambda n_steps: RandomReaches(
+    loss_func=simple_reach_loss(n_steps),
+    workspace=workspace, 
+    n_steps=n_steps,
+    eval_grid_n=2,
+    eval_n_directions=8,
+    eval_reach_length=0.5,
+)
+
+get_models = lambda task, n_steps, n_replicates, key: get_model_ensemble(
+    partial(
+        point_mass_RNN,
+        task,
+        dt=dt,
+        mass=mass,
+        n_hidden=n_hidden,
+        n_steps=n_steps,
+        feedback_delay=feedback_delay_steps,
+    ),
+    n_replicates,
+    key=key, 
+)
+
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
@@ -92,11 +115,13 @@ trainable_leaves_func = lambda model: (
 )
 
 # %% [markdown]
-# We'll use batch callbacks to time three runs for each of several values of `n_replicates`, to see how training rate depends on it.
+# We'll use batch callbacks to time three training runs for each of several values of `n_replicates`, to see how training rate depends on it.
 
 # %%
+n_steps_timer = 100
+
 batch_callbacks = lambda timer: {
-    n_batches - 101: (lambda: timer.start(),),
+    n_batches - n_steps_timer - 1: (lambda: timer.start(),),
     n_batches - 1: (lambda: timer.stop(),),
 }
 
@@ -118,32 +143,12 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
         
         timer = Timer()
         
-        task = RandomReaches(
-            loss_func=simple_reach_loss(s),
-            workspace=workspace, 
-            n_steps=s,
-            eval_grid_n=2,
-            eval_n_directions=8,
-            eval_reach_length=0.5,
-        )
+        task = get_task(s)
         
         # get `n` models with `s` steps each
-        models = get_model_ensemble(
-            partial(
-                point_mass_RNN,
-                task,
-                dt=dt,
-                mass=mass,
-                n_hidden=n_hidden,
-                n_steps=s,
-                feedback_delay=feedback_delay_steps,
-            ),
-            n,
-            key=key, 
-        )
+        models = get_models(task, s, n, key)
         
         for i in range(n_runs):
-            models = models
             trainer.train_ensemble(
                 task=task, 
                 models=models,
@@ -157,10 +162,8 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
                 disable_tqdm=True,
             )
         
-        times_means[idx0, idx1] = np.mean(timer.times)
-        times_stds[idx0, idx1] = np.std(timer.times)
-    
-
+        times_means[idx0, idx1] = np.mean(timer.times) / n_steps_timer 
+        times_stds[idx0, idx1] = np.std(timer.times) / n_steps_timer
 
 # %% [markdown]
 # Save the results
@@ -176,7 +179,7 @@ np.save(f"./data/{NB_PREFIX}_times_stds.npy", times_stds)
 # %%
 fig, ax = plt.subplots()
 
-means = np.array(times_means) / 100
+means = np.array(times_means) 
 
 cmap_func = plt.get_cmap('viridis')
 colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
@@ -193,8 +196,10 @@ ax.set_xscale("log")
 ax.set_yscale("log")
 ax.set_xlabel('Number of replicates')
 ax.set_ylabel('Training rate (it/s)')
-ax.set_xticks([1, 8, 16, 32, 64], [1, 8, 16, 32, 64])
-ax.set_yticks([1, 10, 30], [1, 10, 30])
+ax.set_xticks([1, 8, 16, 32, 64], 
+              [1, 8, 16, 32, 64])
+ax.set_yticks([1, 10, 30], 
+              [1, 10, 30])
 
 plt.legend(n_steps, title="Time steps")
 
@@ -202,10 +207,12 @@ plt.legend(n_steps, title="Time steps")
 # Plot the time taken for a 10,000 iteration training run
 
 # %%
+n_batches_example = 10_000
+
 fig, ax = plt.subplots()
 
-means = 10_000 * (np.array(times_means) / 100) / 60
-stds = np.array(times_stds) / 100
+means = n_batches_example * np.array(times_means) / 60  # minutes
+stds = np.array(times_stds) 
 
 cmap_func = plt.get_cmap('viridis')
 colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
@@ -221,8 +228,171 @@ ax.set_xscale("log")
 ax.set_yscale("log")
 ax.set_xlabel('Number of replicates')
 ax.set_ylabel('Training time (min)')
-ax.set_xticks([1, 8, 16, 32, 64], [1, 8, 16, 32, 64])
-ax.set_yticks([5, 10, 100], [5, 10, 100])
+ax.set_xticks([1, 8, 16, 32, 64], 
+              [1, 8, 16, 32, 64])
+ax.set_yticks([5, 10, 100], 
+              [5, 10, 100])
 # ax.tick_params(axis='y', which='minor', left=False)
 
 plt.legend(n_steps, title="Time steps")
+
+# %% [markdown]
+# ### Evaluation rate
+
+# %% [markdown]
+# Let's do the same thing, but for model evaluation. 
+#
+# First, let's evaluate on untrained models.
+
+# %%
+n_eval = 50
+n_steps = [10, 25, 50, 75, 100]
+n_replicates = [1, 2, 4, 8, 16, 32, 64]
+
+times_means = np.zeros((len(n_steps), len(n_replicates)))
+times_stds = np.zeros((len(n_steps), len(n_replicates)))
+
+key = jr.PRNGKey(seed)
+
+for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
+    s = n_steps[idx0]
+    
+    for idx1 in tqdm(range(len(n_replicates)), desc="n_replicates"):
+        n = n_replicates[idx1]
+        
+        timer = Timer()
+        
+        task = get_task(s)
+        
+        # get `n` models with `s` steps each
+        # don't need a new key since the splits are changing
+        models = get_models(task, s, n, key)
+        
+        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        
+        def evaluate_single(model_arrays, model_other, batch_size, key):
+            model = eqx.combine(model_arrays, model_other)
+            return task.eval_train_batch(model, batch_size, key)         
+        
+        @eqx.filter_jit
+        def evaluate(keys_eval):
+            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
+                models_arrays, models_other, batch_size, keys_eval
+            )
+        
+        keys_eval = jr.split(key, n)
+        
+        # make sure the model is compiled
+        evaluate(keys_eval)
+        
+        # same eval keys but different models
+        for _ in range(n_eval):    
+            with timer:            
+                evaluate(keys_eval)
+        
+        times_means[idx0, idx1] = np.mean(timer.times) 
+        times_stds[idx0, idx1] = np.std(timer.times)
+        
+
+# %%
+n_eval = 50
+n_steps = [10, 25, 50, 75, 100][::-1]
+n_replicates = [1, 2, 4, 8, 16, 32, 64]
+n_warmup = 0
+
+times_means = np.zeros((len(n_steps), len(n_replicates)))
+times_stds = np.zeros((len(n_steps), len(n_replicates)))
+
+key = jr.PRNGKey(seed)
+
+for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
+    s = n_steps[idx0]
+    
+    for idx1 in tqdm(range(len(n_replicates)), desc="n_replicates"):
+        n = n_replicates[idx1]
+        
+        timer = Timer()
+                
+        task = get_task(s)
+        
+        # get `n` models with `s` steps each
+        # don't need a new key since the splits are changing
+        models = get_models(task, s, n, key)
+        
+        # make sure the model is compiled
+        task.eval_ensemble_train_batch(models, n, batch_size, key)
+        
+        # warmup before first run
+        if s == n_steps[0] and n == n_replicates[0]:
+            for _ in range(n_warmup):
+                task.eval_ensemble_train_batch(models, n, batch_size, key)
+        
+        # same eval keys but different models
+        for _ in range(n_eval):    
+            key, _ = jr.split(key)
+            with timer:            
+                task.eval_ensemble_train_batch(models, n, batch_size, key)
+        
+        times_means[idx0, idx1] = np.mean(timer.times) 
+        times_stds[idx0, idx1] = np.std(timer.times)
+        
+
+# %%
+fig, ax = plt.subplots()
+
+means = np.array(times_means[::-1]) 
+
+cmap_func = plt.get_cmap('viridis')
+colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
+
+rate = 1 / means 
+
+for i in range(len(n_steps)):
+    ax.plot(n_replicates, rate[i], c=colors[i], lw=1.5)
+
+ax.set_xscale("log", base=2)
+ax.set_yscale("log")
+ax.set_xlabel('Number of replicates')
+ax.set_ylabel('Evaluation rate ($s^{-1}$)')
+ax.set_xticks([1, 2, 4, 8, 16, 32, 64], 
+              [1, 2, 4, 8, 16, 32, 64])
+# ax.set_yticks([1, 10, 30], 
+#               [1, 10, 30])
+# ax.set_ylim(1, 1500)
+
+plt.legend(n_steps[::-1], title="Time steps")
+
+# %% [markdown]
+# Time taken for 10,000 evaluations of 500 trials
+
+# %%
+n_batches_example = 10_000
+
+fig, ax = plt.subplots()
+
+means = n_batches_example * np.array(times_means[::-1]) / 60  # minutes
+stds = np.array(times_stds) 
+
+cmap_func = plt.get_cmap('viridis')
+colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
+
+for i in range(len(n_steps)):
+    ax.plot(n_replicates, means[i], c=colors[i], lw=1.5)
+
+# # harcoded estimate I made earlier for a single 1,000-step model
+# ax.plot(1, 95, 'w*', ms=7)
+
+ax.plot()    
+ax.set_xscale("log")
+ax.set_yscale("log")
+ax.set_xlabel('Number of replicates')
+ax.set_ylabel('Evaluation time (min)')
+ax.set_xticks([1, 8, 16, 32, 64], 
+              [1, 8, 16, 32, 64])
+ax.set_yticks([1, 10, 100], 
+              [1, 10, 100])
+# ax.tick_params(axis='y', which='minor', left=False)
+
+plt.legend(n_steps[::-1], title="Time steps")
+
+# %%
