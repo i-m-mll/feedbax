@@ -62,7 +62,7 @@ from feedbax.mechanics.muscle import (
 ) 
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
 from feedbax.networks import RNN
-from feedbax.recursion import Recursion
+from feedbax.iterate import Iterator
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 
@@ -145,7 +145,7 @@ def get_model(
         feedback_leaves_func=feedback_leaves_func,
     )
 
-    return Recursion(body, n_steps)
+    return Iterator(body, n_steps)
 
 
 # %% [markdown]
@@ -154,9 +154,9 @@ def get_model(
 # %%
 seed = 5567
 
-n_replicates = 1
+n_replicates = 64
 
-n_steps = 50
+n_steps = 100
 dt = 0.05 
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 

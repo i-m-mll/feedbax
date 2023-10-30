@@ -52,7 +52,7 @@ import numpy as np
 import optax 
 
 from feedbax.xabdeef.losses import simple_reach_loss
-from feedbax.xabdeef import point_mass_RNN
+from feedbax.xabdeef.models import point_mass_RNN
 
 from feedbax.plot import plot_loss, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
@@ -66,7 +66,7 @@ plt.style.use('dark_background')
 seed = 5566
 
 mass = 1.0
-n_steps = 100
+n_steps = 1000
 dt = 0.1
 feedback_delay_steps = 5
 workspace = ((-1., 1.),
@@ -160,13 +160,13 @@ plot_loss(losses, losses_terms)
 
 # %%
 n_runs = 3
-n_batches = 610
+n_batches = 510
 
 batch_callbacks = lambda timer: {
-    300: (lambda: timer.start(),),
+    200: (lambda: timer.start(),),
+    300: (lambda: timer.stop(), lambda: timer.start()),
     400: (lambda: timer.stop(), lambda: timer.start()),
-    500: (lambda: timer.stop(), lambda: timer.start()),
-    600: (lambda: timer.stop(),),
+    500: (lambda: timer.stop(),),
 }
 
 timers = [Timer() for _ in range(n_runs)]

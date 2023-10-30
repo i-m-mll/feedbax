@@ -51,11 +51,11 @@ import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
+from tqdm.auto import tqdm
 
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_RNN
 
-from feedbax.plot import plot_loss
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer
 from feedbax.utils import Timer, get_model_ensemble
@@ -75,17 +75,8 @@ workspace = ((-1., 1.),
 n_hidden  = 50
 learning_rate = 0.01
 
-n_batches = 410
+n_batches = 201
 batch_size = 500
-
-task = RandomReaches(
-    loss_func=simple_reach_loss(n_steps),
-    workspace=workspace, 
-    n_steps=n_steps,
-    eval_grid_n=2,
-    eval_n_directions=8,
-    eval_reach_length=0.5,
-)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
@@ -100,126 +91,138 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-
-# %%
-def get_models(n_replicates, key):
-    return get_model_ensemble(
-        partial(
-            point_mass_RNN,
-            task,
-            dt=dt,
-            mass=mass,
-            n_hidden=n_hidden,
-            n_steps=n_steps,
-            feedback_delay=feedback_delay_steps,
-        ),
-        n_replicates,
-        key=key, 
-    )
-
-
 # %% [markdown]
 # We'll use batch callbacks to time three runs for each of several values of `n_replicates`, to see how training rate depends on it.
 
 # %%
 batch_callbacks = lambda timer: {
-    n_batches - 110: (lambda: timer.start(),),
-    n_batches - 10: (lambda: timer.stop(),),
+    n_batches - 101: (lambda: timer.start(),),
+    n_batches - 1: (lambda: timer.stop(),),
 }
 
 # %%
-from typing import List, Tuple
+n_runs = 1
+n_steps = [10, 25, 50, 75, 100]
+n_replicates = [1, 2, 4, 8, 16, 32, 64]
 
-n_runs = 3
-n_replicates = [1, 2, 4, 8, 16, 32, 64, 128]
-times_mean_std: List[Tuple[float, float]] = []
+times_means = np.zeros((len(n_steps), len(n_replicates)))
+times_stds = np.zeros((len(n_steps), len(n_replicates)))
 
 key = jr.PRNGKey(seed)
 
-for n in n_replicates:
-    timer = Timer()
-    for i in range(n_runs):
-        models = get_models(n, key)
-        trainer.train_ensemble(
-            task=task, 
-            models=models,
-            n_replicates=n,
-            n_batches=n_batches, 
-            batch_size=batch_size, 
-            key=jr.PRNGKey(seed + i),
-            log_step=200,
-            trainable_leaves_func=trainable_leaves_func,
-            batch_callbacks=batch_callbacks(timer),
+for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
+    s = n_steps[idx0]
+    
+    for idx1 in tqdm(range(len(n_replicates)), desc="n_replicates"):
+        n = n_replicates[idx1]
+        
+        timer = Timer()
+        
+        task = RandomReaches(
+            loss_func=simple_reach_loss(s),
+            workspace=workspace, 
+            n_steps=s,
+            eval_grid_n=2,
+            eval_n_directions=8,
+            eval_reach_length=0.5,
         )
-    times_mean_std.append((
-        np.mean(timer.times),
-        np.std(timer.times)
-    ))
+        
+        # get `n` models with `s` steps each
+        models = get_model_ensemble(
+            partial(
+                point_mass_RNN,
+                task,
+                dt=dt,
+                mass=mass,
+                n_hidden=n_hidden,
+                n_steps=s,
+                feedback_delay=feedback_delay_steps,
+            ),
+            n,
+            key=key, 
+        )
+        
+        for i in range(n_runs):
+            models = models
+            trainer.train_ensemble(
+                task=task, 
+                models=models,
+                n_replicates=n,
+                n_batches=n_batches, 
+                batch_size=batch_size, 
+                key=jr.PRNGKey(seed + i),
+                log_step=200,
+                trainable_leaves_func=trainable_leaves_func,
+                batch_callbacks=batch_callbacks(timer),
+                disable_tqdm=True,
+            )
+        
+        times_means[idx0, idx1] = np.mean(timer.times)
+        times_stds[idx0, idx1] = np.std(timer.times)
     
 
-# avg_rate = (batch_timer_stop - batch_timer_start) / timer.time
-# print(f"\n The timed iterations took {timer.time:.2f} s, "
-#       + f"at an average rate of {avg_rate:.2f} it/s.")
+
+# %% [markdown]
+# Save the results
 
 # %%
-means, stds = list(zip(*times_mean_std))
+os.makedirs("./data", exist_ok=True)
+np.save(f"./data/{NB_PREFIX}_times_means.npy", times_means)
+np.save(f"./data/{NB_PREFIX}_times_stds.npy", times_stds)
 
-means = np.array(means) * 1000 / 100
-stds = np.array(stds) * 1000 / 100
+# %% [markdown]
+# Plot the training rate in iterations/second
 
+# %%
 fig, ax = plt.subplots()
-ax.errorbar(n_replicates, means, stds, fmt='.', capsize=3)
-ax.set_xscale('log')
+
+means = np.array(times_means) / 100
+
+cmap_func = plt.get_cmap('viridis')
+colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
+
+rate = 1 / means 
+
+for i in range(len(n_steps)):
+    ax.plot(n_replicates, rate[i], c=colors[i], lw=1.5)
+
+# harcoded estimate I made earlier for a single 1,000-step model
+ax.plot(1, 1.75, 'w*', ms=7)
+
+ax.set_xscale("log")
+ax.set_yscale("log")
 ax.set_xlabel('Number of replicates')
-ax.set_ylabel('Time per iteration (ms)')
+ax.set_ylabel('Training rate (it/s)')
+ax.set_xticks([1, 8, 16, 32, 64], [1, 8, 16, 32, 64])
+ax.set_yticks([1, 10, 30], [1, 10, 30])
+
+plt.legend(n_steps, title="Time steps")
 
 # %% [markdown]
-# Time multiple runs to get some statistics
+# Plot the time taken for a 10,000 iteration training run
 
 # %%
-n_runs = 3
-n_batches = 610
+fig, ax = plt.subplots()
 
-batch_callbacks = lambda timer: {
-    300: (lambda: timer.start(),),
-    400: (lambda: timer.stop(), lambda: timer.start()),
-    500: (lambda: timer.stop(), lambda: timer.start()),
-    600: (lambda: timer.stop(),),
-}
+means = 10_000 * (np.array(times_means) / 100) / 60
+stds = np.array(times_stds) / 100
 
-timers = [Timer() for _ in range(n_runs)]
+cmap_func = plt.get_cmap('viridis')
+colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
 
-for i in range(n_runs):
-    model, losses, losses_terms, learning_rates = trainer(
-        task=task, 
-        model=model,
-        n_batches=n_batches, 
-        batch_size=batch_size, 
-        key=key_train,
-        log_step=200,
-        trainable_leaves_func=trainable_leaves_func,
-        batch_callbacks=batch_callbacks(timers[i]),
-    )
+for i in range(len(n_steps)):
+    ax.plot(n_replicates, means[i], c=colors[i], lw=1.5)
 
-# %% [markdown]
-# Calculate two timing statistics:
-#
-# 1) Within-run mean and std
-# 2) Between-run mean and std
-#
-# TODO: Not sure if there is another way to do the between-run mean and std. Here I do a mean-of-means.
+# harcoded estimate I made earlier for a single 1,000-step model
+ax.plot(1, 95, 'w*', ms=7)
 
-# %%
-within = [dict(mean=np.mean(timer.times),
-               std=np.std(timer.times)) 
-          for timer in timers]
-within_means = np.array([d["mean"] for d in within])
-between = dict(mean=np.mean(within_means),
-               std=np.std(within_means))
-    
-eqx.tree_pprint(within)
-print(between)
+ax.plot()    
+ax.set_xscale("log")
+ax.set_yscale("log")
+ax.set_xlabel('Number of replicates')
+ax.set_ylabel('Training time (min)')
+ax.set_xticks([1, 8, 16, 32, 64], [1, 8, 16, 32, 64])
+ax.set_yticks([5, 10, 100], [5, 10, 100])
+# ax.tick_params(axis='y', which='minor', left=False)
 
-# %%
-# average rate, given we're timing intervals of 100 iterations
-100 / between['mean']
+plt.legend(n_steps, title="Time steps")

@@ -159,7 +159,7 @@ class TaskTrainer(eqx.Module):
         models_arrays, models_other = eqx.partition(models, eqx.is_array)
         
         # only map over model arrays and training keys
-        in_axes = (None, 0, None, None, None, None, None, None, None, 0, None)
+        in_axes = (None, 0, None, None, None, None, None, None, None, 0, None, None)
         
         return eqx.filter_vmap(self._train, in_axes=in_axes)(
             task, 
@@ -262,9 +262,11 @@ class TaskTrainer(eqx.Module):
                 loss_func_wrapped,
                 keys, 
             )  
-            tqdm.write(f"Training step compiled.", file=sys.stdout)
+            if not disable_tqdm:
+                tqdm.write(f"Training step compiled.", file=sys.stdout)
             task.eval(model, key)
-            tqdm.write(f"Validation step compiled.", file=sys.stdout)
+            if not disable_tqdm:
+                tqdm.write(f"Validation step compiled.", file=sys.stdout)
 
         keys = jr.split(key, n_batches)
         
@@ -359,11 +361,12 @@ class TaskTrainer(eqx.Module):
                         self.writer.add_scalar(f'Loss/validation/{term}', loss_term.item(), batch)
                     
                 # TODO: https://stackoverflow.com/a/69145493
-                tqdm.write(f"step: {batch}", file=sys.stdout)
-                tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
-                tqdm.write(f"\tvalidation loss: {loss_val:.4f}", file=sys.stdout)
-                if learning_rate is not None:                    
-                    tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
+                if not disable_tqdm:
+                    tqdm.write(f"step: {batch}", file=sys.stdout)
+                    tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
+                    tqdm.write(f"\tvalidation loss: {loss_val:.4f}", file=sys.stdout)
+                    if learning_rate is not None:                    
+                        tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
          
         model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
          
