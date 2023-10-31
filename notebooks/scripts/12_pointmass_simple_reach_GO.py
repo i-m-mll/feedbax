@@ -54,13 +54,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.channel import ChannelState
-from feedbax.context import SimpleFeedback, SimpleFeedbackState
+from feedbax.context import SimpleFeedback
+from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNN
-from feedbax.recursion import Recursion
+from feedbax.networks import RNNCellWithReadout
 from feedbax.task import RandomReachesDelayed
 from feedbax.trainer import TaskTrainer, save, load
 
@@ -70,7 +69,7 @@ from feedbax.plot import (
     plot_3D_paths,
     plot_activity_heatmap,
     plot_activity_sample_units,
-    plot_loglog_losses, 
+    plot_loss, 
     plot_pos_vel_force_2D,
     plot_task_and_speed_profiles,
 )
@@ -96,7 +95,7 @@ def get_model(
     task,
     dt: float = 0.1, 
     mass: float = 1., 
-    n_hidden: int = 50,  
+    hidden_size: int = 50,  
     n_steps: int = 100, 
     feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
@@ -105,27 +104,26 @@ def get_model(
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)  
-        
-    key1, key2 = jr.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt)
     
     # automatically determine network input size
-    n_input = SimpleFeedback.get_nn_input_size(
+    input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics
     )
     
-    net = RNN(
-        eqx.nn.GRUCell(n_input, n_hidden, key=key1), 
+    net = RNNCellWithReadout(
+        input_size,
+        hidden_size, 
         system.control_size, 
         out_nonlinearity=out_nonlinearity,
         persistence=True, 
-        key=key2
+        key=key
     )
     body = SimpleFeedback(net, mechanics, feedback_delay)
 
-    return Recursion(body, n_steps)
+    return Iterator(body, n_steps)
 
 
 # %%
@@ -141,7 +139,7 @@ workspace = ((-1., 1.),
 task_epoch_len_ranges = ((5, 15),   # start
                          (10, 20),  # stim
                          (10, 25))  # hold
-n_hidden = 50
+hidden_size = 50
 
 n_batches = 10_000
 batch_size = 500
@@ -187,7 +185,7 @@ hyperparams = dict(
     workspace=workspace, 
     task_epoch_len_ranges=task_epoch_len_ranges,
     dt=dt, 
-    n_hidden=n_hidden, 
+    hidden_size=hidden_size, 
 )
 
 def setup(
@@ -198,7 +196,7 @@ def setup(
     workspace, 
     task_epoch_len_ranges,
     dt, 
-    n_hidden, 
+    hidden_size, 
     **kwargs,
 ):
     key = jr.PRNGKey(seed)
@@ -236,7 +234,7 @@ def setup(
     model = get_model(
         task,
         dt=dt,
-        n_hidden=n_hidden,
+        hidden_size=hidden_size,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
         key=key,
@@ -274,11 +272,11 @@ model, losses, losses_terms, learning_rates = trainer(
     key=key,
 )
 
-plot_loglog_losses(losses, losses_terms);
+plot_loss(losses, losses_terms);
 
 # %%
 plt.style.use('dark_background')
-plot_loglog_losses(losses, losses_terms);
+plot_loss(losses, losses_terms);
 
 # %%
 model_path = save(

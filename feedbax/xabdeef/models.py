@@ -20,7 +20,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled
-from feedbax.networks import RNN
+from feedbax.networks import RNNCellWithReadout
 from feedbax.task import AbstractTask
 from feedbax.trainer import TaskTrainer
 
@@ -81,7 +81,7 @@ def point_mass_RNN(
     key: Optional[jax.Array],
     dt: float = 0.05, 
     mass: float = 1., 
-    n_hidden: int = 50, 
+    hidden_size: int = 50, 
     n_steps: int = 100, 
     feedback_delay: int = 0,
     out_nonlinearity: Callable = lambda x: x,
@@ -91,8 +91,6 @@ def point_mass_RNN(
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
     
-    key1, key2 = jr.split(key)
-    
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
@@ -101,16 +99,13 @@ def point_mass_RNN(
         task, mechanics
     )
     
-    # the cell determines what kind of RNN layer to use
-    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
     net = RNNCellWithReadout(
         input_size,
         hidden_size,
-        out_size,
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
         persistence=False,
-        key=key2,
+        key=key,
     )
     body = SimpleFeedback(net, mechanics, feedback_delay)
     

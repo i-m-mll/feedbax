@@ -72,7 +72,7 @@ dt = 0.1
 feedback_delay_steps = 5
 workspace = ((-1., 1.),
              (-1., 1.))
-n_hidden  = 50
+hidden_size  = 50
 learning_rate = 0.01
 
 n_batches = 201
@@ -134,7 +134,7 @@ times_means = np.zeros((len(n_steps), len(n_replicates)))
 times_stds = np.zeros((len(n_steps), len(n_replicates)))
 
 key = jr.PRNGKey(seed)
-
+hidden_sizehidden_size
 for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
     s = n_steps[idx0]
     
@@ -169,9 +169,9 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
 # Save the results
 
 # %%
-os.makedirs("./data", exist_ok=True)
-np.save(f"./data/{NB_PREFIX}_times_means.npy", times_means)
-np.save(f"./data/{NB_PREFIX}_times_stds.npy", times_stds)
+os.makedirs("../data", exist_ok=True)
+np.save(f"../data/{NB_PREFIX}_times_means.npy", times_means)
+np.save(f"../data/{NB_PREFIX}_times_stds.npy", times_stds)
 
 # %% [markdown]
 # Plot the training rate in iterations/second
@@ -292,7 +292,7 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
         
         times_means[idx0, idx1] = np.mean(timer.times) 
         times_stds[idx0, idx1] = np.std(timer.times)
-        
+
 
 # %%
 n_eval = 50
@@ -335,7 +335,7 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
         
         times_means[idx0, idx1] = np.mean(timer.times) 
         times_stds[idx0, idx1] = np.std(timer.times)
-        
+
 
 # %%
 fig, ax = plt.subplots()

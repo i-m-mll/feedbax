@@ -5,10 +5,9 @@
 """
 
 from functools import cached_property
-from itertools import zip_longest
 import logging
 import math
-from typing import Callable, Optional, Tuple, Type
+from typing import Callable, Optional, Protocol, Tuple, Type, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -28,12 +27,52 @@ class NetworkState(eqx.Module):
     output: PyTree
     
 
+@runtime_checkable
+class RNNCell(Protocol):
+    """Specifies the interface expected from RNN cell instances.
+    
+    Based on `eqx.nn.GRUCell` and `eqx.nn.LSTMCell`.
+    
+    Neither mypy nor typeguard currently complain if the `Type[RNNCell]` 
+    argument to `RNNCellWithReadout` doesn't satisfy this protocol. I'm 
+    not sure if this is because protocols aren't compatible with `Type`, 
+    though no errors are raised to suggest that is so.
+    
+    I'm leaving this in here because it is currently harmless, and it at 
+    least functions as documentation for the interface expected from an
+    RNN cell. 
+    
+    Alternatively, we could maybe use a protocol `RNNCellType` that 
+    defines `__call__` for `__init__`, whose return satisfies another protocol 
+    `RNNCell` that specifies the fields expected in the returned class.
+    """
+    hidden_size: int
+    
+    def __init__(
+        self, 
+        input_size: int, 
+        hidden_size: int, 
+        use_bias: bool, 
+        *, 
+        key: jax.Array,
+        **kwargs, 
+    ):
+        ...
+    
+    def __call__(
+        self, 
+        input: jax.Array, 
+        state: jax.Array, 
+    ) -> jax.Array:
+        ...
+        
+
 class RNNCellWithReadout(eqx.Module):
     """A single step of an RNN with a linear readout layer and noise.
     
     Derived from https://docs.kidger.site/equinox/examples/train_rnn/"""
     out_size: int 
-    layer: eqx.Module
+    linear: eqx.Module
     cell: eqx.Module
     bias: jax.Array
     out_nonlinearity: Callable[[Float], Float]
@@ -45,7 +84,7 @@ class RNNCellWithReadout(eqx.Module):
         input_size: int, 
         hidden_size: int,
         out_size: int, 
-        cell: Type[eqx.Module] = eqx.nn.GRUCell,
+        cell: Type[RNNCell] = eqx.nn.GRUCell,
         use_bias: bool = True,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
@@ -98,7 +137,7 @@ class RNNCellWithReadout(eqx.Module):
         return NetworkState(activity, output)
 
 
-class RNNCell(eqx.Module):
+class LeakyRNNCell(eqx.Module):
     """Custom `RNNCell` with persistent, leaky state.
     
     Based on `eqx.nn.GRUCell` and the leaky RNN from
@@ -130,8 +169,8 @@ class RNNCell(eqx.Module):
         use_bias: bool = True,
         use_noise: bool = False,
         noise_strength: float = 0.01,
-        dt: float = 1,
-        tau: float = 1,
+        dt: float = 1.,
+        tau: float = 1.,
         *,  # this forces the user to pass the following as keyword arguments
         key: jax.Array,
         **kwargs

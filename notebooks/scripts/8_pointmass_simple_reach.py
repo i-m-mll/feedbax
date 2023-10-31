@@ -68,12 +68,12 @@ import numpy as np
 import optax 
 
 from feedbax.context import SimpleFeedback
+from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNN
+from feedbax.networks import RNNCellWithReadout
 from feedbax.plot import plot_loss, plot_pos_vel_force_2D
-from feedbax.recursion import Recursion
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 
@@ -99,10 +99,9 @@ from feedbax.utils import tree_sum_n_features
 
 def get_model(
     task,
-    
     dt: float = 0.05, 
     mass: float = 1., 
-    n_hidden: int = 50, 
+    hidden_size: int = 50, 
     n_steps: int = 100, 
     feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
@@ -112,30 +111,25 @@ def get_model(
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
     
-    key1, key2 = jr.split(key)
-    
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
     # automatically determine network input size
-    n_input = SimpleFeedback.get_nn_input_size(
+    input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics
     )
     
-    # the cell determines what kind of RNN layer to use
-    cell = eqx.nn.GRUCell(n_input, n_hidden, key=key1)
-    net = RNN(
-        cell, 
+    net = RNNCellWithReadout(
+        input_size,
+        hidden_size,
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
         persistence=False,
-        key=key2
+        key=key
     )
     body = SimpleFeedback(net, mechanics, feedback_delay)
     
-    model = Recursion(body, n_steps)
-    
-    return model
+    return Iterator (body, n_steps)
 
 
 # %%
@@ -146,7 +140,7 @@ dt = 0.1
 feedback_delay_steps = 5
 workspace = ((-1., 1.),
              (-1., 1.))
-n_hidden  = 50
+hidden_size  = 50
 learning_rate = 0.01
 
 loss_term_weights = dict(
@@ -164,7 +158,7 @@ hyperparams = dict(
     loss_term_weights=loss_term_weights, 
     workspace=workspace, 
     dt=dt, 
-    n_hidden=n_hidden, 
+    hidden_size=hidden_size, 
     feedback_delay_steps=feedback_delay_steps, 
 )
 
@@ -176,7 +170,7 @@ def setup(
     loss_term_weights,
     workspace,
     dt,
-    n_hidden,
+    hidden_size,
     feedback_delay_steps,
 ):
     """Set up the model and the task."""
@@ -209,7 +203,7 @@ def setup(
     model = get_model(
         task,
         dt=dt,
-        n_hidden=n_hidden,
+        hidden_size=hidden_size,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
         key=key, 
@@ -281,11 +275,11 @@ except NameError:
 loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
-init_states, target_states, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
+trial_specs, _ = task.trials_validation
+goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,
-    endpoints=(init_states.pos, goal_states.pos),
+    endpoints=(trial_specs.init.pos, goal_states.pos),
 )
 plt.show()
 

@@ -53,8 +53,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.channel import ChannelState
-from feedbax.context import SimpleFeedback, SimpleFeedbackState
+from feedbax.context import SimpleFeedback
+from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.muscle import (
@@ -62,14 +62,13 @@ from feedbax.mechanics.muscle import (
     TodorovLiVirtualMuscle, 
 ) 
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.networks import RNN
-from feedbax.recursion import Recursion
+from feedbax.networks import RNNCellWithReadout
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 
 
 from feedbax.plot import (
-    plot_loglog_losses, 
+    plot_loss, 
     plot_2D_joint_positions,
     plot_pos_vel_force_2D,
     plot_activity_heatmap,
@@ -98,7 +97,7 @@ model_dir = Path("../models/")
 def get_model(
     task,
     dt: float = 0.05, 
-    n_hidden: int = 50, 
+    hidden_size: int = 50, 
     n_steps: int = 50, 
     feedback_delay: int = 0, 
     tau: float = 0.01, 
@@ -108,7 +107,6 @@ def get_model(
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
-    key1, key2 = jr.split(key)
     
     system = TwoLinkMuscled(
         muscle_model=TodorovLiVirtualMuscle(), 
@@ -128,16 +126,17 @@ def get_model(
     )
     
     # automatically determine network input size
-    n_input = SimpleFeedback.get_nn_input_size(
+    input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics, feedback_leaves_func
     )
     
-    net = RNN(
-        eqx.nn.GRUCell(n_input, n_hidden, key=key1), 
+    net = RNNCellWithReadout(
+        input_size, 
+        hidden_size, 
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
         persistence=False,
-        key=key2
+        key=key,
     )
     body = SimpleFeedback(
         net, 
@@ -146,7 +145,7 @@ def get_model(
         feedback_leaves_func=feedback_leaves_func, 
     )
 
-    return Recursion(body, n_steps)
+    return Iterator(body, n_steps)
 
 
 # %%
@@ -157,7 +156,7 @@ dt = 0.05
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
              (0.20, 0.50))
-n_hidden  = 50
+hidden_size  = 50
 learning_rate = 0.05
 
 loss_term_weights = dict(
@@ -173,7 +172,7 @@ hyperparams = dict(
     workspace=workspace,
     loss_term_weights=loss_term_weights,
     dt=dt,
-    n_hidden=n_hidden,
+    hidden_size=hidden_size,
     feedback_delay_steps=feedback_delay_steps,
 )
 
@@ -185,7 +184,7 @@ def setup(
     workspace,
     loss_term_weights,
     dt, 
-    n_hidden,
+    hidden_size,
     feedback_delay_steps,    
 ):
 
@@ -208,7 +207,7 @@ def setup(
     model = get_model(
         task,
         dt=dt,
-        n_hidden=n_hidden,
+        hidden_size=hidden_size,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
         tau=0.01,
@@ -246,7 +245,7 @@ model, losses, loss_terms, learning_rates = trainer(
     key=jr.PRNGKey(seed + 1),
 )
 
-plot_loglog_losses(losses, loss_terms)
+plot_loss(losses, loss_terms)
 plt.show()
 
 # %% [markdown]

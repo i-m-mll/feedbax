@@ -71,16 +71,16 @@ plt.plot(*xs[0].T)
 
 
 # %%
-class RNN(eqx.Module):
+class RNNCellWithReadout(eqx.Module):
     hidden_size: int
     cell: eqx.Module
     linear: eqx.nn.Linear
     bias: jax.Array
     
-    def __init__(self, in_size, out_size, hidden_size, *, key):
+    def __init__(self, input_size, hidden_size, out_size, *, key):
         ckey, lkey = jrandom.split(key)
         self.hidden_size = hidden_size
-        self.cell = eqx.nn.GRUCell(in_size, hidden_size, key=ckey)
+        self.cell = eqx.nn.GRUCell(input_size, hidden_size, key=ckey)
         self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
         self.bias = jnp.zeros(out_size)
         
@@ -109,7 +109,7 @@ def main(
     xs, ys = get_data(dataset_size, key=data_key)
     iter_data = dataloader((xs, ys), batch_size)
     
-    model = RNN(in_size=2, out_size=1, hidden_size=hidden_size, key=model_key)
+    model = RNNCellWithReadout(input_size=2, hidden_size=hidden_size, out_size=1, key=model_key)
     
     @eqx.filter_value_and_grad
     def compute_loss(model, x, y):

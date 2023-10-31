@@ -71,7 +71,7 @@ dt = 0.1
 feedback_delay_steps = 5
 workspace = ((-1., 1.),
              (-1., 1.))
-n_hidden  = 50
+hidden_size  = 50
 learning_rate = 0.01
 
 # %%
@@ -90,7 +90,7 @@ model = point_mass_RNN(
     task,
     dt=dt,
     mass=mass,
-    n_hidden=n_hidden,
+    hidden_size=hidden_size,
     n_steps=n_steps,
     feedback_delay=feedback_delay_steps,
     key=key, 
