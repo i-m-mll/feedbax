@@ -33,6 +33,7 @@ N_DIM = 2  # TODO: not here
 import os
 import logging
 import sys
+from typing import Optional
 
 from IPython import get_ipython
 
@@ -54,7 +55,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.context import SimpleFeedback
+from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
@@ -98,8 +99,45 @@ def get_model(
     hidden_size: int = 50,  
     n_steps: int = 100, 
     feedback_delay: int = 0,
+    out_nonlinearity = lambda x: x,
+    key: Optional[jr.PRNGKey] = None, 
+):
+    if key is None:
+        # in case we just want a skeleton model, e.g. for deserializing
+        key = jr.PRNGKey(0)  
+    
+    system = point_mass(mass=mass, n_dim=N_DIM)
+    mechanics = Mechanics(system, dt)
+    
+    # automatically determine network input size
+    input_size = SimpleFeedback.get_nn_input_size(
+        task, mechanics
+    )
+    
+    net = RNNCellWithReadout(
+        input_size,
+        hidden_size, 
+        system.control_size, 
+        out_nonlinearity=out_nonlinearity,
+        persistence=True, 
+        key=key
+    )
+    body = SimpleFeedback(net, mechanics, feedback_delay)
+
+    return Iterator(body, n_steps)
+
+
+# %%
+def get_model(
+    task,
+    dt: float = 0.1, 
+    mass: float = 1., 
+    hidden_size: int = 50,  
+    n_steps: int = 100, 
+    feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
-    key: jr=None, 
+    *,
+    key, 
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing

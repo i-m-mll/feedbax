@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import Callable, Optional
+from typing import Callable, Optional, Type
 
 import diffrax
 import equinox as eqx
@@ -14,15 +14,16 @@ import jax.random as jr
 import optax
 
 from feedbax.channel import ChannelState
-from feedbax.context import AbstractModel, SimpleFeedback
+from feedbax.model import AbstractModel, SimpleFeedback
 from feedbax.iterate import Iterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import RNNCellWithReadout
-from feedbax.task import AbstractTask
+from feedbax.task import AbstractTask, RandomReaches
 from feedbax.trainer import TaskTrainer
+from feedbax.xabdeef.losses import simple_reach_loss
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ N_DIM = 2
 DEFAULT_LEARNING_RATE = 0.01
 
 
-class ModelManager(eqx.Module):
+class ContextManager(eqx.Module):
     """Simple interface to pre-built models, losses, and tasks.
     
     Not sure about naming... `Model` conflicts with references to
@@ -45,46 +46,48 @@ class ModelManager(eqx.Module):
     """
     model: AbstractModel 
     task: AbstractTask
-    optimizer: optax.GradientTransformation
+    trainable_leaves_func: Optional[Callable] = None
     
-    def __init__(
-        self,
-        task: AbstractTask,
-        context: AbstractModel,
-        optimizer: Optional[optax.GradientTransformation] = None,
-    ):
-        if optimizer is None:
-            optimizer = optax.adam(DEFAULT_LEARNING_RATE)
-        
-        self._trainer = TaskTrainer(
-            optimizer,  
-            
-        )    
-        
-        self.context = context 
-        self.task = task
     
     def train(
         self,
-        batch_size,
         n_batches,
+        batch_size,
+        *,
+        learning_rate: float = DEFAULT_LEARNING_RATE,
+        log_step=100,
+        optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
+        key
     ):
+        optimizer = optax.inject_hyperparams(optimizer_cls)(
+            learning_rate
+        )
+        
+        trainer = TaskTrainer(
+            optimizer=optimizer,
+            checkpointing=False,
+        )
+        
         """Train the model on the task."""
-        return self.trainer(
+        return trainer(
             task=self.task,
             model=self.model, 
+            n_batches=n_batches,
+            batch_size=batch_size,
+            log_step=log_step,
+            trainable_leaves_func=self.trainable_leaves_func,
+            key=key,
         )
-
 
 def point_mass_RNN(
     task,
-    key: Optional[jax.Array],
+    key: Optional[jax.Array] = None,
     dt: float = 0.05, 
     mass: float = 1., 
     hidden_size: int = 50, 
     n_steps: int = 100, 
-    feedback_delay: int = 0,
-    out_nonlinearity: Callable = lambda x: x,
+    feedback_delay_steps: int = 0,
+    # out_nonlinearity: Callable = lambda x: x,
 ):
     """From nb8"""
     if key is None:
@@ -103,12 +106,59 @@ def point_mass_RNN(
         input_size,
         hidden_size,
         system.control_size, 
-        out_nonlinearity=out_nonlinearity, 
+        # out_nonlinearity=out_nonlinearity, 
         persistence=False,
         key=key,
     )
-    body = SimpleFeedback(net, mechanics, feedback_delay)
+    body = SimpleFeedback(net, mechanics, feedback_delay_steps)
     
     model = Iterator(body, n_steps)
     
     return model
+
+
+def point_mass_RNN_simple_reaches(
+    n_steps: int = 100, 
+    dt: float = 0.05, 
+    mass: float = 1., 
+    workspace = ((-1., 1.),
+                 (-1., 1.)),
+    hidden_size: int = 50, 
+    feedback_delay_steps: int = 0,
+    *,
+    key: jax.Array,
+):
+    """"""
+    
+    task = RandomReaches(
+        loss_func=simple_reach_loss(n_steps),
+        workspace=workspace, 
+        n_steps=n_steps,
+        eval_grid_n=2,
+        eval_n_directions=8,
+        eval_reach_length=0.5,    
+    )
+    
+    model = point_mass_RNN(
+        task,
+        key=key,
+        dt=dt,
+        mass=mass,
+        hidden_size=hidden_size, 
+        n_steps=n_steps,
+        feedback_delay_steps=feedback_delay_steps,
+    )
+    
+    trainable_leaves_func = lambda model: (
+        model.step.net.cell.weight_hh, 
+        model.step.net.cell.weight_ih, 
+        model.step.net.cell.bias
+    )
+    
+    manager = ContextManager(
+        model=model,
+        task=task,
+        trainable_leaves_func=trainable_leaves_func,
+    )
+    
+    return manager

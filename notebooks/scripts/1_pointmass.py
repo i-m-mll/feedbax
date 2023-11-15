@@ -56,6 +56,10 @@ class LTISystem(eqx.Module):
     A: jnp.ndarray
     B: jnp.ndarray
     C: jnp.ndarray
+    
+    def vector_field(self, t, state, input_):
+        d_state = self.A @ state + self.B @ input_
+        return d_state
 
 def point_mass_old(mass=1):
     A = sum([jnp.diagflat(jnp.ones((ORDER - i) * N_DIM), i * N_DIM)
@@ -100,8 +104,6 @@ sol = solve(y0, t0, t1, dt0, args)
 # %timeit jax.jit(solve)(y0, 0.01, args) 
 # %timeit solve(y0, 0.001, args)  
 # %timeit jax.jit(solve)(y0, 0.001, args)  
-
-# %%
 
 # %%
 # plot the simulated position over time

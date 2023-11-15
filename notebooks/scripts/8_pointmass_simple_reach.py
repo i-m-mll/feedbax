@@ -59,7 +59,6 @@ get_ipython().log.setLevel(LOG_LEVEL)
 
 # %%
 import diffrax
-import equinox as eqx
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
@@ -67,7 +66,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.context import SimpleFeedback
+from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
@@ -93,10 +92,8 @@ plt.style.use('dark_background')
 # %%
 model_dir = Path("../models/")
 
+
 # %%
-from feedbax.utils import tree_sum_n_features
-
-
 def get_model(
     task,
     dt: float = 0.05, 

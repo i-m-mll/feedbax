@@ -52,7 +52,7 @@ import optax
 import pandas as pd
 import seaborn as sns
 
-from feedbax.context import SimpleFeedback
+from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 

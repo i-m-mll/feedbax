@@ -8,7 +8,7 @@ import numpy as np
 import optax 
 
 from feedbax.channel import ChannelState
-from feedbax.context import SimpleFeedback, SimpleFeedbackState
+from feedbax.model import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass

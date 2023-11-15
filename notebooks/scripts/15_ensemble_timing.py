@@ -100,9 +100,9 @@ get_models = lambda task, n_steps, n_replicates, key: get_model_ensemble(
         task,
         dt=dt,
         mass=mass,
-        n_hidden=n_hidden,
+        hidden_size=hidden_size,
         n_steps=n_steps,
-        feedback_delay=feedback_delay_steps,
+        feedback_delay_steps=feedback_delay_steps,
     ),
     n_replicates,
     key=key, 
@@ -134,7 +134,7 @@ times_means = np.zeros((len(n_steps), len(n_replicates)))
 times_stds = np.zeros((len(n_steps), len(n_replicates)))
 
 key = jr.PRNGKey(seed)
-hidden_sizehidden_size
+
 for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
     s = n_steps[idx0]
     

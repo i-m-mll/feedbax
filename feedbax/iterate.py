@@ -16,7 +16,7 @@ import jax.random as jr
 from jaxtyping import Array, PyTree
 from tqdm.auto import tqdm
 
-from feedbax.context import AbstractModel
+from feedbax.model import AbstractModel
 from feedbax.utils import tree_get_idx, tree_set_idx
 
 logger = logging.getLogger(__name__)
