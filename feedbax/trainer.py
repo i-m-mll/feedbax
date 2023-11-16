@@ -126,7 +126,7 @@ class TaskTrainer(eqx.Module):
             disable_tqdm,
         )
     
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def train_ensemble(
         self,
         task: AbstractTask,

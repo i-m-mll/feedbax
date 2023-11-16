@@ -118,10 +118,10 @@ trainable_leaves_func = lambda model: (
 # We'll use batch callbacks to time three training runs for each of several values of `n_replicates`, to see how training rate depends on it.
 
 # %%
-n_steps_timer = 100
+n_batches_timer = 100
 
 batch_callbacks = lambda timer: {
-    n_batches - n_steps_timer - 1: (lambda: timer.start(),),
+    n_batches - n_batches_timer - 1: (lambda: timer.start(),),
     n_batches - 1: (lambda: timer.stop(),),
 }
 
@@ -162,16 +162,20 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
                 disable_tqdm=True,
             )
         
-        times_means[idx0, idx1] = np.mean(timer.times) / n_steps_timer 
-        times_stds[idx0, idx1] = np.std(timer.times) / n_steps_timer
+        times_means[idx0, idx1] = np.mean(timer.times) / n_batches_timer 
+        times_stds[idx0, idx1] = np.std(timer.times) / n_batches_timer
 
 # %% [markdown]
 # Save the results
 
 # %%
 os.makedirs("../data", exist_ok=True)
-np.save(f"../data/{NB_PREFIX}_times_means.npy", times_means)
-np.save(f"../data/{NB_PREFIX}_times_stds.npy", times_stds)
+np.save(f"../data/{NB_PREFIX}_train_times_means.npy", times_means)
+np.save(f"../data/{NB_PREFIX}_train_times_stds.npy", times_stds)
+
+# %%
+times_means = np.load(f"../data/{NB_PREFIX}_train_times_means.npy")
+times_stds = np.load(f"../data/{NB_PREFIX}_train_times_stds.npy")
 
 # %% [markdown]
 # Plot the training rate in iterations/second
@@ -198,8 +202,9 @@ ax.set_xlabel('Number of replicates')
 ax.set_ylabel('Training rate (it/s)')
 ax.set_xticks([1, 8, 16, 32, 64], 
               [1, 8, 16, 32, 64])
-ax.set_yticks([1, 10, 30], 
-              [1, 10, 30])
+ax.set_ylim(0.1, 1000)
+# ax.set_yticks([1, 10, 30], 
+#               [1, 10, 30])
 
 plt.legend(n_steps, title="Time steps")
 
@@ -230,8 +235,9 @@ ax.set_xlabel('Number of replicates')
 ax.set_ylabel('Training time (min)')
 ax.set_xticks([1, 8, 16, 32, 64], 
               [1, 8, 16, 32, 64])
-ax.set_yticks([5, 10, 100], 
-              [5, 10, 100])
+ax.set_ylim(0.1, 300)
+# ax.set_yticks([5, 10, 100], 
+#               [5, 10, 100])
 # ax.tick_params(axis='y', which='minor', left=False)
 
 plt.legend(n_steps, title="Time steps")
@@ -338,6 +344,11 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
 
 
 # %%
+os.makedirs("../data", exist_ok=True)
+np.save(f"../data/{NB_PREFIX}_eval_times_means.npy", times_means)
+np.save(f"../data/{NB_PREFIX}_eval_times_stds.npy", times_stds)
+
+# %%
 fig, ax = plt.subplots()
 
 means = np.array(times_means[::-1]) 
@@ -356,6 +367,7 @@ ax.set_xlabel('Number of replicates')
 ax.set_ylabel('Evaluation rate ($s^{-1}$)')
 ax.set_xticks([1, 2, 4, 8, 16, 32, 64], 
               [1, 2, 4, 8, 16, 32, 64])
+ax.set_ylim(0.1, 1000)
 # ax.set_yticks([1, 10, 30], 
 #               [1, 10, 30])
 # ax.set_ylim(1, 1500)
@@ -389,8 +401,7 @@ ax.set_xlabel('Number of replicates')
 ax.set_ylabel('Evaluation time (min)')
 ax.set_xticks([1, 8, 16, 32, 64], 
               [1, 8, 16, 32, 64])
-ax.set_yticks([1, 10, 100], 
-              [1, 10, 100])
+ax.set_ylim(0.1, 300)
 # ax.tick_params(axis='y', which='minor', left=False)
 
 plt.legend(n_steps[::-1], title="Time steps")
