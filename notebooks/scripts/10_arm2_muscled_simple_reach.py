@@ -122,7 +122,7 @@ def get_model(
     feedback_leaves_func = lambda mechanics_state: (
         mechanics_state.system.theta,
         mechanics_state.system.d_theta,
-        mechanics_state.effector,         
+        mechanics_state.effector,        
     )
     
     # automatically determine network input size

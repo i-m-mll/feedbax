@@ -35,14 +35,18 @@ from feedbax.types import CartesianState2D
 logger = logging.getLogger(__name__)
 
 
-class AbstractLoss(eqx.Module):
+class LossDict(eqx.Module):
+    ...
+
+
+class AbstractLossFunc(eqx.Module):
     """Abstract base class for loss functions.
     
     Enforces that concrete subclasses should have a string label.
     
     TODO: 
     - Time aggregation should happen in every concrete subclass.
-      Could add a method/abstractvar to `AbstractLoss`.
+      Could add a method/abstractvar to `AbstractLossFunc`.
     - Should probably allow the user to override with their own label.
     """
     labels: AbstractVar[Tuple[str, ...]]
@@ -57,24 +61,24 @@ class AbstractLoss(eqx.Module):
         ...        
 
 
-class CompositeLoss(AbstractLoss):
+class CompositeLossFunc(AbstractLossFunc):
     """Composite of simpler loss functions.
     
     TODO:
     - Different aggregation schemes.
     - Perhaps, nesting of losses. As of now, if any of the component losses
-      are themselves instances of `CompositeLoss`, their own component terms
+      are themselves instances of `CompositeLossFunc`, their own component terms
       are not remembered. 
     - Perhaps change the labeling scheme; if we don't allow nesting then 
       it is inappropriate to just take the first label name from each component.
     """
-    terms: Sequence[AbstractLoss]
+    terms: Sequence[AbstractLossFunc]
     weights: Optional[Sequence[float]]
     labels: Tuple[str, ...]
     
     def __init__(
         self, 
-        terms: Sequence[AbstractLoss], 
+        terms: Sequence[AbstractLossFunc], 
         weights: Optional[Sequence[float]] = None,
     ):
         if weights is None:
@@ -93,7 +97,7 @@ class CompositeLoss(AbstractLoss):
         else:
             self.weights = weights
     
-    @jax.named_scope("fbx.CompositeLoss")
+    @jax.named_scope("fbx.CompositeLossFunc")
     def __call__(
         self, 
         states: PyTree, 
@@ -105,7 +109,7 @@ class CompositeLoss(AbstractLoss):
         loss_terms = jax.tree_map(
             lambda term: term(states, targets, task_inputs)[0], 
             self.terms,
-            is_leaf=lambda x: isinstance(x, AbstractLoss),
+            is_leaf=lambda x: isinstance(x, AbstractLossFunc),
         )
         # aggregate over time 
         #! this should be done in all the other classes as well! they aren't returning scalars
@@ -135,19 +139,19 @@ class HasMechanicsState(Protocol):
     mechanics: HasEffectorState
 
 
-class EffectorPositionLoss(AbstractLoss):
+class EffectorPositionLossFunc(AbstractLossFunc):
     """
     
     Note that if discount is shaped such that it gives non-zero weight to the
     position error during the fixation period of (say) a delayed reach task,
     then typically the target will be specified as the fixation point during
-    that period, and `EffectorPositionLoss` will also act as a fixation loss.
+    that period, and `EffectorPositionLossFunc` will also act as a fixation loss.
     However, when we are using certain kinds of goal error discounting (e.g.
     exponential, favouring errors near the end of the trial) then the fixation
-    loss may not be weighed into `EffectorPositionLoss`, and it may be
-    appropriate to add `EffectorFixationLoss` to the composite loss. However,
+    loss may not be weighed into `EffectorPositionLossFunc`, and it may be
+    appropriate to add `EffectorFixationLossFunc` to the composite loss. However,
     in that case the same result could still be achieved using a single
-    instance of `EffectorPositionLoss`, by passing a `discount` that's the sum
+    instance of `EffectorPositionLossFunc`, by passing a `discount` that's the sum
     of the goal error discount (say, non-zero only near the end of the trial)
     and the hold signal (non-zero only during the fixation period) scaled by
     the relative weights of the goal and fixation error losses.
@@ -188,7 +192,7 @@ class EffectorPositionLoss(AbstractLoss):
         return loss, {self.labels[0]: loss}
 
 
-class EffectorFixationLoss(AbstractLoss):
+class EffectorFixationLossFunc(AbstractLossFunc):
     """"""
     labels: Tuple[str, ...] = ("effector_fixation",)
     
@@ -209,7 +213,7 @@ class EffectorFixationLoss(AbstractLoss):
         return loss, {self.labels[0]: loss}
 
 
-class EffectorFinalVelocityLoss(AbstractLoss):
+class EffectorFinalVelocityLossFunc(AbstractLossFunc):
     """
     
     TODO: how do we handle calculating oss for a single timestep only?
@@ -234,7 +238,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
         return loss, {self.labels[0]: loss}
 
 
-class NetworkOutputLoss(AbstractLoss):
+class NetworkOutputLossFunc(AbstractLossFunc):
     """"""
     labels: Tuple[str, ...] = ("nn_output",)
 
@@ -251,7 +255,7 @@ class NetworkOutputLoss(AbstractLoss):
         return loss, {self.labels[0]: loss}
 
 
-class NetworkActivityLoss(AbstractLoss):
+class NetworkActivityLossFunc(AbstractLossFunc):
     """"""
     labels: Tuple[str, ...] = ("nn_activity",)
 

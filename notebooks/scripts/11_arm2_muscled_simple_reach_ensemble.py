@@ -54,7 +54,6 @@ import seaborn as sns
 
 from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator
-import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.muscle import (
     ActivationFilter,
@@ -64,6 +63,7 @@ from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import RNNCellWithReadout
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
+from feedbax.xabdeef.losses import simple_reach_loss
 
 from feedbax.plot import (
     plot_mean_losses,
@@ -147,15 +147,12 @@ def get_model(
     return Iterator(body, n_steps)
 
 
-# %% [markdown]
-# Train the model.
-
 # %%
 seed = 5567
 
-n_replicates = 64
+n_replicates = 8
 
-n_steps = 100
+n_steps = 50
 dt = 0.05 
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
@@ -197,7 +194,7 @@ def setup(
     
     key = jr.PRNGKey(seed)
 
-    loss_func = fbl.simple_reach_loss(
+    loss_func = simple_reach_loss(
         n_steps, 
         loss_term_weights,
     )
@@ -238,9 +235,12 @@ trainer = TaskTrainer(
     checkpointing=True,
 )
 
+# %% [markdown]
+# Train the model.
+
 # %%
 batch_size = 500
-n_batches = 500
+n_batches = 10_000
 key_train = jr.PRNGKey(seed + 1)
 
 trainable_leaves_func = lambda model: (
@@ -255,7 +255,7 @@ model, losses, losses_terms, learning_rates = trainer.train_ensemble(
     n_replicates=n_replicates,
     n_batches=n_batches, 
     batch_size=batch_size, 
-    log_step=10,
+    log_step=200,
     trainable_leaves_func=trainable_leaves_func,
     key=key_train,
 )

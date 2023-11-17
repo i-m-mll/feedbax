@@ -15,19 +15,6 @@
 
 # %% [markdown]
 # Simple feedback model with a single-layer RNN controlling a point mass to reach from a starting position to a target position. 
-#
-# Components:
-#
-# - Point mass module
-# - RNN module
-# - Feedback loop 
-#     - RNN call plus a single step of diffrax integration
-# - Loss function
-#     - quadratic in position near final state
-#     - quadratic in controls
-# - Generate reach endpoints
-#     - uniformly sampled in a rectangular workspace
-#     - i.i.d. start and end (variable magnitude)
 
 # %%
 LOG_LEVEL = "INFO"

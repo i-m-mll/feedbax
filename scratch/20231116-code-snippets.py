@@ -1,10 +1,13 @@
-import numpy as np
 
 
 ### Basic model structure, purely functional vs. stateful
 
+import numpy as np
+
 weights = np.random.random((2, 10))
 input_ = np.random.random((10,)) 
+
+# output = weights @ input_
 
 import torch
 
@@ -184,3 +187,20 @@ tree1 = tree2 = None
 
 jtu.tree_map(lambda x, y: x + y, tree1, tree2)
 
+
+
+### ensemble
+import jax
+
+def get_model(
+    task,
+    dt: float = 0.05, 
+    hidden_size: int = 50, 
+    n_steps: int = 50, 
+    feedback_delay: int = 0, 
+    *,
+    key: jnp.ndarray = None,
+):
+    ...
+    
+    return model
