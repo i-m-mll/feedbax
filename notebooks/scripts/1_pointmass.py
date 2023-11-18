@@ -28,6 +28,7 @@ import optax
 from tqdm import tqdm
 
 from feedbax.mechanics.linear import point_mass
+from feedbax.types import CartesianState2D
 from feedbax.utils import exp_taylor
 
 # %%
@@ -86,12 +87,31 @@ def solve(y0, t0, t1, dt0, args):
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
     return sol
 
-y0 = jnp.array([0., 0., 0.5, 0.])  
+y0 = CartesianState2D(
+    pos=jnp.array([-20., -2.]),
+    vel=jnp.array([0.5, 0.]),
+)  
 t0 = 0
 dt0 = 0.01  
 t1 = 1
 args = jnp.array([-0.5, 0.5])
 sol = solve(y0, t0, t1, dt0, args)   
+
+# %%
+# plot the simulated position over time
+cmap = plt.get_cmap('viridis')
+cs = [cmap(i) for i in sol.ts * 0.9]  # 0.9 cuts off yellows
+
+fig, axs = plt.subplots(1, 2, constrained_layout=True)
+axs[0].scatter(*sol.ys.pos.T, c=cs, s=1)
+axs[0].set_xlabel('x')
+axs[0].set_ylabel('y')
+axs[0].set_aspect('equal')
+axs[1].scatter(*sol.ys.vel.T, c=cs, s=1) 
+axs[1].set_xlabel('$v_x$')
+axs[1].set_ylabel('$v_y$')
+axs[1].set_aspect('equal')
+
 
 # %%
 # %timeit solve(y0, t0, t1, dt0, args)
@@ -104,22 +124,6 @@ sol = solve(y0, t0, t1, dt0, args)
 # %timeit jax.jit(solve)(y0, 0.01, args) 
 # %timeit solve(y0, 0.001, args)  
 # %timeit jax.jit(solve)(y0, 0.001, args)  
-
-# %%
-# plot the simulated position over time
-cmap = plt.get_cmap('viridis')
-cs = [cmap(i) for i in sol.ts * 0.9]  # 0.9 cuts off yellows
-
-fig, axs = plt.subplots(1, 2, constrained_layout=True)
-axs[0].scatter(*sol.ys[:, :2].T, c=cs, s=1)
-axs[0].set_xlabel('x')
-axs[0].set_ylabel('y')
-axs[0].set_aspect('equal')
-axs[1].scatter(*sol.ys[:, 2:].T, c=cs, s=1) 
-axs[1].set_xlabel('$v_x$')
-axs[1].set_ylabel('$v_y$')
-axs[1].set_aspect('equal')
-
 
 # %% [markdown]
 # We can also [step through](https://docs.kidger.site/diffrax/usage/manual-stepping/) the solution:

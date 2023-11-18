@@ -97,6 +97,7 @@ class Iterator(eqx.Module):
         
         return states
     
+    @jax.named_scope("fbx.Iterator.init")
     def init(self, input, init_state, key):
         # get the shape of the state output by `self.step`
         outputs = eqx.filter_eval_shape(

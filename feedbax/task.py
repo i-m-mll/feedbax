@@ -24,7 +24,7 @@ import jax.random as jr
 from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
 
-from feedbax.loss import AbstractLossFunc
+from feedbax.loss import AbstractLoss
 from feedbax.types import CartesianState2D
 from feedbax.utils import internal_grid_points
 
@@ -63,7 +63,7 @@ class AbstractTask(eqx.Module):
       datasets of trials. Currently training is dynamic, and evaluation is 
       static.
     """
-    loss_func: AbstractVar[AbstractLossFunc]
+    loss_func: AbstractVar[AbstractLoss]
     
     @abstractmethod
     def get_train_trial(
@@ -172,7 +172,7 @@ class RandomReaches(AbstractTask):
     - Could assume a default loss function (e.g. `loss.simple_reach_loss`)
       and allow the user to pass just `loss_term_weights`.
     """
-    loss_func: AbstractLossFunc
+    loss_func: AbstractLoss
     workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
     n_steps: int
     eval_n_directions: int 
@@ -261,7 +261,7 @@ class RandomReachesDelayed(AbstractTask):
     
     TODO: 
     """
-    loss_func: AbstractLossFunc 
+    loss_func: AbstractLoss 
     workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
     n_steps: int 
     epoch_len_ranges: Tuple[Tuple[int, int], ...]

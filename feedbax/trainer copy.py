@@ -22,7 +22,7 @@ from jaxtyping import Array, Float, PyTree
 import optax
 from tqdm.auto import tqdm
 
-from feedbax.loss import AbstractLossFunc
+from feedbax.loss import AbstractLoss
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.utils import (
     delete_contents,
@@ -461,7 +461,7 @@ class TaskTrainer(eqx.Module):
     
     
 def grad_wrap_loss_func(
-    loss_func: AbstractLossFunc
+    loss_func: AbstractLoss
 ):
     """Wraps a loss function taking state to a `grad`-able one taking a model.
     

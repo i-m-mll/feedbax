@@ -1,6 +1,7 @@
 # ---
 # jupyter:
 #   jupytext:
+#     formats: ipynb,scripts//py:percent
 #     text_representation:
 #       extension: .py
 #       format_name: percent
@@ -155,7 +156,7 @@ shape2 = shape1[::-1]
 keys = jr.split(jr.PRNGKey(seed), n_matrices)
 
 # %timeit multiply_many_matrices(keys, shape1, shape2).block_until_ready()
-    
+
 
 # %%
 multiply_many_matrices_jit = jax.jit(multiply_many_matrices, static_argnums=(1, 2))

@@ -5,11 +5,11 @@ from typing import Dict, Optional
 import jax.numpy as jnp
 
 from feedbax.loss import (
-    CompositeLossFunc,
-    EffectorPositionLossFunc,
-    EffectorFinalVelocityLossFunc,
-    NetworkOutputLossFunc,
-    NetworkActivityLossFunc,
+    CompositeLoss,
+    EffectorPositionLoss,
+    EffectorFinalVelocityLoss,
+    NetworkOutputLoss,
+    NetworkActivityLoss,
 )
 
 
@@ -39,14 +39,14 @@ def simple_reach_loss(
         discount = 1.
     else: 
         discount = jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp
-    return CompositeLossFunc(
+    return CompositeLoss(
         dict(
             # these assume a particular PyTree structure to the states returned by the model
             # which is why we simply instantiate them 
-            effector_position=EffectorPositionLossFunc(discount=discount),
-            effector_final_velocity=EffectorFinalVelocityLossFunc(),
-            nn_output=NetworkOutputLossFunc(),  # the "control" loss
-            nn_activity=NetworkActivityLossFunc(),
+            effector_position=EffectorPositionLoss(discount=discount),
+            effector_final_velocity=EffectorFinalVelocityLoss(),
+            nn_output=NetworkOutputLoss(),  # the "control" loss
+            nn_activity=NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )

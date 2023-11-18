@@ -46,7 +46,7 @@ import os
 import logging
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Optional, Callable
 
 from IPython import get_ipython
 
@@ -59,6 +59,7 @@ get_ipython().log.setLevel(LOG_LEVEL)
 
 # %%
 import diffrax
+import equinox as eqx
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
@@ -71,7 +72,7 @@ from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNNCellWithReadout
+from feedbax.networks import RNNCellWithReadoutAndInput
 from feedbax.plot import plot_loss, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -92,13 +93,53 @@ plt.style.use('dark_background')
 # %%
 model_dir = Path("../models/")
 
+# %%
+eqx.nn.Linear(10, 10, key=jr.PRNGKey(0))
+
 
 # %%
+# class TestTwoLayerReadout(eqx.Module):
+#     input_size: int
+#     hidden_size: int
+#     out_size: int
+#     nonlinearity: Callable
+#     use_bias: bool = True
+    
+#     def __init__(
+#         self, 
+#         input_size, 
+#         hidden_size,
+#         out_size, 
+#         nonlinearity=jnp.sigmoid,
+#         use_bias=True,
+#         *,
+#         key: jax.Array,
+#     ):
+#         self.input_size = input_size
+#         self.hidden_size = hidden_size
+#         self.out_size = out_size
+#         self.use_bias = use_bias
+#         self.nonlinearity = nonlinearity
+        
+#         self._layers = eqx.nn.Sequential(
+#             [
+#                 eqx.nn.Linear(input_size, hidden_size, use_bias=use_bias, key=key),
+#                 eqx.nn.Lambda(self.nonlinearity),
+#                 eqx.nn.Linear(hidden_size, out_size, use_bias=use_bias, key=key),
+#             ]
+#         )
+#         self.layers = self._layers.layers
+    
+#     def __call__(self, input):
+#         return 
+
 def get_model(
     task,
     dt: float = 0.05, 
     mass: float = 1., 
+    rnn_input_size: int = 50,
     hidden_size: int = 50, 
+    readout_hidden_size: int = 25,
     n_steps: int = 100, 
     feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
@@ -116,18 +157,30 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    def two_layer_readout(input_size, out_size, use_bias=True, *, key):
+        key1, key2 = jr.split(key, 2)
+        return eqx.nn.Sequential(
+            [
+                eqx.nn.Linear(input_size, readout_hidden_size, use_bias=use_bias, key=key1),
+                eqx.nn.Lambda(jnp.tanh),
+                eqx.nn.Linear(readout_hidden_size, out_size, use_bias=use_bias, key=key2),
+            ]
+        )
+    
+    net = RNNCellWithReadoutAndInput(
         input_size,
+        rnn_input_size,
         hidden_size,
         system.control_size, 
+        readout_type=two_layer_readout,
         out_nonlinearity=out_nonlinearity, 
-        persistence=False,
-        key=key
+        persistence=True,
+        key=key,
     )
     
     body = SimpleFeedback(net, mechanics, feedback_delay)
     
-    return Iterator (body, n_steps)
+    return Iterator(body, n_steps)
 
 
 # %%
@@ -221,14 +274,17 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 1_000
+n_batches = 10_000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
 trainable_leaves_func = lambda model: (
+    model.step.net.input_layer.weight,
+    model.step.net.input_layer.bias,
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias
+    model.step.net.cell.bias,
+    model.step.net.readout,
 )
 
 model, losses, losses_terms, learning_rates = trainer(

@@ -72,9 +72,8 @@ class RNNCellWithReadout(eqx.Module):
     
     Derived from https://docs.kidger.site/equinox/examples/train_rnn/"""
     out_size: int 
-    linear: eqx.Module
     cell: eqx.Module
-    bias: jax.Array
+    readout: eqx.Module
     out_nonlinearity: Callable[[Float], Float]
     noise_std: Optional[float]
     persistence: bool
@@ -84,7 +83,8 @@ class RNNCellWithReadout(eqx.Module):
         input_size: int, 
         hidden_size: int,
         out_size: int, 
-        cell: Type[RNNCell] = eqx.nn.GRUCell,
+        cell_type: Type[RNNCell] = eqx.nn.GRUCell,
+        readout_type: Type[eqx.Module] = eqx.nn.Linear,
         use_bias: bool = True,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
@@ -94,14 +94,13 @@ class RNNCellWithReadout(eqx.Module):
     ):
         key1, key2 = jr.split(key, 2)
         self.out_size = out_size
-        self.cell = cell(input_size, hidden_size, use_bias=use_bias, key=key1)
-        self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=key2)
-        self.bias = jnp.zeros(out_size)
+        self.cell = cell_type(input_size, hidden_size, use_bias=use_bias, key=key1)
+        self.readout = readout_type(hidden_size, out_size, use_bias=True, key=key2)
         self.out_nonlinearity = out_nonlinearity       
         self.noise_std = noise_std
         self.persistence = persistence
     
-    @jax.named_scope("fbx.SingleLayerWithReadout")
+    @jax.named_scope("fbx.RNNCellWithReadout")
     def __call__(
         self, 
         input, 
@@ -110,8 +109,9 @@ class RNNCellWithReadout(eqx.Module):
     ) -> NetworkState:
         if not self.persistence:
             state = self.init()
-        # TODO: flatten leaves before concatenating `tree_map(ravel, leaves)`
-        input = jnp.concatenate(jax.tree_leaves(input))
+        if not isinstance(input, jnp.ndarray):
+            # TODO: flatten each leaf before concatenating 
+            input = jnp.concatenate(jax.tree_leaves(input))
         activity = self.cell(input, state.activity)
         if self.noise_std is not None:
             #! this will only affect recurrent computations if `persistence` is `True`
@@ -121,7 +121,7 @@ class RNNCellWithReadout(eqx.Module):
         return NetworkState(activity, self._output(activity))
     
     def _output(self, activity):
-        return self.out_nonlinearity(self.linear(activity) + self.bias)
+        return self.out_nonlinearity(self.readout(activity))
     
     def init(self, activity=None, output=None):
         if activity is None:
@@ -135,6 +135,67 @@ class RNNCellWithReadout(eqx.Module):
             output = jnp.array(activity)
         
         return NetworkState(activity, output)
+
+
+class RNNCellWithReadoutAndInput(eqx.Module):
+    """Adds a linear input layer to `RNNCellWithReadout`.
+    
+    Since the linear layer is "stateless", we use the same `init` method 
+    and the same `__call__` signature as `RNNCellWithReadout`, so instances 
+    of the two classes are interchangeable as model components.
+    """
+    out_size: int 
+    input_layer: eqx.Module
+    rnn_cell_with_readout: RNNCellWithReadout
+    cell: eqx.Module
+    readout: eqx.Module
+    
+    def __init__(
+        self, 
+        input_size: int, 
+        rnn_input_size: int,
+        hidden_size: int,
+        out_size: int, 
+        cell_type: Type[RNNCell] = eqx.nn.GRUCell,
+        *,
+        key: jax.Array, 
+        **kwargs
+    ):
+        key1, key2 = jr.split(key, 2)
+        self.input_layer = eqx.nn.Linear(input_size, rnn_input_size, key=key1)
+        self.rnn_cell_with_readout = RNNCellWithReadout(
+            rnn_input_size,
+            hidden_size,
+            out_size,
+            cell_type=cell_type, 
+            key=key2,
+            **kwargs,
+        )
+        self.out_size = out_size
+        
+        # expose some attributes of `RNNCellWithReadout`
+        # to maintain references in the model PyTree
+        self.cell = self.rnn_cell_with_readout.cell
+        self.readout = self.rnn_cell_with_readout.readout
+        
+        
+    @jax.named_scope("fbx.RNNCellWithReadout")
+    def __call__(
+        self, 
+        input, 
+        state: NetworkState, 
+        key: jax.Array,
+    ) -> NetworkState:
+        # TODO: flatten each leaf before concatenating `tree_map(ravel, leaves)`
+        if not isinstance(input, jnp.ndarray):
+            input = jnp.concatenate(jax.tree_leaves(input))
+        input = jnp.concatenate(jax.tree_leaves(input))
+        rnn_input = self.input_layer(input)
+        output = self.rnn_cell_with_readout(rnn_input, state, key)
+        return output
+
+    def init(self, activity=None, output=None):
+        return self.rnn_cell_with_readout.init(activity, output)
 
 
 class LeakyRNNCell(eqx.Module):
