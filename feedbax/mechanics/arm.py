@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from jaxtyping import Float, Array
 import numpy as np
 
-from feedbax.types import CartesianState2D
+from feedbax.types import AbstractState, CartesianState2D, StateBounds
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class TwoLinkState(eqx.Module):
+class TwoLinkState(AbstractState):
     theta: Float[Array, "... 2"]
     d_theta: Float[Array, "... 2"]
     torque: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
@@ -255,4 +255,23 @@ class TwoLink(eqx.Module):
         return jax.tree_map(
             lambda x: x[-1],  # last link
             self.forward_kinematics(state),
+        )
+    
+    @property
+    def bounds(self) -> StateBounds[TwoLinkState]:
+        """Suggested bounds on the state space.
+        
+        Angle limits adopted from MotorNet (TODO cite).
+        """
+        return StateBounds(
+            low=TwoLinkState(
+                theta=jnp.array([0., 0.]),
+                d_theta=None,
+                torque=None,
+            ), 
+            high=TwoLinkState(
+                theta=jnp.deg2rad(jnp.array([140., 160.])),
+                d_theta=None,
+                torque=None,
+            ),
         )

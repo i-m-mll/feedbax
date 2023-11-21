@@ -16,7 +16,7 @@ from jaxtyping import Array, Float
 
 from feedbax.mechanics.arm import TwoLink
 from feedbax.mechanics.muscle import VirtualMuscle
-from feedbax.types import CartesianState2D
+from feedbax.types import AbstractState, CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class TwoLinkMuscledState(eqx.Module):
+class TwoLinkMuscledState(AbstractState):
     theta: Float[Array, "links=2"]
     d_theta: Float[Array, "links=2"]
     activation: Float[Array, "muscles"]
@@ -145,4 +145,26 @@ class TwoLinkMuscled(eqx.Module):
     def state_size(self):
         return self.twolink.state_size + self.control_size
 
-
+    @property
+    def bounds(self) -> StateBounds[TwoLinkMuscledState]:
+        """Suggested bounds on the state space.
+        
+        Angle limits adopted from MotorNet (TODO cite).
+        
+        TODO:
+        - Shouldn't need to specify the `TwoLink` limits again!
+        """
+        return StateBounds(
+            low=TwoLinkMuscledState(
+                theta=jnp.array([0., 0.]),
+                d_theta=None,
+                activation=None,
+                torque=None,
+            ), 
+            high=TwoLinkMuscledState(
+                theta=jnp.deg2rad(jnp.array([140., 160.])),
+                d_theta=None,
+                activation=None,
+                torque=None,
+            ),
+        )

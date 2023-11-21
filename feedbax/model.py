@@ -239,3 +239,9 @@ def add_intervenors(
         feedback_leaves_func=model.feedback_leaves_func,
         intervenors=intervenors,
     )
+
+def remove_intervenors(
+    model: SimpleFeedback
+) -> SimpleFeedback:
+    """Return a model with no intervenors."""
+    return add_intervenors(model, intervenors=(), keep_existing=False)

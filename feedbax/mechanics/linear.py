@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from feedbax.types import CartesianState2D
+from feedbax.types import CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,10 @@ class AbstractLTISystem(eqx.Module):
     @property 
     def state_size(self) -> int:
         return self.A.shape[1]
+    
+    @property
+    def bounds(self) -> StateBounds[CartesianState2D]:
+        return StateBounds(low=None, high=None)
 
 
 class SimpleLTISystem(AbstractLTISystem):

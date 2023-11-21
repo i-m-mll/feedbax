@@ -5,6 +5,7 @@
 """
 
 import logging
+from typing import Callable, TypeVar
 
 import diffrax as dfx
 import equinox as eqx
@@ -13,7 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, PyTree
 
 from feedbax.mechanics.system import System
-from feedbax.types import CartesianState2D
+from feedbax.types import AbstractState, CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -34,31 +35,19 @@ class Mechanics(eqx.Module):
     dt: float 
     term: dfx.AbstractTerm 
     solver: dfx.AbstractSolver
+    clip_states: bool
     
-    def __init__(self, system, dt, solver=dfx.Euler):
+    def __init__(self, system, dt, solver=dfx.Euler, clip_states=True):
         self.system = system
         self.term = dfx.ODETerm(self.system.vector_field)
         self.solver = solver()
         self.dt = dt        
+        self.clip_states = clip_states
     
     @jax.named_scope("fbx.Mechanics")
     def __call__(self, input, state: MechanicsState):
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
         
-        # state = jax.lax.cond(
-        #     jnp.allclose(state.effector.force, 0),
-        #     lambda state: state,
-        #     lambda state: eqx.tree_at(
-        #         lambda state: state.system,
-        #         state,
-        #         self.system.update_state_given_effector_force(
-        #             state.system, 
-        #             state.effector.force,
-        #         ),
-        #     ),
-        #     state,
-        # )
-
         state = eqx.tree_at(
             lambda state: state.system,
             state,
@@ -77,6 +66,10 @@ class Mechanics(eqx.Module):
             state.solver, 
             made_jump=False,
         )
+        
+        if self.clip_states:
+            system_state = clip_state(system_state, self.system.bounds)
+        
         effector_state = self.system.effector(system_state)
         return MechanicsState(system_state, effector_state, solver_state)
     
@@ -139,3 +132,49 @@ class Mechanics(eqx.Module):
         """
         # utils.tree_sum_n_features
         ...
+      
+
+StateT = TypeVar("StateT", bound=AbstractState)
+  
+        
+def clip_state(
+    state: StateT, 
+    bounds: StateBounds[StateT],
+) -> StateT:
+    """Constrain a state to the given bounds.
+    
+    TODO: 
+    - Maybe we can `tree_map` this, but I'm not sure it matters,
+      especially since it might require we make a bizarre
+      `StateBounds[Callable]` for the operations...
+    """
+    if bounds.low is not None:
+        state = _clip_state_to_bound(
+            state, bounds.low, bounds.filter_spec.low, jnp.greater
+        )
+    if bounds.high is not None:
+        state = _clip_state_to_bound(
+            state, bounds.high, bounds.filter_spec.high, jnp.less
+        )
+    return state
+
+
+def _clip_state_to_bound(
+    state: StateT, 
+    bound: StateT,
+    filter_spec: PyTree[bool],
+    op: Callable,
+) -> StateT:
+    """A single (one-sided) clipping operation."""
+    states_to_clip, states_other = eqx.partition(
+        state,
+        filter_spec,
+    )    
+    
+    states_clipped = jax.tree_map(
+        lambda x, y: jnp.where(op(x, y), x, y),
+        states_to_clip,
+        bound,
+    )
+    
+    return eqx.combine(states_other, states_clipped)

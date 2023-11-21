@@ -236,14 +236,14 @@ trainer = TaskTrainer(
 
 # #! this is currently leading to NaNs at step 44 of the second iteration
 
-# from feedbax.intervene import EffectorCurlForceField
-# from feedbax.model import add_intervenors
+from feedbax.intervene import EffectorCurlForceField
+from feedbax.model import add_intervenors
 
-# model = eqx.tree_at(
-#     lambda model: model.step,
-#     model,
-#     add_intervenors(model.step, [EffectorCurlForceField(0.05, direction='ccw')]),
-# )
+model = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, [EffectorCurlForceField(0.05, direction='ccw')]),
+)
 
 # %%
 trainable_leaves_func = lambda model: (
@@ -302,9 +302,6 @@ trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 
 # %%
-jax.config.update("jax_disable_jit", True)
-jax.config.update("jax_debug_nans", True)
-
 plot_pos_vel_force_2D(
     states,
     endpoints=(trial_specs.init.pos, goal_states.pos), 
@@ -314,16 +311,13 @@ plot_pos_vel_force_2D(
 );
 
 # %%
-model
-
-# %%
 from feedbax.intervene import EffectorCurlForceField
 from feedbax.model import add_intervenors
 
 model_ = eqx.tree_at(
     lambda model: model.step,
     model,
-    add_intervenors(model.step, [EffectorCurlForceField(0.05, direction='ccw')]),
+    add_intervenors(model.step, [], keep_existing=False),
 )
 
 # %%
