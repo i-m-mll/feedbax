@@ -28,7 +28,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 import numpy as np
 
-from feedbax.types import CartesianState2D, HasEffectorState
+from feedbax.state import CartesianState2D, HasEffectorState
 
 
 logger = logging.getLogger(__name__)

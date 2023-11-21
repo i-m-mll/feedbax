@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PyTree
 
-from feedbax.types import AbstractState, CartesianState2D
+from feedbax.state import AbstractState, CartesianState2D
 
 
 logger = logging.getLogger(__name__)

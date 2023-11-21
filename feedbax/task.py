@@ -1,9 +1,8 @@
 """Tasks on which models are trained and evaluated.
 
 TODO:
-- `RandomReaches` and `RandomReachesDelayed` are similar. 
-   See what can be abstracted.
-- Ditto `get_target_seq` and `get_scalar_epoch_seq`.
+- Some of the private functions could be public.
+- Refactor `get_target_seq` and `get_scalar_epoch_seq` redundancy.
     - Also, the way `seq` and `seqs` are generated is similar to `states` in 
       `Iterator.init`...
 
@@ -11,10 +10,20 @@ TODO:
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from __future__ import annotations
+
+
 from abc import abstractmethod, abstractproperty
 from functools import cached_property
 import logging 
-from typing import Callable, Dict, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Callable, 
+    Dict, 
+    Optional, 
+    Tuple, 
+    TypeVar,
+)
 
 import equinox as eqx
 from equinox import AbstractVar, field
@@ -25,7 +34,9 @@ from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
 
 from feedbax.loss import AbstractLoss
-from feedbax.types import CartesianState2D
+if TYPE_CHECKING:
+    from feedbax.model import AbstractModel
+from feedbax.state import AbstractState, CartesianState2D
 from feedbax.utils import internal_grid_points
 
 
@@ -35,19 +46,22 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
+StateT = TypeVar("StateT", bound=AbstractState)
+
+
 class AbstractTaskInput(eqx.Module):
     intervenors: AbstractVar[Dict[str, jax.Array]]
 
 
 class SimpleReachTaskInput:
-    stim: Float[Array, "n_steps 1"]
+    stim: Float[Array, "time 1"]
     intervenors: Dict[str, jax.Array]
     
 
 class DelayedReachTaskInput(AbstractTaskInput):
-    stim: Float[Array, "n_steps 1"]
-    hold: Int[Array, "n_steps 1"]
-    stim_on: Int[Array, "n_steps 1"]
+    stim: Float[Array, "time 1"]
+    hold: Int[Array, "time 1"]
+    stim_on: Int[Array, "time 1"]
     intervenors: Dict[str, jax.Array]
 
 
@@ -106,9 +120,9 @@ class AbstractTask(eqx.Module):
 
     def eval(
         self, 
-        model: eqx.Module, 
+        model: AbstractModel[StateT], 
         key: jax.Array,
-    ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
+    ) -> Tuple[Float[Array, ""], PyTree, StateT]:
         """Evaluate a model on the task's validation set of trials."""
         
         return self.eval_trials(model, self.trials_validation[0], key)
@@ -116,10 +130,10 @@ class AbstractTask(eqx.Module):
     @eqx.filter_jit
     def eval_train_batch(
         self, 
-        model: eqx.Module, 
+        model: AbstractModel[StateT], 
         batch_size: int, 
         key: jax.Array,
-    ) -> Tuple[Tuple[Float[Array, ""], PyTree, PyTree], 
+    ) -> Tuple[Tuple[Float[Array, ""], PyTree, StateT], 
                AbstractTaskTrialSpec, 
                PyTree]:
         """Evaluate a model on a single batch of training trials."""
@@ -131,10 +145,10 @@ class AbstractTask(eqx.Module):
     @eqx.filter_jit
     def eval_ensemble_train_batch(
         self,
-        models,
-        n_replicates,  # TODO: infer from `models`
-        batch_size,
-        key,
+        models: AbstractModel[StateT],
+        n_replicates: int,  # TODO: infer from `models`
+        batch_size: int,
+        key: jax.Array,
     ):
         """Evaluate an ensemble of models on training batches.
         
@@ -156,10 +170,10 @@ class AbstractTask(eqx.Module):
     @jax.named_scope("fbx.AbstractTask.eval_trials")
     def eval_trials(
         self, 
-        model: eqx.Module, 
+        model: AbstractModel[StateT], 
         trial_specs: AbstractTaskTrialSpec, 
         key: jax.Array,
-    ) -> Tuple[Float[Array, ""], PyTree, PyTree]:
+    ) -> Tuple[Float[Array, ""], PyTree, StateT]:
         """Evaluate a model on a set of trials.
         """      
         
@@ -176,10 +190,77 @@ class AbstractTask(eqx.Module):
         return loss, loss_terms, states
 
 
+def _uniform_pos_endpoints(
+    key: jax.Array,
+    workspace: Float[Array, "ndim=2 2"],
+):
+    """Uniformly distributed position pairs in a rectangular workspace.
+    """
+    return jr.uniform(
+        key, 
+        (2, N_DIM), 
+        minval=workspace[:, 0], 
+        maxval=workspace[:, 1]
+    )
+
+
+def _pos_only_inits_targets(
+    pos_endpoints: Float[Array, "... ndim=2"]
+):
+    """Construct Cartesian init and target states with zero force and velocity.
+    """
+    vel_endpoints = jnp.zeros_like(pos_endpoints)
+    forces = jnp.zeros_like(pos_endpoints)
+    
+    init_state, target_state = jax.tree_map(
+        lambda x: CartesianState2D(*x),
+        list(zip(pos_endpoints, vel_endpoints, forces)),
+        is_leaf=lambda x: isinstance(x, tuple)
+    )
+    return init_state, target_state
+
+
+def _centerout_endpoints_grid(
+    workspace: Float[Array, "ndim=2 2"],
+    eval_grid_n: int,
+    eval_n_directions: int,
+    eval_reach_length: float,
+):
+    """Sets of center-out reaches, their centers in a grid across a workspace.
+    """
+    centers = internal_grid_points(workspace, eval_grid_n)
+    pos_endpoints = jax.vmap(
+        centreout_endpoints, 
+        in_axes=(0, None, None),
+        out_axes=1,
+    )(
+        centers, eval_n_directions, eval_reach_length
+    ).reshape((2, -1, N_DIM))
+    return pos_endpoints
+
+
+def _randomreaches_task_inputs(
+    target_states: CartesianState2D,
+):
+    """Only position and velocity of targets are supplied to the model.
+    
+    This is necessary because `force` is a dataclass field in 
+    `CartesianState2D`, but in `RandomReaches` we don't want to pass forces as
+    a task input to the model.
+    """
+    return (target_states.pos, target_states.vel)
+
+
 class RandomReaches(AbstractTask):
     """Train on random reach endpoints in rectangular workspace.
     
     Validation set is center-out reaches. 
+    
+    NOTE:
+    - This passes a sequence of target velocities equal to zero, assuming that 
+      the user will only associate a cost function that penalizes the initial
+      or final velocities. If the intervening velocities are penalized, this 
+      no longer makes sense as a reaching task.
     
     TODO:
     - Could assume a default loss function (e.g. `loss.simple_reach_loss`)
@@ -201,31 +282,21 @@ class RandomReaches(AbstractTask):
         key: jax.Array
     ) -> [ReachTrialSpec, None]:
         """Random reach endpoints in a 2D rectangular workspace.
-        
-        TODO:
-        - Try JIT.
         """
         
-        pos_endpoints = jr.uniform(
-            key, 
-            (2, self.N_DIM), 
-            minval=self.workspace[:, 0], 
-            maxval=self.workspace[:, 1]
-        )
-        vel_endpoints = jnp.zeros_like(pos_endpoints)
-        forces = jnp.zeros_like(pos_endpoints)
+        pos_endpoints = _uniform_pos_endpoints(key, self.workspace)
+                
+        init_state, target_state = \
+            _pos_only_inits_targets(pos_endpoints)
         
-        init_state, target_state = jax.tree_map(
-            lambda x: CartesianState2D(*x),
-            list(zip(pos_endpoints, vel_endpoints, forces)),
-            is_leaf=lambda x: isinstance(x, tuple)
-        )
-        # make targets as sequences, because `Iterator` and `Loss` want that
+        # Broadcast the fixed targets to a sequence with the desired number of 
+        # time steps, since that's what `Iterator` and `Loss` will expect.
+        # Hopefully this should not use up any extra memory. 
         target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             target_state,
         )
-        task_input = target_state
+        task_input = _randomreaches_task_inputs(target_state)
         
         return ReachTrialSpec(init_state, task_input, target_state), None
         
@@ -233,24 +304,18 @@ class RandomReaches(AbstractTask):
     def trials_validation(self) -> [ReachTrialSpec, None]:
         """Center-out reaches across a regular workspace grid."""
         
-        centers = internal_grid_points(self.workspace, self.eval_grid_n)
-        pos_endpoints = jax.vmap(
-            centreout_endpoints, 
-            in_axes=(0, None, None),
-            out_axes=1,
-        )(
-            centers, self.eval_n_directions, self.eval_reach_length
-        ).reshape((2, -1, self.N_DIM))
-        vel_endpoints = jnp.zeros_like(pos_endpoints)
-        forces = jnp.zeros_like(pos_endpoints)
-        
-        init_states, target_states = jax.tree_map(
-            lambda x: CartesianState2D(*x),
-            list(zip(pos_endpoints, vel_endpoints, forces)),
-            is_leaf=lambda x: isinstance(x, tuple)
+        pos_endpoints = _centerout_endpoints_grid(
+            self.workspace,
+            self.eval_grid_n,
+            self.eval_n_directions,
+            self.eval_reach_length,
         )
-        # this is kind of annoying, but because the batch is explicit here, we
-        # need to swap axes as well as broadcast
+        
+        init_states, target_states = \
+            _pos_only_inits_targets(pos_endpoints)
+        
+        # Broadcast to the desired number of time steps. Awkwardly, we also 
+        # need to use `swapaxes` because the batch dimension is explicit, here.
         target_states = jax.tree_map(
             lambda x: jnp.swapaxes(
                 jnp.broadcast_to(x, (self.n_steps, *x.shape)),
@@ -258,15 +323,16 @@ class RandomReaches(AbstractTask):
             ),
             target_states,
         )
-        task_inputs = target_states 
+        
+        task_inputs = _randomreaches_task_inputs(target_states)
         
         return ReachTrialSpec(init_states, task_inputs, target_states), None
 
 
 class DelayTaskInput(eqx.Module):
-    stim: PyTree[Float[Array, "n_steps ..."]]
-    hold: Int[Array, "n_steps 1"]
-    stim_on: Int[Array, "n_steps 1"]
+    stim: PyTree[Float[Array, "time ..."]]
+    hold: Int[Array, "time 1"]
+    stim_on: Int[Array, "time 1"]
 
 
 class RandomReachesDelayed(AbstractTask):
@@ -296,19 +362,11 @@ class RandomReachesDelayed(AbstractTask):
         """Random reach endpoints in a 2D rectangular workspace."""
         
         key1, key2 = jr.split(key)
-        pos_endpoints = jr.uniform(
-            key1, 
-            (2, N_DIM), 
-            minval=self.workspace[:, 0], 
-            maxval=self.workspace[:, 1]
-        )
-        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        pos_endpoints = _uniform_pos_endpoints(key1, self.workspace)
+                
+        init_state, target_state = \
+            _pos_only_inits_targets(pos_endpoints)
         
-        init_state, target_state = jax.tree_map(
-            lambda x: CartesianState2D(*x),
-            list(zip(pos_endpoints, vel_endpoints)),
-            is_leaf=lambda x: isinstance(x, tuple)
-        )
         task_inputs, target_states, epoch_start_idxs = self.get_sequences(
             init_state, target_state, key2
         )      
@@ -322,21 +380,16 @@ class RandomReachesDelayed(AbstractTask):
     def trials_validation(self):
         """Center-out reaches across a regular workspace grid."""
         
-        centers = internal_grid_points(self.workspace, self.eval_grid_n)
-        pos_endpoints = jax.vmap(
-            centreout_endpoints, 
-            in_axes=(0, None, None),
-            out_axes=1,
-        )(
-            centers, self.eval_n_directions, self.eval_reach_length
-        ).reshape((2, -1, self.N_DIM))
-        vel_endpoints = jnp.zeros_like(pos_endpoints)
+        pos_endpoints = _centerout_endpoints_grid(
+            self.workspace,
+            self.eval_grid_n,
+            self.eval_n_directions,
+            self.eval_reach_length,
+        )
         
-        init_states, target_states = jax.tree_map(
-            lambda x: CartesianState2D(*x),
-            list(zip(pos_endpoints, vel_endpoints)),
-            is_leaf=lambda x: isinstance(x, tuple)
-        )        
+        init_states, target_states = \
+            _pos_only_inits_targets(pos_endpoints)
+        
         epochs_keys = jr.split(self.key_eval, init_states.pos.shape[0])
         task_inputs, target_states, epoch_start_idxs = jax.vmap(self.get_sequences)(
             init_states, target_states, epochs_keys
@@ -367,7 +420,7 @@ class RandomReachesDelayed(AbstractTask):
         )[None, :]
         
         stim_seqs = get_masked_seqs(
-            target_states, 
+            _randomreaches_task_inputs(target_states), 
             epoch_masks[self.stim_epochs]
         )
         target_seqs = jax.tree_map(

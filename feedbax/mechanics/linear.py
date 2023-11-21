@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from feedbax.types import CartesianState2D, StateBounds
+from feedbax.state import CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)

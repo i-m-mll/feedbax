@@ -14,7 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, PyTree
 
 from feedbax.mechanics.system import System
-from feedbax.types import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import AbstractState, CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class Mechanics(eqx.Module):
     def __call__(self, input, state: MechanicsState):
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
         
+        # given effector force, update system state
         state = eqx.tree_at(
             lambda state: state.system,
             state,
@@ -56,7 +57,8 @@ class Mechanics(eqx.Module):
                 state.effector.force,
             )
         )
-            
+        
+        # evolve system state
         system_state, _, _, solver_state, _ = self.solver.step(
             self.term, 
             0, 
@@ -71,6 +73,7 @@ class Mechanics(eqx.Module):
             system_state = clip_state(system_state, self.system.bounds)
         
         effector_state = self.system.effector(system_state)
+        
         return MechanicsState(system_state, effector_state, solver_state)
     
     def init(
@@ -99,11 +102,6 @@ class Mechanics(eqx.Module):
         TODO:
         - Should we allow the user to pass input for constructing `solver_state`?
         """
-        # if effector_state is None:
-        #     effector_state = CartesianState2D(
-        #         pos=jnp.zeros(N_DIM),  
-        #         vel=jnp.zeros(N_DIM),  
-        #     )
         # TODO: don't pass effector state to system; use `inverse_kinematics` and pass result
         system_state = self.system.init(effector_state)
         effector_state = self.system.effector(system_state)

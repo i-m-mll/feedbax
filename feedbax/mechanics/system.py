@@ -13,7 +13,7 @@ from typing import Protocol, TypeVar
 import equinox as eqx
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.types import AbstractState, StateBounds
+from feedbax.state import AbstractState, StateBounds
 
 
 logger = logging.getLogger(__name__)

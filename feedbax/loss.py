@@ -1,6 +1,10 @@
 """
 
 TODO:
+- The time aggregation could be done in `CompositeLoss`, if we unsqueeze
+  terms that don't have a time dimension. This would allow time aggregation
+  to be controlled in one place, if for some reason it makes sense to change 
+  how this aggregation occurs across all loss terms.
 - Protocols for all the different `state` types/fields
 - Could use another dataclass instead of a dict for loss terms,
   though if they're not referenced in transformations I don't 
@@ -27,7 +31,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.types import CartesianState2D, HasEffectorState
+from feedbax.state import CartesianState2D, HasEffectorState
 
 
 logger = logging.getLogger(__name__)
@@ -109,9 +113,6 @@ class CompositeLoss(AbstractLoss):
             self.terms,
             is_leaf=lambda x: isinstance(x, AbstractLoss),
         )
-        # aggregate over time 
-        #! this should be done in all the other classes as well! they aren't returning scalars
-        loss_terms = jax.tree_map(lambda x: jnp.sum(x, axis=-1), loss_terms)
         # aggregate over batch 
         loss_terms = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_terms)
         if self.weights is not None:
@@ -177,6 +178,45 @@ class EffectorPositionLoss(AbstractLoss):
         if self.discount is not None:
             loss = loss * self.discount
         
+        # sum over time
+        loss = jnp.sum(loss, axis=-1)
+        
+        return loss, {self.labels[0]: loss}
+
+
+class EffectorStraightPathLoss(AbstractLoss):
+    """Penalize non-straight paths between initial and final state.
+    
+    Calculates the length of the paths followed, and normalizes by the
+    Euclidean distance between the initial and final state.
+    
+    The parameter `normalize_by` controls whether to normalize by the 
+    Euclidean distance between the initial and final actual states, or the 
+    initial actual state, but the goal state defined by the task.
+    """
+    labels: Tuple[str, ...] = ("effector_straight_path",)
+    normalize_by: str = "actual"
+
+    def __call__(
+        self, 
+        states: HasEffectorState, 
+        targets: PyTree,
+        task_inputs: Optional[PyTree] = None,
+    ) -> Tuple[float, Dict[str, float]]:
+        
+        effector_pos = states.mechanics.effector.pos
+        pos_diff = jnp.diff(effector_pos, axis=1)
+        piecewise_lengths = jnp.linalg.norm(pos_diff, axis=-1)
+        path_length = jnp.sum(piecewise_lengths, axis=1)
+        if self.normalize_by == "actual":
+            final_pos = effector_pos[:, -1]
+        elif self.normalize_by == "goal":
+            final_pos = targets.pos
+        init_final_diff = final_pos - effector_pos[:, 0]
+        straight_length = jnp.linalg.norm(init_final_diff, axis=-1)
+        
+        loss = path_length / straight_length
+        
         return loss, {self.labels[0]: loss}
 
 
@@ -197,6 +237,9 @@ class EffectorFixationLoss(AbstractLoss):
         )
         
         loss = loss * jnp.squeeze(task_inputs.hold)
+        
+        # sum over time
+        loss = jnp.sum(loss, axis=-1)
         
         return loss, {self.labels[0]: loss}
 
@@ -220,9 +263,6 @@ class EffectorFinalVelocityLoss(AbstractLoss):
             axis=-1
         )
         
-        # so the result plays nicely with time aggregation
-        loss = jnp.expand_dims(loss, axis=-1)
-        
         return loss, {self.labels[0]: loss}
 
 
@@ -240,6 +280,9 @@ class NetworkOutputLoss(AbstractLoss):
         
         loss = jnp.sum(states.network.output ** 2, axis=-1)
         
+        # sum over time
+        loss = jnp.sum(loss, axis=-1)
+        
         return loss, {self.labels[0]: loss}
 
 
@@ -256,6 +299,13 @@ class NetworkActivityLoss(AbstractLoss):
         
         loss = jnp.sum(states.network.activity ** 2, axis=-1)
         
+        # sum over time
+        loss = jnp.sum(loss, axis=-1)
+        
         return loss, {self.labels[0]: loss}
 
         
+def power_discount(n_steps, discount_exp=6):
+    """Discounting vector, a power law curve from 0 to 1, start to end.
+    """
+    return jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp

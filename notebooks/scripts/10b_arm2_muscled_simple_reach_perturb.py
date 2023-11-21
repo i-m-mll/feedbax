@@ -53,8 +53,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-import feedbax.loss as fbl
-from feedbax.model import SimpleFeedback
+from feedbax.intervene import EffectorCurlForceField
+from feedbax.model import SimpleFeedback, add_intervenors
 from feedbax.iterate import Iterator
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.muscle import (
@@ -118,7 +118,7 @@ def get_model(
             tau_deact=tau,
         )
     )
-    mechanics = Mechanics(system, dt, clip_states=False)
+    mechanics = Mechanics(system, dt)
     
     # this time we need to specifically request joint angles
     # and angular velocities, and not muscle activations
@@ -166,7 +166,6 @@ learning_rate = 0.05
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=0.1,
-    effector_straight_path=1e-3,
     nn_output=1e-4,
     nn_activity=0.,
 )
@@ -195,16 +194,9 @@ def setup(
 
     key = jr.PRNGKey(seed)
 
-    discount = fbl.power_discount(n_steps, 6)
-    loss_func = fbl.CompositeLoss(
-        dict(
-            effector_position=fbl.EffectorPositionLoss(discount=discount),
-            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            effector_straight_path=fbl.EffectorStraightPathLoss(),
-            nn_output=fbl.NetworkOutputLoss(),
-            nn_activity=fbl.NetworkActivityLoss(),
-        ),
-        weights=loss_term_weights,
+    loss_func = simple_reach_loss(
+        n_steps, 
+        loss_term_weights,
     )
 
     task = RandomReaches(
@@ -238,6 +230,13 @@ trainer = TaskTrainer(
         learning_rate=learning_rate
     ),
     checkpointing=True,
+)
+
+# %%
+model = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, [EffectorCurlForceField(0.05, direction='ccw')]),
 )
 
 # %%
@@ -304,6 +303,22 @@ plot_pos_vel_force_2D(
     cmap='plasma', 
     workspace=task.workspace,
 );
+
+# %%
+from feedbax.intervene import EffectorCurlForceField
+from feedbax.model import add_intervenors
+
+model_ = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, [], keep_existing=False),
+)
+
+# %%
+loss, loss_terms, states = task.eval(model_, key=jr.PRNGKey(0))
+
+# %%
+states.mechanics.effector.force
 
 # %% [markdown]
 # Plot entire arm trajectory for an example direction

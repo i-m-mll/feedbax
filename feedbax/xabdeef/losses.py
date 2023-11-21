@@ -10,6 +10,7 @@ from feedbax.loss import (
     EffectorFinalVelocityLoss,
     NetworkOutputLoss,
     NetworkActivityLoss,
+    power_discount,
 )
 
 
@@ -38,7 +39,7 @@ def simple_reach_loss(
     if discount_exp == 0:
         discount = 1.
     else: 
-        discount = jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp
+        discount = power_discount(n_steps, discount_exp)
     return CompositeLoss(
         dict(
             # these assume a particular PyTree structure to the states returned by the model

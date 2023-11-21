@@ -27,7 +27,7 @@ from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState 
 from feedbax.task import AbstractTask
-from feedbax.types import CartesianState2D
+from feedbax.state import CartesianState2D
 from feedbax.utils import tree_sum_n_features
 
 

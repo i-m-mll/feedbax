@@ -16,7 +16,7 @@ from jaxtyping import Array, Float
 
 from feedbax.mechanics.arm import TwoLink
 from feedbax.mechanics.muscle import VirtualMuscle
-from feedbax.types import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import AbstractState, CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)

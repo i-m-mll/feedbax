@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from jaxtyping import Float, Array
 import numpy as np
 
-from feedbax.types import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import AbstractState, CartesianState2D, StateBounds
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
 
@@ -27,16 +27,16 @@ N_DIM = 2
 
 
 class TwoLinkState(AbstractState):
-    theta: Float[Array, "... 2"]
-    d_theta: Float[Array, "... 2"]
-    torque: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
+    theta: Float[Array, "... ndim=2"]
+    d_theta: Float[Array, "... ndim=2"]
+    torque: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
 
 
 class TwoLink(eqx.Module):
-    l: Float[Array, "2"] = field(converter=jnp.asarray)  # [L] lengths of arm segments
-    m: Float[Array, "2"] = field(converter=jnp.asarray)  # [M] masses of segments
-    I: Float[Array, "2"] = field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
-    s: Float[Array, "2"] = field(converter=jnp.asarray)  # [L] distance from joint center to segment COM
+    l: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [L] lengths of arm segments
+    m: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [M] masses of segments
+    I: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
+    s: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [L] distance from joint center to segment COM
     B: Float[Array, "2 2"] = field(converter=jnp.asarray)  # [M L^2 T^-1] joint friction matrix
     inertia_gain: float   
     
