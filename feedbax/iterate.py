@@ -56,16 +56,19 @@ class Iterator(eqx.Module):
         
         key1, key2 = jr.split(key)
         
-        # since we optionally store the trajectories of only some of the states,
+        # Since we optionally store the trajectories of only some of the states,
         # as specified by `states_includes`, we need to partition these out 
         # so we can index them, then recombine with the states for which only 
-        # the current step is stored
+        # a single time step (the current one) is stored.
         states_mem, state_nomem = eqx.partition(states, self.states_includes)
         state_mem, input = tree_get_idx((states_mem, inputs), i)
         state = eqx.combine(state_mem, state_nomem)
         
         state = self.step(input, state, key1)
         
+        # Likewise, we split the resulting states into those which are stored,
+        # which are then assigned to the next index in the trajectory, and 
+        # recombined with the single-timestep states (previous time step lost).
         state_mem, state_nomem = eqx.partition(state, self.states_includes)        
         states_mem = tree_set_idx(states_mem, state_mem, i + 1)
         states = eqx.combine(states_mem, state_nomem)
@@ -76,7 +79,8 @@ class Iterator(eqx.Module):
     def __call__(self, inputs, init_effector_state, key):
         key1, key2, key3 = jr.split(key, 3)
         
-        init_state = self.step.init(init_effector_state)  #! maybe this should be outside
+        # TODO: this should be outside        
+        init_state = self.step.init(init_effector_state)  
         
         init_input = tree_get_idx(inputs, 0)
         states = self.init(init_input, init_state, key2)

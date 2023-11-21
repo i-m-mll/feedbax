@@ -216,7 +216,6 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         n_feedback = tree_sum_n_features(example_feedback)
         example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))[0]
         n_task_inputs = tree_sum_n_features(example_trial_spec.input)
-    
         return n_feedback + n_task_inputs
     
     

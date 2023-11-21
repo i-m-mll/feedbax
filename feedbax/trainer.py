@@ -248,29 +248,38 @@ class TaskTrainer(eqx.Module):
         flat_model, treedef_model = jax.tree_util.tree_flatten(model)
         flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
          
-        # Finish the JIT compilation before the first training iteration,
-        # so the user will see it timed.
-        for _ in tqdm(range(1), desc='compile', disable=disable_tqdm):
-            keys = jr.split(key, batch_size)
-            trial_specs, _ = get_batch(key=keys)
-            self.train_step(  # doesn't alter model or opt_state
-                flat_model, 
-                treedef_model,
-                flat_opt_state,
-                treedef_opt_state,
-                filter_spec, 
-                trial_specs,
-                loss_func_wrapped,
-                keys, 
-            )  
-            if not disable_tqdm:
-                tqdm.write(f"Training step compiled.", file=sys.stdout)
-            task.eval(model, key)
-            if not disable_tqdm:
-                tqdm.write(f"Validation step compiled.", file=sys.stdout)
+        # Finish the JIT compilation before the first training iteration.
+        if not jax.config.jax_disable_jit:
+            for _ in tqdm(range(1), desc='compile', disable=disable_tqdm):
+                keys = jr.split(key, batch_size)
+                trial_specs, _ = get_batch(key=keys)
+                self.train_step(  # doesn't alter model or opt_state
+                    flat_model, 
+                    treedef_model,
+                    flat_opt_state,
+                    treedef_opt_state,
+                    filter_spec, 
+                    trial_specs,
+                    loss_func_wrapped,
+                    keys, 
+                )  
+                if not disable_tqdm:
+                    tqdm.write(f"Training step compiled.", file=sys.stdout)
+                task.eval(model, key)
+                if not disable_tqdm:
+                    tqdm.write(f"Validation step compiled.", file=sys.stdout)
+        else:
+            logger.debug("JIT globally disabled, skipping pre-run compilation")
 
         keys = jr.split(key, n_batches)
         
+        #! The first step of a run is still slow, even with the above warmup.
+        #! I suspect this might be due to re-compilation that is happening 
+        #! due to the structure of `opt-state` changing *only on the first
+        #! step*. Perhaps we can either 1) figure out why `opt_state` changes,
+        #! and perhaps avoid that, or 2) do the first two actual steps inside 
+        #! the warmup loop, and then continue here from step 3, to give the 
+        #! user more appropriate timing estimates.
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
         for batch in tqdm(
             range(start_batch, n_batches), 

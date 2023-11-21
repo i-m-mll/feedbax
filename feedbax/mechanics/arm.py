@@ -97,7 +97,7 @@ class TwoLink(eqx.Module):
     ):
         if effector_state is None:
             effector_state = CartesianState2D(
-                pos=jnp.zeros(N_DIM), 
+                pos=self._forward_pos(jnp.zeros(2))[0][-1], 
                 vel=jnp.zeros(N_DIM),
             )
         theta, torque = self.inverse_kinematics(effector_state)        
@@ -159,7 +159,7 @@ class TwoLink(eqx.Module):
         l, lsqpm = self.l, self._lsqpm
         dsq = jnp.sum(pos ** 2)
 
-        jax.debug.print("{x}, {y}", x=dsq, y=l[0])
+       
         alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
         gamma = jnp.arctan2(pos[1], pos[0])
         theta0 = gamma - alpha

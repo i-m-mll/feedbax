@@ -19,7 +19,7 @@
 # %%
 LOG_LEVEL = "INFO"
 NB_PREFIX = "nb10"
-DEBUG = True
+DEBUG = False
 ENABLE_X64 = False
 N_DIM = 2  # TODO: not here
 
@@ -62,7 +62,7 @@ from feedbax.mechanics.muscle import (
     TodorovLiVirtualMuscle, 
 ) 
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.networks import RNNCellWithReadout
+from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -80,6 +80,7 @@ os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
 logging.getLogger("jax").setLevel(logging.INFO)
 
 jax.config.update("jax_debug_nans", DEBUG)
+jax.config.update('jax_disable_jit', DEBUG)
 jax.config.update("jax_enable_x64", ENABLE_X64)
 
 # not sure if this will work or if I need to use the env variable version
@@ -98,6 +99,7 @@ model_dir = Path("../models/")
 def get_model(
     task,
     dt: float = 0.05, 
+    rnn_input_size: int = 25,
     hidden_size: int = 50, 
     n_steps: int = 50, 
     feedback_delay: int = 0, 
@@ -123,7 +125,8 @@ def get_model(
     feedback_leaves_func = lambda mechanics_state: (
         mechanics_state.system.theta,
         mechanics_state.system.d_theta,
-        mechanics_state.effector,        
+        mechanics_state.effector.pos,
+        mechanics_state.effector.vel,        
     )
     
     # automatically determine network input size
@@ -131,8 +134,9 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
     
-    net = RNNCellWithReadout(
+    net = RNNCellWithReadoutAndInput(
         input_size, 
+        rnn_input_size,
         hidden_size, 
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
@@ -151,7 +155,7 @@ def get_model(
 # %%
 seed = 5566
 
-n_steps = 10
+n_steps = 50
 dt = 0.05 
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
@@ -229,16 +233,30 @@ trainer = TaskTrainer(
 )
 
 # %%
+
+# #! this is currently leading to NaNs at step 44 of the second iteration
+
+# from feedbax.intervene import EffectorCurlForceField
+# from feedbax.model import add_intervenors
+
+# model = eqx.tree_at(
+#     lambda model: model.step,
+#     model,
+#     add_intervenors(model.step, [EffectorCurlForceField(0.05, direction='ccw')]),
+# )
+
+# %%
 trainable_leaves_func = lambda model: (
+    model.step.net.input_layer,
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias
+    model.step.net.cell.bias,
 )
 
 model, losses, loss_terms, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=1_000, 
+    n_batches=10_000, 
     batch_size=500, 
     log_step=250,
     trainable_leaves_func=trainable_leaves_func,
@@ -247,9 +265,6 @@ model, losses, loss_terms, learning_rates = trainer(
 
 plot_loss(losses, loss_terms)
 plt.show()
-
-# %%
-loss_terms
 
 # %% [markdown]
 # Save the trained model to file
@@ -262,6 +277,8 @@ model_path = save(
     suffix=NB_PREFIX,
 )
 
+model_path
+
 # %% [markdown]
 # If we didn't just save a model, we can try to load one
 
@@ -270,15 +287,8 @@ try:
     model_path
     model, task
 except NameError:
-    model_path = '../models/model_20231026-103421_b4a92ad_nb8.eqx'
+    model_path = '../models/model_20231121-104123_eb3d3cc_nb10.eqx'
     model, task = load(model_path, setup)
-
-# %% [markdown]
-# Optionally, load an existing model
-
-# %%
-model = get_model()
-model = eqx.tree_deserialise_leaves("../models/model_20230926-093821_nb10.eqx", model)
 
 # %% [markdown]
 # Evaluate on a centre-out task
@@ -288,19 +298,39 @@ loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 # fig = make_eval_plot(states[1], states[2], workspace)
-init_states, target_states, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
+trial_specs, _ = task.trials_validation
+goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
+# %%
+jax.config.update("jax_disable_jit", True)
+jax.config.update("jax_debug_nans", True)
 
 plot_pos_vel_force_2D(
-    states.mechanics.effector.pos, 
-    states.mechanics.effector.vel, 
-    # leave out the first timestep of controls, since it jumps from (0, 0)
-    states.network.output[:, 1:, -2:], 
-    endpoints=(init_states.pos, goal_states.pos), 
+    states,
+    endpoints=(trial_specs.init.pos, goal_states.pos), 
     force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
     cmap='plasma', 
     workspace=task.workspace,
 );
+
+# %%
+model
+
+# %%
+from feedbax.intervene import EffectorCurlForceField
+from feedbax.model import add_intervenors
+
+model_ = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, [EffectorCurlForceField(0.05, direction='ccw')]),
+)
+
+# %%
+loss, loss_terms, states = task.eval(model_, key=jr.PRNGKey(0))
+
+# %%
+states.mechanics.effector.force
 
 # %% [markdown]
 # Plot entire arm trajectory for an example direction

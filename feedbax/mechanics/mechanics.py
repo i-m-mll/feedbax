@@ -106,14 +106,14 @@ class Mechanics(eqx.Module):
         TODO:
         - Should we allow the user to pass input for constructing `solver_state`?
         """
-        if effector_state is None:
-            effector_state = CartesianState2D(
-                pos=jnp.zeros(N_DIM),  
-                vel=jnp.zeros(N_DIM),  
-            )
+        # if effector_state is None:
+        #     effector_state = CartesianState2D(
+        #         pos=jnp.zeros(N_DIM),  
+        #         vel=jnp.zeros(N_DIM),  
+        #     )
         # TODO: don't pass effector state to system; use `inverse_kinematics` and pass result
-        #! assumes zero initial velocity; TODO convert initial velocity also
         system_state = self.system.init(effector_state)
+        effector_state = self.system.effector(system_state)
         init_input = jnp.zeros((self.system.control_size,))
         solver_state = self.solver.init(
             self.term, 0, self.dt, system_state, init_input

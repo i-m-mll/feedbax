@@ -16,9 +16,12 @@ from jaxtyping import Array, Float
 
 from feedbax.mechanics.arm import TwoLink
 from feedbax.mechanics.muscle import VirtualMuscle
+from feedbax.types import CartesianState2D
 
 
 logger = logging.getLogger(__name__)
+
+N_DIM = 2
 
 
 class TwoLinkMuscledState(eqx.Module):
@@ -63,6 +66,7 @@ class TwoLinkMuscled(eqx.Module):
     inverse_kinematics: Callable
     effector: Callable
     update_state_given_effector_force: Callable
+    _forward_pos: Callable
     
     def __init__(
         self, 
@@ -88,6 +92,7 @@ class TwoLinkMuscled(eqx.Module):
         self.forward_kinematics = self.twolink.forward_kinematics
         self.inverse_kinematics = self.twolink.inverse_kinematics
         self.effector = self.twolink.effector
+        self._forward_pos = self.twolink._forward_pos
         self.update_state_given_effector_force = \
             self.twolink.update_state_given_effector_force
 
@@ -119,6 +124,11 @@ class TwoLinkMuscled(eqx.Module):
         return v
     
     def init(self, effector_state):
+        if effector_state is None:
+            effector_state = CartesianState2D(
+                pos=self._forward_pos(jnp.zeros(2))[0][-1], 
+                vel=jnp.zeros(N_DIM),
+            )
         theta, torque = self.inverse_kinematics(effector_state)         
         return TwoLinkMuscledState(
             theta=theta, 
