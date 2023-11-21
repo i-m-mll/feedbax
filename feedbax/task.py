@@ -14,7 +14,7 @@ TODO:
 from abc import abstractmethod, abstractproperty
 from functools import cached_property
 import logging 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import equinox as eqx
 from equinox import AbstractVar, field
@@ -35,19 +35,34 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class AbstractTaskInputs(eqx.Module):
-    stim: PyTree  #?
+class AbstractTaskInput(eqx.Module):
+    intervenors: AbstractVar[Dict[str, jax.Array]]
+
+
+class SimpleReachTaskInput:
+    stim: Float[Array, "n_steps 1"]
+    intervenors: Dict[str, jax.Array]
+    
+
+class DelayedReachTaskInput(AbstractTaskInput):
+    stim: Float[Array, "n_steps 1"]
+    hold: Int[Array, "n_steps 1"]
+    stim_on: Int[Array, "n_steps 1"]
+    intervenors: Dict[str, jax.Array]
 
 
 class AbstractTaskTrialSpec(eqx.Module):
     init: PyTree
-    input: AbstractTaskInputs
+    input: AbstractTaskInput
     target: PyTree
     
 
+# TODO: this same trial spec also applies to tracking and stabilization tasks...
+#? does it apply to all kinds of movement tasks we're interested in?
+# if so we can eliminate the `AbstractTaskTrialSpec`
 class ReachTrialSpec(AbstractTaskTrialSpec):
     init: CartesianState2D 
-    input: AbstractTaskInputs
+    input: AbstractTaskInput
     target: CartesianState2D
 
 
@@ -76,7 +91,6 @@ class AbstractTask(eqx.Module):
         useful for plotting or analysis but not for model training or
         evaluation.
         """
-        
         ...  
         
     @abstractproperty    
@@ -88,7 +102,6 @@ class AbstractTask(eqx.Module):
         May also return a pytree of auxiliary data, e.g. that would be 
         useful for plotting or analysis but not for model evaluation.
         """
-        
         ...
 
     def eval(
@@ -173,7 +186,7 @@ class RandomReaches(AbstractTask):
       and allow the user to pass just `loss_term_weights`.
     """
     loss_func: AbstractLoss
-    workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
+    workspace: Float[Array, "ndim 2"] = field(converter=jnp.asarray)
     n_steps: int
     eval_n_directions: int 
     eval_reach_length: float
@@ -200,10 +213,11 @@ class RandomReaches(AbstractTask):
             maxval=self.workspace[:, 1]
         )
         vel_endpoints = jnp.zeros_like(pos_endpoints)
+        forces = jnp.zeros_like(pos_endpoints)
         
         init_state, target_state = jax.tree_map(
             lambda x: CartesianState2D(*x),
-            list(zip(pos_endpoints, vel_endpoints)),
+            list(zip(pos_endpoints, vel_endpoints, forces)),
             is_leaf=lambda x: isinstance(x, tuple)
         )
         # make targets as sequences, because `Iterator` and `Loss` want that
@@ -228,10 +242,11 @@ class RandomReaches(AbstractTask):
             centers, self.eval_n_directions, self.eval_reach_length
         ).reshape((2, -1, self.N_DIM))
         vel_endpoints = jnp.zeros_like(pos_endpoints)
+        forces = jnp.zeros_like(pos_endpoints)
         
         init_states, target_states = jax.tree_map(
             lambda x: CartesianState2D(*x),
-            list(zip(pos_endpoints, vel_endpoints)),
+            list(zip(pos_endpoints, vel_endpoints, forces)),
             is_leaf=lambda x: isinstance(x, tuple)
         )
         # this is kind of annoying, but because the batch is explicit here, we
@@ -262,7 +277,7 @@ class RandomReachesDelayed(AbstractTask):
     TODO: 
     """
     loss_func: AbstractLoss 
-    workspace: Float[Array, "ndim 2"] = eqx.field(converter=jnp.asarray)
+    workspace: Float[Array, "ndim 2"] = field(converter=jnp.asarray)
     n_steps: int 
     epoch_len_ranges: Tuple[Tuple[int, int], ...]
     eval_n_directions: int

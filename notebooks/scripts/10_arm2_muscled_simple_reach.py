@@ -19,7 +19,7 @@
 # %%
 LOG_LEVEL = "INFO"
 NB_PREFIX = "nb10"
-DEBUG = False
+DEBUG = True
 ENABLE_X64 = False
 N_DIM = 2  # TODO: not here
 
@@ -65,6 +65,7 @@ from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import RNNCellWithReadout
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
+from feedbax.xabdeef.losses import simple_reach_loss
 
 
 from feedbax.plot import (
@@ -135,7 +136,6 @@ def get_model(
         hidden_size, 
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
-        persistence=False,
         key=key,
     )
     body = SimpleFeedback(
@@ -151,7 +151,7 @@ def get_model(
 # %%
 seed = 5566
 
-n_steps = 50
+n_steps = 10
 dt = 0.05 
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.15), 
@@ -190,7 +190,7 @@ def setup(
 
     key = jr.PRNGKey(seed)
 
-    loss_func = fbl.simple_reach_loss(
+    loss_func = simple_reach_loss(
         n_steps, 
         loss_term_weights,
     )
@@ -247,6 +247,9 @@ model, losses, loss_terms, learning_rates = trainer(
 
 plot_loss(losses, loss_terms)
 plt.show()
+
+# %%
+loss_terms
 
 # %% [markdown]
 # Save the trained model to file

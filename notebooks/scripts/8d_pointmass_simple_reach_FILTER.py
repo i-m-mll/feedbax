@@ -72,10 +72,11 @@ from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNNCellWithReadoutAndInput
+from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
 from feedbax.plot import plot_loss, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
+from feedbax.utils import tree_take 
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -93,46 +94,8 @@ plt.style.use('dark_background')
 # %%
 model_dir = Path("../models/")
 
-# %%
-eqx.nn.Linear(10, 10, key=jr.PRNGKey(0))
-
 
 # %%
-# class TestTwoLayerReadout(eqx.Module):
-#     input_size: int
-#     hidden_size: int
-#     out_size: int
-#     nonlinearity: Callable
-#     use_bias: bool = True
-    
-#     def __init__(
-#         self, 
-#         input_size, 
-#         hidden_size,
-#         out_size, 
-#         nonlinearity=jnp.sigmoid,
-#         use_bias=True,
-#         *,
-#         key: jax.Array,
-#     ):
-#         self.input_size = input_size
-#         self.hidden_size = hidden_size
-#         self.out_size = out_size
-#         self.use_bias = use_bias
-#         self.nonlinearity = nonlinearity
-        
-#         self._layers = eqx.nn.Sequential(
-#             [
-#                 eqx.nn.Linear(input_size, hidden_size, use_bias=use_bias, key=key),
-#                 eqx.nn.Lambda(self.nonlinearity),
-#                 eqx.nn.Linear(hidden_size, out_size, use_bias=use_bias, key=key),
-#             ]
-#         )
-#         self.layers = self._layers.layers
-    
-#     def __call__(self, input):
-#         return 
-
 def get_model(
     task,
     dt: float = 0.05, 
@@ -157,28 +120,21 @@ def get_model(
         task, mechanics
     )
     
-    def two_layer_readout(input_size, out_size, use_bias=True, *, key):
-        key1, key2 = jr.split(key, 2)
-        return eqx.nn.Sequential(
-            [
-                eqx.nn.Linear(input_size, readout_hidden_size, use_bias=use_bias, key=key1),
-                eqx.nn.Lambda(jnp.tanh),
-                eqx.nn.Linear(readout_hidden_size, out_size, use_bias=use_bias, key=key2),
-            ]
-        )
-    
     net = RNNCellWithReadoutAndInput(
         input_size,
         rnn_input_size,
         hidden_size,
         system.control_size, 
-        readout_type=two_layer_readout,
+        readout_type=eqx.nn.Linear, #two_layer_readout,
         out_nonlinearity=out_nonlinearity, 
-        persistence=True,
         key=key,
     )
     
-    body = SimpleFeedback(net, mechanics, feedback_delay)
+    body = SimpleFeedback(
+        net, 
+        mechanics, 
+        feedback_delay
+    )
     
     return Iterator(body, n_steps)
 
@@ -319,7 +275,7 @@ try:
     model_path
     model, task
 except NameError:
-    model_path = '../models/model_20231026-165045_2fbb446_nb8.eqx'
+    model_path = "../models/model_20231120-155247_0244319_nb8.eqx"
     model, task = load(model_path, setup)
 
 # %% [markdown]
@@ -332,10 +288,25 @@ loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
 trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
-    states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    states, #tree_take(states, jnp.arange(10), 1),
+    endpoints=None,#(trial_specs.init.pos, goal_states.pos),
 )
 plt.show()
+
+# %%
+from feedbax.intervene import EffectorCurlForceField
+from feedbax.model import add_intervenors
+
+model_ = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, [EffectorCurlForceField(0.15)]),
+)
+
+# %%
+loss, loss_terms, states = task.eval(model_, key=jr.PRNGKey(0))
+
+# %%
 
 # %%
 (loss, loss_terms, states), trials, aux = task.eval_train_batch(

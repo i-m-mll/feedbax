@@ -9,6 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 import equinox as eqx
+from equinox import field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -24,6 +25,8 @@ class TwoLinkMuscledState(eqx.Module):
     theta: Float[Array, "links=2"]
     d_theta: Float[Array, "links=2"]
     activation: Float[Array, "muscles"]
+    torque: Float[Array, "links=2"] = field(
+        default_factory=lambda: jnp.zeros(2))
 
 
 class TwoLinkMuscled(eqx.Module):
@@ -59,6 +62,7 @@ class TwoLinkMuscled(eqx.Module):
     forward_kinematics: Callable 
     inverse_kinematics: Callable
     effector: Callable
+    update_state_given_effector_force: Callable
     
     def __init__(
         self, 
@@ -84,6 +88,8 @@ class TwoLinkMuscled(eqx.Module):
         self.forward_kinematics = self.twolink.forward_kinematics
         self.inverse_kinematics = self.twolink.inverse_kinematics
         self.effector = self.twolink.effector
+        self.update_state_given_effector_force = \
+            self.twolink.update_state_given_effector_force
 
     @jax.named_scope("fbx.TwoLinkMuscled.vector_field")
     def vector_field(self, t, state, args):
@@ -113,11 +119,12 @@ class TwoLinkMuscled(eqx.Module):
         return v
     
     def init(self, effector_state):
-        theta = self.inverse_kinematics(effector_state)        
+        theta, torque = self.inverse_kinematics(effector_state)         
         return TwoLinkMuscledState(
-            theta, 
-            jnp.zeros_like(theta), 
-            jnp.zeros(self.control_size)
+            theta=theta, 
+            d_theta=jnp.zeros_like(theta), 
+            activation=jnp.zeros(self.control_size),
+            torque=torque,
         )
     
     @property

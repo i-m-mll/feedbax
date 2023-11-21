@@ -17,11 +17,8 @@ from typing import (
     ClassVar,
     Dict, 
     Optional, 
-    Protocol, 
     Sequence,
     Tuple,
-    Union,
-    runtime_checkable,
 )
 
 import equinox as eqx
@@ -31,7 +28,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 import numpy as np
 
-from feedbax.types import CartesianState2D
+from feedbax.types import CartesianState2D, HasEffectorState
 
 
 logger = logging.getLogger(__name__)
@@ -154,16 +151,6 @@ class CompositeLoss(AbstractLoss):
         loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
         
         return loss, loss_terms
-    
-
-@runtime_checkable
-class HasEffectorState(Protocol):
-    effector: CartesianState2D
-
-
-@runtime_checkable
-class HasMechanicsState(Protocol):
-    mechanics: HasEffectorState
 
 
 class EffectorPositionLoss(AbstractLoss):

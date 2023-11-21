@@ -89,7 +89,8 @@ def delete_contents(path: Union[str, Path]):
             p.unlink()
             
             
-def dirname_of_this_module():
+def _dirname_of_this_module():
+    """Return the directory containing this module."""
     return os.path.dirname(os.path.abspath(__file__))
     
 
@@ -124,7 +125,7 @@ def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
     Based on <https://stackoverflow.com/a/57683700>
     """
     if path is None:
-        path = dirname_of_this_module()
+        path = _dirname_of_this_module()
 
     commit_id = subprocess.check_output(["git", "describe", "--always"],
                                         cwd=path).strip().decode()
@@ -200,6 +201,17 @@ def tree_get_idx(tree: PyTree, idx: int):
     """
     arrays, other = eqx.partition(tree, eqx.is_array)
     values = jax.tree_map(lambda xs: xs[idx], arrays)
+    return eqx.combine(values, other)
+
+
+@jax.named_scope("fbx.tree_get_idx")
+def tree_take(tree: PyTree, idx: int, axis: int):
+    """Take elements from the specified axis of each array leaf of `tree`.
+    
+    Any non-array leaves are returned unchanged.
+    """
+    arrays, other = eqx.partition(tree, eqx.is_array)
+    values = jax.tree_map(lambda xs: jnp.take(xs, idx, axis=axis), arrays)
     return eqx.combine(values, other)
 
 

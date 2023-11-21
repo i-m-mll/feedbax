@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 import equinox as eqx
+from equinox import field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
@@ -26,26 +27,27 @@ N_DIM = 2
 
 
 class TwoLinkState(eqx.Module):
-    theta: Float[Array, "2"]
-    d_theta: Float[Array, "2"]
+    theta: Float[Array, "... 2"]
+    d_theta: Float[Array, "... 2"]
+    torque: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
 
 
 class TwoLink(eqx.Module):
-    l: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [L] lengths of arm segments
-    m: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [M] masses of segments
-    I: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
-    s: Float[Array, "2"] = eqx.field(converter=jnp.asarray)  # [L] distance from joint center to segment COM
-    B: Float[Array, "2 2"] = eqx.field(converter=jnp.asarray)  # [M L^2 T^-1] joint friction matrix
+    l: Float[Array, "2"] = field(converter=jnp.asarray)  # [L] lengths of arm segments
+    m: Float[Array, "2"] = field(converter=jnp.asarray)  # [M] masses of segments
+    I: Float[Array, "2"] = field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
+    s: Float[Array, "2"] = field(converter=jnp.asarray)  # [L] distance from joint center to segment COM
+    B: Float[Array, "2 2"] = field(converter=jnp.asarray)  # [M L^2 T^-1] joint friction matrix
     inertia_gain: float   
     
     def __init__(
-            self,
-            l=(0.30, 0.33),  # [m]
-            m=(1.4, 1.0),  # [kg]
-            I=(0.025, 0.045),  # [kg m^2]
-            s=(0.11, 0.16),  # [m]
-            B=((0.05, 0.025),  # [kg m^2 s^-1]
-               (0.025, 0.05)),
+        self,
+        l=(0.30, 0.33),  # [m]
+        m=(1.4, 1.0),  # [kg]
+        I=(0.025, 0.045),  # [kg m^2]
+        s=(0.11, 0.16),  # [m]
+        B=((0.05, 0.025),  # [kg m^2 s^-1]
+           (0.025, 0.05)),
     ):
         self.l = l
         self.m = m
@@ -75,7 +77,15 @@ class TwoLink(eqx.Module):
         inertia_mat = jnp.array(((self._a[0] + 2 * self._a[1] * cs1, tmp),
                                  (tmp, self._a[2] * jnp.ones_like(cs1))))
         
-        net_torque = input_torque - c_vec.T - jnp.matmul(d_theta, self.B.T)
+        # Normally, `state.torque` only contains the torque induced by
+        # linear force on the effector, as determined by inverse kinematics;
+        # whereas `input_torque` is direct torque control.
+        net_torque = (
+            state.torque  
+            + input_torque 
+            - c_vec.T 
+            - jnp.matmul(d_theta, self.B.T)
+        )
         
         dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
         
@@ -87,11 +97,15 @@ class TwoLink(eqx.Module):
     ):
         if effector_state is None:
             effector_state = CartesianState2D(
-                jnp.zeros(N_DIM), 
-                jnp.zeros(N_DIM)
+                pos=jnp.zeros(N_DIM), 
+                vel=jnp.zeros(N_DIM),
             )
-        theta = self.inverse_kinematics(effector_state)        
-        return TwoLinkState(theta, jnp.zeros_like(theta))
+        theta, torque = self.inverse_kinematics(effector_state)        
+        return TwoLinkState(
+            theta=theta, 
+            dtheta=jnp.zeros_like(theta),
+            torque=torque,
+        )
 
     @cached_property
     def _a(self):
@@ -123,7 +137,7 @@ class TwoLink(eqx.Module):
     def inverse_kinematics(
             self,
             effector_state: CartesianState2D
-    ) -> Float[Array, "2"]: # TwoLinkState
+    ) -> Float[Array, "2"]: # TODO: should be TwoLinkState
         """Convert Cartesian effector position to joint angles for a two-link arm.
         
         NOTE: 
@@ -145,6 +159,7 @@ class TwoLink(eqx.Module):
         l, lsqpm = self.l, self._lsqpm
         dsq = jnp.sum(pos ** 2)
 
+        jax.debug.print("{x}, {y}", x=dsq, y=l[0])
         alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
         gamma = jnp.arctan2(pos[1], pos[0])
         theta0 = gamma - alpha
@@ -152,14 +167,58 @@ class TwoLink(eqx.Module):
         beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
         theta1 = np.pi - beta
 
-        angles = jnp.stack([theta0, theta1], axis=-1)
+        theta = jnp.stack([theta0, theta1], axis=-1)
+        
+        if effector_state.force is not None:
+            torque = self.effector_force_to_torques(theta, effector_state.force)
+        else:
+            torque = None
 
-        return angles    
+        return theta, torque
+    
+    def update_state_given_effector_force(
+        self, 
+        state: TwoLinkState, 
+        effector_force: jax.Array,
+    ):
+        """Update a state PyTree with torques inferred from effector force."""
+        torque = self.effector_force_to_torques(
+            state.theta, 
+            effector_force,
+        )
+        
+        return eqx.tree_at(
+            lambda state: state.torque, 
+            state, 
+            torque + state.torque
+        )
+    
+    def effector_force_to_torques(
+        self, 
+        theta: jax.Array, 
+        effector_force: jax.Array
+    ):
+        """Return the torques induced by a force on the effector."""
+        torque = self.effector_jac(theta).T @ effector_force
+        return torque
+    
+    def effector_jac(self, theta):
+        """Jacobian of effector position with respect to joint angles."""
+        jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(theta)
+        return jac[-1]
+    
+    def _forward_pos(self, theta):
+        """Separated from `forward_kinematics` for use in `effector_jac`."""
+        angle_sum = jnp.cumsum(theta)  # links
+        length_components = self.l * jnp.array([jnp.cos(angle_sum),
+                                                jnp.sin(angle_sum)])  # xy, links
+        xy_pos = jnp.cumsum(length_components, axis=1)  # xy, links
+        return xy_pos.T, length_components
 
     @jax.named_scope("fbx.TwoLink.forward_kinematics")
     def forward_kinematics(
-            self,
-            state: TwoLinkState
+        self,
+        state: TwoLinkState
     ) -> CartesianState2D:
         """Convert angular state to Cartesian state.
         
@@ -172,16 +231,24 @@ class TwoLink(eqx.Module):
         TODO:
         - Any point to reducing memory by only calculating the last link?
         """
-        angle_sum = jnp.cumsum(state.theta)  # links
-        length_components = self.l * jnp.array([jnp.cos(angle_sum),
-                                                jnp.sin(angle_sum)])  # xy, links
-        xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
+        xy_pos, length_components = self._forward_pos(state.theta)
         
         ang_vel_sum = jnp.cumsum(state.d_theta)  # links
-        xy_velocity = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
-                                 * ang_vel_sum,
-                                 axis=1)  # xy, links
-        return CartesianState2D(xy_position.T, xy_velocity.T)
+        xy_vel = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
+                            * ang_vel_sum,
+                            axis=1).T  # xy, links
+        
+        # TODO: add force conversion?
+        # It might be very important NOT to convert force here.
+        # Otherwise we could get positive feedback where the effector force
+        # is passed to the next time step and converted to torques, then
+        # converted to effector forces and added back to the torques, etc.
+
+        return CartesianState2D(
+            pos=xy_pos, 
+            vel=xy_vel,
+            force=jnp.zeros_like(xy_vel),
+        )
 
     def effector(self, state: TwoLinkState) -> CartesianState2D:
         """Return the Cartesian state of the end of the arm."""

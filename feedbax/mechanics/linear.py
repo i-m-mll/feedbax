@@ -1,4 +1,4 @@
-"""
+"""Modules defining continuous linear dynamical systems.
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -59,7 +59,14 @@ class AbstractLTISystem(eqx.Module):
 
 
 class SimpleLTISystem(AbstractLTISystem):
-    """An LTI system where the effector is taken trivially as the state.
+    """An LTI system where the effector is assumed identical to the system.
+    
+    This generally makes sense for linear systems with only one moving part, 
+    such as a point mass.
+    
+    NOTE: I'm not actually sure if there are other systems that this applies to.
+    I guess there may be other linear but non-Newtonian point systems we might
+    want to use, but I'm not sure why.
     """
     A: Float[Array, "state state"]  # state evolution matrix
     B: Float[Array, "state input"]  # control matrix
@@ -77,17 +84,46 @@ class SimpleLTISystem(AbstractLTISystem):
     ) -> CartesianState2D:
         return effector_state
     
-    def effector(self, system_state):
-        return system_state
+    def effector(
+        self, 
+        system_state: CartesianState2D,
+    ) -> CartesianState2D:
+        """Return the effector state given the system state.
+        
+        For a point mass, these are identical. However, we make sure to return
+        zero `force` to avoid positive feedback loops as effector forces are
+        converted back to system forces by `Mechanics` on the next time step.
+        """
+        return CartesianState2D(
+            pos=system_state.pos,
+            vel=system_state.vel,
+            force=jnp.zeros_like(system_state.force),
+        )
+
+    def update_state_given_effector_force(
+        self, 
+        system_state: CartesianState2D,
+        effector_force: jax.Array,
+    ) -> CartesianState2D:
+        #? Can we just return `system_state`?
+        # That is, are there any cases where the effector force is not already
+        # reflected by the system state?
+        if system_state.force is not None:
+            effector_force = effector_force + system_state.force
+        return eqx.tree_at(
+            lambda state: state.force,
+            system_state,
+            effector_force,
+        )
     
     def init(
         self, 
         effector_state: Optional[CartesianState2D] = None
-    ):
+    ) -> CartesianState2D:
         if effector_state is None:
             effector_state = CartesianState2D(
-                jnp.zeros(N_DIM), 
-                jnp.zeros(N_DIM),
+                pos=jnp.zeros(N_DIM),  
+                vel=jnp.zeros(N_DIM),  
             )
         return effector_state
     

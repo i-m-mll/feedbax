@@ -29,6 +29,7 @@ class MechanicsState(eqx.Module):
 
 
 class Mechanics(eqx.Module):
+    """Discretizes and iterates the solution of a system with an effector."""
     system: System 
     dt: float 
     term: dfx.AbstractTerm 
@@ -43,6 +44,30 @@ class Mechanics(eqx.Module):
     @jax.named_scope("fbx.Mechanics")
     def __call__(self, input, state: MechanicsState):
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
+        
+        # state = jax.lax.cond(
+        #     jnp.allclose(state.effector.force, 0),
+        #     lambda state: state,
+        #     lambda state: eqx.tree_at(
+        #         lambda state: state.system,
+        #         state,
+        #         self.system.update_state_given_effector_force(
+        #             state.system, 
+        #             state.effector.force,
+        #         ),
+        #     ),
+        #     state,
+        # )
+
+        state = eqx.tree_at(
+            lambda state: state.system,
+            state,
+            self.system.update_state_given_effector_force(
+                state.system, 
+                state.effector.force,
+            )
+        )
+            
         system_state, _, _, solver_state, _ = self.solver.step(
             self.term, 
             0, 
@@ -83,9 +108,10 @@ class Mechanics(eqx.Module):
         """
         if effector_state is None:
             effector_state = CartesianState2D(
-                jnp.zeros(N_DIM), 
-                jnp.zeros(N_DIM)
+                pos=jnp.zeros(N_DIM),  
+                vel=jnp.zeros(N_DIM),  
             )
+        # TODO: don't pass effector state to system; use `inverse_kinematics` and pass result
         #! assumes zero initial velocity; TODO convert initial velocity also
         system_state = self.system.init(effector_state)
         init_input = jnp.zeros((self.system.control_size,))

@@ -7,10 +7,11 @@
 from functools import cached_property
 import logging
 import math
-from typing import Callable, Optional, Protocol, Tuple, Type, runtime_checkable
+from typing import Callable, Optional, Protocol, Sequence, Tuple, Type, runtime_checkable
 
 import equinox as eqx
 import jax
+from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PyTree
@@ -76,7 +77,6 @@ class RNNCellWithReadout(eqx.Module):
     readout: eqx.Module
     out_nonlinearity: Callable[[Float], Float]
     noise_std: Optional[float]
-    persistence: bool
 
     def __init__(
         self, 
@@ -88,7 +88,6 @@ class RNNCellWithReadout(eqx.Module):
         use_bias: bool = True,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
-        persistence: bool = True,
         *,
         key: jax.Array, 
     ):
@@ -98,7 +97,6 @@ class RNNCellWithReadout(eqx.Module):
         self.readout = readout_type(hidden_size, out_size, use_bias=True, key=key2)
         self.out_nonlinearity = out_nonlinearity       
         self.noise_std = noise_std
-        self.persistence = persistence
     
     @jax.named_scope("fbx.RNNCellWithReadout")
     def __call__(
@@ -107,14 +105,10 @@ class RNNCellWithReadout(eqx.Module):
         state: NetworkState, 
         key: jax.Array,
     ) -> NetworkState:
-        if not self.persistence:
-            state = self.init()
         if not isinstance(input, jnp.ndarray):
-            # TODO: flatten each leaf before concatenating 
-            input = jnp.concatenate(jax.tree_leaves(input))
+            input, _ = ravel_pytree(input)
         activity = self.cell(input, state.activity)
         if self.noise_std is not None:
-            #! this will only affect recurrent computations if `persistence` is `True`
             noise = self.noise_std * jr.normal(key, activity.shape) 
             activity = activity + noise
         
@@ -130,7 +124,7 @@ class RNNCellWithReadout(eqx.Module):
             activity = jnp.array(activity)
             
         if output is None:
-            output = self._output(activity)
+            output = jnp.zeros(self.out_size)
         else:
             output = jnp.array(activity)
         
@@ -186,10 +180,8 @@ class RNNCellWithReadoutAndInput(eqx.Module):
         state: NetworkState, 
         key: jax.Array,
     ) -> NetworkState:
-        # TODO: flatten each leaf before concatenating `tree_map(ravel, leaves)`
         if not isinstance(input, jnp.ndarray):
-            input = jnp.concatenate(jax.tree_leaves(input))
-        input = jnp.concatenate(jax.tree_leaves(input))
+            input, _ = ravel_pytree(input)
         rnn_input = self.input_layer(input)
         output = self.rnn_cell_with_readout(rnn_input, state, key)
         return output
@@ -299,43 +291,48 @@ class LeakyRNNCell(eqx.Module):
             return None
          
 
-class SimpleMultiLayerNet(eqx.Module):
-    """A series of layers of the same type with nonlinearities of the same type.
-    
-    NOTE: Could just use `eqx.nn.MLP` in case of linear layers with fixed nonlinearity.
-    """
-    layers: list 
-    
-    def __init__(
-        self, 
-        sizes: Tuple[int, ...], 
-        layer_type: eqx.Module = eqx.nn.Linear,
-        use_bias=(), 
-        nonlinearity: Callable[[Float], Float] = jnp.tanh, 
-        output_nonlinearity: Optional[Callable[[Float], Float]] = None, 
-        linear_final_layer: bool = False,  # replace the final layer with a linear layer
-        *,
-        key: jax.Array,
-    ):
-        keys = jr.split(key, len(sizes) - 1)
-        
-        if bool(use_bias) is use_bias:
-            use_bias = (use_bias,) * (len(sizes) - 1)
-            
-        layers = [layer_type(m, n, key=key, use_bias=b) 
-                  for m, n, key, b in zip(sizes[:-1], sizes[1:], keys, use_bias)]
-        
-        nonlinearities = [nonlinearity] * (len(sizes) - 2) 
-        if output_nonlinearity is not None:
-            nonlinearities += [output_nonlinearity]
-        
-        # TODO: makes a diff to use eqx.nn.Sequential?
-        self.layers = list(interleave_unequal(layers, nonlinearities))
-        
-        if linear_final_layer:
-            self.layers[-1] = eqx.nn.Linear(sizes[-2], sizes[-1], key=keys[-1])
+def n_layer_linear(
+    hidden_sizes: Sequence[int], 
+    input_size: int, 
+    out_size: int, 
+    use_bias: bool = True, 
+    nonlinearity: Callable[[Float], Float] = jnp.tanh,
+    *, 
+    key
+):
+    """A simple n-layer linear network with nonlinearity."""
+    keys = jr.split(key, len(hidden_sizes) + 1)
+    sizes = (input_size,) + tuple(hidden_sizes) + (out_size,)
+    layers = [
+        eqx.nn.Linear(size0, size1, use_bias=use_bias, key=keys[i])
+        for i, (size0, size1) in enumerate(
+            zip(sizes[:-1], sizes[1:])
+        )
+    ]
+    return eqx.nn.Sequential(
+        interleave_unequal(layers, [nonlinearity] * len(hidden_sizes))
+    )
 
-    def __call__(self, x):        
-        for layer in self.layers:
-            x = layer(x)
-        return x
+
+def two_layer_linear(
+    hidden_size, 
+    input_size, 
+    out_size, 
+    use_bias=True, 
+    nonlinearity=jnp.tanh,
+    *, 
+    key
+):
+    """A two-layer linear network with nonlinearity.
+    
+    Just a convenience over `n_layer` since two-layer readouts may be more 
+    common than other n-layer readouts for RNNs.
+    """
+    return n_layer_linear(
+        (hidden_size,), 
+        input_size,
+        out_size,
+        use_bias=use_bias,
+        nonlinearity=nonlinearity,
+        key=key,
+    )

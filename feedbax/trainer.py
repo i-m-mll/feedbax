@@ -301,7 +301,7 @@ class TaskTrainer(eqx.Module):
             if batch_callbacks is not None and batch in batch_callbacks:
                 for func in batch_callbacks[batch]:
                     func()
-            
+    
             losses = losses.at[batch].set(loss)
             losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
             try:
@@ -336,14 +336,14 @@ class TaskTrainer(eqx.Module):
                 
                 logger.warning(msg)
                 
-                return model, losses, losses_terms
+                return model, losses, losses_terms, learning_rates
 
             # checkpointing and validation occasionally
             if batch % log_step == 0:
                 model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
                 
                 # model checkpoint
-                if self.checkpointing:
+                if self.checkpointing and batch > 0:
                     eqx.tree_serialise_leaves(self.chkpt_dir / f'model{batch}.eqx', model)
                     eqx.tree_serialise_leaves(self.chkpt_dir / f'losses{batch}.eqx', 
                                               (losses, losses_terms))
