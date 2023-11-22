@@ -128,7 +128,50 @@ jax.vmap(grad_f)(states)
 # %%
 eqx.tree_pprint(jax.vmap(grad_f)(states), short_arrays=False)
 
+# %% [markdown]
+# ### Using `jax.eval_shape`
+
+# %% [markdown]
+# Recall:
+
 # %%
+jax.vmap(grad_f)(states)
+
+# %% [markdown]
+# However these are actual return values. Sometimes a computation is expensive, and before start to compute anything, we want to infer what the shapes of the return values will be. This is what `jax.eval_shape` is for:
+
+# %%
+jax.eval_shape(jax.vmap(grad_f), states)
+
+
+# %% [markdown]
+# The time difference between these is not super obvious here, because this is not a very expensive computation:
+
+# %%
+# %timeit jax.vmap(grad_f)(states)
+# %timeit jax.eval_shape(jax.vmap(grad_f), states)
+
+# %%
+class RNN(eqx.Module):
+    cell: eqx.nn.GRUCell
+
+    def __init__(self, **kwargs):
+        self.cell = eqx.nn.GRUCell(**kwargs)
+
+    def __call__(self, xs):
+        scan_fn = lambda state, input: (self.cell(input, state), None)
+        init_state = jnp.zeros(self.cell.hidden_size)
+        final_state, _ = jax.lax.scan(scan_fn, init_state, xs)
+        return final_state
+
+rnn = RNN(input_size=50, hidden_size=1000, key=key)
+
+n_examples = 50000
+n_steps = 100
+examples = jr.uniform(key, (n_examples, n_steps, 50))
+    
+# %time jax.vmap(rnn)(examples).block_until_ready()
+# %timeit jax.eval_shape(jax.vmap(rnn), examples)
 
 # %% [markdown]
 # ### `jax.jit` and performance

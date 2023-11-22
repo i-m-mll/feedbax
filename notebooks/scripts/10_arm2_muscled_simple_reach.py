@@ -105,6 +105,7 @@ def get_model(
     feedback_delay: int = 0, 
     tau: float = 0.01, 
     out_nonlinearity=jax.nn.sigmoid,
+    clip_states=False,
     key: Optional[jr.PRNGKeyArray] = None,
 ):
     if key is None:
@@ -118,7 +119,7 @@ def get_model(
             tau_deact=tau,
         )
     )
-    mechanics = Mechanics(system, dt, clip_states=False)
+    mechanics = Mechanics(system, dt, clip_states=clip_states)
     
     # this time we need to specifically request joint angles
     # and angular velocities, and not muscle activations
@@ -253,7 +254,7 @@ model, losses, loss_terms, learning_rates = trainer(
     model=model,
     n_batches=10_000, 
     batch_size=500, 
-    log_step=250,
+    log_step=100,
     trainable_leaves_func=trainable_leaves_func,
     key=jr.PRNGKey(seed + 1),
 )

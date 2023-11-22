@@ -228,8 +228,8 @@ def plot_pos_vel_force_2D(
         # velocity
         axs[1].plot(velocities[i, :, 0], velocities[i, :, 1], '-o', color=colors[i], ms=ms)
         
-        # force 
-        axs[2].plot(controls[i, :, 0], controls[i, :, 1], '-o', color=colors[i], ms=ms)
+        # force (start at timestep 1; timestep 0 is always 0)
+        axs[2].plot(controls[i, 1:, 0], controls[i, 1:, 1], '-o', color=colors[i], ms=ms)
 
     if force_labels is None:
         if force_label_type == 'linear':

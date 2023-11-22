@@ -1,6 +1,7 @@
 """
 
 TODO:
+
 - The time aggregation could be done in `CompositeLoss`, if we unsqueeze
   terms that don't have a time dimension. This would allow time aggregation
   to be controlled in one place, if for some reason it makes sense to change 
@@ -15,11 +16,14 @@ TODO:
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from __future__ import annotations
+
 from abc import abstractmethod
 import logging
 from typing import (
     ClassVar, 
-    Dict, 
+    Dict,
+    List, 
     Optional, 
     Sequence,
     Tuple,
@@ -29,6 +33,7 @@ import equinox as eqx
 from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.state import CartesianState2D, HasEffectorState
@@ -44,14 +49,9 @@ class LossDict(eqx.Module):
 class AbstractLoss(eqx.Module):
     """Abstract base class for loss functions.
     
-    Enforces that concrete subclasses should have a string label.
-    
-    TODO: 
-    - Time aggregation should happen in every concrete subclass.
-      Could add a method/abstractvar to `AbstractLoss`.
-    - Should probably allow the user to override with their own label.
+    Instances can be composed by addition and scalar multiplication.
     """
-    labels: AbstractVar[Tuple[str, ...]]
+    label: AbstractVar[str]
     
     @abstractmethod
     def __call__(
@@ -62,43 +62,140 @@ class AbstractLoss(eqx.Module):
     ) -> Tuple[float, Dict[str, float]]:
         ...        
 
+    def __add__(self, other: AbstractLoss) -> CompositeLoss:
+        return CompositeLoss(terms=(self, other), weights=(1., 1.))
+
+    def __radd__(self, other: AbstractLoss) -> CompositeLoss:
+        return self.__add__(other)
+    
+    def __sub__(self, other: AbstractLoss) -> CompositeLoss:
+        #? I don't know if this even makes sense but it's easy to implement.
+        return CompositeLoss(terms=(self, other), weights=(1., -1.))
+    
+    def __rsub__(self, other: AbstractLoss) -> CompositeLoss:
+        return CompositeLoss(terms=(self, other), weights=(-1., 1.))
+
+    def __mul__(self, other) -> CompositeLoss:
+        """Assume scalar multiplication."""        
+        if eqx.is_array_like(other):
+            if eqx.is_array(other) and not other.shape == ():
+                raise ValueError("Can't multiply loss term by non-scalar array")
+            return CompositeLoss(terms=(self,), weights=(other,))
+        else:
+            raise ValueError("Can't multiply loss term by non-numeric type")
+        
+    def __rmul__(self, other):
+        return self.__mul__(other)
+   
+
+def get_label(label: str, invalid_labels: Sequence[str]) -> str:
+    """Get a unique label from a base label."""
+    i = 0
+    label_ = label
+    while label_ in invalid_labels:
+        label_ = f"{label}_{i}" 
+    return label_
+
 
 class CompositeLoss(AbstractLoss):
     """Composite of simpler loss functions.
     
+    During construction the user may pass dictionaries and/or sequences of 
+    `AbstractLoss` instances ("terms") and weights. Any `CompositeLoss` terms 
+    are flattened, incorporating their simple terms into the new composite
+    loss, and multiplying through their component weights by the single weight
+    passed as an argument for that composite term. If a composite term has a
+    user-specified label, that label will be prepended to the labels of its 
+    component terms, on flattening. If the flattened terms still do not have
+    unique labels, they will be suffixed with the lowest integer that makes 
+    them unique.
+    
     TODO:
     - Different aggregation schemes.
-    - Perhaps, nesting of losses. As of now, if any of the component losses
-      are themselves instances of `CompositeLoss`, their own component terms
-      are not remembered. 
-    - Perhaps change the labeling scheme; if we don't allow nesting then 
-      it is inappropriate to just take the first label name from each component.
     """
-    terms: Sequence[AbstractLoss]
-    weights: Optional[Sequence[float]]
-    labels: Tuple[str, ...]
+    terms: Dict[str, AbstractLoss]
+    weights: Dict[str, float]
+    label: str 
     
     def __init__(
-        self, 
-        terms: Sequence[AbstractLoss], 
-        weights: Optional[Sequence[float]] = None,
+        self,
+        terms: Dict[str, AbstractLoss] | Sequence[AbstractLoss],
+        weights: Optional[Dict[str, float] | Sequence[float]] = None,
+        label: str = "",
     ):
-        if weights is None:
-            weights = [1.] * len(terms)
-        elif not len(terms) == len(weights):
-            raise ValueError("Mismatch between number of loss terms and term weights")
-        #! assumes all the components are simple losses, and `labels` is a one-tuple
+        self.label = label
+        
         if isinstance(terms, dict):
-            self.labels = tuple(terms.keys())
-            self.terms = terms 
+            labels, terms = list(zip(*terms.items()))
         else:
-            self.labels = [term.labels[0] for term in terms]
-            self.terms = dict(zip(self.labels, terms))
-        if not isinstance(weights, dict):
-            self.weights = dict(zip(self.labels, weights))
+            labels = [term.label for term in terms]
+        
+        if weights is None:
+            weights = jax.tree_map(lambda _: 1., terms)
+        elif not len(terms) == len(weights):
+            raise ValueError("Mismatch between number of loss terms " 
+                             + "and number of term weights")
+        
+        if isinstance(weights, dict):
+            weights = list(weights.values())
+            
+        # Split into lists of data for simple and composite terms.
+        term_tuples_split: Tuple[List[Tuple[str, AbstractLoss, float]],
+                                 List[Tuple[str, AbstractLoss, float]]] 
+        term_tuples_split = eqx.partition(
+            list(zip(labels, terms, weights)),
+            lambda x: not isinstance(x[1], CompositeLoss),
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
+        
+        # Removes the `None` values from the lists.
+        term_tuples_leaves = jax.tree_map(
+            lambda x: jtu.tree_leaves(x, 
+                                      is_leaf=lambda x: isinstance(x, tuple)),
+            term_tuples_split,
+            is_leaf=lambda x: isinstance(x, list),
+        )
+
+        # Start with the simple terms, if there are any. 
+        if term_tuples_leaves[0] == []:
+            all_labels, all_terms, all_weights = [], [], []
         else:
-            self.weights = weights
+            all_labels, all_terms, all_weights = zip(*term_tuples_leaves[0])
+            
+        # Flatten the composite terms, assuming they have the usual dict 
+        # attributes
+        for group_label, composite_term, group_weight in term_tuples_leaves[1]:
+            labels = composite_term.terms.keys()
+            
+            # If a unique label for the composite term is available, use it to 
+            # format the labels of the flattened terms.
+            if group_label != "":
+                labels = [f"{group_label}_{label}" for label in labels]
+            elif composite_term.label != "":
+                labels = [f"{composite_term.label}_{label}" 
+                          for label in labels]
+            
+            # Make sure the labels are unique.
+            for label in labels:
+                label = get_label(label, all_labels)
+                all_labels += (label,)
+            
+            all_terms += tuple(composite_term.terms.values())
+            all_weights += tuple(
+                [group_weight * weight 
+                 for weight in composite_term.weights.values()]
+            )
+        
+        self.terms = dict(zip(all_labels, all_terms))
+        self.weights = dict(zip(all_labels, all_weights))
     
+    def __or__(self, other: CompositeLoss) -> CompositeLoss:
+        """Merge two composite losses, overriding terms with the same label."""
+        return CompositeLoss(
+            terms=self.terms | other.terms, 
+            weights=self.weights | other.weights,
+        )
+ 
     @jax.named_scope("fbx.CompositeLoss")
     def __call__(
         self, 
@@ -147,15 +244,15 @@ class EffectorPositionLoss(AbstractLoss):
     
     TODO: do we handle the temporal discount here? or return the sequence of losses
     """
-    labels: Tuple[str, ...]
+    label: str
     discount: Optional[Float[Array, "time"]] = None
 
     def __init__(
         self, 
-        labels=("effector_position",), 
+        label="effector_position", 
         discount=None,
     ):
-        self.labels = labels
+        self.label = label
         if discount is not None:
             self.discount = discount[None, :]  # singleton batch dimension
         else:   
@@ -181,7 +278,7 @@ class EffectorPositionLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.labels[0]: loss}
+        return loss, {self.label: loss}
 
 
 class EffectorStraightPathLoss(AbstractLoss):
@@ -194,7 +291,7 @@ class EffectorStraightPathLoss(AbstractLoss):
     Euclidean distance between the initial and final actual states, or the 
     initial actual state, but the goal state defined by the task.
     """
-    labels: Tuple[str, ...] = ("effector_straight_path",)
+    label: str = "effector_straight_path"
     normalize_by: str = "actual"
 
     def __call__(
@@ -217,12 +314,12 @@ class EffectorStraightPathLoss(AbstractLoss):
         
         loss = path_length / straight_length
         
-        return loss, {self.labels[0]: loss}
+        return loss, {self.label: loss}
 
 
 class EffectorFixationLoss(AbstractLoss):
     """"""
-    labels: Tuple[str, ...] = ("effector_fixation",)
+    label: str = "effector_fixation"
     
     def __call__(
         self, 
@@ -241,7 +338,7 @@ class EffectorFixationLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.labels[0]: loss}
+        return loss, {self.label: loss}
 
 
 class EffectorFinalVelocityLoss(AbstractLoss):
@@ -249,7 +346,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     
     TODO: how do we handle calculating oss for a single timestep only?
     """
-    labels: Tuple[str, ...] = ("effector_final_velocity",)
+    label: str = "effector_final_velocity"
 
     def __call__(
         self, 
@@ -263,12 +360,12 @@ class EffectorFinalVelocityLoss(AbstractLoss):
             axis=-1
         )
         
-        return loss, {self.labels[0]: loss}
+        return loss, {self.label: loss}
 
 
 class NetworkOutputLoss(AbstractLoss):
     """"""
-    labels: Tuple[str, ...] = ("nn_output",)
+    label: str = "nn_output"
 
     def __call__(
         self, 
@@ -283,12 +380,12 @@ class NetworkOutputLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.labels[0]: loss}
+        return loss, {self.label: loss}
 
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    labels: Tuple[str, ...] = ("nn_activity",)
+    labels: str = "nn_activity"
 
     def __call__(
         self, 
@@ -302,7 +399,7 @@ class NetworkActivityLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.labels[0]: loss}
+        return loss, {self.label: loss}
 
         
 def power_discount(n_steps, discount_exp=6):
