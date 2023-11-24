@@ -155,8 +155,8 @@ n_replicates = 8
 n_steps = 50
 dt = 0.05 
 feedback_delay_steps = 0
-workspace = ((-0.15, 0.15), 
-             (0.20, 0.50))
+workspace = ((-0.15, 0.20), 
+             (0.15, 0.50))
 hidden_size  = 50
 out_nonlinearity = jax.nn.sigmoid
 learning_rate = 0.05

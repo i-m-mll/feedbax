@@ -34,9 +34,10 @@ TODO:
 from __future__ import annotations
 
 from abc import abstractmethod
-from functools import cached_property
+from functools import cache, cached_property
 import logging
 from typing import (
+    Callable,
     ClassVar, 
     Dict,
     List, 
@@ -138,6 +139,7 @@ def get_label(label: str, invalid_labels: Sequence[str]) -> str:
     label_ = label
     while label_ in invalid_labels:
         label_ = f"{label}_{i}" 
+        i += 1
     return label_
 
 
@@ -152,7 +154,7 @@ class CompositeLoss(AbstractLoss):
     user-specified label, that label will be prepended to the labels of its 
     component terms, on flattening. If the flattened terms still do not have
     unique labels, they will be suffixed with the lowest integer that makes 
-    them unique.
+    them unique. 
     
     TODO:
     - Different aggregation schemes.
@@ -202,9 +204,14 @@ class CompositeLoss(AbstractLoss):
 
         # Start with the simple terms, if there are any. 
         if term_tuples_leaves[0] == []:
-            all_labels, all_terms, all_weights = [], [], []
+            all_labels, all_terms, all_weights = (), (), ()
         else:
             all_labels, all_terms, all_weights = zip(*term_tuples_leaves[0])
+            
+        # Make sure the simple term labels are unique.
+        for i, label in enumerate(all_labels):
+            label = get_label(label, all_labels[:i])
+            all_labels = all_labels[:i] + (label,) + all_labels[i+1:]
             
         # Flatten the composite terms, assuming they have the usual dict 
         # attributes. We only need to flatten one level, because this `__init__`
@@ -295,19 +302,9 @@ class EffectorPositionLoss(AbstractLoss):
     
     TODO: do we handle the temporal discount here? or return the sequence of losses
     """
-    label: str
-    discount: Optional[Float[Array, "time"]] = None
-
-    def __init__(
-        self, 
-        label="effector_position", 
-        discount=None,
-    ):
-        self.label = label
-        if discount is not None:
-            self.discount = discount[None, :]  # singleton batch dimension
-        else:   
-            self.discount = None
+    label: str = "effector_position"
+    discount_func: Optional[Callable[[int], Float[Array, "time"]]] = \
+        lambda n_steps: power_discount(n_steps, discount_exp=6)[None, :]
 
     def __call__(
         self, 
@@ -323,13 +320,19 @@ class EffectorPositionLoss(AbstractLoss):
         )
         
         # temporal discount
-        if self.discount is not None:
-            loss = loss * self.discount
+        if self.discount_func is not None:
+            loss = loss * self.discount(loss.shape[-1])
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
         return LossDict({self.label: loss})
+    
+    #@cache
+    def discount(self, n_steps):
+        # Can't use a cache because of JIT. 
+        # But we only need to run this once per training iteration...
+        return self.discount_func(n_steps)
 
 
 class EffectorStraightPathLoss(AbstractLoss):
@@ -456,4 +459,7 @@ class NetworkActivityLoss(AbstractLoss):
 def power_discount(n_steps, discount_exp=6):
     """Discounting vector, a power law curve from 0 to 1, start to end.
     """
-    return jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp
+    if discount_exp == 0:
+        return 1.
+    else:
+        return jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp

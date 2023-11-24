@@ -66,8 +66,8 @@ mass = 1.0
 n_steps = 100
 dt = 0.1
 feedback_delay_steps = 5
-workspace = ((-1., 1.),
-             (-1., 1.))
+workspace = ((-1., -1.),
+             (1., 1.))
 hidden_size  = 50
 learning_rate = 0.01
 

@@ -30,6 +30,9 @@ class AbstractLTISystem(eqx.Module):
     Note that the system is defined in continuous time.
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
+    
+    TODO:
+    - Don't hardcode the state split.
     """
     A: AbstractVar[Float[Array, "state state"]]  # state evolution matrix
     B: AbstractVar[Float[Array, "state input"]]  # control matrix
@@ -44,8 +47,8 @@ class AbstractLTISystem(eqx.Module):
     ) -> Float[Array, "state"]:
         input = args  
         state_ = jnp.concatenate([state.pos, state.vel])
-        d_y = self.A @ state_ + self.B @ input
-        # TODO: don't hardcode the split; define on instantiation
+        force = input + state.force
+        d_y = self.A @ state_ + self.B @ force
         d_pos, d_vel = d_y[:2], d_y[2:]
         return CartesianState2D(d_pos, d_vel)
     
@@ -109,11 +112,6 @@ class SimpleLTISystem(AbstractLTISystem):
         system_state: CartesianState2D,
         effector_force: jax.Array,
     ) -> CartesianState2D:
-        #? Can we just return `system_state`?
-        # That is, are there any cases where the effector force is not already
-        # reflected by the system state?
-        if system_state.force is not None:
-            effector_force = effector_force + system_state.force
         return eqx.tree_at(
             lambda state: state.force,
             system_state,

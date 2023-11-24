@@ -17,7 +17,7 @@ from jaxtyping import Float, Array
 import numpy as np
 
 from feedbax.state import AbstractState, CartesianState2D, StateBounds
-from feedbax.utils import SINCOS_GRAD_SIGNS
+from feedbax.utils import SINCOS_GRAD_SIGNS, corners_2d
 
 
 logger = logging.getLogger(__name__)
@@ -275,3 +275,12 @@ class TwoLink(eqx.Module):
                 torque=None,
             ),
         )
+    
+    
+def twolink_workspace_test(workspace: Float[Array, "bounds=2 xy=2"], twolink: TwoLink):
+    """Tests whether a rectangular workspace is reachable by the two-link arm."""
+    r = sum(twolink.l)
+    lengths = jnp.sum(corners_2d(workspace) ** 2, axis=0) ** 0.5
+    if jnp.any(lengths > r):
+        return False 
+    return True

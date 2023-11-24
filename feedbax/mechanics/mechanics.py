@@ -69,6 +69,11 @@ class Mechanics(eqx.Module):
             made_jump=False,
         )
         
+        # TODO: make sure total system forces are in `system.force`/`system.torque`...
+        # It doesn't make sense to update them in the solver step,
+        # and they are a combination of the converted effector forces and the 
+        # effect of the inputs (either directly, or through muscles).
+        
         if self.clip_states:
             system_state = clip_state(system_state, self.system.bounds)
         

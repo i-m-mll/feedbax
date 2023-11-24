@@ -159,8 +159,8 @@ seed = 5566
 n_steps = 50
 dt = 0.05 
 feedback_delay_steps = 0
-workspace = ((-0.15, 0.15), 
-             (0.20, 0.50))
+workspace = ((-0.15, 0.20), 
+             (0.15, 0.50))
 hidden_size  = 50
 learning_rate = 0.05
 
@@ -196,10 +196,10 @@ def setup(
 
     key = jr.PRNGKey(seed)
 
-    discount = fbl.power_discount(n_steps, 6)
     loss_func = fbl.CompositeLoss(
         dict(
-            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_position=fbl.EffectorPositionLoss(
+                discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
             effector_straight_path=fbl.EffectorStraightPathLoss(),
             nn_output=fbl.NetworkOutputLoss(),

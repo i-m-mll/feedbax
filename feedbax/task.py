@@ -191,20 +191,6 @@ class AbstractTask(eqx.Module):
         return losses, states
 
 
-def _uniform_pos_endpoints(
-    key: jax.Array,
-    workspace: Float[Array, "ndim=2 2"],
-):
-    """Uniformly distributed position pairs in a rectangular workspace.
-    """
-    return jr.uniform(
-        key, 
-        (2, N_DIM), 
-        minval=workspace[:, 0], 
-        maxval=workspace[:, 1]
-    )
-
-
 def _pos_only_inits_targets(
     pos_endpoints: Float[Array, "... ndim=2"]
 ):
@@ -222,7 +208,7 @@ def _pos_only_inits_targets(
 
 
 def _centerout_endpoints_grid(
-    workspace: Float[Array, "ndim=2 2"],
+    workspace: Float[Array, "bounds=2 ndim=2"],
     eval_grid_n: int,
     eval_n_directions: int,
     eval_reach_length: float,
@@ -268,7 +254,7 @@ class RandomReaches(AbstractTask):
       and allow the user to pass just `loss_term_weights`.
     """
     loss_func: AbstractLoss
-    workspace: Float[Array, "ndim 2"] = field(converter=jnp.asarray)
+    workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
     eval_n_directions: int 
     eval_reach_length: float
@@ -285,7 +271,7 @@ class RandomReaches(AbstractTask):
         """Random reach endpoints in a 2D rectangular workspace.
         """
         
-        pos_endpoints = _uniform_pos_endpoints(key, self.workspace)
+        pos_endpoints = uniform_tuples(key, n=2, bounds=self.workspace)
                 
         init_state, target_state = \
             _pos_only_inits_targets(pos_endpoints)
@@ -344,7 +330,7 @@ class RandomReachesDelayed(AbstractTask):
     TODO: 
     """
     loss_func: AbstractLoss 
-    workspace: Float[Array, "ndim 2"] = field(converter=jnp.asarray)
+    workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int 
     epoch_len_ranges: Tuple[Tuple[int, int], ...]
     eval_n_directions: int
@@ -363,7 +349,7 @@ class RandomReachesDelayed(AbstractTask):
         """Random reach endpoints in a 2D rectangular workspace."""
         
         key1, key2 = jr.split(key)
-        pos_endpoints = _uniform_pos_endpoints(key1, self.workspace)
+        pos_endpoints = uniform_tuples(key1, n=2, bounds=self.workspace)
                 
         init_state, target_state = \
             _pos_only_inits_targets(pos_endpoints)
@@ -442,18 +428,18 @@ class RandomReachesDelayed(AbstractTask):
         return task_input, target_states, epoch_start_idxs  
 
 
-def uniform_endpoints(
-    key: jr.PRNGKey,
-    ndim: int = 2, 
-    workspace: Float[Array, "ndim 2"] = jnp.array([[-1., 1.], 
-                                                   [-1., 1.]]),
-) -> Float[Array, "2 ndim"]:
-    """Segment endpoints uniformly distributed in a rectangular workspace."""
+def uniform_tuples(
+    key: jax.Array,
+    n: int,
+    bounds: Float[Array, "bounds=2 ndim=2"],
+):
+    """Tuples of points uniformly distributed in some (2D) bounds.
+    """
     return jr.uniform(
         key, 
-        (2, ndim),   # (start/end, ...)
-        minval=workspace[:, 0], 
-        maxval=workspace[:, 1]
+        (n, N_DIM), 
+        minval=bounds[0], 
+        maxval=bounds[1]
     )
 
 

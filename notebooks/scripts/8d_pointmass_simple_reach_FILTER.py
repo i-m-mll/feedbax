@@ -145,8 +145,8 @@ seed = 5566
 n_steps = 100
 dt = 0.1
 feedback_delay_steps = 5
-workspace = ((-1., 1.),
-             (-1., 1.))
+workspace = ((-1., -1.),
+             (1., 1.))
 hidden_size  = 50
 learning_rate = 0.01
 
@@ -185,12 +185,12 @@ def setup(
 
     # these assume a particular PyTree structure to the states returned by the model
     # which is why we simply instantiate them 
-    discount = jnp.linspace(1. / n_steps, 1., n_steps) ** 6
     loss_func = fbl.CompositeLoss(
         dict(
             # these assume a particular PyTree structure to the states returned by the model
             # which is why we simply instantiate them 
-            effector_position=fbl.EffectorPositionLoss(discount=discount),
+            effector_position=fbl.EffectorPositionLoss(
+                discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
             nn_output=fbl.NetworkOutputLoss(),
             nn_activity=fbl.NetworkActivityLoss(),

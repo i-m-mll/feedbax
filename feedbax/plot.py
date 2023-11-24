@@ -12,9 +12,11 @@ from itertools import zip_longest
 import logging 
 from typing import Dict, Optional, Tuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree_util as jtu
 from jaxtyping import Float, Array, Int, PyTree
 import matplotlib as mpl
 from matplotlib import animation
@@ -34,14 +36,14 @@ logger = logging.getLogger(__name__)
 def plot_2D_joint_positions(
         xy, 
         t0t1=(0, 1),  # (t0, t1)
-        cmap="viridis",
+        cmap: str = "viridis",
         length_unit=None, 
         ax=None, 
-        add_root=True,
-        colorbar=True,
-        ms_trace=6,
-        lw_arm=4,
-        workspace=None,
+        add_root: bool = True,
+        colorbar: bool = True,
+        ms_trace: int = 6,
+        lw_arm: int = 4,
+        workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
 ):
     """Plot paths of joint position for an n-link arm. 
     
@@ -191,15 +193,13 @@ def plot_pos_vel_force_2D(
     force_labels: Optional[Tuple[str, str, str]] = None,
     force_label_type: str = 'linear',
     cmap: str = 'tab10',
-    workspace: Optional[Float[Array, "xy=2 2"]] = None,
+    workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
     fig=None, 
     ms: int = 3, 
     ms_source: int = 6, 
     ms_target: int = 7,
 ):
-    """Plot trajectories of position, velocity, force in 2D subplots.
-    
-    Intended for systems with Cartesian force control (e.g. point mass).
+    """Plot trajectories of position, velocity, network output in 2D subplots.
     
     - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
     - First dim is batch, second dim is time step.
@@ -252,6 +252,48 @@ def plot_pos_vel_force_2D(
         axs[i].set_ylabel(ylabel)
         axs[i].set_aspect('equal')
         
+    plt.tight_layout()
+
+    return fig, axs
+
+
+def plot_trajectories(
+    states_tree: PyTree[Float[Array, "batch time ..."]],
+    labels: Optional[Tuple[str, str, str]] = None,
+    cmap: str = 'tab10',
+    fig=None, 
+    ms: int = 3, 
+):
+    """Plot trajectories of states.        
+    """    
+    state_arrays = jtu.tree_leaves(states_tree, is_leaf=eqx.is_array)
+    
+    # TODO: clever row-col layout
+    fig, axs = plt.subplots(1, len(state_arrays), figsize=(12, 6))
+
+    cmap_func = plt.get_cmap(cmap)
+    colors = [cmap_func(i) for i in np.linspace(0, 1, state_arrays[0].shape[0])]
+   
+    for j, array in enumerate(state_arrays):
+        # Assumes constant batch size among state arrays.
+        for i in range(state_arrays[0].shape[0]):
+            axs[j].plot(
+                array[i, 1:, 0], 
+                array[i, 1:, 1], 
+                '-o', 
+                color=colors[i], 
+                ms=ms
+            )
+        
+        axs[j].set_aspect('equal')
+
+    if labels is not None:
+        # TODO: `labels` should be a PyTree with same structure as `states_tree`
+        for i, (title, xlabel, ylabel) in enumerate(labels):
+            axs[i].set_title(title)
+            axs[i].set_xlabel(xlabel)
+            axs[i].set_ylabel(ylabel)
+            
     plt.tight_layout()
 
     return fig, axs

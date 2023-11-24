@@ -216,7 +216,6 @@ class TaskTrainer(eqx.Module):
         
         filter_spec = filter_spec_leaves(model, trainable_leaves_func)
         
-        # losses = jnp.empty((n_batches,))
         losses_history = LossDict(zip(
             task.loss_func.weights.keys(), 
             [jnp.empty((n_batches,)) for _ in task.loss_func.weights]
@@ -311,7 +310,6 @@ class TaskTrainer(eqx.Module):
                 for func in batch_callbacks[batch]:
                     func()
     
-            # losses = losses.at[batch].set(loss)
             losses_history = tree_set_idx(losses_history, losses, batch)
             try:
                 # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
@@ -497,12 +495,11 @@ def grad_wrap_loss_func(
         static_model, 
         trial_specs: AbstractTaskTrialSpec,
         keys: jax.Array,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> Tuple[float, LossDict]:
         model = eqx.combine(diff_model, static_model)
         #? will `in_axes` ever change? 
         states = jax.vmap(model)(trial_specs.input, trial_specs.init, keys)
         
-        # TODO: loss_func should take task_input as well, probably
         losses = loss_func(states, trial_specs.target, trial_specs.input)
         
         return losses.total, losses 

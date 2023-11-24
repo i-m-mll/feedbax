@@ -19,6 +19,10 @@
 # In this notebook, we use the highest-level API from `feedbax.xabdeef`, which allows users to easily train common models from default parameters.
 
 # %%
+# %load_ext autoreload
+# %autoreload 2
+
+# %%
 # This isn't strictly necessary to train a model,
 # but it may be necessary for reproducibility.
 import os
@@ -79,8 +83,8 @@ context = point_mass_RNN_simple_reaches(
     n_steps=100,
     dt=0.1,
     mass=1.0,
-    workspace=((-1., 1.),
-               (-1., 1.)),
+    workspace=((-1., -1.),
+               (1., 1.)),
     hidden_size=50,
     feedback_delay_steps=5,
     key=key_model,
@@ -114,20 +118,35 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %% [markdown]
-# Test the response to perturbation
+# Test the response to perturbation.
+#
+# Use a single center-out set for easier debugging
+
+# %%
+from feedbax.task import RandomReaches
+
+
+task2 = RandomReaches(
+    loss_func = context.task.loss_func,
+    workspace = context.task.workspace,
+    n_steps = context.task.n_steps,
+    eval_n_directions=7,
+    eval_reach_length=0.5,
+    eval_grid_n=1,
+)
 
 # %%
 model_ = eqx.tree_at(
     lambda model: model.step,
     model,
-    add_intervenors(model.step, [EffectorCurlForceField(0.15)]),
+    add_intervenors(model.step, [EffectorCurlForceField(1)]),
 )
 
 # %%
-losses, states = context.task.eval(model_, key=key_eval)
+losses, states = task2.eval(model_, key=key_eval)
 
 # %%
-trial_specs, _ = context.task.trials_validation
+trial_specs, _ = task2.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,

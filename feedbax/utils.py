@@ -141,13 +141,16 @@ def interleave_unequal(*args):
             if x is not None)
     
 
-def internal_grid_points(bounds, n=2):
+def internal_grid_points(
+    bounds: Float[Array, "bounds=2 ndim=2"], 
+    n: int = 2
+):
     """Generate an even grid of points inside the given bounds.
     
-    e.g. if bounds=((0, 9), (0, 9)) and n=2 the return value will be
+    e.g. if bounds=((0, 0), (9, 9)) and n=2 the return value will be
     Array([[3., 3.], [6., 3.], [3., 6.], [6., 6.]]).
     """
-    ticks = jax.vmap(lambda b: jnp.linspace(*b, n + 2)[1:-1])(bounds)
+    ticks = jax.vmap(lambda b: jnp.linspace(*b, n + 2)[1:-1])(bounds.T)
     points = jnp.vstack(jax.tree_map(jnp.ravel, jnp.meshgrid(*ticks))).T
     return points
 
@@ -295,19 +298,10 @@ def tree_sum_n_features(tree):
     )
 
 
-def corners_2d(bounds: Float[Array, "xy=2 2"]):    
+def corners_2d(bounds: Float[Array, "2 xy=2"]):    
     """Generate the corners of a rectangle from its bounds."""
-    xy = jax.tree_map(jnp.ravel, jnp.meshgrid(*bounds))
+    xy = jax.tree_map(jnp.ravel, jnp.meshgrid(*bounds.T))
     return jnp.vstack(xy)
-
-
-def twolink_workspace_test(workspace: Float[Array, "xy=2 bounds=2"], twolink):
-    """Tests whether a rectangular workspace is reachable by the two-link arm."""
-    r = sum(twolink.l)
-    lengths = jnp.sum(corners_2d(workspace) ** 2, axis=0) ** 0.5
-    if jnp.any(lengths > r):
-        return False 
-    return True
 
 
 def padded_bounds(x, p=0.2):

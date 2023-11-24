@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 from feedbax.xabdeef import point_mass_RNN_simple_reaches
 
-from feedbax.plot import plot_losseses, plot_pos_vel_force_2D
+from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 
 # %%
 # changes matplotlib style, to match dark notebook themes
@@ -53,7 +53,7 @@ model, losses, _ = context.train(
     key=jr.PRNGKey(seed + 1),
 )
 
-plot_losseses(losses)
+plot_losses(losses)
 
 # %% [markdown]
 # What do the task and model PyTrees look like?
@@ -76,8 +76,8 @@ context = point_mass_RNN_simple_reaches(
     n_steps=100,
     dt=0.1,
     mass=1.0,
-    workspace=((-1., 1.),
-               (-1., 1.)),
+    workspace=((-1., -1.),
+               (1., 1.)),
     hidden_size=50,
     feedback_delay_steps=5,
     key=key_model,

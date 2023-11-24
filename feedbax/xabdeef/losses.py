@@ -36,15 +36,12 @@ def simple_reach_loss(
             nn_output=1e-5,
             nn_activity=1e-5,
         )
-    if discount_exp == 0:
-        discount = 1.
-    else: 
-        discount = power_discount(n_steps, discount_exp)
     return CompositeLoss(
         dict(
             # these assume a particular PyTree structure to the states returned by the model
             # which is why we simply instantiate them 
-            effector_position=EffectorPositionLoss(discount=discount),
+            effector_position=EffectorPositionLoss(
+                discount_func=lambda n_steps: power_discount(n_steps, discount_exp)),
             effector_final_velocity=EffectorFinalVelocityLoss(),
             nn_output=NetworkOutputLoss(),  # the "control" loss
             nn_activity=NetworkActivityLoss(),
