@@ -69,7 +69,7 @@ from feedbax.xabdeef.losses import simple_reach_loss
 
 
 from feedbax.plot import (
-    plot_loss, 
+    plot_losses, 
     plot_2D_joint_positions,
     plot_pos_vel_force_2D,
     plot_activity_heatmap,
@@ -257,7 +257,7 @@ model, losses, loss_terms, learning_rates = trainer(
     key=jr.PRNGKey(seed + 1),
 )
 
-plot_loss(losses, loss_terms)
+plot_losses(losses, loss_terms)
 plt.show()
 
 # %% [markdown]
@@ -288,7 +288,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
+losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 # fig = make_eval_plot(states[1], states[2], workspace)
@@ -315,7 +315,7 @@ model_ = eqx.tree_at(
 )
 
 # %%
-loss, loss_terms, states = task.eval(model_, key=jr.PRNGKey(0))
+losses, states = task.eval(model_, key=jr.PRNGKey(0))
 
 # %%
 states.mechanics.effector.force

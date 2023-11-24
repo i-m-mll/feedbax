@@ -283,7 +283,7 @@ class TaskTrainer(eqx.Module):
             trial_specs, _ = get_batch(keys_trials)
     
             #! vmap
-            loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state = \
+            losses, flat_model, flat_opt_state, treedef_opt_state = \
                 self.train_step(
                     flat_model, 
                     treedef_model,

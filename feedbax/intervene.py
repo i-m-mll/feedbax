@@ -87,6 +87,7 @@ class EffectorCurlForceField(eqx.Module):
             effector_state.force
             + self._curl_force(state.mechanics.effector.vel)
         )
+    
         state = eqx.tree_at(
             self._where, 
             state, 

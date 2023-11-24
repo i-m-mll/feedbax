@@ -1,15 +1,30 @@
-"""
+"""Composable loss function modules operating on state PyTrees.
 
 TODO:
 
+- `LossDict` only computes the total loss once, but when we append a `LossDict`
+  for a single timestep to `losses_history` in `TaskTrainer`, we lose the loss
+  total for that time step. When it is needed later (e.g. on plotting the loss)
+  it will be recomputed, once. It is also not serialized along with the 
+  `losses_history`. I doubt this is a significant computational loss 
+  (how many loss terms * training iterations could be involved? 1e6?)
+  to have to compute from time to time, but perhaps it would be nice to 
+  include the total as part of flatten/unflatten. It'd probably just require
+  that we allow passing the total on instantiation, however that would be kind
+  of weird.
+    - Even if we have 6 loss terms with 1e6 iterations, it only takes ~130 ms 
+    to compute `losses.total`. Given that we only need to compute this once
+    per session or so, it shouldn't be a problem.
 - The time aggregation could be done in `CompositeLoss`, if we unsqueeze
   terms that don't have a time dimension. This would allow time aggregation
   to be controlled in one place, if for some reason it makes sense to change 
   how this aggregation occurs across all loss terms.
-- Protocols for all the different `state` types/fields
-- Could use another dataclass instead of a dict for loss terms,
-  though if they're not referenced in transformations I don't 
-  know that it really matters.
+- Protocols for all the different `state` types/fields?
+    - Alternatively we could make `AbstractLoss` generic over an 
+      `AbstractState` typevar, however that might not make sense for typing
+      the compositions (e.g. `__sum__`) since the composite can support any
+      state pytrees that have the right combination of fields, not just pytrees
+      that have an identical structure.
 - L2 by default, but should allow for other norms
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
@@ -19,6 +34,7 @@ TODO:
 from __future__ import annotations
 
 from abc import abstractmethod
+from functools import cached_property
 import logging
 from typing import (
     ClassVar, 
@@ -37,13 +53,38 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.state import CartesianState2D, HasEffectorState
+from feedbax.utils import unzip2
 
 
 logger = logging.getLogger(__name__)
 
+@jtu.register_pytree_node_class
+class LossDict(dict[str, Array]):
+    @cached_property
+    def total(self):
+        loss_term_values = list(self.values())
+        return jax.tree_util.tree_reduce(lambda x, y: x + y, loss_term_values)
+        # return jnp.sum(jtu.tree_map(
+        #     lambda *args: sum(args), 
+        #     *loss_term_values
+        # ))
+    
+    def __setitem__(self, key, value):
+        raise TypeError("LossDict does not support item assignment")
+        
+    def update(self, dict_):
+        raise TypeError("LossDict does not support update")
+    
+    def __or__(self, other):
+        return LossDict({**self, **other})
+    
+    def tree_flatten(self):
+        """The same flatten function used by JAX for `dict`"""
+        return unzip2(sorted(self.items()))[::-1]
 
-class LossDict(eqx.Module):
-    ...
+    @classmethod
+    def tree_unflatten(cls, keys, values):
+        return LossDict(zip(keys, values))
 
 
 class AbstractLoss(eqx.Module):
@@ -59,7 +100,7 @@ class AbstractLoss(eqx.Module):
         states: PyTree, 
         targets: PyTree, 
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         ...        
 
     def __add__(self, other: AbstractLoss) -> CompositeLoss:
@@ -74,6 +115,9 @@ class AbstractLoss(eqx.Module):
     
     def __rsub__(self, other: AbstractLoss) -> CompositeLoss:
         return CompositeLoss(terms=(self, other), weights=(-1., 1.))
+    
+    def __neg__(self) -> CompositeLoss:
+        return CompositeLoss(terms=(self,), weights=(-1.,))
 
     def __mul__(self, other) -> CompositeLoss:
         """Assume scalar multiplication."""        
@@ -163,7 +207,9 @@ class CompositeLoss(AbstractLoss):
             all_labels, all_terms, all_weights = zip(*term_tuples_leaves[0])
             
         # Flatten the composite terms, assuming they have the usual dict 
-        # attributes
+        # attributes. We only need to flatten one level, because this `__init__`
+        # (and the immutability of `eqx.Module`) ensures no deeper nestings 
+        # are ever constructed except through extreme hacks.
         for group_label, composite_term, group_weight in term_tuples_leaves[1]:
             labels = composite_term.terms.keys()
             
@@ -194,6 +240,7 @@ class CompositeLoss(AbstractLoss):
         return CompositeLoss(
             terms=self.terms | other.terms, 
             weights=self.weights | other.weights,
+            label=other.label,
         )
  
     @jax.named_scope("fbx.CompositeLoss")
@@ -202,27 +249,31 @@ class CompositeLoss(AbstractLoss):
         states: PyTree, 
         targets: PyTree,
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
-        # evaluate loss terms
-        loss_terms = jax.tree_map(
-            lambda term: term(states, targets, task_inputs)[0], 
-            self.terms,
-            is_leaf=lambda x: isinstance(x, AbstractLoss),
+        # evaluate loss terms and merge resulting `LossDict`s
+        losses = jtu.tree_reduce(
+            lambda x, y: x | y,
+            jax.tree_map(
+                lambda term: term(states, targets, task_inputs), 
+                self.terms,
+                is_leaf=lambda x: isinstance(x, AbstractLoss),
+            ),
+            is_leaf=lambda x: isinstance(x, LossDict),
         )
+
         # aggregate over batch 
-        loss_terms = jax.tree_map(lambda x: jnp.mean(x, axis=0), loss_terms)
+        losses = jax.tree_map(lambda x: jnp.mean(x, axis=0), losses)
+        
         if self.weights is not None:
             # term scaling
-            loss_terms = jax.tree_map(
+            losses = jax.tree_map(
                 lambda term, weight: term * weight, 
-                loss_terms, 
+                dict(losses), 
                 self.weights
             )
-        
-        loss = jax.tree_util.tree_reduce(lambda x, y: x + y, loss_terms)
-        
-        return loss, loss_terms
+            
+        return LossDict(losses)
 
 
 class EffectorPositionLoss(AbstractLoss):
@@ -263,7 +314,7 @@ class EffectorPositionLoss(AbstractLoss):
         states: HasEffectorState, 
         targets: PyTree,
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
         # sum over xyz
         loss = jnp.sum(
@@ -278,7 +329,7 @@ class EffectorPositionLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.label: loss}
+        return LossDict({self.label: loss})
 
 
 class EffectorStraightPathLoss(AbstractLoss):
@@ -299,7 +350,7 @@ class EffectorStraightPathLoss(AbstractLoss):
         states: HasEffectorState, 
         targets: PyTree,
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
         effector_pos = states.mechanics.effector.pos
         pos_diff = jnp.diff(effector_pos, axis=1)
@@ -314,7 +365,7 @@ class EffectorStraightPathLoss(AbstractLoss):
         
         loss = path_length / straight_length
         
-        return loss, {self.label: loss}
+        return LossDict({self.label: loss})
 
 
 class EffectorFixationLoss(AbstractLoss):
@@ -326,7 +377,7 @@ class EffectorFixationLoss(AbstractLoss):
         states: PyTree, 
         targets: PyTree,
         task_inputs: PyTree,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
         loss = jnp.sum(
             (states.mechanics.effector.pos - targets.pos) ** 2, 
@@ -338,7 +389,7 @@ class EffectorFixationLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.label: loss}
+        return LossDict({self.label: loss})
 
 
 class EffectorFinalVelocityLoss(AbstractLoss):
@@ -353,14 +404,14 @@ class EffectorFinalVelocityLoss(AbstractLoss):
         states: PyTree, 
         targets: PyTree,
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
         loss = jnp.sum(
             (states.mechanics.effector.vel[:, -1] - targets.vel[:, -1]) ** 2, 
             axis=-1
         )
         
-        return loss, {self.label: loss}
+        return LossDict({self.label: loss})
 
 
 class NetworkOutputLoss(AbstractLoss):
@@ -373,33 +424,33 @@ class NetworkOutputLoss(AbstractLoss):
         #! **kwargs?
         targets: PyTree,
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
         loss = jnp.sum(states.network.output ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.label: loss}
+        return LossDict({self.label: loss})
 
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    labels: str = "nn_activity"
+    label: str = "nn_activity"
 
     def __call__(
         self, 
         states: PyTree, 
         targets: PyTree,
         task_inputs: Optional[PyTree] = None,
-    ) -> Tuple[float, Dict[str, float]]:
+    ) -> LossDict:
         
         loss = jnp.sum(states.network.activity ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return loss, {self.label: loss}
+        return LossDict({self.label: loss})
 
         
 def power_discount(n_steps, discount_exp=6):

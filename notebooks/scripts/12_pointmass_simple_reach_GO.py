@@ -70,7 +70,7 @@ from feedbax.plot import (
     plot_3D_paths,
     plot_activity_heatmap,
     plot_activity_sample_units,
-    plot_loss, 
+    plot_losses, 
     plot_pos_vel_force_2D,
     plot_task_and_speed_profiles,
 )
@@ -301,7 +301,7 @@ trainer = TaskTrainer(
 # %%
 key = jr.PRNGKey(seed + 1)
 
-model, losses, losses_terms, learning_rates = trainer(
+model, losses, learning_rates = trainer(
     task=task,
     model=model,
     batch_size=batch_size, 
@@ -310,11 +310,11 @@ model, losses, losses_terms, learning_rates = trainer(
     key=key,
 )
 
-plot_loss(losses, losses_terms);
+plot_losses(losses);
 
 # %%
 plt.style.use('dark_background')
-plot_loss(losses, losses_terms);
+plot_losses(losses);
 
 # %%
 model_path = save(
@@ -339,7 +339,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
+losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %% [markdown]
 # Plot speeds along with a line indicating the first availability of target information.

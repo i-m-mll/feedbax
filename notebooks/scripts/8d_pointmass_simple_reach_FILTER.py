@@ -73,7 +73,7 @@ import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
-from feedbax.plot import plot_loss, plot_pos_vel_force_2D
+from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.utils import tree_take 
@@ -243,7 +243,7 @@ trainable_leaves_func = lambda model: (
     model.step.net.readout,
 )
 
-model, losses, losses_terms, learning_rates = trainer(
+model, losses, learning_rates = trainer(
     task=task, 
     model=model,
     n_batches=n_batches, 
@@ -253,7 +253,7 @@ model, losses, losses_terms, learning_rates = trainer(
     key=key_train,
 )
 
-plot_loss(losses, losses_terms)
+plot_losses(losses)
 
 # %% [markdown]
 # Save the trained model to file, along with the task and the hyperparams needed to set them up again
@@ -282,7 +282,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
+losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 trial_specs, _ = task.trials_validation
@@ -304,12 +304,10 @@ model_ = eqx.tree_at(
 )
 
 # %%
-loss, loss_terms, states = task.eval(model_, key=jr.PRNGKey(0))
+losses, states = task.eval(model_, key=jr.PRNGKey(0))
 
 # %%
-
-# %%
-(loss, loss_terms, states), trials, aux = task.eval_train_batch(
+(losses, states), trials, aux = task.eval_train_batch(
     model, 
     batch_size=10,
     key=jr.PRNGKey(0), 

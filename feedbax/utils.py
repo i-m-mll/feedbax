@@ -14,7 +14,7 @@ from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
 from time import perf_counter
-from typing import Callable, Concatenate, Dict, Optional, TypeVarTuple, Union
+from typing import Callable, Concatenate, Dict, Iterable, List, Optional, Tuple, TypeVar, TypeVarTuple, Union
 
 import equinox as eqx
 import jax
@@ -33,6 +33,8 @@ TODO: infinite cycle
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
 
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
 Ts = TypeVarTuple("Ts")
 
 
@@ -319,3 +321,18 @@ def padded_bounds(x, p=0.2):
 #                             for p, s in jax.tree_util.tree_leaves_with_path(state)]))
 
 
+def unzip2(
+    xys: Iterable[Tuple[T1, T2]]
+) -> Tuple[Tuple[T1, ...], Tuple[T2, ...]]:
+    """Unzip sequence of length-2 tuples into two tuples.
+    
+    Taken from `jax._src.util`.
+    """
+    # Note: we deliberately don't use zip(*xys) because it is lazily evaluated,
+    # is too permissive about inputs, and does not guarantee a length-2 output.
+    xs: List[T1] = []
+    ys: List[T2] = []
+    for x, y in xys:
+        xs.append(x)
+        ys.append(y)
+    return tuple(xs), tuple(ys)

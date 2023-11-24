@@ -62,7 +62,7 @@ from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 
 from feedbax.plot import (
-    plot_loss, 
+    plot_losses, 
     plot_2D_joint_positions,
     plot_pos_vel_force_2D,
     plot_activity_heatmap,
@@ -228,7 +228,7 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-model, losses, losses_terms, learning_rates = trainer(
+model, losses, learning_rates = trainer(
     task=task, 
     model=model,
     n_batches=1000, 
@@ -238,7 +238,7 @@ model, losses, losses_terms, learning_rates = trainer(
     key=jrandom.PRNGKey(seed + 1),
 )
 
-plot_loss(losses, losses_terms)
+plot_losses(losses)
 plt.show()
 
 # %% [markdown]
@@ -267,7 +267,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jrandom.PRNGKey(0))
+losses, states = task.eval(model, key=jrandom.PRNGKey(0))
 
 # %%
 init_states, target_states, _ = task.trials_validation

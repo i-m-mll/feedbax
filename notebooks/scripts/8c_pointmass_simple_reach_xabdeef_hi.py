@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 from feedbax.xabdeef import point_mass_RNN_simple_reaches
 
-from feedbax.plot import plot_loss, plot_pos_vel_force_2D
+from feedbax.plot import plot_losseses, plot_pos_vel_force_2D
 
 # %%
 # changes matplotlib style, to match dark notebook themes
@@ -47,13 +47,13 @@ seed = 5566
 
 context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
 
-model, losses, losses_terms, _ = context.train(
-    n_batches=10_000, 
+model, losses, _ = context.train(
+    n_batches=100, 
     batch_size=500, 
     key=jr.PRNGKey(seed + 1),
 )
 
-plot_loss(losses, losses_terms)
+plot_losseses(losses)
 
 # %% [markdown]
 # What do the task and model PyTrees look like?
@@ -83,7 +83,7 @@ context = point_mass_RNN_simple_reaches(
     key=key_model,
 )
 
-model, losses, losses_terms, _ = context.train(
+model, losses, _ = context.train(
     n_batches=10_000, 
     batch_size=500, 
     log_step=200,
@@ -91,7 +91,7 @@ model, losses, losses_terms, _ = context.train(
     key=key_train,
 )
 
-plot_loss(losses, losses_terms)
+plot_losses(losses)
 
 
 # %% [markdown]
@@ -99,7 +99,7 @@ plot_loss(losses, losses_terms)
 
 # %%
 key_eval = jr.PRNGKey(seed + 2)
-loss, loss_terms, states = context.task.eval(model, key=key_eval)
+losses, states = context.task.eval(model, key=key_eval)
 
 # %%
 trial_specs, _ = context.task.trials_validation
@@ -138,7 +138,7 @@ plt.show()
 # We can also evaluate the model on an example training batch, to see what the training trials look like. The method `eval_train_batch` also returns information on the trials in the batch, since unlike the validation task, these aren't constant and accessible from `context.task`.
 
 # %%
-(loss, loss_terms, states), trials, _ = context.task.eval_train_batch(
+(losses, states), trials, _ = context.task.eval_train_batch(
     model, 
     batch_size=10,
     key=jr.PRNGKey(0), 

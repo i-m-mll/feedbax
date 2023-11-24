@@ -33,7 +33,7 @@ import jax.random as jr
 from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
 
-from feedbax.loss import AbstractLoss
+from feedbax.loss import AbstractLoss, LossDict
 if TYPE_CHECKING:
     from feedbax.model import AbstractModel
 from feedbax.state import AbstractState, CartesianState2D
@@ -53,6 +53,12 @@ class AbstractTaskInput(eqx.Module):
     intervenors: AbstractVar[Dict[str, jax.Array]]
 
 
+class AbstractTaskTrialSpec(eqx.Module):
+    init: PyTree
+    input: AbstractTaskInput
+    target: PyTree
+
+
 class SimpleReachTaskInput:
     stim: Float[Array, "time 1"]
     intervenors: Dict[str, jax.Array]
@@ -64,12 +70,6 @@ class DelayedReachTaskInput(AbstractTaskInput):
     stim_on: Int[Array, "time 1"]
     intervenors: Dict[str, jax.Array]
 
-
-class AbstractTaskTrialSpec(eqx.Module):
-    init: PyTree
-    input: AbstractTaskInput
-    target: PyTree
-    
 
 # TODO: this same trial spec also applies to tracking and stabilization tasks...
 #? does it apply to all kinds of movement tasks we're interested in?
@@ -83,8 +83,9 @@ class ReachTrialSpec(AbstractTaskTrialSpec):
 class AbstractTask(eqx.Module):
     """Abstract base class for tasks.
     
-    Associates a trial generator with a loss function and a set of . Also provides methods
-    for evaluating a suitable model. 
+    Associates a training trial generator with a loss function and a set of 
+    validation trials. Also provides methods for evaluating suitable models
+    in trials. 
     
     TODO: 
     - Could use `__call__` instead of `eval_trials`.
@@ -122,7 +123,7 @@ class AbstractTask(eqx.Module):
         self, 
         model: AbstractModel[StateT], 
         key: jax.Array,
-    ) -> Tuple[Float[Array, ""], PyTree, StateT]:
+    ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on the task's validation set of trials."""
         
         return self.eval_trials(model, self.trials_validation[0], key)
@@ -133,7 +134,7 @@ class AbstractTask(eqx.Module):
         model: AbstractModel[StateT], 
         batch_size: int, 
         key: jax.Array,
-    ) -> Tuple[Tuple[Float[Array, ""], PyTree, StateT], 
+    ) -> Tuple[Tuple[LossDict, StateT], 
                AbstractTaskTrialSpec, 
                PyTree]:
         """Evaluate a model on a single batch of training trials."""
@@ -173,7 +174,7 @@ class AbstractTask(eqx.Module):
         model: AbstractModel[StateT], 
         trial_specs: AbstractTaskTrialSpec, 
         key: jax.Array,
-    ) -> Tuple[Float[Array, ""], PyTree, StateT]:
+    ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on a set of trials.
         """      
         
@@ -181,13 +182,13 @@ class AbstractTask(eqx.Module):
             trial_specs.input, trial_specs.init, key
         ) 
         
-        loss, loss_terms = self.loss_func(
+        losses = self.loss_func(
             states, 
             trial_specs.target, 
             trial_specs.input
         )
         
-        return loss, loss_terms, states
+        return losses, states
 
 
 def _uniform_pos_endpoints(

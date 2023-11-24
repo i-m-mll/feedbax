@@ -25,6 +25,7 @@ import pandas as pd
 import seaborn as sns
 
 from feedbax import utils
+from feedbax.loss import LossDict
 
 
 logger = logging.getLogger(__name__)
@@ -320,31 +321,26 @@ def plot_activity_sample_units(
         axs[-1][-j-1].set_xlabel(xlabel)
         
 
-def plot_loss(
-    losses: Float[Array, "trainstep"], 
-    losses_terms: Optional[Dict[str, Float[Array, "trainstep"]]] = None,
+def plot_losses(
+    losses: LossDict, 
     xscale: str = 'log',
     yscale: str = 'log',
 ):
-    """Log-log plot of losses and component loss terms."""
-    if losses_terms is None:
-        losses_terms = dict()
-    
+    """Line plot of loss terms and total."""  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
-    ax.plot(losses, 'white', lw=3)
+    ax.plot(losses.total, 'white', lw=3)
     
     ax.set_xscale(xscale)
     ax.set_yscale(yscale)
     
-    if losses_terms is not None:
-        for loss_term in losses_terms.values():
-            ax.loglog(loss_term, lw=0.75)
+    for loss_term in losses.values():
+        ax.loglog(loss_term, lw=0.75)
         
-    ax.set_xlabel('Training step')
+    ax.set_xlabel('Training iteration')
     ax.set_ylabel('Loss')
     
-    ax.legend(['Total', *losses_terms.keys()])
+    ax.legend(['Total', *losses.keys()])
     
     return fig, ax
 

@@ -107,7 +107,6 @@ def point_mass_RNN(
         hidden_size,
         system.control_size, 
         # out_nonlinearity=out_nonlinearity, 
-        persistence=False,
         key=key,
     )
     body = SimpleFeedback(net, mechanics, feedback_delay_steps)

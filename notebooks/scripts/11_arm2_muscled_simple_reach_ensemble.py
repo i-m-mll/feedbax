@@ -249,7 +249,7 @@ trainable_leaves_func = lambda model: (
     model.step.net.cell.bias
 )
 
-model, losses, losses_terms, learning_rates = trainer.train_ensemble(
+model, losses, learning_rates = trainer.train_ensemble(
     task=task, 
     models=models,
     n_replicates=n_replicates,
@@ -263,7 +263,7 @@ model, losses, losses_terms, learning_rates = trainer.train_ensemble(
 plt.loglog(losses.T)
 
 # %%
-plot_mean_losses(losses, losses_terms)
+plot_mean_losses(losses)
 plt.show()
 
 # %% [markdown]
@@ -294,7 +294,7 @@ except NameError:
 # %%
 keys_eval = jr.split(jr.PRNGKey(seed + 2), n_replicates)
 
-loss, loss_terms, states = eqx.filter_vmap(task.eval)(
+losses, states = eqx.filter_vmap(task.eval)(
     models, keys_eval
 )
 

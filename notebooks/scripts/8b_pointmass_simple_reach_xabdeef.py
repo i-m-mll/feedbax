@@ -51,7 +51,7 @@ from feedbax.xabdeef.models import point_mass_RNN
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer
 
-from feedbax.plot import plot_loss, plot_pos_vel_force_2D
+from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 
 # %%
 logging.getLogger("jax").setLevel(logging.INFO)
@@ -109,7 +109,7 @@ trainable_leaves_func = lambda model: (
 # %%
 key_train = jr.PRNGKey(seed + 1)
 
-model, losses, losses_terms, learning_rates = trainer(
+model, losses, learning_rates = trainer(
     task=task, 
     model=model,
     n_batches=n_batches, 
@@ -119,13 +119,13 @@ model, losses, losses_terms, learning_rates = trainer(
     key=key_train,
 )
 
-plot_loss(losses, losses_terms)
+plot_losses(losses)
 
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
-loss, loss_terms, states = task.eval(model, key=jr.PRNGKey(0))
+losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 trial_specs, _ = task.trials_validation
@@ -137,7 +137,7 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
-(loss, loss_terms, states), trials, aux = task.eval_train_batch(
+(losses, states), trials, aux = task.eval_train_batch(
     model, 
     batch_size=10,
     key=jr.PRNGKey(0), 

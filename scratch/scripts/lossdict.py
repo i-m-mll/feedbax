@@ -21,7 +21,62 @@ from types import MappingProxyType
 import jax
 from jax import Array
 import jax.numpy as jnp
+import jax.random as jr
 import jax.tree_util as jtu
+
+# %%
+from feedbax.loss import LossDict 
+
+# %%
+import jax.tree_util as jtu 
+
+a = dict(a=1, b=2)
+b = dict(c=3, d=4)
+c = dict(e=5, d=6)
+d = dict()
+
+jtu.tree_reduce(
+    lambda x, y: x | y,
+    (a,b,c,d),
+    is_leaf=lambda x: isinstance(x, dict)
+)
+
+# %%
+LossDict_ = LossDict
+
+test = LossDict_(
+    test1=jnp.ones(10),
+    test2=jr.normal(jr.PRNGKey(0), (10,)),
+    test3=jr.normal(jr.PRNGKey(1), (10,)),
+)
+
+loss_terms = (
+    LossDict_(test1=jnp.ones(10)),
+    LossDict_(test2=jr.normal(jr.PRNGKey(0), (10,))),
+    LossDict_(test3=jr.normal(jr.PRNGKey(1), (10,))),
+)
+
+losses = jtu.tree_reduce(
+    lambda x, y: x | y,
+    loss_terms,
+    is_leaf=lambda x: isinstance(x, LossDict_)
+)
+
+type(losses)
+
+# %%
+type(test)
+
+# %%
+jtu.tree_leaves(test)
+
+# %%
+jax.tree_map(jnp.sum, test)
+
+# %%
+losses.total
+
+jax.tree_leaves(losses)
 
 
 # %% [markdown]
@@ -43,6 +98,14 @@ class LossDict(UserDict):
     def __radd__(self, other):
         return self.__add__(other)
 
+
+# %%
+n = 100_000
+
+losses_large = LossDict(zip(
+    tuple('abcdef'),
+    [jr.uniform(jr.PRNGKey(i), (n,)) for i in range(6)],
+))
 
 # %%
 loss = LossDict({
