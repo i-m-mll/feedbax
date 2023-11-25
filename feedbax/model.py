@@ -12,8 +12,9 @@ TODO:
 """
 
 from abc import abstractmethod, abstractproperty
+from collections import OrderedDict
 import logging
-from typing import Callable, Generic, Sequence, TypeVar
+from typing import Callable, Dict, Generic, Optional, Sequence, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -88,18 +89,29 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     
     TODO:
     - PyTree of force inputs (in addition to control inputs) to mechanics
+    - Could insert intervenors as stages in the model, but I think it makes 
+    more sense for modules to be designed-in, which then provides the user 
+    with labels for stages at which interventions can be applied, resulting 
+    in a dict of interventions that mirrors the dict of stages.
     """
     net: eqx.Module  
     mechanics: Mechanics 
     feedback_channel: Channel
     delay: int 
     feedback_leaves_func: Callable[[PyTree], PyTree]  
-    # TODO: could do AbstractIntervenor[SimpleFeedbackState] but maybe that's too restrictive
-    intervenors: Sequence[AbstractIntervenor] 
     
-    wheres: Sequence[Callable[[SimpleFeedbackState], PyTree]]
-    modules: Sequence[eqx.Module]
-    module_inputs: Sequence[Callable[[AbstractTaskInput, SimpleFeedbackState], PyTree]]
+    # stage_spec: Dict[str, Tuple[
+    #     Callable[[SimpleFeedbackState], PyTree],
+    #     eqx.Module,
+    #     Sequence[Callable[[AbstractTaskInput, SimpleFeedbackState], PyTree]],
+    # ]]
+    intervenors: Dict[str, Sequence[AbstractIntervenor]]
+    stages: Tuple[Tuple[
+        Sequence[AbstractIntervenor],
+        Callable[[SimpleFeedbackState], PyTree],
+        eqx.Module,
+        Sequence[Callable[[AbstractTaskInput, SimpleFeedbackState], PyTree]],
+    ]]
     
     def __init__(
         self, 
@@ -108,33 +120,65 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         delay: int = 0, 
         feedback_leaves_func: Callable[[MechanicsState], PyTree] = \
             lambda mechanics_state: mechanics_state.system,
-        intervenors: Sequence[AbstractIntervenor] = (),
+        intervenors: Optional[Union[Sequence[AbstractIntervenor],
+                              Dict[str, Sequence[AbstractIntervenor]]]] = None,
     ):
         self.net = net
         self.mechanics = mechanics
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1, idx=-1
         self.feedback_channel = Channel(delay)
         self.feedback_leaves_func = feedback_leaves_func
-        self.intervenors = intervenors
         
-        # module_labels = ['get_feedback', 'network_step', 'mechanics_step']
-        self.wheres = [
-            lambda state: state.feedback,
-            lambda state: state.network,
-            lambda state: state.mechanics,
-        ]
+        intervention_dict = jax.tree_map(
+            lambda _: ((),), 
+            self.stages_spec,
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
         
-        self.modules = [
-            self.feedback_channel,
-            self.net,
-            self.mechanics,
-        ]
+        if intervenors is not None:
+            if isinstance(intervenors, Sequence):
+                # By default, place interventions in the first stage.
+                intervention_dict.update({'get_feedback': tuple(intervenors)})
+            elif isinstance(intervenors, dict):
+                intervention_dict.update(jax.tree_map(tuple, intervenors))
+            else:
+                raise ValueError("intervenors not a sequence or dict of sequences")
         
-        self.module_inputs = [
-            lambda _, state: feedback_leaves_func(state.mechanics),
-            lambda input, state: (input, state.feedback.output),
-            lambda _, state: state.network.output,
-        ]
+        self.intervenors = intervention_dict
+        
+        # To construct actual stages, join intervenors with stages_spec.
+        self.stages = tuple(jax.tree_map(
+            lambda x, y: y + x, 
+            self.stages_spec, 
+            self.intervenors,
+            is_leaf=lambda x: isinstance(x, tuple),
+        ).values())
+        
+    @property
+    def stages_spec(self):
+        """Specifies the stages of the model in terms of substate operations.
+        
+        Note that the module has to be given as a function that obtains it from `self`, 
+        or otherwise it won't use modules that have been updated during training.
+        I'm not sure why the references are kept across model updates...
+        """
+        return OrderedDict({
+            'get_feedback': (
+                lambda state: state.feedback,  # substate it operates on
+                lambda self: self.feedback_channel,  # module that operates on it
+                lambda _, state: self.feedback_leaves_func(state.mechanics),  # inputs
+            ),
+            'network_step': (
+                lambda state: state.network,
+                lambda self: self.net,
+                lambda input, state: (input, state.feedback.output),
+            ),
+            'mechanics_step': (
+                lambda state: state.mechanics,
+                lambda self: self.mechanics,
+                lambda _, state: state.network.output,
+            ),
+        })
     
     @jax.named_scope("fbx.SimpleFeedback")
     def __call__(
@@ -144,42 +188,26 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         key: jax.Array,
     ) -> SimpleFeedbackState:
         
-        key1, key2, key3 = jr.split(key, 3)
-
-        for intervenor in self.intervenors:
-            # whether thisz modifies the state depends on `input`
-            #? it should be OK to use a single key across unique intervenors
-            state = intervenor(state, input, key=key)
+        keys = jr.split(key, len(self.stages))
         
-        state = eqx.tree_at(
-            self.wheres[0], 
-            state, 
-            self.feedback_channel(
-                self.module_inputs[0](input, state), 
-                self.wheres[0](state), 
-                key=key1
-            ),
-        )
-        
-        state = eqx.tree_at(
-            self.wheres[1], 
-            state, 
-            self.net(
-                self.module_inputs[1](input, state), 
-                self.wheres[1](state), 
-                key=key2
-            ),
-        )
-        
-        state = eqx.tree_at(
-            self.wheres[2], 
-            state, 
-            self.mechanics(
-                self.module_inputs[2](input, state), 
-                self.wheres[2](state), 
-                key=key3
-            ),
-        )
+        for (intervenors, where, module, module_input), key \
+            in zip(self.stages, keys):
+            
+            key1, key2 = jr.split(key)
+            
+            for intervenor in intervenors:
+                # whether this modifies the state depends on `input`
+                state = intervenor(state, input, key=key1)
+                
+            state = eqx.tree_at(
+                where, 
+                state, 
+                module(self)(
+                    module_input(input, state), 
+                    where(state), 
+                    key=key2,
+                ),
+            )
         
         return state
         
@@ -245,7 +273,8 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     
 def add_intervenors(
     model: SimpleFeedback, 
-    intervenors: Sequence[AbstractIntervenor], 
+    intervenors: Union[Sequence[AbstractIntervenor],
+                       Dict[str, Sequence[AbstractIntervenor]]], 
     keep_existing: bool = True,
 ) -> SimpleFeedback:
     """Add intervenors to a model, returning the updated model.
@@ -254,14 +283,29 @@ def add_intervenors(
     - Could this be generalized to `AbstractModel[StateT]`?
     """
     if keep_existing:
-        intervenors = model.intervenors + tuple(intervenors)
+        if isinstance(intervenors, Sequence):
+            # If a sequence is given, append to the first stage.
+            first_stage_label = model.intervenors.popitem(last=False)[0]
+            intervenors_dict = eqx.tree_at(
+                lambda intervenors: intervenors[first_stage_label],
+                model.intervenors,
+                model.intervenors[first_stage_label] + tuple(intervenors),
+            )
+        elif isinstance(intervenors, dict):
+            intervenors_dict = eqx.tree_map(
+                lambda x, y: x + tuple(y),
+                model.intervenors,
+                intervenors,
+            )
+        else:
+            raise ValueError("intervenors not a sequence or dict of sequences")
     
     return SimpleFeedback(
         net=model.net,
         mechanics=model.mechanics,
         delay=model.delay,
         feedback_leaves_func=model.feedback_leaves_func,
-        intervenors=intervenors,
+        intervenors=intervenors_dict,
     )
 
 def remove_intervenors(

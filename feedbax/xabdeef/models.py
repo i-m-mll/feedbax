@@ -15,7 +15,7 @@ import optax
 
 from feedbax.channel import ChannelState
 from feedbax.model import AbstractModel, SimpleFeedback
-from feedbax.iterate import Iterator
+from feedbax.iterate import Iterator, SimpleIterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
@@ -111,7 +111,7 @@ def point_mass_RNN(
     )
     body = SimpleFeedback(net, mechanics, feedback_delay_steps)
     
-    model = Iterator(body, n_steps)
+    model = SimpleIterator(body, n_steps)
     
     return model
 

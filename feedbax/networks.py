@@ -29,7 +29,7 @@ class NetworkState(eqx.Module):
     
 
 @runtime_checkable
-class RNNCell(Protocol):
+class RNNCellProto(Protocol):
     """Specifies the interface expected from RNN cell instances.
     
     Based on `eqx.nn.GRUCell` and `eqx.nn.LSTMCell`.
@@ -83,7 +83,7 @@ class RNNCellWithReadout(eqx.Module):
         input_size: int, 
         hidden_size: int,
         out_size: int, 
-        cell_type: Type[RNNCell] = eqx.nn.GRUCell,
+        cell_type: Type[RNNCellProto] = eqx.nn.GRUCell,
         readout_type: Type[eqx.Module] = eqx.nn.Linear,
         use_bias: bool = True,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
