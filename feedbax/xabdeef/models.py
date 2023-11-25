@@ -20,7 +20,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.linear import point_mass
 from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled
-from feedbax.networks import RNNCellWithReadout
+from feedbax.networks import RNNCell, RNNCellWithReadout
 from feedbax.task import AbstractTask, RandomReaches
 from feedbax.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -93,6 +93,8 @@ def point_mass_RNN(
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
+        
+    key1, key2 = jr.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
@@ -102,14 +104,14 @@ def point_mass_RNN(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    net = RNNCell(
         input_size,
         hidden_size,
-        system.control_size, 
+        # system.control_size, 
         # out_nonlinearity=out_nonlinearity, 
-        key=key,
+        key=key1,
     )
-    body = SimpleFeedback(net, mechanics, feedback_delay_steps)
+    body = SimpleFeedback(net, mechanics, delay=feedback_delay_steps, key=key2)
     
     model = SimpleIterator(body, n_steps)
     

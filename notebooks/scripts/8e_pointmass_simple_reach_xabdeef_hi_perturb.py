@@ -40,7 +40,12 @@ from feedbax.intervene import EffectorCurlForceField
 from feedbax.model import add_intervenors
 from feedbax.xabdeef import point_mass_RNN_simple_reaches
 
-from feedbax.plot import plot_losses, plot_pos_vel_force_2D
+from feedbax.plot import (
+    plot_losses, 
+    plot_pos_vel_force_2D,
+    plot_activity_heatmap, 
+    plot_activity_sample_units,
+)
 
 # %%
 # changes matplotlib style, to match dark notebook themes
@@ -55,7 +60,7 @@ seed = 5566
 context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
 
 model, losses, _ = context.train(
-    n_batches=10_000, 
+    n_batches=1_000, 
     batch_size=500, 
     key=jr.PRNGKey(seed + 1),
 )
@@ -70,36 +75,6 @@ context.task
 
 # %%
 context.model
-
-# %% [markdown]
-# ### Slightly less minimal example
-
-# %%
-seed = 5566
-key_model = jr.PRNGKey(seed)
-key_train = jr.PRNGKey(seed + 1)
-
-context = point_mass_RNN_simple_reaches(
-    n_steps=100,
-    dt=0.1,
-    mass=1.0,
-    workspace=((-1., -1.),
-               (1., 1.)),
-    hidden_size=50,
-    feedback_delay_steps=5,
-    key=key_model,
-)
-
-model, losses, _ = context.train(
-    n_batches=10_000, 
-    batch_size=500, 
-    log_step=200,
-    learning_rate=0.01,
-    key=key_train,
-)
-
-plot_losses(losses)
-
 
 # %% [markdown]
 # Evaluate the model on the task---in this case, center-out reaches:
@@ -131,8 +106,6 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
-from feedbax.plot import plot_activity_heatmap, plot_activity_sample_units
-
 plot_activity_heatmap(states.network.activity[0])
 plt.show()
 
@@ -152,7 +125,7 @@ unit_spec = jax.tree_map(
     states.network,
 )
 
-activity = unit_spec.activity.at[4].set(-0.5)
+activity = unit_spec.activity.at[4].set(1)
 
 unit_spec = eqx.tree_at(
     lambda tree: tree.activity,
@@ -162,12 +135,16 @@ unit_spec = eqx.tree_at(
 
 # %%
 from feedbax.intervene import NetworkConstantPerturbation
+import jax.random as jr
 
 model_ = eqx.tree_at(
     lambda model: model.step,
     model,
-    add_intervenors(model.step, 
-                    [NetworkConstantPerturbation(unit_spec)]),
+    add_intervenors(
+        model.step, 
+        {'nn_readout': [NetworkConstantPerturbation(unit_spec)]},
+        key=jr.PRNGKey(seed + 3),
+    ),
 )
 
 # %%
@@ -181,6 +158,8 @@ plot_pos_vel_force_2D(
     endpoints=(trial_specs.init.pos, goal_states.pos),
 )
 plt.show()
+
+# %%
 
 # %%
 seed = 5566

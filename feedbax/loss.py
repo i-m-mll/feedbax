@@ -429,7 +429,8 @@ class NetworkOutputLoss(AbstractLoss):
         task_inputs: Optional[PyTree] = None,
     ) -> LossDict:
         
-        loss = jnp.sum(states.network.output ** 2, axis=-1)
+        #loss = jnp.sum(states.network.output ** 2, axis=-1)
+        loss = jnp.sum(states.net_readout ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)

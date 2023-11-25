@@ -4,7 +4,7 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
-from functools import cached_property
+from functools import cached_property, wraps
 import logging
 import math
 from typing import Callable, Optional, Protocol, Sequence, Tuple, Type, runtime_checkable
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class NetworkState(eqx.Module):
     """State of a neural network."""
     activity: PyTree[Float[Array, "unit"]]
-    output: PyTree
+    output: Optional[PyTree]
     
 
 @runtime_checkable
@@ -66,7 +66,55 @@ class RNNCellProto(Protocol):
         state: jax.Array, 
     ) -> jax.Array:
         ...
+
+
+class RNNCell(eqx.Module):
+    """A single step of an RNN with a linear readout layer and noise.
+    
+    Derived from https://docs.kidger.site/equinox/examples/train_rnn/"""
+    cell: eqx.Module
+    noise_std: Optional[float]
+    hidden_size: int
+
+    def __init__(
+        self, 
+        input_size: int, 
+        hidden_size: int,
+        cell_type: Type[RNNCellProto] = eqx.nn.GRUCell,
+        use_bias: bool = True,
+        noise_std: Optional[float] = None,
+        *,
+        key: jax.Array, 
+    ):
+        key1, key2 = jr.split(key, 2)
+        self.cell = cell_type(input_size, hidden_size, use_bias=use_bias, key=key1)  
+        self.noise_std = noise_std
+        self.hidden_size = self.cell.hidden_size
+    
+    @jax.named_scope("fbx.RNNCellWithReadout")
+    def __call__(
+        self, 
+        input, 
+        state: NetworkState, 
+        key: jax.Array,
+    ) -> NetworkState:
+        if not isinstance(input, jnp.ndarray):
+            input, _ = ravel_pytree(input)
+        activity = self.cell(input, state.activity)
+        if self.noise_std is not None:
+            noise = self.noise_std * jr.normal(key, activity.shape) 
+            activity = activity + noise
         
+        return NetworkState(activity, None)
+    
+    def init(self, activity=None):
+        if activity is None:
+            activity = jnp.zeros(self.cell.hidden_size)
+        else:
+            activity = jnp.array(activity)
+        
+        return NetworkState(activity, output=None)    
+
 
 class RNNCellWithReadout(eqx.Module):
     """A single step of an RNN with a linear readout layer and noise.
@@ -290,6 +338,18 @@ class LeakyRNNCell(eqx.Module):
         else:
             return None
          
+
+def wrap_stateless_network(net: eqx.Module):
+    """Make a stateless network trivially compatible with state-passing.
+    
+    TODO: should be `wrap_stateless_module` probably
+    """
+    @wraps(net)
+    def wrapped(input, state, *args, **kwargs):
+        return net(input, *args, **kwargs)
+    
+    return wrapped
+
 
 def n_layer_linear(
     hidden_sizes: Sequence[int], 

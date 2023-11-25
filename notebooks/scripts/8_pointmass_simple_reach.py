@@ -71,7 +71,7 @@ from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNNCellWithReadout
+from feedbax.networks import RNNCell, RNNCellWithReadout
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -108,6 +108,8 @@ def get_model(
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
     
+    key1, key2 = jr.split(key)
+    
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
@@ -116,15 +118,15 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    net = RNNCell(
         input_size,
         hidden_size,
-        system.control_size, 
-        out_nonlinearity=out_nonlinearity, 
-        key=key
+        #system.control_size, 
+        #out_nonlinearity=out_nonlinearity, 
+        key=key1
     )
     
-    body = SimpleFeedback(net, mechanics, feedback_delay)
+    body = SimpleFeedback(net, mechanics, delay=feedback_delay, key=key2)
     
     return SimpleIterator(body, n_steps)
 
@@ -220,7 +222,7 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 1000
+n_batches = 10000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
