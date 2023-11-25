@@ -63,6 +63,7 @@ from feedbax.mechanics.linear import point_mass
 from feedbax.networks import RNNCellWithReadout
 from feedbax.task import RandomReachesDelayed
 from feedbax.trainer import TaskTrainer, save, load
+from feedbax.xabdeef.losses import simple_reach_loss
 
 from feedbax.plot import (
     animate_3D_rotate,
@@ -119,7 +120,6 @@ def get_model(
         hidden_size, 
         system.control_size, 
         out_nonlinearity=out_nonlinearity,
-        persistence=True, 
         key=key
     )
     body = SimpleFeedback(net, mechanics, feedback_delay)
@@ -156,13 +156,14 @@ def get_model(
         hidden_size, 
         system.control_size, 
         out_nonlinearity=out_nonlinearity,
-        persistence=True, 
         key=key
     )
     body = SimpleFeedback(net, mechanics, feedback_delay)
 
     return Iterator(body, n_steps)
 
+
+# %%
 
 # %%
 seed = 5566
@@ -186,31 +187,12 @@ log_step = 100
 
 # the keys need to match 
 loss_term_weights = dict(
-   # effector_fixation=1.,
+    effector_fixation=1.,
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-4,
     nn_activity=1e-5,
 )
-
-# %%
-loss_func = fbl.simple_reach_loss(
-    n_steps=n_steps,
-    loss_term_weights=loss_term_weights,
-)
-task = RandomReachesDelayed(
-        loss_func=loss_func,
-        workspace=workspace, 
-        n_steps=n_steps,
-        epoch_len_ranges=task_epoch_len_ranges,
-        eval_grid_n=1,
-        eval_n_directions=8,
-        eval_reach_length=0.5,
-)
-
-task.get_train_trial(jr.PRNGKey(seed))
-
-# %%
 
 # %%
 # hyperparams dict + setup function isn't strictly necessary,
@@ -297,8 +279,6 @@ trainer = TaskTrainer(
 )
 
 # %%
-
-# %%
 key = jr.PRNGKey(seed + 1)
 
 model, losses, learning_rates = trainer(
@@ -345,27 +325,27 @@ losses, states = task.eval(model, key=jr.PRNGKey(0))
 # Plot speeds along with a line indicating the first availability of target information.
 
 # %%
-init_states, target_states, task_inputs, epoch_start_idxs = \
+trial_specs, epoch_start_idxs = \
     task.trials_validation
 # assume the goal is the target state at the last time step
-goal_states = jax.tree_map(lambda x: x[:, -1], target_states)
+goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_task_and_speed_profiles(
     velocity=states.mechanics.effector.vel, 
     task_variables={
-        'stim X': task_inputs.stim.pos[..., 0],
-        'stim Y': task_inputs.stim.pos[..., 1],
-        'fixation signal': task_inputs.hold,
-        'target ON signal': task_inputs.stim_on,
+        'stim X': trial_specs.input.stim.pos[..., 0],
+        'stim Y': trial_specs.input.stim.pos[..., 1],
+        'fixation signal': trial_specs.input.hold,
+        'target ON signal': trial_specs.input.stim_on,
     }, 
     epoch_start_idxs=epoch_start_idxs
 )
 
 # %%
-plot_states_forces_2d(
+plot_pos_vel_force_2D(
     states.mechanics.system.pos, 
     states.mechanics.system.vel, 
     states.network.output, 
-    endpoints=(init_states.pos, goal_states.pos),
+    endpoints=(trial_specs.init.pos, goal_states.pos),
 )
 plt.show()
 
@@ -373,7 +353,7 @@ plt.show()
 # Plot network activity. Heatmap of all units, and a sample of six units.
 
 # %%
-plot_activity_heatmap(states.hidden[0])
+plot_activity_heatmap(states.network.activity[0])
 plt.show()
 
 # %%
@@ -381,7 +361,7 @@ seed = 5566
 n_samples = 6
 key = jr.PRNGKey(seed)
 
-plot_activity_sample_units(states.hidden, n_samples, key=key)
+plot_activity_sample_units(states.network.activity, n_samples, key=key)
 
 
 # %% [markdown]

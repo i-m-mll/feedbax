@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import Callable, TypeVar
+from typing import Callable, Optional, TypeVar
 
 import diffrax as dfx
 import equinox as eqx
@@ -45,7 +45,7 @@ class Mechanics(eqx.Module):
         self.clip_states = clip_states
     
     @jax.named_scope("fbx.Mechanics")
-    def __call__(self, input, state: MechanicsState):
+    def __call__(self, input, state: MechanicsState, *, key: Optional[jax.Array] = None):
         # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
         
         # given effector force, update system state

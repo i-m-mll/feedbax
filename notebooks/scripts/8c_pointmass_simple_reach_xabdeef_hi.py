@@ -48,7 +48,7 @@ seed = 5566
 context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
 
 model, losses, _ = context.train(
-    n_batches=100, 
+    n_batches=10_000, 
     batch_size=500, 
     key=jr.PRNGKey(seed + 1),
 )

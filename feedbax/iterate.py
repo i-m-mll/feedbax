@@ -1,4 +1,10 @@
-"""
+"""Modules that iterate `AbstractModel` instances over time.
+
+TODO:
+
+- These classes shouldn't know about effector states, and the interface between
+  `AbstractTask` and `AbstractModel` needs to be improved so that we're not 
+  necessarily passing just the effector state through here, explicitly.
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -29,10 +35,6 @@ class Iterator(eqx.Module):
     returned by `step`, and use this to initialize empty trajectory arrays in 
     which to store the states across all steps; `states_includes` can be used
     to specify which states to store. By default, all are stored.
-    
-    TODO:
-    - is there a way to avoid assuming the `input, state` argument structure of `step`?
-    - with the new partitioning of states into memory and no-memory,
     """
     step: AbstractModel
     n_steps: int 
@@ -135,3 +137,40 @@ class Iterator(eqx.Module):
         )
         
         return states
+    
+
+class SimpleIterator(eqx.Module):
+    """A simple model iterator that stores the entire state.
+    
+    If memory is not an issue, this class is preferred as lacks the overhead
+    of `Iterator` in terms of state partitioning, and is therefore faster. For 
+    large state PyTrees, however, it may be preferable to use `Iterator` and
+    choose which states are worth discarding to save memory.
+    """
+    step: AbstractModel
+    n_steps: int 
+    
+    def __init__(self, step: AbstractModel, n_steps: int, *args, **kwargs):
+        self.step = step
+        self.n_steps = n_steps
+    
+    def __call__(self, inputs, init_effector_state, key):
+        init_state = self.step.init(init_effector_state)  
+        
+        keys = jr.split(key, self.n_steps)
+        
+        def step(state, args): 
+            input, key = args
+            state = self.step(input, state, key)
+            return state, state
+        
+        _, states = lax.scan(
+            step,
+            init_state, 
+            (inputs, keys),
+            length=self.n_steps,
+        )
+        
+        return states 
+        
+        

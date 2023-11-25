@@ -105,28 +105,10 @@ plot_losses(losses)
 # Evaluate the model on the task---in this case, center-out reaches:
 
 # %%
-key_eval = jr.PRNGKey(seed + 2)
-losses, states = context.task.eval(model, key=key_eval)
-
-# %%
-trial_specs, _ = context.task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
-plot_pos_vel_force_2D(
-    states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
-)
-plt.show()
-
-# %% [markdown]
-# Test the response to perturbation.
-#
-# Use a single center-out set for easier debugging
-
-# %%
 from feedbax.task import RandomReaches
 
 
-task2 = RandomReaches(
+task = RandomReaches(
     loss_func = context.task.loss_func,
     workspace = context.task.workspace,
     n_steps = context.task.n_steps,
@@ -136,20 +118,75 @@ task2 = RandomReaches(
 )
 
 # %%
-model_ = eqx.tree_at(
-    lambda model: model.step,
-    model,
-    add_intervenors(model.step, [EffectorCurlForceField(1)]),
-)
+key_eval = jr.PRNGKey(seed + 2)
+losses, states = task.eval(model, key=key_eval)
 
 # %%
-losses, states = task2.eval(model_, key=key_eval)
-
-# %%
-trial_specs, _ = task2.trials_validation
+trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,
     endpoints=(trial_specs.init.pos, goal_states.pos),
 )
 plt.show()
+
+# %%
+from feedbax.plot import plot_activity_heatmap, plot_activity_sample_units
+
+plot_activity_heatmap(states.network.activity[0])
+plt.show()
+
+# %%
+seed = 5566
+n_samples = 6
+key = jr.PRNGKey(seed)
+
+plot_activity_sample_units(states.network.activity, n_samples, key=key)
+
+# %% [markdown]
+# Test the response to perturbation.
+
+# %%
+unit_spec = jax.tree_map(
+    lambda x: jnp.zeros(x.shape[-1]),
+    states.network,
+)
+
+activity = unit_spec.activity.at[4].set(-0.5)
+
+unit_spec = eqx.tree_at(
+    lambda tree: tree.activity,
+    unit_spec,
+    activity,
+)
+
+# %%
+from feedbax.intervene import NetworkConstantPerturbation
+
+model_ = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, 
+                    [NetworkConstantPerturbation(unit_spec)]),
+)
+
+# %%
+losses, states = task.eval(model_, key=key_eval)
+
+# %%
+trial_specs, _ = task.trials_validation
+goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+plot_pos_vel_force_2D(
+    states,
+    endpoints=(trial_specs.init.pos, goal_states.pos),
+)
+plt.show()
+
+# %%
+seed = 5566
+n_samples = 6
+key = jr.PRNGKey(seed)
+
+plot_activity_sample_units(states.network.activity, n_samples, key=key)
+
+# %%

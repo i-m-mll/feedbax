@@ -100,12 +100,18 @@ class LossDict(UserDict):
 
 
 # %%
-n = 100_000
+n = 1_000_000
 
 losses_large = LossDict(zip(
     tuple('abcdef'),
     [jr.uniform(jr.PRNGKey(i), (n,)) for i in range(6)],
 ))
+
+# %%
+losses_large.total.shape
+
+# %%
+# %time losses_large.total
 
 # %%
 loss = LossDict({

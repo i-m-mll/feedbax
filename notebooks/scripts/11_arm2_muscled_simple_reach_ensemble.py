@@ -134,7 +134,6 @@ def get_model(
         hidden_size,
         system.control_size, 
         out_nonlinearity=out_nonlinearity,
-        persistence=False, 
         key=key,
     )
     body = SimpleFeedback(

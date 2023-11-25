@@ -78,6 +78,10 @@ class ReachTrialSpec(AbstractTaskTrialSpec):
     init: CartesianState2D 
     input: AbstractTaskInput
     target: CartesianState2D
+    
+    @cached_property
+    def goal(self):
+        return jax.tree_map(lambda x: x[..., -1], self.target)
 
 
 class AbstractTask(eqx.Module):
@@ -228,14 +232,14 @@ def _centerout_endpoints_grid(
 
 def _randomreaches_task_inputs(
     target_states: CartesianState2D,
-):
+) -> CartesianState2D:
     """Only position and velocity of targets are supplied to the model.
-    
-    This is necessary because `force` is a dataclass field in 
-    `CartesianState2D`, but in `RandomReaches` we don't want to pass forces as
-    a task input to the model.
     """
-    return (target_states.pos, target_states.vel)
+    return CartesianState2D(
+        pos=target_states.pos, 
+        vel=target_states.vel,
+        force=None,
+    )
 
 
 class RandomReaches(AbstractTask):

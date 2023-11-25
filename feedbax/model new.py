@@ -12,21 +12,23 @@ TODO:
 """
 
 from abc import abstractmethod, abstractproperty
+from functools import partial
 import logging
-from typing import Callable, Generic, Sequence, TypeVar
+from typing import Any, Callable, Generic, Sequence, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, PyTree
+
 import numpy as np
 
 from feedbax.channel import Channel, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState 
-from feedbax.task import AbstractTask, AbstractTaskInput
+from feedbax.task import AbstractTask
 from feedbax.state import CartesianState2D
 from feedbax.utils import tree_sum_n_features
 
@@ -64,12 +66,12 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     ) -> StateT:
         ...
         
-    # @abstractmethod
-    # def init(
-    #     self,
-    #     state, 
-    # ) -> State:
-    #     ...
+    @abstractmethod
+    def init(
+        self,
+        state, 
+    ) -> StateT:
+        ...
         
     @abstractproperty
     def memory_spec(self) -> PyTree[bool]:
@@ -82,6 +84,23 @@ class SimpleFeedbackState(AbstractModelState):
     network: NetworkState
     feedback: ChannelState
 
+
+class ModuleWrapper(eqx.Module):
+    where: Callable[[SimpleFeedbackState], PyTree]
+    module: eqx.Module
+    module_input: Callable[[PyTree, SimpleFeedbackState], PyTree]  
+
+    def __call__(self, state, input, key):
+        return eqx.tree_at(
+            self.where, 
+            state, 
+            self.module(
+                self.module_input(input, state), 
+                self.where(state), 
+                key=key
+            ),
+        )
+        
 
 class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     """Simple feedback loop with a single RNN and single mechanical system.
@@ -97,9 +116,11 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     # TODO: could do AbstractIntervenor[SimpleFeedbackState] but maybe that's too restrictive
     intervenors: Sequence[AbstractIntervenor] 
     
-    wheres: Sequence[Callable[[SimpleFeedbackState], PyTree]]
-    modules: Sequence[eqx.Module]
-    module_inputs: Sequence[Callable[[AbstractTaskInput, SimpleFeedbackState], PyTree]]
+    wheres: Any
+    modules: Any
+    modules_: list[ModuleWrapper]
+    module_inputs: Any
+    module_tuples: Any
     
     def __init__(
         self, 
@@ -116,6 +137,7 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         self.feedback_channel = Channel(delay)
         self.feedback_leaves_func = feedback_leaves_func
         self.intervenors = intervenors
+             
         
         # module_labels = ['get_feedback', 'network_step', 'mechanics_step']
         self.wheres = [
@@ -135,6 +157,37 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
             lambda input, state: (input, state.feedback.output),
             lambda _, state: state.network.output,
         ]
+        
+        self.modules_ = jax.tree_map(
+            lambda *args: ModuleWrapper(*args),
+            self.wheres, self.modules, self.module_inputs
+        )
+        
+        self.module_tuples = tuple(zip(
+            self.wheres, 
+            self.modules, 
+            self.module_inputs,
+        ))
+
+    def _eval_module(self, i, val):
+        state, keys = val
+        where, module, module_input = self.module_tuples[i]
+        state = eqx.tree_at(
+            where,
+            state, 
+            module(module_input(input, state), where(state), key=keys[i]),
+        )
+        return state, keys
+    
+    @partial(jax.jit, static_argnames=('module_tuples',))
+    def _eval_modules(self, state, keys, module_tuples):
+        state, _ = jax.lax.fori_loop(
+            0, 
+            len(module_tuples),
+            self._eval_module,
+            (state, keys)
+        )
+        return state
     
     @jax.named_scope("fbx.SimpleFeedback")
     def __call__(
@@ -144,46 +197,37 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         key: jax.Array,
     ) -> SimpleFeedbackState:
         
-        key1, key2, key3 = jr.split(key, 3)
-
         for intervenor in self.intervenors:
             # whether thisz modifies the state depends on `input`
             #? it should be OK to use a single key across unique intervenors
             state = intervenor(state, input, key=key)
         
-        state = eqx.tree_at(
-            self.wheres[0], 
-            state, 
-            self.feedback_channel(
-                self.module_inputs[0](input, state), 
-                self.wheres[0](state), 
-                key=key1
-            ),
-        )
-        
-        state = eqx.tree_at(
-            self.wheres[1], 
-            state, 
-            self.net(
-                self.module_inputs[1](input, state), 
-                self.wheres[1](state), 
-                key=key2
-            ),
-        )
-        
-        state = eqx.tree_at(
-            self.wheres[2], 
-            state, 
-            self.mechanics(
-                self.module_inputs[2](input, state), 
-                self.wheres[2](state), 
-                key=key3
-            ),
-        )
-        
-        return state
-        
+        keys = jr.split(key, len(self.module_tuples))  
 
+        # 0. THIS DOES NOT WORK        
+        for i, module_ in enumerate(self.modules_):
+            state = module_(state, input, keys[i])
+        
+        # 1. THIS DOES NOT WORK
+        # state = self._eval_modules(state, keys, self.module_tuples)
+        
+        # 2. THIS DOES NOT WORK
+        # states = [state]
+        #        
+        # for i in range(len(self.module_tuples)):
+        #     where, module, module_input = self.module_tuples[i]
+        #     states.append(eqx.tree_at(
+        #         where, 
+        #         states[-1], 
+        #         module(
+        #             module_input(input, states[-1]), 
+        #             where(states[-1]), 
+        #             key=keys[i]
+        #         ),
+        #     ))
+
+        return state
+    
     def init(
         self, 
         effector_state: CartesianState2D,

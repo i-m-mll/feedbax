@@ -67,7 +67,7 @@ import numpy as np
 import optax 
 
 from feedbax.model import SimpleFeedback
-from feedbax.iterate import Iterator
+from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
@@ -121,13 +121,12 @@ def get_model(
         hidden_size,
         system.control_size, 
         out_nonlinearity=out_nonlinearity, 
-        persistence=False,
         key=key
     )
     
     body = SimpleFeedback(net, mechanics, feedback_delay)
     
-    return Iterator (body, n_steps)
+    return SimpleIterator(body, n_steps)
 
 
 # %%
@@ -221,7 +220,7 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 1_000
+n_batches = 1000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
@@ -236,7 +235,7 @@ model, losses, learning_rates = trainer(
     model=model,
     n_batches=n_batches, 
     batch_size=batch_size, 
-    log_step=200,
+    log_step=100,
     trainable_leaves_func=trainable_leaves_func,
     key=key_train,
 )
