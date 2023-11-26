@@ -1,4 +1,4 @@
-"""
+"""Modules that modify parts of PyTrees.
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -26,7 +26,11 @@ StateT = TypeVar("StateT", bound=AbstractState)
 
 
 class AbstractIntervenor(eqx.Module):
-    """A module that intervenes on a model's state.
+    """Base class for modules that intervene on a model's state.
+    
+    Concrete subclasses must define `_out` and `_in` class variables, which 
+    are callables that return the substate to be updated and the substate to 
+    use as input to the update method, respectively.
     
     Instances of the concrete subclasses of this class are intended to be
     registered with the `register_intervention` method of an instance of an
@@ -37,15 +41,33 @@ class AbstractIntervenor(eqx.Module):
     - Interestingly, this has the same call signature as `AbstractModel`.
       This might be relevant to generalizing the `AbstractModel` class and 
       the notion of model-model interactions.
-    
-    TODO:
-    - If `eqx.pytree_at` has much overhead, it might be good to have a way to
-      "compile" multiple intervenors into a single `eqx.pytree_at` call.    
+        - Each "stage" of an `AbstractModel` is a modification of a substate.
+    - `_get_updated_substate` in `AbstractClampIntervenor` and 
+      `_get_substate_to_add` in `AbstractAdditiveIntervenor` serve a similar 
+      role and have the same signature, but are defined separately for the 
+      sake of clearer naming.
     """
-    label: AbstractVar[str]
-    _where: AbstractClassVar[Callable[[AbstractIntervenor, PyTree], PyTree]]
     
-    @abstractmethod
+    label: AbstractVar[str]
+    _out: AbstractClassVar[Callable[[AbstractIntervenor, PyTree], PyTree]]
+    _in: AbstractClassVar[Callable[[AbstractIntervenor, PyTree], PyTree]]
+    
+    def update_substate(
+        self,
+        state: StateT, 
+        substate: PyTree,      
+    ) -> StateT:
+        """Return a modified state PyTree."""
+        return eqx.tree_at(
+            self._out, 
+            state, 
+            substate,
+        )
+    
+
+class AbstractClampIntervenor(AbstractIntervenor):
+    """Base class for intervenors that replace part of the substate."""
+    
     def __call__(
         self, 
         state: StateT, 
@@ -54,60 +76,72 @@ class AbstractIntervenor(eqx.Module):
         key: jax.Array,
     ) -> StateT:
         """Return a modified state PyTree."""
+        new_substate = self._get_updated_substate(self._in(state))
+        return self.update_substate(state, new_substate)
+    
+    @abstractmethod
+    def _get_updated_substate(self, substate_in: PyTree) -> PyTree:
+        """Return a modified substate PyTree."""
         ...
     
-    def substate_update(
-        self,
-        state: StateT, 
-        substate: PyTree,      
-    ) -> StateT:
-        """Return a modified state PyTree."""
-        return eqx.tree_at(
-            self._where, 
-            state, 
-            substate,
-        )
-    
-    def substate(self, state: StateT) -> PyTree:
-        return self._where(state)
 
-
-class EffectorVelDepForceField(eqx.Module):
-    """Apply a force field to an effector."""
-    label: str = "effector_force_field"
-    
-    amplitude: float = 1.0   
-    _where = lambda tree: tree.mechanics.effector.force
-    
+class AbstractAdditiveIntervenor(AbstractIntervenor):
+    """Base class for intervenors that add updates to a substate."""
     
     def __call__(
         self, 
         state: StateT, 
         input: PyTree,  # task inputs
+        *,
         key: jax.Array,
     ) -> StateT:
+        """Return a modified state PyTree."""
+        new_substate = jax.tree_map(
+            lambda x, y: x + y,
+            self._out(state),
+            self._get_updated_substate(self._in(state)),
+        )
+        return self.update_substate(state, new_substate)
+
+    @abstractmethod
+    def _get_substate_to_add(self, substate_in: PyTree) -> PyTree:
+        """Return a modified substate PyTree."""
         ...
+
+
+class EffectorVelDepForceField(AbstractAdditiveIntervenor):
+    """Apply a force field to an effector."""
+    _rot_scale: jax.Array
+    _expand_scale: jax.Array
     
-    def _force(self, vel: jax.Array):
+    label: str = "effector_force_field"
+    
+    amplitude: float = 1.0   
+    _out = lambda tree: tree.mechanics.effector.force
+    _in = lambda tree: tree.mechanics.effector.vel
+
+    def _get_substate_to_add(self, vel: jax.Array):
         """Return velocity-dependent forces."""
         rot_forces = self._rot_scale * vel[..., ::-1]
         expand_force = self._expand_scale * vel 
         return rot_forces + expand_force
     
 
-class EffectorCurlForceField(AbstractIntervenor):
+class EffectorCurlForceField(AbstractAdditiveIntervenor):
     """Apply a curl force field to an effector.
     
     TODO:
     - Special case of `EffectorVelDepForceField`?
     """
-    label: str = "effector_curl_field"
-    _where = lambda self, tree: tree.mechanics.effector
-    
     amplitude: float   # TODO: allow asymmetry 
     direction: str
     _scale: jax.Array
     
+    label: str = "effector_curl_field"
+    
+    _in = lambda self, tree: tree.mechanics.effector.vel 
+    _out = lambda self, tree: tree.mechanics.effector.force
+        
     def __init__(self, amplitude: float = 1.0, direction: str = "cw"):
         self.amplitude = amplitude
         self.direction = direction.lower()
@@ -120,64 +154,54 @@ class EffectorCurlForceField(AbstractIntervenor):
             raise ValueError(f"Invalid curl field direction: {direction}")
         
         self._scale = amplitude * _signs
-    
-    def __call__(
-        self, 
-        state: StateT, 
-        input: PyTree,  # task inputs
-        key: jax.Array,
-    ) -> StateT:
-        """Return a modified state PyTree."""
-        effector_state = state.mechanics.effector
-        effector_force = (
-            effector_state.force
-            + self._curl_force(state.mechanics.effector.vel)
-        )
 
-        return self.substate_update(
-            state,
-            CartesianState2D(
-                pos=effector_state.pos,
-                vel=effector_state.vel,
-                force=effector_force,
-            ),
-        )
-
-    def _curl_force(self, vel: jax.Array):
-        """Return a curl force field."""
-        # flip x and y
-        return self._scale * vel[..., ::-1]
+    def _get_substate_to_add(self, vel: Array):
+        """Returns curl forces."""
+        return self._scale * vel[..., ::-1]  
     
     
-class NetworkConstantPerturbation(AbstractIntervenor):
-    label: str = "network_perturbation"
-    _where = lambda self, tree: tree.network
+class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
+    """Adds a constant input to the network states.
     
+    Args:
+        unit_spec (PyTree[Array]): A PyTree with the same structure as the
+        network state, to be added to the network state.
+    """
     unit_spec: PyTree
     
-    def __init__(
-        self, 
-        unit_spec, # network state PyTree with constant perturbations
-    ):
-        self.unit_spec = unit_spec 
-        
-    def __call__(
-        self, 
-        state: StateT,
-        input: PyTree,  # task inputs
-        key: jax.Array,
-    ) -> StateT:
-        """Return a modified state PyTree."""
-        network_state = state.network 
-        
-        network_state = jax.tree_map(
-            lambda x, y: x + y,
+    label: str = "network_input_perturbation"
+    
+    _in = lambda self, tree: tree.network  # not really...
+    _out = lambda self, tree: tree.network
+    
+    def __init__(self, unit_spec: PyTree):
+        self.unit_spec = jax.tree_map(jnp.nan_to_num, unit_spec)
+    
+    def _get_substate_to_add(self, network_state: PyTree):
+        """Return a modified network state PyTree."""
+        return self.unit_spec
+
+
+class NetworkClamp(AbstractClampIntervenor):
+    """Replaces part of the network state with constant values.
+    
+    Args:
+        unit_spec (PyTree[Array]): A PyTree with the same structure as the
+        network state, where all array values are NaN except for the constant
+        values to be clamped.
+    """
+    unit_spec: PyTree
+    
+    label: str = "network_clamp"
+    
+    _in = lambda self, tree: tree.network  
+    _out = lambda self, tree: tree.network
+    
+    def _get_updated_substate(self, network_state: PyTree):
+        """Return a modified network state PyTree."""
+        return jax.tree_map(
+            lambda x, y: jnp.where(jnp.isnan(y), x, y),
             network_state,
             self.unit_spec,
         )
-        
-        return self.substate_update(
-            state,
-            network_state,
-        )
-        
+

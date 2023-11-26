@@ -126,6 +126,7 @@ def point_mass_RNN_simple_reaches(
                  (1., 1.)),
     hidden_size: int = 50, 
     feedback_delay_steps: int = 0,
+    eval_grid_n: int = 2,
     *,
     key: jax.Array,
 ):
@@ -135,7 +136,7 @@ def point_mass_RNN_simple_reaches(
         loss_func=simple_reach_loss(n_steps),
         workspace=workspace, 
         n_steps=n_steps,
-        eval_grid_n=2,
+        eval_grid_n=eval_grid_n,
         eval_n_directions=8,
         eval_reach_length=0.5,    
     )

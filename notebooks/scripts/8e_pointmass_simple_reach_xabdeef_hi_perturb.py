@@ -36,7 +36,11 @@ import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 
-from feedbax.intervene import EffectorCurlForceField
+from feedbax.intervene import (
+    EffectorCurlForceField,
+    NetworkClamp,
+    NetworkConstantInputPerturbation,
+)
 from feedbax.model import add_intervenors
 from feedbax.xabdeef import point_mass_RNN_simple_reaches
 
@@ -57,7 +61,9 @@ plt.style.use('dark_background')
 # %%
 seed = 5566
 
-context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
+# context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
+
+context = point_mass_RNN_simple_reaches(eval_grid_n=1, key=jr.PRNGKey(seed))
 
 model, losses, _ = context.train(
     n_batches=1_000, 
@@ -118,14 +124,45 @@ plot_activity_sample_units(states.network.activity, n_samples, key=key)
 
 # %% [markdown]
 # Test the response to perturbation.
+#
+# Apply a clockwise curl field:
 
 # %%
+model_curl = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(
+        model.step, 
+        [EffectorCurlForceField(0.25, direction='cw')],
+        key=jr.PRNGKey(seed + 3),
+    ),
+)
+
+# %%
+losses, states = task.eval(model_curl, key=key_eval)
+
+# %%
+trial_specs, _ = task.trials_validation
+goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+plot_pos_vel_force_2D(
+    states,
+    endpoints=(trial_specs.init.pos, goal_states.pos),
+)
+plt.show()
+
+# %% [markdown]
+# Add a constant input to a single unit:
+
+# %%
+unit = 3
+input_current = 0.5
+
 unit_spec = jax.tree_map(
-    lambda x: jnp.zeros(x.shape[-1]),
+    lambda x: jnp.full(x.shape[-1], jnp.nan),
     states.network,
 )
 
-activity = unit_spec.activity.at[4].set(1)
+activity = unit_spec.activity.at[unit].set(input_current)
 
 unit_spec = eqx.tree_at(
     lambda tree: tree.activity,
@@ -134,15 +171,12 @@ unit_spec = eqx.tree_at(
 )
 
 # %%
-from feedbax.intervene import NetworkConstantPerturbation
-import jax.random as jr
-
 model_ = eqx.tree_at(
     lambda model: model.step,
     model,
     add_intervenors(
         model.step, 
-        {'nn_readout': [NetworkConstantPerturbation(unit_spec)]},
+        {'nn_readout': [NetworkConstantInputPerturbation(unit_spec)]},
         key=jr.PRNGKey(seed + 3),
     ),
 )
@@ -160,6 +194,8 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
+plot_activity_heatmap(states.network.activity[0])
+plt.show()
 
 # %%
 seed = 5566
@@ -167,5 +203,54 @@ n_samples = 6
 key = jr.PRNGKey(seed)
 
 plot_activity_sample_units(states.network.activity, n_samples, key=key)
+
+# %% [markdown]
+# Clamp the unit rather than adding the input to its existing activity
+
+# %%
+input_current = 0.5
+
+unit_spec = jax.tree_map(
+    lambda x: jnp.full(x.shape[-1], jnp.nan),
+    states.network,
+)
+
+activity = unit_spec.activity.at[unit].set(input_current)
+
+unit_spec = eqx.tree_at(
+    lambda tree: tree.activity,
+    unit_spec,
+    activity,
+)
+
+# %%
+model_ = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(
+        model.step, 
+        {'nn_readout': [NetworkClamp(unit_spec)]},
+        key=jr.PRNGKey(seed + 3),
+    ),
+)
+
+# %%
+losses, states = task.eval(model_, key=key_eval)
+
+# %%
+seed = 5566
+n_samples = 6
+key = jr.PRNGKey(seed)
+
+plot_activity_sample_units(states.network.activity, n_samples, key=key)
+
+# %%
+trial_specs, _ = task.trials_validation
+goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+plot_pos_vel_force_2D(
+    states,
+    endpoints=(trial_specs.init.pos, goal_states.pos),
+)
+plt.show()
 
 # %%

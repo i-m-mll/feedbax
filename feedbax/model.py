@@ -13,6 +13,7 @@ TODO:
 
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
+import copy
 import logging
 from typing import Callable, Dict, Generic, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -331,10 +332,9 @@ def add_intervenors(
                 model.intervenors[first_stage_label] + list(intervenors),
             )
         elif isinstance(intervenors, dict):
-            intervenors_dict = OrderedDict(model.intervenors)
+            intervenors_dict = copy.deepcopy(model.intervenors)
             for label, new_intervenors in intervenors.items():
                 intervenors_dict[label] += list(new_intervenors)
-
         else:
             raise ValueError("intervenors not a sequence or dict of sequences")
 
