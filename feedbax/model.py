@@ -38,7 +38,8 @@ import numpy as np
 
 from feedbax.channel import Channel, ChannelState
 from feedbax.intervene import AbstractIntervenor
-from feedbax.mechanics import Mechanics, MechanicsState
+if TYPE_CHECKING:
+    from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.task import AbstractTask, AbstractTaskInput
 from feedbax.utils import tree_sum_n_features
 
@@ -68,21 +69,18 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
            structure of the full model state. The fields may be types of 
            `AbstractModelState` as well, in the case of nested models.
         2. A concrete subclass of this class (`AbstractModel`) with:
-            i. fields to hold the modules that compose the model, 
-            ii. a `model_spec` property that specifies a series of operations 
-            on parts of the full model state, using those component modules, 
-            and
-            iii. an `init` method that returns an initial model state
-    
-    TODO:
-    - Should `init` be in `AbstractModelState` rather than an `AbstractModel`?
-    
-    - It might make sense to implement `__call__` here, and then get subclasses
-      to implement another method (`step`?). 
-      - For example, this would allow all the `intervenors` to be called at the 
-        start of each `__call__`, regardless of what type of model we're 
-        dealing with; we'd need an `intervenors: AbstractVar` field in that 
-        case. However, I'm not sure yet that this makes sense.
+            i. the appropriate components for doing state transformations;
+            either `eqx.Module`/`AbstractModel`-typed fields, or instance 
+            methods, each with the signature `input, state, *, key`;
+            ii. a `model_spec` property that specifies a series of named 
+            operations on parts of the full model state, using those component 
+            modules; and
+            iii. an `init` method that returns an initial full model state.
+            
+    The motivation behind the level of abstraction of this class is that it
+    gives a name to each functional stage of a composite model, so that after 
+    model instantiation or training, the user can choose to insert additional 
+    state interventions to be executed prior to any of the named stages. 
     """
     intervenors: AbstractVar[Dict[str, Sequence[AbstractIntervenor]]]
     
@@ -102,9 +100,9 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
             key1, key2 = jr.split(key)
             
             for intervenor in intervenors:
-                # whether this modifies the state depends on `input`
+                # Whether this modifies the state depends on `input`.
                 state = intervenor(state, input, key=key1)
-                
+            
             state = eqx.tree_at(
                 where, 
                 state, 
@@ -190,7 +188,7 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         
 
 class SimpleFeedbackState(AbstractModelState):
-    mechanics: MechanicsState
+    mechanics: "MechanicsState"
     network: "NetworkState"
     feedback: ChannelState
 
@@ -206,7 +204,7 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     in a dict of interventions that mirrors the dict of stages.
     """
     net: eqx.Module  
-    mechanics: Mechanics 
+    mechanics: "Mechanics"
     feedback_channel: Channel
     delay: int 
     feedback_leaves_func: Callable[[PyTree], PyTree]  
@@ -216,9 +214,9 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     def __init__(
         self, 
         net: eqx.Module, 
-        mechanics: Mechanics, 
+        mechanics: "Mechanics", 
         delay: int = 0, 
-        feedback_leaves_func: Callable[[MechanicsState], PyTree] \
+        feedback_leaves_func: Callable[["MechanicsState"], PyTree] \
             = lambda mechanics_state: mechanics_state.system,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Dict[str, Sequence[AbstractIntervenor]]]] \
@@ -307,16 +305,15 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         memory of another variable in the loop. 
         """
         return SimpleFeedbackState(
-            mechanics=True, 
-            network=True,
-            net_readout=True,
+            mechanics=self.mechanics.memory_spec, 
+            network=self.net.memory_spec,
             feedback=ChannelState(output=True, queue=False)
         )
 
     @staticmethod
     def get_nn_input_size(
         task: AbstractTask, 
-        mechanics: Mechanics, 
+        mechanics: "Mechanics", 
         feedback_leaves_func=lambda mechanics_state: mechanics_state.system,
     ) -> int:
         """Determine how many scalar input features the neural network needs.
@@ -342,7 +339,7 @@ def add_intervenors(
     *,
     key: jax.Array
 ) -> AbstractModel:
-    """Add intervenors to a model, returning the updated model.
+    """Return an updated model with added intervenors.
     
     TODO:
     - Could this be generalized to `AbstractModel[StateT]`?
@@ -368,7 +365,6 @@ def add_intervenors(
         model, 
         intervenors_dict,
     )
-
 
 def remove_intervenors(
     model: SimpleFeedback

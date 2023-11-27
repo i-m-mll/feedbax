@@ -1,5 +1,8 @@
 """Modules that modify parts of PyTrees.
 
+TODO:
+- The type signature is backwards compared to `AbstractModel`.
+
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
@@ -10,13 +13,16 @@
 
 from abc import abstractmethod
 import logging
-from typing import Callable, LiteralString, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, LiteralString, TypeVar
 
 import equinox as eqx
 from equinox import AbstractClassVar, AbstractVar
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PyTree
+
+if TYPE_CHECKING:
+    from feedbax.networks import NetworkState
 
 from feedbax.state import AbstractState, CartesianState2D
 
@@ -27,7 +33,7 @@ logger = logging.getLogger(__name__)
 StateT = TypeVar("StateT", bound=AbstractState)
 
 
-class AbstractIntervenor(eqx.Module):
+class AbstractIntervenor(eqx.Module, Generic[StateT]):
     """Base class for modules that intervene on a model's state.
     
     Concrete subclasses must define `_out` and `_in` class variables, which 
@@ -48,11 +54,23 @@ class AbstractIntervenor(eqx.Module):
       `_get_substate_to_add` in `AbstractAdditiveIntervenor` serve a similar 
       role and have the same signature, but are defined separately for the 
       sake of clearer naming.
+      
+    TODO:
+    - Should `Intervenor` only operate on a specific array in a state PyTree?    
+      That is, should `_out` and `_in` return `Array` instead of `PyTree`?
     """
     
     label: AbstractVar[str]
-    _out: AbstractClassVar[Callable] #[[AbstractIntervenor, PyTree], PyTree]]
-    _in: AbstractClassVar[Callable] #[[AbstractIntervenor, PyTree], PyTree]]
+    
+    @abstractmethod
+    def _out(self, state: StateT) -> PyTree:
+        """Return the substate to be updated."""
+        ...
+    
+    @abstractmethod
+    def _in(self, state: StateT) -> PyTree:
+        """Return the substate to be used as input."""
+        ...
     
     def update_substate(
         self,
@@ -65,18 +83,21 @@ class AbstractIntervenor(eqx.Module):
             state, 
             substate,
         )
-    
 
-class AbstractClampIntervenor(AbstractIntervenor):
+
+SubstateT = TypeVar("SubstateT", bound=PyTree)
+
+
+class AbstractClampIntervenor(AbstractIntervenor[StateT]):
     """Base class for intervenors that replace part of the substate."""
     
     def __call__(
         self, 
-        state: StateT, 
+        state: SubstateT, 
         input: PyTree,  # task inputs
         *,
         key: jax.Array,
-    ) -> StateT:
+    ) -> SubstateT:
         """Return a modified state PyTree."""
         new_substate = self._get_updated_substate(self._in(state))
         return self.update_substate(state, new_substate)
@@ -87,16 +108,16 @@ class AbstractClampIntervenor(AbstractIntervenor):
         ...
     
 
-class AbstractAdditiveIntervenor(AbstractIntervenor):
+class AbstractAdditiveIntervenor(AbstractIntervenor[StateT]):
     """Base class for intervenors that add updates to a substate."""
     
     def __call__(
         self, 
-        state: StateT, 
+        state: SubstateT, 
         input: PyTree,  # task inputs
         *,
         key: jax.Array,
-    ) -> StateT:
+    ) -> SubstateT:
         """Return a modified state PyTree."""
         new_substate = jax.tree_map(
             lambda x, y: x + y,
@@ -162,8 +183,12 @@ class EffectorCurlForceField(AbstractAdditiveIntervenor):
         return self._scale * vel[..., ::-1]  
     
     
-class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
+class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor["NetworkState"]):
     """Adds a constant input to a network unit's states.
+    
+    NOTE:
+    Originally this was intended to modify an arbitrary PyTree of network 
+    states. See `NetworkClamp` for more details.
     
     Args:
         unit_spec (PyTree[Array]): A PyTree with the same structure as the
@@ -173,8 +198,11 @@ class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
     
     label: str = "network_input_perturbation"
     
-    _in = lambda self, tree: tree.activity  # not really...
-    _out = lambda self, tree: tree.activity
+    def _in(self, tree: "NetworkState"):
+        return tree.activity
+    
+    def _out(self, tree: "NetworkState"):
+        return tree.activity
     
     def __init__(self, unit_spec: PyTree):
         self.unit_spec = jax.tree_map(jnp.nan_to_num, unit_spec)
@@ -184,9 +212,16 @@ class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
         return self.unit_spec
 
 
-class NetworkClamp(AbstractClampIntervenor):
+class NetworkClamp(AbstractClampIntervenor["NetworkState"]):
     """Replaces part of a network's state with constant values.
-    
+
+    NOTE:
+    Originally this was intended to modify an arbitrary PyTree of network 
+    states, which is why we use `tree_map` to replace parts of `network_state`
+    with parts of `unit_spec`. However, currently it is only used to modify
+    `NetworkState.activity`, which is a single JAX array. Thus `unit_spec`
+    should also be a single JAX array.
+
     Args:
         unit_spec (PyTree[Array]): A PyTree with the same structure as the
         network state, where all array values are NaN except for the constant
@@ -196,8 +231,11 @@ class NetworkClamp(AbstractClampIntervenor):
     
     label: str = "network_clamp"
     
-    _in = lambda self, tree: tree.activity 
-    _out = lambda self, tree: tree.activity
+    def _in(self, state: "NetworkState"):
+        return state.activity
+    
+    def _out(self, state: "NetworkState"):
+        return state.activity
     
     def _get_updated_substate(self, network_state: PyTree):
         """Return a modified network state PyTree."""

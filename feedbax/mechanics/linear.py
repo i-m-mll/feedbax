@@ -109,8 +109,10 @@ class SimpleLTISystem(AbstractLTISystem):
 
     def update_state_given_effector_force(
         self, 
-        system_state: CartesianState2D,
         effector_force: jax.Array,
+        system_state: CartesianState2D,
+        *,
+        key: Optional[jax.Array] = None,
     ) -> CartesianState2D:
         return eqx.tree_at(
             lambda state: state.force,

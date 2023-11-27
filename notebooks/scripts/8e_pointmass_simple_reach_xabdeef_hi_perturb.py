@@ -107,7 +107,7 @@ trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    endpoints=(trial_specs.init['mechanics']['effector'].pos, goal_states.pos),
 )
 plt.show()
 
@@ -146,7 +146,7 @@ trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    endpoints=(trial_specs.init['mechanics']['effector'].pos, goal_states.pos),
 )
 plt.show()
 
@@ -157,26 +157,17 @@ plt.show()
 unit = 3
 input_current = 0.5
 
-unit_spec = jax.tree_map(
-    lambda x: jnp.full(x.shape[-1], jnp.nan),
-    states.network,
-)
+unit_spec = jnp.full(states.network.activity.shape[-1], jnp.nan)
 
-activity = unit_spec.activity.at[unit].set(input_current)
-
-unit_spec = eqx.tree_at(
-    lambda tree: tree.activity,
-    unit_spec,
-    activity,
-)
+unit_spec = unit_spec.at[unit].set(input_current)
 
 # %%
 model_ = eqx.tree_at(
-    lambda model: model.step,
+    lambda model: model.step.net,
     model,
     add_intervenors(
-        model.step, 
-        {'nn_readout': [NetworkConstantInputPerturbation(unit_spec)]},
+        model.step.net, 
+        {'readout': [NetworkConstantInputPerturbation(unit_spec)]},
         key=jr.PRNGKey(seed + 3),
     ),
 )
@@ -189,7 +180,10 @@ trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        goal_states.pos
+    ),
 )
 plt.show()
 
@@ -208,28 +202,12 @@ plot_activity_sample_units(states.network.activity, n_samples, key=key)
 # Clamp the unit rather than adding the input to its existing activity
 
 # %%
-input_current = 0.5
-
-unit_spec = jax.tree_map(
-    lambda x: jnp.full(x.shape[-1], jnp.nan),
-    states.network,
-)
-
-activity = unit_spec.activity.at[unit].set(input_current)
-
-unit_spec = eqx.tree_at(
-    lambda tree: tree.activity,
-    unit_spec,
-    activity,
-)
-
-# %%
 model_ = eqx.tree_at(
-    lambda model: model.step,
+    lambda model: model.step.net,
     model,
     add_intervenors(
-        model.step, 
-        {'nn_readout': [NetworkClamp(unit_spec)]},
+        model.step.net, 
+        {'readout': [NetworkClamp(unit_spec)]},
         key=jr.PRNGKey(seed + 3),
     ),
 )
@@ -249,7 +227,10 @@ trial_specs, _ = task.trials_validation
 goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        goal_states.pos,
+    ),
 )
 plt.show()
 

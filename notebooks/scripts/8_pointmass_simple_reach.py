@@ -118,11 +118,12 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCell(
+    net = RNNCellWithReadout(
         input_size,
         hidden_size,
-        #system.control_size, 
-        #out_nonlinearity=out_nonlinearity, 
+        system.control_size, 
+        noise_std=0.0,
+        out_nonlinearity=out_nonlinearity, 
         key=key1
     )
     
@@ -135,8 +136,8 @@ def get_model(
 seed = 5566
 
 n_steps = 100
-dt = 0.1
-feedback_delay_steps = 5
+dt = 0.05
+feedback_delay_steps = 0
 workspace = ((-1., -1.),
              (1., 1.))
 hidden_size  = 50
@@ -226,6 +227,7 @@ n_batches = 10000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
+# not training readout!
 trainable_leaves_func = lambda model: (
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 

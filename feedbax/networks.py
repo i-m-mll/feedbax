@@ -1,9 +1,5 @@
 """Neural network architectures.
 
-TODO:
-
-- Might be able to subclass `AbstractModel`.
-
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
@@ -35,9 +31,8 @@ import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.utils import interleave_unequal
 from feedbax.model import AbstractModel, AbstractModelState
-    
+from feedbax.utils import interleave_unequal  
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
     
@@ -99,7 +94,7 @@ class RNNCell(AbstractModel[NetworkState]):
     noise_std: Optional[float]
     hidden_size: int
     
-    intervenors: Dict[str, AbstractIntervenor] = field(default_factory=dict)
+    intervenors: Dict[str, AbstractIntervenor] 
 
     def __init__(
         self, 
@@ -134,12 +129,23 @@ class RNNCell(AbstractModel[NetworkState]):
     
     @property
     def model_spec(self):
-        ...
-        # return OrderedDict({
-        #     'cell': (
-        #         lambda self: self.cell
-        #     )
-        # })
+        return OrderedDict({
+            'cell': (
+                lambda self: self.cell,
+                lambda state: state.activity,
+                lambda input, _: ravel_pytree(input)[0],
+            ),
+            'noise': (
+                lambda self: self._add_state_noise,
+                lambda state: state.activity,
+                lambda _, state: state.activity,
+            ),
+            'readout': (
+                lambda self: self._output,
+                lambda state: state.output,
+                lambda _, state: state.activity,
+            )
+        })
         
     @property
     def memory_spec(self):
@@ -180,8 +186,8 @@ class RNNCellWithReadout(AbstractModel[NetworkState]):
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                            Dict[str, Sequence[AbstractIntervenor]]]] \
-                    = None,
+                                    Dict[str, Sequence[AbstractIntervenor]]]] \
+            = None,
         *,
         key: jax.Array, 
     ):

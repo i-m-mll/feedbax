@@ -169,8 +169,10 @@ class TwoLink(eqx.Module):
     
     def update_state_given_effector_force(
         self, 
-        state: TwoLinkState, 
         effector_force: jax.Array,
+        state: TwoLinkState, 
+        *,
+        key: Optional[jax.Array] = None,
     ) -> TwoLinkState:
         """Update a state PyTree with torques inferred from effector force."""
         torque = self.effector_force_to_torques(
