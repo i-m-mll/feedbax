@@ -25,12 +25,11 @@ N_DIM = 2
 
 
 class TwoLinkMuscledState(AbstractState):
-    theta: Float[Array, "links=2"]
-    d_theta: Float[Array, "links=2"]
     activation: Float[Array, "muscles"]
-    torque: Float[Array, "links=2"] = field(
-        default_factory=lambda: jnp.zeros(2))
-
+    theta: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    d_theta: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    torque: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    
 
 class TwoLinkMuscled(eqx.Module):
     """
@@ -123,19 +122,8 @@ class TwoLinkMuscled(eqx.Module):
         v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
         return v
     
-    def init(self, effector_state):
-        if effector_state is None:
-            effector_state = CartesianState2D(
-                pos=self._forward_pos(jnp.zeros(2))[0][-1], 
-                vel=jnp.zeros(N_DIM),
-            )
-        theta, torque = self.inverse_kinematics(effector_state)         
-        return TwoLinkMuscledState(
-            theta=theta, 
-            d_theta=jnp.zeros_like(theta), 
-            activation=jnp.zeros(self.control_size),
-            torque=torque,
-        )
+    def init(self) -> TwoLinkMuscledState:       
+        return TwoLinkMuscledState(activation=jnp.zeros(self.control_size))
     
     @property
     def control_size(self):

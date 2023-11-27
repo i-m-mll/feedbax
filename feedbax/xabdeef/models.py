@@ -87,7 +87,7 @@ def point_mass_RNN(
     hidden_size: int = 50, 
     n_steps: int = 100, 
     feedback_delay_steps: int = 0,
-    # out_nonlinearity: Callable = lambda x: x,
+    out_nonlinearity: Callable = lambda x: x,
 ):
     """From nb8"""
     if key is None:
@@ -104,11 +104,11 @@ def point_mass_RNN(
         task, mechanics
     )
     
-    net = RNNCell(
+    net = RNNCellWithReadout(
         input_size,
         hidden_size,
-        # system.control_size, 
-        # out_nonlinearity=out_nonlinearity, 
+        system.control_size, 
+        out_nonlinearity=out_nonlinearity, 
         key=key1,
     )
     body = SimpleFeedback(net, mechanics, delay=feedback_delay_steps, key=key2)
@@ -116,6 +116,54 @@ def point_mass_RNN(
     model = SimpleIterator(body, n_steps)
     
     return model
+
+
+def point_mass_RNN_simple_reaches(
+    n_steps: int = 100, 
+    dt: float = 0.05, 
+    mass: float = 1., 
+    workspace = ((-1., -1.),
+                 (1., 1.)),
+    hidden_size: int = 50, 
+    feedback_delay_steps: int = 0,
+    eval_grid_n: int = 2,
+    *,
+    key: jax.Array,
+):
+    """"""
+    
+    task = RandomReaches(
+        loss_func=simple_reach_loss(n_steps),
+        workspace=workspace, 
+        n_steps=n_steps,
+        eval_grid_n=eval_grid_n,
+        eval_n_directions=8,
+        eval_reach_length=0.5,    
+    )
+    
+    model = point_mass_RNN(
+        task,
+        key=key,
+        dt=dt,
+        mass=mass,
+        hidden_size=hidden_size, 
+        n_steps=n_steps,
+        feedback_delay_steps=feedback_delay_steps,
+    )
+    
+    trainable_leaves_func = lambda model: (
+        model.step.net.cell.weight_hh, 
+        model.step.net.cell.weight_ih, 
+        model.step.net.cell.bias
+    )
+    
+    manager = ContextManager(
+        model=model,
+        task=task,
+        trainable_leaves_func=trainable_leaves_func,
+    )
+    
+    return manager
 
 
 def point_mass_RNN_simple_reaches(

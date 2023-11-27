@@ -104,7 +104,7 @@ class SimpleLTISystem(AbstractLTISystem):
         return CartesianState2D(
             pos=system_state.pos,
             vel=system_state.vel,
-            force=jnp.zeros_like(system_state.force),
+            # force=jnp.zeros_like(system_state.force),
         )
 
     def update_state_given_effector_force(
@@ -119,15 +119,9 @@ class SimpleLTISystem(AbstractLTISystem):
         )
     
     def init(
-        self, 
-        effector_state: Optional[CartesianState2D] = None
+        self,
     ) -> CartesianState2D:
-        if effector_state is None:
-            effector_state = CartesianState2D(
-                pos=jnp.zeros(N_DIM),  
-                vel=jnp.zeros(N_DIM),  
-            )
-        return effector_state
+        return CartesianState2D()
     
 
 def point_mass(

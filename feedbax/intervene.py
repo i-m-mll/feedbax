@@ -4,11 +4,13 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from __future__ import annotations
+#! Equinox 0.11.2 doesn't support stringified annotations of abstract vars
+#! This is why we can't properly annotate `_in` and `_out` fields below.
+# from __future__ import annotations
 
 from abc import abstractmethod
 import logging
-from typing import Callable, TypeVar
+from typing import Callable, LiteralString, TypeVar
 
 import equinox as eqx
 from equinox import AbstractClassVar, AbstractVar
@@ -49,8 +51,8 @@ class AbstractIntervenor(eqx.Module):
     """
     
     label: AbstractVar[str]
-    _out: AbstractClassVar[Callable[[AbstractIntervenor, PyTree], PyTree]]
-    _in: AbstractClassVar[Callable[[AbstractIntervenor, PyTree], PyTree]]
+    _out: AbstractClassVar[Callable] #[[AbstractIntervenor, PyTree], PyTree]]
+    _in: AbstractClassVar[Callable] #[[AbstractIntervenor, PyTree], PyTree]]
     
     def update_substate(
         self,
@@ -99,7 +101,7 @@ class AbstractAdditiveIntervenor(AbstractIntervenor):
         new_substate = jax.tree_map(
             lambda x, y: x + y,
             self._out(state),
-            self._get_updated_substate(self._in(state)),
+            self._get_substate_to_add(self._in(state)),
         )
         return self.update_substate(state, new_substate)
 
@@ -161,7 +163,7 @@ class EffectorCurlForceField(AbstractAdditiveIntervenor):
     
     
 class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
-    """Adds a constant input to the network states.
+    """Adds a constant input to a network unit's states.
     
     Args:
         unit_spec (PyTree[Array]): A PyTree with the same structure as the
@@ -171,8 +173,8 @@ class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
     
     label: str = "network_input_perturbation"
     
-    _in = lambda self, tree: tree.network  # not really...
-    _out = lambda self, tree: tree.network
+    _in = lambda self, tree: tree.activity  # not really...
+    _out = lambda self, tree: tree.activity
     
     def __init__(self, unit_spec: PyTree):
         self.unit_spec = jax.tree_map(jnp.nan_to_num, unit_spec)
@@ -183,7 +185,7 @@ class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor):
 
 
 class NetworkClamp(AbstractClampIntervenor):
-    """Replaces part of the network state with constant values.
+    """Replaces part of a network's state with constant values.
     
     Args:
         unit_spec (PyTree[Array]): A PyTree with the same structure as the
@@ -194,8 +196,8 @@ class NetworkClamp(AbstractClampIntervenor):
     
     label: str = "network_clamp"
     
-    _in = lambda self, tree: tree.network  
-    _out = lambda self, tree: tree.network
+    _in = lambda self, tree: tree.activity 
+    _out = lambda self, tree: tree.activity
     
     def _get_updated_substate(self, network_state: PyTree):
         """Return a modified network state PyTree."""

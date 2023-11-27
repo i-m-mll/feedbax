@@ -27,10 +27,10 @@ N_DIM = 2
 
 
 class TwoLinkState(AbstractState):
-    theta: Float[Array, "... ndim=2"]
-    d_theta: Float[Array, "... ndim=2"]
+    theta: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    d_theta: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
     torque: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
-
+            
 
 class TwoLink(eqx.Module):
     l: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [L] lengths of arm segments
@@ -93,19 +93,8 @@ class TwoLink(eqx.Module):
     
     def init(
         self, 
-        effector_state: Optional[CartesianState2D] = None,
-    ):
-        if effector_state is None:
-            effector_state = CartesianState2D(
-                pos=self._forward_pos(jnp.zeros(2))[0][-1], 
-                vel=jnp.zeros(N_DIM),
-            )
-        theta, torque = self.inverse_kinematics(effector_state)        
-        return TwoLinkState(
-            theta=theta, 
-            dtheta=jnp.zeros_like(theta),
-            torque=torque,
-        )
+    ) -> TwoLinkState:
+        return TwoLinkState()
 
     @cached_property
     def _a(self):
@@ -137,7 +126,7 @@ class TwoLink(eqx.Module):
     def inverse_kinematics(
             self,
             effector_state: CartesianState2D
-    ) -> Float[Array, "2"]: # TODO: should be TwoLinkState
+    ) -> TwoLinkState: 
         """Convert Cartesian effector position to joint angles for a two-link arm.
         
         NOTE: 
@@ -151,7 +140,6 @@ class TwoLink(eqx.Module):
         how to convert velocity.
         
         TODO:
-        - Convert velocity using the effector Jacobian.
         - Try to generalize to n-link arm using Jacobian of forward kinematics?
         - Unit test round trip with `forward_kinematics`.
         """
@@ -169,18 +157,21 @@ class TwoLink(eqx.Module):
 
         theta = jnp.stack([theta0, theta1], axis=-1)
         
+        # TODO: don't calculate Jacobian twice, for `d_theta` and `torque`
+        d_theta = jnp.linalg.inv(self.effector_jac(theta)) @ effector_state.vel
+        
         if effector_state.force is not None:
             torque = self.effector_force_to_torques(theta, effector_state.force)
         else:
             torque = None
 
-        return theta, torque
+        return TwoLinkState(theta=theta, d_theta=d_theta, torque=torque)
     
     def update_state_given_effector_force(
         self, 
         state: TwoLinkState, 
         effector_force: jax.Array,
-    ):
+    ) -> TwoLinkState:
         """Update a state PyTree with torques inferred from effector force."""
         torque = self.effector_force_to_torques(
             state.theta, 

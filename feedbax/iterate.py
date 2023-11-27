@@ -78,11 +78,10 @@ class Iterator(eqx.Module):
         return inputs, states, key2
     
     @jax.named_scope("fbx.Iterator")
-    def __call__(self, inputs, init_effector_state, key):
+    def __call__(self, inputs, init_state, key):
         key1, key2, key3 = jr.split(key, 3)
-        
-        # TODO: this should be outside        
-        init_state = self.step.init(init_effector_state)  
+        # TODO: this should be outside       
+        init_state = self.step.init(**init_state)  
         
         init_input = tree_get_idx(inputs, 0)
         states = self.init(init_input, init_state, key2)
@@ -154,8 +153,8 @@ class SimpleIterator(eqx.Module):
         self.step = step
         self.n_steps = n_steps
     
-    def __call__(self, inputs, init_effector_state, key):
-        init_state = self.step.init(init_effector_state)  
+    def __call__(self, inputs, init_state, key):
+        init_state = self.step.init(**init_state)  
         
         keys = jr.split(key, self.n_steps)
         

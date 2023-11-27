@@ -31,7 +31,8 @@ TODO:
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from __future__ import annotations
+#! Can't do this because `AbstractVar` annotations can't be stringified.
+# from __future__ import annotations
 
 from abc import abstractmethod
 from functools import cache, cached_property
@@ -104,23 +105,23 @@ class AbstractLoss(eqx.Module):
     ) -> LossDict:
         ...        
 
-    def __add__(self, other: AbstractLoss) -> CompositeLoss:
+    def __add__(self, other: "AbstractLoss") -> "CompositeLoss":
         return CompositeLoss(terms=(self, other), weights=(1., 1.))
 
-    def __radd__(self, other: AbstractLoss) -> CompositeLoss:
+    def __radd__(self, other: "AbstractLoss") -> "CompositeLoss":
         return self.__add__(other)
     
-    def __sub__(self, other: AbstractLoss) -> CompositeLoss:
+    def __sub__(self, other: "AbstractLoss") -> "CompositeLoss":
         #? I don't know if this even makes sense but it's easy to implement.
         return CompositeLoss(terms=(self, other), weights=(1., -1.))
     
-    def __rsub__(self, other: AbstractLoss) -> CompositeLoss:
+    def __rsub__(self, other: "AbstractLoss") -> "CompositeLoss":
         return CompositeLoss(terms=(self, other), weights=(-1., 1.))
     
-    def __neg__(self) -> CompositeLoss:
+    def __neg__(self) -> "CompositeLoss":
         return CompositeLoss(terms=(self,), weights=(-1.,))
 
-    def __mul__(self, other) -> CompositeLoss:
+    def __mul__(self, other) -> "CompositeLoss":
         """Assume scalar multiplication."""        
         if eqx.is_array_like(other):
             if eqx.is_array(other) and not other.shape == ():
@@ -242,7 +243,7 @@ class CompositeLoss(AbstractLoss):
         self.terms = dict(zip(all_labels, all_terms))
         self.weights = dict(zip(all_labels, all_weights))
     
-    def __or__(self, other: CompositeLoss) -> CompositeLoss:
+    def __or__(self, other: "CompositeLoss") -> "CompositeLoss":
         """Merge two composite losses, overriding terms with the same label."""
         return CompositeLoss(
             terms=self.terms | other.terms, 
@@ -430,7 +431,7 @@ class NetworkOutputLoss(AbstractLoss):
     ) -> LossDict:
         
         #loss = jnp.sum(states.network.output ** 2, axis=-1)
-        loss = jnp.sum(states.net_readout ** 2, axis=-1)
+        loss = jnp.sum(states.network.output ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)

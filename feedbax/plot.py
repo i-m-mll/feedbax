@@ -206,7 +206,7 @@ def plot_pos_vel_force_2D(
     """
     positions = states.mechanics.effector.pos
     velocities = states.mechanics.effector.vel
-    controls = states.net_readout 
+    controls = states.network.output 
     if endpoints is not None:
         endpoints = jnp.asarray(endpoints)
     

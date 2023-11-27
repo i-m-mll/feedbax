@@ -1,32 +1,49 @@
 """Neural network architectures.
 
+TODO:
+
+- Might be able to subclass `AbstractModel`.
+
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from collections import OrderedDict
 from functools import cached_property, wraps
 import logging
 import math
-from typing import Callable, Optional, Protocol, Sequence, Tuple, Type, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Callable, 
+    Dict, 
+    Optional, 
+    Protocol, 
+    Sequence, 
+    Tuple, 
+    Type, 
+    TypeVar,
+    Union,
+    runtime_checkable,
+)
 
 import equinox as eqx
+from equinox import field
 import jax
 from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
+from feedbax.intervene import AbstractIntervenor
 from feedbax.utils import interleave_unequal
+from feedbax.model import AbstractModel, AbstractModelState
+    
 
+StateT = TypeVar("StateT", bound=AbstractModelState)
+    
 
 logger = logging.getLogger(__name__)
 
-
-class NetworkState(eqx.Module):
-    """State of a neural network."""
-    activity: PyTree[Float[Array, "unit"]]
-    output: Optional[PyTree]
-    
 
 @runtime_checkable
 class RNNCellProto(Protocol):
@@ -68,13 +85,21 @@ class RNNCellProto(Protocol):
         ...
 
 
-class RNNCell(eqx.Module):
+class NetworkState(AbstractModelState):
+    """State of a neural network."""
+    activity: PyTree[Float[Array, "unit"]]
+    output: Optional[PyTree]
+
+
+class RNNCell(AbstractModel[NetworkState]):
     """A single step of an RNN with a linear readout layer and noise.
     
     Derived from https://docs.kidger.site/equinox/examples/train_rnn/"""
     cell: eqx.Module
     noise_std: Optional[float]
     hidden_size: int
+    
+    intervenors: Dict[str, AbstractIntervenor] = field(default_factory=dict)
 
     def __init__(
         self, 
@@ -91,7 +116,7 @@ class RNNCell(eqx.Module):
         self.noise_std = noise_std
         self.hidden_size = self.cell.hidden_size
     
-    @jax.named_scope("fbx.RNNCellWithReadout")
+    @jax.named_scope("fbx.RNNCell")
     def __call__(
         self, 
         input, 
@@ -107,16 +132,32 @@ class RNNCell(eqx.Module):
         
         return NetworkState(activity, None)
     
-    def init(self, activity=None):
+    @property
+    def model_spec(self):
+        ...
+        # return OrderedDict({
+        #     'cell': (
+        #         lambda self: self.cell
+        #     )
+        # })
+        
+    @property
+    def memory_spec(self):
+        return NetworkState(
+            activity=True,
+            output=True,
+        )        
+    
+    def init(self, activity=None, output=None):
         if activity is None:
             activity = jnp.zeros(self.cell.hidden_size)
         else:
             activity = jnp.array(activity)
         
-        return NetworkState(activity, output=None)    
+        return NetworkState(activity, output=output)    
 
 
-class RNNCellWithReadout(eqx.Module):
+class RNNCellWithReadout(AbstractModel[NetworkState]):
     """A single step of an RNN with a linear readout layer and noise.
     
     Derived from https://docs.kidger.site/equinox/examples/train_rnn/"""
@@ -125,6 +166,8 @@ class RNNCellWithReadout(eqx.Module):
     readout: eqx.Module
     out_nonlinearity: Callable[[Float], Float]
     noise_std: Optional[float]
+    hidden_size: int
+    intervenors: Dict[str, AbstractIntervenor]
 
     def __init__(
         self, 
@@ -136,6 +179,9 @@ class RNNCellWithReadout(eqx.Module):
         use_bias: bool = True,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
+        intervenors: Optional[Union[Sequence[AbstractIntervenor],
+                                            Dict[str, Sequence[AbstractIntervenor]]]] \
+                    = None,
         *,
         key: jax.Array, 
     ):
@@ -145,25 +191,43 @@ class RNNCellWithReadout(eqx.Module):
         self.readout = readout_type(hidden_size, out_size, use_bias=True, key=key2)
         self.out_nonlinearity = out_nonlinearity       
         self.noise_std = noise_std
+        self.hidden_size = self.cell.hidden_size
+        self.intervenors = self._get_intervenors_dict(intervenors)
     
-    @jax.named_scope("fbx.RNNCellWithReadout")
-    def __call__(
-        self, 
-        input, 
-        state: NetworkState, 
-        key: jax.Array,
-    ) -> NetworkState:
-        if not isinstance(input, jnp.ndarray):
-            input, _ = ravel_pytree(input)
-        activity = self.cell(input, state.activity)
-        if self.noise_std is not None:
-            noise = self.noise_std * jr.normal(key, activity.shape) 
-            activity = activity + noise
-        
-        return NetworkState(activity, self._output(activity))
-    
-    def _output(self, activity):
+    def _output(self, activity, state, *, key):
         return self.out_nonlinearity(self.readout(activity))
+    
+    def _add_state_noise(self, input, state, *, key):
+        if self.noise_std is None:
+            return state
+        return state + self.noise_std * jr.normal(key, state.shape)      
+    
+    @property
+    def model_spec(self):
+        return OrderedDict({
+            'cell': (
+                lambda self: self.cell,
+                lambda state: state.activity,
+                lambda input, _: ravel_pytree(input)[0],
+            ),
+            'noise': (
+                lambda self: self._add_state_noise,
+                lambda state: state.activity,
+                lambda _, state: state.activity,
+            ),
+            'readout': (
+                lambda self: self._output,
+                lambda state: state.output,
+                lambda _, state: state.activity,
+            )
+        })
+        
+    @property
+    def memory_spec(self):
+        return NetworkState(
+            activity=True,
+            output=True,
+        )        
     
     def init(self, activity=None, output=None):
         if activity is None:
@@ -191,6 +255,7 @@ class RNNCellWithReadoutAndInput(eqx.Module):
     rnn_cell_with_readout: RNNCellWithReadout
     cell: eqx.Module
     readout: eqx.Module
+    hidden_size: int
     
     def __init__(
         self, 
@@ -214,6 +279,7 @@ class RNNCellWithReadoutAndInput(eqx.Module):
             **kwargs,
         )
         self.out_size = out_size
+        self.hidden_size = self.rnn_cell_with_readout.hidden_size
         
         # expose some attributes of `RNNCellWithReadout`
         # to maintain references in the model PyTree

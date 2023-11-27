@@ -10,7 +10,8 @@ TODO:
 :license: Apache 2.0, see LICENSE for details.
 """
 
-from __future__ import annotations
+#! Can't do this because `AbstractVar` annotations can't be stringified.
+# from __future__ import annotations
 
 
 from abc import abstractmethod, abstractproperty
@@ -125,7 +126,7 @@ class AbstractTask(eqx.Module):
 
     def eval(
         self, 
-        model: AbstractModel[StateT], 
+        model: "AbstractModel[StateT]", 
         key: jax.Array,
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on the task's validation set of trials."""
@@ -135,7 +136,7 @@ class AbstractTask(eqx.Module):
     @eqx.filter_jit
     def eval_train_batch(
         self, 
-        model: AbstractModel[StateT], 
+        model: "AbstractModel[StateT]", 
         batch_size: int, 
         key: jax.Array,
     ) -> Tuple[Tuple[LossDict, StateT], 
@@ -150,7 +151,7 @@ class AbstractTask(eqx.Module):
     @eqx.filter_jit
     def eval_ensemble_train_batch(
         self,
-        models: AbstractModel[StateT],
+        models: "AbstractModel[StateT]",
         n_replicates: int,  # TODO: infer from `models`
         batch_size: int,
         key: jax.Array,
@@ -175,7 +176,7 @@ class AbstractTask(eqx.Module):
     @jax.named_scope("fbx.AbstractTask.eval_trials")
     def eval_trials(
         self, 
-        model: AbstractModel[StateT], 
+        model: "AbstractModel[StateT]", 
         trial_specs: AbstractTaskTrialSpec, 
         key: jax.Array,
     ) -> Tuple[LossDict, StateT]:
@@ -208,7 +209,8 @@ def _pos_only_inits_targets(
         list(zip(pos_endpoints, vel_endpoints, forces)),
         is_leaf=lambda x: isinstance(x, tuple)
     )
-    return init_state, target_state
+    
+    return dict(mechanics=dict(effector=init_state)), target_state
 
 
 def _centerout_endpoints_grid(

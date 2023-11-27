@@ -1,4 +1,8 @@
-"""
+"""Discretize and solve mechanical models.
+
+TODO:
+- Maybe use generics for `MechanicsState.system`, e.g. so we can type 
+  `system_state`
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -30,7 +34,11 @@ class MechanicsState(eqx.Module):
 
 
 class Mechanics(eqx.Module):
-    """Discretizes and iterates the solution of a system with an effector."""
+    """Discretizes and iterates the solution of a system with an effector.
+    
+    TODO:
+    - Could subclass `AbstractModel`; rename `MechanicsModel`.
+    """
     system: System 
     dt: float 
     term: dfx.AbstractTerm 
@@ -83,37 +91,40 @@ class Mechanics(eqx.Module):
     
     def init(
         self, 
-        system_state=None,
-        effector_state=None,
-        solver_state=None,
-        #input=None, 
-        key=None
+        system=None,
+        effector: CartesianState2D = None,
+        solver=None,
+        key=None,
     ):
         """Returns an initial state for use with the `Mechanics` module.
         
-        TODO: There are a couple of options how to switch between initializing 
-        from effector state versus configuration state. We could 
-        
-            1) Initialize based on which of the two is provided. Then we'd have 
-               to give precedence to one of them, or raise an error, if both 
-               are provided. The init of other modules would need to 
-            2) Let the user control a switch, in this module or elsewhere,
-               that determines which to use, and raise an error if the 
-               provided arguments don't match the switch.
-            3) Assume that only effector init makes sense, since otherwise 
-               `Task` might need to know about the inner workings of systems,
-               when perhaps it should only know about behaviour.
-        
-        TODO:
-        - Should we allow the user to pass input for constructing `solver_state`?
+        If system state happens to be passed, it takes precedence over 
+        passed effector state. If neither is passed, the default system state
+        is used.
         """
-        # TODO: don't pass effector state to system; use `inverse_kinematics` and pass result
-        system_state = self.system.init(effector_state)
-        effector_state = self.system.effector(system_state)
-        init_input = jnp.zeros((self.system.control_size,))
-        solver_state = self.solver.init(
-            self.term, 0, self.dt, system_state, init_input
-        )
+        if effector is None and system is None:
+            system = self.system.init()
+        
+        if system is not None:
+            if effector is not None:
+                logger.warning("Both `system` and `effector` inits provided "
+                            "to `Mechanics`; initializing from `system` "
+                            "values")
+            system_state = system
+            effector_state = self.system.effector(system_state)
+
+        if effector is not None:
+            system_state = self.system.inverse_kinematics(effector)
+            effector_state = self.system.effector(system_state)
+        
+        if solver is None:
+            init_input = jnp.zeros((self.system.control_size,))
+            solver_state = self.solver.init(
+                self.term, 0, self.dt, system_state, init_input
+            )
+        else:
+            # I don't know that this would ever be useful.
+            solver_state = solver
         
         return MechanicsState(
             system=system_state,

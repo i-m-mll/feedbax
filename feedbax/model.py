@@ -16,7 +16,17 @@ from collections import OrderedDict
 import copy
 from functools import cached_property
 import logging
-from typing import Callable, Dict, Generic, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Callable, 
+    Dict, 
+    Generic, 
+    Optional, 
+    Sequence, 
+    Tuple, 
+    TypeVar, 
+    Union,
+)
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -29,10 +39,11 @@ import numpy as np
 from feedbax.channel import Channel, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.networks import NetworkState, wrap_stateless_network 
 from feedbax.task import AbstractTask, AbstractTaskInput
-from feedbax.state import CartesianState2D
 from feedbax.utils import tree_sum_n_features
+
+if TYPE_CHECKING:
+    from feedbax.networks import NetworkState
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +59,7 @@ class AbstractModelState(eqx.Module):
 StateT = TypeVar("StateT", bound=AbstractModelState)
 
 
-class AbstractModel(eqx.Module, Generic[StateT]):
+class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     """Base class for compositional state-dependent models.
     
     To define a new model, the following should be implemented:
@@ -107,7 +118,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         return state
 
     @abstractproperty
-    def stages_spec(self) -> Dict[str, Tuple[
+    def model_spec(self) -> Dict[str, Tuple[
         eqx.Module,
         Callable[[StateT], PyTree],
         Sequence[Callable[[AbstractTaskInput, StateT], PyTree]],
@@ -131,11 +142,11 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         Callable[[StateT], PyTree],
         Sequence[Callable[[AbstractTaskInput, StateT], PyTree]],
     ]]: 
-        """Zips up the user-defined intervenors with `stages_spec`."""
+        """Zips up the user-defined intervenors with `model_spec`."""
         #! should not be referred to in `__init__`, at least before defining `intervenors`
         return tuple(jax.tree_map(
             lambda x, y: (y,) + x, 
-            self.stages_spec, 
+            self.model_spec, 
             jax.tree_map(tuple, self.intervenors, 
                          is_leaf=lambda x: isinstance(x, list)),
             is_leaf=lambda x: isinstance(x, tuple),
@@ -147,7 +158,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     ):
         intervenors_dict = jax.tree_map(
             lambda _: [], 
-            self.stages_spec,
+            self.model_spec,
             is_leaf=lambda x: isinstance(x, tuple),
         )
         
@@ -163,7 +174,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
                 raise ValueError("intervenors not a sequence or dict of sequences")
         
         return intervenors_dict
-        
+    
     @abstractmethod
     def init(
         self,
@@ -171,7 +182,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     ) -> StateT:
         """Return an initial state for the model."""
         ...
-        
+    
     @abstractproperty
     def memory_spec(self) -> PyTree[bool]:
         """Specifies which states should typically be remembered by callers."""
@@ -180,8 +191,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
 
 class SimpleFeedbackState(AbstractModelState):
     mechanics: MechanicsState
-    network: NetworkState
-    net_readout: Array
+    network: "NetworkState"
     feedback: ChannelState
 
 
@@ -196,7 +206,6 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     in a dict of interventions that mirrors the dict of stages.
     """
     net: eqx.Module  
-    net_readout: eqx.Module
     mechanics: Mechanics 
     feedback_channel: Channel
     delay: int 
@@ -208,7 +217,6 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         self, 
         net: eqx.Module, 
         mechanics: Mechanics, 
-        net_readout: Optional[eqx.Module] = None,
         delay: int = 0, 
         feedback_leaves_func: Callable[[MechanicsState], PyTree] \
             = lambda mechanics_state: mechanics_state.system,
@@ -217,16 +225,7 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
             = None,
         key: Optional[jax.Array] = None,
     ):
-        if net_readout is None:
-            net_readout = wrap_stateless_network(eqx.nn.Linear(
-                net.hidden_size, 
-                mechanics.system.control_size, 
-                use_bias=True,
-                key=key,
-            ))
-        
         self.net = net
-        self.net_readout = net_readout
         self.mechanics = mechanics
         self.feedback_leaves_func = feedback_leaves_func
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1
@@ -234,7 +233,7 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         self.intervenors = self._get_intervenors_dict(intervenors)
         
     @property
-    def stages_spec(self):
+    def model_spec(self):
         """Specifies the stages of the model in terms of substate operations.
         
         Note that the module has to be given as a function that obtains it from `self`, 
@@ -252,44 +251,36 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
                 lambda state: state.network,
                 lambda input, state: (input, state.feedback.output),
             ),
-            'nn_readout': (
-                lambda self: self.net_readout,
-                lambda state: state.net_readout,
-                lambda _, state: state.network.activity,
-            ),
             'mechanics_step': (
                 lambda self: self.mechanics,
                 lambda state: state.mechanics,
-                lambda _, state: state.net_readout,
+                lambda _, state: state.network.output,
             ),
         })        
 
     def init(
         self, 
-        effector_state: CartesianState2D,
-        # mechanics_state: MechanicsState = None, 
-        # network_state: NetworkState = None, 
-        # feedback_state: ChannelState = None,
+        mechanics = None,
+        network = None, 
+        feedback = None,
     ): 
         """Return an initial state for the model.
         
         TODO:
         - We can probably use `eval_shape` more generally when an init is not 
           available, which may be the case for simpler modules. The 
-          `stages_spec` could be used to determine the relevant info flow.
+          `model_spec` could be used to determine the relevant info flow.
         """
-        mechanics_state = self.mechanics.init(effector_state=effector_state)
-        network_state = self.net.init()
-        readout_dtype = eqx.filter_eval_shape(
-            self.net_readout, 
-            jnp.zeros(self.net.hidden_size), 
-            None,
-        )
-        readout_state = jnp.zeros(readout_dtype.shape)
+        if mechanics is None:
+            mechanics = dict()
+        if network is None:
+            network = dict()
+        
+        mechanics_state = self.mechanics.init(**mechanics)
+          
         return SimpleFeedbackState(
             mechanics=mechanics_state,
-            network=network_state,
-            net_readout=readout_state,
+            network=self.net.init(**network),
             feedback=self.feedback_channel.init(
                 self.feedback_leaves_func(mechanics_state)
             ),
@@ -344,13 +335,13 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     
     
 def add_intervenors(
-    model: SimpleFeedback, 
+    model: AbstractModel, 
     intervenors: Union[Sequence[AbstractIntervenor],
                        Dict[str, Sequence[AbstractIntervenor]]], 
     keep_existing: bool = True,
     *,
     key: jax.Array
-) -> SimpleFeedback:
+) -> AbstractModel:
     """Add intervenors to a model, returning the updated model.
     
     TODO:
@@ -372,15 +363,12 @@ def add_intervenors(
         else:
             raise ValueError("intervenors not a sequence or dict of sequences")
 
-    return SimpleFeedback(
-        net=model.net,
-        mechanics=model.mechanics,
-        net_readout=model.net_readout,
-        delay=model.delay,
-        feedback_leaves_func=model.feedback_leaves_func,
-        intervenors=intervenors_dict,
-        key=key,
+    return eqx.tree_at(
+        lambda model: model.intervenors,
+        model, 
+        intervenors_dict,
     )
+
 
 def remove_intervenors(
     model: SimpleFeedback

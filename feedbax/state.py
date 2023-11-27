@@ -48,8 +48,8 @@ class StateBounds(eqx.Module, Generic[StateT]):
 
 class CartesianState2D(AbstractState):
     """Cartesian state of a system."""
-    pos: Float[Array, "... 2"]
-    vel: Float[Array, "... 2"]
+    pos: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
+    vel: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
     force: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
     
 
