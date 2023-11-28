@@ -104,10 +104,13 @@ losses, states = task.eval(model, key=key_eval)
 
 # %%
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init['mechanics']['effector'].pos, goal_states.pos),
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.goal.pos
+    ),
 )
 plt.show()
 
@@ -143,10 +146,13 @@ losses, states = task.eval(model_curl, key=key_eval)
 
 # %%
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init['mechanics']['effector'].pos, goal_states.pos),
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.goal.pos
+    ),
 )
 plt.show()
 
@@ -177,12 +183,12 @@ losses, states = task.eval(model_, key=key_eval)
 
 # %%
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
 plot_pos_vel_force_2D(
     states,
     endpoints=(
         trial_specs.init['mechanics']['effector'].pos, 
-        goal_states.pos
+        trial_specs.goal.pos
     ),
 )
 plt.show()
@@ -224,12 +230,12 @@ plot_activity_sample_units(states.network.activity, n_samples, key=key)
 
 # %%
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
 plot_pos_vel_force_2D(
     states,
     endpoints=(
         trial_specs.init['mechanics']['effector'].pos, 
-        goal_states.pos,
+        trial_specs.goal.pos
     ),
 )
 plt.show()

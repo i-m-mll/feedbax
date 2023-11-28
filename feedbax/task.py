@@ -82,7 +82,7 @@ class ReachTrialSpec(AbstractTaskTrialSpec):
     
     @cached_property
     def goal(self):
-        return jax.tree_map(lambda x: x[..., -1], self.target)
+        return jax.tree_map(lambda x: x[:, -1], self.target)
 
 
 class AbstractTask(eqx.Module):

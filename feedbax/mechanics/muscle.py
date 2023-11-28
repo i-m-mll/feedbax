@@ -29,13 +29,30 @@ import logging
 from typing import Optional, Tuple
 
 import equinox as eqx
+from equinox import AbstractVar
 import jax
 import jax.random as jr
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 
+from feedbax.model import AbstractModelState
+
 
 logger = logging.getLogger(__name__)
+
+
+class AbstractMuscleState(AbstractModelState):
+    activation: AbstractVar[Array]
+    length: AbstractVar[Array]
+    velocity: AbstractVar[Array]
+    force: AbstractVar[Array]
+
+
+class VirtualMuscleState(AbstractMuscleState):
+    activation: Array
+    length: Array
+    velocity: Array
+    force: Array
 
 
 class VirtualMuscle(eqx.Module):

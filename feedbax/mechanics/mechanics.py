@@ -77,24 +77,24 @@ class Mechanics(AbstractModel[MechanicsState]):
         return OrderedDict({
             "convert_effector_force": (
                 lambda self: self.system.update_state_given_effector_force,
-                lambda state: state.system, 
                 lambda _, state: state.effector.force,
+                lambda state: state.system,
             ),
             "solver_step": (
                 lambda self: self._solver_step,
-                lambda state: (state.system, state.solver),
                 lambda input, _: input,
+                lambda state: (state.system, state.solver),
             ),
             "clip_states": (
                 lambda self: self._get_clipped_states,
-                lambda state: state.system,
                 lambda *_: None,
+                lambda state: state.system,
             ),
             "get_effector": (
                 lambda self: \
                     lambda input, _, key=None: self.system.effector(input),
-                lambda state: state.effector,
                 lambda _, state: state.system,
+                lambda state: state.effector,
             )
         })
     

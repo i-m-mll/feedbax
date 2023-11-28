@@ -293,12 +293,13 @@ losses, states = task.eval(model, key=jr.PRNGKey(0))
 # %%
 # fig = make_eval_plot(states[1], states[2], workspace)
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 
-# %%
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init.pos, goal_states.pos), 
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.goal.pos
+    ),
     force_labels=('Biarticular controls', 'Flexor', 'Extensor'), 
     cmap='plasma', 
     workspace=task.workspace,

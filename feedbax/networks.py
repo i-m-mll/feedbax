@@ -111,21 +111,21 @@ class RNNCell(AbstractModel[NetworkState]):
         self.noise_std = noise_std
         self.hidden_size = self.cell.hidden_size
     
-    @jax.named_scope("fbx.RNNCell")
-    def __call__(
-        self, 
-        input, 
-        state: NetworkState, 
-        key: jax.Array,
-    ) -> NetworkState:
-        if not isinstance(input, jnp.ndarray):
-            input, _ = ravel_pytree(input)
-        activity = self.cell(input, state.activity)
-        if self.noise_std is not None:
-            noise = self.noise_std * jr.normal(key, activity.shape) 
-            activity = activity + noise
+    # @jax.named_scope("fbx.RNNCell")
+    # def __call__(
+    #     self, 
+    #     input, 
+    #     state: NetworkState, 
+    #     key: jax.Array,
+    # ) -> NetworkState:
+    #     if not isinstance(input, jnp.ndarray):
+    #         input, _ = ravel_pytree(input)
+    #     activity = self.cell(input, state.activity)
+    #     if self.noise_std is not None:
+    #         noise = self.noise_std * jr.normal(key, activity.shape) 
+    #         activity = activity + noise
         
-        return NetworkState(activity, None)
+    #     return NetworkState(activity, None)
     
     @property
     def model_spec(self):
@@ -140,11 +140,11 @@ class RNNCell(AbstractModel[NetworkState]):
                 lambda state: state.activity,
                 lambda _, state: state.activity,
             ),
-            'readout': (
-                lambda self: self._output,
-                lambda state: state.output,
-                lambda _, state: state.activity,
-            )
+            # 'readout': (
+            #     lambda self: self._output,
+            #     lambda state: state.output,
+            #     lambda _, state: state.activity,
+            # )
         })
         
     @property
@@ -213,18 +213,18 @@ class RNNCellWithReadout(AbstractModel[NetworkState]):
         return OrderedDict({
             'cell': (
                 lambda self: self.cell,
-                lambda state: state.activity,
                 lambda input, _: ravel_pytree(input)[0],
+                lambda state: state.activity,
             ),
             'noise': (
                 lambda self: self._add_state_noise,
-                lambda state: state.activity,
                 lambda _, state: state.activity,
+                lambda state: state.activity,
             ),
             'readout': (
                 lambda self: self._output,
-                lambda state: state.output,
                 lambda _, state: state.activity,
+                lambda state: state.output,
             )
         })
         
@@ -293,7 +293,7 @@ class RNNCellWithReadoutAndInput(eqx.Module):
         self.readout = self.rnn_cell_with_readout.readout
         
         
-    @jax.named_scope("fbx.RNNCellWithReadout")
+    @jax.named_scope("fbx.RNNCellWithReadoutAndInput")
     def __call__(
         self, 
         input, 

@@ -22,7 +22,7 @@ from jaxtyping import Array, Float, PyTree
 import optax
 from tqdm.auto import tqdm
 
-from feedbax.loss import AbstractLoss
+from feedbax.loss import AbstractLoss, LossDict
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.utils import (
     delete_contents,
@@ -121,12 +121,12 @@ class TaskTrainer(eqx.Module):
             batch_callbacks,
             log_step,
             restore_checkpoint,
-            disable_tqdm,
             key,
             False,
+            disable_tqdm,
         )
     
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def train_ensemble(
         self,
         task: AbstractTask,
@@ -172,9 +172,9 @@ class TaskTrainer(eqx.Module):
             batch_callbacks,
             log_step,
             restore_checkpoint,
-            disable_tqdm,
             keys_train,
             True,
+            disable_tqdm,
         )
     
     @jax.named_scope("fbx.TaskTrainer")
@@ -189,9 +189,9 @@ class TaskTrainer(eqx.Module):
         batch_callbacks,
         log_step,
         restore_checkpoint,
-        disable_tqdm,
         key,
         ensembled,
+        disable_tqdm,
     ):
         """Implementation of the training procedure. 
         
@@ -213,24 +213,28 @@ class TaskTrainer(eqx.Module):
           should be separated out from the loop.
         """
         model = eqx.combine(model_arrays, model_other)
+        
         filter_spec = filter_spec_leaves(model, trainable_leaves_func)
         
-        loss_func_wrapped = grad_wrap_loss_func(task.loss_func)
-        get_batch = jax.vmap(task.get_train_trial)
+        losses_history = LossDict(zip(
+            task.loss_func.weights.keys(), 
+            [jnp.empty((n_batches,)) for _ in task.loss_func.weights]
+        ))
+        learning_rates = jnp.empty((n_batches,))
         
-        #! vmap
-        losses, losses_terms = self._init_loss_arrays(n_batches, task)
-        #learning_rates = jnp.empty((n_batches,))
+        start_batch = 0  # except when we load a checkpoint
         
-        start_batch, model, losses, losses_terms = self._cond_restore_ckpt(
-            restore_checkpoint, model, losses, losses_terms
-        )
+        if restore_checkpoint:
+            chkpt_path, last_batch, model, losses_history = \
+                self._load_last_checkpoint(model, losses_history)
+            start_batch = last_batch + 1
+            logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}.")
             
-        if self.checkpointing and start_batch == 0:
-            # Delete old checkpoints if we're starting over.
+        elif self.checkpointing:
+            # Delete old checkpoints if checkpointing is on.
+            # TODO: keep old checkpoints for past N runs (env variable?)
             delete_contents(self.chkpt_dir)  
-        
-        #! vmap
+            
         # TODO: should also restore this from checkpoint
         opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))        
 
@@ -239,31 +243,37 @@ class TaskTrainer(eqx.Module):
         flat_model, treedef_model = jax.tree_util.tree_flatten(model)
         flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
          
-        # Finish the JIT compilation before the first training iteration,
-        # so the user will see it timed.
-        for _ in tqdm(range(1), desc='compile', disable=disable_tqdm):
-            #! vmap
-            keys = jr.split(key, batch_size)
-            trial_specs, _ = get_batch(key=keys)
-            self.train_step(  # doesn't alter model or opt_state
-                flat_model, 
-                treedef_model,
-                flat_opt_state,
-                treedef_opt_state,
-                filter_spec, 
-                trial_specs,
-                loss_func_wrapped,
-                keys, 
-            )  
-            if not disable_tqdm:
-                tqdm.write(f"Training step compiled.", file=sys.stdout)
-            task.eval(model, key)
-            if not disable_tqdm:
-                tqdm.write(f"Validation step compiled.", file=sys.stdout)
-    
-        #! vmap
+        # Finish the JIT compilation before the first training iteration.
+        if not jax.config.jax_disable_jit:
+            for _ in tqdm(range(1), desc='compile', disable=disable_tqdm):
+
+                self.train_step(  # doesn't alter model or opt_state
+                    task,
+                    batch_size,
+                    flat_model, 
+                    treedef_model,
+                    flat_opt_state,
+                    treedef_opt_state,
+                    filter_spec, 
+                    key, 
+                )  
+                if not disable_tqdm:
+                    tqdm.write(f"Training step compiled.", file=sys.stdout)
+                task.eval(model, key)
+                if not disable_tqdm:
+                    tqdm.write(f"Validation step compiled.", file=sys.stdout)
+        else:
+            logger.debug("JIT globally disabled, skipping pre-run compilation")
+
         keys = jr.split(key, n_batches)
         
+        #! The first step of a run is still slow, even with the above warmup.
+        #! I suspect this might be due to re-compilation that is happening 
+        #! due to the structure of `opt-state` changing *only on the first
+        #! step*. Perhaps we can either 1) figure out why `opt_state` changes,
+        #! and perhaps avoid that, or 2) do the first two actual steps inside 
+        #! the warmup loop, and then continue here from step 3, to give the 
+        #! user more appropriate timing estimates.
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
         for batch in tqdm(
             range(start_batch, n_batches), 
@@ -272,125 +282,127 @@ class TaskTrainer(eqx.Module):
             total=n_batches,
             smoothing=0.1,
             disable=disable_tqdm,
-        ):  
-            #! vmap       
-            key_train, key_eval, key_batch = jr.split(keys[batch], 3)
-            # Sample 1) different model noise per trial, 2) different trials
-            keys_train = jr.split(key_train, batch_size)  
-            keys_trials = jr.split(key_batch, batch_size)  
-            
-            #! vmap
-            trial_specs, _ = get_batch(keys_trials)
-    
-            #! vmap
-            losses, flat_model, flat_opt_state, treedef_opt_state = \
-                self.train_step(
-                    flat_model, 
-                    treedef_model,
-                    flat_opt_state,
-                    treedef_opt_state,
-                    filter_spec, 
-                    trial_specs,
-                    loss_func_wrapped,
-                    keys_train, 
-                )           
+        ):            
+            key_train, key_eval = jr.split(keys[batch], 2)
+
+            losses, flat_model, flat_opt_state, treedef_opt_state = self.train_step(
+                task,
+                batch_size,
+                flat_model, 
+                treedef_model,
+                flat_opt_state,
+                treedef_opt_state,
+                filter_spec, 
+                key_train, 
+            )           
             
             if batch_callbacks is not None and batch in batch_callbacks:
                 for func in batch_callbacks[batch]:
                     func()
+    
+            losses_history = tree_set_idx(losses_history, losses, batch)
+            try:
+                # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
+                learning_rate = opt_state.hyperparams['learning_rate']
+                learning_rates = learning_rates.at[batch].set(learning_rate)
+            except (AttributeError, KeyError):
+                learning_rate = None 
             
-            losses = losses.at[batch].set(loss)
-            losses_terms = tree_set_idx(losses_terms, loss_terms, batch)
-            # try:
-            #     #! vmap?
-            #     # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
-            #     #! this doesn't record the most recent learning rate! `flat_opt_state`
-            #     learning_rate = opt_state.hyperparams['learning_rate']
-            #     learning_rates = learning_rates.at[batch].set(learning_rate)
-            # except (AttributeError, KeyError):
-            #     learning_rate = None 
+            if ensembled: 
+                # ensemble training skips the logging and NaN control flow stuff
+                continue
             
             # tensorboard losses on every iteration
             #! just report for one of the replicates
             if self._use_tb:
-                self.writer.add_scalar('Loss/train', loss.item(), batch)
-                for term, loss_term in loss_terms.items():
-                    self.writer.add_scalar(f'Loss/train/{term}', loss_term.item(), batch)
+                self.writer.add_scalar('Loss/train', losses.total.item(), batch)
+                for loss_term_label, loss_term in losses.items():
+                    self.writer.add_scalar(
+                        f'Loss/train/{loss_term_label}', 
+                        loss_term.item(), 
+                        batch
+                    )
         
-            if jnp.isnan(loss):
+            if jnp.isnan(losses.total):
                 model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
                 
                 msg = f"NaN loss at batch {batch}! "
                 if (checkpoint := self._load_last_checkpoint(
-                    model, losses, losses_terms
+                    model, losses_history
                 )) is not None:
-                    _, last_batch, model, losses, losses_terms = checkpoint
+                    _, last_batch, model, losses_history = checkpoint
                     msg += f"Returning checkpoint from batch {last_batch}."
                 else:
                     msg += "No checkpoint found, returning model from final iteration."
                 
                 logger.warning(msg)
                 
-                return model, losses, losses_terms
+                return model, losses_history, learning_rates
 
             # checkpointing and validation occasionally
             if batch % log_step == 0:
                 model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
                 
                 # model checkpoint
-                if self.checkpointing:
+                if self.checkpointing and batch > 0:
                     eqx.tree_serialise_leaves(self.chkpt_dir / f'model{batch}.eqx', model)
                     eqx.tree_serialise_leaves(self.chkpt_dir / f'losses{batch}.eqx', 
-                                              (losses, losses_terms))
+                                              losses_history)
                     with open(self.chkpt_dir / "last_batch.txt", 'w') as f:
                         f.write(str(batch)) 
                 
                 # tensorboard
-                loss_val, loss_val_terms, states = task.eval(model, key_eval)
+                losses_val, states = task.eval(model, key_eval)
                 
                 if self._use_tb:
                     # TODO: register plots
                     # fig = make_eval_fig(states.effector, states.network.output, workspace)
                     # self.writer.add_figure('Eval/centerout', fig, batch)
-                    self.writer.add_scalar('Loss/validation', loss_val.item(), batch)
-                    for term, loss_term in loss_val_terms.items():
-                        self.writer.add_scalar(f'Loss/validation/{term}', loss_term.item(), batch)
+                    self.writer.add_scalar('Loss/validation', losses_val.total.item(), batch)
+                    for loss_term_label, loss_term in losses_val.items():
+                        self.writer.add_scalar(
+                            f'Loss/validation/{loss_term_label}', 
+                            loss_term.item(), 
+                            batch
+                        )
                     
                 # TODO: https://stackoverflow.com/a/69145493
                 if not disable_tqdm:
                     tqdm.write(f"step: {batch}", file=sys.stdout)
-                    tqdm.write(f"\ttraining loss: {loss:.4f}", file=sys.stdout)
-                    tqdm.write(f"\tvalidation loss: {loss_val:.4f}", file=sys.stdout)
-                    # if learning_rate is not None:                    
-                    #     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
+                    tqdm.write(f"\ttraining loss: {losses.total:.4f}", file=sys.stdout)
+                    tqdm.write(f"\tvalidation loss: {losses_val.total:.4f}", file=sys.stdout)
+                    if learning_rate is not None:                    
+                        tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
          
         model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
          
-        return model, losses, losses_terms#, learning_rates
+        return model, losses_history, learning_rates
     
     @eqx.filter_jit
     @jax.named_scope("fbx.TaskTrainer.train_step")
     def train_step(
         self, 
+        task,
+        batch_size,
         flat_model, 
         treedef_model,
         flat_opt_state, 
         treedef_opt_state,
         filter_spec, 
-        trial_specs: AbstractTaskTrialSpec,
-        loss_func_wrapped,
-        keys: jax.Array,
+        key: jax.Array,
     ):
         """Executes a single training step of the model.
         
-        This assumes that the (wrapped) loss function returns an auxiliary
-        `loss_terms`, which is intended to be a dictionary of the loss
-        components prior to their final aggregation (i.e. already weighted).
+        Note that the primary output of `loss_func_wrapped` is tht scalar 
+        `losses.total`, which is discarded because `losses` is itself returned
+        as the auxiliary of `loss_func_wrapped`. This is necessary because 
+        the gradient is computed with respect to the primary output, but we 
+        only need to store the original `LossDict` containing all loss terms.
               
         The wrapping calls to `tree_unflatten` and `tree_leaves`, and passing
         of flattened versions of `model` and `opt_state`, bring slight
         performance improvements because they cancel out the inverse tree
-        operations that are performed by JIT compilation. 
+        operations that would be performed by default during JIT compilation. 
         
         See https://docs.kidger.site/equinox/tricks/#low-overhead-training-loops
         
@@ -398,8 +410,12 @@ class TaskTrainer(eqx.Module):
         - Use a wrapper to make the flatten/unflatten stuff less ugly.
         - The shape of `opt_state` changes due to `optimizer.update` on the 
           first step only. Why? 
-        - Typing
+        - Typing of arguments.
         """
+        key_trials, key_model = jr.split(key, 2)
+        keys_trials = jr.split(key_trials, batch_size)  
+        keys_model = jr.split(key_model, batch_size)  
+        trial_specs, _ = jax.vmap(task.get_train_trial)(keys_trials)
         
         model = jax.tree_util.tree_unflatten(treedef_model, 
                                              flat_model)
@@ -408,13 +424,13 @@ class TaskTrainer(eqx.Module):
         
         diff_model, static_model = eqx.partition(model, filter_spec)
         
-        (loss, loss_terms), grads = eqx.filter_value_and_grad(
-            loss_func_wrapped, has_aux=True
+        (_, losses), grads = eqx.filter_value_and_grad(
+            grad_wrap_loss_func(task.loss_func), has_aux=True
         )(
             diff_model, 
             static_model, 
             trial_specs,
-            keys,
+            keys_model,
         )
         
         updates, opt_state = self.optimizer.update(grads, opt_state)
@@ -423,27 +439,9 @@ class TaskTrainer(eqx.Module):
         flat_model = jax.tree_util.tree_leaves(model)
         flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
         
-        return loss, loss_terms, flat_model, flat_opt_state, treedef_opt_state
+        return losses, flat_model, flat_opt_state, treedef_opt_state
 
-    def _init_loss_arrays(self, n_batches, task):
-        losses = jnp.empty((n_batches,))
-        losses_terms = dict(zip(
-            task.loss_func.weights.keys(), 
-            [jnp.empty((n_batches,)) for _ in task.loss_func.weights]
-        ))
-        return losses, losses_terms
-
-    def _cond_restore_ckpt(self, restore_checkpoint, model, losses, losses_terms):
-        if restore_checkpoint:
-            chkpt_path, last_batch, model, losses, losses_terms = \
-                self._load_last_ckpt(model, losses, losses_terms)
-            start_batch = last_batch + 1
-            logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}.")
-        else:
-            start_batch = 0
-        return start_batch, model, losses, losses_terms
-
-    def _load_last_ckpt(self, model, losses, losses_terms):
+    def _load_last_checkpoint(self, model, losses_history):
         try:
             with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
@@ -453,11 +451,11 @@ class TaskTrainer(eqx.Module):
             
         chkpt_path = self.chkpt_dir / f'model{last_batch}.eqx'
         model = eqx.tree_deserialise_leaves(chkpt_path, model)
-        losses, losses_terms = eqx.tree_deserialise_leaves(
+        losses_history = eqx.tree_deserialise_leaves(
             self.chkpt_dir / f'losses{last_batch}.eqx', 
-            (losses, losses_terms),
+            losses_history,
         )
-        return chkpt_path, last_batch, model, losses, losses_terms
+        return chkpt_path, last_batch, model, losses_history
     
     
 def grad_wrap_loss_func(
@@ -491,13 +489,14 @@ def grad_wrap_loss_func(
         static_model, 
         trial_specs: AbstractTaskTrialSpec,
         keys: jax.Array,
-    ):
+    ) -> Tuple[float, LossDict]:
         model = eqx.combine(diff_model, static_model)
         #? will `in_axes` ever change? 
         states = jax.vmap(model)(trial_specs.input, trial_specs.init, keys)
         
-        # TODO: loss_func should take task_input as well, probably
-        return loss_func(states, trial_specs.target, trial_specs.input)
+        losses = loss_func(states, trial_specs.target, trial_specs.input)
+        
+        return losses.total, losses 
     
     return wrapper 
 

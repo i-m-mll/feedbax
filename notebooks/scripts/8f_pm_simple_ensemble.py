@@ -46,7 +46,7 @@ import os
 import logging
 from pathlib import Path
 import sys
-from typing import Optional, Callable
+from typing import Optional
 
 from IPython import get_ipython
 
@@ -59,7 +59,6 @@ get_ipython().log.setLevel(LOG_LEVEL)
 
 # %%
 import diffrax
-import equinox as eqx
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
@@ -68,15 +67,16 @@ import numpy as np
 import optax 
 
 from feedbax.model import SimpleFeedback
-from feedbax.iterate import Iterator
+from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
+from feedbax.networks import RNNCell, RNNCellWithReadout
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
-from feedbax.utils import tree_take 
+
+from feedbax.utils import get_model_ensemble
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -100,17 +100,16 @@ def get_model(
     task,
     dt: float = 0.05, 
     mass: float = 1., 
-    rnn_input_size: int = 50,
     hidden_size: int = 50, 
-    readout_hidden_size: int = 25,
     n_steps: int = 100, 
     feedback_delay: int = 0,
-    out_nonlinearity=lambda x: x,
     key: Optional[jr.PRNGKeyArray] = None,
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
+    
+    key1, key2 = jr.split(key)
     
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
@@ -120,31 +119,28 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadoutAndInput(
+    net = RNNCellWithReadout(
         input_size,
-        rnn_input_size,
         hidden_size,
         system.control_size, 
-        readout_type=eqx.nn.Linear, #two_layer_readout,
-        out_nonlinearity=out_nonlinearity, 
-        key=key,
+        noise_std=0.0,
+        key=key1
     )
     
-    body = SimpleFeedback(
-        net, 
-        mechanics, 
-        feedback_delay
-    )
+    body = SimpleFeedback(net, mechanics, delay=feedback_delay, key=key2)
     
-    return Iterator(body, n_steps)
+    return SimpleIterator(body, n_steps)
 
 
 # %%
 seed = 5566
 
+n_replicates = 5
+
 n_steps = 100
-dt = 0.1
-feedback_delay_steps = 5
+mass = 1.
+dt = 0.05
+feedback_delay_steps = 0
 workspace = ((-1., -1.),
              (1., 1.))
 hidden_size  = 50
@@ -161,6 +157,7 @@ loss_term_weights = dict(
 # but it makes model saving and loading more sensible
 hyperparams = dict(
     seed=seed,
+    n_replicates=n_replicates,
     n_steps=n_steps, 
     loss_term_weights=loss_term_weights, 
     workspace=workspace, 
@@ -173,6 +170,7 @@ hyperparams = dict(
 # %%
 def setup(
     seed, 
+    n_replicates,
     n_steps, 
     loss_term_weights,
     workspace,
@@ -207,20 +205,23 @@ def setup(
         eval_reach_length=0.5,
     )
 
-    model = get_model(
+    models = get_model_ensemble(
+        get_model,
+        n_replicates,
         task,
-        dt=dt,
-        hidden_size=hidden_size,
-        n_steps=n_steps,
-        feedback_delay=feedback_delay_steps,
+        dt,
+        mass,
+        hidden_size,
+        n_steps,
+        feedback_delay_steps,
         key=key, 
     )
     
-    return model, task
+    return models, task
 
 
 # %%
-model, task = setup(**hyperparams)
+models, task = setup(**hyperparams)
 
 trainer = TaskTrainer(
     optimizer=optax.inject_hyperparams(optax.adam)(
@@ -230,25 +231,24 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 10_000
+n_batches = 100
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
+# not training readout!
 trainable_leaves_func = lambda model: (
-    model.step.net.input_layer.weight,
-    model.step.net.input_layer.bias,
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias,
-    model.step.net.readout,
+    model.step.net.cell.bias
 )
 
-model, losses, learning_rates = trainer(
+models, losses, learning_rates = trainer(
     task=task, 
-    model=model,
+    ensembled=True,
+    model=models,
     n_batches=n_batches, 
     batch_size=batch_size, 
-    log_step=200,
+    log_step=100,
     trainable_leaves_func=trainable_leaves_func,
     key=key_train,
 )
@@ -260,7 +260,7 @@ plot_losses(losses)
 
 # %%
 model_path = save(
-    (model, task),
+    (models, task),
     hyperparams, 
     save_dir=model_dir, 
     suffix=NB_PREFIX,
@@ -273,38 +273,35 @@ model_path
 # %%
 try:
     model_path
-    model, task
+    models, task
 except NameError:
-    model_path = "../models/model_20231120-155247_0244319_nb8.eqx"
+    model_path = ''
     model, task = load(model_path, setup)
 
 # %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
+
+from feedbax.utils import tree_get_idx
+
+
+model = tree_get_idx(models, 0)
+
+# %%
 losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
 plot_pos_vel_force_2D(
-    states, #tree_take(states, jnp.arange(10), 1),
-    endpoints=None,#(trial_specs.init.pos, goal_states.pos),
+    states,
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.goal.pos
+    ),
 )
 plt.show()
-
-# %%
-from feedbax.intervene import EffectorCurlForceField
-from feedbax.model import add_intervenors
-
-model_ = eqx.tree_at(
-    lambda model: model.step,
-    model,
-    add_intervenors(model.step, [EffectorCurlForceField(0.15)]),
-)
-
-# %%
-losses, states = task.eval(model_, key=jr.PRNGKey(0))
 
 # %%
 (losses, states), trials, aux = task.eval_train_batch(

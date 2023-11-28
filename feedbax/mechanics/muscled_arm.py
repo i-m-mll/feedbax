@@ -156,3 +156,50 @@ class TwoLinkMuscled(eqx.Module):
                 torque=None,
             ),
         )
+    
+    #! This is nearly identical to the copy in `TwoLink`
+    @jax.named_scope("fbx.TwoLink.inverse_kinematics")
+    def inverse_kinematics(
+            self,
+            effector_state: CartesianState2D
+    ) -> TwoLinkMuscledState: 
+        """Convert Cartesian effector position to joint angles for a two-link arm.
+        
+        NOTE: 
+        
+        - This is the "inverse kinematics" problem.
+        - This gives the "elbow down" or "righty" solution. The "elbow up" or
+        "lefty" solution is given by `theta0 = gamma + alpha` and 
+        `theta1 = beta - pi`.
+        - No solution exists if `dsq` is outside of `(l[0] - l[1], l[0] + l[1])`.
+        - See https://robotics.stackexchange.com/a/6393 which also covers
+        how to convert velocity.
+        
+        TODO:
+        - Try to generalize to n-link arm using Jacobian of forward kinematics?
+        - Unit test round trip with `forward_kinematics`.
+        """
+        pos = effector_state.pos
+        l, lsqpm = self.l, self._lsqpm
+        dsq = jnp.sum(pos ** 2)
+
+       
+        alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
+        gamma = jnp.arctan2(pos[1], pos[0])
+        theta0 = gamma - alpha
+        
+        beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
+        theta1 = np.pi - beta
+
+        theta = jnp.stack([theta0, theta1], axis=-1)
+        
+        # TODO: don't calculate Jacobian twice, for `d_theta` and `torque`
+        d_theta = jnp.linalg.inv(self.effector_jac(theta)) @ effector_state.vel
+        
+        if effector_state.force is not None:
+            torque = self.effector_force_to_torques(theta, effector_state.force)
+        else:
+            torque = None
+
+        return TwoLinkMuscledState(theta=theta, d_theta=d_theta, torque=torque,
+                                   activation=jnp.zeros(self.control_size))

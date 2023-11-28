@@ -328,7 +328,6 @@ losses, states = task.eval(model, key=jr.PRNGKey(0))
 trial_specs, epoch_start_idxs = \
     task.trials_validation
 # assume the goal is the target state at the last time step
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
 plot_task_and_speed_profiles(
     velocity=states.mechanics.effector.vel, 
     task_variables={
@@ -342,10 +341,11 @@ plot_task_and_speed_profiles(
 
 # %%
 plot_pos_vel_force_2D(
-    states.mechanics.system.pos, 
-    states.mechanics.system.vel, 
-    states.network.output, 
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    states,
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.goal.pos
+    ),
 )
 plt.show()
 

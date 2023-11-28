@@ -174,7 +174,12 @@ class TwoLink(eqx.Module):
         *,
         key: Optional[jax.Array] = None,
     ) -> TwoLinkState:
-        """Update a state PyTree with torques inferred from effector force."""
+        """Update a state PyTree with torques inferred from effector force.
+        
+        TODO:
+        
+        - generalize to force anywhere on arm
+        """
         torque = self.effector_force_to_torques(
             state.theta, 
             effector_force,

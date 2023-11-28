@@ -367,22 +367,39 @@ def plot_losses(
     losses: LossDict, 
     xscale: str = 'log',
     yscale: str = 'log',
+    cmap: str = 'Set1',
 ):
-    """Line plot of loss terms and total."""  
+    """Line plot of loss terms and total.
+    
+    Each term in `losses` is an array where the first dimension is the
+    training iteration, with an optional second batch dimension, e.g.
+    for model replicates. Each term is plotted in a different color,
+    with the same color used across the optional batch dimension.
+    """  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
-    ax.plot(losses.total, 'white', lw=3)
+    cmap = plt.get_cmap(cmap)
+    colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
+    
+    total = ax.plot(losses.total, 'white', lw=3)
     
     ax.set_xscale(xscale)
     ax.set_yscale(yscale)
     
-    for loss_term in losses.values():
-        ax.loglog(loss_term, lw=0.75)
+    all_handles = [total]
+    
+    for i, loss_term in enumerate(losses.values()):
+        handles = ax.loglog(loss_term, lw=0.75, color=colors[i])
+        all_handles.append(handles)
         
     ax.set_xlabel('Training iteration')
     ax.set_ylabel('Loss')
     
-    ax.legend(['Total', *losses.keys()])
+    ax.legend(
+        # Only include the first plot for each loss term.
+        [handles[0] for handles in all_handles],
+        ['Total', *losses.keys()]
+    )
     
     return fig, ax
 

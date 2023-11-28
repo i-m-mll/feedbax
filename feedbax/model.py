@@ -84,7 +84,6 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     """
     intervenors: AbstractVar[Dict[str, Sequence[AbstractIntervenor]]]
     
-    @jax.named_scope("fbx.AbstractModel")
     def __call__(
         self, 
         input, # AbstractTaskInput 
@@ -92,31 +91,33 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         key: jax.Array,
     ) -> StateT:
         
-        keys = jr.split(key, len(self._stages))
-        
-        for (intervenors, module, where, module_input), key \
-            in zip(self._stages, keys):
+        with jax.named_scope(type(self).__name__):
             
-            key1, key2 = jr.split(key)
+            keys = jr.split(key, len(self._stages))
             
-            for intervenor in intervenors:
-                # Whether this modifies the state depends on `input`.
-                state = intervenor(state, input, key=key1)
-            
-            state = eqx.tree_at(
-                where, 
-                state, 
-                module(self)(
-                    module_input(input, state), 
-                    where(state), 
-                    key=key2,
-                ),
-            )
+            for (intervenors, module, module_input, substate_where), key \
+                in zip(self._stages, keys):
+                
+                key1, key2 = jr.split(key)
+                
+                for intervenor in intervenors:
+                    # Whether this modifies the state depends on `input`.
+                    state = intervenor(input, state, key=key1)
+                
+                state = eqx.tree_at(
+                    substate_where, 
+                    state, 
+                    module(self)(
+                        module_input(input, state), 
+                        substate_where(state), 
+                        key=key2,
+                    ),
+                )
         
         return state
 
     @abstractproperty
-    def model_spec(self) -> Dict[str, Tuple[
+    def model_spec(self) -> OrderedDict[str, Tuple[
         eqx.Module,
         Callable[[StateT], PyTree],
         Sequence[Callable[[AbstractTaskInput, StateT], PyTree]],
@@ -125,11 +126,18 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         
         Each tuple in the dict has the following elements:
         
-            1. An equinox module that performs a state update
-            2. A function that selects the part of the model state PyTree that 
-               is updated (i.e. output) by the module
-            3. A function that selects the part of the model state PyTree that 
-               is passed as input to the module
+            1. A callable (e.g. an `eqx.Module` or method) that takes `input`
+               and a substate of the model state and returns an updated 
+               substate;
+            2. A function that selects the parts of the model input and state 
+               PyTrees that are passed to the module, i.e. its `input`; and
+            3. A function that selects the part of the model state PyTree to 
+               be updated, i.e. the part of the model state passed as the
+               second (`state`) argument to the callable, and updated by the
+               PyTree returned by the callable.
+               
+        It's necessary to use `OrderedDict` because `jax.tree_util` still
+        sorts `dict` keys, and we can't have that.
         """
         ...
   
@@ -232,27 +240,27 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         
     @property
     def model_spec(self):
-        """Specifies the stages of the model in terms of substate operations.
+        """Specifies the stages of the model in terms of state operations.
         
         Note that the module has to be given as a function that obtains it from `self`, 
-        or otherwise it won't use modules that have been updated during training.
+        otherwise it won't use modules that have been updated during training.
         I'm not sure why the references are kept across model updates...
         """
         return OrderedDict({
             'get_feedback': (
                 lambda self: self.feedback_channel,  # module that operates on it
-                lambda state: state.feedback,  # substate it operates on
                 lambda _, state: self.feedback_leaves_func(state.mechanics),  # inputs
+                lambda state: state.feedback,  # substate it operates on
             ),
             'nn_step': (
                 lambda self: self.net,
-                lambda state: state.network,
                 lambda input, state: (input, state.feedback.output),
+                lambda state: state.network,                
             ),
             'mechanics_step': (
                 lambda self: self.mechanics,
-                lambda state: state.mechanics,
                 lambda _, state: state.network.output,
+                lambda state: state.mechanics,
             ),
         })        
 
@@ -269,13 +277,14 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
           available, which may be the case for simpler modules. The 
           `model_spec` could be used to determine the relevant info flow.
         """
+        
         if mechanics is None:
             mechanics = dict()
         if network is None:
             network = dict()
         
         mechanics_state = self.mechanics.init(**mechanics)
-          
+
         return SimpleFeedbackState(
             mechanics=mechanics_state,
             network=self.net.init(**network),

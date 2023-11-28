@@ -239,7 +239,7 @@ trainer = TaskTrainer(
 
 # %%
 batch_size = 500
-n_batches = 10_000
+n_batches = 1_000
 key_train = jr.PRNGKey(seed + 1)
 
 trainable_leaves_func = lambda model: (

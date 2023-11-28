@@ -46,7 +46,7 @@ import os
 import logging
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Optional, Callable
 
 from IPython import get_ipython
 
@@ -59,6 +59,7 @@ get_ipython().log.setLevel(LOG_LEVEL)
 
 # %%
 import diffrax
+import equinox as eqx
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
@@ -67,14 +68,15 @@ import numpy as np
 import optax 
 
 from feedbax.model import SimpleFeedback
-from feedbax.iterate import Iterator, SimpleIterator
+from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNNCell, RNNCellWithReadout
+from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
+from feedbax.utils import tree_take 
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -98,7 +100,9 @@ def get_model(
     task,
     dt: float = 0.05, 
     mass: float = 1., 
+    rnn_input_size: int = 50,
     hidden_size: int = 50, 
+    readout_hidden_size: int = 25,
     n_steps: int = 100, 
     feedback_delay: int = 0,
     out_nonlinearity=lambda x: x,
@@ -108,8 +112,6 @@ def get_model(
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
     
-    key1, key2 = jr.split(key)
-    
     system = point_mass(mass=mass, n_dim=N_DIM)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
@@ -118,26 +120,31 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    net = RNNCellWithReadoutAndInput(
         input_size,
+        rnn_input_size,
         hidden_size,
         system.control_size, 
-        noise_std=0.0,
+        readout_type=eqx.nn.Linear, #two_layer_readout,
         out_nonlinearity=out_nonlinearity, 
-        key=key1
+        key=key,
     )
     
-    body = SimpleFeedback(net, mechanics, delay=feedback_delay, key=key2)
+    body = SimpleFeedback(
+        net, 
+        mechanics, 
+        feedback_delay
+    )
     
-    return SimpleIterator(body, n_steps)
+    return Iterator(body, n_steps)
 
 
 # %%
 seed = 5566
 
 n_steps = 100
-dt = 0.05
-feedback_delay_steps = 0
+dt = 0.1
+feedback_delay_steps = 5
 workspace = ((-1., -1.),
              (1., 1.))
 hidden_size  = 50
@@ -223,15 +230,17 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 10000
+n_batches = 10_000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 
-# not training readout!
 trainable_leaves_func = lambda model: (
+    model.step.net.input_layer.weight,
+    model.step.net.input_layer.bias,
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias
+    model.step.net.cell.bias,
+    model.step.net.readout,
 )
 
 model, losses, learning_rates = trainer(
@@ -239,7 +248,7 @@ model, losses, learning_rates = trainer(
     model=model,
     n_batches=n_batches, 
     batch_size=batch_size, 
-    log_step=100,
+    log_step=200,
     trainable_leaves_func=trainable_leaves_func,
     key=key_train,
 )
@@ -266,7 +275,7 @@ try:
     model_path
     model, task
 except NameError:
-    model_path = '../models/model_20231026-165045_2fbb446_nb8.eqx'
+    model_path = "../models/model_20231120-155247_0244319_nb8.eqx"
     model, task = load(model_path, setup)
 
 # %% [markdown]
@@ -286,6 +295,19 @@ plot_pos_vel_force_2D(
     ),
 )
 plt.show()
+
+# %%
+from feedbax.intervene import EffectorCurlForceField
+from feedbax.model import add_intervenors
+
+model_ = eqx.tree_at(
+    lambda model: model.step,
+    model,
+    add_intervenors(model.step, [EffectorCurlForceField(0.15)]),
+)
+
+# %%
+losses, states = task.eval(model_, key=jr.PRNGKey(0))
 
 # %%
 (losses, states), trials, aux = task.eval_train_batch(

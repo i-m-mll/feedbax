@@ -44,7 +44,13 @@ class System(Protocol[StateT]):
         ...
     
     def init(self, **kwargs) -> StateT:
-        """Initial state of the system."""
+        """Initial state of the system.
+        
+        TODO:
+        
+        - This is shared with `AbstractModel`, so perhaps they should have 
+          a common abstract parent.
+        """
         ...
     
     @property

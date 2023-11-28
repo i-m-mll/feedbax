@@ -13,7 +13,7 @@ TODO:
 
 from abc import abstractmethod
 import logging
-from typing import TYPE_CHECKING, Callable, Generic, LiteralString, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, LiteralString, Optional, TypeVar
 
 import equinox as eqx
 from equinox import AbstractClassVar, AbstractVar
@@ -93,17 +93,22 @@ class AbstractClampIntervenor(AbstractIntervenor[StateT]):
     
     def __call__(
         self, 
-        state: SubstateT, 
         input: PyTree,  # task inputs
+        state: SubstateT, 
         *,
         key: jax.Array,
     ) -> SubstateT:
         """Return a modified state PyTree."""
-        new_substate = self._get_updated_substate(self._in(state))
+        new_substate = self._get_updated_substate(self._in(state), key=key)
         return self.update_substate(state, new_substate)
     
     @abstractmethod
-    def _get_updated_substate(self, substate_in: PyTree) -> PyTree:
+    def _get_updated_substate(
+        self, 
+        substate_in: PyTree, 
+        *, 
+        key: Optional[jax.Array] = None
+    ) -> PyTree:
         """Return a modified substate PyTree."""
         ...
     
@@ -113,8 +118,8 @@ class AbstractAdditiveIntervenor(AbstractIntervenor[StateT]):
     
     def __call__(
         self, 
-        state: SubstateT, 
         input: PyTree,  # task inputs
+        state: SubstateT, 
         *,
         key: jax.Array,
     ) -> SubstateT:
@@ -122,14 +127,48 @@ class AbstractAdditiveIntervenor(AbstractIntervenor[StateT]):
         new_substate = jax.tree_map(
             lambda x, y: x + y,
             self._out(state),
-            self._get_substate_to_add(self._in(state)),
+            self._get_substate_to_add(self._in(state), key=key),
         )
         return self.update_substate(state, new_substate)
 
     @abstractmethod
-    def _get_substate_to_add(self, substate_in: PyTree) -> PyTree:
+    def _get_substate_to_add(
+        self, 
+        substate_in: PyTree, 
+        *, 
+        key: Optional[jax.Array] = None
+    ) -> PyTree:
         """Return a modified substate PyTree."""
         ...
+
+
+class AddNoise(AbstractAdditiveIntervenor[StateT]):
+    """Add noise to a substate. Default is standard normal noise."""
+    amplitude: float = 1.0
+    noise_func: Callable = jax.random.normal
+    
+    label: str = "noise"
+    
+    def _out(self, state: StateT):
+        return state
+    
+    def _in(self, state: StateT):
+        return state
+    
+    def _get_substate_to_add(
+        self, 
+        substate_in: PyTree, 
+        *, 
+        key: jax.Array
+    ):
+        return jax.tree_map(
+            lambda x: self.noise_func(
+                key=key, 
+                shape=x.shape, 
+                dtype=x.dtype,
+            ) * self.amplitude,
+            substate_in,
+        ) 
 
 
 class EffectorVelDepForceField(AbstractAdditiveIntervenor):

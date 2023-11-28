@@ -129,10 +129,13 @@ losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 trial_specs, _ = task.trials_validation
-goal_states = jax.tree_map(lambda x: x[:, -1], trial_specs.target)
+
 plot_pos_vel_force_2D(
     states,
-    endpoints=(trial_specs.init.pos, goal_states.pos),
+    endpoints=(
+        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.goal.pos
+    ),
 )
 plt.show()
 
