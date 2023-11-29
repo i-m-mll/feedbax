@@ -130,10 +130,6 @@ class TaskTrainer(eqx.Module):
             n_replicates = jax.tree_leaves(
                 eqx.filter(model, eqx.is_array)
             )[0].shape[0]
-        
-        filter_spec = filter_spec_leaves(model, trainable_leaves_func)
-        
-        if ensembled:
             loss_array_shape = (n_batches, n_replicates)
             opt_state = jax.vmap(self.optimizer.init)(
                 eqx.filter(model, eqx.is_array)
@@ -191,7 +187,9 @@ class TaskTrainer(eqx.Module):
         else:
             train_step = self.train_step
             evaluate = task.eval
-            
+        
+        filter_spec = filter_spec_leaves(model, trainable_leaves_func)
+           
         # Finish the JIT compilation before the first training iteration.
         if not jax.config.jax_disable_jit:
             for _ in tqdm(range(1), desc='compile', disable=disable_tqdm):
@@ -269,15 +267,23 @@ class TaskTrainer(eqx.Module):
             if ensembled:
                 losses_mean = jax.tree_map(lambda x: jnp.mean(x, axis=-1), 
                                            losses)
+                # This will be appended to user-facing labels
+                # e.g. "mean training loss"
+                ensembled_str = "mean "
             else:
                 losses_mean = losses
+                ensembled_str = ""
             
             
             if self._use_tb:
-                self.writer.add_scalar('Loss/train', losses_mean.total.item(), batch)
+                self.writer.add_scalar(
+                    f'loss/{ensembled_str}train', 
+                    losses_mean.total.item(), 
+                    batch
+                )
                 for loss_term_label, loss_term in losses_mean.items():
                     self.writer.add_scalar(
-                        f'Loss/train/{loss_term_label}', 
+                        f'loss/{ensembled_str}train/{loss_term_label}', 
                         loss_term.item(), 
                         batch
                     )
@@ -319,7 +325,7 @@ class TaskTrainer(eqx.Module):
                     losses_val_mean = jax.tree_map(lambda x: jnp.mean(x, axis=-1), 
                                                    losses_val)
                     # Only log a validation plot for the first replicate.
-                    states_plot = tree_get_idx(states, 0)
+                    states_plot = tree_get_idx(states, 0)            
                 else:
                     losses_val_mean = losses_val
                     states_plot = states
@@ -335,20 +341,28 @@ class TaskTrainer(eqx.Module):
                         ),
                         workspace=task.workspace,
                     )
-                    self.writer.add_figure('Validation/centerout', fig, batch)
-                    self.writer.add_scalar('Loss/validation', losses_val.total.item(), batch)
-                    for loss_term_label, loss_term in losses_val.items():
+                    self.writer.add_figure('validation/centerout', fig, batch)
+                    self.writer.add_scalar(
+                        f'loss/{ensembled_str}validation', 
+                        losses_val_mean.total.item(), 
+                        batch
+                    )
+                    for loss_term_label, loss_term in losses_val_mean.items():
                         self.writer.add_scalar(
-                            f'Loss/validation/{loss_term_label}', 
+                            f'loss/{ensembled_str}validation/{loss_term_label}', 
                             loss_term.item(), 
                             batch
                         )
                     
                 # TODO: https://stackoverflow.com/a/69145493
                 if not disable_tqdm:
-                    tqdm.write(f"step: {batch}", file=sys.stdout)
-                    tqdm.write(f"\ttraining loss: {losses_mean.total:.4f}", file=sys.stdout)
-                    tqdm.write(f"\tvalidation loss: {losses_val_mean.total:.4f}", file=sys.stdout)
+                    tqdm.write(f"\nTraining iteration: {batch}", file=sys.stdout)
+                    tqdm.write(f"\t{ensembled_str}training loss: "
+                               + f"{losses_mean.total:.4f}".capitalize(), 
+                               file=sys.stdout)
+                    tqdm.write(f"\t{ensembled_str}validation loss: "
+                               + f"{losses_val_mean.total:.4f}".capitalize(), 
+                               file=sys.stdout)
                     # if learning_rate is not None:                    
                     #     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
          

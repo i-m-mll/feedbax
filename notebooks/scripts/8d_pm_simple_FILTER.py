@@ -71,7 +71,7 @@ from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
-from feedbax.mechanics.linear import point_mass
+from feedbax.mechanics.skeleton import PointMass
 from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
@@ -112,7 +112,7 @@ def get_model(
         # in case we just want a skeleton model, e.g. for deserializing
         key = jr.PRNGKey(0)
     
-    system = point_mass(mass=mass, n_dim=N_DIM)
+    system = PointMass(mass=mass)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
     # automatically determine network input size

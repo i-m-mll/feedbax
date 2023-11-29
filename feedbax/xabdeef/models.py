@@ -17,7 +17,7 @@ from feedbax.channel import ChannelState
 from feedbax.model import AbstractModel, SimpleFeedback
 from feedbax.iterate import Iterator, SimpleIterator
 from feedbax.mechanics import Mechanics
-from feedbax.mechanics.linear import point_mass
+from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import RNNCell, RNNCellWithReadout
@@ -96,7 +96,7 @@ def point_mass_RNN(
         
     key1, key2 = jr.split(key)
     
-    system = point_mass(mass=mass, n_dim=N_DIM)
+    system = PointMass(mass=mass)
     mechanics = Mechanics(system, dt, solver=diffrax.Euler)
     
     # automatically determine network input size

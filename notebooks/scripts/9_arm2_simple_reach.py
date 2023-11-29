@@ -56,7 +56,7 @@ from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
-from feedbax.mechanics.arm import TwoLink
+from feedbax.mechanics.skeleton import TwoLink
 from feedbax.networks import RNNCell, RNNCellWithReadout
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -228,7 +228,7 @@ trainable_leaves_func = lambda model: model.step.net
 model, losses, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=100, 
+    n_batches=1000, 
     batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,

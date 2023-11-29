@@ -56,7 +56,7 @@ from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
-from feedbax.mechanics.arm import TwoLink
+from feedbax.mechanics.skeleton import TwoLink
 from feedbax.networks import RNNCell, RNNCellWithReadout
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load

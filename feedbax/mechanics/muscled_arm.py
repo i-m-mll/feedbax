@@ -13,8 +13,9 @@ from equinox import field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
+from feedbax.dynamics import AbstractDynamicalSystem
 
-from feedbax.mechanics.arm import TwoLink
+from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.muscle import VirtualMuscle
 from feedbax.state import AbstractState, CartesianState2D, StateBounds
 
@@ -31,7 +32,7 @@ class TwoLinkMuscledState(AbstractState):
     torque: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
     
 
-class TwoLinkMuscled(eqx.Module):
+class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
     """
     
     NOTE: 
@@ -95,19 +96,19 @@ class TwoLinkMuscled(eqx.Module):
         self.update_state_given_effector_force = \
             self.twolink.update_state_given_effector_force
 
-    @jax.named_scope("fbx.TwoLinkMuscled.vector_field")
-    def vector_field(self, t, state, args):
+    @jax.named_scope("fbx.TwoLinkMuscled")
+    def __call__(self, t, state, args):
         u = args 
 
         muscle_length = self._muscle_length(state.theta)
         muscle_velocity = self._muscle_velocity(state.d_theta)
         
-        d_activation = self.activator.vector_field(t, state.activation, u)
+        d_activation = self.activator(t, state.activation, u)
         
         tension = self.muscle_model(muscle_length, muscle_velocity, u)
         torque = self.moment_arms @ (self.f0 * tension)
         
-        d_joints = self.twolink.vector_field(t, state, torque)
+        d_joints = self.twolink(t, state, torque)
         d_theta, dd_theta = d_joints.theta, d_joints.d_theta
                 
         return TwoLinkMuscledState(d_theta, dd_theta, d_activation)

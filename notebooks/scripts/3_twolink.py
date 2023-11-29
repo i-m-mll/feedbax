@@ -30,7 +30,7 @@ import optax
 import seaborn as sns
 from tqdm import tqdm
 
-from feedbax.mechanics.arm import TwoLink
+from feedbax.mechanics.skeleton import TwoLink
 from feedbax.plot import plot_2D_joint_positions, plot_pos_vel_force_2D
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
@@ -191,7 +191,7 @@ print("St. dev. difference from actual length: ", np.std(distances, axis=0))
 # Inverse kinematics:
 
 # %%
-from feedbax.mechanics.arm import TwoLink, twolink_effector_pos_to_angles
+from feedbax.mechanics.skeleton import TwoLink, twolink_effector_pos_to_angles
 
 # %%
 batch_size = 5

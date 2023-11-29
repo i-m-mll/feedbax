@@ -11,9 +11,9 @@ from feedbax.channel import ChannelState
 from feedbax.model import SimpleFeedback, SimpleFeedbackState
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
-from feedbax.mechanics.linear import point_mass
-from feedbax.networks import RNN
-from feedbax.plot import plot_loss, plot_pos_vel_force_2D
+from feedbax.mechanics.skeleton import PointMass, TwoLink
+from feedbax.networks import RNNCellWithReadout
+from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.iterate import Iterator
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load

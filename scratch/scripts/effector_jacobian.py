@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.mechanics.arm import TwoLink, TwoLinkState
+from feedbax.mechanics.skeleton.arm import TwoLink, TwoLinkState
 
 # %%
 arm = TwoLink()

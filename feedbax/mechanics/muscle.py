@@ -35,6 +35,7 @@ import jax.random as jr
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 
+from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import AbstractModelState
 
 
@@ -45,17 +46,22 @@ class AbstractMuscleState(AbstractModelState):
     activation: AbstractVar[Array]
     length: AbstractVar[Array]
     velocity: AbstractVar[Array]
-    force: AbstractVar[Array]
+    tension: AbstractVar[Array]
 
 
 class VirtualMuscleState(AbstractMuscleState):
     activation: Array
     length: Array
     velocity: Array
-    force: Array
+    tension: Array
 
 
-class VirtualMuscle(eqx.Module):
+class AbstractMuscle(eqx.Module):
+    """Abstract muscle model."""
+    ...
+
+
+class VirtualMuscle(AbstractMuscle):
     """Virtual Muscle Model from Brown et al. 1999.
     
     TODO:
@@ -396,7 +402,7 @@ _BROWN_SLOWFAST_AVG_PARAMS = jax.tree_map(
 )
     
     
-class ActivationFilter(eqx.Module):
+class ActivationFilter(AbstractDynamicalSystem):
     """First-order filter to model calcium dynamics of muscle activation.
     """
     tau_act: float 
@@ -407,17 +413,28 @@ class ActivationFilter(eqx.Module):
         self.tau_deact = tau_deact
         self.tau_diff  
 
-    def vector_field(self, t, y, args):
-        activation = y 
-        u = args 
+    def __call__(self, t, state, input):
+        activation = state 
         
         tau = self.tau_deact + self.tau_diff * jnp.where(
-            u < activation, u, jnp.zeros(1)
+            input < activation, input, jnp.zeros(1)
         )
-        d_activation = (u - activation) / tau
+        d_activation = (input - activation) / tau
         
         return d_activation
     
     @cached_property
     def tau_diff(self):
         return self.tau_act - self.tau_deact
+    
+    def control_size(self):
+        return 1
+    
+    @property 
+    def bounds(self):
+        ... 
+    
+    def init(self):
+        ... 
+        
+    

@@ -30,7 +30,7 @@ import numpy as np
 import optax 
 from tqdm import tqdm
 
-from feedbax.mechanics.arm import TwoLink, nlink_angular_to_cartesian
+from feedbax.mechanics.skeleton import TwoLink
 from feedbax.mechanics.muscle import (
     LillicrapScottVirtualMuscle, 
     TodorovLiVirtualMuscle, 
@@ -69,6 +69,7 @@ with jax.default_device(jax.devices('cpu')[0]):
     sol = solve(arm2M.vector_field, y0, dt0, t0, t1, u)   
 
 # %%
+# TODO: use the forward kinematics built into TwoLink
 xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(TwoLink(), sol.ys[0], sol.ys[1])
 #xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
 

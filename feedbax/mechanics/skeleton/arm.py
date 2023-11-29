@@ -16,7 +16,8 @@ import jax.numpy as jnp
 from jaxtyping import Float, Array
 import numpy as np
 
-from feedbax.state import AbstractState, CartesianState2D, StateBounds
+from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
+from feedbax.state import CartesianState2D, StateBounds
 from feedbax.utils import SINCOS_GRAD_SIGNS, corners_2d
 
 
@@ -26,13 +27,13 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class TwoLinkState(AbstractState):
+class TwoLinkState(AbstractSkeletonState):
     theta: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
     d_theta: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
     torque: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
             
 
-class TwoLink(eqx.Module):
+class TwoLink(AbstractSkeleton[TwoLinkState]):
     l: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [L] lengths of arm segments
     m: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [M] masses of segments
     I: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
@@ -60,10 +61,10 @@ class TwoLink(eqx.Module):
         # otherwise their initialization is a side effect
         self._a  
     
-    @jax.named_scope("fbx.TwoLink.vector_field")
-    def vector_field(self, t, state, args):
+    @jax.named_scope("fbx.TwoLink")
+    def __call__(self, t, state, input):
         theta, d_theta = state.theta, state.d_theta
-        input_torque = args
+        input_torque = input
 
         # centripetal and coriolis torques 
         c_vec = jnp.array((
@@ -174,7 +175,7 @@ class TwoLink(eqx.Module):
         *,
         key: Optional[jax.Array] = None,
     ) -> TwoLinkState:
-        """Update a state PyTree with torques inferred from effector force.
+        """Add torques inferred from effector force to the state PyTree.
         
         TODO:
         

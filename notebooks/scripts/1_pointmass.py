@@ -27,8 +27,8 @@ import numpy as np
 import optax 
 from tqdm import tqdm
 
-from feedbax.mechanics.linear import point_mass
-from feedbax.types import CartesianState2D
+from feedbax.mechanics.skeleton import PointMass
+from feedbax.state import CartesianState2D
 from feedbax.utils import exp_taylor
 
 # %%
@@ -73,7 +73,7 @@ sys = point_mass_old(mass=1)
 
 # %%
 # #! use the version from feedbax
-sys = point_mass(mass=1)
+sys = PointMass(mass=1)
 
 
 # %% [markdown]
@@ -81,7 +81,7 @@ sys = point_mass(mass=1)
 
 # %%
 def solve(y0, t0, t1, dt0, args):
-    term = dfx.ODETerm(sys.vector_field)
+    term = dfx.ODETerm(sys)
     solver = dfx.Tsit5()
     saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 100))
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)

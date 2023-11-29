@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 import tqdm
 from tqdm import tqdm
 
-from feedbax.mechanics.arm import (
+from feedbax.mechanics.skeleton.arm import (
     nlink_angular_to_cartesian, 
     twolink_effector_pos_to_angles
 )
@@ -26,7 +26,7 @@ from feedbax.mechanics.muscle import (
     TodorovLiVirtualMuscle, 
 )    
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.mechanics.system import System
+from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.networks import RNN
 from feedbax.plot import (
     plot_loss, 
