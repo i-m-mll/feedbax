@@ -38,6 +38,14 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         ...
         
     @abstractmethod
+    def effector(self, state: StateT) -> CartesianState2D:
+        """
+        
+        TODO: should this really be here?
+        """
+        ...
+    
+    @abstractmethod
     def update_state_given_effector_force(
         self, 
         effector_force: Array, 
@@ -47,3 +55,4 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     ) -> StateT:
         """Update the state of the skeleton given an effector force."""
         ...
+    

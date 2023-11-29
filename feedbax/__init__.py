@@ -5,6 +5,7 @@
 """
 
 import logging 
+import logging.handlers as loghandlers
 import os 
 
 # logging.config.fileConfig('../logging.conf')
@@ -13,7 +14,7 @@ LOG_LEVEL = os.environ.get('FEEDBAX_LOG_LEVEL', 'DEBUG').upper()
 logger = logging.getLogger(__package__)
 logger.setLevel(LOG_LEVEL)
 
-file_handler = logging.handlers.RotatingFileHandler(
+file_handler = loghandlers.RotatingFileHandler(
     f'{__package__}.log',
     maxBytes=1_000_000,
     backupCount=1,
