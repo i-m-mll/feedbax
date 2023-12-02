@@ -9,16 +9,20 @@ TODO:
 """
 
 from collections import OrderedDict
+from functools import cached_property
 import logging
-from typing import Callable, Dict, Optional, Sequence, TypeVar, Union
+from typing import Callable, Dict, Optional, Sequence, Tuple, TypeVar, Union
 
 import diffrax as dfx
 import equinox as eqx
+from equinox import field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.muscle import AbstractMuscleState, VirtualMuscle
+from feedbax.mechanics.plant import AbstractPlant, PlantState
+from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import AbstractModel, AbstractModelState
@@ -32,7 +36,7 @@ N_DIM = 2
 
 
 class MechanicsState(AbstractModelState):
-    system: PyTree[Array]
+    plant: PlantState
     effector: CartesianState2D
     solver: PyTree 
 
@@ -46,7 +50,7 @@ class Mechanics(AbstractModel[MechanicsState]):
         a combination of the converted effector forces and the effect of the 
         inputs (either directly, or through muscles).
     """
-    system: AbstractDynamicalSystem
+    plant: AbstractPlant 
     dt: float 
     solver: dfx.AbstractSolver
     clip_states: bool
@@ -55,8 +59,8 @@ class Mechanics(AbstractModel[MechanicsState]):
     
     def __init__(
         self, 
-        system, 
-        dt, 
+        plant: AbstractPlant,
+        dt: float, 
         solver=dfx.Euler, 
         clip_states=True,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
@@ -65,81 +69,102 @@ class Mechanics(AbstractModel[MechanicsState]):
         *,
         key: Optional[jax.Array] = None,
     ):
-        self.system = system 
+        self.plant = plant
         self.solver = solver()
         self.dt = dt        
         self.clip_states = clip_states
-        self.intervenors = self._get_intervenors_dict(intervenors)
-    
-    @property 
-    def term(self) -> dfx.AbstractTerm:
-        return dfx.ODETerm(self.system)    
+        self.intervenors = self._get_intervenors_dict(intervenors)         
     
     @property
     def model_spec(self):
         return OrderedDict({
             "convert_effector_force": (
-                lambda self: self.system.update_state_given_effector_force,
+                lambda self: self.plant.skeleton.update_state_given_effector_force,
                 lambda _, state: state.effector.force,
-                lambda state: state.system,
+                lambda state: state.plant.skeleton,
+            ),
+            "plant_update": (  # dependent (non-ODE) updates specified by the plant
+                lambda self: self.plant,
+                lambda input, state: (input, state.plant),
+                lambda state: state.plant,
             ),
             "solver_step": (
                 lambda self: self._solver_step,
                 lambda input, _: input,
-                lambda state: (state.system, state.solver),
+                lambda state: (state.plant, state.solver),
             ),
             "clip_states": (
                 lambda self: self._get_clipped_states,
                 lambda *_: None,
-                lambda state: state.system,
+                lambda state: state.plant,
             ),
             "get_effector": (
                 lambda self: \
-                    lambda input, _, key=None: self.system.effector(input),
-                lambda _, state: state.system,
+                    lambda input, _, key=None: self.plant.skeleton.effector(input),
+                lambda _, state: state.plant.skeleton,
                 lambda state: state.effector,
             )
         })
+
+    @cached_property 
+    def term(self) -> dfx.AbstractTerm:
+        
+        def _vector_field(self, t, state, input):       
+            d_state = jax.tree_map(jnp.zeros, state)
+            
+            for vf, input_func, state_where in self.plant.dynamics_spec.values():
+                d_state = eqx.tree_at(
+                    state_where(d_state),
+                    d_state,
+                    vf(t, state_where(state), input_func(input, state))
+                )
+            
+            return state 
+        
+        return dfx.ODETerm(_vector_field) 
+    
     
     def _solver_step(
         self, 
         input, 
-        state,
+        state: Tuple[PlantState, PyTree],
         *,
         key: Optional[jax.Array] = None,
     ):
-        system_state, solver_state = state
-        system_state, _, _, solver_state, _ = self.solver.step(
+        plant_state, solver_state = state
+        
+        plant_state, _, _, solver_state, _ = self.solver.step(
             self.term, 
             0, 
             self.dt, 
-            system_state, 
+            plant_state, 
             input, 
             solver_state, 
             made_jump=False,
         )
         
-        return (system_state, solver_state)
+        return (plant_state, solver_state)
     
     def _get_clipped_states(self, input, state, *, key: Optional[jax.Array] = None):
+        # TODO: This gets passed `mechanics_state.plant`. Maybe move it into `AbstractPlant`.
         if self.clip_states:
-            return clip_state(state, self.system.bounds)
+            return clip_state(state, self.plant.bounds)
         else: 
             return state
     
     @property 
     def memory_spec(self):
         return MechanicsState(
-            system=True,
+            plant=True,
             effector=True,
             solver=False,
         )
     
     def init(
         self, 
-        system=None,
+        plant=None,
         effector: CartesianState2D = None,
-        solver=None,
+        # solver=None,
         key=None,
     ):
         """Returns an initial state for use with the `Mechanics` module.
@@ -148,32 +173,31 @@ class Mechanics(AbstractModel[MechanicsState]):
         passed effector state. If neither is passed, the default system state
         is used.
         """
-        if effector is None and system is None:
-            system = self.system.init()
-        
-        if system is not None:
+        if effector is None and plant is None:
+            plant_state = self.plant.init()
+            effector_state = self.plant.skeleton.effector(plant_state.skeleton)
+            
+        elif plant is not None:
             if effector is not None:
-                logger.warning("Both `system` and `effector` inits provided "
-                            "to `Mechanics`; initializing from `system` "
+                logger.warning("Both `plant` and `effector` inits provided "
+                            "to `Mechanics`; initializing from `plant` "
                             "values")
-            system_state = system
-            effector_state = self.system.effector(system_state)
+            plant_state = self.plant.init(**plant)
+            effector_state = self.plant.skeleton.effector(plant_state.skeleton)
+        
+        elif effector is not None:
+            skeleton_state = self.plant.skeleton.inverse_kinematics(effector)
+            plant_state = self.plant.init(skeleton=skeleton_state)
+            effector_state = self.plant.skeleton.effector(plant_state.skeleton)
 
-        if effector is not None:
-            system_state = self.system.inverse_kinematics(effector)
-            effector_state = self.system.effector(system_state)
-        
-        if solver is None:
-            init_input = jnp.zeros((self.system.control_size,))
-            solver_state = self.solver.init(
-                self.term, 0, self.dt, system_state, init_input
-            )
-        else:
-            # I don't know that this would ever be useful.
-            solver_state = solver
-        
+        init_input = jnp.zeros((self.plant.input_size,))
+        solver_state = self.solver.init(
+            self.term, 0, self.dt, plant_state, init_input
+        )
+
+
         return MechanicsState(
-            system=system_state,
+            plant=plant_state,
             effector=effector_state, 
             solver=solver_state,
         )
@@ -193,197 +217,6 @@ class Mechanics(AbstractModel[MechanicsState]):
         """
         # utils.tree_sum_n_features
         ...
-        
-
-class MuscledMechanicsState(AbstractModelState):
-    system: PyTree[Array]
-    muscle: AbstractMuscleState
-    effector: CartesianState2D
-    solver: PyTree         
-
-
-class MuscledMechanics(AbstractModel[MechanicsState]):
-    """Discretizes and iterates the solution of a system with an effector.
-        
-    TODO: 
-    - Make sure total system forces are in `system.force`/`system.torque`...
-      - It doesn't make sense to update them in the solver step, and they are 
-        a combination of the converted effector forces and the effect of the 
-        inputs (either directly, or through muscles).
-    """
-    system: AbstractDynamicalSystem
-    muscle_model: VirtualMuscle
-    activator: eqx.Module
-    dt: float 
-    solver: dfx.AbstractSolver
-    clip_states: bool
-    
-    moment_arms: Float[Array, "links=2 muscles"]
-    theta0: Float[Array, "links=2 muscles"] 
-    l0: Float[Array, "muscles"] 
-    f0: Float[Array, "muscles"] 
-    
-    intervenors: Dict[str, AbstractIntervenor] 
-    
-    def __init__(
-        self, 
-        system, 
-        muscle_model,
-        activator,
-        dt, 
-        solver=dfx.Euler, 
-        clip_states=True,
-        intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                    Dict[str, Sequence[AbstractIntervenor]]]] \
-            = None,
-        *,
-        key: Optional[jax.Array] = None,
-    ):
-        self.system = system 
-        self.muscle_model = muscle_model 
-        self.activator = activator
-        self.solver = solver()
-        self.dt = dt        
-        self.clip_states = clip_states
-        self.intervenors = self._get_intervenors_dict(intervenors)
-    
-    @property 
-    def term(self) -> dfx.AbstractTerm:
-        return (
-            dfx.ODETerm(self.system),
-            dfx.ODETerm(self.activator),
-        )
-    
-    @property
-    def model_spec(self):
-        return OrderedDict({
-            "convert_effector_force": (
-                lambda self: self.system.update_state_given_effector_force,
-                lambda _, state: state.effector.force,
-                lambda state: state.system,
-            ),
-            "muscle_update": (
-                lambda self: self.muscle_update,
-                lambda input, state: (input, state.system),
-                lambda state: state.muscle,
-            ),
-            "muscle_torques": (
-                lambda self: self.muscle_torques,
-                lambda input, state: state.muscle,
-                lambda state: state.system.torque,
-            ),
-            "solver_step": (
-                lambda self: self._solver_step,
-                lambda input, _: input,
-                lambda state: ((state.system, self.muscle.activation), state.solver),
-            ),
-            "clip_states": (
-                lambda self: self._get_clipped_states,
-                lambda *_: None,
-                lambda state: state.system,
-            ),
-            "get_effector": (
-                lambda self: \
-                    lambda input, _, key=None: self.system.effector(input),
-                lambda _, state: state.system,
-                lambda state: state.effector,
-            )
-        })
-    
-    def muscle_update(self, input, state, *, key=None):
-        muscle_input, system_state = input
-        length = self._muscle_length(system_state.theta)
-        velocity = self._muscle_velocity(system_state.d_theta)
-        tension = self.muscle_model(length, velocity, muscle_input)
-        
-        return eqx.tree_at(
-            lambda state: (state.length, state.velocity, state.tension),
-            state,
-            (length, velocity, tension)
-        )
-    
-    def muscle_torques(self, input, state, *, key=None):
-        torque = self.moment_arms @ (self.f0 * input.tension)
-        return torque
-        
-    
-    def _solver_step(
-        self, 
-        input, 
-        state,
-        *,
-        key: Optional[jax.Array] = None,
-    ):
-        system_state, solver_state = state
-        system_state, _, _, solver_state, _ = self.solver.step(
-            self.term, 
-            0, 
-            self.dt, 
-            system_state, 
-            input, 
-            solver_state, 
-            made_jump=False,
-        )
-        
-        return (system_state, solver_state)
-    
-    def _get_clipped_states(self, input, state, *, key: Optional[jax.Array] = None):
-        if self.clip_states:
-            return clip_state(state, self.system.bounds)
-        else: 
-            return state
-    
-    @property 
-    def memory_spec(self):
-        return MechanicsState(
-            system=True,
-            effector=True,
-            solver=False,
-        )
-    
-    def init(
-        self, 
-        system=None,
-        effector: CartesianState2D = None,
-        solver=None,
-        key=None,
-    ):
-        """Returns an initial state for use with the `Mechanics` module.
-        
-        If system state happens to be passed, it takes precedence over 
-        passed effector state. If neither is passed, the default system state
-        is used.
-        """
-        if effector is None and system is None:
-            system = self.system.init()
-        
-        if system is not None:
-            if effector is not None:
-                logger.warning("Both `system` and `effector` inits provided "
-                            "to `Mechanics`; initializing from `system` "
-                            "values")
-            system_state = system
-            effector_state = self.system.effector(system_state)
-
-        if effector is not None:
-            system_state = self.system.inverse_kinematics(effector)
-            effector_state = self.system.effector(system_state)
-        
-        if solver is None:
-            init_input = jnp.zeros((self.system.control_size,))
-            solver_state = self.solver.init(
-                self.term, 0, self.dt, system_state, init_input
-            )
-        else:
-            # I don't know that this would ever be useful.
-            solver_state = solver
-        
-        return MechanicsState(
-            system=system_state,
-            effector=effector_state, 
-            solver=solver_state,
-            muscle=self.muscle_model.init(),
-        )
       
 
 StateT = TypeVar("StateT", bound=AbstractState)

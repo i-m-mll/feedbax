@@ -157,6 +157,20 @@ class VirtualMuscle(AbstractMuscle):
             force = force + self.noise(force, activation, key)
         return force
 
+    def init(self, n_muscles):
+        length = jnp.ones(n_muscles)
+        velocity = jnp.zeros(n_muscles)
+        activation = jnp.zeros(n_muscles)
+        
+        tension = self(length, velocity, activation)
+        
+        return VirtualMuscleState(
+            activation=activation,
+            length=length,  
+            velocity=velocity,
+            tension=tension,
+        )
+
     def force_length(self, l):
         return jnp.exp(-jnp.abs((l ** self.beta - 1) / self.omega) ** self.rho)
     
@@ -209,6 +223,7 @@ class VirtualMuscle(AbstractMuscle):
         n_f, a_f = self.n_f, self.a_f
         n_f = n_f[0] + n_f[1] * (1 / l - 1)  # TODO: l_eff filter option (see method _l_eff_field)
         Y = 1  # TODO: Y filter option (see method _Y_field)
+        eqx.tree_pprint(a)
         A_f = 1 - jnp.exp(-(a / (a_f * n_f)) ** n_f)
         # A_f = 1 - jnp.exp(-((a * Y) / (a_f * n_f)) ** n_f)
         return A_f
@@ -413,9 +428,13 @@ class ActivationFilter(AbstractDynamicalSystem):
         self.tau_deact = tau_deact
         self.tau_diff  
 
-    def __call__(self, t, state, input):
-        activation = state 
-        
+    def __call__(
+        self, 
+        t, 
+        state, 
+        input
+    ):        
+        activation = state
         tau = self.tau_deact + self.tau_diff * jnp.where(
             input < activation, input, jnp.zeros(1)
         )

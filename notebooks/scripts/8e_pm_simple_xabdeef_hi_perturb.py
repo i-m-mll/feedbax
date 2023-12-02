@@ -222,13 +222,6 @@ model_ = eqx.tree_at(
 losses, states = task.eval(model_, key=key_eval)
 
 # %%
-seed = 5566
-n_samples = 6
-key = jr.PRNGKey(seed)
-
-plot_activity_sample_units(states.network.activity, n_samples, key=key)
-
-# %%
 trial_specs, _ = task.trials_validation
 
 plot_pos_vel_force_2D(
@@ -239,5 +232,12 @@ plot_pos_vel_force_2D(
     ),
 )
 plt.show()
+
+# %%
+seed = 5566
+n_samples = 6
+key = jr.PRNGKey(seed)
+
+plot_activity_sample_units(states.network.activity, n_samples, key=key)
 
 # %%

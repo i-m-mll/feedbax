@@ -231,7 +231,7 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 100
+n_batches = 1000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 

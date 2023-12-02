@@ -154,9 +154,13 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
             lambda x, y: (y,) + x, 
             self.model_spec, 
             jax.tree_map(tuple, self.intervenors, 
-                         is_leaf=lambda x: isinstance(x, list)),
+                        is_leaf=lambda x: isinstance(x, list)),
             is_leaf=lambda x: isinstance(x, tuple),
         ).values())
+        # except ValueError:
+        #     eqx.tree_pprint(self.model_spec)
+        #     eqx.tree_pprint(jax.tree_map(tuple, self.intervenors, 
+        #                     is_leaf=lambda x: isinstance(x, list)))
     
     def _get_intervenors_dict(
         self, intervenors: Optional[Union[Sequence[AbstractIntervenor],

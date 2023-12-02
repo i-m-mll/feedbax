@@ -217,7 +217,7 @@ class EffectorCurlForceField(AbstractAdditiveIntervenor):
         
         self._scale = amplitude * _signs
 
-    def _get_substate_to_add(self, vel: Array):
+    def _get_substate_to_add(self, vel: Array, *, key: jax.Array):
         """Returns curl forces."""
         return self._scale * vel[..., ::-1]  
     
@@ -246,7 +246,7 @@ class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor["NetworkState"
     def __init__(self, unit_spec: PyTree):
         self.unit_spec = jax.tree_map(jnp.nan_to_num, unit_spec)
     
-    def _get_substate_to_add(self, network_state: PyTree):
+    def _get_substate_to_add(self, network_state: PyTree, *, key: jax.Array):
         """Return a modified network state PyTree."""
         return self.unit_spec
 
@@ -276,7 +276,7 @@ class NetworkClamp(AbstractClampIntervenor["NetworkState"]):
     def _out(self, state: "NetworkState"):
         return state.activity
     
-    def _get_updated_substate(self, network_state: PyTree):
+    def _get_updated_substate(self, network_state: PyTree, *, key: jax.Array):
         """Return a modified network state PyTree."""
         return jax.tree_map(
             lambda x, y: jnp.where(jnp.isnan(y), x, y),

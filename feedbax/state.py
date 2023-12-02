@@ -4,6 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from copy import deepcopy
 from functools import cached_property
 import logging
 from typing import (
@@ -26,7 +27,9 @@ logger = logging.getLogger(__name__)
 
 class AbstractState(eqx.Module):
     """Base class for model states."""
-    ...
+    
+    def copy(self):
+        return deepcopy(self)
 
 
 StateT = TypeVar("StateT", bound=AbstractState)
