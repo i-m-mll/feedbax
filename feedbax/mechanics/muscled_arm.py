@@ -63,7 +63,6 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
     f0: Float[Array, "muscles"] 
     
     forward_kinematics: Callable 
-    inverse_kinematics: Callable
     effector: Callable
     update_state_given_effector_force: Callable
     _forward_pos: Callable
@@ -90,36 +89,35 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
         
         #! alias these so this class behaves like `Mechanics` expects
         self.forward_kinematics = self.twolink.forward_kinematics
-        self.inverse_kinematics = self.twolink.inverse_kinematics
         self.effector = self.twolink.effector
         self._forward_pos = self.twolink._forward_pos
         self.update_state_given_effector_force = \
             self.twolink.update_state_given_effector_force
 
     @jax.named_scope("fbx.TwoLinkMuscled")
-    def __call__(self, t, state, args):
-        u = args 
-
+    def __call__(self, t, state: TwoLinkMuscledState, input):
+        
         muscle_length = self._muscle_length(state.theta)
         muscle_velocity = self._muscle_velocity(state.d_theta)
         
-        d_activation = self.activator(t, state.activation, u)
+        d_activation = self.activator(t, state.activation, input)
         
-        tension = self.muscle_model(muscle_length, muscle_velocity, u)
+        #! `activation` isn't passed!
+        tension = self.muscle_model(muscle_length, muscle_velocity, input)
         torque = self.moment_arms @ (self.f0 * tension)
         
         d_joints = self.twolink(t, state, torque)
-        d_theta, dd_theta = d_joints.theta, d_joints.d_theta
-                
-        return TwoLinkMuscledState(d_theta, dd_theta, d_activation)
+        d_theta, dd_theta = d_joints.theta, d_joints.d_theta   
+        
+        return TwoLinkMuscledState(d_activation, d_theta, dd_theta)
 
     def _muscle_length(self, theta):
-        moment_arms, l0, theta0 = self.theta0, self.l0, self.theta0
+        moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
         l = 1 + (moment_arms[0] * (theta0[0] - theta[0]) + moment_arms[1] * (theta0[1] - theta[1])) / l0
         return l
     
     def _muscle_velocity(self, d_theta):
-        moment_arms, l0 = self.theta0, self.l0
+        moment_arms, l0 = self.moment_arms, self.l0
         v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
         return v
     
@@ -181,7 +179,7 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
         - Unit test round trip with `forward_kinematics`.
         """
         pos = effector_state.pos
-        l, lsqpm = self.l, self._lsqpm
+        l, lsqpm = self.twolink.l, self.twolink._lsqpm
         dsq = jnp.sum(pos ** 2)
 
        
@@ -190,15 +188,15 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
         theta0 = gamma - alpha
         
         beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
-        theta1 = np.pi - beta
+        theta1 = jnp.pi - beta
 
         theta = jnp.stack([theta0, theta1], axis=-1)
         
         # TODO: don't calculate Jacobian twice, for `d_theta` and `torque`
-        d_theta = jnp.linalg.inv(self.effector_jac(theta)) @ effector_state.vel
+        d_theta = jnp.linalg.inv(self.twolink.effector_jac(theta)) @ effector_state.vel
         
         if effector_state.force is not None:
-            torque = self.effector_force_to_torques(theta, effector_state.force)
+            torque = self.twolink.effector_force_to_torques(theta, effector_state.force)
         else:
             torque = None
 

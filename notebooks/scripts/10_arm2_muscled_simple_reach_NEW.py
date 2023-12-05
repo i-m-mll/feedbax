@@ -17,7 +17,7 @@
 # Simple feedback model with a single-layer RNN controlling a two-link arm to reach from a starting position to a target position. 
 
 # %%
-LOG_LEVEL = "INFO"
+LOG_LEVEL = "DEBUG"
 NB_PREFIX = "nb10"
 DEBUG = False
 ENABLE_X64 = False
@@ -36,6 +36,12 @@ import sys
 from typing import Optional
 
 from IPython import get_ipython
+
+# #! TMP
+try:
+    os.remove("feedbax.log")
+except FileNotFoundError:
+    pass
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -61,8 +67,10 @@ from feedbax.mechanics.muscle import (
     ActivationFilter,
     TodorovLiVirtualMuscle, 
 ) 
-from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
+
+from feedbax.mechanics.plant import MuscledArm
+from feedbax.mechanics.skeleton.arm import TwoLink
+from feedbax.networks import RNNCell
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -91,19 +99,15 @@ plt.style.use('dark_background')
 # %%
 model_dir = Path("../models/")
 
+
 # %% [markdown]
 # Define the model.
-
-# %%
-from feedbax.mechanics.plant import MuscledArm
-from feedbax.mechanics.skeleton.arm import TwoLink
-
 
 # %%
 def get_model(
     task,
     dt: float = 0.05, 
-    rnn_input_size: int = 25,
+    encoding_size: int = 25,
     hidden_size: int = 50, 
     n_steps: int = 50, 
     feedback_delay: int = 0, 
@@ -140,11 +144,11 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
     
-    net = RNNCellWithReadout(
+    net = RNNCell(
         input_size, 
-        # rnn_input_size,
         hidden_size, 
-        mechanics.plant.input_size, 
+        # encoding_size=encoding_size,
+        out_size=mechanics.plant.input_size,
         out_nonlinearity=out_nonlinearity, 
         key=key,
     )
@@ -162,7 +166,7 @@ def get_model(
 seed = 5566
 
 n_steps = 50
-dt = 0.05 
+dt = 0.005
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.20), 
              (0.15, 0.50))
@@ -172,7 +176,7 @@ learning_rate = 0.05
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=0.1,
-    effector_straight_path=1e-3,
+    #effector_straight_path=1e-3,
     nn_output=1e-4,
     nn_activity=0.,
 )
@@ -201,17 +205,19 @@ def setup(
 
     key = jr.PRNGKey(seed)
 
-    loss_func = fbl.CompositeLoss(
-        dict(
-            effector_position=fbl.EffectorPositionLoss(
-                discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
-            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            effector_straight_path=fbl.EffectorStraightPathLoss(),
-            nn_output=fbl.NetworkOutputLoss(),
-            nn_activity=fbl.NetworkActivityLoss(),
-        ),
-        weights=loss_term_weights,
-    )
+    loss_func = simple_reach_loss(n_steps, loss_term_weights)
+
+    # loss_func = fbl.CompositeLoss(
+    #     dict(
+    #         effector_position=fbl.EffectorPositionLoss(
+    #             discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
+    #         effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+    #         #effector_straight_path=fbl.EffectorStraightPathLoss(),
+    #         nn_output=fbl.NetworkOutputLoss(),
+    #         nn_activity=fbl.NetworkActivityLoss(),
+    #     ),
+    #     weights=loss_term_weights,
+    # )
 
     task = RandomReaches(
         loss_func=loss_func,
@@ -248,23 +254,23 @@ trainer = TaskTrainer(
 
 # %%
 trainable_leaves_func = lambda model: (
-    model.step.net.input_layer,
+    # model.step.net.encoder,
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
     model.step.net.cell.bias,
 )
 
-model, losses, loss_terms, learning_rates = trainer(
+model, losses, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=10_000, 
+    n_batches=1_000, 
     batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
     key=jr.PRNGKey(seed + 1),
 )
 
-plot_losses(losses, loss_terms)
+plot_losses(losses)
 plt.show()
 
 # %% [markdown]

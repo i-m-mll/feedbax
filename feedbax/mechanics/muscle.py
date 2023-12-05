@@ -223,7 +223,6 @@ class VirtualMuscle(AbstractMuscle):
         n_f, a_f = self.n_f, self.a_f
         n_f = n_f[0] + n_f[1] * (1 / l - 1)  # TODO: l_eff filter option (see method _l_eff_field)
         Y = 1  # TODO: Y filter option (see method _Y_field)
-        eqx.tree_pprint(a)
         A_f = 1 - jnp.exp(-(a / (a_f * n_f)) ** n_f)
         # A_f = 1 - jnp.exp(-((a * Y) / (a_f * n_f)) ** n_f)
         return A_f

@@ -162,7 +162,7 @@ def filter_spec_leaves(tree, leaf_func):
     """
     filter_spec = jax.tree_util.tree_map(lambda _: False, tree)
     filter_spec = eqx.tree_at(
-        leaf_func, filter_spec, replace_fn=lambda x: True 
+        leaf_func, filter_spec, replace_fn=lambda x: True,
     )
     return filter_spec
 

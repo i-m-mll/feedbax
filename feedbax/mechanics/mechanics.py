@@ -85,7 +85,7 @@ class Mechanics(AbstractModel[MechanicsState]):
             ),
             "plant_update": (  # dependent (non-ODE) updates specified by the plant
                 lambda self: self.plant,
-                lambda input, state: (input, state.plant),
+                lambda input, state: input,
                 lambda state: state.plant,
             ),
             "solver_step": (
@@ -108,21 +108,8 @@ class Mechanics(AbstractModel[MechanicsState]):
 
     @cached_property 
     def term(self) -> dfx.AbstractTerm:
-        
-        def _vector_field(self, t, state, input):       
-            d_state = jax.tree_map(jnp.zeros, state)
-            
-            for vf, input_func, state_where in self.plant.dynamics_spec.values():
-                d_state = eqx.tree_at(
-                    state_where(d_state),
-                    d_state,
-                    vf(t, state_where(state), input_func(input, state))
-                )
-            
-            return state 
-        
-        return dfx.ODETerm(_vector_field) 
-    
+        """The total vector field for the plant"""
+        return dfx.ODETerm(self.plant.vector_field) 
     
     def _solver_step(
         self, 
@@ -194,7 +181,6 @@ class Mechanics(AbstractModel[MechanicsState]):
         solver_state = self.solver.init(
             self.term, 0, self.dt, plant_state, init_input
         )
-
 
         return MechanicsState(
             plant=plant_state,

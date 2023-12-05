@@ -16,6 +16,7 @@ from collections import OrderedDict
 import copy
 from functools import cached_property
 import logging
+import os
 from typing import (
     TYPE_CHECKING,
     Callable, 
@@ -95,10 +96,27 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
             
             keys = jr.split(key, len(self._stages))
             
-            for (intervenors, module, module_input, substate_where), key \
-                in zip(self._stages, keys):
+            #eqx.tree_pprint(state, short_arrays=False)
+            
+            for label, key in zip(self._stages, keys):
+                intervenors, module, module_input, substate_where = \
+                    self._stages[label]
                 
                 key1, key2 = jr.split(key)
+                
+                if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
+                    strs = [eqx.tree_pformat(x, short_arrays=False) for x in (
+                        module(self),
+                        module_input(input, state),
+                        substate_where(state),
+                    )]
+                    logger.debug(f"Module: {type(self).__name__}")
+                    logger.debug(f"Stage: {label}")
+                    logger.debug(f"Stage module:\n{strs[0]}")
+                    logger.debug(f"Input:\n{strs[1]}")
+                    logger.debug(f"Substate:\n{strs[2]}")
+                    
+                    
                 
                 for intervenor in intervenors:
                     # Whether this modifies the state depends on `input`.
@@ -150,13 +168,13 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     ]]: 
         """Zips up the user-defined intervenors with `model_spec`."""
         #! should not be referred to in `__init__`, at least before defining `intervenors`
-        return tuple(jax.tree_map(
+        return jax.tree_map(
             lambda x, y: (y,) + x, 
             self.model_spec, 
             jax.tree_map(tuple, self.intervenors, 
                         is_leaf=lambda x: isinstance(x, list)),
             is_leaf=lambda x: isinstance(x, tuple),
-        ).values())
+        )
         # except ValueError:
         #     eqx.tree_pprint(self.model_spec)
         #     eqx.tree_pprint(jax.tree_map(tuple, self.intervenors, 
@@ -229,7 +247,7 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         mechanics: "Mechanics", 
         delay: int = 0, 
         feedback_leaves_func: Callable[["MechanicsState"], PyTree] \
-            = lambda mechanics_state: mechanics_state.system,
+            = lambda mechanics_state: mechanics_state.plant.skeleton,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Dict[str, Sequence[AbstractIntervenor]]]] \
             = None,
@@ -327,7 +345,7 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     def get_nn_input_size(
         task: AbstractTask, 
         mechanics: "Mechanics", 
-        feedback_leaves_func=lambda mechanics_state: mechanics_state.system,
+        feedback_leaves_func=lambda mechanics_state: mechanics_state.plant.skeleton,
     ) -> int:
         """Determine how many scalar input features the neural network needs.
         

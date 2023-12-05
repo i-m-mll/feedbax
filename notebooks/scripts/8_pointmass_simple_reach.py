@@ -71,7 +71,7 @@ from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import PointMass
-from feedbax.networks import RNNCell, RNNCellWithReadout
+from feedbax.networks import RNNCell
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -92,8 +92,10 @@ plt.style.use('dark_background')
 # %%
 model_dir = Path("../models/")
 
-
 # %%
+from feedbax.mechanics.plant import SimplePlant
+
+
 def get_model(
     task,
     dt: float = 0.05, 
@@ -110,18 +112,19 @@ def get_model(
     
     key1, key2 = jr.split(key)
     
-    system = PointMass(mass=mass)
-    mechanics = Mechanics(system, dt, solver=diffrax.Euler)
+    skeleton = PointMass(mass=mass)
+    plant = SimplePlant(skeleton)
+    mechanics = Mechanics(plant, dt, solver=diffrax.Euler, clip_states=False)
     
     # automatically determine network input size
     input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    net = RNNCell(
         input_size,
         hidden_size,
-        system.control_size, 
+        out_size=plant.input_size,
         noise_std=0.0,
         out_nonlinearity=out_nonlinearity, 
         key=key1
@@ -223,7 +226,7 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 10000
+n_batches = 1000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
 

@@ -6,6 +6,7 @@
 
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
+from functools import cached_property
 import logging
 from typing import Dict, Optional, Sequence, Tuple, TypeVar, Union
 
@@ -14,13 +15,14 @@ from equinox import AbstractVar
 import jax
 from jax import Array
 import jax.numpy as jnp
-from jaxtyping import Float
+from jaxtyping import Float, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton
 
 from feedbax.model import AbstractModel, AbstractModelState
+from feedbax.state import StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -32,13 +34,13 @@ class AbstractSkeletonState(AbstractModelState):
     
 class PlantState(AbstractModelState):
     skeleton: AbstractSkeletonState
-    muscles: AbstractMuscleState
+    muscles: Optional[AbstractMuscleState] = None
 
 
 class AbstractPlant(AbstractModel[PlantState]):
     
+    
     skeleton: AbstractVar[AbstractSkeleton]
-    muscle_model: AbstractVar[AbstractMuscle]
     
     @abstractproperty
     def model_spec(self):
@@ -59,6 +61,69 @@ class AbstractPlant(AbstractModel[PlantState]):
     @abstractproperty 
     def input_size(self) -> int:
         ...
+        
+    def vector_field(self, t, state, input):       
+        d_state = jax.tree_map(jnp.zeros_like, state)
+        
+        for vf, input_func, state_where in self.dynamics_spec.values():
+            d_state = eqx.tree_at(
+                state_where,
+                d_state,
+                vf(t, state_where(state), input_func(input, state))
+            )
+            
+        return d_state 
+        
+
+class SimplePlant(AbstractPlant):
+    skeleton: AbstractSkeleton 
+    
+    intervenors: Dict[str, AbstractIntervenor]
+    
+    def __init__(self, skeleton, intervenors=None, *, key=None):
+        self.skeleton = skeleton
+        self.intervenors = self._get_intervenors_dict(intervenors)
+        
+    @cached_property
+    def dynamics_spec(self):
+        return dict({
+            "skeleton": (
+                self.skeleton,
+                lambda input, state: input,
+                lambda state: state.skeleton,
+            ),
+        })
+    
+    @cached_property
+    def model_spec(self):
+        return OrderedDict()
+        
+    @property
+    def memory_spec(self):
+        return PlantState(
+            skeleton=True,
+            muscles=False,
+        )
+    
+    def init(self, skeleton=None, muscles=None) -> PlantState:
+        if skeleton is None:
+            skeleton = self.skeleton.init()
+        
+        return PlantState(
+            skeleton=skeleton,
+            muscles=None,
+        )
+    
+    @property
+    def input_size(self):
+        return self.skeleton.control_size
+    
+    @property 
+    def bounds(self) -> PyTree[StateBounds]:
+        return PlantState(
+            skeleton=self.skeleton.bounds,
+            muscles=None,
+        )
 
 
 class MuscledArm(AbstractPlant):
@@ -110,25 +175,12 @@ class MuscledArm(AbstractPlant):
         
         self.intervenors = self._get_intervenors_dict(intervenors)        
     
-    def dynamics_spec(self):
-        return dict({
-            "muscle_activation": (
-                lambda self: self.activator,  # vector field
-                lambda input, state: input,  # system input
-                lambda state: state.muscles.activation,  # system state
-            ),
-            "skeleton": (
-                lambda self: self.skeleton,
-                lambda input, state: state.skeleton.torque,
-                lambda state: state.skeleton,
-            ),
-        })
-    
-    @property
+    @cached_property
     def model_spec(self):
         return OrderedDict({
             "muscle_update": (
                 lambda self: self.muscle_update,
+                #! `activation` isn't passed!
                 lambda input, state: (input, state.skeleton),
                 lambda state: (
                     state.muscles.length,
@@ -140,6 +192,22 @@ class MuscledArm(AbstractPlant):
                 lambda self: self.muscle_torques,
                 lambda input, state: state.muscles,
                 lambda state: state.skeleton.torque,
+            ),
+        })
+
+    
+    @cached_property
+    def dynamics_spec(self):
+        return dict({
+            # "muscle_activation": (
+            #     self.activator,  # vector field
+            #     lambda input, state: input,  # system input
+            #     lambda state: state.muscles.activation,  # system state
+            # ),
+            "skeleton": (
+                self.skeleton,
+                lambda input, state: state.skeleton.torque,
+                lambda state: state.skeleton,
             ),
         })
     
@@ -158,12 +226,12 @@ class MuscledArm(AbstractPlant):
         return (length, velocity, tension)
 
     def _muscle_length(self, theta):
-        moment_arms, l0, theta0 = self.theta0, self.l0, self.theta0
+        moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
         l = 1 + (moment_arms[0] * (theta0[0] - theta[0]) + moment_arms[1] * (theta0[1] - theta[1])) / l0
         return l
     
     def _muscle_velocity(self, d_theta):
-        moment_arms, l0 = self.theta0, self.l0
+        moment_arms, l0 = self.moment_arms, self.l0
         v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
         return v
 

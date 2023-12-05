@@ -19,7 +19,7 @@
 # %%
 LOG_LEVEL = "INFO"
 NB_PREFIX = "nb10"
-DEBUG = False
+DEBUG = True
 ENABLE_X64 = False
 N_DIM = 2  # TODO: not here
 
@@ -55,14 +55,14 @@ import optax
 
 import feedbax.loss as fbl
 from feedbax.model import SimpleFeedback
-from feedbax.iterate import Iterator
+from feedbax.iterate import SimpleIterator, Iterator
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.muscle import (
     ActivationFilter,
     TodorovLiVirtualMuscle, 
 ) 
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.networks import RNNCellWithReadoutAndInput
+from feedbax.networks import RNNCell
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -99,7 +99,7 @@ model_dir = Path("../models/")
 def get_model(
     task,
     dt: float = 0.05, 
-    rnn_input_size: int = 25,
+    encoding_size: int = 25,
     hidden_size: int = 50, 
     n_steps: int = 50, 
     feedback_delay: int = 0, 
@@ -135,11 +135,11 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
     
-    net = RNNCellWithReadoutAndInput(
+    net = RNNCell(
         input_size, 
-        rnn_input_size,
         hidden_size, 
-        system.control_size, 
+        out_size=system.control_size, 
+        encoding_size=encoding_size,
         out_nonlinearity=out_nonlinearity, 
         key=key,
     )
@@ -167,7 +167,7 @@ learning_rate = 0.05
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=0.1,
-    effector_straight_path=1e-3,
+    #effector_straight_path=1e-3,
     nn_output=1e-4,
     nn_activity=0.,
 )
@@ -196,16 +196,21 @@ def setup(
 
     key = jr.PRNGKey(seed)
 
-    loss_func = fbl.CompositeLoss(
-        dict(
-            effector_position=fbl.EffectorPositionLoss(
-                discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
-            effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
-            effector_straight_path=fbl.EffectorStraightPathLoss(),
-            nn_output=fbl.NetworkOutputLoss(),
-            nn_activity=fbl.NetworkActivityLoss(),
-        ),
-        weights=loss_term_weights,
+    # loss_func = fbl.CompositeLoss(
+    #     dict(
+    #         effector_position=fbl.EffectorPositionLoss(
+    #             discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
+    #         effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
+    #         #effector_straight_path=fbl.EffectorStraightPathLoss(),
+    #         nn_output=fbl.NetworkOutputLoss(),
+    #         nn_activity=fbl.NetworkActivityLoss(),
+    #     ),
+    #     weights=loss_term_weights,
+    # )
+
+    loss_func = simple_reach_loss(
+        n_steps, 
+        loss_term_weights,
     )
 
     task = RandomReaches(
@@ -243,13 +248,13 @@ trainer = TaskTrainer(
 
 # %%
 trainable_leaves_func = lambda model: (
-    model.step.net.input_layer,
+    model.step.net.encoder,
     model.step.net.cell.weight_hh, 
     model.step.net.cell.weight_ih, 
     model.step.net.cell.bias,
 )
 
-model, losses, loss_terms, learning_rates = trainer(
+model, losses, learning_rates = trainer(
     task=task, 
     model=model,
     n_batches=10_000, 
@@ -259,7 +264,7 @@ model, losses, loss_terms, learning_rates = trainer(
     key=jr.PRNGKey(seed + 1),
 )
 
-plot_losses(losses, loss_terms)
+plot_losses(losses)
 plt.show()
 
 # %% [markdown]
