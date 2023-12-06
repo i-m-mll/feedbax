@@ -15,6 +15,7 @@ data/
 
 # logs
 *.log
+*.log.*
 
 # profile data
 *stats

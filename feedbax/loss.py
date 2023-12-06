@@ -340,11 +340,11 @@ class EffectorStraightPathLoss(AbstractLoss):
     """Penalize non-straight paths between initial and final state.
     
     Calculates the length of the paths followed, and normalizes by the
-    Euclidean distance between the initial and final state.
+    Euclidean (straight-line) distance between the initial and final state.
     
     The parameter `normalize_by` controls whether to normalize by the 
-    Euclidean distance between the initial and final actual states, or the 
-    initial actual state, but the goal state defined by the task.
+    Euclidean distance between the actual initial & final states, or the 
+    actual initial state & the task-specified goal state.
     """
     label: str = "effector_straight_path"
     normalize_by: str = "actual"
@@ -399,7 +399,8 @@ class EffectorFixationLoss(AbstractLoss):
 class EffectorFinalVelocityLoss(AbstractLoss):
     """
     
-    TODO: how do we handle calculating oss for a single timestep only?
+    TODO:
+    - For tracking, an ongoing (not just final) velocity loss might make sense
     """
     label: str = "effector_final_velocity"
 

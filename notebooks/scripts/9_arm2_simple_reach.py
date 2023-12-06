@@ -52,12 +52,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax 
 
-from feedbax.model import SimpleFeedback
 from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import TwoLink
-from feedbax.networks import RNNCell, RNNCellWithReadout
+from feedbax.mechanics.plant import SimplePlant
+from feedbax.model import SimpleFeedback
+from feedbax.networks import RNNCell
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -100,8 +101,10 @@ def get_model(
     key=None,
     dt=0.05, 
     hidden_size=50, 
+    encoding_size=25,
     n_steps=50, 
     feedback_delay=0, 
+    clip_states=True,
     out_nonlinearity=lambda x: x,
 ):
     if key is None:
@@ -110,25 +113,28 @@ def get_model(
 
     key1, key2, key3 = jrandom.split(key, 3)
 
-    system = TwoLink()  
-    mechanics = Mechanics(system, dt, clip_states=True)
+    plant = SimplePlant(TwoLink())
+    mechanics = Mechanics(plant, dt, clip_states=clip_states)
     
     # unlike in the pointmass example, the effector is different
     # from the system configuration, so we include both 
     # (by default only `mechanics_state.system` is included)
     feedback_leaves_func = lambda mechanics_state: (
-        mechanics_state.system,
-        mechanics_state.effector,         
+        mechanics_state.plant.skeleton.theta,
+        mechanics_state.plant.skeleton.d_theta,
+        mechanics_state.effector.pos,
+        mechanics_state.effector.vel,         
     )
     
     input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics, feedback_leaves_func
     )
 
-    net = RNNCellWithReadout(
+    net = RNNCell(
         input_size, 
         hidden_size, 
-        system.control_size,
+        encoding_size=encoding_size,
+        out_size=plant.input_size,
         out_nonlinearity=out_nonlinearity,
         key=key1,
     )
@@ -150,8 +156,10 @@ seed = 5566
 n_steps = 50
 dt = 0.05 
 feedback_delay_steps = 0
-workspace = ((-0.15, 0.20), 
-             (0.15, 0.50))
+# workspace = ((-0.15, 0.20), 
+#              (0.15, 0.50))
+workspace = ((-0.2, 0.10), 
+             (0.2, 0.50))
 hidden_size  = 50
 
 loss_term_weights = dict(
@@ -223,12 +231,22 @@ trainer = TaskTrainer(
 )
 
 # %%
-trainable_leaves_func = lambda model: model.step.net
+model = eqx.tree_at(
+    lambda model: model.step.mechanics.clip_states,
+    model,
+    False
+)
+
+# %%
+trainable_leaves_func = lambda model: (
+    model.step.net.encoder,
+    model.step.net.cell,
+)
 
 model, losses, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=1000, 
+    n_batches=5_000, 
     batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
@@ -277,7 +295,16 @@ plot_pos_vel_force_2D(
         trial_specs.init['mechanics']['effector'].pos, 
         trial_specs.goal.pos
     ),
+);
+
+# %%
+from feedbax.utils import tree_get_idx
+
+xy = eqx.filter_vmap(model.step.mechanics.plant.skeleton.forward_kinematics)(
+    tree_get_idx(states, 0).mechanics.plant.skeleton
 )
+
+plot_2D_joint_positions(xy.pos)
 
 # %% [markdown]
 # Plot entire arm trajectory for an example direction

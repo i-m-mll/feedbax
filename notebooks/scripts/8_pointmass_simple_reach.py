@@ -111,9 +111,8 @@ def get_model(
         key = jr.PRNGKey(0)
     
     key1, key2 = jr.split(key)
-    
-    skeleton = PointMass(mass=mass)
-    plant = SimplePlant(skeleton)
+
+    plant = SimplePlant(PointMass(mass=mass))
     mechanics = Mechanics(plant, dt, solver=diffrax.Euler, clip_states=False)
     
     # automatically determine network input size

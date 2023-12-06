@@ -14,6 +14,10 @@
 # ---
 
 # %%
+# %load_ext autoreload
+# %autoreload 2
+
+# %%
 import math
 
 import diffrax as dfx
@@ -30,7 +34,8 @@ import optax
 import seaborn as sns
 from tqdm import tqdm
 
-from feedbax.mechanics.skeleton import TwoLink
+from feedbax.mechanics.skeleton.arm import TwoLink, TwoLinkState
+from feedbax.mechanics.plant import SimplePlant, PlantState
 from feedbax.plot import plot_2D_joint_positions, plot_pos_vel_force_2D
 from feedbax.utils import SINCOS_GRAD_SIGNS
 
@@ -39,7 +44,7 @@ from feedbax.utils import SINCOS_GRAD_SIGNS
 def torque(t, y, args):
     return jnp.array([0.1, 0.])
 
-class TwoLink:
+class TwoLink_:
     l: Float[Array, "2"] = jnp.array((0.30, 0.33))  # [m] lengths of arm segments
     m: Float[Array, "2"] = jnp.array((1.4, 1.0))  # [kg] masses of segments
     I: Float[Array, "2"] = jnp.array((0.025, 0.045))  # [kg m^2] moments of inertia of segments
@@ -63,12 +68,12 @@ class TwoLink:
 
 class State(eqx.Module):
     theta: Float[Array, "2"]
-    dtheta: Float[Array, "2"]
+    d_theta: Float[Array, "2"]
 
 
 def twolink_field(twolink):
     def field(t, state, args):
-        theta, dtheta = state.theta, state.dtheta 
+        theta, dtheta = state.theta, state.d_theta 
         
         # centripetal and coriolis forces 
         c_vec = jnp.array((
@@ -89,49 +94,109 @@ def twolink_field(twolink):
     
     return field
 
-def solve(y0, dt0, args):
-    term = dfx.ODETerm(twolink_field(TwoLink()))
-    solver = dfx.Tsit5()
-    t0 = 0
-    t1 = 1
-    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
-    state = solver.init(term, t0, t1 + dt0, y0, args)
-    sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat)
-    return sol
-
-y0 = State(jnp.array([np.pi / 5, np.pi / 3]), jnp.array([0., 0.]))
-dt0 = 0.01  
-args = None
-
-with jax.default_device(jax.devices('cpu')[0]):
-    sol = solve(y0, dt0, args)      
 
 # %%
-xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(
-    TwoLink(), sol.ys.theta, sol.ys.dtheta
+def solve(vf, y0, t0, t1, dt0, args, n_save_steps=None):
+    if n_save_steps is None:
+        n_save_steps = int((t1 - t0) / dt0)
+    
+    term = dfx.ODETerm(vf)
+    solver = dfx.Tsit5()
+    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, n_save_steps))
+    # solver_state = solver.init(term, t0, t1 + dt0, y0, args)
+    sol = dfx.diffeqsolve(
+        term, 
+        solver, 
+        t0, 
+        t1, 
+        dt0, 
+        y0, 
+        args=args, 
+        saveat=saveat,
+    )
+    return sol
+
+
+# %%
+arm = TwoLink()
+
+t0 = 0
+t1 = 1
+dt0 = 0.01  
+n_steps = int((t1 - t0) / dt0)
+n_save_steps = n_steps
+y0 = TwoLinkState(
+    theta=jnp.array([np.pi / 5, np.pi / 3]), 
+    d_theta=jnp.array([0., 0.]),
 )
+args = input_torque = jnp.array([0.1, 0.])
+
+with jax.default_device(jax.devices('cpu')[0]):
+    sol = solve(arm, y0, t0, t1, dt0, args, n_save_steps=n_save_steps)      
+
+# %%
+xy = eqx.filter_vmap(arm.forward_kinematics)(sol.ys)
 
 # %% [markdown]
 # Plot the trajectory of the end of the arm, plus the (constant) control torques:
 
 # %%
-controls = jnp.tile(jnp.array([-0.1, 0.1]), (1000, 1))
-position = xy_pos[..., -1]
-velocity = xy_vel[..., -1]
-data = (position, velocity, controls)
-plot_states_forces_2d(*jax.tree_map(lambda x: x[None, :], data), force_label_type='torques')
+plot_pos_vel_force_2D(
+    xy, 
+    leaf_func=lambda states: (
+        states.pos[None, :, -1],
+        states.vel[None, :, -1],
+        jnp.tile(input_torque, (1, 1000, 1)),
+    ),
+    force_label_type='torques',
+)
 plt.show()
 
 # %% [markdown]
 # Plot the position of the entire arm over time
 
 # %%
-ax = plot_2D_joint_positions(xy_pos, add_root=True)
+ax = plot_2D_joint_positions(xy.pos, add_root=True)
+plt.show()
+
+# %% [markdown]
+# Repeat the solution, but wrapping the arm in `SimplePlant`. The `vector_field` of the resulting instance should behave identically to the original arm.
+
+# %%
+plant = SimplePlant(arm)
+
+# %%
+arm = TwoLink()
+
+t0 = 0
+t1 = 1
+dt0 = 0.01  
+n_steps = int((t1 - t0) / dt0)
+n_save_steps = n_steps
+y0 = PlantState(
+    skeleton=TwoLinkState(
+        theta=jnp.array([np.pi / 5, np.pi / 3]), 
+        d_theta=jnp.array([0., 0.]),
+    ),
+)
+args = input_torque = jnp.array([0.1, 0.])
+
+with jax.default_device(jax.devices('cpu')[0]):
+    sol = solve(plant.vector_field, y0, t0, t1, dt0, args, n_save_steps=n_save_steps)      
+
+# %%
+xy = eqx.filter_vmap(arm.forward_kinematics)(
+    sol.ys.skeleton
+)
+
+ax = plot_2D_joint_positions(xy.pos, add_root=True)
 plt.show()
 
 
 # %% [markdown]
 # Iterative solution
+#
+# TODO: update this to work with `TwoLinkState`
 
 # %%
 @eqx.filter_jit
@@ -179,19 +244,17 @@ ys = solve_loop(y0, t0, t1, dt0, args)
 # TODO: this should be a unit test for angular_to_cartesian
 
 # %%
-twolink = TwoLink()
+# add root joint at (0, 0)
+pos = np.pad(xy.pos, ((0, 0), (1, 0), (0, 0)))
 
-distances = np.sqrt(np.sum(np.diff(xy_pos, axis=2)**2, axis=1)) - twolink.l
+distances = np.sqrt(np.sum(np.diff(pos, axis=1) ** 2, axis=2)) - arm.l
 print(distances, '\n')
 print("Mean difference from actual length: ", np.mean(distances, axis=0))
-print("% difference from actual length: ", 100 * np.mean(distances, axis=0) / twolink.l)
+print("% difference from actual length: ", 100 * np.mean(distances, axis=0) / arm.l)
 print("St. dev. difference from actual length: ", np.std(distances, axis=0))
 
 # %% [markdown]
 # Inverse kinematics:
-
-# %%
-from feedbax.mechanics.skeleton import TwoLink, twolink_effector_pos_to_angles
 
 # %%
 batch_size = 5

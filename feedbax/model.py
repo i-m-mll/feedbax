@@ -42,7 +42,7 @@ from feedbax.intervene import AbstractIntervenor
 if TYPE_CHECKING:
     from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.task import AbstractTask, AbstractTaskInput
-from feedbax.utils import tree_sum_n_features
+from feedbax.utils import tree_sum_n_features, tree_pformat_indent
 
 if TYPE_CHECKING:
     from feedbax.networks import NetworkState
@@ -96,8 +96,6 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
             
             keys = jr.split(key, len(self._stages))
             
-            #eqx.tree_pprint(state, short_arrays=False)
-            
             for label, key in zip(self._stages, keys):
                 intervenors, module, module_input, substate_where = \
                     self._stages[label]
@@ -105,18 +103,21 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
                 key1, key2 = jr.split(key)
                 
                 if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
-                    strs = [eqx.tree_pformat(x, short_arrays=False) for x in (
-                        module(self),
-                        module_input(input, state),
-                        substate_where(state),
-                    )]
-                    logger.debug(f"Module: {type(self).__name__}")
-                    logger.debug(f"Stage: {label}")
-                    logger.debug(f"Stage module:\n{strs[0]}")
-                    logger.debug(f"Input:\n{strs[1]}")
-                    logger.debug(f"Substate:\n{strs[2]}")
+                    debug_strs = [tree_pformat_indent(x, indent=4) for x in 
+                        (
+                            module(self),
+                            module_input(input, state),
+                            substate_where(state),
+                        )
+                    ]
                     
-                    
+                    logger.debug(
+                        f"Module: {type(self).__name__} \n"
+                        f"Stage: {label} \n"
+                        f"Stage module:\n{debug_strs[0]}\n"
+                        f"Input:\n{debug_strs[1]}\n"
+                        f"Substate:\n{debug_strs[2]}\n"
+                    )                  
                 
                 for intervenor in intervenors:
                     # Whether this modifies the state depends on `input`.
@@ -175,10 +176,6 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
                         is_leaf=lambda x: isinstance(x, list)),
             is_leaf=lambda x: isinstance(x, tuple),
         )
-        # except ValueError:
-        #     eqx.tree_pprint(self.model_spec)
-        #     eqx.tree_pprint(jax.tree_map(tuple, self.intervenors, 
-        #                     is_leaf=lambda x: isinstance(x, list)))
     
     def _get_intervenors_dict(
         self, intervenors: Optional[Union[Sequence[AbstractIntervenor],

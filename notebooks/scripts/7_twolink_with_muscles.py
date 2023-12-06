@@ -14,6 +14,15 @@
 # ---
 
 # %%
+# %load_ext autoreload
+# %autoreload 2
+
+# %%
+import os 
+
+os.environ["FEEDBAX_DEBUG"] = str(True)
+
+# %%
 import math
 from typing import Any
 
@@ -30,13 +39,17 @@ import numpy as np
 import optax 
 from tqdm import tqdm
 
-from feedbax.mechanics.skeleton import TwoLink
+from feedbax.iterate import SimpleIterator
+from feedbax.mechanics import Mechanics
+from feedbax.mechanics.plant import MuscledArm, PlantState
+from feedbax.mechanics.skeleton.arm import TwoLink, TwoLinkState
 from feedbax.mechanics.muscle import (
     LillicrapScottVirtualMuscle, 
     TodorovLiVirtualMuscle, 
     ActivationFilter,
+    VirtualMuscleState,
 )
-from feedbax.mechanics.muscled_arm import TwoLinkMuscled
+from feedbax.mechanics.muscled_arm import TwoLinkMuscled, TwoLinkMuscledState
 from feedbax.plot import plot_2D_joint_positions
 
 # %%
@@ -44,41 +57,99 @@ jax.config.update("jax_debug_nans", False)
 
 
 # %%
-def solve(field, y0, dt0, t0, t1, args, **kwargs):
+def solve(field, y0, dt0, t0, t1, args, n_steps, **kwargs):
     term = dfx.ODETerm(field)
     solver = dfx.Tsit5()
-    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, 1000))
+    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, n_steps))
     sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, y0, args=args, saveat=saveat, **kwargs)
     return sol
 
 
+# %% [markdown]
+# First, test the old `TwoLinkMuscled` class, which lumped the skeleton and muscle elements together into a single `vector_field` call.
+
 # %%
+tau = 0.01
+
 arm2M = TwoLinkMuscled(
     muscle_model=TodorovLiVirtualMuscle(),
-    activator=ActivationFilter(),
+    activator=ActivationFilter(
+        tau_act=tau,
+        tau_deact=tau,
+    ),
 )
 
-y0 = (jnp.array([np.pi / 5, np.pi / 3]), 
-      jnp.array([0., 0.]),
-      jnp.zeros(6))
-u = jnp.array([0., 0., 0., 0., 0.0, 0.00015])
+y0 = TwoLinkMuscledState(
+    theta=jnp.array([np.pi / 5, np.pi / 3]), 
+    d_theta=jnp.array([0., 0.]),
+    activation=jnp.zeros(6),
+)
+args = muscle_input = jnp.array([0.0, 0., 0.0, 0., 0.1, 0.0])
 t0 = 0
-dt0 = 1  # [ms]
-t1 = 1000
+dt0 = 0.05  # [ms]
+t1 = 1
+n_steps = int((t1 - t0) / dt0)
+
 with jax.default_device(jax.devices('cpu')[0]):
-    sol = solve(arm2M.vector_field, y0, dt0, t0, t1, u)   
+    sol = solve(arm2M, y0, dt0, t0, t1, args, n_steps)   
 
 # %%
-# TODO: use the forward kinematics built into TwoLink
-xy_pos, xy_vel = eqx.filter_vmap(nlink_angular_to_cartesian)(TwoLink(), sol.ys[0], sol.ys[1])
-#xy_pos = np.pad(xy_pos.squeeze(), ((0,0), (0,0), (1,0)))
+xy = eqx.filter_vmap(arm2M.forward_kinematics)(sol.ys)
 
-# %%
-ax = plot_2D_joint_positions(xy_pos, lw_arm=4, add_root=True)
+ax = plot_2D_joint_positions(xy.pos, add_root=True)
 plt.show()
 
 # %% [markdown]
+# Repeat the solve for the new `MuscledArm` subclass of `AbstractPlant`.
+
+# %%
+plant = MuscledArm(
+    skeleton=TwoLink(),
+    muscle_model=TodorovLiVirtualMuscle(), 
+    activator=ActivationFilter(
+        tau_act=tau,
+        tau_deact=tau,
+    ),
+)
+
+mechanics = Mechanics(
+    plant, 
+    dt=dt0,
+    clip_states=False,
+    # solver=dfx.Tsit5,
+)
+
+# %%
+muscle_inputs = jnp.broadcast_to(
+    muscle_input,
+    (n_steps, 6),
+)
+
+init_state = dict(
+    plant=dict(
+        skeleton=TwoLinkState(
+            theta=jnp.array([np.pi / 5, np.pi / 3]), 
+            d_theta=jnp.array([0., 0.]),
+        ),    
+))
+
+model = SimpleIterator(mechanics, n_steps)
+
+states = model(muscle_inputs, init_state, key=jrandom.PRNGKey(0))
+
+# %%
+xy = eqx.filter_vmap(plant.skeleton.forward_kinematics)(states.plant.skeleton)
+
+ax = plot_2D_joint_positions(xy.pos, add_root=True)
+plt.show()
+
+# %% [markdown]
+# Note that the solution is similar, but not identical, to the earlier solution where the muscle inputs were 5x larger. This is presumably due to the different discretization of `Iterator` versus `diffeqsolve`.
+
+# %% [markdown]
 # Testing the activation dynamics. See Fig 1D in Todorov & Li 2004.
+#
+# TODO: use `feedbax.mechanics.muscle.ActivationFilter`
 
 # %%
 tau_act = 50 # [ms]

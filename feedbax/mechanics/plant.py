@@ -73,6 +73,16 @@ class AbstractPlant(AbstractModel[PlantState]):
             )
             
         return d_state 
+    
+    @property 
+    def bounds(self) -> PyTree[StateBounds]:
+        return PlantState(
+            skeleton=self.skeleton.bounds,
+            muscles=StateBounds(
+                low=None,
+                high=None,
+            ),
+        )
         
 
 class SimplePlant(AbstractPlant):
@@ -96,10 +106,12 @@ class SimplePlant(AbstractPlant):
     
     @cached_property
     def model_spec(self):
+        """Simple plants have no state updates apart from the skeletal ODE."""
         return OrderedDict()
         
     @property
     def memory_spec(self):
+        """A simple plant has no muscles, and no muscle state to remember."""
         return PlantState(
             skeleton=True,
             muscles=False,
@@ -118,12 +130,6 @@ class SimplePlant(AbstractPlant):
     def input_size(self):
         return self.skeleton.control_size
     
-    @property 
-    def bounds(self) -> PyTree[StateBounds]:
-        return PlantState(
-            skeleton=self.skeleton.bounds,
-            muscles=None,
-        )
 
 
 class MuscledArm(AbstractPlant):
@@ -178,15 +184,18 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def model_spec(self):
         return OrderedDict({
-            "muscle_update": (
-                lambda self: self.muscle_update,
-                #! `activation` isn't passed!
-                lambda input, state: (input, state.skeleton),
+            "muscle_geometry": (
+                lambda self: self.muscle_geometry,
+                lambda input, state: state.skeleton,
                 lambda state: (
                     state.muscles.length,
                     state.muscles.velocity,
-                    state.muscles.tension,
                 ),
+            ),
+            "muscle_tension": (
+                lambda self: self.muscle_model,
+                lambda input, state: state.muscles,
+                lambda state: state.muscles.tension,
             ),
             "muscle_torques": (
                 lambda self: self.muscle_torques,
@@ -199,11 +208,11 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def dynamics_spec(self):
         return dict({
-            # "muscle_activation": (
-            #     self.activator,  # vector field
-            #     lambda input, state: input,  # system input
-            #     lambda state: state.muscles.activation,  # system state
-            # ),
+            "muscle_activation": (
+                self.activator,  # vector field
+                lambda input, state: input,  # system input
+                lambda state: state.muscles.activation,  # system state
+            ),
             "skeleton": (
                 self.skeleton,
                 lambda input, state: state.skeleton.torque,
@@ -211,19 +220,18 @@ class MuscledArm(AbstractPlant):
             ),
         })
     
-    def muscle_update(
+    def muscle_geometry(
         self, 
-        input: Tuple[Array, AbstractSkeletonState], 
+        input: AbstractSkeletonState, 
         state, 
         *, 
         key=None
     ):
-        muscle_input, skeleton_state = input
+        skeleton_state = input
         length = self._muscle_length(skeleton_state.theta)
         velocity = self._muscle_velocity(skeleton_state.d_theta)
-        tension = self.muscle_model(length, velocity, muscle_input)
         
-        return (length, velocity, tension)
+        return (length, velocity)
 
     def _muscle_length(self, theta):
         moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
@@ -258,3 +266,10 @@ class MuscledArm(AbstractPlant):
     @property
     def input_size(self):
         return self.n_muscles
+    
+    @property 
+    def bounds(self) -> PyTree[StateBounds]:
+        return PlantState(
+            skeleton=self.skeleton.bounds,
+            muscles=self.muscle_model.bounds,
+        )

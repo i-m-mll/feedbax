@@ -315,6 +315,13 @@ def padded_bounds(x, p=0.2):
 #                             for p, s in jax.tree_util.tree_leaves_with_path(state)]))
 
 
+def tree_pformat_indent(tree: PyTree, indent: int = 4, **kwargs) -> str:
+    """Pretty format a PyTree, but indent all lines with `indent` spaces."""
+    indent_str = " " * indent
+    pformat_str = eqx.tree_pformat(tree, **kwargs)
+    return indent_str + pformat_str.replace("\n", "\n{indent_str}")
+
+
 def unzip2(
     xys: Iterable[Tuple[T1, T2]]
 ) -> Tuple[Tuple[T1, ...], Tuple[T2, ...]]:

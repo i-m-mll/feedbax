@@ -10,7 +10,7 @@ TODO:
 import io
 from itertools import zip_longest
 import logging 
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def plot_2D_joint_positions(
-        xy, 
+        xy: Float[Array, "time links ndim=2"], 
         t0t1=(0, 1),  # (t0, t1)
         cmap: str = "viridis",
         length_unit=None, 
@@ -60,7 +60,7 @@ def plot_2D_joint_positions(
         ax = fig.add_subplot()
 
     if add_root:
-        xy = np.pad(xy, ((0,0), (0,0), (1,0)))
+        xy = np.pad(xy, ((0, 0), (1, 0), (0, 0)))
 
     cmap_func = plt.get_cmap(cmap)
     cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
@@ -71,15 +71,15 @@ def plot_2D_joint_positions(
         idx = len(xy) // i - 1
         c = cmap(idx / len(xy))
         # segment lines
-        ax.plot(*xy[idx, :], c=c, lw=lw_arm, ms=0)
+        ax.plot(*xy[idx, :].T, c=c, lw=lw_arm, ms=0)
         # mobile joints
-        ax.plot(*xy[idx, :, 1:], c=c, lw=0, marker='o', ms=5)
+        ax.plot(*xy[idx, 1:].T, c=c, lw=0, marker='o', ms=5)
         # root joint
-        ax.plot(*xy[idx, :, 0], c=c, lw=lw_arm, marker='s', ms=7)
+        ax.plot(*xy[idx, 0].T, c=c, lw=lw_arm, marker='s', ms=7)
 
     # full joint traces along trajectory
-    for j in range(xy.shape[2]):
-        ax.scatter(*xy[..., j].T, 
+    for j in range(xy.shape[1]):
+        ax.scatter(*xy[:, j].T, 
                    marker='.', s=ms_trace, linewidth=0, c=cmap.colors)
 
     if workspace is not None:
@@ -187,6 +187,7 @@ def plot_planes(
 
 def plot_pos_vel_force_2D(
     states: PyTree[Float[Array, "batch time ..."]],
+    leaf_func: Optional[Callable] = None,
     endpoints: Optional[Tuple[Float[Array, "batch xy"],
                               Float[Array, "batch xy"]]] = None, 
     straight_guides: bool = False,
@@ -204,9 +205,15 @@ def plot_pos_vel_force_2D(
     - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
     - First dim is batch, second dim is time step.
     """
-    positions = states.mechanics.effector.pos
-    velocities = states.mechanics.effector.vel
-    controls = states.network.output 
+    if leaf_func is None:
+        positions, velocities, controls = (
+            states.mechanics.effector.pos, 
+            states.mechanics.effector.vel,
+            states.network.output,
+        )
+    else:
+        positions, velocities, controls = leaf_func(states)
+        
     if endpoints is not None:
         endpoints = jnp.asarray(endpoints)
     

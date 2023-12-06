@@ -28,9 +28,9 @@ N_DIM = 2
 
 
 class TwoLinkState(AbstractSkeletonState):
-    theta: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
-    d_theta: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
-    torque: Float[Array, "... ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    theta: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    d_theta: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    torque: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
             
 
 class TwoLink(AbstractSkeleton[TwoLinkState]):
@@ -273,8 +273,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
                 d_theta=None,
                 torque=None,
             ),
-        )
-    
+        )   
     
 def twolink_workspace_test(workspace: Float[Array, "bounds=2 xy=2"], twolink: TwoLink):
     """Tests whether a rectangular workspace is reachable by the two-link arm."""

@@ -19,7 +19,7 @@
 # %%
 LOG_LEVEL = "DEBUG"
 NB_PREFIX = "nb10"
-DEBUG = False
+DEBUG = True
 ENABLE_X64 = False
 N_DIM = 2  # TODO: not here
 
@@ -113,7 +113,7 @@ def get_model(
     feedback_delay: int = 0, 
     tau: float = 0.01, 
     out_nonlinearity=jax.nn.sigmoid,
-    clip_states=False,
+    clip_states=True,
     key: Optional[jr.PRNGKeyArray] = None,
 ):
     if key is None:
@@ -166,11 +166,11 @@ def get_model(
 seed = 5566
 
 n_steps = 50
-dt = 0.005
+dt = 0.05
 feedback_delay_steps = 0
 workspace = ((-0.15, 0.20), 
              (0.15, 0.50))
-hidden_size  = 50
+hidden_size = 50
 learning_rate = 0.05
 
 loss_term_weights = dict(
@@ -234,7 +234,7 @@ def setup(
         hidden_size=hidden_size,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
-        tau=0.01,
+        tau=0.5,
         out_nonlinearity=jax.nn.sigmoid,
         key=key, 
     )

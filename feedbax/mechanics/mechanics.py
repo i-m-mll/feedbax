@@ -80,7 +80,7 @@ class Mechanics(AbstractModel[MechanicsState]):
         return OrderedDict({
             "convert_effector_force": (
                 lambda self: self.plant.skeleton.update_state_given_effector_force,
-                lambda _, state: state.effector.force,
+                lambda input, state: state.effector.force,
                 lambda state: state.plant.skeleton,
             ),
             "plant_update": (  # dependent (non-ODE) updates specified by the plant
@@ -90,18 +90,18 @@ class Mechanics(AbstractModel[MechanicsState]):
             ),
             "solver_step": (
                 lambda self: self._solver_step,
-                lambda input, _: input,
+                lambda input, state: input,
                 lambda state: (state.plant, state.solver),
             ),
             "clip_states": (
                 lambda self: self._get_clipped_states,
-                lambda *_: None,
+                lambda input, state: None,
                 lambda state: state.plant,
             ),
             "get_effector": (
                 lambda self: \
-                    lambda input, _, key=None: self.plant.skeleton.effector(input),
-                lambda _, state: state.plant.skeleton,
+                    lambda input, state, key=None: self.plant.skeleton.effector(input),
+                lambda input, state: state.plant.skeleton,
                 lambda state: state.effector,
             )
         })
@@ -133,9 +133,14 @@ class Mechanics(AbstractModel[MechanicsState]):
         return (plant_state, solver_state)
     
     def _get_clipped_states(self, input, state, *, key: Optional[jax.Array] = None):
-        # TODO: This gets passed `mechanics_state.plant`. Maybe move it into `AbstractPlant`.
         if self.clip_states:
-            return clip_state(state, self.plant.bounds)
+            return jax.tree_map(
+                clip_state, 
+                self.plant.bounds, 
+                state, 
+                is_leaf=lambda x: isinstance(x, StateBounds)
+            )
+            #return clip_state(state, self.plant.bounds)
         else: 
             return state
     
@@ -151,7 +156,6 @@ class Mechanics(AbstractModel[MechanicsState]):
         self, 
         plant=None,
         effector: CartesianState2D = None,
-        # solver=None,
         key=None,
     ):
         """Returns an initial state for use with the `Mechanics` module.
@@ -209,8 +213,8 @@ StateT = TypeVar("StateT", bound=AbstractState)
   
         
 def clip_state(
-    state: StateT, 
     bounds: StateBounds[StateT],
+    state: StateT, 
 ) -> StateT:
     """Constrain a state to the given bounds.
     
@@ -219,6 +223,7 @@ def clip_state(
       especially since it might require we make a bizarre
       `StateBounds[Callable]` for the operations...
     """
+    
     if bounds.low is not None:
         state = _clip_state_to_bound(
             state, bounds.low, bounds.filter_spec.low, jnp.greater
