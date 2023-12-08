@@ -38,6 +38,9 @@ if TYPE_CHECKING:
     from torch.utils.tensorboard import SummaryWriter
 
 
+LOSS_FMT = ".2e"
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -358,10 +361,10 @@ class TaskTrainer(eqx.Module):
                 if not disable_tqdm:
                     tqdm.write(f"\nTraining iteration: {batch}", file=sys.stdout)
                     tqdm.write(f"\t{ensembled_str}training loss: "
-                               + f"{losses_mean.total:.4f}".capitalize(), 
+                               + f"{losses_mean.total:{LOSS_FMT}}".capitalize(), 
                                file=sys.stdout)
                     tqdm.write(f"\t{ensembled_str}validation loss: "
-                               + f"{losses_val_mean.total:.4f}".capitalize(), 
+                               + f"{losses_val_mean.total:{LOSS_FMT}}".capitalize(), 
                                file=sys.stdout)
                     # if learning_rate is not None:                    
                     #     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)

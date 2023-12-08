@@ -8,7 +8,7 @@ from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
 from functools import cached_property
 import logging
-from typing import Dict, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, Dict, Optional, Sequence, Tuple, TypeVar, Union
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -22,7 +22,7 @@ from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton
 
 from feedbax.model import AbstractModel, AbstractModelState
-from feedbax.state import StateBounds
+from feedbax.state import StateBounds, clip_state
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,15 @@ class AbstractPlant(AbstractModel[PlantState]):
         
 
 class SimplePlant(AbstractPlant):
+    """A skeleton that is controlled by direct forces or torques.
+    
+    This is essentially a wrapper for `AbstractSkeleton`, to make sure a
+    skeleton conforms with the interface expected by `Mechanics`. 
+    
+    TODO:
+    - State clipping
+    """
+    
     skeleton: AbstractSkeleton 
     
     intervenors: Dict[str, AbstractIntervenor]
@@ -137,7 +146,7 @@ class MuscledArm(AbstractPlant):
     skeleton: AbstractSkeleton 
     muscle_model: AbstractMuscle
     activator: eqx.Module
-    
+    clip_states: bool
     n_muscles: int
     moment_arms: Float[Array, "links=2 muscles"]
     theta0: Float[Array, "links=2 muscles"] 
@@ -151,6 +160,7 @@ class MuscledArm(AbstractPlant):
         muscle_model, 
         activator,
         skeleton=TwoLink(), 
+        clip_states: bool = True,
         moment_arms=jnp.array(((2.0, -2.0, 0.0, 0.0, 1.50, -2.0),  # [cm]
                                (0.0, 0.0, 2.0, -2.0, 2.0, -1.50))),
         theta0=2 * jnp.pi * jnp.array(((15.0, 4.88, 0.0, 0.0, 4.5, 2.12), # [rad]
@@ -166,6 +176,7 @@ class MuscledArm(AbstractPlant):
         self.skeleton = skeleton
         self.muscle_model = muscle_model
         self.activator = activator
+        self.clip_states = clip_states
         
         if not theta0.shape[1] == l0.shape[0] == moment_arms.shape[1]:
             raise ValueError(
@@ -184,13 +195,24 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def model_spec(self):
         return OrderedDict({
+            "clip_skeleton": (
+                lambda self: self._clip_state,
+                lambda input, state: self.bounds.skeleton,
+                lambda state: state.skeleton,
+            ),
             "muscle_geometry": (
-                lambda self: self.muscle_geometry,
+                lambda self: self._muscle_geometry,
                 lambda input, state: state.skeleton,
                 lambda state: (
                     state.muscles.length,
                     state.muscles.velocity,
                 ),
+            ),
+            "clip_muscle_state": (
+                # Activation shouldn't be below 0, and length has an UB.
+                lambda self: self._clip_state,
+                lambda input, state: self.bounds.muscles,
+                lambda state: state.muscles,
             ),
             "muscle_tension": (
                 lambda self: self.muscle_model,
@@ -198,15 +220,25 @@ class MuscledArm(AbstractPlant):
                 lambda state: state.muscles.tension,
             ),
             "muscle_torques": (
-                lambda self: self.muscle_torques,
+                lambda self: self._muscle_torques,
                 lambda input, state: state.muscles,
                 lambda state: state.skeleton.torque,
             ),
         })
+    
+    
+    def _clip_state(self, input, state, *, key: Optional[Array] = None):
+        if self.clip_states:
+            state = clip_state(input, state)
+        else:
+            return state
 
     
     @cached_property
-    def dynamics_spec(self):
+    def dynamics_spec(
+        self
+    ) -> Dict[str, Tuple[eqx.Module, Callable, Callable]]:
+        
         return dict({
             "muscle_activation": (
                 self.activator,  # vector field
@@ -220,35 +252,35 @@ class MuscledArm(AbstractPlant):
             ),
         })
     
-    def muscle_geometry(
+    def _muscle_geometry(
         self, 
         input: AbstractSkeletonState, 
-        state, 
+        state: Tuple[Array, Array], 
         *, 
         key=None
     ):
         skeleton_state = input
-        length = self._muscle_length(skeleton_state.theta)
-        velocity = self._muscle_velocity(skeleton_state.d_theta)
+        length = self._muscle_length(skeleton_state.angle)
+        velocity = self._muscle_velocity(skeleton_state.d_angle)
         
         return (length, velocity)
 
-    def _muscle_length(self, theta):
+    def _muscle_length(self, angle: Array) -> Array:
         moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
-        l = 1 + (moment_arms[0] * (theta0[0] - theta[0]) + moment_arms[1] * (theta0[1] - theta[1])) / l0
+        l = 1 + (moment_arms[0] * (theta0[0] - angle[0]) + moment_arms[1] * (theta0[1] - angle[1])) / l0
         return l
     
-    def _muscle_velocity(self, d_theta):
+    def _muscle_velocity(self, d_angle: Array) -> Array:
         moment_arms, l0 = self.moment_arms, self.l0
-        v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
+        v = (moment_arms[0] * d_angle[0] + moment_arms[1] * d_angle[1]) / l0
         return v
 
-    def muscle_torques(self, input, state, *, key=None):
+    def _muscle_torques(self, input, state, *, key=None) -> Array:
         torque = self.moment_arms @ (self.f0 * input.tension)
         return torque
         
     @property
-    def memory_spec(self):
+    def memory_spec(self) -> PlantState:
         return PlantState(
             skeleton=True,
             muscles=True,
@@ -264,7 +296,7 @@ class MuscledArm(AbstractPlant):
         )
     
     @property
-    def input_size(self):
+    def input_size(self) -> int:
         return self.n_muscles
     
     @property 

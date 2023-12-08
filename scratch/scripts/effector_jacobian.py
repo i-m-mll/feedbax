@@ -22,49 +22,49 @@ from feedbax.mechanics.skeleton.arm import TwoLink, TwoLinkState
 
 # %%
 arm = TwoLink()
-theta = jnp.array([0.1, 0.2])
+angle = jnp.array([0.1, 0.2])
 
 
 # %% [markdown]
 # Compare the exact effector Jacobian with the Jacobian computed by JAX from the forward kinematics of the arm
 
 # %%
-def effector_jac_exact(theta):
+def effector_jac_exact(angle):
     J = jnp.array([
-        [-arm.l[0] * jnp.sin(theta[0]) - arm.l[1] * jnp.sin(theta[0] + theta[1]), -arm.l[1] * jnp.sin(theta[0] + theta[1])],
-        [arm.l[0] * jnp.cos(theta[0]) + arm.l[1] * jnp.cos(theta[0] + theta[1]), arm.l[1] * jnp.cos(theta[0] + theta[1])]
+        [-arm.l[0] * jnp.sin(angle[0]) - arm.l[1] * jnp.sin(angle[0] + angle[1]), -arm.l[1] * jnp.sin(angle[0] + angle[1])],
+        [arm.l[0] * jnp.cos(angle[0]) + arm.l[1] * jnp.cos(angle[0] + angle[1]), arm.l[1] * jnp.cos(angle[0] + angle[1])]
     ])
     return J
 
 
 # %%
-effector_jac_exact(theta)
+effector_jac_exact(angle)
 
 
 # %%
-# %timeit effector_jac_exact(theta)
+# %timeit effector_jac_exact(angle)
 
 # %%
-def forward_kin_wrapped(theta):
-    state = TwoLinkState(theta=theta, d_theta=jnp.zeros(2))
+def forward_kin_wrapped(angle):
+    state = TwoLinkState(angle=angle, d_angle=jnp.zeros(2))
     return arm.forward_kinematics(state).pos 
 
 
 # %%
 # compilation time
-# %time jax.jacfwd(forward_kin_wrapped)(theta)[-1]
+# %time jax.jacfwd(forward_kin_wrapped)(angle)[-1]
 
 # %%
-jax.jacfwd(forward_kin_wrapped)(theta)[-1]
+jax.jacfwd(forward_kin_wrapped)(angle)[-1]
 
 # %%
 jnp.allclose(
-    effector_jac_exact(theta),
-    jax.jacfwd(forward_kin_wrapped)(theta)[-1],
+    effector_jac_exact(angle),
+    jax.jacfwd(forward_kin_wrapped)(angle)[-1],
 )
 
 # %%
-# %timeit jax.jacfwd(forward_kin_wrapped)(theta)[-1]
+# %timeit jax.jacfwd(forward_kin_wrapped)(angle)[-1]
 
 # %% [markdown]
 # So the JAX `jacfwd` is, aside from compilation time, about 50% slower than the exact Jacobian. 
@@ -74,21 +74,21 @@ jnp.allclose(
 # I'm not sure how to interpret the first row...
 
 # %%
-jax.jacfwd(forward_kin_wrapped)(theta)
+jax.jacfwd(forward_kin_wrapped)(angle)
 
 # %%
-theta.shape
+angle.shape
 
 # %%
-forward_kin_wrapped(theta).shape
+forward_kin_wrapped(angle).shape
 
 
 # %% [markdown]
 # Separate out the relevant part of `arm.forward_kinematics` and repeat
 
 # %%
-def forward_kin(theta):
-    angle_sum = jnp.cumsum(theta)  # links
+def forward_kin(angle):
+    angle_sum = jnp.cumsum(angle)  # links
     length_components = arm.l * jnp.array([jnp.cos(angle_sum),
                                            jnp.sin(angle_sum)])  # xy, links
     xy_position = jnp.cumsum(length_components, axis=1)  # xy, links
@@ -97,11 +97,11 @@ def forward_kin(theta):
 
 
 # %%
-jax.jacfwd(forward_kin)(theta)[-1]
+jax.jacfwd(forward_kin)(angle)[-1]
 
 # %%
-# %timeit effector_jac_exact(theta)
-# %timeit jax.jacfwd(forward_kin)(theta)[-1]
+# %timeit effector_jac_exact(angle)
+# %timeit jax.jacfwd(forward_kin)(angle)[-1]
 
 # %% [markdown]
 # Now it's only slightly worse.
@@ -134,7 +134,7 @@ effector_jac_jax2 = lambda x: jax.jacfwd(forward_kin)(x)[-1]
 # I added the appropriate methods to `TwoLink`, so let's try them out
 
 # %%
-arm._effector_jac(theta)
+arm._effector_jac(angle)
 
 # %% [markdown]
 #

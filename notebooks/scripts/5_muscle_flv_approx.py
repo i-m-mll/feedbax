@@ -65,12 +65,12 @@ class MuscleGroup:  # TODO rename
 # %% [markdown]
 # $\mathbf{f}_{flv}$ depends on $l$ and $\dot{l}$. 
 #
-# At each step of a biomechanical simulation, we typically have access to joint angles ($\theta$ or `theta`) and angular velocities ($\dot\theta$ or `dtheta`), so we define functions for $l(\theta)$ and $\dot l(\dot\theta)$:
+# At each step of a biomechanical simulation, we typically have access to joint angles ($\angle$ or `angle`) and angular velocities ($\dot\angle$ or `dtheta`), so we define functions for $l(\angle)$ and $\dot l(\dot\angle)$:
 
 # %%
-def muscle_l(theta, muscles):
+def muscle_l(angle, muscles):
     M, theta0, l0 = muscles.M, muscles.theta0, muscles.l0
-    l = 1 + (M[0] * (theta0[0] - theta[0]) + M[1] * (theta0[1] - theta[1])) / l0
+    l = 1 + (M[0] * (theta0[0] - angle[0]) + M[1] * (theta0[1] - angle[1])) / l0
     return l
 
 def muscle_v(dtheta, muscles):
@@ -83,9 +83,9 @@ def muscle_v(dtheta, muscles):
 # %%
 # a little test
 muscles = MuscleGroup()
-theta = jnp.array((45, 90))
+angle = jnp.array((45, 90))
 
-muscle_l(theta, muscles)
+muscle_l(angle, muscles)
 
 # %% [markdown]
 # Now we define the FLV functions themselves, which depend only on $l$ and $\dot l$ (`l` and `v`).
@@ -116,9 +116,9 @@ def tension_from_lv_ls2013(l, v):
     flv = f_l * f_fv
     return flv
 
-def tension_ls2013(theta, dtheta):
+def tension_ls2013(angle, dtheta):
     """Simple helper to take joint configuration as input."""
-    l = muscle_l(theta)
+    l = muscle_l(angle)
     v = muscle_v(dtheta)
     return tension_from_lv_ls2013(l, v)
 
@@ -158,9 +158,9 @@ def tension_from_lv_lt2004(l, v, a=1):
     tension = A_f * (f_l * f_fv + f_p)
     return tension
 
-def tension_lt2004(theta, dtheta):
+def tension_lt2004(angle, dtheta):
     """Simple helper to take joint configuration as input."""
-    l = muscle_l(theta)
+    l = muscle_l(angle)
     v = muscle_v(dtheta)
     return tension_from_lv_lt2004(l, v)
 

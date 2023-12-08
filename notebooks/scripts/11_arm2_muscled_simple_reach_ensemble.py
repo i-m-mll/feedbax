@@ -119,8 +119,8 @@ def get_model(
     mechanics = Mechanics(system, dt)
     
     feedback_leaves_func = lambda mechanics_state: (
-        mechanics_state.system.theta,
-        mechanics_state.system.d_theta,
+        mechanics_state.system.angle,
+        mechanics_state.system.d_angle,
         mechanics_state.effector,         
     )
     

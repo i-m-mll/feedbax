@@ -67,21 +67,21 @@ class TwoLink_:
 
 
 class State(eqx.Module):
-    theta: Float[Array, "2"]
-    d_theta: Float[Array, "2"]
+    angle: Float[Array, "2"]
+    d_angle: Float[Array, "2"]
 
 
 def twolink_field(twolink):
     def field(t, state, args):
-        theta, dtheta = state.theta, state.d_theta 
+        angle, dtheta = state.angle, state.d_angle 
         
         # centripetal and coriolis forces 
         c_vec = jnp.array((
             -dtheta[1] * (2 * dtheta[0] + dtheta[1]),
             dtheta[0] ** 2
-        )) * twolink.a2 * jnp.sin(theta[1])  
+        )) * twolink.a2 * jnp.sin(angle[1])  
         
-        cs1 = jnp.cos(theta[1])
+        cs1 = jnp.cos(angle[1])
         tmp = twolink.a3 + twolink.a2 * cs1
         inertia_mat = jnp.array(((twolink.a1 + 2 * twolink.a2 * cs1, tmp),
                                  (tmp, twolink.a3 * jnp.ones_like(cs1))))
@@ -126,8 +126,8 @@ dt0 = 0.01
 n_steps = int((t1 - t0) / dt0)
 n_save_steps = n_steps
 y0 = TwoLinkState(
-    theta=jnp.array([np.pi / 5, np.pi / 3]), 
-    d_theta=jnp.array([0., 0.]),
+    angle=jnp.array([np.pi / 5, np.pi / 3]), 
+    d_angle=jnp.array([0., 0.]),
 )
 args = input_torque = jnp.array([0.1, 0.])
 
@@ -175,8 +175,8 @@ n_steps = int((t1 - t0) / dt0)
 n_save_steps = n_steps
 y0 = PlantState(
     skeleton=TwoLinkState(
-        theta=jnp.array([np.pi / 5, np.pi / 3]), 
-        d_theta=jnp.array([0., 0.]),
+        angle=jnp.array([np.pi / 5, np.pi / 3]), 
+        d_angle=jnp.array([0., 0.]),
     ),
 )
 args = input_torque = jnp.array([0.1, 0.])

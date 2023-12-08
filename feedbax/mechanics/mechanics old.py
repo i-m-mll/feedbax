@@ -292,8 +292,8 @@ class MuscledMechanics(AbstractModel[MechanicsState]):
     
     def muscle_update(self, input, state, *, key=None):
         muscle_input, system_state = input
-        length = self._muscle_length(system_state.theta)
-        velocity = self._muscle_velocity(system_state.d_theta)
+        length = self._muscle_length(system_state.angle)
+        velocity = self._muscle_velocity(system_state.d_angle)
         tension = self.muscle_model(length, velocity, muscle_input)
         
         return eqx.tree_at(

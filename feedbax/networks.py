@@ -90,7 +90,7 @@ class NetworkState(AbstractModelState):
     TODO:
     - Rename to `RNNCellState`.
     """
-    activity: PyTree[Float[Array, "unit"]]
+    hidden: PyTree[Float[Array, "unit"]]
     output: Optional[PyTree]
     encoding: Optional[PyTree]
 
@@ -150,7 +150,12 @@ class RNNCell(AbstractModel[NetworkState]):
         self.hidden_size = self.cell.hidden_size
         
         if out_size is not None:
-            self.readout = readout_type(hidden_size, out_size, use_bias=True, key=key3)
+            readout = readout_type(hidden_size, out_size, use_bias=True, key=key3)
+            self.readout = eqx.tree_at(
+                lambda layer: layer.bias,
+                readout,
+                jnp.zeros_like(readout.bias),
+            )
             self.out_nonlinearity = out_nonlinearity  
             self.out_size = out_size
         else:
@@ -158,8 +163,8 @@ class RNNCell(AbstractModel[NetworkState]):
 
         self.intervenors = self._get_intervenors_dict(intervenors)
     
-    def _output(self, activity, state, *, key):
-        return self.out_nonlinearity(self.readout(activity))
+    def _output(self, hidden, state, *, key):
+        return self.out_nonlinearity(self.readout(hidden))
         
     def _encode(self, input, state, *, key):
         return self.encoder(input)
@@ -178,10 +183,16 @@ class RNNCell(AbstractModel[NetworkState]):
                     lambda input, _: ravel_pytree(input)[0],
                     lambda state: state.encoding,
                 ),
+                # 'tmp_zero_hidden': (
+                #     lambda self: \
+                #         lambda input, state, key=None: self.init(output=state.output, encoding=state.encoding),
+                #     lambda input, state: None,
+                #     lambda state: state,
+                # ),
                 'cell': (
                     lambda self: self.cell,
                     lambda input, state: state.encoding,
-                    lambda state: state.activity,
+                    lambda state: state.hidden,
                 ),
             })
         else:
@@ -189,15 +200,15 @@ class RNNCell(AbstractModel[NetworkState]):
                 'cell': (
                     lambda self: self.cell,
                     lambda input, _: ravel_pytree(input)[0],
-                    lambda state: state.activity,
+                    lambda state: state.hidden,
                 ),
             })
         
         spec |= {
             'cell_noise': (
                 lambda self: self._add_state_noise,
-                lambda _, state: state.activity,
-                lambda state: state.activity,
+                lambda _, state: state.hidden,
+                lambda state: state.hidden,
             ),
         }
         
@@ -205,7 +216,7 @@ class RNNCell(AbstractModel[NetworkState]):
             spec |= {
                 'readout': (
                     lambda self: self._output,
-                    lambda _, state: state.activity,
+                    lambda _, state: state.hidden,
                     lambda state: state.output,
                 )
             }
@@ -216,16 +227,16 @@ class RNNCell(AbstractModel[NetworkState]):
     @property
     def memory_spec(self):
         return NetworkState(
-            activity=True,
+            hidden=True,
             output=True,
             encoding=True,
         )        
     
-    def init(self, activity=None, output=None, encoding=None):
-        if activity is None:
-            activity = jnp.zeros(self.cell.hidden_size)
+    def init(self, hidden=None, output=None, encoding=None):
+        if hidden is None:
+            hidden = jnp.zeros(self.cell.hidden_size)
         else:
-            activity = jnp.array(activity)
+            hidden = jnp.array(hidden)
             
         if self.readout is not None:
             if output is None:
@@ -239,7 +250,7 @@ class RNNCell(AbstractModel[NetworkState]):
             else:
                 encoding = jnp.array(encoding)
         
-        return NetworkState(activity, output, encoding)
+        return NetworkState(hidden, output, encoding)
 
 
 

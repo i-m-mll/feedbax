@@ -11,7 +11,7 @@ TODO:
 from collections import OrderedDict
 from functools import cached_property
 import logging
-from typing import Callable, Dict, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, Dict, Optional, Sequence, Tuple, Type, TypeVar, Union
 
 import diffrax as dfx
 import equinox as eqx
@@ -26,7 +26,7 @@ from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import AbstractModel, AbstractModelState
-from feedbax.state import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import CartesianState2D, StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,6 @@ class Mechanics(AbstractModel[MechanicsState]):
     plant: AbstractPlant 
     dt: float 
     solver: dfx.AbstractSolver
-    clip_states: bool
     
     intervenors: Dict[str, AbstractIntervenor] 
     
@@ -61,8 +60,7 @@ class Mechanics(AbstractModel[MechanicsState]):
         self, 
         plant: AbstractPlant,
         dt: float, 
-        solver=dfx.Euler, 
-        clip_states=True,
+        solver_type: Type[dfx.AbstractSolver] = dfx.Euler, 
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Dict[str, Sequence[AbstractIntervenor]]]] \
             = None,
@@ -70,9 +68,8 @@ class Mechanics(AbstractModel[MechanicsState]):
         key: Optional[jax.Array] = None,
     ):
         self.plant = plant
-        self.solver = solver()
+        self.solver = solver_type()
         self.dt = dt        
-        self.clip_states = clip_states
         self.intervenors = self._get_intervenors_dict(intervenors)         
     
     @property
@@ -83,24 +80,21 @@ class Mechanics(AbstractModel[MechanicsState]):
                 lambda input, state: state.effector.force,
                 lambda state: state.plant.skeleton,
             ),
-            "plant_update": (  # dependent (non-ODE) updates specified by the plant
+            "statics_step": (  
+                # the `plant` module directly implements non-ODE operations 
                 lambda self: self.plant,
                 lambda input, state: input,
                 lambda state: state.plant,
             ),
-            "solver_step": (
-                lambda self: self._solver_step,
+            "dynamics_step": (
+                lambda self: self._dynamics_step,
                 lambda input, state: input,
                 lambda state: (state.plant, state.solver),
             ),
-            "clip_states": (
-                lambda self: self._get_clipped_states,
-                lambda input, state: None,
-                lambda state: state.plant,
-            ),
             "get_effector": (
                 lambda self: \
-                    lambda input, state, key=None: self.plant.skeleton.effector(input),
+                    lambda input, state, key=None: \
+                        self.plant.skeleton.effector(input),
                 lambda input, state: state.plant.skeleton,
                 lambda state: state.effector,
             )
@@ -111,7 +105,7 @@ class Mechanics(AbstractModel[MechanicsState]):
         """The total vector field for the plant"""
         return dfx.ODETerm(self.plant.vector_field) 
     
-    def _solver_step(
+    def _dynamics_step(
         self, 
         input, 
         state: Tuple[PlantState, PyTree],
@@ -131,18 +125,6 @@ class Mechanics(AbstractModel[MechanicsState]):
         )
         
         return (plant_state, solver_state)
-    
-    def _get_clipped_states(self, input, state, *, key: Optional[jax.Array] = None):
-        if self.clip_states:
-            return jax.tree_map(
-                clip_state, 
-                self.plant.bounds, 
-                state, 
-                is_leaf=lambda x: isinstance(x, StateBounds)
-            )
-            #return clip_state(state, self.plant.bounds)
-        else: 
-            return state
     
     @property 
     def memory_spec(self):
@@ -209,48 +191,3 @@ class Mechanics(AbstractModel[MechanicsState]):
         ...
       
 
-StateT = TypeVar("StateT", bound=AbstractState)
-  
-        
-def clip_state(
-    bounds: StateBounds[StateT],
-    state: StateT, 
-) -> StateT:
-    """Constrain a state to the given bounds.
-    
-    TODO: 
-    - Maybe we can `tree_map` this, but I'm not sure it matters,
-      especially since it might require we make a bizarre
-      `StateBounds[Callable]` for the operations...
-    """
-    
-    if bounds.low is not None:
-        state = _clip_state_to_bound(
-            state, bounds.low, bounds.filter_spec.low, jnp.greater
-        )
-    if bounds.high is not None:
-        state = _clip_state_to_bound(
-            state, bounds.high, bounds.filter_spec.high, jnp.less
-        )
-    return state
-
-
-def _clip_state_to_bound(
-    state: StateT, 
-    bound: StateT,
-    filter_spec: PyTree[bool],
-    op: Callable,
-) -> StateT:
-    """A single (one-sided) clipping operation."""
-    states_to_clip, states_other = eqx.partition(
-        state,
-        filter_spec,
-    )    
-    
-    states_clipped = jax.tree_map(
-        lambda x, y: jnp.where(op(x, y), x, y),
-        states_to_clip,
-        bound,
-    )
-    
-    return eqx.combine(states_other, states_clipped)

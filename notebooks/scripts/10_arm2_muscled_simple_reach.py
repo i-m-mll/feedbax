@@ -124,8 +124,8 @@ def get_model(
     # this time we need to specifically request joint angles
     # and angular velocities, and not muscle activations
     feedback_leaves_func = lambda mechanics_state: (
-        mechanics_state.system.theta,
-        mechanics_state.system.d_theta,
+        mechanics_state.system.angle,
+        mechanics_state.system.d_angle,
         mechanics_state.effector.pos,
         mechanics_state.effector.vel,        
     )

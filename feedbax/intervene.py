@@ -238,10 +238,10 @@ class NetworkConstantInputPerturbation(AbstractAdditiveIntervenor["NetworkState"
     label: str = "network_input_perturbation"
     
     def _in(self, tree: "NetworkState"):
-        return tree.activity
+        return tree.hidden
     
     def _out(self, tree: "NetworkState"):
-        return tree.activity
+        return tree.hidden
     
     def __init__(self, unit_spec: PyTree):
         self.unit_spec = jax.tree_map(jnp.nan_to_num, unit_spec)
@@ -258,7 +258,7 @@ class NetworkClamp(AbstractClampIntervenor["NetworkState"]):
     Originally this was intended to modify an arbitrary PyTree of network 
     states, which is why we use `tree_map` to replace parts of `network_state`
     with parts of `unit_spec`. However, currently it is only used to modify
-    `NetworkState.activity`, which is a single JAX array. Thus `unit_spec`
+    `NetworkState.hidden`, which is a single JAX array. Thus `unit_spec`
     should also be a single JAX array.
 
     Args:
@@ -271,10 +271,10 @@ class NetworkClamp(AbstractClampIntervenor["NetworkState"]):
     label: str = "network_clamp"
     
     def _in(self, state: "NetworkState"):
-        return state.activity
+        return state.hidden
     
     def _out(self, state: "NetworkState"):
-        return state.activity
+        return state.hidden
     
     def _get_updated_substate(self, network_state: PyTree, *, key: jax.Array):
         """Return a modified network state PyTree."""

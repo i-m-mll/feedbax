@@ -7,6 +7,7 @@ TODO:
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from collections import OrderedDict
 import io
 from itertools import zip_longest
 import logging 
@@ -19,7 +20,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Float, Array, Int, PyTree
 import matplotlib as mpl
-from matplotlib import animation
+from matplotlib import animation, gridspec
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,9 +29,74 @@ import seaborn as sns
 
 from feedbax import utils
 from feedbax.loss import LossDict
+from feedbax.state import CartesianState2D
 
 
 logger = logging.getLogger(__name__)
+
+
+class SeabornFig2Grid: 
+    """Inserts a seaborn plot as a subplot in a matplotlib figure.
+    
+    Certain seaborn plots create entire figures rather than plot on existing
+    axes, which means they cannot be used directly to plot in a subplot grid.
+    This class decomposes a seaborn plot's gridspec and inserts it in the 
+    gridspec of a matplotlib figure.
+    
+    See `plot_endpoint_dists` for an example.
+        
+    From a stackoverflow answer by Luca Clissa:  https://stackoverflow.com/a/70666592
+    """
+    def __init__(self, seaborngrid, fig, subplot_spec):
+        self.fig = fig
+        self.sg = seaborngrid
+        self.subplot = subplot_spec
+        if isinstance(self.sg, sns.axisgrid.FacetGrid) or \
+            isinstance(self.sg, sns.axisgrid.PairGrid):
+            self._movegrid()
+        elif isinstance(self.sg, sns.axisgrid.JointGrid):
+            self._movejointgrid()
+        self._finalize()
+
+    def _movegrid(self):
+        """Move PairGrid or FacetGrid """
+        self._resize()
+        n = self.sg.axes.shape[0]
+        m = self.sg.axes.shape[1]
+        self.subgrid = gridspec.GridSpecFromSubplotSpec(n, m, subplot_spec=self.subplot)
+        for i in range(n):
+            for j in range(m):
+                self._moveaxes(self.sg.axes[i,j], self.subgrid[i,j])
+
+    def _movejointgrid(self):
+        """Move JointGrid"""
+        h = self.sg.ax_joint.get_position().height
+        h2 = self.sg.ax_marg_x.get_position().height
+        r = int(np.round(h/h2))
+        self._resize()
+        self.subgrid = gridspec.GridSpecFromSubplotSpec(r+1, r+1, subplot_spec=self.subplot)
+
+        self._moveaxes(self.sg.ax_joint, self.subgrid[1:, :-1])
+        self._moveaxes(self.sg.ax_marg_x, self.subgrid[0, :-1])
+        self._moveaxes(self.sg.ax_marg_y, self.subgrid[1:, -1])
+
+    def _moveaxes(self, ax, gs):
+        # https://stackoverflow.com/a/46906599/4124317
+        ax.remove()
+        ax.figure = self.fig
+        self.fig.axes.append(ax)
+        self.fig.add_axes(ax)
+        ax._subplotspec = gs
+        ax.set_position(gs.get_position(self.fig))
+        ax.set_subplotspec(gs)
+
+    def _finalize(self):
+        plt.close(self.sg.fig)
+        self.fig.canvas.mpl_connect("resize_event", self._resize)
+        self.fig.canvas.draw()
+
+    def _resize(self, evt=None):
+        self.sg.fig.set_size_inches(self.fig.get_size_inches())
 
 
 def plot_2D_joint_positions(
@@ -382,21 +448,26 @@ def plot_losses(
     training iteration, with an optional second batch dimension, e.g.
     for model replicates. Each term is plotted in a different color,
     with the same color used across the optional batch dimension.
+    
+    Uses 1-indexing for the training iteration, so that the first iteration
+    is visible even when the x-axis is log-scaled.
     """  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
     
-    total = ax.plot(losses.total, 'white', lw=3)
-    
     ax.set_xscale(xscale)
     ax.set_yscale(yscale)
+    
+    xs = 1 + np.arange(len(losses.total))
+        
+    total = ax.plot(xs, losses.total, 'white', lw=3)
     
     all_handles = [total]
     
     for i, loss_term in enumerate(losses.values()):
-        handles = ax.loglog(loss_term, lw=0.75, color=colors[i])
+        handles = ax.plot(xs, loss_term, lw=0.75, color=colors[i])
         all_handles.append(handles)
         
     ax.set_xlabel('Training iteration')
@@ -436,6 +507,63 @@ def plot_mean_losses(
             ax=ax
         )
     return fig, ax
+
+
+def plot_endpoint_pos_with_dists(
+    trial_specs, 
+    s=7,
+    color=None,
+    **kwargs
+):
+    """Plot the start and goal positions along with distributions.
+    
+    TODO:
+    - Give the two joint plots the same axes limits.
+    """
+    if color is None:
+        color = get_high_contrast_neutral_shade() 
+        bbox_fc = dict(white='0.2', black='0.8')[color]
+        bbox_ec = dict(white='0.8', black='0.2')[color]
+    
+    fig = plt.figure(figsize=(10, 5))
+
+    endpoints = OrderedDict({
+        'Start': trial_specs.init['mechanics']['effector'], 
+        'Goal': trial_specs.goal,
+    })
+    
+    endpoint_pos_dfs = jax.tree_map(
+        lambda arr: pd.DataFrame(arr.pos, columns=('x', 'y')),
+        endpoints,
+        is_leaf=lambda x: isinstance(x, CartesianState2D),
+    )
+    
+    gs = gridspec.GridSpec(1, len(endpoint_pos_dfs))
+
+    for i, (label, df) in enumerate(endpoint_pos_dfs.items()):
+        joint_grid = sns.jointplot(
+            data=df, 
+            x='x', 
+            y='y', 
+            color=color,
+            s=s,
+            **kwargs,
+        ) 
+        joint_grid.ax_joint.annotate(
+            label,
+            xy=(-0.2, 1.1), 
+            xycoords='axes fraction',
+            ha='left', 
+            va='center',
+            color=color, 
+            size=16,
+            bbox=dict(boxstyle='round', fc=bbox_fc, ec=bbox_ec, lw=2)
+        )  
+        SeabornFig2Grid(joint_grid, fig, gs[i])   
+
+    gs.tight_layout(fig)
+    
+    return fig, fig.axes
 
 
 def plot_task_and_speed_profiles(
@@ -613,3 +741,16 @@ def fig_to_img_arr(fig, norm=True):
     plt.close(fig)
 
     return img_arr
+
+
+def get_high_contrast_neutral_shade():
+    """Return a high-contrast color depending on the current matplotlib style.
+    
+    Assumes that black will generally be the best choice, except when a dark 
+    theme (i.e. black axes background color) is used.
+    """
+    axes_facecolor = plt.rcParams['axes.facecolor']
+    if axes_facecolor == 'black':
+        return 'white'
+    else:
+        return 'black'

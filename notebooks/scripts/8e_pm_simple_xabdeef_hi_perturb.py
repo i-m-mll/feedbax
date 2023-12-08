@@ -115,7 +115,7 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
-plot_activity_heatmap(states.network.activity[0])
+plot_activity_heatmap(states.network.hidden[0])
 plt.show()
 
 # %%
@@ -123,7 +123,7 @@ seed = 5566
 n_samples = 6
 key = jr.PRNGKey(seed)
 
-plot_activity_sample_units(states.network.activity, n_samples, key=key)
+plot_activity_sample_units(states.network.hidden, n_samples, key=key)
 
 # %% [markdown]
 # Test the response to perturbation.
@@ -163,7 +163,7 @@ plt.show()
 unit = 3
 input_current = 0.5
 
-unit_spec = jnp.full(states.network.activity.shape[-1], jnp.nan)
+unit_spec = jnp.full(states.network.hidden.shape[-1], jnp.nan)
 
 unit_spec = unit_spec.at[unit].set(input_current)
 
@@ -194,7 +194,7 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
-plot_activity_heatmap(states.network.activity[0])
+plot_activity_heatmap(states.network.hidden[0])
 plt.show()
 
 # %%
@@ -202,7 +202,7 @@ seed = 5566
 n_samples = 6
 key = jr.PRNGKey(seed)
 
-plot_activity_sample_units(states.network.activity, n_samples, key=key)
+plot_activity_sample_units(states.network.hidden, n_samples, key=key)
 
 # %% [markdown]
 # Clamp the unit rather than adding the input to its existing activity
@@ -238,6 +238,6 @@ seed = 5566
 n_samples = 6
 key = jr.PRNGKey(seed)
 
-plot_activity_sample_units(states.network.activity, n_samples, key=key)
+plot_activity_sample_units(states.network.hidden, n_samples, key=key)
 
 # %%

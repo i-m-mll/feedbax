@@ -28,8 +28,8 @@ N_DIM = 2
 
 
 class TwoLinkState(AbstractSkeletonState):
-    theta: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
-    d_theta: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    angle: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    d_angle: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
     torque: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
             
 
@@ -63,17 +63,17 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     @jax.named_scope("fbx.TwoLink")
     def __call__(self, t, state, input):
-        theta, d_theta = state.theta, state.d_theta
+        angle, d_angle = state.angle, state.d_angle
         input_torque = input
 
         # centripetal and coriolis torques 
         c_vec = jnp.array((
-            -d_theta[1] * (2 * d_theta[0] + d_theta[1]),
-            d_theta[0] ** 2
-        )) * self._a[1] * jnp.sin(theta[1])  
+            -d_angle[1] * (2 * d_angle[0] + d_angle[1]),
+            d_angle[0] ** 2
+        )) * self._a[1] * jnp.sin(angle[1])  
         
         # inertia matrix that maps torques -> angular accelerations
-        cs1 = jnp.cos(theta[1])
+        cs1 = jnp.cos(angle[1])
         tmp = self._a[2] + self._a[1] * cs1
         inertia_mat = jnp.array(((self._a[0] + 2 * self._a[1] * cs1, tmp),
                                  (tmp, self._a[2] * jnp.ones_like(cs1))))
@@ -85,12 +85,12 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
             state.torque  
             + input_torque 
             - c_vec.T 
-            - jnp.matmul(d_theta, self.B.T)
+            - jnp.matmul(d_angle, self.B.T)
         )
         
-        dd_theta = jnp.linalg.inv(inertia_mat) @ net_torque
+        dd_angle = jnp.linalg.inv(inertia_mat) @ net_torque
         
-        return TwoLinkState(d_theta, dd_theta)
+        return TwoLinkState(d_angle, dd_angle)
     
     def init(
         self, 
@@ -156,17 +156,17 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
         theta1 = np.pi - beta
 
-        theta = jnp.stack([theta0, theta1], axis=-1)
+        angle = jnp.stack([theta0, theta1], axis=-1)
         
-        # TODO: don't calculate Jacobian twice, for `d_theta` and `torque`
-        d_theta = jnp.linalg.inv(self.effector_jac(theta)) @ effector_state.vel
+        # TODO: don't calculate Jacobian twice, for `d_angle` and `torque`
+        d_angle = jnp.linalg.inv(self.effector_jac(angle)) @ effector_state.vel
         
         if effector_state.force is not None:
-            torque = self.effector_force_to_torques(theta, effector_state.force)
+            torque = self.effector_force_to_torques(angle, effector_state.force)
         else:
             torque = None
 
-        return TwoLinkState(theta=theta, d_theta=d_theta, torque=torque)
+        return TwoLinkState(angle=angle, d_angle=d_angle, torque=torque)
     
     def update_state_given_effector_force(
         self, 
@@ -182,7 +182,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         - generalize to force anywhere on arm
         """
         torque = self.effector_force_to_torques(
-            state.theta, 
+            state.angle, 
             effector_force,
         )
         
@@ -194,21 +194,21 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     def effector_force_to_torques(
         self, 
-        theta: jax.Array, 
+        angle: jax.Array, 
         effector_force: jax.Array
     ):
         """Return the torques induced by a force on the effector."""
-        torque = self.effector_jac(theta).T @ effector_force
+        torque = self.effector_jac(angle).T @ effector_force
         return torque
     
-    def effector_jac(self, theta):
+    def effector_jac(self, angle):
         """Jacobian of effector position with respect to joint angles."""
-        jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(theta)
+        jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(angle)
         return jac[-1]
     
-    def _forward_pos(self, theta):
+    def _forward_pos(self, angle):
         """Separated from `forward_kinematics` for use in `effector_jac`."""
-        angle_sum = jnp.cumsum(theta)  # links
+        angle_sum = jnp.cumsum(angle)  # links
         length_components = self.l * jnp.array([jnp.cos(angle_sum),
                                                 jnp.sin(angle_sum)])  # xy, links
         xy_pos = jnp.cumsum(length_components, axis=1)  # xy, links
@@ -230,9 +230,9 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         TODO:
         - Any point to reducing memory by only calculating the last link?
         """
-        xy_pos, length_components = self._forward_pos(state.theta)
+        xy_pos, length_components = self._forward_pos(state.angle)
         
-        ang_vel_sum = jnp.cumsum(state.d_theta)  # links
+        ang_vel_sum = jnp.cumsum(state.d_angle)  # links
         xy_vel = jnp.cumsum(SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] 
                             * ang_vel_sum,
                             axis=1).T  # xy, links
@@ -264,13 +264,13 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         """
         return StateBounds(
             low=TwoLinkState(
-                theta=jnp.array([0., 0.]),
-                d_theta=None,
+                angle=jnp.array([0., 0.]),
+                d_angle=None,
                 torque=None,
             ), 
             high=TwoLinkState(
-                theta=jnp.deg2rad(jnp.array([140., 160.])),
-                d_theta=None,
+                angle=jnp.deg2rad(jnp.array([140., 160.])),
+                d_angle=None,
                 torque=None,
             ),
         )   

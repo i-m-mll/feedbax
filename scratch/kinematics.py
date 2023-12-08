@@ -20,8 +20,8 @@ class CartesianState2D:
 
 
 class AngularState2D:
-    theta: Float[Array, "2"]
-    d_theta: Float[Array, "2"]
+    angle: Float[Array, "2"]
+    d_angle: Float[Array, "2"]
 
 
 class NLinkForwardKinematics:
@@ -35,12 +35,12 @@ class NLinkForwardKinematics:
 
 
 class NLinkState:
-    theta: Float[Array, "links"]
-    d_theta: Float[Array, "links"]
+    angle: Float[Array, "links"]
+    d_angle: Float[Array, "links"]
     effector: CartesianState2D = NLinkForwardKinematics()
     
 
 class TwoLinkState:
-    theta: Float[Array, "2"]
-    d_theta: Float[Array, "2"]
+    angle: Float[Array, "2"]
+    d_angle: Float[Array, "2"]
     effector: CartesianState2D = NLinkForwardKinematics()

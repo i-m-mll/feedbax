@@ -80,8 +80,8 @@ arm2M = TwoLinkMuscled(
 )
 
 y0 = TwoLinkMuscledState(
-    theta=jnp.array([np.pi / 5, np.pi / 3]), 
-    d_theta=jnp.array([0., 0.]),
+    angle=jnp.array([np.pi / 5, np.pi / 3]), 
+    d_angle=jnp.array([0., 0.]),
     activation=jnp.zeros(6),
 )
 args = muscle_input = jnp.array([0.0, 0., 0.0, 0., 0.1, 0.0])
@@ -128,8 +128,8 @@ muscle_inputs = jnp.broadcast_to(
 init_state = dict(
     plant=dict(
         skeleton=TwoLinkState(
-            theta=jnp.array([np.pi / 5, np.pi / 3]), 
-            d_theta=jnp.array([0., 0.]),
+            angle=jnp.array([np.pi / 5, np.pi / 3]), 
+            d_angle=jnp.array([0., 0.]),
         ),    
 ))
 

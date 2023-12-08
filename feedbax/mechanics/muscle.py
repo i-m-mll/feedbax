@@ -6,18 +6,12 @@ NOTE:
   For now, I encode the 
 
 TODO:
-- Respect the concrete-final design pattern. `AbstractVirtualMuscle` doesn't
-  really make sense, since then we'd have to re-list all the fields or make 
-  them all `AbstractVar`s.
-  - It makes more sense for `TodorovLiVirtualMuscle` and 
-    `LillicrapScottVirtualMuscle` to be functions that return instances.
+- Review the "subclasses" of `VirtualMuscle`; they should probably be functions
+  in `xabdeef`.
 - ActivationFilter could be 
     - a module applied in serial to the muscle module 
     - a wrapper around other muscle modules; signature `(l, v, a, u)`
     - composed into the muscle module
-- It's kind of annoying to keep so many fields for parameters, but it seems
-  like the cleanest way to do it. But maybe there's a way to use the default
-  dataclass init, at least.
   
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -66,6 +60,7 @@ class VirtualMuscle(AbstractMuscle):
     """Virtual Muscle Model from Brown et al. 1999.
     
     TODO:
+    - Use the default dataclass init
     - Multiplicative noise option
     - Static element (SE) model
     - Y and l_eff filters. See `_Y_field` and `_l_eff_field` methods.

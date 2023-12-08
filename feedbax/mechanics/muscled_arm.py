@@ -27,8 +27,8 @@ N_DIM = 2
 
 class TwoLinkMuscledState(AbstractState):
     activation: Float[Array, "muscles"]
-    theta: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
-    d_theta: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    angle: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    d_angle: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
     torque: Float[Array, "links=2"] = field(default_factory=lambda: jnp.zeros(2))
     
 
@@ -97,8 +97,8 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
     @jax.named_scope("fbx.TwoLinkMuscled")
     def __call__(self, t, state: TwoLinkMuscledState, input):
         
-        muscle_length = self._muscle_length(state.theta)
-        muscle_velocity = self._muscle_velocity(state.d_theta)
+        muscle_length = self._muscle_length(state.angle)
+        muscle_velocity = self._muscle_velocity(state.d_angle)
         
         d_activation = self.activator(t, state.activation, input)
         
@@ -107,18 +107,18 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
         torque = self.moment_arms @ (self.f0 * tension)
         
         d_joints = self.twolink(t, state, torque)
-        d_theta, dd_theta = d_joints.theta, d_joints.d_theta   
+        d_angle, dd_angle = d_joints.angle, d_joints.d_angle   
         
-        return TwoLinkMuscledState(d_activation, d_theta, dd_theta)
+        return TwoLinkMuscledState(d_activation, d_angle, dd_angle)
 
-    def _muscle_length(self, theta):
+    def _muscle_length(self, angle):
         moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
-        l = 1 + (moment_arms[0] * (theta0[0] - theta[0]) + moment_arms[1] * (theta0[1] - theta[1])) / l0
+        l = 1 + (moment_arms[0] * (theta0[0] - angle[0]) + moment_arms[1] * (theta0[1] - angle[1])) / l0
         return l
     
-    def _muscle_velocity(self, d_theta):
+    def _muscle_velocity(self, d_angle):
         moment_arms, l0 = self.moment_arms, self.l0
-        v = (moment_arms[0] * d_theta[0] + moment_arms[1] * d_theta[1]) / l0
+        v = (moment_arms[0] * d_angle[0] + moment_arms[1] * d_angle[1]) / l0
         return v
     
     def init(self) -> TwoLinkMuscledState:       
@@ -143,14 +143,14 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
         """
         return StateBounds(
             low=TwoLinkMuscledState(
-                theta=jnp.array([0., 0.]),
-                d_theta=None,
+                angle=jnp.array([0., 0.]),
+                d_angle=None,
                 activation=None,
                 torque=None,
             ), 
             high=TwoLinkMuscledState(
-                theta=jnp.deg2rad(jnp.array([140., 160.])),
-                d_theta=None,
+                angle=jnp.deg2rad(jnp.array([140., 160.])),
+                d_angle=None,
                 activation=None,
                 torque=None,
             ),
@@ -190,15 +190,15 @@ class TwoLinkMuscled(AbstractDynamicalSystem[TwoLinkMuscledState]):
         beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
         theta1 = jnp.pi - beta
 
-        theta = jnp.stack([theta0, theta1], axis=-1)
+        angle = jnp.stack([theta0, theta1], axis=-1)
         
-        # TODO: don't calculate Jacobian twice, for `d_theta` and `torque`
-        d_theta = jnp.linalg.inv(self.twolink.effector_jac(theta)) @ effector_state.vel
+        # TODO: don't calculate Jacobian twice, for `d_angle` and `torque`
+        d_angle = jnp.linalg.inv(self.twolink.effector_jac(angle)) @ effector_state.vel
         
         if effector_state.force is not None:
-            torque = self.twolink.effector_force_to_torques(theta, effector_state.force)
+            torque = self.twolink.effector_force_to_torques(angle, effector_state.force)
         else:
             torque = None
 
-        return TwoLinkMuscledState(theta=theta, d_theta=d_theta, torque=torque,
+        return TwoLinkMuscledState(angle=angle, d_angle=d_angle, torque=torque,
                                    activation=jnp.zeros(self.control_size))

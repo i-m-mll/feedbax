@@ -72,7 +72,11 @@ import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import PointMass
 from feedbax.networks import RNNCell
-from feedbax.plot import plot_losses, plot_pos_vel_force_2D
+from feedbax.plot import (
+    plot_endpoint_pos_with_dists,
+    plot_losses, 
+    plot_pos_vel_force_2D,
+)
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 
@@ -88,6 +92,8 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 #jax.config.update("jax_traceback_filtering", DEBUG)  
 
 plt.style.use('dark_background')
+
+# %%
 
 # %%
 model_dir = Path("../models/")
@@ -113,7 +119,7 @@ def get_model(
     key1, key2 = jr.split(key)
 
     plant = SimplePlant(PointMass(mass=mass))
-    mechanics = Mechanics(plant, dt, solver=diffrax.Euler, clip_states=False)
+    mechanics = Mechanics(plant, dt)
     
     # automatically determine network input size
     input_size = SimpleFeedback.get_nn_input_size(
@@ -149,7 +155,7 @@ loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-5,
-    nn_activity=1e-5,
+    nn_hidden=1e-5,
 )
 
 # hyperparams dict + setup function isn't strictly necessary,
@@ -188,7 +194,7 @@ def setup(
                 discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
             nn_output=fbl.NetworkOutputLoss(),
-            nn_activity=fbl.NetworkActivityLoss(),
+            nn_hidden=fbl.NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )
@@ -225,9 +231,38 @@ trainer = TaskTrainer(
 )
 
 # %%
-n_batches = 1000
 batch_size = 500
 key_train = jr.PRNGKey(seed + 1)
+
+# %% [markdown]
+# What do the distributions of reach endpoints look like? Let's consider a sample 10x the batch size we'll use.
+
+# %%
+plt.style.use('default')
+trials_keys = jr.split(key_train, batch_size)
+
+trial_specs, _ = jax.vmap(task.get_train_trial)(trials_keys)
+
+plot_endpoint_pos_with_dists(trial_specs);
+
+# %% [markdown]
+# And what's the distribution of reach lengths for the same batch?
+
+# %%
+start = trial_specs.init['mechanics']['effector'].pos
+goal = trial_specs.goal.pos 
+
+reach_lengths = jnp.sqrt(jnp.sum((start - goal) ** 2, axis=-1))
+
+plt.hist(reach_lengths, density=True)
+plt.xlabel("Reach length")
+plt.ylabel("p(Reach length)");
+
+# %% [markdown]
+# Train the model
+
+# %%
+n_batches = 1000
 
 # not training readout!
 trainable_leaves_func = lambda model: (

@@ -8,6 +8,7 @@ from copy import deepcopy
 from functools import cached_property
 import logging
 from typing import (
+    Callable,
     Optional, 
     Generic,
     Protocol, 
@@ -64,3 +65,47 @@ class HasEffectorState(Protocol):
 @runtime_checkable
 class HasMechanicsState(Protocol):
     mechanics: HasEffectorState
+  
+        
+def clip_state(
+    bounds: StateBounds[StateT],
+    state: StateT, 
+) -> StateT:
+    """Constrain a state to the given bounds.
+    
+    TODO: 
+    - Maybe we can `tree_map` this, but I'm not sure it matters,
+      especially since it might require we make a bizarre
+      `StateBounds[Callable]` for the operations...
+    """
+    
+    if bounds.low is not None:
+        state = clip_state_to_bound(
+            state, bounds.low, bounds.filter_spec.low, jnp.greater
+        )
+    if bounds.high is not None:
+        state = clip_state_to_bound(
+            state, bounds.high, bounds.filter_spec.high, jnp.less
+        )
+    return state
+
+
+def clip_state_to_bound(
+    state: StateT, 
+    bound: StateT,
+    filter_spec: PyTree[bool],
+    op: Callable,
+) -> StateT:
+    """A single (one-sided) clipping operation."""
+    states_to_clip, states_other = eqx.partition(
+        state,
+        filter_spec,
+    )    
+    
+    states_clipped = jax.tree_map(
+        lambda x, y: jnp.where(op(x, y), x, y),
+        states_to_clip,
+        bound,
+    )
+    
+    return eqx.combine(states_other, states_clipped)

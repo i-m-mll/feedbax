@@ -133,8 +133,8 @@ def get_model(
     # this time we need to specifically request joint angles
     # and angular velocities, and not muscle activations
     feedback_leaves_func = lambda mechanics_state: (
-        mechanics_state.plant.skeleton.theta,
-        mechanics_state.plant.skeleton.d_theta,
+        mechanics_state.plant.skeleton.angle,
+        mechanics_state.plant.skeleton.d_angle,
         mechanics_state.effector.pos,
         mechanics_state.effector.vel,        
     )
@@ -178,7 +178,7 @@ loss_term_weights = dict(
     effector_final_velocity=0.1,
     #effector_straight_path=1e-3,
     nn_output=1e-4,
-    nn_activity=0.,
+    nn_hidden=0.,
 )
 
 hyperparams = dict(
@@ -214,7 +214,7 @@ def setup(
     #         effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
     #         #effector_straight_path=fbl.EffectorStraightPathLoss(),
     #         nn_output=fbl.NetworkOutputLoss(),
-    #         nn_activity=fbl.NetworkActivityLoss(),
+    #         nn_hidden=fbl.NetworkActivityLoss(),
     #     ),
     #     weights=loss_term_weights,
     # )

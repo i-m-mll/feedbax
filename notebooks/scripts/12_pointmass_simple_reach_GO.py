@@ -353,7 +353,7 @@ plt.show()
 # Plot network activity. Heatmap of all units, and a sample of six units.
 
 # %%
-plot_activity_heatmap(states.network.activity[0])
+plot_activity_heatmap(states.network.hidden[0])
 plt.show()
 
 # %%
@@ -361,7 +361,7 @@ seed = 5566
 n_samples = 6
 key = jr.PRNGKey(seed)
 
-plot_activity_sample_units(states.network.activity, n_samples, key=key)
+plot_activity_sample_units(states.network.hidden, n_samples, key=key)
 
 
 # %% [markdown]

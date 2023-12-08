@@ -62,6 +62,8 @@ logger = logging.getLogger(__name__)
 
 @jtu.register_pytree_node_class
 class LossDict(dict[str, Array]):
+    """Stores loss terms and automatically calculates the sum."""
+    
     @cached_property
     def total(self):
         loss_term_values = list(self.values())
@@ -451,7 +453,7 @@ class NetworkActivityLoss(AbstractLoss):
         task_inputs: Optional[PyTree] = None,
     ) -> LossDict:
         
-        loss = jnp.sum(states.network.activity ** 2, axis=-1)
+        loss = jnp.sum(states.network.hidden ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)

@@ -44,6 +44,7 @@ get_ipython().log.handlers[0].stream = stderr_log
 get_ipython().log.setLevel(LOG_LEVEL)
 
 # %%
+import diffrax as dfx
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
@@ -69,6 +70,7 @@ from feedbax.plot import (
     plot_pos_vel_force_2D,
     plot_activity_heatmap,
 )
+from feedbax.utils import tree_get_idx
 
 # %%
 os.environ["FEEDBAX_DEBUG"] = str(DEBUG)
@@ -113,15 +115,14 @@ def get_model(
 
     key1, key2, key3 = jrandom.split(key, 3)
 
-    plant = SimplePlant(TwoLink())
-    mechanics = Mechanics(plant, dt, clip_states=clip_states)
+    mechanics = Mechanics(SimplePlant(TwoLink()), dt)
     
     # unlike in the pointmass example, the effector is different
     # from the system configuration, so we include both 
     # (by default only `mechanics_state.system` is included)
     feedback_leaves_func = lambda mechanics_state: (
-        mechanics_state.plant.skeleton.theta,
-        mechanics_state.plant.skeleton.d_theta,
+        mechanics_state.plant.skeleton.angle,
+        mechanics_state.plant.skeleton.d_angle,
         mechanics_state.effector.pos,
         mechanics_state.effector.vel,         
     )
@@ -134,7 +135,7 @@ def get_model(
         input_size, 
         hidden_size, 
         encoding_size=encoding_size,
-        out_size=plant.input_size,
+        out_size=mechanics.plant.input_size,
         out_nonlinearity=out_nonlinearity,
         key=key1,
     )
@@ -151,7 +152,7 @@ def get_model(
 
 
 # %%
-seed = 5566
+seed = 1234
 
 n_steps = 50
 dt = 0.05 
@@ -161,12 +162,13 @@ feedback_delay_steps = 0
 workspace = ((-0.2, 0.10), 
              (0.2, 0.50))
 hidden_size  = 50
+encoding_size = None
 
 loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-5,
-    nn_activity=1e-6,
+    nn_activity=1e-7,
 )
 
 hyperparams = dict(
@@ -176,6 +178,7 @@ hyperparams = dict(
     loss_term_weights=loss_term_weights,
     dt=dt,
     hidden_size=hidden_size,
+    encoding_size=encoding_size,
     feedback_delay_steps=feedback_delay_steps,
 )
 
@@ -188,6 +191,7 @@ def setup(
     loss_term_weights,
     dt,
     hidden_size,
+    encoding_size,
     feedback_delay_steps,
 ):
 
@@ -212,6 +216,7 @@ def setup(
         key, 
         dt=dt,
         hidden_size=hidden_size,
+        encoding_size=encoding_size,
         n_steps=n_steps,
         feedback_delay=feedback_delay_steps,
     )
@@ -231,23 +236,27 @@ trainer = TaskTrainer(
 )
 
 # %%
-model = eqx.tree_at(
-    lambda model: model.step.mechanics.clip_states,
-    model,
-    False
-)
+batch_size = 1000
+keys = jrandom.split(jrandom.PRNGKey(0), batch_size)
+trial_specs, _ = jax.vmap(task.get_train_trial)(keys)
 
 # %%
+# trainable_leaves_func = lambda model: (
+#     #model.step.net.encoder,
+#     model.step.net.cell,
+# )
+
 trainable_leaves_func = lambda model: (
-    model.step.net.encoder,
-    model.step.net.cell,
+    model.step.net.cell.weight_hh, 
+    model.step.net.cell.weight_ih, 
+    model.step.net.cell.bias,
 )
 
 model, losses, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=5_000, 
-    batch_size=500, 
+    n_batches=10_000, 
+    batch_size=1000, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
     key=jrandom.PRNGKey(seed + 1),
@@ -298,8 +307,6 @@ plot_pos_vel_force_2D(
 );
 
 # %%
-from feedbax.utils import tree_get_idx
-
 xy = eqx.filter_vmap(model.step.mechanics.plant.skeleton.forward_kinematics)(
     tree_get_idx(states, 0).mechanics.plant.skeleton
 )
