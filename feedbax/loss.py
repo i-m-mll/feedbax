@@ -444,7 +444,7 @@ class NetworkOutputLoss(AbstractLoss):
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    label: str = "nn_activity"
+    label: str = "nn_hidden"
 
     def __call__(
         self, 

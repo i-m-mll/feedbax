@@ -72,7 +72,7 @@ from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import PointMass
-from feedbax.networks import RNNCellWithReadout, RNNCellWithReadoutAndInput
+from feedbax.networks import SimpleNetwork
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
@@ -120,7 +120,7 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadoutAndInput(
+    net = SimpleNetwork(
         input_size,
         rnn_input_size,
         hidden_size,
@@ -154,7 +154,7 @@ loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-5,
-    nn_activity=1e-5,
+    nn_hidden=1e-5,
 )
 
 # hyperparams dict + setup function isn't strictly necessary,
@@ -193,7 +193,7 @@ def setup(
                 discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
             nn_output=fbl.NetworkOutputLoss(),
-            nn_activity=fbl.NetworkActivityLoss(),
+            nn_hidden=fbl.NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )

@@ -5,6 +5,7 @@
 """
 
 import dataclasses
+import inspect
 from itertools import zip_longest, chain
 from functools import partial
 import logging 
@@ -133,6 +134,13 @@ def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
                                         cwd=path).strip().decode()
 
     return commit_id
+
+
+def n_positional_args(func: Callable) -> int:
+    """Get the number of positional arguments of a function."""
+    sig = inspect.signature(func)
+    return sum(1 for param in sig.parameters.values() 
+               if param.kind == param.POSITIONAL_OR_KEYWORD)
 
 
 def interleave_unequal(*args):

@@ -9,7 +9,7 @@ TODO:
 """
 
 from collections import OrderedDict
-from functools import cached_property, wraps
+from functools import cached_property
 import logging
 import math
 from typing import (
@@ -35,8 +35,8 @@ import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModel, AbstractModelState
-from feedbax.utils import interleave_unequal  
+from feedbax.model import AbstractModel, AbstractModelState, wrap_stateless_module
+from feedbax.utils import interleave_unequal, n_positional_args  
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
     
@@ -95,22 +95,26 @@ class NetworkState(AbstractModelState):
     encoding: Optional[PyTree]
 
 
-class RNNCell(AbstractModel[NetworkState]):
-    """A single step of a noisy RNN with optional encoding and readout layers.
+class SimpleNetwork(AbstractModel[NetworkState]):
+    """A single step of a noisy network with optional encoding and readout layers.
     
     Ultimately derived from https://docs.kidger.site/equinox/examples/train_rnn/
+    
+    TODO:
+    - The user should use `partial` if they want to change `use_bias` for the 
+      encoder or readout.
     """
     out_size: int 
-    cell: eqx.Module
-    noise_std: Optional[float]
+    hidden: eqx.Module
     hidden_size: int
-    
-    intervenors: Dict[str, AbstractIntervenor]
+    noise_std: Optional[float]
+    hidden_nonlinearity: Optional[Callable[[Float], Float]] = None
     encoder: Optional[eqx.Module] = None
     encoding_size: Optional[int] = None
     readout: Optional[eqx.Module] = None
     out_nonlinearity: Optional[Callable[[Float], Float]] = None 
     
+    intervenors: Dict[str, AbstractIntervenor]
 
     def __init__(
         self, 
@@ -118,10 +122,11 @@ class RNNCell(AbstractModel[NetworkState]):
         hidden_size: int,
         out_size: Optional[int] = None, 
         encoding_size: Optional[int] = None,
-        cell_type: Type[RNNCellProto] = eqx.nn.GRUCell,
-        readout_type: Type[eqx.Module] = eqx.nn.Linear,
+        hidden_type: Type[RNNCellProto] = eqx.nn.GRUCell,
         encoder_type: Type[eqx.Module] = eqx.nn.Linear,
+        readout_type: Type[eqx.Module] = eqx.nn.Linear,
         use_bias: bool = True,
+        hidden_nonlinearity: Callable[[Float], Float] = None,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
@@ -131,23 +136,29 @@ class RNNCell(AbstractModel[NetworkState]):
         key: jax.Array, 
     ):
         """
-        If an integer is passed for `encoding_size`, input encoding is enabled. 
-        Otherwise network inputs are passed directly to the RNN cell.
+        If an integer is passed for `encoding_size`, input encoding is enabled.
+        Otherwise network inputs are passed directly to the hidden layer.
             
         If an integer is passed for `out_size`, readout is enabled. Otherwise
-        the network's outputs are the RNN cell's hidden units.
+        the network's outputs are the outputs of the "hidden" units.
+        
+        In principle `hidden_type` can be a multi-layer network class, but must
+        be instantiated as `hidden_type(input_size, hidden_size, use_bias, *,
+        key)`, and the called instance should only return its output values, as
+        usual.
         """
         key1, key2, key3 = jr.split(key, 3)
-        self.noise_std = noise_std     
 
         if encoding_size is not None:
             self.encoder = encoder_type(input_size, encoding_size, use_bias=True, key=key2)
             self.encoding_size = encoding_size
-            self.cell = cell_type(encoding_size, hidden_size, use_bias=use_bias, key=key1)
+            self.hidden = hidden_type(encoding_size, hidden_size, use_bias=use_bias, key=key1)
         else:
-            self.cell = cell_type(input_size, hidden_size, use_bias=use_bias, key=key1)
+            self.hidden = hidden_type(input_size, hidden_size, use_bias=use_bias, key=key1)
         
-        self.hidden_size = self.cell.hidden_size
+        self.hidden_size = hidden_size
+        self.hidden_nonlinearity = hidden_nonlinearity
+        self.noise_std = noise_std 
         
         if out_size is not None:
             readout = readout_type(hidden_size, out_size, use_bias=True, key=key3)
@@ -176,41 +187,62 @@ class RNNCell(AbstractModel[NetworkState]):
     
     @cached_property
     def model_spec(self):
-        if self.encoder is not None:
+        """
+        Inspects the instantiated hidden layer to determine if it is a stateful
+        network (e.g. an RNN). If not (e.g. Linear), it wraps the layer so that
+        it plays well with the state-passing of `AbstractModel`. Assumes that 
+        stateful layers will take 2 positional arguments, and stateless layers
+        only 1.
+        """
+        
+        if n_positional_args(self.hidden) == 1:
+            hidden_module = lambda self: wrap_stateless_module(self.hidden)
+            if isinstance(self.hidden, eqx.nn.Linear):
+                logger.warning("Network hidden layer is linear but no hidden "
+                                "nonlinearity is defined")
+        else:
+            hidden_module = lambda self: self.hidden
+        
+        if self.encoder is None:
+            spec = OrderedDict({
+                'hidden': (
+                    hidden_module,
+                    lambda input, _: ravel_pytree(input)[0],
+                    lambda state: state.hidden,
+                ),
+            })
+        else:
             spec = OrderedDict({
                 'encoder': (
                     lambda self: self._encode,
                     lambda input, _: ravel_pytree(input)[0],
                     lambda state: state.encoding,
                 ),
-                # 'tmp_zero_hidden': (
-                #     lambda self: \
-                #         lambda input, state, key=None: self.init(output=state.output, encoding=state.encoding),
-                #     lambda input, state: None,
-                #     lambda state: state,
-                # ),
-                'cell': (
-                    lambda self: self.cell,
+                'hidden': (
+                    hidden_module,
                     lambda input, state: state.encoding,
                     lambda state: state.hidden,
                 ),
-            })
-        else:
-            spec = OrderedDict({
-                'cell': (
-                    lambda self: self.cell,
-                    lambda input, _: ravel_pytree(input)[0],
+            }) 
+        
+        if self.hidden_nonlinearity is not None:
+            spec |= {
+                'hidden_nonlinearity': (
+                    lambda self: lambda input, state, key: \
+                        self.hidden_nonlinearity(state),
+                    lambda input, state: None,
                     lambda state: state.hidden,
                 ),
-            })
+            }
         
-        spec |= {
-            'cell_noise': (
-                lambda self: self._add_state_noise,
-                lambda _, state: state.hidden,
-                lambda state: state.hidden,
-            ),
-        }
+        if self.noise_std is not None:
+            spec |= {
+                'hidden_noise': (
+                    lambda self: self._add_state_noise,
+                    lambda _, state: state.hidden,
+                    lambda state: state.hidden,
+                ),
+            }
         
         if self.readout is not None:
             spec |= {
@@ -223,7 +255,6 @@ class RNNCell(AbstractModel[NetworkState]):
         
         return spec
         
-
     @property
     def memory_spec(self):
         return NetworkState(
@@ -234,7 +265,7 @@ class RNNCell(AbstractModel[NetworkState]):
     
     def init(self, hidden=None, output=None, encoding=None):
         if hidden is None:
-            hidden = jnp.zeros(self.cell.hidden_size)
+            hidden = jnp.zeros(self.hidden_size)
         else:
             hidden = jnp.array(hidden)
             
@@ -354,19 +385,6 @@ class LeakyRNNCell(eqx.Module):
             return math.sqrt(2 / self.alpha) * noise_strength
         else:
             return None
-         
-
-def wrap_stateless_network(net: eqx.Module):
-    """Make a stateless network trivially compatible with state-passing.
-    
-    TODO: should be `wrap_stateless_module` probably
-    """
-    @wraps(net)
-    def wrapped(input, state, *args, **kwargs):
-        return net(input, *args, **kwargs)
-    
-    return wrapped
-
 
 def n_layer_linear(
     hidden_sizes: Sequence[int], 

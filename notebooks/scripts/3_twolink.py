@@ -25,7 +25,7 @@ import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Float, Array
 import matplotlib as mpl
 import matplotlib.pyplot as plt

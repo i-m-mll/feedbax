@@ -31,7 +31,7 @@ import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 from jaxtyping import Float, Array
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -135,7 +135,7 @@ init_state = dict(
 
 model = SimpleIterator(mechanics, n_steps)
 
-states = model(muscle_inputs, init_state, key=jrandom.PRNGKey(0))
+states = model(muscle_inputs, init_state, key=jr.PRNGKey(0))
 
 # %%
 xy = eqx.filter_vmap(plant.skeleton.forward_kinematics)(states.plant.skeleton)

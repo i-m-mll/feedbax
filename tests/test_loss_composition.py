@@ -30,14 +30,14 @@ def test_loss_composition():
         effector_position=1.,
         effector_final_velocity=1.,
         nn_output=1e-5,
-        nn_activity=1e-5,
+        nn_hidden=1e-5,
     )
 
     loss_classes = dict(
         effector_position=EffectorPositionLoss,
         effector_final_velocity=EffectorFinalVelocityLoss,
         nn_output=NetworkOutputLoss,  
-        nn_activity=NetworkActivityLoss,
+        nn_hidden=NetworkActivityLoss,
     )
 
     loss_from_dicts = CompositeLoss(

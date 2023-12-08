@@ -34,7 +34,7 @@ def simple_reach_loss(
             effector_position=1.,
             effector_final_velocity=1.,
             nn_output=1e-5,
-            nn_activity=1e-5,
+            nn_hidden=1e-5,
         )
     return CompositeLoss(
         dict(
@@ -44,7 +44,7 @@ def simple_reach_loss(
                 discount_func=lambda n_steps: power_discount(n_steps, discount_exp)),
             effector_final_velocity=EffectorFinalVelocityLoss(),
             nn_output=NetworkOutputLoss(),  # the "control" loss
-            nn_activity=NetworkActivityLoss(),
+            nn_hidden=NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )

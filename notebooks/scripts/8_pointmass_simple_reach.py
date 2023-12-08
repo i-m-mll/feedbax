@@ -71,7 +71,7 @@ from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import PointMass
-from feedbax.networks import RNNCell
+from feedbax.networks import SimpleNetwork
 from feedbax.plot import (
     plot_endpoint_pos_with_dists,
     plot_losses, 
@@ -92,8 +92,6 @@ jax.config.update("jax_enable_x64", ENABLE_X64)
 #jax.config.update("jax_traceback_filtering", DEBUG)  
 
 plt.style.use('dark_background')
-
-# %%
 
 # %%
 model_dir = Path("../models/")
@@ -126,7 +124,7 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCell(
+    net = SimpleNetwork(
         input_size,
         hidden_size,
         out_size=plant.input_size,
@@ -238,7 +236,6 @@ key_train = jr.PRNGKey(seed + 1)
 # What do the distributions of reach endpoints look like? Let's consider a sample 10x the batch size we'll use.
 
 # %%
-plt.style.use('default')
 trials_keys = jr.split(key_train, batch_size)
 
 trial_specs, _ = jax.vmap(task.get_train_trial)(trials_keys)
@@ -266,9 +263,7 @@ n_batches = 1000
 
 # not training readout!
 trainable_leaves_func = lambda model: (
-    model.step.net.cell.weight_hh, 
-    model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias
+    model.step.net.hidden
 )
 
 model, losses, learning_rates = trainer(
@@ -321,6 +316,7 @@ plot_pos_vel_force_2D(
         trial_specs.init['mechanics']['effector'].pos, 
         trial_specs.goal.pos
     ),
+    cmap='viridis',
 )
 plt.show()
 

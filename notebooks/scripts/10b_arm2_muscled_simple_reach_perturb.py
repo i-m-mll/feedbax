@@ -62,7 +62,7 @@ from feedbax.mechanics.muscle import (
     TodorovLiVirtualMuscle, 
 ) 
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled 
-from feedbax.networks import RNNCellWithReadoutAndInput
+from feedbax.networks import SimpleNetwork
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -134,7 +134,7 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
     
-    net = RNNCellWithReadoutAndInput(
+    net = SimpleNetwork(
         input_size, 
         rnn_input_size,
         hidden_size, 
@@ -167,7 +167,7 @@ loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=0.1,
     nn_output=1e-4,
-    nn_activity=0.,
+    nn_hidden=0.,
 )
 
 hyperparams = dict(

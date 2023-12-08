@@ -14,7 +14,7 @@ TODO:
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
 import copy
-from functools import cached_property
+from functools import cached_property, wraps
 import logging
 import os
 from typing import (
@@ -399,3 +399,21 @@ def remove_intervenors(
 ) -> SimpleFeedback:
     """Return a model with no intervenors."""
     return add_intervenors(model, intervenors=(), keep_existing=False)
+
+
+def wrap_stateless_module(module: eqx.Module):
+    """Makes a 'stateless' module trivially compatible with state-passing.
+    
+    `AbstractModel` defines everything in terms of transformations of parts of
+    a state PyTree. In each case, the substate that is operated on is passed
+    to the module that returns the updated substate. However, in some cases
+    the new substate does not depend on the previous substate. For example,
+    a linear network layer takes some inputs and returns some outputs, and
+    on the next iteration, the linear layer's outputs do not conventionally 
+    depend on its previous outputs, like an RNN cell's would.
+    """
+    @wraps(module)
+    def wrapped(input, state, *args, **kwargs):
+        return module(input, *args, **kwargs)
+    
+    return wrapped

@@ -20,7 +20,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
 from feedbax.mechanics.muscled_arm import TwoLinkMuscled
-from feedbax.networks import RNNCell
+from feedbax.networks import SimpleNetwork
 from feedbax.task import AbstractTask, RandomReaches
 from feedbax.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -104,7 +104,7 @@ def point_mass_RNN(
         task, mechanics
     )
     
-    net = RNNCell(
+    net = SimpleNetwork(
         input_size,
         hidden_size,
         out_size=system.control_size, 

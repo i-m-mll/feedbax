@@ -17,7 +17,7 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,7 +35,7 @@ layer_sizes = [1, 10, 1]
 learning_rate = 1.e-2
 n_batches = 5000
 
-model = SimpleMultiLayerNet(layer_sizes, key=jrandom.PRNGKey(0))
+model = SimpleMultiLayerNet(layer_sizes, key=jr.PRNGKey(0))
 print(model)
 
 
@@ -59,20 +59,20 @@ def step(model, opt_state, x, y):
 
 # %%
 
-key = jrandom.PRNGKey(678)
+key = jr.PRNGKey(678)
 
 opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
 losses = []
 
 for t in tqdm(range(n_batches)):
-    key1, key2 = jrandom.split(key)
-    train_x = jrandom.uniform(key1, (batch_size, 1), minval=-1, maxval=1)
-    train_y = train_x ** 4 + 0.1 * train_x * jrandom.normal(key2, (batch_size, 1))
+    key1, key2 = jr.split(key)
+    train_x = jr.uniform(key1, (batch_size, 1), minval=-1, maxval=1)
+    train_y = train_x ** 4 + 0.1 * train_x * jr.normal(key2, (batch_size, 1))
     
     loss, model, opt_state = step(model, opt_state, train_x, train_y)
     losses.append(loss)
-    _, key = jrandom.split(key)
+    _, key = jr.split(key)
     
 fig = plt.figure()
 ax = fig.add_subplot(111)

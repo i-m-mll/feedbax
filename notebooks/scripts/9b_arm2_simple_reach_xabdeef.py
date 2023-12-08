@@ -47,7 +47,7 @@ get_ipython().log.setLevel(LOG_LEVEL)
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -57,7 +57,7 @@ from feedbax.iterate import Iterator, SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import TwoLink
-from feedbax.networks import RNNCell, RNNCellWithReadout
+from feedbax.networks import SimpleNetwork
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -106,9 +106,9 @@ def get_model(
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
 
-    key1, key2, key3 = jrandom.split(key, 3)
+    key1, key2, key3 = jr.split(key, 3)
 
     system = TwoLink()  
     mechanics = Mechanics(system, dt, clip_states=True)
@@ -125,7 +125,7 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
 
-    net = RNNCellWithReadout(
+    net = SimpleNetwork(
         input_size, 
         hidden_size, 
         system.control_size,
@@ -158,7 +158,7 @@ loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-5,
-    nn_activity=1e-6,
+    nn_hidden=1e-6,
 )
 
 hyperparams = dict(
@@ -183,7 +183,7 @@ def setup(
     feedback_delay_steps,
 ):
 
-    key = jrandom.PRNGKey(seed)
+    key = jr.PRNGKey(seed)
 
     loss_func = simple_reach_loss(
         n_steps, 
@@ -232,7 +232,7 @@ model, losses, learning_rates = trainer(
     batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
-    key=jrandom.PRNGKey(seed + 1),
+    key=jr.PRNGKey(seed + 1),
 )
 
 plot_losses(losses)
@@ -266,7 +266,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-losses, states = task.eval(model, key=jrandom.PRNGKey(0))
+losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 trial_specs, _ = task.trials_validation

@@ -23,7 +23,7 @@ import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -78,7 +78,7 @@ def simulate_lti_system(
     ts: jnp.ndarray,
     us: Optional[jnp.ndarray] = None,
     std_measurement_noise: float = 0.0,
-    key=jrandom.PRNGKey(
+    key=jr.PRNGKey(
         1,
     ),
 ):
@@ -90,7 +90,7 @@ def simulate_lti_system(
     xs = diffeqsolve(rhs, ts, y0)
     # noisy measurements
     ys = xs @ sys.C.transpose()
-    ys = ys + jrandom.normal(key, shape=ys.shape) * std_measurement_noise
+    ys = ys + jr.normal(key, shape=ys.shape) * std_measurement_noise
     return xs, ys
 
 

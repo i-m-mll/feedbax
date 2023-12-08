@@ -70,7 +70,7 @@ from feedbax.mechanics.muscle import (
 
 from feedbax.mechanics.plant import MuscledArm
 from feedbax.mechanics.skeleton.arm import TwoLink
-from feedbax.networks import RNNCell
+from feedbax.networks import SimpleNetwork
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -144,7 +144,7 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
     
-    net = RNNCell(
+    net = SimpleNetwork(
         input_size, 
         hidden_size, 
         # encoding_size=encoding_size,

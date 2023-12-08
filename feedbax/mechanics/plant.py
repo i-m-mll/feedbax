@@ -38,8 +38,12 @@ class PlantState(AbstractModelState):
 
 
 class AbstractPlant(AbstractModel[PlantState]):
+    """
+    Static updates are specified in `model_spec` (i.e. `__call__`), and 
+    dynamic updates (i.e. parts of the ODE/vector field) in `dynamics_spec`.
+    """
     
-    
+    clip_states: AbstractVar[bool]
     skeleton: AbstractVar[AbstractSkeleton]
     
     @abstractproperty
@@ -83,6 +87,12 @@ class AbstractPlant(AbstractModel[PlantState]):
                 high=None,
             ),
         )
+    
+    def _clip_state(self, input, state, *, key: Optional[Array] = None):
+        if self.clip_states:
+            return clip_state(input, state)
+        else:
+            return state
         
 
 class SimplePlant(AbstractPlant):
@@ -92,15 +102,23 @@ class SimplePlant(AbstractPlant):
     skeleton conforms with the interface expected by `Mechanics`. 
     
     TODO:
-    - State clipping
+    - Make state clipping optional
     """
     
     skeleton: AbstractSkeleton 
-    
+    clip_states: bool 
     intervenors: Dict[str, AbstractIntervenor]
     
-    def __init__(self, skeleton, intervenors=None, *, key=None):
+    def __init__(
+        self, 
+        skeleton, 
+        clip_states=True, 
+        intervenors=None, 
+        *, 
+        key=None
+    ):
         self.skeleton = skeleton
+        self.clip_states = clip_states
         self.intervenors = self._get_intervenors_dict(intervenors)
         
     @cached_property
@@ -116,7 +134,13 @@ class SimplePlant(AbstractPlant):
     @cached_property
     def model_spec(self):
         """Simple plants have no state updates apart from the skeletal ODE."""
-        return OrderedDict()
+        return OrderedDict({
+            "clip_skeleton_state": (
+                lambda self: self._clip_state,
+                lambda input, state: self.bounds.skeleton,
+                lambda state: state.skeleton,
+            ),
+        })
         
     @property
     def memory_spec(self):
@@ -195,7 +219,7 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def model_spec(self):
         return OrderedDict({
-            "clip_skeleton": (
+            "clip_skeleton_state": (
                 lambda self: self._clip_state,
                 lambda input, state: self.bounds.skeleton,
                 lambda state: state.skeleton,
@@ -226,14 +250,6 @@ class MuscledArm(AbstractPlant):
             ),
         })
     
-    
-    def _clip_state(self, input, state, *, key: Optional[Array] = None):
-        if self.clip_states:
-            state = clip_state(input, state)
-        else:
-            return state
-
-    
     @cached_property
     def dynamics_spec(
         self
@@ -241,9 +257,9 @@ class MuscledArm(AbstractPlant):
         
         return dict({
             "muscle_activation": (
-                self.activator,  # vector field
-                lambda input, state: input,  # system input
-                lambda state: state.muscles.activation,  # system state
+                self.activator,  # ODE/vector field
+                lambda input, state: input,  # input to the ODE
+                lambda state: state.muscles.activation,  # state we're returning derivatives for
             ),
             "skeleton": (
                 self.skeleton,
@@ -266,6 +282,7 @@ class MuscledArm(AbstractPlant):
         return (length, velocity)
 
     def _muscle_length(self, angle: Array) -> Array:
+        # TODO: should this be a function? how general is it?
         moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
         l = 1 + (moment_arms[0] * (theta0[0] - angle[0]) + moment_arms[1] * (theta0[1] - angle[1])) / l0
         return l

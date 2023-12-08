@@ -22,7 +22,7 @@ import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import jaxopt
 from jaxtyping import Float, Array
 import matplotlib as mpl
@@ -260,11 +260,11 @@ eval_input_norm = normalize(eval_input, min=-1, max=1)[0]
 
 def rand_range(lo, hi, size, key):
     """Helper to generate random numbers in a range using"""
-    return (hi - lo) * jrandom.uniform(key, size) + lo
+    return (hi - lo) * jr.uniform(key, size) + lo
 
 def get_batch(tension_fn, batch_size, key):
     """This is specific to the type of function we're fitting"""""
-    l_key, v_key = jrandom.split(key)
+    l_key, v_key = jr.split(key)
     inputs = jnp.stack([
         rand_range(*l_range, (batch_size,), l_key),
         rand_range(*v_range, (batch_size,), v_key),
@@ -283,7 +283,7 @@ def get_batch1D(tension_fn, batch_size, key):
 # plot example batch of data samples
 
 batch_size = 1000
-x, y = get_batch(tension_fn, batch_size, jrandom.PRNGKey(0))
+x, y = get_batch(tension_fn, batch_size, jr.PRNGKey(0))
 
 fig = plt.figure(constrained_layout=True, figsize=(10,5))
 ax = fig.add_subplot(111, projection='3d')
@@ -310,15 +310,15 @@ batch_size = 2000
 # functions to generate network parameters
 
 def random_layer_params(m, n, key, scale=1.):
-    w_key, b_key = jrandom.split(key)
+    w_key, b_key = jr.split(key)
     stdv = 1. / jnp.sqrt(m)
-    w = jrandom.uniform(w_key, (n, m), minval=-stdv, maxval=stdv)
-    b = jrandom.uniform(b_key, (n,), minval=-stdv, maxval=stdv)
+    w = jr.uniform(w_key, (n, m), minval=-stdv, maxval=stdv)
+    b = jr.uniform(b_key, (n,), minval=-stdv, maxval=stdv)
     return scale * w, scale * b
-    #return scale * jrandom.normal(w_key, (n, m)), scale * jrandom.normal(b_key, (n,))
+    #return scale * jr.normal(w_key, (n, m)), scale * jr.normal(b_key, (n,))
 
 def init_network_params(sizes, key):
-    keys = jrandom.split(key, len(sizes))
+    keys = jr.split(key, len(sizes))
     return [random_layer_params(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
 
 
@@ -372,9 +372,9 @@ def step(params, opt_state, x, y):
 # %%
 # initialize network and train on randomly-generated batches
 
-key = jrandom.PRNGKey(0)
+key = jr.PRNGKey(0)
 
-params = init_network_params(layer_sizes, jrandom.PRNGKey(0))
+params = init_network_params(layer_sizes, jr.PRNGKey(0))
 params_init = params
 
 opt_state = optimizer.init(params)
@@ -385,7 +385,7 @@ for batch in tqdm(range(n_batches)):
     x, = normalize(x, min=-1, max=1)
     loss, params, opt_state = step(params, opt_state, x, y)
     losses.append(loss)
-    _, key = jrandom.split(key)
+    _, key = jr.split(key)
     
 fig = plt.figure()
 ax = fig.add_subplot(111)
@@ -439,13 +439,13 @@ axs[2].set_title("1 - 2");
 # These need to be trained on the entire dataset at once. But our problem is otherwise rather small so probably no big deal.
 
 # %%
-data_key = jrandom.PRNGKey(5678)
+data_key = jr.PRNGKey(5678)
 
 batch_size = 50000
 X, y = get_batch(tension_fn, batch_size, data_key)
 X, = normalize(X, min=-1, max=1)
 
-params = init_network_params(layer_sizes, jrandom.PRNGKey(0))
+params = init_network_params(layer_sizes, jr.PRNGKey(0))
 params_init = params
 
 # %%
@@ -505,7 +505,7 @@ layer_sizes = [2, 5, 1]
 use_bias = (True, False)
 nonlinearity = jax.nn.sigmoid
 output_nonlinearity = jax.nn.sigmoid
-model_key = jrandom.PRNGKey(0)
+model_key = jr.PRNGKey(0)
 learning_rate = 1.e-2
 n_batches = 20000
 batch_size = 2000
@@ -526,7 +526,7 @@ print(model)
 
 def weight_init_fn(param: jax.Array, key: jax.random.PRNGKey) -> jax.Array:
     stddev = math.sqrt(1 / param.shape[-1])
-    return stddev * jrandom.uniform(key, param.shape, minval=-1, maxval=1) #lower=-2, upper=2)
+    return stddev * jr.uniform(key, param.shape, minval=-1, maxval=1) #lower=-2, upper=2)
 
 def init_linear_weight(model, init_fn, key):
     """Re-initialize the weights of all linear layers in a model."""
@@ -541,7 +541,7 @@ def init_linear_weight(model, init_fn, key):
         model = eqx.tree_at(get_params, model, new_params)
     return model
 
-model = init_linear_weight(model, weight_init_fn, jrandom.PRNGKey(567))
+model = init_linear_weight(model, weight_init_fn, jr.PRNGKey(567))
 
 
 # %%
@@ -567,7 +567,7 @@ def step(model, opt_state, x, y):
 # %%
 # initialize network and train on randomly-generated batches
 
-key = jrandom.PRNGKey(0)
+key = jr.PRNGKey(0)
 
 opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 losses = []
@@ -577,7 +577,7 @@ for batch in tqdm(range(n_batches)):
     x, = normalize(x, min=-1, max=1)
     loss, model, opt_state = step(model, opt_state, x, y)
     losses.append(loss)
-    _, key = jrandom.split(key)
+    _, key = jr.split(key)
     
 fig = plt.figure()
 ax = fig.add_subplot(111)

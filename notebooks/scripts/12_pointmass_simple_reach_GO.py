@@ -60,7 +60,7 @@ from feedbax.iterate import Iterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import PointMass
-from feedbax.networks import RNNCellWithReadout
+from feedbax.networks import SimpleNetwork
 from feedbax.task import RandomReachesDelayed
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -115,7 +115,7 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    net = SimpleNetwork(
         input_size,
         hidden_size, 
         system.control_size, 
@@ -151,7 +151,7 @@ def get_model(
         task, mechanics
     )
     
-    net = RNNCellWithReadout(
+    net = SimpleNetwork(
         input_size,
         hidden_size, 
         system.control_size, 
@@ -191,7 +191,7 @@ loss_term_weights = dict(
     effector_position=1.,
     effector_final_velocity=1.,
     nn_output=1e-4,
-    nn_activity=1e-5,
+    nn_hidden=1e-5,
 )
 
 # %%
@@ -230,7 +230,7 @@ def setup(
                 discount_func=lambda n_steps: fbl.power_discount(n_steps, 6)),
             effector_final_velocity=fbl.EffectorFinalVelocityLoss(),
             nn_output=fbl.NetworkOutputLoss(),
-            nn_activity=fbl.NetworkActivityLoss(),
+            nn_hidden=fbl.NetworkActivityLoss(),
         ),
         weights=loss_term_weights,
     )

@@ -20,7 +20,7 @@ import equinox as eqx
 import jax
 import jax.lax as lax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -50,7 +50,7 @@ def dataloader(arrays, batch_size):
 
 def get_data(dataset_size, *, key):
     t = jnp.linspace(0, 2 * math.pi, 16)
-    offset = jrandom.uniform(key, (dataset_size, 1), minval=0, maxval=2 * math.pi)
+    offset = jr.uniform(key, (dataset_size, 1), minval=0, maxval=2 * math.pi)
     x1 = jnp.sin(t + offset) / (1 + t)
     x2 = jnp.cos(t + offset) / (1 + t)
     y = jnp.ones((dataset_size, 1))
@@ -65,7 +65,7 @@ def get_data(dataset_size, *, key):
 
 # %%
 # plot example data sample
-data_key, model_key = jrandom.split(jrandom.PRNGKey(5678), 2)
+data_key, model_key = jr.split(jr.PRNGKey(5678), 2)
 xs, ys = get_data(100, key=data_key)
 plt.plot(*xs[0].T)
 
@@ -78,7 +78,7 @@ class RNNCellWithReadout(eqx.Module):
     bias: jax.Array
     
     def __init__(self, input_size, hidden_size, out_size, *, key):
-        ckey, lkey = jrandom.split(key)
+        ckey, lkey = jr.split(key)
         self.hidden_size = hidden_size
         self.cell = eqx.nn.GRUCell(input_size, hidden_size, key=ckey)
         self.linear = eqx.nn.Linear(hidden_size, out_size, use_bias=False, key=lkey)
@@ -105,7 +105,7 @@ def main(
     depth=1,
     seed=5678,
 ):
-    data_key, model_key = jrandom.split(jrandom.PRNGKey(seed), 2)
+    data_key, model_key = jr.split(jr.PRNGKey(seed), 2)
     xs, ys = get_data(dataset_size, key=data_key)
     iter_data = dataloader((xs, ys), batch_size)
     

@@ -48,7 +48,7 @@ import diffrax as dfx
 import equinox as eqx
 import jax
 import jax.numpy as jnp 
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 import optax 
@@ -59,7 +59,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton import TwoLink
 from feedbax.mechanics.plant import SimplePlant
 from feedbax.model import SimpleFeedback
-from feedbax.networks import RNNCell
+from feedbax.networks import SimpleNetwork
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -103,6 +103,8 @@ def get_model(
     key=None,
     dt=0.05, 
     hidden_size=50, 
+    hidden_type=eqx.nn.Linear,
+    hidden_nonlinearity=jnp.tanh,
     encoding_size=25,
     n_steps=50, 
     feedback_delay=0, 
@@ -111,9 +113,9 @@ def get_model(
 ):
     if key is None:
         # in case we just want a skeleton model, e.g. for deserializing
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
 
-    key1, key2, key3 = jrandom.split(key, 3)
+    key1, key2, key3 = jr.split(key, 3)
 
     mechanics = Mechanics(SimplePlant(TwoLink()), dt)
     
@@ -131,10 +133,12 @@ def get_model(
         task, mechanics, feedback_leaves_func
     )
 
-    net = RNNCell(
+    net = SimpleNetwork(
         input_size, 
         hidden_size, 
         encoding_size=encoding_size,
+        hidden_type=hidden_type,
+        hidden_nonlinearity=hidden_nonlinearity,
         out_size=mechanics.plant.input_size,
         out_nonlinearity=out_nonlinearity,
         key=key1,
@@ -162,13 +166,13 @@ feedback_delay_steps = 0
 workspace = ((-0.2, 0.10), 
              (0.2, 0.50))
 hidden_size  = 50
-encoding_size = None
+encoding_size = 20
 
 loss_term_weights = dict(
     effector_position=1.,
-    effector_final_velocity=1.,
+    effector_final_velocity=0.1,
     nn_output=1e-5,
-    nn_activity=1e-7,
+    nn_hidden=1e-7,
 )
 
 hyperparams = dict(
@@ -195,7 +199,7 @@ def setup(
     feedback_delay_steps,
 ):
 
-    key = jrandom.PRNGKey(seed)
+    key = jr.PRNGKey(seed)
 
     loss_func = simple_reach_loss(
         n_steps, 
@@ -236,30 +240,23 @@ trainer = TaskTrainer(
 )
 
 # %%
-batch_size = 1000
-keys = jrandom.split(jrandom.PRNGKey(0), batch_size)
-trial_specs, _ = jax.vmap(task.get_train_trial)(keys)
-
-# %%
 # trainable_leaves_func = lambda model: (
 #     #model.step.net.encoder,
 #     model.step.net.cell,
 # )
 
 trainable_leaves_func = lambda model: (
-    model.step.net.cell.weight_hh, 
-    model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias,
+    model.step.net
 )
 
 model, losses, learning_rates = trainer(
     task=task, 
     model=model,
-    n_batches=10_000, 
-    batch_size=1000, 
+    n_batches=5_000, 
+    batch_size=500, 
     log_step=100,
     trainable_leaves_func=trainable_leaves_func,
-    key=jrandom.PRNGKey(seed + 1),
+    key=jr.PRNGKey(seed + 1),
 )
 
 plot_losses(losses)
@@ -293,7 +290,7 @@ except NameError:
 # Evaluate on a centre-out task
 
 # %%
-losses, states = task.eval(model, key=jrandom.PRNGKey(0))
+losses, states = task.eval(model, key=jr.PRNGKey(0))
 
 # %%
 trial_specs, _ = task.trials_validation
@@ -336,5 +333,3 @@ xy_pos = jnp.swapaxes(xy_pos, 0, 1)
 # %%
 ax = plot_2D_joint_positions(xy_pos[idx], add_root=True)
 plt.show()
-
-# %%
