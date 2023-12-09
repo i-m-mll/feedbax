@@ -651,17 +651,15 @@ def animate_3D_rotate(
         elev: float = 10.,
         interval: int = 20,
 ) -> animation.FuncAnimation:
-    """Rotate a 3D plot by `degrees` about the z axis."""
+    """Rotate a 3D plot through `axim_range` degrees about the z axis."""
     def animate(i):
         ax.view_init(elev=elev, azim=i)
         return fig,
 
-    frames = azim_range[1] - azim_range[0]
-
     return animation.FuncAnimation(
         fig, 
         animate, 
-        frames=frames,
+        frames=azim_range[1] - azim_range[0],
         interval=interval,
         blit=True,
     )

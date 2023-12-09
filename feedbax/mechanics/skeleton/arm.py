@@ -276,7 +276,10 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         )   
     
 def twolink_workspace_test(workspace: Float[Array, "bounds=2 xy=2"], twolink: TwoLink):
-    """Tests whether a rectangular workspace is reachable by the two-link arm."""
+    """Tests whether a rectangular workspace is reachable by the two-link arm.
+    
+    TODO: Take the angle bounds into account.
+    """
     r = sum(twolink.l)
     lengths = jnp.sum(corners_2d(workspace) ** 2, axis=0) ** 0.5
     if jnp.any(lengths > r):

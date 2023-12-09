@@ -209,9 +209,9 @@ def setup(
         loss_func=loss_func,
         workspace=workspace, 
         n_steps=n_steps,
-        eval_grid_n=2,
+        eval_grid_n=1,
         eval_n_directions=8,
-        eval_reach_length=0.05,
+        eval_reach_length=0.2,
     )
 
     model = get_model(
@@ -262,30 +262,6 @@ plot_losses(losses)
 plt.show()
 
 # %% [markdown]
-# Save the model and task to file along with the hyperparameters needed to set them up again on loading
-
-# %%
-model_path = save(
-    (model, task),
-    hyperparams, 
-    save_dir=model_dir, 
-    suffix=NB_PREFIX
-)
-
-model_path
-
-# %% [markdown]
-# If we didn't just save a model, we can try to load one. Note that this depends on `setup` being the same.
-
-# %%
-try:
-    model_path
-    model, task
-except NameError:
-    model_path = "../models/model_20231026-100544_b4a92ad_nb12.eqx"
-    model, task = load(model_path, setup)
-
-# %% [markdown]
 # Evaluate on a centre-out task
 
 # %%
@@ -303,32 +279,3 @@ plot_pos_vel_force_2D(
 );
 
 # %%
-xy = eqx.filter_vmap(model.step.mechanics.plant.skeleton.forward_kinematics)(
-    tree_get_idx(states, 0).mechanics.plant.skeleton
-)
-
-plot_2D_joint_positions(xy.pos)
-
-# %% [markdown]
-# Plot entire arm trajectory for an example direction
-
-# %%
-idx = 0
-
-# %%
-# convert all joints to Cartesian since I only saved the EE state
-
-# vmap twice, over trials and time; `forward_kinematics` applies to single points
-forward_kinematics = model.step.mechanics.system.forward_kinematics
-xy_pos = jax.vmap(jax.vmap(forward_kinematics, in_axes=0), in_axes=1)(
-    states.mechanics.system
-).pos
-
-# #? we can't just swap `in_axes` above; it causes a vmap shape error with 
-# axis 2 of the arrays in `states.mechanics.system`, which includes 
-# the (unused, in this case) muscle activation state
-xy_pos = jnp.swapaxes(xy_pos, 0, 1)
-
-# %%
-ax = plot_2D_joint_positions(xy_pos[idx], add_root=True)
-plt.show()

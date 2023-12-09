@@ -48,7 +48,7 @@ seed = 5566
 context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
 
 model, losses, _ = context.train(
-    n_batches=10_000, 
+    n_batches=2_000, 
     batch_size=500, 
     key=jr.PRNGKey(seed + 1),
 )
@@ -102,7 +102,7 @@ key_eval = jr.PRNGKey(seed + 2)
 losses, states = context.task.eval(model, key=key_eval)
 
 # %%
-trial_specs, _ = task.trials_validation
+trial_specs, _ = context.task.trials_validation
 
 plot_pos_vel_force_2D(
     states,
