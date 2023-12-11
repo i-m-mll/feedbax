@@ -38,6 +38,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 
 from feedbax.intervene import (
     EffectorCurlForceField,
@@ -56,6 +58,8 @@ from feedbax.plot import (
     animate_3D_rotate,
     circular_hist,
 )
+
+from feedbax.utils import angle_between_vectors, vector_angle
 
 # %%
 # changes matplotlib style, to match dark notebook themes
@@ -172,7 +176,7 @@ def prep_data(hidden, target):
 # %%
 from functools import partial
 
-def get_unit_preferred_angles(model, task, *, key, n_iter=50, ts=slice(None)):
+def get_unit_pref_angles(model, task, *, key, n_iter=50, ts=slice(None)):
     _, states = task.eval(model, key=key)
     trial_specs, _ = task.trials_validation
     
@@ -197,17 +201,17 @@ def get_unit_preferred_angles(model, task, *, key, n_iter=50, ts=slice(None)):
     pds = jnp.squeeze(fits.weight)  # preferred directions
 
     # Vector length is irrelevant to angles
-    preferred_angles = jnp.arctan2(pds[:, 1], pds[:, 0])
+    pref_angles = jnp.arctan2(pds[:, 1], pds[:, 0])
     
     pds = pds / jnp.linalg.norm(pds, axis=1, keepdims=True)
     
-    return preferred_angles, pds, states, trial_specs
+    return pref_angles, pds, states, trial_specs
     
 
 
 # %%
 ts = slice(0, 20)
-preferred_angles, preferred_vectors_start, states, trial_specs = get_unit_preferred_angles(
+pref_angles, pref_vectors_start, states, trial_specs = get_unit_pref_angles(
     model, 
     task, 
     ts=ts,
@@ -215,14 +219,12 @@ preferred_angles, preferred_vectors_start, states, trial_specs = get_unit_prefer
 )
 
 # %%
-_ = circular_hist(preferred_angles)
+_ = circular_hist(pref_angles)
 
 # %% [markdown]
 # Visualize one of the regressions:
 
 # %%
-# %matplotlib inline
-
 unit = 3
 
 hidden = states.network.hidden[:, ts]
@@ -237,7 +239,7 @@ colors = [cmap_func(i) for i in np.linspace(0, 1, hidden.shape[0])]
 
 for X_, y_, c in zip(target, hidden, colors):
     ax.scatter(X_[:, 0], X_[:, 1], y_[..., unit], c=c, marker='o')
-ax.quiver(0, 0, 0, *preferred_vectors_start[unit], 0, length=0.5, color='k')
+ax.quiver(0, 0, 0, *pref_vectors_start[unit], 0, length=0.5, color='k')
 
 ax.set_xlabel('x')
 ax.set_ylabel('y')
@@ -253,10 +255,12 @@ anim.save(f'unit_{unit}_pd.mp4', fps=20)
 # %%
 ts = slice(60, 100)
 
-preferred_angles, preferred_vectors_end, _, _ = get_unit_preferred_angles(model, task, ts=ts, key=key_eval)
+pref_angles, pref_vectors_end, _, _ = get_unit_pref_angles(
+    model, task, ts=ts, key=key_eval
+)
 
 # %%
-_ = circular_hist(preferred_angles)
+_ = circular_hist(pref_angles)
 
 # %%
 unit = 44
@@ -273,7 +277,7 @@ colors = [cmap_func(i) for i in np.linspace(0, 1, hidden.shape[0])]
 
 for X_, y_, c in zip(target, hidden, colors):
     ax.scatter(X_[:, 0], X_[:, 1], y_[..., unit], c=c, marker='o')
-ax.quiver(0, 0, 0, *preferred_vectors_end[unit], 0, length=0.5, color='k')
+ax.quiver(0, 0, 0, *pref_vectors_end[unit], 0, length=0.5, color='k')
 
 ax.set_xlabel('x')
 ax.set_ylabel('y')
@@ -298,7 +302,7 @@ model_curl = eqx.tree_at(
 # %%
 ts = slice(0, 20)
 
-preferred_angles, pds, states, trial_specs = get_unit_preferred_angles(model_curl, task, ts=ts, key=key_eval)
+pref_angles, pds, states, trial_specs = get_unit_pref_angles(model_curl, task, ts=ts, key=key_eval)
 
 # %%
 plot_pos_vel_force_2D(
@@ -311,46 +315,48 @@ plot_pos_vel_force_2D(
 plt.show()
 
 # %%
-_ = circular_hist(preferred_angles)
+_ = circular_hist(pref_angles)
 
-
-# %%
-def angle_between_vectors(v1, v2):
-    return jnp.arctan2(
-        v1[..., 0] * v2[..., 1] - v1[..., 1] * v2[..., 0], 
-        v1[..., 0] * v2[..., 0] + v1[..., 1] * v2[..., 1],
-    )   
-
+# %% [markdown]
+# What is the distribution of changes in preferred direction over units?
 
 # %%
-_ = circular_hist(angle_between_vectors(pds, preferred_vectors_start), plot_mean=True)
+_ = circular_hist(angle_between_vectors(pds, pref_vectors_start), plot_mean=True)
+
 
 # %% [markdown]
 # Add a constant input to a single unit:
 
 # %%
+def add_unit_perturbation(model, unit, input_current, perturbation_type=NetworkConstantInputPerturbation, *, key):
+    unit_spec = jnp.full(model.step.net.hidden_size, jnp.nan)
+    unit_spec = unit_spec.at[unit].set(input_current)
+
+    model = eqx.tree_at(
+        lambda model: model.step.net,
+        model,
+        add_intervenors(
+            model.step.net, 
+            {'readout': [perturbation_type(unit_spec)]},
+            key=key,
+        ),
+    )
+    
+    return model
+
+
+# %%
 unit = 3
 input_current = 2.
 
-unit_spec = jnp.full(states.network.hidden.shape[-1], jnp.nan)
-
-unit_spec = unit_spec.at[unit].set(input_current)
-
-# %%
-model_ = eqx.tree_at(
-    lambda model: model.step.net,
-    model,
-    add_intervenors(
-        model.step.net, 
-        {'readout': [NetworkConstantInputPerturbation(unit_spec)]},
-        key=jr.PRNGKey(seed + 3),
-    ),
-)
+model_ = add_unit_perturbation(model, unit, input_current, key=jr.PRNGKey(seed + 3))
 
 # %%
 ts = slice(0, 20)
 
-preferred_angles, pds, states, trial_specs = get_unit_preferred_angles(model_, task, ts=ts, key=key_eval)
+pref_angles, pds, states, trial_specs = get_unit_pref_angles(
+    model_, task, ts=ts, key=key_eval
+)
 
 # %%
 plot_pos_vel_force_2D(
@@ -370,56 +376,237 @@ key = jr.PRNGKey(seed + 1)
 plot_activity_sample_units(states.network.hidden, n_samples, unit_includes=(6,), key=key)
 
 # %%
-_ = circular_hist(preferred_angles)
+_ = circular_hist(pref_angles)
 
 # %%
-preferred_angle_change = angle_between_vectors(pds, preferred_vectors_start)
-ax, _, _, _ = circular_hist(preferred_angle_change, plot_mean=True)
+pref_angle_change = angle_between_vectors(pds, pref_vectors_start)
+ax, _, _, _ = circular_hist(pref_angle_change, plot_mean=True)
 
-stim_unit_original_angle = jnp.arctan2(*preferred_vectors_start[unit])
+stim_unit_original_angle = jnp.arctan2(*pref_vectors_start[unit])
 suoa = stim_unit_original_angle
 ax.plot([suoa, suoa], [0, 0.5], 'b-', lw=2)
 
-# %% [markdown]
-# Interesting that the unit additive perturbation doesn't alter the distribution of preferred directions, but the curl field does.
 
 # %% [markdown]
-# Does this alter the distribution of preferences?
-
-# %% [markdown]
-# Clamp the unit rather than adding the input to its existing activity
+# Now, apply the same perturbation to each unit in turn
 
 # %%
-model_ = eqx.tree_at(
-    lambda model: model.step.net,
-    model,
-    add_intervenors(
-        model.step.net, 
-        {'readout': [NetworkClamp(unit_spec)]},
-        key=jr.PRNGKey(seed + 3),
-    ),
+def pref_vectors_pre_post_pert(model, task, unit, input_current, pert_type=NetworkConstantInputPerturbation, *, key, ts=slice(None)):
+    key1, key2 = jr.split(key)
+    
+    # no perturbation
+    _, pref_vectors, _, _ = get_unit_pref_angles(
+        model, task, ts=ts, key=key2
+    )
+    
+    model = add_unit_perturbation(model, unit, input_current, perturbation_type=pert_type, key=key1)
+    
+    # with perturbation
+    _, pref_vectors_pert, _, _ = get_unit_pref_angles(
+        model, task, ts=ts, key=key2
+    )
+    
+    return pref_vectors, pref_vectors_pert
+
+
+pref_vectors, pref_vectors_pert = \
+    eqx.filter_vmap(
+        partial(
+            pref_vectors_pre_post_pert,
+            key=key_eval, ts=ts,
+        ),
+        in_axes=(None, None, 0, None),
+    )(
+        model, task, jnp.arange(model.step.net.hidden_size), input_current
+    )
+
+# %% [markdown]
+# Plot the distribution of mean angle change over perturbation of different individual units
+
+# %%
+pref_angle_changes = angle_between_vectors(
+    pref_vectors_pert, 
+    pref_vectors,
 )
 
-# %%
-losses, states = task.eval(model_, key=key_eval)
+_ = circular_hist(jnp.mean(pref_angle_changes, axis=1), plot_mean=True)
+
+# %% [markdown]
+# Note that the red line (due to `plot_mean=True`) is the mean of means.
+#
+# Now plot the mean angle change against the preferred angle of the stimulated unit
 
 # %%
-trial_specs, _ = task.trials_validation
+stim_unit_original_pds = np.diagonal(pref_vectors, axis1=0, axis2=1).T
+stim_unit_original_angles = vector_angle(stim_unit_original_pds)
 
-plot_pos_vel_force_2D(
-    states,
-    endpoints=(
-        trial_specs.init['mechanics']['effector'].pos, 
-        trial_specs.goal.pos
-    ),
-)
+fig, ax = plt.subplots(1,1)
+ax.plot(stim_unit_original_angles, jnp.mean(pref_angle_changes, axis=1), 'o')
+ax.set_xlabel("Original pref. angle of stim. unit")
+ax.set_ylabel("Mean change in pref. angles of non-stim. units")
 plt.show()
 
-# %%
-seed = 5566
-n_samples = 6
-key = jr.PRNGKey(seed)
+# %% [markdown]
+# These analyses don't really demonstrate that individual units PDs aren't biased with respect to the PD of the stimulated unit---more that there aren't any global systematic biases in PD. 
+#
+# For example, the polar histogram of the mean `pref_angle_changes` is centered on 0, but each of the means is with respect to a particular perturbed unit with a particular PD. But within that distribution, are the changes in PD biased toward/away from the original PD of the stimulated unit?
+#
+# We can investigate this by taking the angle of the preferred direction of each unit with respect to that of the stimulated unit, with and without the perturbation. The ratio of the latter to the former will then indicate if the angle between a unit's PD and the stim unit's PD grew (>1) or shrank (<1) due to the perturbation. 
 
-plot_activity_sample_units(states.network.hidden, n_samples, key=key)
+# %%
+change_ratio_pref_angle_wrt_stim = angle_between_vectors(
+    pref_vectors_pert, 
+    stim_unit_original_pds[:, None, :],
+) / angle_between_vectors(
+    pref_vectors, 
+    stim_unit_original_pds[:, None, :],
+)
+
+# %% [markdown]
+# Now plot the distribution of the ratio, in particular the mean over the non-stimulated units, for perturbation of each of the stimulated units.
+
+# %%
+mean_change_ratio_pref_angle_wrt_stim = jnp.nanmean(
+    jnp.where(jnp.isinf(change_ratio_pref_angle_wrt_stim), jnp.nan, change_ratio_pref_angle_wrt_stim),
+    axis=1,
+)
+
+fig, ax = plt.subplots(1, 1)
+ax.hist(mean_change_ratio_pref_angle_wrt_stim, bins=20, density=True)
+ax.set_xlabel("Pre-post pert. ratio of mean non-stim. PD to (pre) stim. PD")
+
+# %% [markdown]
+# Clearly most of these values are slightly less than 1, indicating that the PD of the non-stimulated units in a network tend to be biased toward the PD of the stimulated unit. 
+
+# %%
+jnp.mean(mean_change_ratio_pref_angle_wrt_stim)
+
+# %% [markdown]
+# Mechanistically, if the unit PDs are biased towards that of the stimulated unit, then their activities are relatively higher than pre-perturbation for those reach directions which are closer to the PD of the stimulated unit. But the perturbation is present for all reaches, including those that are in the opposite direction to the PD of the stimulated unit. This may suggest that a unit's causal influence on the other units in the network is greater during reaches in its preferred direction.
+#
+# However, this hypothesis might be trivially true because the perturbation is additive in this case, so the stimulated units remain more active during reaches in their PD, and less active in reaches away from their PD. 
+#
+# What happens if we repeat the analysis for single-unit perturbations that aren't additive, but instead clamp each unit to a particular value? Then we should still expect to see the above relationship only if the direction-dependent influence of each unit is encoded by the rest of the network, and not merely because that unit's output is itself direction-dependent.
+
+# %%
+pref_vectors, pref_vectors_pert = \
+    eqx.filter_vmap(
+        partial(
+            pref_vectors_pre_post_pert,
+            pert_type=NetworkClamp, key=key_eval, ts=ts,
+        ),
+        in_axes=(None, None, 0, None),
+    )(
+        model, task, jnp.arange(model.step.net.hidden_size), input_current
+    )
+
+# %%
+stim_unit_original_pds = np.diagonal(pref_vectors, axis1=0, axis2=1).T
+
+change_ratio_pref_angle_wrt_stim = angle_between_vectors(
+    pref_vectors_pert, 
+    stim_unit_original_pds[:, None, :],
+) / angle_between_vectors(
+    pref_vectors, 
+    stim_unit_original_pds[:, None, :],
+)
+
+# %%
+mean_change_ratio_pref_angle_wrt_stim = jnp.nanmean(
+    jnp.where(jnp.isinf(change_ratio_pref_angle_wrt_stim), jnp.nan, change_ratio_pref_angle_wrt_stim),
+    axis=1,
+)
+
+fig, ax = plt.subplots(1, 1)
+ax.hist(mean_change_ratio_pref_angle_wrt_stim, bins=20, density=True)
+ax.set_xlabel("Pre-post pert. ratio of mean non-stim. PD to (pre) stim. PD")
+
+# %%
+jnp.mean(mean_change_ratio_pref_angle_wrt_stim)
+
+# %% [markdown]
+# How does the effect scale with the size of the perturbation?
+
+# %%
+input_currents = jnp.linspace(-5, 5, 20)
+
+def mean_PD_bias(model, task, unit, input_current, key):
+    pref_vectors, pref_vectors_pert = eqx.filter_vmap(
+            partial(
+                pref_vectors_pre_post_pert,
+                pert_type=NetworkClamp, key=key, ts=ts,
+            ),
+            in_axes=(None, None, 0, None),
+        )(
+            model, task, unit, input_current,
+    )
+
+    stim_unit_original_pds = np.diagonal(pref_vectors, axis1=0, axis2=1).T
+
+    change_ratio_pref_angle_wrt_stim = angle_between_vectors(
+        pref_vectors_pert, 
+        stim_unit_original_pds[:, None, :],
+    ) / angle_between_vectors(
+        pref_vectors, 
+        stim_unit_original_pds[:, None, :],
+    )
+    
+    return jnp.where(
+        jnp.isinf(change_ratio_pref_angle_wrt_stim), 
+        jnp.nan, 
+        change_ratio_pref_angle_wrt_stim
+    )
+
+change_ratio_pref_angle_wrt_stim = \
+    eqx.filter_vmap(
+        mean_PD_bias,
+        in_axes=(None, None, None, 0, None),
+    )(
+        model, task, jnp.arange(model.step.net.hidden_size), input_currents, key_eval
+    )
+    
+mean_change_ratio_by_stim = jnp.nanmean(change_ratio_pref_angle_wrt_stim, axis=2)
+mcr = mean_change_ratio_by_stim
+
+# %% [markdown]
+# Here's an example of the the distribution for a negative (-5) value of the perturbation strength:
+
+# %%
+fig, ax = plt.subplots(1, 1)
+ax.hist(mcr[10], bins=20, density=True)
+ax.set_xlabel("Pre-post pert. ratio of mean non-stim. PD to (pre) stim. PD")
+
+# %% [markdown]
+# I'm not sure about the point near 14, which appears in all the distributions for perturbation strengths <0. We're going to exclude it from the following analysis so that it doesn't distort the estimate of the mean and variability of the bulk of the distribution, which is near 1. You can comment out the following cell and run the following ones, to see the effect of including the "outlier".
+#
+# #### TODO: 
+# What do the points at >10 and <1 mean? It can't be as simple as what happened with the 180 degree flip with one of the PDs above---the datapoints in these histograms are means over the entire non-stimulated population of units, for stimulation of each unit in turn. So these "outlier" points should correspond to particular units which were perturbed, and which had an unusual effect on the rest of the network. I suppose it might have something to do with the ratios being calculated between angles, so that if the PD of the stimulated unit is very near 0 or $2\pi$ and we shift over the boundary, we might get a very large ratio, 6 / 0.4 or something? But that would involve shifts that are larger than what we'd expect on average...
+
+# %%
+mcr = jnp.where(mcr > 10, jnp.nan, mcr)
+
+# %%
+df = pd.DataFrame(
+    mcr, 
+    index=input_currents, 
+    #columns=jnp.arange(model.step.net.hidden_size),
+).reset_index().melt(id_vars="index", var_name="stim_unit", value_name="shift")
+
+df
+
+# %%
+fig, ax = plt.subplots(1, 1)
+sns.lineplot(
+    data=df,
+    x="index",
+    y="shift",
+    errorbar='sd',
+    ax=ax,
+    n_boot=1000,
+)
+ax.hlines(1, xmin=input_currents[0], xmax=input_currents[-1], linestyles='dashed')
+ax.set_xlabel("Input to stim. unit")
+ax.set_ylabel("PD shift ratio of non-stim units")
+
 
 # %%

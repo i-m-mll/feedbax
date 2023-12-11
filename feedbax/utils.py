@@ -63,6 +63,23 @@ class Timer:
     stop = __exit__
 
 
+def angle_between_vectors(v1, v2):
+    """Return the signed angle between two 2-vectors."""
+    return jnp.arctan2(
+        v1[..., 0] * v2[..., 1] - v1[..., 1] * v2[..., 0], 
+        v1[..., 0] * v2[..., 0] + v1[..., 1] * v2[..., 1],
+    )   
+
+
+def vector_angle(v):
+    """Return the angle of a 2-vector.
+    
+    This is a hardcoded special case of `angle_between_vectors`, 
+    where `v2=(1, 0)`.
+    """
+    return jnp.arctan2(v[..., 1], v[..., 0])
+
+
 def datacls_flatten(datacls):
     """Flatten function for dataclasses as PyTrees."""
     field_names, field_values = zip(*[
