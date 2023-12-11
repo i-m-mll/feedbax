@@ -2,6 +2,7 @@
 
 TODO:
 - Some vmap-like option for plotting batches of trials on a single axis?
+- Optional `fig` or `ax` argument that overrides figure generation
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -390,6 +391,7 @@ def plot_activity_sample_units(
     n_samples: int, 
     cols: int = 2, 
     cmap: str = 'tab10', 
+    unit_includes = None,
     *, 
     key: jax.Array
 ):
@@ -405,6 +407,8 @@ def plot_activity_sample_units(
     unit_idxs = jr.choice(
         key, jnp.arange(activities.shape[-1]), (n_samples,), replace=False
     )
+    if unit_includes is not None:
+        unit_idxs = jnp.concatenate([unit_idxs, jnp.array(unit_includes)])
     x = activities[..., unit_idxs]
 
     cmap = plt.get_cmap(cmap)
@@ -641,7 +645,6 @@ def animate_arm2(
         interval=interval, 
         blit=True
     )
-    
 
 
 def animate_3D_rotate(
@@ -752,3 +755,91 @@ def get_high_contrast_neutral_shade():
         return 'white'
     else:
         return 'black'
+    
+    
+def circular_hist(x, ax=None, bins=16, density=True, offset=0, gaps=True, plot_mean=False):
+    """Produce a circular histogram of angles on ax.
+    
+    NOTE: Should probably replace this. See the original SO answer linked
+    below. The area of the bars is not linear in the counts, but we tend to
+    visually estimate proportions by areas.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes._subplots.PolarAxesSubplot
+        axis instance created with subplot_kw=dict(projection='polar').
+
+    x : array
+        Angles to plot, expected in units of radians.
+
+    bins : int, optional
+        Defines the number of equal-width bins in the range. The default is 16.
+
+    density : bool, optional
+        If True plot frequency proportional to area. If False plot frequency
+        proportional to radius. The default is True.
+
+    offset : float, optional
+        Sets the offset for the location of the 0 direction in units of
+        radians. The default is 0.
+
+    gaps : bool, optional
+        Whether to allow gaps between bins. When gaps = False the bins are
+        forced to partition the entire [-pi, pi] range. The default is True.
+
+    Returns
+    -------
+    n : array or list of arrays
+        The number of values in each bin.
+
+    bins : array
+        The edges of the bins.
+
+    patches : `.BarContainer` or list of a single `.Polygon`
+        Container of individual artists used to create the histogram
+        or list of such containers if there are multiple input datasets.
+        
+    From https://stackoverflow.com/a/55067613
+    """
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, subplot_kw=dict(projection='polar'))
+    
+    # Wrap angles to [-pi, pi)
+    x = (x+np.pi) % (2*np.pi) - np.pi
+
+    # Force bins to partition entire circle
+    if not gaps:
+        bins = np.linspace(-np.pi, np.pi, num=bins+1)
+
+    # Bin data and record counts
+    n, bins = np.histogram(x, bins=bins)
+
+    # Compute width of each bin
+    widths = np.diff(bins)
+
+    # By default plot frequency proportional to area
+    if density:
+        # Area to assign each bin
+        area = n / x.size
+        # Calculate corresponding bin radius
+        radius = (area/np.pi) ** .5
+    # Otherwise plot frequency proportional to radius
+    else:
+        radius = n
+
+    # Plot data on ax
+    patches = ax.bar(bins[:-1], radius, zorder=1, align='edge', width=widths,
+                     edgecolor='C0', fill=False, linewidth=1)
+    
+    if plot_mean:
+        mean_angle = np.mean(x)
+        ax.plot([mean_angle, mean_angle], [0, np.max(radius)], "r-", lw=2)
+    
+    # Set the direction of the zero angle
+    ax.set_theta_offset(offset)
+
+    # Remove ylabels for area plots (they are mostly obstructive)
+    if density:
+        ax.set_yticks([])
+
+    return ax, n, bins, patches

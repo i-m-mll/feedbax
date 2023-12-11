@@ -452,7 +452,27 @@ class TaskTrainer(eqx.Module):
             losses_history,
         )
         return chkpt_path, last_batch, model, losses_history
+        
+
+class SimpleTrainer(eqx.Module):
+    """For training on whole datasets over a fixed number of iterations.
     
+    e.g. for training a linear regression or jPCA model.
+    """
+    
+    loss_func: Callable[[eqx.Module, Array, Array], Float]
+    optimizer: optax.GradientTransformation
+    
+    def __call__(self, model, X, y, n_iter=100): 
+        opt_state = self.optimizer.init(model)
+        
+        for _ in tqdm(range(n_iter)):
+            loss, grads = jax.value_and_grad(self.loss_func)(model, X, y)
+            updates, opt_state = self.optimizer.update(grads, opt_state)
+            model = eqx.apply_updates(model, updates)
+        
+        return model
+        
     
 def grad_wrap_loss_func(
     loss_func: AbstractLoss
