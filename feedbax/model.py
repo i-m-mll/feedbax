@@ -388,6 +388,10 @@ def add_intervenors(
         else:
             raise ValueError("intervenors not a sequence or dict of sequences")
 
+    for k in intervenors_dict:
+        if k not in model.model_spec:
+            raise ValueError(f"{k} is not a valid model stage for intervention")
+
     return eqx.tree_at(
         lambda model: model.intervenors,
         model, 

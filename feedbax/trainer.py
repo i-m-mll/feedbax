@@ -472,7 +472,8 @@ class SimpleTrainer(eqx.Module):
             model = eqx.apply_updates(model, updates)
         
         return model
-        
+
+            
     
 def grad_wrap_loss_func(
     loss_func: AbstractLoss

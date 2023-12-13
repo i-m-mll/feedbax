@@ -28,6 +28,9 @@ N_DIM = 2  # TODO: not here
 # %load_ext autoreload
 # %autoreload 2
 
+# %% [markdown]
+#
+
 # %%
 import os
 import logging

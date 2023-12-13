@@ -196,7 +196,7 @@ class AbstractTask(eqx.Module):
         return losses, states
 
 
-def _pos_only_inits_targets(
+def _pos_only_states(
     pos_endpoints: Float[Array, "... ndim=2"]
 ):
     """Construct Cartesian init and target states with zero force and velocity.
@@ -204,13 +204,13 @@ def _pos_only_inits_targets(
     vel_endpoints = jnp.zeros_like(pos_endpoints)
     forces = jnp.zeros_like(pos_endpoints)
     
-    init_state, target_state = jax.tree_map(
+    states = jax.tree_map(
         lambda x: CartesianState2D(*x),
         list(zip(pos_endpoints, vel_endpoints, forces)),
         is_leaf=lambda x: isinstance(x, tuple)
     )
     
-    return dict(mechanics=dict(effector=init_state)), target_state
+    return states
 
 
 def _centerout_endpoints_grid(
@@ -232,7 +232,7 @@ def _centerout_endpoints_grid(
     return pos_endpoints
 
 
-def _randomreaches_task_inputs(
+def _forceless_task_inputss(
     target_states: CartesianState2D,
 ) -> CartesianState2D:
     """Only position and velocity of targets are supplied to the model.
@@ -245,7 +245,7 @@ def _randomreaches_task_inputs(
 
 
 class RandomReaches(AbstractTask):
-    """Train on random reach endpoints in rectangular workspace.
+    """Reaches between random endpoints in a rectangular workspace.
     
     Validation set is center-out reaches. 
     
@@ -280,7 +280,7 @@ class RandomReaches(AbstractTask):
         pos_endpoints = uniform_tuples(key, n=2, bounds=self.workspace)
                 
         init_state, target_state = \
-            _pos_only_inits_targets(pos_endpoints)
+            _pos_only_states(pos_endpoints)
         
         # Broadcast the fixed targets to a sequence with the desired number of 
         # time steps, since that's what `Iterator` and `Loss` will expect.
@@ -289,9 +289,13 @@ class RandomReaches(AbstractTask):
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             target_state,
         )
-        task_input = _randomreaches_task_inputs(target_state)
+        task_input = _forceless_task_inputss(target_state)
         
-        return ReachTrialSpec(init_state, task_input, target_state), None
+        return ReachTrialSpec(
+            dict(mechanics=dict(effector=init_state)), 
+            task_input, 
+            target_state
+        ), None
         
     @cached_property
     def trials_validation(self) -> [ReachTrialSpec, None]:
@@ -305,7 +309,7 @@ class RandomReaches(AbstractTask):
         )
         
         init_states, target_states = \
-            _pos_only_inits_targets(pos_endpoints)
+            _pos_only_states(pos_endpoints)
         
         # Broadcast to the desired number of time steps. Awkwardly, we also 
         # need to use `swapaxes` because the batch dimension is explicit, here.
@@ -317,9 +321,13 @@ class RandomReaches(AbstractTask):
             target_states,
         )
         
-        task_inputs = _randomreaches_task_inputs(target_states)
+        task_inputs = _forceless_task_inputss(target_states)
         
-        return ReachTrialSpec(init_states, task_inputs, target_states), None
+        return ReachTrialSpec(
+            dict(mechanics=dict(effector=init_states)), 
+            task_inputs, 
+            target_states
+        ), None
 
 
 class DelayTaskInput(eqx.Module):
@@ -358,14 +366,18 @@ class RandomReachesDelayed(AbstractTask):
         pos_endpoints = uniform_tuples(key1, n=2, bounds=self.workspace)
                 
         init_state, target_state = \
-            _pos_only_inits_targets(pos_endpoints)
+            _pos_only_states(pos_endpoints)
         
         task_inputs, target_states, epoch_start_idxs = self.get_sequences(
             init_state, target_state, key2
         )      
         
         return (
-            ReachTrialSpec(init_state, task_inputs, target_states), 
+            ReachTrialSpec(
+                dict(mechanics=dict(effector=init_state)), 
+                task_inputs, 
+                target_states
+            ), 
             epoch_start_idxs,
         )
         
@@ -381,7 +393,7 @@ class RandomReachesDelayed(AbstractTask):
         )
         
         init_states, target_states = \
-            _pos_only_inits_targets(pos_endpoints)
+            _pos_only_states(pos_endpoints)
         
         epochs_keys = jr.split(self.key_eval, init_states.pos.shape[0])
         task_inputs, target_states, epoch_start_idxs = jax.vmap(self.get_sequences)(
@@ -389,7 +401,11 @@ class RandomReachesDelayed(AbstractTask):
         )    
            
         return (
-            ReachTrialSpec(init_states, task_inputs, target_states), 
+            ReachTrialSpec(
+                dict(mechanics=dict(effector=init_states)), 
+                task_inputs, 
+                target_states
+            ), 
             epoch_start_idxs,
         )
     
@@ -413,7 +429,7 @@ class RandomReachesDelayed(AbstractTask):
         )[None, :]
         
         stim_seqs = get_masked_seqs(
-            _randomreaches_task_inputs(target_states), 
+            _forceless_task_inputss(target_states), 
             epoch_masks[self.stim_epochs]
         )
         target_seqs = jax.tree_map(
@@ -432,6 +448,113 @@ class RandomReachesDelayed(AbstractTask):
         target_states = target_seqs
         
         return task_input, target_states, epoch_start_idxs  
+
+
+class Stabilization(AbstractTask):
+    """Postural stabilization task at random points in workspace.
+    
+    Validation set is center-out reaches. 
+    
+    TODO:
+    - This should involve some kind of perturbations, which might be different
+      for the validation set.
+    """
+    loss_func: AbstractLoss
+    workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
+    n_steps: int
+    eval_grid_n: int  # e.g. 2 -> 2x2 grid of center-out reach sets
+    eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
+        converter=jnp.asarray, default=None)
+    
+    N_DIM = 2
+    
+    @eqx.filter_jit
+    @jax.named_scope("fbx.RandomReaches.get_train_trial")
+    def get_train_trial(
+        self, 
+        key: jax.Array
+    ) -> [ReachTrialSpec, None]:
+        """Random reach endpoints in a 2D rectangular workspace.
+        """
+        
+        points = uniform_tuples(key, n=1, bounds=self.workspace)
+                
+        target_state = \
+            _pos_only_states(points)
+        
+        init_state = target_state
+        
+        # Broadcast the fixed targets to a sequence with the desired number of 
+        # time steps, since that's what `Iterator` and `Loss` will expect.
+        # Hopefully this should not use up any extra memory. 
+        target_state = jax.tree_map(
+            lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+            target_state,
+        )
+        task_input = _forceless_task_inputss(target_state)
+        
+        return ReachTrialSpec(
+            dict(mechanics=dict(effector=init_state)),
+            task_input, 
+            target_state
+        ), None
+        
+    @cached_property
+    def trials_validation(self) -> [ReachTrialSpec, None]:
+        """Center-out reaches across a regular workspace grid."""
+        
+        if self.eval_workspace is None:
+            workspace = self.workspace
+        else:
+            workspace = self.eval_workspace
+        
+        pos_endpoints = points_grid(
+            workspace,
+            self.eval_grid_n,
+        )
+        
+        target_states = \
+            _pos_only_states(pos_endpoints)
+        
+        init_states = target_states
+        
+        # Broadcast to the desired number of time steps. Awkwardly, we also 
+        # need to use `swapaxes` because the batch dimension is explicit, here.
+        target_states = jax.tree_map(
+            lambda x: jnp.swapaxes(
+                jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+                0, 1
+            ),
+            target_states,
+        )
+        
+        task_inputs = _forceless_task_inputss(target_states)
+        
+        return ReachTrialSpec(
+            dict(mechanics=dict(effector=init_states)),
+            task_inputs,
+            target_states
+        ), None
+
+
+def points_grid(
+    workspace: Float[Array, "bounds=2 ndim=2"],
+    grid_n: int | Tuple[int, int],
+):
+    """A regular grid of points over a rectangular workspace.
+    
+    Args:
+    
+        grid_n: Number of grid points in each dimension.
+    """
+    if isinstance(grid_n, int):
+        grid_n = (grid_n, grid_n)
+    
+    xy_1d = map(lambda x: jnp.linspace(*x[0], x[1]), 
+                zip(workspace.T, grid_n))
+    grid = jnp.stack(jnp.meshgrid(*xy_1d))
+    grid_points = grid.reshape(2, -1).T
+    return grid_points
 
 
 def uniform_tuples(
