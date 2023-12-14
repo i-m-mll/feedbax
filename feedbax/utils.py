@@ -63,7 +63,7 @@ class Timer:
     stop = __exit__
 
 
-def angle_between_vectors(v1, v2):
+def angle_between_vectors(v2, v1):
     """Return the signed angle between two 2-vectors."""
     return jnp.arctan2(
         v1[..., 0] * v2[..., 1] - v1[..., 1] * v2[..., 0], 

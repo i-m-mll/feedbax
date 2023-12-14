@@ -15,6 +15,7 @@ import sys
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence, Tuple
 
 import equinox as eqx
+from equinox import field
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
@@ -22,6 +23,7 @@ from jaxtyping import Array, Float, PyTree
 import optax
 from tqdm.auto import tqdm
 
+from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
 import feedbax.plot as plot
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
@@ -421,7 +423,7 @@ class TaskTrainer(eqx.Module):
                                                  flat_opt_state)
         
         (_, losses), grads = eqx.filter_value_and_grad(
-            grad_wrap_loss_func(task.loss_func), has_aux=True
+            grad_wrap_task_loss_func(task.loss_func), has_aux=True
         )(
             diff_model, 
             static_model, 
@@ -452,16 +454,40 @@ class TaskTrainer(eqx.Module):
             losses_history,
         )
         return chkpt_path, last_batch, model, losses_history
+
+
+def grad_wrap_simple_loss_func(
+    loss_func
+):
+    """Wraps a loss function taking outputs and targets to one taking a model.
+    """
+    @wraps(loss_func)
+    def wrapper(
+        model, 
+        X, 
+        y,
+    ) -> Tuple[float, LossDict]:
+        loss = loss_func(model(X), y)
         
+        return loss
+    
+    return wrapper
+
 
 class SimpleTrainer(eqx.Module):
     """For training on whole datasets over a fixed number of iterations.
     
+    By default, uses SGD with a fixed learning rate of 1e-2, and MSE loss.
+    
     e.g. for training a linear regression or jPCA model.
     """
     
-    loss_func: Callable[[eqx.Module, Array, Array], Float]
-    optimizer: optax.GradientTransformation
+    loss_func: Callable[[eqx.Module, Array, Array], Float] = field(
+        default=grad_wrap_simple_loss_func(loss.mse),
+    )
+    optimizer: optax.GradientTransformation = field(
+        default=optax.sgd(1e-2),
+    )
     
     def __call__(self, model, X, y, n_iter=100): 
         opt_state = self.optimizer.init(model)
@@ -472,13 +498,12 @@ class SimpleTrainer(eqx.Module):
             model = eqx.apply_updates(model, updates)
         
         return model
-
-            
+          
     
-def grad_wrap_loss_func(
+def grad_wrap_task_loss_func(
     loss_func: AbstractLoss
 ):
-    """Wraps a loss function taking state to a `grad`-able one taking a model.
+    """Wraps a task loss function taking state to a `grad`-able one taking a model.
     
     It is convenient to first define the loss function in terms of a 
     mapping from states to scalars, because sometimes we want to evaluate the 

@@ -358,42 +358,68 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         n_task_inputs = tree_sum_n_features(example_trial_spec.input)
         return n_feedback + n_task_inputs
     
+
+def add_intervenor(
+    model: AbstractModel, 
+    intervenor: AbstractIntervenor,
+    stage_name: Optional[str] = None,
+    **kwargs
+) -> AbstractModel:
+    """Return an updated model with an added intervenor.
     
+    This is just a convenience for passing a single intervenor to `add_intervenor`.
+    """
+    if stage_name is not None:
+        return add_intervenors(model, {stage_name: [intervenor]}, **kwargs)
+    else:
+        return add_intervenors(model, [intervenor], **kwargs)
+
+
 def add_intervenors(
     model: AbstractModel, 
     intervenors: Union[Sequence[AbstractIntervenor],
                        Dict[str, Sequence[AbstractIntervenor]]], 
+    where: Callable[[AbstractModel], AbstractModel] = lambda model: model,
     keep_existing: bool = True,
     *,
-    key: jax.Array
+    key: Optional[jax.Array] = None
 ) -> AbstractModel:
     """Return an updated model with added intervenors.
+    
+    Intervenors are added to `where(model)`, which by default is 
+    just `model` itself.
+    
+    If intervenors are passed as a sequence, they are added to the first stage
+    specified in `where(model).model_spec`, otherwise they should be passed in
+    a dict where the keys refer to particular stages in the model spec.
     
     TODO:
     - Could this be generalized to `AbstractModel[StateT]`?
     """
     if keep_existing:
+        existing_intervenors = where(model).intervenors
+        
         if isinstance(intervenors, Sequence):
             # If a sequence is given, append to the first stage.
-            first_stage_label = next(iter(model.intervenors))
+            first_stage_label = next(iter(existing_intervenors))
             intervenors_dict = eqx.tree_at(
                 lambda intervenors: intervenors[first_stage_label],
-                model.intervenors,
-                model.intervenors[first_stage_label] + list(intervenors),
+                existing_intervenors,
+                existing_intervenors[first_stage_label] + list(intervenors),
             )
         elif isinstance(intervenors, dict):
-            intervenors_dict = copy.deepcopy(model.intervenors)
+            intervenors_dict = copy.deepcopy(existing_intervenors)
             for label, new_intervenors in intervenors.items():
                 intervenors_dict[label] += list(new_intervenors)
         else:
             raise ValueError("intervenors not a sequence or dict of sequences")
 
     for k in intervenors_dict:
-        if k not in model.model_spec:
+        if k not in where(model).model_spec:
             raise ValueError(f"{k} is not a valid model stage for intervention")
 
     return eqx.tree_at(
-        lambda model: model.intervenors,
+        lambda model: where(model).intervenors,
         model, 
         intervenors_dict,
     )

@@ -468,3 +468,11 @@ def power_discount(n_steps, discount_exp=6):
         return 1.
     else:
         return jnp.linspace(1. / n_steps, 1., n_steps) ** discount_exp
+    
+
+def mse(x, y):
+    """Mean squared error."""
+    return jax.tree_map(
+        lambda x, y: jnp.mean((x - y) ** 2),
+        x, y,
+    )
