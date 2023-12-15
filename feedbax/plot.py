@@ -12,7 +12,7 @@ from collections import OrderedDict
 import io
 from itertools import zip_longest
 import logging 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -455,6 +455,13 @@ def plot_losses(
     
     Uses 1-indexing for the training iteration, so that the first iteration
     is visible even when the x-axis is log-scaled.
+    
+    TODO:
+    - Currently this assumes that any batch dimension (e.g. during ensembling)
+      appears last, which is at odds with what happens elsewhere. So perhaps
+      this function should assume the batch dimension would be first, check if
+      it exists, and then transpose the data if necessary. Then we could return
+      the losses in the shape `(replicates, iteration)` from `TaskTrainer`.
     """  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
@@ -487,20 +494,28 @@ def plot_losses(
 
 
 def plot_mean_losses(
-    losses: Float[Array, "rep trainstep"], 
-    losses_terms: Dict[str, Float[Array, "rep trainstep"]]
+    losses: LossDict,
 ):
     """Similar to `plot_loss`, with mean-std over a batch dimension.
+    
+    TODO:
+    - This is pretty slow. Maybe there's a way to construct only one 
+    dataframe.
     """
     losses_terms_df = jax.tree_map(
-        lambda losses: pd.DataFrame(losses, index=range(losses.shape[0])).melt(
+        lambda losses: pd.DataFrame(
+            losses.T, 
+            index=range(losses.shape[1])
+        ).melt(
             var_name='Time step', 
             value_name='Loss'
         ),
-        dict(losses_terms, total=losses),
+        dict(losses, total=losses.total),
     )
+    
     fig, ax = plt.subplots()
     ax.set(xscale='log', yscale='log')
+    
     for label, df in losses_terms_df.items():
         sns.lineplot(
             data=df, 
@@ -510,6 +525,7 @@ def plot_mean_losses(
             label=label, 
             ax=ax
         )
+        
     return fig, ax
 
 
@@ -843,3 +859,52 @@ def circular_hist(x, ax=None, bins=16, density=True, offset=0, gaps=True, plot_m
         ax.set_yticks([])
 
     return ax, n, bins, patches
+
+
+class preserve_axes_limits:
+    """Context manager for preserving the axes limits of matplotlib axis/axes.
+    
+    For example, let's say we want to plot an `hlines` on an axis and use
+    very large limits so that it definitely spans the visible region, but 
+    we don't want the plot to adjust its limits to those of the `hlines`.    
+    
+    It is perhaps odd to use `jax.tree_map` for a stateful operation like 
+    the one in `__exit__`, but it works.
+    """
+    def __init__(self, ax: mpl.axes.Axes | PyTree[mpl.axes.Axes]):
+        if isinstance(ax, mpl.axes.Axes):
+            axs = [ax]
+        self._axs = axs
+        self._lims = jax.tree_map(
+            lambda ax: dict(
+                x=ax.get_xlim(),
+                y=ax.get_ylim(),
+            ),
+            axs,
+            is_leaf=lambda x: isinstance(x, mpl.axes.Axes),
+        )
+        
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        jax.tree_map(
+            lambda ax, lims: (
+                ax.set_xlim(lims['x']), 
+                ax.set_ylim(lims['y'])
+            ),
+            self._axs,
+            self._lims,
+        )
+        
+    
+def hlines(ax, y, **kwargs):
+    """Add a horizontal line across a plot, preserving the axes limits."""
+    with preserve_axes_limits(ax):
+        ax.hlines(y, -1e100, 1e100, **kwargs)
+
+
+def vlines(ax, x, **kwargs):
+    """Add a vertical line across a plot, preserving the axes limits."""
+    with preserve_axes_limits(ax):
+        ax.vlines(x, -1e100, 1e100, **kwargs)

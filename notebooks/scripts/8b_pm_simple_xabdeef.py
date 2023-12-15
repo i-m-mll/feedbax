@@ -47,7 +47,7 @@ import matplotlib.pyplot as plt
 import optax 
 
 from feedbax.xabdeef.losses import simple_reach_loss
-from feedbax.xabdeef.models import point_mass_RNN
+from feedbax.xabdeef.models import point_mass_NN
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer
 
@@ -90,7 +90,7 @@ task = RandomReaches(
     eval_reach_length=0.5,    
 )
 
-model = point_mass_RNN(
+model = point_mass_NN(
     task,
     key=key_model,
     dt=dt,

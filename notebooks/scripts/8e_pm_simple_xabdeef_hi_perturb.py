@@ -42,7 +42,7 @@ from feedbax.intervene import (
     NetworkConstantInputPerturbation,
 )
 from feedbax.model import add_intervenors
-from feedbax.xabdeef import point_mass_RNN_simple_reaches
+from feedbax.xabdeef import point_mass_NN_simple_reaches
 
 from feedbax.plot import (
     plot_losses, 
@@ -61,9 +61,9 @@ plt.style.use('dark_background')
 # %%
 seed = 5566
 
-# context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
+# context = point_mass_NN_simple_reaches(key=jr.PRNGKey(seed))
 
-context = point_mass_RNN_simple_reaches(eval_grid_n=1, key=jr.PRNGKey(seed))
+context = point_mass_NN_simple_reaches(eval_grid_n=1, key=jr.PRNGKey(seed))
 
 model, losses, _ = context.train(
     n_batches=1_000, 

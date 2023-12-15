@@ -71,6 +71,16 @@ def angle_between_vectors(v2, v1):
     )   
 
 
+def tree_index(tree: PyTree, index: int):
+    """Returns the same PyTree, indexing all of its array leaves.
+    """
+    models_arrays, models_other = eqx.partition(tree, eqx.is_array)
+    return eqx.combine(
+        jax.tree_map(lambda x: x[index], models_arrays),
+        models_other,
+    )
+
+
 def vector_angle(v):
     """Return the angle of a 2-vector.
     

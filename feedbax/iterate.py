@@ -135,8 +135,8 @@ class Iterator(eqx.Module):
             init_state_nomem
         )
         
-        return states
-    
+        return states  
+
 
 class SimpleIterator(eqx.Module):
     """A simple model iterator that stores the entire state.
@@ -171,5 +171,4 @@ class SimpleIterator(eqx.Module):
         )
         
         return states 
-        
         

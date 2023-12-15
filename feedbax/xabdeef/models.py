@@ -4,6 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from functools import partial
 import logging
 from typing import Callable, Optional, Type
 
@@ -24,6 +25,7 @@ from feedbax.mechanics.muscled_arm import TwoLinkMuscled
 from feedbax.networks import SimpleNetwork
 from feedbax.task import AbstractTask, RandomReaches
 from feedbax.trainer import TaskTrainer
+from feedbax.utils import get_model_ensemble
 from feedbax.xabdeef.losses import simple_reach_loss
 
 
@@ -44,10 +46,14 @@ class ContextManager(eqx.Module):
     
     We could choose not to associate `task` with this class. Let users choose 
     tasks from `xabdeef.tasks` and pass them to `train`...
+    
+    TODO:
+    - Rename this, since it conflicts with a common Python pattern.
     """
     model: AbstractModel 
     task: AbstractTask
     trainable_leaves_func: Optional[Callable] = None
+    ensembled: bool = False
     
     
     def train(
@@ -78,14 +84,17 @@ class ContextManager(eqx.Module):
             log_step=log_step,
             trainable_leaves_func=self.trainable_leaves_func,
             key=key,
+            ensembled=self.ensembled,
         )
+    
 
-def point_mass_RNN(
+def point_mass_NN(
     task,
     key: Optional[jax.Array] = None,
     dt: float = 0.05, 
     mass: float = 1., 
     hidden_size: int = 50, 
+    hidden_type: eqx.Module = eqx.nn.GRUCell,
     encoding_size: Optional[int] = None,
     n_steps: int = 100, 
     feedback_delay_steps: int = 0,
@@ -111,6 +120,7 @@ def point_mass_RNN(
         hidden_size,
         out_size=system.control_size, 
         encoding_size=encoding_size,
+        hidden_type=hidden_type,
         out_nonlinearity=out_nonlinearity, 
         key=key1,
     )
@@ -121,7 +131,8 @@ def point_mass_RNN(
     return model
 
 
-def point_mass_RNN_simple_reaches(
+def point_mass_NN_simple_reaches(
+    n_replicates: int = 1,
     n_steps: int = 100, 
     dt: float = 0.05, 
     mass: float = 1., 
@@ -129,12 +140,21 @@ def point_mass_RNN_simple_reaches(
                  (1., 1.)),
     hidden_size: int = 50, 
     encoding_size: Optional[int] = None,
+    hidden_type: eqx.Module = eqx.nn.GRUCell,
     feedback_delay_steps: int = 0,
     eval_grid_n: int = 2,
     *,
     key: jax.Array,
 ):
-    """"""
+    """
+    
+    TODO: 
+    - It would be nice to avoid the vmapping overhead when not ensembling.
+      However, then there's an issue with return values. Should we unsqueeze
+      the model/states in the non-ensembled case to look like the ensembled 
+      case? Or allow different returns? Or make separate functions here in 
+      `xabdeef` for the two cases?
+    """
     
     task = RandomReaches(
         loss_func=simple_reach_loss(n_steps),
@@ -145,16 +165,38 @@ def point_mass_RNN_simple_reaches(
         eval_reach_length=0.5,    
     )
     
-    model = point_mass_RNN(
-        task,
+    # if n_replicates == 1:
+    #     model = point_mass_NN(
+    #         task,
+    #         key=key,
+    #         dt=dt,
+    #         mass=mass,
+    #         hidden_size=hidden_size, 
+    #         encoding_size=encoding_size,
+    #         hidden_type=hidden_type,
+    #         n_steps=n_steps,
+    #         feedback_delay_steps=feedback_delay_steps,
+    #     )
+    #     ensembled = False
+    # elif n_replicates > 1:
+    model = get_model_ensemble(
+        partial(
+            point_mass_NN,
+            task,
+            dt=dt,
+            mass=mass,
+            hidden_size=hidden_size, 
+            encoding_size=encoding_size,
+            hidden_type=hidden_type,
+            n_steps=n_steps,
+            feedback_delay_steps=feedback_delay_steps,
+        ),
+        n_replicates=n_replicates,
         key=key,
-        dt=dt,
-        mass=mass,
-        hidden_size=hidden_size, 
-        encoding_size=encoding_size,
-        n_steps=n_steps,
-        feedback_delay_steps=feedback_delay_steps,
     )
+    ensembled = True
+    # else:
+    #     raise ValueError("n_replicates must be an integer >= 1")
     
     trainable_leaves_func = lambda model: model.step.net
     
@@ -162,6 +204,7 @@ def point_mass_RNN_simple_reaches(
         model=model,
         task=task,
         trainable_leaves_func=trainable_leaves_func,
+        ensembled=ensembled,
     )
     
     return manager

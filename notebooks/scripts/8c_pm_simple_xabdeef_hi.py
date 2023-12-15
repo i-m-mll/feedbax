@@ -31,7 +31,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 
-from feedbax.xabdeef import point_mass_RNN_simple_reaches
+from feedbax.xabdeef import point_mass_NN_simple_reaches
 
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 
@@ -45,7 +45,7 @@ plt.style.use('dark_background')
 # %%
 seed = 5566
 
-context = point_mass_RNN_simple_reaches(key=jr.PRNGKey(seed))
+context = point_mass_NN_simple_reaches(key=jr.PRNGKey(seed))
 
 model, losses, _ = context.train(
     n_batches=2_000, 
@@ -72,7 +72,7 @@ seed = 5566
 key_model = jr.PRNGKey(seed)
 key_train = jr.PRNGKey(seed + 1)
 
-context = point_mass_RNN_simple_reaches(
+context = point_mass_NN_simple_reaches(
     n_steps=100,
     dt=0.1,
     mass=1.0,

@@ -54,7 +54,7 @@ import optax
 from tqdm.auto import tqdm
 
 from feedbax.xabdeef.losses import simple_reach_loss
-from feedbax.xabdeef.models import point_mass_RNN
+from feedbax.xabdeef.models import point_mass_NN
 
 from feedbax.task import RandomReaches
 from feedbax.trainer import TaskTrainer
@@ -67,9 +67,9 @@ plt.style.use('dark_background')
 seed = 5566
 
 mass = 1.0
-n_steps = 10
-dt = 0.1
-feedback_delay_steps = 5
+# n_steps = 10
+dt = 0.05
+feedback_delay_steps = 0
 workspace = ((-1., -1.),
              (1., 1.))
 hidden_size  = 50
@@ -96,7 +96,7 @@ get_task = lambda n_steps: RandomReaches(
 
 get_models = lambda task, n_steps, n_replicates, key: get_model_ensemble(
     partial(
-        point_mass_RNN,
+        point_mass_NN,
         task,
         dt=dt,
         mass=mass,
@@ -109,13 +109,13 @@ get_models = lambda task, n_steps, n_replicates, key: get_model_ensemble(
 )
 
 trainable_leaves_func = lambda model: (
-    model.step.net.cell.weight_hh, 
-    model.step.net.cell.weight_ih, 
-    model.step.net.cell.bias
+    model.step.net.hidden.weight_hh, 
+    model.step.net.hidden.weight_ih, 
+    model.step.net.hidden.bias
 )
 
 # %% [markdown]
-# We'll use batch callbacks to time three training runs for each of several values of `n_replicates`, to see how training rate depends on it.
+# We'll use batch callbacks to time some training runs for each of several values of `n_replicates`, to see how training rate depends on it.
 
 # %%
 n_batches_timer = 100
@@ -149,12 +149,12 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
         models = get_models(task, s, n, key)
         
         for i in range(n_runs):
-            trainer.train_ensemble(
+            trainer(
                 task=task, 
-                models=models,
-                n_replicates=n,
+                model=models,
                 n_batches=n_batches, 
                 batch_size=batch_size, 
+                ensembled=True,
                 key=jr.PRNGKey(seed + i),
                 log_step=200,
                 trainable_leaves_func=trainable_leaves_func,
@@ -170,8 +170,8 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
 
 # %%
 os.makedirs("../data", exist_ok=True)
-np.save(f"../data/{NB_PREFIX}_train_times_means.npy", times_means)
-np.save(f"../data/{NB_PREFIX}_train_times_stds.npy", times_stds)
+np.save(f"../data/{NB_PREFIX}_train_times_means_0delay.npy", times_means)
+np.save(f"../data/{NB_PREFIX}_train_times_stds_0delay.npy", times_stds)
 
 # %%
 times_means = np.load(f"../data/{NB_PREFIX}_train_times_means.npy")
@@ -194,7 +194,7 @@ for i in range(len(n_steps)):
     ax.plot(n_replicates, rate[i], c=colors[i], lw=1.5)
 
 # harcoded estimate I made earlier for a single 1,000-step model
-ax.plot(1, 1.75, 'w*', ms=7)
+#ax.plot(1, 1.75, 'w*', ms=7)
 
 ax.set_xscale("log")
 ax.set_yscale("log")
@@ -226,7 +226,7 @@ for i in range(len(n_steps)):
     ax.plot(n_replicates, means[i], c=colors[i], lw=1.5)
 
 # harcoded estimate I made earlier for a single 1,000-step model
-ax.plot(1, 95, 'w*', ms=7)
+#ax.plot(1, 95, 'w*', ms=7)
 
 ax.plot()    
 ax.set_xscale("log")
@@ -241,6 +241,9 @@ ax.set_ylim(0.1, 300)
 # ax.tick_params(axis='y', which='minor', left=False)
 
 plt.legend(n_steps, title="Time steps")
+
+# %%
+jnp.max(means)
 
 # %% [markdown]
 # ### Evaluation rate
@@ -302,7 +305,7 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
 
 # %%
 n_eval = 50
-n_steps = [10, 25, 50, 75, 100][::-1]
+n_steps = [10, 25, 50, 75, 100]
 n_replicates = [1, 2, 4, 8, 16, 32, 64]
 n_warmup = 0
 
@@ -345,13 +348,13 @@ for idx0 in tqdm(range(len(n_steps)), desc="n_steps"):
 
 # %%
 os.makedirs("../data", exist_ok=True)
-np.save(f"../data/{NB_PREFIX}_eval_times_means.npy", times_means)
-np.save(f"../data/{NB_PREFIX}_eval_times_stds.npy", times_stds)
+np.save(f"../data/{NB_PREFIX}_eval_times_means_0delay.npy", times_means)
+np.save(f"../data/{NB_PREFIX}_eval_times_stds_0delay.npy", times_stds)
 
 # %%
 fig, ax = plt.subplots()
 
-means = np.array(times_means[::-1]) 
+means = np.array(times_means) 
 
 cmap_func = plt.get_cmap('viridis')
 colors = [cmap_func(i) for i in np.linspace(0, 1, len(n_steps))]
@@ -382,7 +385,7 @@ n_batches_example = 10_000
 
 fig, ax = plt.subplots()
 
-means = n_batches_example * np.array(times_means[::-1]) / 60  # minutes
+means = n_batches_example * np.array(times_means) / 60  # minutes
 stds = np.array(times_stds) 
 
 cmap_func = plt.get_cmap('viridis')
@@ -407,3 +410,4 @@ ax.set_ylim(0.1, 300)
 plt.legend(n_steps[::-1], title="Time steps")
 
 # %%
+jnp.max(means)

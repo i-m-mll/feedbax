@@ -52,7 +52,7 @@ import numpy as np
 import optax 
 
 from feedbax.xabdeef.losses import simple_reach_loss
-from feedbax.xabdeef.models import point_mass_RNN
+from feedbax.xabdeef.models import point_mass_NN
 
 from feedbax.plot import plot_losses, plot_pos_vel_force_2D
 from feedbax.task import RandomReaches
@@ -86,7 +86,7 @@ task = RandomReaches(
     eval_reach_length=0.5,
 )
 
-model = point_mass_RNN(
+model = point_mass_NN(
     task,
     dt=dt,
     mass=mass,
