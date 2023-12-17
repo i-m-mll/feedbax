@@ -165,24 +165,10 @@ def point_mass_NN_simple_reaches(
         eval_reach_length=0.5,    
     )
     
-    # if n_replicates == 1:
-    #     model = point_mass_NN(
-    #         task,
-    #         key=key,
-    #         dt=dt,
-    #         mass=mass,
-    #         hidden_size=hidden_size, 
-    #         encoding_size=encoding_size,
-    #         hidden_type=hidden_type,
-    #         n_steps=n_steps,
-    #         feedback_delay_steps=feedback_delay_steps,
-    #     )
-    #     ensembled = False
-    # elif n_replicates > 1:
-    model = get_model_ensemble(
-        partial(
-            point_mass_NN,
+    if n_replicates == 1:
+        model = point_mass_NN(
             task,
+            key=key,
             dt=dt,
             mass=mass,
             hidden_size=hidden_size, 
@@ -190,13 +176,27 @@ def point_mass_NN_simple_reaches(
             hidden_type=hidden_type,
             n_steps=n_steps,
             feedback_delay_steps=feedback_delay_steps,
-        ),
-        n_replicates=n_replicates,
-        key=key,
-    )
-    ensembled = True
-    # else:
-    #     raise ValueError("n_replicates must be an integer >= 1")
+        )
+        ensembled = False
+    elif n_replicates > 1:
+        model = get_model_ensemble(
+            partial(
+                point_mass_NN,
+                task,
+                dt=dt,
+                mass=mass,
+                hidden_size=hidden_size, 
+                encoding_size=encoding_size,
+                hidden_type=hidden_type,
+                n_steps=n_steps,
+                feedback_delay_steps=feedback_delay_steps,
+            ),
+            n_replicates=n_replicates,
+            key=key,
+        )
+        ensembled = True
+    else:
+        raise ValueError("n_replicates must be an integer >= 1")
     
     trainable_leaves_func = lambda model: model.step.net
     

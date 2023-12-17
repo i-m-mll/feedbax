@@ -586,9 +586,9 @@ def plot_endpoint_pos_with_dists(
     return fig, fig.axes
 
 
-def plot_task_and_speed_profiles(
+def plot_speed_profiles(
     velocity: Float[Array, "batch time xy"], 
-    task_variables = Dict[str, Float[Array, "batch time"]], 
+    task_variables: Dict[str, Float[Array, "batch time"]] = dict(), 
     epoch_start_idxs: Optional[Int[Array, "batch epoch"]] = None,
     cmap: str = 'tab10',
 ):
@@ -596,16 +596,23 @@ def plot_task_and_speed_profiles(
     
     For example: does the network start moving before the go cue is given?
     """
-    speeds = jnp.sqrt(jnp.sum(velocity**2, axis=-1))
+    speeds = jnp.sqrt(jnp.sum(velocity ** 2, axis=-1))
 
     task_rows = len(task_variables)
-    height_ratios = (1,) * task_rows + (task_rows,)
+    
+    if task_rows > 0:
+        height_ratios = (1,) * task_rows + (task_rows,)
+    else:
+        height_ratios = (1,)
 
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, speeds.shape[0])]
 
     fig, axs = plt.subplots(1 + task_rows, 1, height_ratios=height_ratios, 
                             sharex=True, constrained_layout=True)
+                            
+    if task_rows == 0:
+        axs = [axs]
 
     axs[-1].set_title('speed profiles')
     for i in range(speeds.shape[0]):
@@ -626,6 +633,9 @@ def plot_task_and_speed_profiles(
         for j in range(arr.shape[0]):
             axs[i].plot(arr[j].T, color=colors[j])
         axs[i].set_ylim(*utils.padded_bounds(arr))
+    
+    axs[-1].set_xlabel('Time step')
+    axs[-1].set_ylabel('Speed')
 
 
 def animate_arm2(

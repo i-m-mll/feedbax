@@ -131,14 +131,10 @@ plot_activity_sample_units(states.network.hidden, n_samples, key=key)
 # Apply a clockwise curl field:
 
 # %%
-model_curl = eqx.tree_at(
-    lambda model: model.step,
-    model,
-    add_intervenors(
-        model.step, 
+model_curl = add_intervenors(
+        model,
         [EffectorCurlForceField(0.25, direction='cw')],
-        key=jr.PRNGKey(seed + 3),
-    ),
+        lambda model: model.step, 
 )
 
 # %%

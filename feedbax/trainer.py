@@ -33,6 +33,7 @@ from feedbax.utils import (
     git_commit_id,
     tree_get_idx,
     tree_set_idx,
+    mask_diagonal,
 )
 
 if TYPE_CHECKING:
@@ -60,17 +61,24 @@ class TaskTrainer(eqx.Module):
     checkpointing: bool
     chkpt_dir: Optional[Path]
     writer: Optional[SummaryWriter]
+    model_update_funcs: Sequence[Callable]
     _use_tb: bool
     
     def __init__(
         self,
         optimizer: optax.GradientTransformation,    
+        model_update_funcs: Optional[Sequence[Callable]] = None,
         checkpointing: bool = True,
         chkpt_dir: str | Path ="/tmp/fbx-checkpoints",
         enable_tensorboard: bool = False,
         tensorboard_logdir: str | Path = "/tmp/fbx-tensorboard",
     ):
         self.optimizer = optimizer 
+        if model_update_funcs is None:
+            self.model_update_funcs = ()
+        else:
+            self.model_update_funcs = model_update_funcs
+            
         self._use_tb = enable_tensorboard
         if self._use_tb:
             from torch.utils.tensorboard import SummaryWriter
@@ -422,7 +430,7 @@ class TaskTrainer(eqx.Module):
         opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, 
                                                  flat_opt_state)
         
-        (_, losses), grads = eqx.filter_value_and_grad(
+        (_, (losses, states)), grads = eqx.filter_value_and_grad(
             grad_wrap_task_loss_func(task.loss_func), has_aux=True
         )(
             diff_model, 
@@ -433,6 +441,10 @@ class TaskTrainer(eqx.Module):
         
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
+        
+        for update_func in self.model_update_funcs:
+            state_dep_updates = update_func(model, states)
+            model = eqx.apply_updates(model, state_dep_updates)
 
         flat_model = jax.tree_util.tree_leaves(model)
         flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
@@ -538,7 +550,7 @@ def grad_wrap_task_loss_func(
         
         losses = loss_func(states, trial_specs.target, trial_specs.input)
         
-        return losses.total, losses 
+        return losses.total, (losses, states)
     
     return wrapper 
 
@@ -598,3 +610,42 @@ def load(
     
     return tree
     
+    
+class HebbianGRUUpdate(eqx.Module):
+    """Hebbian update rule for the recurrent weights of a GRUCell.
+
+    This specifically applies the Hebbian update to the candidate activation
+    weights of the GRU, while leaving the update and reset weights unchanged.
+    
+    TODO:
+    - Generalize to other architectures. Vanilla RNN is easy.
+        - Allow the user to specify `where` in the model the weights are.
+    """
+    
+    scale: float = 0.01
+    
+    def __call__(self, model, states):
+        x = states.network.hidden
+        
+        # Hebbian learning rule
+        dW = self.scale * x[..., :, None] @ x[..., None, :]
+        
+        # Updates do not apply to self weights.
+        dW = mask_diagonal(dW)
+        
+        # Sum over all batch dimensions (e.g. trials, time)
+        dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
+        
+        # Build the update for the candidate activation weights of the GRU.
+        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
+        weight_idxs = slice(2 * weight_hh.shape[-2] // 3, None)        
+        weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
+        
+        update = eqx.tree_at(
+            lambda model: model.step.net.hidden.weight_hh, 
+            jax.tree_map(lambda x: None, model),
+            weight_hh,
+            is_leaf=lambda x: x is None,
+        )
+        
+        return update

@@ -80,6 +80,11 @@ def tree_index(tree: PyTree, index: int):
         models_other,
     )
 
+def mask_diagonal(array):
+    """Set the diagonal of (the last two dimensions of) `array` to zero."""
+    mask = 1 - jnp.eye(array.shape[-1])
+    return array * mask
+
 
 def vector_angle(v):
     """Return the angle of a 2-vector.
