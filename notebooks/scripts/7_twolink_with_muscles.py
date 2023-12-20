@@ -84,9 +84,9 @@ y0 = TwoLinkMuscledState(
     d_angle=jnp.array([0., 0.]),
     activation=jnp.zeros(6),
 )
-args = muscle_input = jnp.array([0.0, 0., 0.0, 0., 0.1, 0.0])
+args = muscle_input = jnp.array([0.0, 0., 0.15, 0., 0.0, 0.0])
 t0 = 0
-dt0 = 0.05  # [ms]
+dt0 = 0.01  # [ms]
 t1 = 1
 n_steps = int((t1 - t0) / dt0)
 
@@ -115,7 +115,7 @@ plant = MuscledArm(
 mechanics = Mechanics(
     plant, 
     dt=dt0,
-    clip_states=False,
+    # clip_states=False,
     # solver=dfx.Tsit5,
 )
 
@@ -140,8 +140,11 @@ states = model(muscle_inputs, init_state, key=jr.PRNGKey(0))
 # %%
 xy = eqx.filter_vmap(plant.skeleton.forward_kinematics)(states.plant.skeleton)
 
-ax = plot_2D_joint_positions(xy.pos, add_root=True)
-plt.show()
+fig, ax = plot_2D_joint_positions(xy.pos, add_root=True)
+
+fig.savefig("monoelbowflexor_0.15.svg", transparent=True)
+
+
 
 # %% [markdown]
 # Note that the solution is similar, but not identical, to the earlier solution where the muscle inputs were 5x larger. This is presumably due to the different discretization of `Iterator` versus `diffeqsolve`.

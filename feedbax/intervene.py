@@ -16,7 +16,7 @@ import logging
 from typing import TYPE_CHECKING, Callable, Generic, LiteralString, Optional, TypeVar
 
 import equinox as eqx
-from equinox import AbstractClassVar, AbstractVar
+from equinox import AbstractClassVar, AbstractVar, field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PyTree
@@ -197,7 +197,7 @@ class EffectorCurlForceField(AbstractAdditiveIntervenor):
     """
     amplitude: float   # TODO: allow asymmetry 
     direction: str
-    _scale: jax.Array
+    _scale: jax.Array# = field(static=True)
     
     label: str = "effector_curl_field"
     

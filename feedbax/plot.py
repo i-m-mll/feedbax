@@ -164,7 +164,7 @@ def plot_2D_joint_positions(
 
     ax.margins(0.1, 0.2)
     ax.set_aspect('equal')
-    return ax
+    return fig, ax
 
 
 def plot_3D_paths(
@@ -261,6 +261,8 @@ def plot_pos_vel_force_2D(
     force_labels: Optional[Tuple[str, str, str]] = None,
     force_label_type: str = 'linear',
     cmap: str = 'tab10',
+    color: Optional[str | Tuple[float, ...]] = None,
+    colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
     fig=None, 
     ms: int = 3, 
@@ -286,8 +288,10 @@ def plot_pos_vel_force_2D(
     
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
-    cmap_func = plt.get_cmap(cmap)
-    colors = [cmap_func(i) for i in np.linspace(0, 1, positions.shape[0])]
+    if colors is None:
+        cmap_func = plt.get_cmap(cmap)
+        colors = [cmap_func(i) if color is None else color
+                  for i in np.linspace(0, 1, positions.shape[0])]
    
     for i in range(positions.shape[0]):
         # position and 
@@ -591,6 +595,8 @@ def plot_speed_profiles(
     task_variables: Dict[str, Float[Array, "batch time"]] = dict(), 
     epoch_start_idxs: Optional[Int[Array, "batch epoch"]] = None,
     cmap: str = 'tab10',
+    colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
+    **kwargs,
 ):
     """For visualizing learned movements versus task structure.
     
@@ -605,8 +611,9 @@ def plot_speed_profiles(
     else:
         height_ratios = (1,)
 
-    cmap = plt.get_cmap(cmap)
-    colors = [cmap(i) for i in np.linspace(0, 1, speeds.shape[0])]
+    if colors is None:
+        cmap = plt.get_cmap(cmap)
+        colors = [cmap(i) for i in np.linspace(0, 1, speeds.shape[0])]
 
     fig, axs = plt.subplots(1 + task_rows, 1, height_ratios=height_ratios, 
                             sharex=True, constrained_layout=True)
@@ -616,7 +623,7 @@ def plot_speed_profiles(
 
     axs[-1].set_title('speed profiles')
     for i in range(speeds.shape[0]):
-        axs[-1].plot(speeds[i].T, color=colors[i])
+        axs[-1].plot(speeds[i].T, color=colors[i], **kwargs)
 
     ymax = 1.5 * jnp.max(speeds)
     if epoch_start_idxs is not None:
@@ -636,6 +643,8 @@ def plot_speed_profiles(
     
     axs[-1].set_xlabel('Time step')
     axs[-1].set_ylabel('Speed')
+    
+    return fig, axs
 
 
 def animate_arm2(
@@ -868,7 +877,7 @@ def circular_hist(x, ax=None, bins=16, density=True, offset=0, gaps=True, plot_m
     if density:
         ax.set_yticks([])
 
-    return ax, n, bins, patches
+    return fig, ax #n, bins, patches
 
 
 class preserve_axes_limits:

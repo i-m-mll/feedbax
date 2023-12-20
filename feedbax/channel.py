@@ -45,7 +45,10 @@ class Channel(eqx.Module):
         queue = state.queue[1:] + (input,)
         output = state.queue[0]
         if self.noise_std is not None:
-            output = output + self.noise_std * jr.normal(key, output.shape) 
+            output = jax.tree_map(
+                lambda x: x + self.noise_std * jr.normal(key, x.shape),
+                output,
+            )
         return ChannelState(output, queue)
     
     def init(self, input):

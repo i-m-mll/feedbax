@@ -132,7 +132,24 @@ class AbstractTask(eqx.Module):
         """Evaluate a model on the task's validation set of trials."""
         
         return self.eval_trials(model, self.trials_validation[0], key)
-    
+
+    @eqx.filter_jit
+    def eval_ensemble(
+        self,
+        models,
+        n_replicates,
+        key,
+    ):
+        """Evaluate an ensemble of models on the task's validation set."""
+        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        def evaluate_single(model_arrays, model_other, key):
+            model = eqx.combine(model_arrays, model_other)
+            return self.eval(model, key)
+        keys_eval = jr.split(key, n_replicates)
+        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
+            models_arrays, models_other, keys_eval
+        )
+        
     @eqx.filter_jit
     def eval_train_batch(
         self, 

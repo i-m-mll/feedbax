@@ -56,11 +56,12 @@ import numpy as np
 import optax 
 
 from feedbax.model import SimpleFeedback
-from feedbax.iterate import Iterator
+from feedbax.iterate import SimpleIterator
 import feedbax.loss as fbl
 from feedbax.mechanics import Mechanics 
 from feedbax.mechanics.skeleton import PointMass
 from feedbax.networks import SimpleNetwork
+from feedbax.mechanics.plant import SimplePlant
 from feedbax.task import RandomReachesDelayed
 from feedbax.trainer import TaskTrainer, save, load
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -73,7 +74,7 @@ from feedbax.plot import (
     plot_activity_sample_units,
     plot_losses, 
     plot_pos_vel_force_2D,
-    plot_task_and_speed_profiles,
+    plot_speed_profiles,
 )
 
 # %%
@@ -124,7 +125,7 @@ def get_model(
     )
     body = SimpleFeedback(net, mechanics, feedback_delay)
 
-    return Iterator(body, n_steps)
+    return SimpleIterator(body, n_steps)
 
 
 # %%
@@ -144,7 +145,7 @@ def get_model(
         key = jr.PRNGKey(0)  
     
     system = PointMass(mass=mass)
-    mechanics = Mechanics(system, dt)
+    mechanics = Mechanics(SimplePlant(system), dt)
     
     # automatically determine network input size
     input_size = SimpleFeedback.get_nn_input_size(
