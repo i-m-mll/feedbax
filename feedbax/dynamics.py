@@ -5,7 +5,7 @@
 """
 
 import logging 
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Optional, Protocol, TypeVar
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -69,15 +69,13 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         
 
 class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
-    """Linear time-invariant system.
-    
-    Note that the system is defined in continuous time.
+    """Linear, continuous, time-invariant system.
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
     
     TODO:
     - Don't hardcode the state split.
-    - Should it be CartesianState2D... linear non-Cartesian systems?
+    - Might the state be non-Cartesian?
     """
     A: AbstractVar[Float[Array, "state state"]]  # state evolution matrix
     B: AbstractVar[Float[Array, "state input"]]  # control matrix
@@ -96,6 +94,7 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
         d_pos, d_vel = d_y[:2], d_y[2:]
         
         return CartesianState2D(pos=d_pos, vel=d_vel)
+    
     @property
     def control_size(self) -> int:
         return self.B.shape[1]
@@ -110,5 +109,7 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
     
     def init(
         self,
+        *,
+        key: Optional[jax.Array] = None,
     ) -> CartesianState2D:
         return CartesianState2D()

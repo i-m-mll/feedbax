@@ -24,7 +24,8 @@ from typing import (
     Generic, 
     Optional, 
     Sequence, 
-    Tuple, 
+    Tuple,
+    Type, 
     TypeVar, 
     Union,
 )
@@ -120,7 +121,7 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
                     )                  
                 
                 for intervenor in intervenors:
-                    # Whether this modifies the state depends on `input`.
+                    # TODO: Whether this modifies the state depends on `input`.
                     state = intervenor(input, state, key=key1)
                 
                 state = eqx.tree_at(
@@ -133,6 +134,36 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
                     ),
                 )
         
+        return state
+    
+    @property
+    def task_interface(self) -> "AbstractModel[StateT]":
+        """TODO: See `Iterator.task_interface`."""
+        return self
+    
+    def state_consistency_update(
+        self, 
+        state: StateT,
+    ) -> StateT:
+        """Make sure the model state is self-consistent.
+        
+        The default behaviour is to just return the same state. However, in
+        models where it is customary to initialize (say) the effector state 
+        but not the plant configuration state, this method should be used 
+        to ensure that the configuration state is initialized properly. 
+        
+        This avoids having to define how both states should be initialized
+        in `AbstractTask`, which would require knowledge not only of the 
+        structure of the state, but also of the model interface that 
+        provides particular operations for modifying the state. Though, I'm not 
+        sure that would be a bad thing, as the model state objects tend to 
+        mirror the operations done on them anyway.
+        
+        However, this approach also has the advantage that these consistency
+        checks can be arbitrarily complex and important to the model 
+        functioning properly; it is useful for the model to be able to 
+        render a state consistent, with respect to its other normal operations.
+        """
         return state
 
     @abstractproperty
@@ -203,7 +234,8 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     @abstractmethod
     def init(
         self,
-        **kwargs,
+        *,
+        key: Optional[jax.Array] = None,
     ) -> StateT:
         """Return an initial state for the model."""
         ...
@@ -245,16 +277,20 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         delay: int = 0, 
         feedback_leaves_func: Callable[["MechanicsState"], PyTree] \
             = lambda mechanics_state: mechanics_state.plant.skeleton,
+        feedback_noise_std: Optional[float] = None,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Dict[str, Sequence[AbstractIntervenor]]]] \
             = None,
+        *,
         key: Optional[jax.Array] = None,
     ):
         self.net = net
         self.mechanics = mechanics
         self.feedback_leaves_func = feedback_leaves_func
         self.delay = delay + 1  # indexing: delay=0 -> storage len=1
-        self.feedback_channel = Channel(delay)
+        self.feedback_channel = Channel(delay, feedback_noise_std).change_input(
+            feedback_leaves_func(mechanics.init())
+        )
         self.intervenors = self._get_intervenors_dict(intervenors)
         
     @property
@@ -285,9 +321,8 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
 
     def init(
         self, 
-        mechanics = None,
-        network = None, 
-        feedback = None,
+        *,
+        key: Optional[jax.Array] = None,
     ): 
         """Return an initial state for the model.
         
@@ -296,17 +331,11 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
           available, which may be the case for simpler modules. The 
           `model_spec` could be used to determine the relevant info flow.
         """
-        
-        if mechanics is None:
-            mechanics = dict()
-        if network is None:
-            network = dict()
-        
-        mechanics_state = self.mechanics.init(**mechanics)
+        mechanics_state = self.mechanics.init()
 
         return SimpleFeedbackState(
             mechanics=mechanics_state,
-            network=self.net.init(**network),
+            network=self.net.init(),
             feedback=self.feedback_channel.init(
                 self.feedback_leaves_func(mechanics_state)
             ),
@@ -357,6 +386,25 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
         example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))[0]
         n_task_inputs = tree_sum_n_features(example_trial_spec.input)
         return n_feedback + n_task_inputs
+    
+    def state_consistency_update(
+        self, 
+        state: SimpleFeedbackState
+    ) -> SimpleFeedbackState:
+        """Update the plant configuration state, given that the user has 
+        initialized the effector state.
+        
+        TODO: 
+        - Check which of the two is initialized, and update the other one.
+          Might require initializing them to NaN or something in `init`.
+        """
+        return eqx.tree_at(
+            lambda state: state.mechanics.plant.skeleton,
+            state, 
+            jax.vmap(self.mechanics.plant.skeleton.inverse_kinematics)(
+                state.mechanics.effector
+            ),
+        )
     
 
 def add_intervenor(

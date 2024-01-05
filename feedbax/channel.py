@@ -4,10 +4,12 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+
 import logging
 from typing import Optional, Tuple
 
 import equinox as eqx
+from equinox import field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -32,9 +34,11 @@ class Channel(eqx.Module):
     
     TODO: 
     - Infer delay steps from time.
+    - Use a shape dtype struct for `input_proto`.
     """
     delay: int 
     noise_std: Optional[float]
+    input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
     
     def __init__(self, delay, noise_std=None):
         self.delay = delay
@@ -51,9 +55,17 @@ class Channel(eqx.Module):
             )
         return ChannelState(output, queue)
     
-    def init(self, input):
-        input_zeros = jax.tree_map(jnp.zeros_like, input)
+    def init(self, *, key: Optional[Array] = None):
+        input_zeros = jax.tree_map(jnp.zeros_like, self.input_proto)
         return ChannelState(
             input_zeros, 
-            (self.delay - 1) * (input_zeros,) + (input,),
+            (self.delay - 1) * (input_zeros,) + (self.input_proto,),
         )
+        
+    def change_input(self, input) -> "Channel":
+        """Returns a similar `Channel` object for a different input type."""
+        return eqx.tree_at(
+            lambda channel: channel.input_proto,
+            self,
+            input
+        )       

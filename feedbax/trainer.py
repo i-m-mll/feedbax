@@ -19,12 +19,14 @@ from equinox import field
 import jax
 import jax.numpy as jnp 
 import jax.random as jr
+import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 import optax
 from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
+from feedbax.model import AbstractModelState
 import feedbax.plot as plot
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.utils import (
@@ -36,9 +38,10 @@ from feedbax.utils import (
     mask_diagonal,
 )
 
-if TYPE_CHECKING:
-    # This is sloow so we'll actually import it only when needed.
-    from torch.utils.tensorboard import SummaryWriter
+# if TYPE_CHECKING:
+#     # This is sloow so we'll actually import it only when needed.
+#     from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 
 
 LOSS_FMT = ".2e"
@@ -78,10 +81,10 @@ class TaskTrainer(eqx.Module):
             self.model_update_funcs = ()
         else:
             self.model_update_funcs = model_update_funcs
-            
+        
         self._use_tb = enable_tensorboard
         if self._use_tb:
-            from torch.utils.tensorboard import SummaryWriter
+            # from torch.utils.tensorboard import SummaryWriter
             
             self.writer = SummaryWriter(tensorboard_logdir)
             # display loss terms in the same figure under "Custom Scalars"
@@ -175,8 +178,8 @@ class TaskTrainer(eqx.Module):
 
         # Passing the flattened pytrees through `train_step` gives a slight
         # performance improvement. See the docstring of `train_step`.
-        flat_model, treedef_model = jax.tree_util.tree_flatten(model)
-        flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
+        flat_model, treedef_model = jtu.tree_flatten(model)
+        flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
          
         if ensembled:
             # We only vmap over axis 0 of the *array* components of the model.
@@ -302,7 +305,7 @@ class TaskTrainer(eqx.Module):
                     )
         
             if jnp.isnan(losses_mean.total):
-                model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+                model = jtu.tree_unflatten(treedef_model, flat_model)
                 
                 msg = f"NaN loss at batch {batch}! "
                 if (checkpoint := self._load_last_checkpoint(
@@ -319,7 +322,7 @@ class TaskTrainer(eqx.Module):
 
             # checkpointing and validation occasionally
             if batch % log_step == 0:
-                model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+                model = jtu.tree_unflatten(treedef_model, flat_model)
                 
                 # model checkpoint
                 if self.checkpointing and batch > 0:
@@ -379,7 +382,7 @@ class TaskTrainer(eqx.Module):
                     # if learning_rate is not None:                    
                     #     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
          
-        model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+        model = jtu.tree_unflatten(treedef_model, flat_model)
          
         return model, losses_history, learning_rates
     
@@ -387,8 +390,8 @@ class TaskTrainer(eqx.Module):
     @jax.named_scope("fbx.TaskTrainer.train_step")
     def train_step(
         self, 
-        task,
-        batch_size,
+        task: AbstractTask,
+        batch_size: int,
         flat_model, 
         treedef_model,
         flat_opt_state, 
@@ -415,26 +418,43 @@ class TaskTrainer(eqx.Module):
         - Use a wrapper to make the flatten/unflatten stuff less ugly.
         - The shape of `opt_state` changes due to `optimizer.update` on the 
           first step only. Why? 
-        - Typing of arguments.
+        - Typing of arguments. Not sure it's possible to type flattened PyTrees 
+          appropriately...
         """
-        key_trials, key_model = jr.split(key, 2)
+        key_trials, key_init, key_model = jr.split(key, 3)
         keys_trials = jr.split(key_trials, batch_size)  
+        keys_init = jr.split(key_init, batch_size)
         keys_model = jr.split(key_model, batch_size)  
         
         trial_specs, _ = jax.vmap(task.get_train_trial)(keys_trials)
         
-        model = jax.tree_util.tree_unflatten(treedef_model, 
-                                             flat_model)
+        model = jtu.tree_unflatten(treedef_model, flat_model)
+        
+        init_states = jax.vmap(model.init)(keys_init) 
+        
+        # TODO: apply task inits (e.g. effector state)
+        for where, init_func in task.init_funcs.items():
+            init_states = eqx.tree_at(
+                where, 
+                init_states,
+                init_func(where(init_states)), #! or something like this
+            )
+            
+        # TODO: consistency check/update after applying task inits (e.g. joint state)
+        init_states = jax.vmap(model.task_interface.state_consistency_update)(
+            init_states
+        )
+        
         diff_model, static_model = eqx.partition(model, filter_spec)
         
-        opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, 
-                                                 flat_opt_state)
+        opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
         
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
             grad_wrap_task_loss_func(task.loss_func), has_aux=True
         )(
             diff_model, 
             static_model, 
+            init_states, 
             trial_specs,
             keys_model,
         )
@@ -442,12 +462,13 @@ class TaskTrainer(eqx.Module):
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
         
+        # For updates computed directly from the state, without loss gradient.
         for update_func in self.model_update_funcs:
             state_dep_updates = update_func(model, states)
             model = eqx.apply_updates(model, state_dep_updates)
 
-        flat_model = jax.tree_util.tree_leaves(model)
-        flat_opt_state, treedef_opt_state = jax.tree_util.tree_flatten(opt_state)
+        flat_model = jtu.tree_leaves(model)
+        flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
         
         return losses, flat_model, flat_opt_state, treedef_opt_state
 
@@ -491,7 +512,7 @@ class SimpleTrainer(eqx.Module):
     
     By default, uses SGD with a fixed learning rate of 1e-2, and MSE loss.
     
-    e.g. for training a linear regression or jPCA model.
+    For example, use this for training a linear regression or jPCA model.
     """
     
     loss_func: Callable[[eqx.Module, Array, Array], Float] = field(
@@ -539,14 +560,17 @@ def grad_wrap_task_loss_func(
     """
     @wraps(loss_func)
     def wrapper(
-        diff_model, 
+        diff_model,  # TODO: `AbstractModel`, if we make `AbstractModel` a parent of `Iterator` 
         static_model, 
         trial_specs: AbstractTaskTrialSpec,
-        keys: jax.Array,
+        init_states: AbstractModelState,
+        keys: jax.Array,  # per trial
     ) -> Tuple[float, LossDict]:
-        model = eqx.combine(diff_model, static_model)
+        
+        model = eqx.combine(diff_model, static_model) 
+        
         #? will `in_axes` ever change? 
-        states = jax.vmap(model)(trial_specs.input, trial_specs.init, keys)
+        states = jax.vmap(model)(trial_specs.input, init_states, keys)
         
         losses = loss_func(states, trial_specs.target, trial_specs.input)
         

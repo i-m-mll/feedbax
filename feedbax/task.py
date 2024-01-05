@@ -15,6 +15,7 @@ TODO:
 
 
 from abc import abstractmethod, abstractproperty
+from collections import OrderedDict
 from functools import cached_property
 import logging 
 from typing import (
@@ -123,6 +124,11 @@ class AbstractTask(eqx.Module):
         useful for plotting or analysis but not for model evaluation.
         """
         ...
+    
+    @abstractproperty 
+    def n_trials_validation(self) -> int:
+        """Size of the validation set."""
+        ...
 
     def eval(
         self, 
@@ -131,7 +137,9 @@ class AbstractTask(eqx.Module):
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on the task's validation set of trials."""
         
-        return self.eval_trials(model, self.trials_validation[0], key)
+        keys = jr.split(key, self.n_trials_validation)
+        
+        return self.eval_trials(model, self.trials_validation[0], keys)
 
     @eqx.filter_jit
     def eval_ensemble(
@@ -160,10 +168,13 @@ class AbstractTask(eqx.Module):
                AbstractTaskTrialSpec, 
                PyTree]:
         """Evaluate a model on a single batch of training trials."""
-        keys = jr.split(key, batch_size)
-        trials, aux = jax.vmap(self.get_train_trial)(keys)
+        key_batch, key_eval = jr.split(key)
+        keys_batch = jr.split(key_batch, batch_size)
+        keys_eval = jr.split(key_eval, batch_size)
         
-        return self.eval_trials(model, trials, key), trials, aux
+        trials, aux = jax.vmap(self.get_train_trial)(keys_batch)
+        
+        return self.eval_trials(model, trials, keys_eval), trials, aux
     
     @eqx.filter_jit
     def eval_ensemble_train_batch(
@@ -195,13 +206,27 @@ class AbstractTask(eqx.Module):
         self, 
         model: "AbstractModel[StateT]", 
         trial_specs: AbstractTaskTrialSpec, 
-        key: jax.Array,
+        keys: jax.Array,
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on a set of trials.
         """      
+        init_states = jax.vmap(model.init)(keys)
         
-        states = jax.vmap(model, in_axes=(0, 0, None))(
-            trial_specs.input, trial_specs.init, key
+        # TODO: apply task inits (e.g. effector state)
+        for where, init_func in self.init_funcs.items():
+            init_states = eqx.tree_at(
+                where, 
+                init_states,
+                init_func(where(init_states)), #! or something like this
+            )
+            
+        # TODO: consistency check/update after applying task inits (e.g. joint state)
+        init_states = jax.vmap(model.task_interface.state_consistency_update)(
+            init_states
+        )
+        
+        states = jax.vmap(model, in_axes=(0, 0, 0))(
+            trial_specs.input, init_states, keys
         ) 
         
         losses = self.loss_func(
@@ -249,7 +274,7 @@ def _centerout_endpoints_grid(
     return pos_endpoints
 
 
-def _forceless_task_inputss(
+def _forceless_task_inputs(
     target_states: CartesianState2D,
 ) -> CartesianState2D:
     """Only position and velocity of targets are supplied to the model.
@@ -279,9 +304,9 @@ class RandomReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
-    eval_n_directions: int 
-    eval_reach_length: float
-    eval_grid_n: int  # e.g. 2 -> 2x2 grid of center-out reach sets
+    eval_n_directions: int = 7
+    eval_reach_length: float = 0.5
+    eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
     
     N_DIM = 2
     
@@ -306,7 +331,8 @@ class RandomReaches(AbstractTask):
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             target_state,
         )
-        task_input = _forceless_task_inputss(target_state)
+        task_input = _forceless_task_inputs(target_state)
+
         
         return ReachTrialSpec(
             dict(mechanics=dict(effector=init_state)), 
@@ -338,13 +364,17 @@ class RandomReaches(AbstractTask):
             target_states,
         )
         
-        task_inputs = _forceless_task_inputss(target_states)
+        task_inputs = _forceless_task_inputs(target_states)
         
         return ReachTrialSpec(
             dict(mechanics=dict(effector=init_states)), 
             task_inputs, 
             target_states
         ), None
+        
+    def n_trials_validation(self) -> int:
+        """Size of the validation set."""
+        return self.eval_grid_n ** 2 * self.eval_n_directions
 
 
 class DelayTaskInput(eqx.Module):
@@ -359,14 +389,22 @@ class RandomReachesDelayed(AbstractTask):
     e.g. allows for a stimulus epoch, followed by a delay period, then movement.
     
     TODO: 
+    - Add a default loss function.
+    - Also allow epoch lengths to be specified in terms of fraction of total
     """
     loss_func: AbstractLoss 
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int 
-    epoch_len_ranges: Tuple[Tuple[int, int], ...]
-    eval_n_directions: int
-    eval_reach_length: float
-    eval_grid_n: int  
+    epoch_len_ranges: Tuple[Tuple[int, int], ...] = field(
+        default=(
+            (5, 15),  # start
+            (10, 20),  # stim
+            (10, 25),  # delay
+        )
+    )
+    eval_n_directions: int = 7
+    eval_reach_length: float = 0.5
+    eval_grid_n: int = 1
     stim_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
     hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
     key_eval: jax.Array = field(default_factory=lambda: jr.PRNGKey(0))
@@ -446,7 +484,7 @@ class RandomReachesDelayed(AbstractTask):
         )[None, :]
         
         stim_seqs = get_masked_seqs(
-            _forceless_task_inputss(target_states), 
+            _forceless_task_inputs(target_states), 
             epoch_masks[self.stim_epochs]
         )
         target_seqs = jax.tree_map(
@@ -465,7 +503,10 @@ class RandomReachesDelayed(AbstractTask):
         target_states = target_seqs
         
         return task_input, target_states, epoch_start_idxs  
-
+    
+    def n_trials_validation(self) -> int:
+        """Size of the validation set."""
+        return self.eval_grid_n ** 2 * self.eval_n_directions
 
 class Stabilization(AbstractTask):
     """Postural stabilization task at random points in workspace.
@@ -479,7 +520,7 @@ class Stabilization(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
-    eval_grid_n: int  # e.g. 2 -> 2x2 grid of center-out reach sets
+    eval_grid_n: int  # e.g. 2 -> 2x2 grid 
     eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
         converter=jnp.asarray, default=None)
     
@@ -508,7 +549,7 @@ class Stabilization(AbstractTask):
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             target_state,
         )
-        task_input = _forceless_task_inputss(target_state)
+        task_input = _forceless_task_inputs(target_state)
         
         return ReachTrialSpec(
             dict(mechanics=dict(effector=init_state)),
@@ -545,13 +586,17 @@ class Stabilization(AbstractTask):
             target_states,
         )
         
-        task_inputs = _forceless_task_inputss(target_states)
+        task_inputs = _forceless_task_inputs(target_states)
         
         return ReachTrialSpec(
             dict(mechanics=dict(effector=init_states)),
             task_inputs,
             target_states
         ), None
+    
+    def n_trials_validation(self) -> int:
+        """Size of the validation set."""
+        return self.eval_grid_n ** 2 
 
 
 def points_grid(

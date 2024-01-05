@@ -22,7 +22,7 @@ import jax.random as jr
 from jaxtyping import Array, PyTree
 from tqdm.auto import tqdm
 
-from feedbax.model import AbstractModel
+from feedbax.model import AbstractModel, AbstractModelState
 from feedbax.utils import tree_get_idx, tree_set_idx
 
 logger = logging.getLogger(__name__)
@@ -78,18 +78,21 @@ class Iterator(eqx.Module):
         return inputs, states, key2
     
     @jax.named_scope("fbx.Iterator")
-    def __call__(self, inputs, init_state, key):
+    def __call__(
+        self, 
+        input,  # should have a batch dimension corresponding to time steps
+        state: AbstractModelState,   # initial state
+        key: Array,
+    ):
         key1, key2, key3 = jr.split(key, 3)
-        # TODO: this should be outside       
-        init_state = self.step.init(**init_state)  
         
-        init_input = tree_get_idx(inputs, 0)
-        states = self.init(init_input, init_state, key2)
+        init_input = tree_get_idx(input, 0)
+        states = self.init_arrays(init_input, state, key2)
         
         if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
             for i in tqdm(range(self.n_steps),
                           desc="steps"):
-                inputs, states, key3 = self._body_func(i, (inputs, states, key3))
+                input, states, key3 = self._body_func(i, (input, states, key3))
                 
             return states
                  
@@ -97,14 +100,32 @@ class Iterator(eqx.Module):
             0, 
             self.n_steps, 
             self._body_func,
-            (inputs, states, key3),
+            (input, states, key3),
         )
         
         return states
     
-    @jax.named_scope("fbx.Iterator.init")
-    def init(self, input, init_state, key):
-        # get the shape of the state output by `self.step`
+    def task_interface(self) -> AbstractModel: 
+        """This allows classes like `AbstractTask` and `TaskTrainer` to refer
+        to methods of a single step of the model, without having to know that 
+        there's an iterator in between. 
+        
+        Other `AbstractModel` instances simply return `self`, here.
+        """
+        return self.step    
+
+    def init(self, *, key: Array) -> AbstractModelState:
+        """Initialize the state of the iterated model.
+        
+        If `Iterator` inherits from `AbstractModel` but not from 
+        `AbstractSpecModel`, we could avoid this and just let `AbstractTask`
+        and `TaskTrainer` refer to `model.task_interface.init`.
+        """
+        return self.step.init(key=key)
+    
+    @jax.named_scope("fbx.Iterator.init_arrays")
+    def init_arrays(self, input, init_state, key):
+        # Get the shape of the state output by `self.step`
         outputs = eqx.filter_eval_shape(
             self.step, 
             input, 
@@ -112,7 +133,7 @@ class Iterator(eqx.Module):
             key=key,
         )
         
-        # generate empty trajectories for mem states
+        # Generate empty trajectories for mem states
         scalars, array_structs = eqx.partition(
             eqx.filter(outputs, self.states_includes), 
             eqx.is_array_like  # False for jax.ShapeDtypeStruct
@@ -126,7 +147,7 @@ class Iterator(eqx.Module):
             asarrays,
         )
     
-        # insert the init state for mem states; combine with no mem state
+        # Insert the init state for mem states; combine with no mem state
         init_state_mem, init_state_nomem = eqx.partition(
             init_state, self.states_includes
         )
@@ -153,8 +174,12 @@ class SimpleIterator(eqx.Module):
         self.step = step
         self.n_steps = n_steps
     
-    def __call__(self, inputs, init_state, key):
-        init_state = self.step.init(**init_state)  
+    def __call__(
+        self, 
+        input,
+        state, 
+        key
+    ):
         
         keys = jr.split(key, self.n_steps)
         
@@ -165,10 +190,27 @@ class SimpleIterator(eqx.Module):
         
         _, states = lax.scan(
             step,
-            init_state, 
-            (inputs, keys),
+            state, 
+            (input, keys),
             length=self.n_steps,
         )
         
         return states 
+
+    def task_interface(self) -> AbstractModel: 
+        """This allows classes like `AbstractTask` and `TaskTrainer` to refer
+        to methods of a single step of the model, without having to know that 
+        there's an iterator in between. 
         
+        Other `AbstractModel` instances simply return `self`, here.
+        """
+        return self.step    
+
+    def init(self, *, key: Array) -> AbstractModelState:
+        """Initialize the state of the iterated model.
+        
+        If `Iterator` inherits from `AbstractModel` but not from 
+        `AbstractSpecModel`, we could avoid this and just let `AbstractTask`
+        and `TaskTrainer` refer to `model.task_interface.init`.
+        """
+        return self.step.init(key=key)

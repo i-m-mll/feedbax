@@ -19,17 +19,13 @@ from jaxtyping import Float, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
-from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton
+from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax.model import AbstractModel, AbstractModelState
 from feedbax.state import StateBounds, clip_state
 
 
 logger = logging.getLogger(__name__)
-
-
-class AbstractSkeletonState(AbstractModelState):
-    ...
     
     
 class PlantState(AbstractModelState):
@@ -59,7 +55,7 @@ class AbstractPlant(AbstractModel[PlantState]):
         ...
     
     @abstractmethod
-    def init(self) -> PlantState:
+    def init(self, *, key: Optional[jax.Array] = None) -> PlantState:
         ...
         
     @abstractproperty 
@@ -150,12 +146,9 @@ class SimplePlant(AbstractPlant):
             muscles=False,
         )
     
-    def init(self, skeleton=None, muscles=None) -> PlantState:
-        if skeleton is None:
-            skeleton = self.skeleton.init()
-        
+    def init(self, *, key: Optional[jax.Array] = None) -> PlantState:
         return PlantState(
-            skeleton=skeleton,
+            skeleton=self.skeleton.init(),
             muscles=None,
         )
     
@@ -198,7 +191,6 @@ class MuscledArm(AbstractPlant):
         key: Optional[jax.Array] = None,
     ):
         self.skeleton = skeleton
-        self.muscle_model = muscle_model
         self.activator = activator
         self.clip_states = clip_states
         
@@ -213,6 +205,8 @@ class MuscledArm(AbstractPlant):
         self.l0 = l0
         self.f0 = f0
         self.n_muscles = moment_arms.shape[1]
+        # Make sure the muscle model has the right number of muscles.
+        self.muscle_model = muscle_model.change_n_muscles(self.n_muscles)
         
         self.intervenors = self._get_intervenors_dict(intervenors)        
     
@@ -240,8 +234,8 @@ class MuscledArm(AbstractPlant):
             ),
             "muscle_tension": (
                 lambda self: self.muscle_model,
-                lambda input, state: state.muscles,
-                lambda state: state.muscles.tension,
+                lambda input, state: None,
+                lambda state: state.muscles,
             ),
             "muscle_torques": (
                 lambda self: self._muscle_torques,
@@ -303,13 +297,10 @@ class MuscledArm(AbstractPlant):
             muscles=True,
         )
     
-    def init(self, skeleton=None) -> PlantState:
-        if skeleton is None:
-            skeleton = self.skeleton.init()
-        
+    def init(self, *, key: Optional[jax.Array] = None) -> PlantState:
         return PlantState(
-            skeleton=skeleton,
-            muscles=self.muscle_model.init(self.n_muscles),
+            skeleton=self.skeleton.init(),
+            muscles=self.muscle_model.init(),
         )
     
     @property

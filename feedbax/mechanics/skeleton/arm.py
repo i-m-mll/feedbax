@@ -94,6 +94,8 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     def init(
         self, 
+        *,
+        key: Optional[jax.Array] = None,
     ) -> TwoLinkState:
         return TwoLinkState()
 

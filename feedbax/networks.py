@@ -263,25 +263,12 @@ class SimpleNetwork(AbstractModel[NetworkState]):
             encoding=True,
         )        
     
-    def init(self, hidden=None, output=None, encoding=None):
-        if hidden is None:
-            hidden = jnp.zeros(self.hidden_size)
-        else:
-            hidden = jnp.array(hidden)
-            
-        if self.readout is not None:
-            if output is None:
-                output = jnp.zeros(self.out_size)
-            else:
-                output = jnp.array(output)
-            
-        if self.encoder is not None:
-            if encoding is None:
-                encoding = jnp.zeros(self.encoding_size)
-            else:
-                encoding = jnp.array(encoding)
-        
-        return NetworkState(hidden, output, encoding)
+    def init(self, *, key: Optional[jax.Array] = None):
+        return NetworkState(
+            hidden=jnp.zeros(self.hidden_size), 
+            output=jnp.zeros(self.out_size), 
+            encoding=jnp.zeros(self.encoding_size),
+        )
 
 
 
@@ -385,6 +372,7 @@ class LeakyRNNCell(eqx.Module):
             return math.sqrt(2 / self.alpha) * noise_strength
         else:
             return None
+
 
 def n_layer_linear(
     hidden_sizes: Sequence[int], 

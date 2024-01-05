@@ -26,14 +26,15 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
+    "diffrax",
     "equinox",
     "jax",
     "jaxtyping",
     "matplotlib",
-    "mypy",
     "numpy",
     "optax",
     "seaborn",
+    "tqdm",
 ]
 
 [project.urls]
@@ -42,6 +43,17 @@ dependencies = [
 # repository = ""
 
 [project.optional-dependencies]
+analysis = [
+    'pandas',
+]
+tensorboard = [
+    'tensorboardX',
+    'crc32c',
+]
+typing = [
+    'mypy',
+    'typeguard',
+]
 tests = [
     'coverage',
     'pytest',

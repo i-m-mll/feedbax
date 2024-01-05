@@ -136,42 +136,33 @@ class Mechanics(AbstractModel[MechanicsState]):
     
     def init(
         self, 
-        plant=None,
-        effector: CartesianState2D = None,
+        *,
         key=None,
     ):
         """Returns an initial state for use with the `Mechanics` module.
+        """            
+        # if plant is not None:
+        #     plant_state = self.plant.init(**plant)
+        #     effector_state = self.plant.skeleton.effector(plant_state.skeleton)
         
-        If system state happens to be passed, it takes precedence over 
-        passed effector state. If neither is passed, the default system state
-        is used.
-        """
-        if effector is None and plant is None:
-            plant_state = self.plant.init()
-            effector_state = self.plant.skeleton.effector(plant_state.skeleton)
+        # elif effector is not None:
+        #     skeleton_state = self.plant.skeleton.inverse_kinematics(effector)
+        #     plant_state = self.plant.init(skeleton=skeleton_state)
+        #     effector_state = self.plant.skeleton.effector(plant_state.skeleton)
             
-        elif plant is not None:
-            if effector is not None:
-                logger.warning("Both `plant` and `effector` inits provided "
-                            "to `Mechanics`; initializing from `plant` "
-                            "values")
-            plant_state = self.plant.init(**plant)
-            effector_state = self.plant.skeleton.effector(plant_state.skeleton)
-        
-        elif effector is not None:
-            skeleton_state = self.plant.skeleton.inverse_kinematics(effector)
-            plant_state = self.plant.init(skeleton=skeleton_state)
-            effector_state = self.plant.skeleton.effector(plant_state.skeleton)
-
+        plant_state = self.plant.init()
         init_input = jnp.zeros((self.plant.input_size,))
-        solver_state = self.solver.init(
-            self.term, 0, self.dt, plant_state, init_input
-        )
 
         return MechanicsState(
             plant=plant_state,
-            effector=effector_state, 
-            solver=solver_state,
+            effector=self.plant.skeleton.effector(plant_state.skeleton), 
+            solver=self.solver.init(
+                self.term, 
+                0, 
+                self.dt, 
+                plant_state, 
+                init_input
+            ),
         )
         
     
