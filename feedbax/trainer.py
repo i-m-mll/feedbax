@@ -440,16 +440,15 @@ class TaskTrainer(eqx.Module):
         
         init_states = jax.vmap(model.init)(keys_init) 
         
-        # TODO: apply task inits (e.g. effector state)
-        for where, init_func in task.init_funcs.items():
+        for substate_where, init_substate in trial_specs.init_spec.items():
             init_states = eqx.tree_at(
-                where, 
+                substate_where, 
                 init_states,
-                init_func(where(init_states)), #! or something like this
+                init_substate, 
             )
             
         # TODO: consistency check/update after applying task inits (e.g. joint state)
-        init_states = jax.vmap(model.task_interface.state_consistency_update)(
+        init_states = jax.vmap(model.step.state_consistency_update)(
             init_states
         )
         
@@ -679,12 +678,12 @@ class HebbianGRUUpdate(eqx.Module):
         dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
         
         # Build the update for the candidate activation weights of the GRU.
-        weight_hh = jnp.zeros_like(model.task_interface.net.hidden.weight_hh)
+        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
         weight_idxs = slice(2 * weight_hh.shape[-2] // 3, None)        
         weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
         
         update = eqx.tree_at(
-            lambda model: model.task_interface.net.hidden.weight_hh, 
+            lambda model: model.step.net.hidden.weight_hh, 
             jax.tree_map(lambda x: None, model),
             weight_hh,
             is_leaf=lambda x: x is None,

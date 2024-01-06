@@ -1,6 +1,12 @@
 """Tasks on which models are trained and evaluated.
 
 TODO:
+- `ReachTrialSpec.init_spec` values could be lambdas, to allow for 
+  state-dependent state initialization. Though I'm not sure of the 
+  use case for that, if any, since the current principle is to 
+  use a standard/constant initial state except where explicitly
+  overridden by these methods. So there would be no input variation.
+- Maybe allow initial mods to model parameters, in addition to substates.
 - Should `AbstractTask` be a generic of `StateT`?
 - Some of the private functions could be public.
 - Refactor `get_target_seq` and `get_scalar_epoch_seq` redundancy.
@@ -38,7 +44,7 @@ import numpy as np
 
 from feedbax.loss import AbstractLoss, LossDict
 if TYPE_CHECKING:
-    from feedbax.model import AbstractModel
+    from feedbax.model import AbstractModel, AbstractModelState
 from feedbax.state import AbstractState, CartesianState2D
 from feedbax.utils import internal_grid_points
 
@@ -57,7 +63,8 @@ class AbstractTaskInput(eqx.Module):
 
 
 class AbstractTaskTrialSpec(eqx.Module):
-    init: PyTree
+    init_spec: OrderedDict[Callable[[AbstractModelState], PyTree[Array]], 
+                           PyTree[Array]]
     input: AbstractTaskInput
     target: PyTree
 
@@ -78,7 +85,8 @@ class DelayedReachTaskInput(AbstractTaskInput):
 #? does it apply to all kinds of movement tasks we're interested in?
 # if so we can eliminate the `AbstractTaskTrialSpec`
 class ReachTrialSpec(AbstractTaskTrialSpec):
-    init: CartesianState2D 
+    init_spec: OrderedDict[Callable[[AbstractModelState], CartesianState2D], 
+                           CartesianState2D] 
     input: AbstractTaskInput
     target: CartesianState2D
     
@@ -181,13 +189,14 @@ class AbstractTask(eqx.Module):
     def eval_ensemble_train_batch(
         self,
         models: "AbstractModel[StateT]",
-        n_replicates: int,  # TODO: infer from `models`
+        n_replicates: int,  
         batch_size: int,
         key: jax.Array,
     ):
         """Evaluate an ensemble of models on training batches.
         
         TODO: 
+        - Infer `n_replicates` from `models_arrays`
         - Allow user to control whether they are evaluated on the same batch,
           or different ones (as is currently the case).
         - Similar functions for evaluating arbitrary trials, and validation set
@@ -213,16 +222,15 @@ class AbstractTask(eqx.Module):
         """      
         init_states = jax.vmap(model.init)(keys)
         
-        # TODO: apply task inits (e.g. effector state)
-        for where, init_func in self.init_funcs.items():
+        for substate_where, init_substate in trial_specs.init_spec.items():
             init_states = eqx.tree_at(
-                where, 
+                substate_where, 
                 init_states,
-                init_func(where(init_states)), #! or something like this
+                init_substate, 
             )
             
         # TODO: consistency check/update after applying task inits (e.g. joint state)
-        init_states = jax.vmap(model.task_interface.state_consistency_update)(
+        init_states = jax.vmap(model.step.state_consistency_update)(
             init_states
         )
         
@@ -336,9 +344,11 @@ class RandomReaches(AbstractTask):
 
         
         return ReachTrialSpec(
-            dict(mechanics=dict(effector=init_state)), 
-            task_input, 
-            target_state
+            init_spec=OrderedDict({
+               lambda state: state.mechanics.effector: init_state 
+            }),
+            input=task_input, 
+            target=target_state,
         ), None
         
     @cached_property
@@ -368,9 +378,11 @@ class RandomReaches(AbstractTask):
         task_inputs = _forceless_task_inputs(target_states)
         
         return ReachTrialSpec(
-            dict(mechanics=dict(effector=init_states)), 
-            task_inputs, 
-            target_states
+            init_spec=OrderedDict({
+               lambda state: state.mechanics.effector: init_states 
+            }),
+            input=task_inputs, 
+            target=target_states,
         ), None
         
     def n_trials_validation(self) -> int:
@@ -430,9 +442,11 @@ class RandomReachesDelayed(AbstractTask):
         
         return (
             ReachTrialSpec(
-                dict(mechanics=dict(effector=init_state)), 
-                task_inputs, 
-                target_states
+                init_spec=OrderedDict({
+                    lambda state: state.mechanics.effector: init_state 
+                }),
+                input=task_inputs, 
+                target=target_states,
             ), 
             epoch_start_idxs,
         )
@@ -458,9 +472,11 @@ class RandomReachesDelayed(AbstractTask):
            
         return (
             ReachTrialSpec(
-                dict(mechanics=dict(effector=init_states)), 
-                task_inputs, 
-                target_states
+                init_spec=OrderedDict({
+                    lambda state: state.mechanics.effector: init_states 
+                }),
+                input=task_inputs, 
+                target=target_states,
             ), 
             epoch_start_idxs,
         )

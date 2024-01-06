@@ -51,23 +51,9 @@ class AbstractIterator(AbstractModel[StateT]):
     
     step: AbstractVar[AbstractModel[StateT]]  
     n_steps: AbstractVar[int]
-    
-    @property
-    def task_interface(self) -> AbstractModel[StateT]: 
-        """This allows classes like `AbstractTask` and `TaskTrainer` to refer
-        to methods of a single step of the model, without having to know that 
-        there's an iterator in between. 
-        
-        Other `AbstractModel` instances simply return `self`, here.
-        """
-        return self.step    
 
     def init(self, *, key: Array) -> StateT:
         """Initialize the state of the iterated model.
-        
-        If `Iterator` inherits from `AbstractModel` but not from 
-        `AbstractSpecModel`, we could avoid this and just let `AbstractTask`
-        and `TaskTrainer` refer to `model.task_interface.init`.
         """
         return self.step.init(key=key)
 

@@ -83,8 +83,13 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         ...
 
     @property
-    def task_interface(self) -> "AbstractModel[StateT]":
-        """TODO: See `Iterator.task_interface`."""
+    def step(self):
+        """Trivial interface to the model step.
+        
+        This allows classes like `AbstractTask` and `TaskTrainer` to refer
+        to methods of a single step of the model, without having to know whether
+        the model step is wrapped in an iterator. 
+        """
         return self
     
     def state_consistency_update(
