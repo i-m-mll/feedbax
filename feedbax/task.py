@@ -1,6 +1,7 @@
 """Tasks on which models are trained and evaluated.
 
 TODO:
+- Should `AbstractTask` be a generic of `StateT`?
 - Some of the private functions could be public.
 - Refactor `get_target_seq` and `get_scalar_epoch_seq` redundancy.
     - Also, the way `seq` and `seqs` are generated is similar to `states` in 

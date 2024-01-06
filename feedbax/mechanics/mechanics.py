@@ -25,7 +25,7 @@ from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractModel, AbstractModelState
+from feedbax.model import AbstractStagedModel, AbstractModelState
 from feedbax.state import CartesianState2D, StateBounds
 
 
@@ -41,7 +41,7 @@ class MechanicsState(AbstractModelState):
     solver: PyTree 
 
 
-class Mechanics(AbstractModel[MechanicsState]):
+class Mechanics(AbstractStagedModel[MechanicsState]):
     """Discretizes and iterates the solution of a system with an effector.
         
     TODO: 

@@ -49,7 +49,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         """Number of control inputs."""
         ...
     
-    def init(self, **kwargs) -> StateT:
+    def init(self, *, key: Optional[Array] = None) -> StateT:
         """Initial state of the system.
         
         TODO:

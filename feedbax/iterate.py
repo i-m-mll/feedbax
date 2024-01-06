@@ -1,10 +1,4 @@
-"""Modules that iterate `AbstractModel` instances over time.
-
-TODO:
-
-- These classes shouldn't know about effector states, and the interface between
-  `AbstractTask` and `AbstractModel` needs to be improved so that we're not 
-  necessarily passing just the effector state through here, explicitly.
+"""Models that iterate other state-updating models.
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -12,9 +6,10 @@ TODO:
 
 import logging
 import os
-from typing import Optional
+from typing import Generic, Optional, Tuple, TypeVar
 
 import equinox as eqx
+from equinox import AbstractVar
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
@@ -28,7 +23,56 @@ from feedbax.utils import tree_get_idx, tree_set_idx
 logger = logging.getLogger(__name__)
 
 
-class Iterator(eqx.Module):
+StateT = TypeVar("StateT", bound=AbstractModelState)
+# ModelT = TypeVar("ModelT", bound=AbstractModel)
+
+
+class AbstractIterator(AbstractModel[StateT]):
+    """Base class for models which iterate other models.
+    
+    A main responsibility of this class, aside from defining abstract fields, 
+    is to expose the interface of the iterated model, since we are often 
+    interested in the methods belonging to the model defined as a single step. 
+    
+    Some issues with inheriting from `AbstractModel`: 
+    - `Iterator.__call__` adds a batch dimension to the returned `StateT`.
+      Technically I don't think we can (should?) type this differently anyway,
+      but in principle it is not the same type.
+    - `AbstractModel` is a generic over a type variable `StateT` of
+      `AbstractModelState`; whereas `AbstractIterator` should be a generic over
+      `AbstractModel[StateT]`, I think. I don't know that there is a way to achieve
+      this without higher-kinded types. 
+      - We could make this class a generic of both `AbstractModel[StateT]` 
+        and a `ModelT`, but I don't think there's a way to associate them and 
+        enforce that `ModelT` is a generic of `StateT`.
+      - I think `AbstractModel` should keep being a generic of `StateT`, because
+        of the signatures of its methods.
+    """
+    
+    step: AbstractVar[AbstractModel[StateT]]  
+    n_steps: AbstractVar[int]
+    
+    @property
+    def task_interface(self) -> AbstractModel[StateT]: 
+        """This allows classes like `AbstractTask` and `TaskTrainer` to refer
+        to methods of a single step of the model, without having to know that 
+        there's an iterator in between. 
+        
+        Other `AbstractModel` instances simply return `self`, here.
+        """
+        return self.step    
+
+    def init(self, *, key: Array) -> StateT:
+        """Initialize the state of the iterated model.
+        
+        If `Iterator` inherits from `AbstractModel` but not from 
+        `AbstractSpecModel`, we could avoid this and just let `AbstractTask`
+        and `TaskTrainer` refer to `model.task_interface.init`.
+        """
+        return self.step.init(key=key)
+
+
+class Iterator(AbstractIterator[StateT]):
     """A module that recursively applies another module for `n_steps` steps.
     
     We automatically determine the shape of the arrays in the PyTree(s) 
@@ -36,13 +80,13 @@ class Iterator(eqx.Module):
     which to store the states across all steps; `states_includes` can be used
     to specify which states to store. By default, all are stored.
     """
-    step: AbstractModel
+    step: AbstractModel[StateT]
     n_steps: int 
-    states_includes: PyTree[bool]
+    states_includes: PyTree[bool]  # can't do StateT[bool]
     
     def __init__(
         self,
-        step: eqx.Module,
+        step: AbstractModel[StateT],
         n_steps: int,
         states_includes: Optional[PyTree[bool]] = None,
     ):
@@ -53,7 +97,7 @@ class Iterator(eqx.Module):
         self.states_includes = states_includes
     
     @jax.named_scope("fbx.Iterator._body_func")
-    def _body_func(self, i, x):
+    def _body_func(self, i: int, x: Tuple) -> Tuple:
         inputs, states, key = x
         
         key1, key2 = jr.split(key)
@@ -80,10 +124,10 @@ class Iterator(eqx.Module):
     @jax.named_scope("fbx.Iterator")
     def __call__(
         self, 
-        input,  # should have a batch dimension corresponding to time steps
-        state: AbstractModelState,   # initial state
+        input,  #! should have a batch dimension corresponding to time steps
+        state: StateT,   # initial state
         key: Array,
-    ):
+    ) -> StateT:  #! Adds a batch dimension, actually.
         key1, key2, key3 = jr.split(key, 3)
         
         init_input = tree_get_idx(input, 0)
@@ -105,26 +149,13 @@ class Iterator(eqx.Module):
         
         return states
     
-    def task_interface(self) -> AbstractModel: 
-        """This allows classes like `AbstractTask` and `TaskTrainer` to refer
-        to methods of a single step of the model, without having to know that 
-        there's an iterator in between. 
-        
-        Other `AbstractModel` instances simply return `self`, here.
-        """
-        return self.step    
-
-    def init(self, *, key: Array) -> AbstractModelState:
-        """Initialize the state of the iterated model.
-        
-        If `Iterator` inherits from `AbstractModel` but not from 
-        `AbstractSpecModel`, we could avoid this and just let `AbstractTask`
-        and `TaskTrainer` refer to `model.task_interface.init`.
-        """
-        return self.step.init(key=key)
-    
     @jax.named_scope("fbx.Iterator.init_arrays")
-    def init_arrays(self, input, init_state, key):
+    def init_arrays(
+        self, 
+        input,  #! No batch dimension 
+        init_state: StateT, 
+        key: Array,
+    ) -> StateT:  #! Adds a batch dimension
         # Get the shape of the state output by `self.step`
         outputs = eqx.filter_eval_shape(
             self.step, 
@@ -159,7 +190,7 @@ class Iterator(eqx.Module):
         return states  
 
 
-class SimpleIterator(eqx.Module):
+class SimpleIterator(AbstractIterator[StateT]):
     """A simple model iterator that stores the entire state.
     
     If memory is not an issue, this class is preferred as lacks the overhead
@@ -167,19 +198,19 @@ class SimpleIterator(eqx.Module):
     large state PyTrees, however, it may be preferable to use `Iterator` and
     choose which states are worth discarding to save memory.
     """
-    step: AbstractModel
+    step: AbstractModel[StateT]
     n_steps: int 
     
-    def __init__(self, step: AbstractModel, n_steps: int, *args, **kwargs):
+    def __init__(self, step: AbstractModel[StateT], n_steps: int):
         self.step = step
         self.n_steps = n_steps
     
     def __call__(
         self, 
         input,
-        state, 
-        key
-    ):
+        state: StateT, 
+        key: Array,
+    ) -> StateT:
         
         keys = jr.split(key, self.n_steps)
         
@@ -196,21 +227,3 @@ class SimpleIterator(eqx.Module):
         )
         
         return states 
-
-    def task_interface(self) -> AbstractModel: 
-        """This allows classes like `AbstractTask` and `TaskTrainer` to refer
-        to methods of a single step of the model, without having to know that 
-        there's an iterator in between. 
-        
-        Other `AbstractModel` instances simply return `self`, here.
-        """
-        return self.step    
-
-    def init(self, *, key: Array) -> AbstractModelState:
-        """Initialize the state of the iterated model.
-        
-        If `Iterator` inherits from `AbstractModel` but not from 
-        `AbstractSpecModel`, we could avoid this and just let `AbstractTask`
-        and `TaskTrainer` refer to `model.task_interface.init`.
-        """
-        return self.step.init(key=key)

@@ -19,6 +19,7 @@ import logging
 import os
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable, 
     Dict, 
     Generic, 
@@ -63,21 +64,80 @@ StateT = TypeVar("StateT", bound=AbstractModelState)
 
 
 class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
-    """Base class for compositional state-dependent models.
+    """
+    
+    TODO:
+    - Should this be a generic of `StateT | Array`, or something?
+      - i.e. what about models that return a single array or some other
+        kind of PyTree? As in linear regression, PCA...
+    """
+    
+    @abstractmethod
+    def __call__(
+        self,
+        input,
+        state: StateT, 
+        key: jax.Array,
+    ) -> StateT:
+        """Update the model state given inputs and a prior state."""
+        ...
+
+    @property
+    def task_interface(self) -> "AbstractModel[StateT]":
+        """TODO: See `Iterator.task_interface`."""
+        return self
+    
+    def state_consistency_update(
+        self, 
+        state: StateT,
+    ) -> StateT:
+        """Make sure the model state is self-consistent.
+        
+        The default behaviour is to just return the same state. However, in
+        models where it is customary to initialize (say) the effector state 
+        but not the plant configuration state, this method should be used 
+        to ensure that the configuration state is initialized properly. 
+        
+        This avoids having to define how both states should be initialized
+        in `AbstractTask`, which would require knowledge not only of the 
+        structure of the state, but also of the model interface that 
+        provides particular operations for modifying the state. Though, I'm not 
+        sure that would be a bad thing, as the model state objects tend to 
+        mirror the operations done on them anyway.
+        
+        However, this approach also has the advantage that these consistency
+        checks can be arbitrarily complex and important to the model 
+        functioning properly; it is useful for the model to be able to 
+        render a state consistent, with respect to its other normal operations.
+        """
+        return state
+    
+    @abstractmethod
+    def init(
+        self,
+        *,
+        key: Optional[jax.Array] = None,
+    ) -> StateT:
+        """Return an initial state for the model."""
+        ...
+    
+
+class AbstractStagedModel(AbstractModel[StateT]):
+    """Base class for state-dependent models.
     
     To define a new model, the following should be implemented:
     
         1. A concrete subclass of `AbstractModelState` that defines the PyTree
            structure of the full model state. The fields may be types of 
            `AbstractModelState` as well, in the case of nested models.
-        2. A concrete subclass of this class (`AbstractModel`) with:
+        2. A concrete subclass of this class with:
             i. the appropriate components for doing state transformations;
             either `eqx.Module`/`AbstractModel`-typed fields, or instance 
             methods, each with the signature `input, state, *, key`;
             ii. a `model_spec` property that specifies a series of named 
             operations on parts of the full model state, using those component 
             modules; and
-            iii. an `init` method that returns an initial full model state.
+            iii. an `init` method that returns an initial model state.
             
     The motivation behind the level of abstraction of this class is that it
     gives a name to each functional stage of a composite model, so that after 
@@ -134,36 +194,6 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
                     ),
                 )
         
-        return state
-    
-    @property
-    def task_interface(self) -> "AbstractModel[StateT]":
-        """TODO: See `Iterator.task_interface`."""
-        return self
-    
-    def state_consistency_update(
-        self, 
-        state: StateT,
-    ) -> StateT:
-        """Make sure the model state is self-consistent.
-        
-        The default behaviour is to just return the same state. However, in
-        models where it is customary to initialize (say) the effector state 
-        but not the plant configuration state, this method should be used 
-        to ensure that the configuration state is initialized properly. 
-        
-        This avoids having to define how both states should be initialized
-        in `AbstractTask`, which would require knowledge not only of the 
-        structure of the state, but also of the model interface that 
-        provides particular operations for modifying the state. Though, I'm not 
-        sure that would be a bad thing, as the model state objects tend to 
-        mirror the operations done on them anyway.
-        
-        However, this approach also has the advantage that these consistency
-        checks can be arbitrarily complex and important to the model 
-        functioning properly; it is useful for the model to be able to 
-        render a state consistent, with respect to its other normal operations.
-        """
         return state
 
     @abstractproperty
@@ -231,15 +261,6 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         
         return intervenors_dict
     
-    @abstractmethod
-    def init(
-        self,
-        *,
-        key: Optional[jax.Array] = None,
-    ) -> StateT:
-        """Return an initial state for the model."""
-        ...
-    
     @abstractproperty
     def memory_spec(self) -> PyTree[bool]:
         """Specifies which states should typically be remembered by callers."""
@@ -252,7 +273,7 @@ class SimpleFeedbackState(AbstractModelState):
     feedback: ChannelState
 
 
-class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
+class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     """Simple feedback loop with a single RNN and single mechanical system.
     
     TODO:
@@ -408,11 +429,11 @@ class SimpleFeedback(AbstractModel[SimpleFeedbackState]):
     
 
 def add_intervenor(
-    model: AbstractModel, 
+    model: AbstractStagedModel[StateT], 
     intervenor: AbstractIntervenor,
     stage_name: Optional[str] = None,
     **kwargs
-) -> AbstractModel:
+) -> AbstractStagedModel[StateT]:
     """Return an updated model with an added intervenor.
     
     This is just a convenience for passing a single intervenor to `add_intervenor`.
@@ -424,14 +445,14 @@ def add_intervenor(
 
 
 def add_intervenors(
-    model: AbstractModel, 
+    model: AbstractStagedModel[StateT], 
     intervenors: Union[Sequence[AbstractIntervenor],
                        Dict[str, Sequence[AbstractIntervenor]]], 
-    where: Callable[[AbstractModel], AbstractModel] = lambda model: model,
+    where: Callable[[AbstractStagedModel[StateT]], Any] = lambda model: model,
     keep_existing: bool = True,
     *,
     key: Optional[jax.Array] = None
-) -> AbstractModel:
+) -> AbstractStagedModel[StateT]:
     """Return an updated model with added intervenors.
     
     Intervenors are added to `where(model)`, which by default is 

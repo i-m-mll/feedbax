@@ -199,6 +199,9 @@ def filter_spec_leaves(tree, leaf_func):
     """Get a filter spec for tree leaves matching `leaf_func`.
     
     `leaf_func` should take `tree` and return leaves from `tree` to filter `True`.
+    
+    TODO:
+    - Is this really the best way to do this?
     """
     filter_spec = jax.tree_util.tree_map(lambda _: False, tree)
     filter_spec = eqx.tree_at(

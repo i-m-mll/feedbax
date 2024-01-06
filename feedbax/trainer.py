@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence, Tuple, TypeVar
 
 import equinox as eqx
 from equinox import field
@@ -26,7 +26,7 @@ from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
-from feedbax.model import AbstractModelState
+from feedbax.model import AbstractModel, AbstractModelState
 import feedbax.plot as plot
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.utils import (
@@ -50,6 +50,9 @@ LOSS_FMT = ".2e"
 logger = logging.getLogger(__name__)
 
 
+StateT = TypeVar("StateT", bound=AbstractModelState)
+
+
 class TaskTrainer(eqx.Module):
     """A class 
     
@@ -59,6 +62,10 @@ class TaskTrainer(eqx.Module):
       on an entire dataset/single array at once. I should try writing another
       training for those cases, and see if perhaps an `AbstractTrainer` makes
       sense to capture the common aspects.  
+      
+    TODO:
+    - Maybe `model_update_funcs` should be passed to `__call__` since their typing
+      depends on `StateT` of the model/task.
     """
     optimizer: optax.GradientTransformation
     checkpointing: bool
@@ -109,11 +116,12 @@ class TaskTrainer(eqx.Module):
     def __call__(
         self, 
         task: AbstractTask,
-        model: eqx.Module,
+        model: AbstractModel[StateT],
         n_batches: int, 
         batch_size: int, 
         key: jax.Array,
-        trainable_leaves_func: Callable = lambda model: model,
+        trainable_leaves_func: Callable[[AbstractModel[StateT]], Any] = \
+            lambda model: model,
         batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint: bool = False,
@@ -396,7 +404,7 @@ class TaskTrainer(eqx.Module):
         treedef_model,
         flat_opt_state, 
         treedef_opt_state,
-        filter_spec, 
+        filter_spec,  #! can't do AbstractModel[StateT[bool]]
         key: jax.Array,
     ):
         """Executes a single training step of the model.
@@ -472,7 +480,11 @@ class TaskTrainer(eqx.Module):
         
         return losses, flat_model, flat_opt_state, treedef_opt_state
 
-    def _load_last_checkpoint(self, model, losses_history):
+    def _load_last_checkpoint(
+        self, 
+        model: AbstractModel[StateT], 
+        losses_history: LossDict,
+    ) -> Tuple[str | Path, int, AbstractModel[StateT], LossDict]:
         try:
             with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
@@ -490,9 +502,10 @@ class TaskTrainer(eqx.Module):
 
 
 def grad_wrap_simple_loss_func(
-    loss_func
+    loss_func: Callable[[Array, Array], Float]
 ):
-    """Wraps a loss function taking outputs and targets to one taking a model.
+    """Wraps a loss function taking output and target arrays, to one taking a model
+    that returns a single array.
     """
     @wraps(loss_func)
     def wrapper(
@@ -560,12 +573,12 @@ def grad_wrap_task_loss_func(
     """
     @wraps(loss_func)
     def wrapper(
-        diff_model,  # TODO: `AbstractModel`, if we make `AbstractModel` a parent of `Iterator` 
-        static_model, 
+        diff_model: AbstractModel[StateT],  
+        static_model: AbstractModel[StateT],  #! Type is technically not identical to `diff_model`
         trial_specs: AbstractTaskTrialSpec,
-        init_states: AbstractModelState,
+        init_states: StateT,  #! has a batch dimension
         keys: jax.Array,  # per trial
-    ) -> Tuple[float, LossDict]:
+    ) -> Tuple[float, Tuple[LossDict, StateT]]:
         
         model = eqx.combine(diff_model, static_model) 
         
@@ -648,7 +661,12 @@ class HebbianGRUUpdate(eqx.Module):
     
     scale: float = 0.01
     
-    def __call__(self, model, states):
+    def __call__(
+        self, 
+        model: AbstractModel[StateT], 
+        states: StateT
+    ) -> AbstractModel[StateT]:
+        
         x = states.network.hidden
         
         # Hebbian learning rule
@@ -661,12 +679,12 @@ class HebbianGRUUpdate(eqx.Module):
         dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
         
         # Build the update for the candidate activation weights of the GRU.
-        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
+        weight_hh = jnp.zeros_like(model.task_interface.net.hidden.weight_hh)
         weight_idxs = slice(2 * weight_hh.shape[-2] // 3, None)        
         weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
         
         update = eqx.tree_at(
-            lambda model: model.step.net.hidden.weight_hh, 
+            lambda model: model.task_interface.net.hidden.weight_hh, 
             jax.tree_map(lambda x: None, model),
             weight_hh,
             is_leaf=lambda x: x is None,

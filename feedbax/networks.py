@@ -35,7 +35,7 @@ import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModel, AbstractModelState, wrap_stateless_module
+from feedbax.model import AbstractStagedModel, AbstractModelState, wrap_stateless_module
 from feedbax.utils import interleave_unequal, n_positional_args  
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
@@ -95,7 +95,7 @@ class NetworkState(AbstractModelState):
     encoding: Optional[PyTree]
 
 
-class SimpleNetwork(AbstractModel[NetworkState]):
+class SimpleNetwork(AbstractStagedModel[NetworkState]):
     """A single step of a noisy network with optional encoding and readout layers.
     
     Ultimately derived from https://docs.kidger.site/equinox/examples/train_rnn/

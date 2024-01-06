@@ -21,7 +21,7 @@ from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
-from feedbax.model import AbstractModel, AbstractModelState
+from feedbax.model import AbstractStagedModel, AbstractModelState
 from feedbax.state import StateBounds, clip_state
 
 
@@ -33,10 +33,13 @@ class PlantState(AbstractModelState):
     muscles: Optional[AbstractMuscleState] = None
 
 
-class AbstractPlant(AbstractModel[PlantState]):
+class AbstractPlant(AbstractStagedModel[PlantState]):
     """
     Static updates are specified in `model_spec` (i.e. `__call__`), and 
     dynamic updates (i.e. parts of the ODE/vector field) in `dynamics_spec`.
+    
+    TODO:
+    - Could inherit from `AbstractDynamicalSystem` as well?
     """
     
     clip_states: AbstractVar[bool]

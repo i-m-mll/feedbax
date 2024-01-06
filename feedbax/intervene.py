@@ -1,7 +1,7 @@
 """Modules that modify parts of PyTrees.
 
 TODO:
-- The type signature is backwards compared to `AbstractModel`.
+- The type signature is backwards, compared to `AbstractModel`.
 
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -85,7 +85,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT]):
         )
 
 
-SubstateT = TypeVar("SubstateT", bound=PyTree)
+HasSubstateT = TypeVar("HasSubstateT", bound=PyTree)
 
 
 class AbstractClampIntervenor(AbstractIntervenor[StateT]):
@@ -94,10 +94,10 @@ class AbstractClampIntervenor(AbstractIntervenor[StateT]):
     def __call__(
         self, 
         input: PyTree,  # task inputs
-        state: SubstateT, 
+        state: HasSubstateT, 
         *,
         key: jax.Array,
-    ) -> SubstateT:
+    ) -> HasSubstateT:
         """Return a modified state PyTree."""
         new_substate = self._get_updated_substate(self._in(state), key=key)
         return self.update_substate(state, new_substate)
@@ -119,10 +119,10 @@ class AbstractAdditiveIntervenor(AbstractIntervenor[StateT]):
     def __call__(
         self, 
         input: PyTree,  # task inputs
-        state: SubstateT, 
+        state: HasSubstateT, 
         *,
         key: jax.Array,
-    ) -> SubstateT:
+    ) -> HasSubstateT:
         """Return a modified state PyTree."""
         new_substate = jax.tree_map(
             lambda x, y: x + y,
