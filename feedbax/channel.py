@@ -37,12 +37,8 @@ class Channel(eqx.Module):
     - Use a shape dtype struct for `input_proto`.
     """
     delay: int 
-    noise_std: Optional[float]
+    noise_std: Optional[float] = None
     input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
-    
-    def __init__(self, delay, noise_std=None):
-        self.delay = delay
-        self.noise_std = noise_std
     
     @jax.named_scope("fbx.Channel")
     def __call__(self, input, state, key):      
@@ -59,7 +55,7 @@ class Channel(eqx.Module):
         input_zeros = jax.tree_map(jnp.zeros_like, self.input_proto)
         return ChannelState(
             input_zeros, 
-            (self.delay - 1) * (input_zeros,) + (self.input_proto,),
+            (self.delay - 1) * (input_zeros,) + (self.input_proto,)
         )
         
     def change_input(self, input) -> "Channel":

@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.15.0
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: fx
 #     language: python
@@ -108,7 +108,7 @@ trial_specs, _ = task.trials_validation
 plot_pos_vel_force_2D(
     states,
     endpoints=(
-        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.init['mechanics.effector'].pos, 
         trial_specs.goal.pos
     ),
 )
@@ -150,7 +150,7 @@ trial_specs, _ = task.trials_validation
 plot_pos_vel_force_2D(
     states,
     endpoints=(
-        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.init['mechanics.effector'].pos, 
         trial_specs.goal.pos
     ),
 )
@@ -187,7 +187,7 @@ trial_specs, _ = task.trials_validation
 plot_pos_vel_force_2D(
     states,
     endpoints=(
-        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.init['mechanics.effector'].pos, 
         trial_specs.goal.pos
     ),
 )
@@ -227,7 +227,7 @@ trial_specs, _ = task.trials_validation
 plot_pos_vel_force_2D(
     states,
     endpoints=(
-        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.init['mechanics.effector'].pos, 
         trial_specs.goal.pos
     ),
 )

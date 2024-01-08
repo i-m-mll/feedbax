@@ -360,7 +360,7 @@ class TaskTrainer(eqx.Module):
                     fig, _ = plot.plot_pos_vel_force_2D(
                         states_plot,
                         endpoints=(
-                            trial_specs.init['mechanics']['effector'].pos, 
+                            trial_specs.init['mechanics.effector'].pos, 
                             trial_specs.goal.pos
                         ),
                         workspace=task.workspace,
@@ -438,9 +438,9 @@ class TaskTrainer(eqx.Module):
         
         model = jtu.tree_unflatten(treedef_model, flat_model)
         
-        init_states = jax.vmap(model.init)(keys_init) 
+        init_states = jax.vmap(model.step.init)(key=keys_init) 
         
-        for substate_where, init_substate in trial_specs.init_spec.items():
+        for substate_where, init_substate in trial_specs.init.items():
             init_states = eqx.tree_at(
                 substate_where, 
                 init_states,
@@ -461,8 +461,8 @@ class TaskTrainer(eqx.Module):
         )(
             diff_model, 
             static_model, 
-            init_states, 
             trial_specs,
+            init_states, 
             keys_model,
         )
         

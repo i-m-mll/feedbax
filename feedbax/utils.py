@@ -4,7 +4,11 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from abc import abstractmethod
+from collections import OrderedDict
+from collections.abc import MutableMapping
 import dataclasses
+import dis
 import inspect
 from itertools import zip_longest, chain
 from functools import partial
@@ -33,7 +37,8 @@ TODO: infinite cycle
 """
 SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
 
-
+KT = TypeVar("KT")
+VT = TypeVar("VT")
 T1 = TypeVar("T1")
 T2 = TypeVar("T2")
 Ts = TypeVarTuple("Ts")
@@ -50,7 +55,7 @@ class Timer:
     def __enter__(self, printout=False):
         self.start_time = perf_counter()
         self.printout = printout
-        return self
+        return self        # Apparently you're supposed to only yield the key
 
     def __exit__(self, *args, **kwargs):
         self.time = perf_counter() - self.start_time
@@ -61,6 +66,86 @@ class Timer:
             
     start = __enter__
     stop = __exit__
+
+
+class AbstractTransformedOrderedDict(MutableMapping[KT, VT]):
+    """Base for `OrderedDict`s which transform keys when getting and setting items.
+    
+    It stores the original keys, and otherwise behaves (e.g. when iterating)
+    as though they are the true keys.
+    
+    This is useful when we want to use a certain type of object as a key, but 
+    it would not be hashed properly by `OrderedDict`, so we need to transform
+    it into something else. In particular, by replacing `_key_transform` with 
+    a code parsing function, a subclass of this class can take lambdas as keys.
+    
+    See `feedbax.task.InitSpecDict` for an example.
+       
+    Based on https://stackoverflow.com/a/3387975
+    
+    TODO: 
+    - I'm not sure how the typing should work. I guess `VT` might need to correspond
+      to a tuple of the original key and the value.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        self.store = OrderedDict()
+        self.update(OrderedDict(*args, **kwargs))
+            
+    def __getitem__(self, key):
+        return self.store[self._key_transform(key)][1]
+
+    def __setitem__(self, key, value):
+        self.store[self._key_transform(key)] = (key, value)
+    
+    def __delitem__(self, key):
+        del self.store[self._key_transform(key)]
+        
+    def __iter__(self):
+        # Apparently you're supposed to only yield the key
+        for key in self.store:
+            yield self.store[key][0]
+
+    def __len__(self):
+        return len(self.store)
+    
+    def __repr__(self):
+        # Make a pretty representation of the lambdas
+        items_str = ', '.join(
+            f"(lambda state: state{'.' if k else ''}{k}, {v})" 
+            for k, (_, v) in self.store.items()
+        )
+        return f"{type(self).__name__}([{items_str}])"
+
+    @abstractmethod
+    def _key_transform(self, key):
+        ...
+
+    def tree_flatten(self):
+        """The same flatten function used by JAX for `dict`"""
+        return unzip2(sorted(self.items()))[::-1]
+
+    @classmethod
+    def tree_unflatten(cls, keys, values):
+        return cls(zip(keys, values))
+
+
+def get_where_str(where_func: Callable) -> str:
+    """
+    Given a function that accesses a tree of attributes of a single parameter, 
+    return a string repesenting the attributes.
+    
+    This is useful for getting a unique string representation of a substate 
+    of an `AbstractState` or `AbstractModel` object, as defined by a `where`
+    function, so we can compare two such functions and see if they refer to 
+    the same substate.
+    
+    TODO:
+    - I'm not sure it's best practice to introspect on bytecode like this.
+    """
+    bytecode = dis.Bytecode(where_func)
+    return '.'.join(instr.argrepr for instr in bytecode
+                    if instr.opname == "LOAD_ATTR")
 
 
 def angle_between_vectors(v2, v1):

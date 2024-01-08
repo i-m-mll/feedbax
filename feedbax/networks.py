@@ -264,10 +264,21 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         )        
     
     def init(self, *, key: Optional[jax.Array] = None):
+        
+        if self.out_size is None:
+            output = None
+        else:
+            output = jnp.zeros(self.out_size)
+            
+        if self.encoding_size is None:
+            encoding = None
+        else:
+            encoding = jnp.zeros(self.encoding_size)
+        
         return NetworkState(
             hidden=jnp.zeros(self.hidden_size), 
-            output=jnp.zeros(self.out_size), 
-            encoding=jnp.zeros(self.encoding_size),
+            output=output, 
+            encoding=encoding,
         )
 
 

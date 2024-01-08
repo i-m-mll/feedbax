@@ -39,6 +39,7 @@ from equinox import AbstractVar, field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
 
@@ -46,7 +47,7 @@ from feedbax.loss import AbstractLoss, LossDict
 if TYPE_CHECKING:
     from feedbax.model import AbstractModel, AbstractModelState
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.utils import internal_grid_points
+from feedbax.utils import AbstractTransformedOrderedDict, internal_grid_points, get_where_str
 
 
 logger = logging.getLogger(__name__)
@@ -57,14 +58,58 @@ N_DIM = 2
 
 StateT = TypeVar("StateT", bound=AbstractState)
 
+@jtu.register_pytree_node_class
+class InitSpecDict(AbstractTransformedOrderedDict[
+    Callable[["AbstractModelState"], PyTree[Array]],
+    PyTree[Array]
+]):
+    """An `OrderedDict` that allows attribute-accessing lambdas as keys.
+    
+    The user can also access by the string keys. These are equivalent:
+    
+        `init_spec[lambda state: state.mechanics.effector]`
+        
+        `init_spec['mechanics.effector']`
+        
+    This assumes that keys will be limited to `where` lambdas: in which only 
+    the first argument is used, and only used to access its attributes (i.e.
+    to indicate a node/leaf of a PyTree argument).
+    
+    Tests of performance:
+    - Construction is about 100x slower than `OrderedDict`. For dicts of 
+      size relevant to our use case, this means ~100 us instead of ~1 us.
+      A modest increase in dict size only changes this modestly.
+    - Access is about 800x slower, and as expected this doesn't
+      change with dict size because there's just a constant overhead 
+      for doing the key transformation on each access. 
+        - Each access is about 26 us, and this is also the duration of 
+          a call to `get_where_str`.
+    - `list(init_spec.items())` is about 100x slower (24 us versus 234 ns)
+      for single entry, and about 260x slower (149 us versus 571 ns) for
+      6 entries, which is about as many as I expect anyone to use in the 
+      near future, when constructing a task.      
+
+    In general this is pretty slow, but since we only need to do a single
+    construction and a single access of `init_spec` per batch/evaluation, 
+    I doubt this is an issue. 
+    
+    Optimizations should focus on `get_where_str`.
+    """
+    
+    def _key_transform(self, key):
+        if isinstance(key, Callable):
+            return get_where_str(key)
+        return key
+
 
 class AbstractTaskInput(eqx.Module):
     intervenors: AbstractVar[Dict[str, jax.Array]]
 
 
 class AbstractTaskTrialSpec(eqx.Module):
-    init_spec: OrderedDict[Callable[[AbstractModelState], PyTree[Array]], 
-                           PyTree[Array]]
+    init: InitSpecDict
+    # init: OrderedDict[Callable[["AbstractModelState"], PyTree[Array]], 
+    #                        PyTree[Array]]
     input: AbstractTaskInput
     target: PyTree
 
@@ -85,8 +130,9 @@ class DelayedReachTaskInput(AbstractTaskInput):
 #? does it apply to all kinds of movement tasks we're interested in?
 # if so we can eliminate the `AbstractTaskTrialSpec`
 class ReachTrialSpec(AbstractTaskTrialSpec):
-    init_spec: OrderedDict[Callable[[AbstractModelState], CartesianState2D], 
-                           CartesianState2D] 
+    init: InitSpecDict
+    # init: OrderedDict[Callable[["AbstractModelState"], CartesianState2D], 
+    #                        CartesianState2D] 
     input: AbstractTaskInput
     target: CartesianState2D
     
@@ -220,9 +266,9 @@ class AbstractTask(eqx.Module):
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on a set of trials.
         """      
-        init_states = jax.vmap(model.init)(keys)
+        init_states = jax.vmap(model.step.init)(key=keys)
         
-        for substate_where, init_substate in trial_specs.init_spec.items():
+        for substate_where, init_substate in trial_specs.init.items():
             init_states = eqx.tree_at(
                 substate_where, 
                 init_states,
@@ -344,7 +390,7 @@ class RandomReaches(AbstractTask):
 
         
         return ReachTrialSpec(
-            init_spec=OrderedDict({
+            init=InitSpecDict({
                lambda state: state.mechanics.effector: init_state 
             }),
             input=task_input, 
@@ -378,13 +424,14 @@ class RandomReaches(AbstractTask):
         task_inputs = _forceless_task_inputs(target_states)
         
         return ReachTrialSpec(
-            init_spec=OrderedDict({
+            init=InitSpecDict({
                lambda state: state.mechanics.effector: init_states 
             }),
             input=task_inputs, 
             target=target_states,
         ), None
         
+    @property
     def n_trials_validation(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n ** 2 * self.eval_n_directions
@@ -442,7 +489,7 @@ class RandomReachesDelayed(AbstractTask):
         
         return (
             ReachTrialSpec(
-                init_spec=OrderedDict({
+                init=InitSpecDict({
                     lambda state: state.mechanics.effector: init_state 
                 }),
                 input=task_inputs, 
@@ -472,7 +519,7 @@ class RandomReachesDelayed(AbstractTask):
            
         return (
             ReachTrialSpec(
-                init_spec=OrderedDict({
+                init=InitSpecDict({
                     lambda state: state.mechanics.effector: init_states 
                 }),
                 input=task_inputs, 
@@ -569,9 +616,11 @@ class Stabilization(AbstractTask):
         task_input = _forceless_task_inputs(target_state)
         
         return ReachTrialSpec(
-            dict(mechanics=dict(effector=init_state)),
-            task_input, 
-            target_state
+            init=InitSpecDict({
+                lambda state: state.mechanics.effector: init_state
+            }),
+            input=task_input, 
+            target=target_state
         ), None
         
     @cached_property
@@ -606,9 +655,11 @@ class Stabilization(AbstractTask):
         task_inputs = _forceless_task_inputs(target_states)
         
         return ReachTrialSpec(
-            dict(mechanics=dict(effector=init_states)),
-            task_inputs,
-            target_states
+            init=InitSpecDict({
+                lambda state: state.mechanics.effector: init_states 
+            }),
+            input=task_inputs,
+            target=target_states
         ), None
     
     def n_trials_validation(self) -> int:

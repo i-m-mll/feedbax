@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.15.0
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: fx
 #     language: python
@@ -65,12 +65,20 @@ def solve(field, y0, dt0, t0, t1, args, n_steps, **kwargs):
     return sol
 
 
+# %%
+t0 = 0
+dt0 = 0.01 
+t1 = 1
+n_steps = int((t1 - t0) / dt0)
+
+tau = 0.01  # muscle activation/deactivation time constant
+
+muscle_input = jnp.array([0.0, 0., 0.15, 0., 0.0, 0.0])
+
 # %% [markdown]
 # First, test the old `TwoLinkMuscled` class, which lumped the skeleton and muscle elements together into a single `vector_field` call.
 
 # %%
-tau = 0.01
-
 arm2M = TwoLinkMuscled(
     muscle_model=TodorovLiVirtualMuscle(),
     activator=ActivationFilter(
@@ -84,11 +92,8 @@ y0 = TwoLinkMuscledState(
     d_angle=jnp.array([0., 0.]),
     activation=jnp.zeros(6),
 )
-args = muscle_input = jnp.array([0.0, 0., 0.15, 0., 0.0, 0.0])
-t0 = 0
-dt0 = 0.01  # [ms]
-t1 = 1
-n_steps = int((t1 - t0) / dt0)
+args = muscle_input 
+
 
 with jax.default_device(jax.devices('cpu')[0]):
     sol = solve(arm2M, y0, dt0, t0, t1, args, n_steps)   
@@ -115,7 +120,6 @@ plant = MuscledArm(
 mechanics = Mechanics(
     plant, 
     dt=dt0,
-    # clip_states=False,
     # solver=dfx.Tsit5,
 )
 

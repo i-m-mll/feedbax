@@ -552,7 +552,7 @@ def plot_endpoint_pos_with_dists(
     fig = plt.figure(figsize=(10, 5))
 
     endpoints = OrderedDict({
-        'Start': trial_specs.init['mechanics']['effector'], 
+        'Start': trial_specs.init['mechanics.effector'], 
         'Goal': trial_specs.goal,
     })
     

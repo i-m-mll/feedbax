@@ -82,15 +82,13 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         """Update the model state given inputs and a prior state."""
         ...
 
-    @property
-    def step(self):
-        """Trivial interface to the model step.
+    @abstractproperty
+    def step(self) -> "AbstractModel[StateT]":
+        """Interface to a single model step.
         
-        This allows classes like `AbstractTask` and `TaskTrainer` to refer
-        to methods of a single step of the model, without having to know whether
-        the model step is wrapped in an iterator. 
+        For non-iterated models, this should trivially return `step`.
         """
-        return self
+        ...
     
     def state_consistency_update(
         self, 
@@ -271,6 +269,18 @@ class AbstractStagedModel(AbstractModel[StateT]):
         """Specifies which states should typically be remembered by callers."""
         ...
         
+    @property 
+    def step(self):
+        """This assumes all staged models will specify single update steps,
+        not iterated models.
+        
+        This allows classes like `AbstractTask` and `TaskTrainer` to refer
+        to methods of a single step of the model, without having to know whether
+        the model step is wrapped in an iterator; `AbstractIterator` concretes will 
+        return `self._step` instead.
+        """
+        return self 
+        
 
 class SimpleFeedbackState(AbstractModelState):
     mechanics: "MechanicsState"
@@ -343,7 +353,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 lambda _, state: state.network.output,
                 lambda state: state.mechanics,
             ),
-        })        
+        })       
 
     def init(
         self, 
@@ -362,9 +372,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return SimpleFeedbackState(
             mechanics=mechanics_state,
             network=self.net.init(),
-            feedback=self.feedback_channel.init(
-                self.feedback_leaves_func(mechanics_state)
-            ),
+            feedback=self.feedback_channel.init(),
         )
     
     @property

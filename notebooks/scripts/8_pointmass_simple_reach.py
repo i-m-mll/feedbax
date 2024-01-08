@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.15.0
+#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: fx
 #     language: python
@@ -246,7 +246,7 @@ plot_endpoint_pos_with_dists(trial_specs);
 # And what's the distribution of reach lengths for the same batch?
 
 # %%
-start = trial_specs.init['mechanics']['effector'].pos
+start = trial_specs.init['mechanics.effector'].pos
 goal = trial_specs.goal.pos 
 
 reach_lengths = jnp.sqrt(jnp.sum((start - goal) ** 2, axis=-1))
@@ -313,7 +313,7 @@ trial_specs, _ = task.trials_validation
 plot_pos_vel_force_2D(
     states,
     endpoints=(
-        trial_specs.init['mechanics']['effector'].pos, 
+        trial_specs.init['mechanics.effector'].pos, 
         trial_specs.goal.pos
     ),
     cmap='viridis',
