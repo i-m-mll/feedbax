@@ -89,7 +89,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
             "dynamics_step": (
                 lambda self: self._dynamics_step,
                 lambda input, state: input,
-                lambda state: (state.plant, state.solver),
+                lambda state: state,
             ),
             "get_effector": (
                 lambda self: \
@@ -108,23 +108,26 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     def _dynamics_step(
         self, 
         input, 
-        state: Tuple[PlantState, PyTree],
+        state: MechanicsState,
         *,
         key: Optional[jax.Array] = None,
     ):
-        plant_state, solver_state = state
         
         plant_state, _, _, solver_state, _ = self.solver.step(
             self.term, 
             0, 
             self.dt, 
-            plant_state, 
+            state.plant, 
             input, 
-            solver_state, 
+            state.solver, 
             made_jump=False,
         )
         
-        return (plant_state, solver_state)
+        return eqx.tree_at(
+            lambda state: (state.plant, state.solver),
+            state,
+            (plant_state, solver_state),
+        )
     
     @property 
     def memory_spec(self):

@@ -237,7 +237,7 @@ class MuscledArm(AbstractPlant):
             ),
             "muscle_tension": (
                 lambda self: self.muscle_model,
-                lambda input, state: None,
+                lambda input, state: state.muscles.activation,
                 lambda state: state.muscles,
             ),
             "muscle_torques": (

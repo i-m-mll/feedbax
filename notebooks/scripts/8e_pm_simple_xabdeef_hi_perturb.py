@@ -164,14 +164,21 @@ unit_spec = jnp.full(states.network.hidden.shape[-1], jnp.nan)
 unit_spec = unit_spec.at[unit].set(input_current)
 
 # %%
-model_ = eqx.tree_at(
-    lambda model: model.step.net,
+# model_ = eqx.tree_at(
+#     lambda model: model.step.net,
+#     model,
+#     add_intervenors(
+#         model.step.net, 
+#         {'readout': [NetworkConstantInputPerturbation(unit_spec)]},
+#         key=jr.PRNGKey(seed + 3),
+#     ),
+# )
+
+model_ = add_intervenors(
     model,
-    add_intervenors(
-        model.step.net, 
-        {'readout': [NetworkConstantInputPerturbation(unit_spec)]},
-        key=jr.PRNGKey(seed + 3),
-    ),
+    intervenors={'readout': [NetworkConstantInputPerturbation(unit_spec)]},
+    where=lambda model: model.step.net,
+    key=jr.PRNGKey(seed + 3),
 )
 
 # %%

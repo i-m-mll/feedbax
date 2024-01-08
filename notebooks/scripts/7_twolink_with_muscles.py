@@ -79,30 +79,30 @@ muscle_input = jnp.array([0.0, 0., 0.15, 0., 0.0, 0.0])
 # First, test the old `TwoLinkMuscled` class, which lumped the skeleton and muscle elements together into a single `vector_field` call.
 
 # %%
-arm2M = TwoLinkMuscled(
-    muscle_model=TodorovLiVirtualMuscle(),
-    activator=ActivationFilter(
-        tau_act=tau,
-        tau_deact=tau,
-    ),
-)
+# arm2M = TwoLinkMuscled(
+#     muscle_model=TodorovLiVirtualMuscle(),
+#     activator=ActivationFilter(
+#         tau_act=tau,
+#         tau_deact=tau,
+#     ),
+# )
 
-y0 = TwoLinkMuscledState(
-    angle=jnp.array([np.pi / 5, np.pi / 3]), 
-    d_angle=jnp.array([0., 0.]),
-    activation=jnp.zeros(6),
-)
-args = muscle_input 
+# y0 = TwoLinkMuscledState(
+#     angle=jnp.array([np.pi / 5, np.pi / 3]), 
+#     d_angle=jnp.array([0., 0.]),
+#     activation=jnp.zeros(6),
+# )
+# args = muscle_input 
 
 
-with jax.default_device(jax.devices('cpu')[0]):
-    sol = solve(arm2M, y0, dt0, t0, t1, args, n_steps)   
+# with jax.default_device(jax.devices('cpu')[0]):
+#     sol = solve(arm2M, y0, dt0, t0, t1, args, n_steps)   
 
 # %%
-xy = eqx.filter_vmap(arm2M.forward_kinematics)(sol.ys)
+# xy = eqx.filter_vmap(arm2M.forward_kinematics)(sol.ys)
 
-ax = plot_2D_joint_positions(xy.pos, add_root=True)
-plt.show()
+# ax = plot_2D_joint_positions(xy.pos, add_root=True)
+# plt.show()
 
 # %% [markdown]
 # Repeat the solve for the new `MuscledArm` subclass of `AbstractPlant`.
@@ -124,20 +124,24 @@ mechanics = Mechanics(
 )
 
 # %%
+seed = 1234
+key = jr.PRNGKey(seed)
+
 muscle_inputs = jnp.broadcast_to(
     muscle_input,
     (n_steps, 6),
 )
 
-init_state = dict(
-    plant=dict(
-        skeleton=TwoLinkState(
-            angle=jnp.array([np.pi / 5, np.pi / 3]), 
-            d_angle=jnp.array([0., 0.]),
-        ),    
-))
-
 model = SimpleIterator(mechanics, n_steps)
+
+init_state = eqx.tree_at(
+    lambda state: state.plant.skeleton,
+    model.init(key=key),
+    TwoLinkState(
+        angle=jnp.array([np.pi / 5, np.pi / 3]), 
+        d_angle=jnp.array([0., 0.]),
+    ),
+)
 
 states = model(muscle_inputs, init_state, key=jr.PRNGKey(0))
 
@@ -146,7 +150,7 @@ xy = eqx.filter_vmap(plant.skeleton.forward_kinematics)(states.plant.skeleton)
 
 fig, ax = plot_2D_joint_positions(xy.pos, add_root=True)
 
-fig.savefig("monoelbowflexor_0.15.svg", transparent=True)
+# fig.savefig("monoelbowflexor_0.15.svg", transparent=True)
 
 
 

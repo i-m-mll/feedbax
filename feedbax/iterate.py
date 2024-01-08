@@ -14,7 +14,7 @@ import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PyTree, Shaped
 from tqdm.auto import tqdm
 
 from feedbax.model import AbstractModel, AbstractModelState
@@ -102,9 +102,9 @@ class Iterator(AbstractIterator[StateT]):
         
         state = self._step(input, state, key1)
         
-        # Likewise, we split the resulting states into those which are stored,
+        # Likewise, split the resulting states into those which are stored,
         # which are then assigned to the next index in the trajectory, and 
-        # recombined with the single-timestep states (previous time step lost).
+        # recombined with the single-timestep states.
         state_mem, state_nomem = eqx.partition(state, self.states_includes)        
         states_mem = tree_set_idx(states_mem, state_mem, i + 1)
         states = eqx.combine(states_mem, state_nomem)
@@ -114,7 +114,7 @@ class Iterator(AbstractIterator[StateT]):
     @jax.named_scope("fbx.Iterator")
     def __call__(
         self, 
-        input,  #! should have a batch dimension corresponding to time steps
+        input: PyTree[Shaped[Array, "n_steps ..."]],  #! should have a batch dimension corresponding to time steps
         state: StateT,   # initial state
         key: Array,
     ) -> StateT:  #! Adds a batch dimension, actually.

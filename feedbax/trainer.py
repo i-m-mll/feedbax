@@ -440,11 +440,11 @@ class TaskTrainer(eqx.Module):
         
         init_states = jax.vmap(model.step.init)(key=keys_init) 
         
-        for substate_where, init_substate in trial_specs.init.items():
+        for where_substate, init_substates in trial_specs.init.items():
             init_states = eqx.tree_at(
-                substate_where, 
+                where_substate, 
                 init_states,
-                init_substate, 
+                init_substates, 
             )
             
         # TODO: consistency check/update after applying task inits (e.g. joint state)

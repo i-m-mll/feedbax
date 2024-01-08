@@ -84,11 +84,11 @@ class VirtualMuscle(AbstractMuscle):
     n_f: Tuple[float, float]
     a_f: float
     c1: Optional[float] = None 
-    c2: float
+    c2: Optional[float] = None
     k1: Optional[float] = None
-    k2: float
+    k2: Optional[float] = None
     l_r1: Optional[float] = None
-    l_r2: float
+    l_r2: Optional[float] = None
     tau_l: Optional[float] = None 
     c_y: Optional[float] = None
     v_y: Optional[float] = None
@@ -96,58 +96,6 @@ class VirtualMuscle(AbstractMuscle):
     n_muscles: int = 1
     hill_shorten_approx: bool = False  # use Hill approx for f_shorten 
     noise_std: Optional[float] = None  # add noise to force output
-    
-    def __init__(
-        self, 
-        beta, 
-        omega, 
-        rho, 
-        v_max, 
-        c_v,
-        a_v,
-        b_v,
-        n_f,
-        a_f,
-        c1,  
-        c2,
-        k1,  
-        k2,
-        l_r1,  
-        l_r2,
-        tau_l,
-        c_y,
-        v_y,
-        tau_y,
-        n_muscles=1,
-        hill_shorten_approx=False,
-        noise_std=None,
-    ):
-        self.n_muscles = n_muscles
-        self.beta = beta
-        self.omega = omega
-        self.rho = rho
-        self.v_max = v_max
-        self.c_v = c_v
-        self.a_v = a_v
-        self.b_v = b_v
-        self.n_f = n_f
-        self.a_f = a_f
-        self.c1 = c1
-        self.c2 = c2
-        self.k1 = k1
-        self.k2 = k2
-        self.l_r1 = l_r1
-        self.l_r2 = l_r2
-        self.tau_l = tau_l
-        self.c_y = c_y
-        self.v_y = v_y
-        self.tau_y = tau_y
-        self.hill_shorten_approx = hill_shorten_approx
-        self.noise_std = noise_std
-        
-        # initialize cached properties
-        self._shorten_denom_factor
-        self._cv_sum
 
     @jax.named_scope("fbx.VirtualMuscle")
     def __call__(self, input, state, *, key: Optional[Array] = None):
@@ -163,11 +111,11 @@ class VirtualMuscle(AbstractMuscle):
         force_v = self.force_velocity(state.length, state.velocity)
         force_pe1, force_pe2 = self.force_passive(state.length)
         #! technically "frequency" (of stimulation) is the input, here
-        A_f = self.activation_frequency(state.activation, state.length)
+        A_f = self.activation_frequency(input, state.length)
         # assumes 100% fibre recruitment, linear factor R=1:
         force = A_f * (force_l * force_v + force_pe2) + force_pe1  
         if self.noise_std is not None:
-            force = force + self.noise(force, state.activation, key)
+            force = force + self.noise(force, input, key)
         return eqx.tree_at(
             lambda state: state.tension,
             state,
@@ -182,11 +130,7 @@ class VirtualMuscle(AbstractMuscle):
             tension=None,
         )
         
-        return eqx.tree_at(
-            lambda state: state.tension,
-            state,
-            self(state, None),
-        )
+        return self(state.activation, state)
 
     @cached_property 
     def bounds(self):
