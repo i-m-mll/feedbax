@@ -45,6 +45,10 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     """Discretizes and iterates the solution of a system with an effector.
         
     TODO: 
+    - What does this class do that is distinct from `Plant`?
+        - In principle we could amalgamate `term`, `solver`, and `_dynamics_step` 
+          into `Plant`... or into `AbstractDynamicalSystem` 
+        - This class manages the effector. Is it just an effector wrapper?
     - Make sure total system forces are in `system.force`/`system.torque`...
       - It doesn't make sense to update them in the solver step, and they are 
         a combination of the converted effector forces and the effect of the 
@@ -144,15 +148,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     ):
         """Returns an initial state for use with the `Mechanics` module.
         """            
-        # if plant is not None:
-        #     plant_state = self.plant.init(**plant)
-        #     effector_state = self.plant.skeleton.effector(plant_state.skeleton)
-        
-        # elif effector is not None:
-        #     skeleton_state = self.plant.skeleton.inverse_kinematics(effector)
-        #     plant_state = self.plant.init(skeleton=skeleton_state)
-        #     effector_state = self.plant.skeleton.effector(plant_state.skeleton)
-            
+           
         plant_state = self.plant.init()
         init_input = jnp.zeros((self.plant.input_size,))
 

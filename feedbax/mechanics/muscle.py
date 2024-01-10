@@ -1,17 +1,10 @@
 """Muscle models.
 
-NOTE:
-- `eqx.Module` is a frozen dataclass, thus its fields are immutable. This has 
-  implications for how we structure the simplifications of `VirtualMuscle`.
-  For now, I encode the 
-
 TODO:
-- Review the "subclasses" of `VirtualMuscle`; they should probably be functions
-  in `xabdeef`.
-- ActivationFilter could be 
-    - a module applied in serial to the muscle module 
-    - a wrapper around other muscle modules; signature `(l, v, a, u)`
-    - composed into the muscle module
+- Multiplicative noise option
+- Static element (SE) model
+- Y and l_eff filters. See `_Y_field` and `_l_eff_field` methods.
+- None of the simplified models I'm citing implement these.
   
 :copyright: Copyright 2023 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -105,11 +98,16 @@ class AbstractFLVFunction(eqx.Module):
 
 
 class AbstractMuscle(eqx.Module):
-    """Abstract muscle model."""
+    """Abstract muscle model.
+    
+    TODO:
+    - Subclass `AbstractStagedModel`
+    - Run activation dynamics before `force_func`
+    """
     
     n_muscles: AbstractVar[int]
     force_func: AbstractVar[AbstractFLVFunction]
-    noise_func: AbstractVar[Optional[Callable[[Array, Array, Array], Array]]] = None
+    noise_func: AbstractVar[Optional[Callable[[Array, Array, Array], Array]]]
     
     @jax.named_scope("fbx.AbstractMuscle")
     def __call__(self, input, state, *, key: Optional[Array] = None):
@@ -135,7 +133,8 @@ class AbstractMuscle(eqx.Module):
             lambda muscle_model: muscle_model.n_muscles,
             self,
             n_muscles,
-        )        
+        )    
+
 
 class VirtualMuscle(AbstractMuscle):
     
@@ -153,15 +152,37 @@ class VirtualMuscle(AbstractMuscle):
         
         return self(state.activation, state, key=key)   
     
+    @property
+    def bounds(self) -> StateBounds[VirtualMuscleState]:
+        return StateBounds(
+            low=VirtualMuscleState(
+                activation=0.,
+                length=None,
+                velocity=None,
+                tension=None,
+            ),
+            high=VirtualMuscleState(
+                activation=None,
+                length=None,
+                velocity=None,
+                tension=None,
+            ),
+        )
+    
     
 class AbstractForceFunction(eqx.Module):
-    """Base class for muscle force-length, force-velocity, and passive force functions."""
+    """Base class for muscle force-length, force-velocity, and passive force functions.
+    
+    TODO:
+    - Maybe this doesn't need to be distinct from `AbstractFLVFunction`
+    """
     
     @abstractmethod
     def __call__(self, length: Array, velocity: Array) -> Array:
         ...
 
-class BrownForceLength(AbstractForceFunction):
+
+class VirtualMuscleForceLength(AbstractForceFunction):
     """Force-length function from Brown et al. 1999."""
     beta: float 
     omega: float
@@ -173,7 +194,7 @@ class BrownForceLength(AbstractForceFunction):
         ) ** self.rho)
 
 
-class AbstractVirtualShortenFactor(eqx.Module):
+class AbstractVirtualMuscleShortenFactor(eqx.Module):
     c_v: Tuple[float, float]
     
     @abstractmethod
@@ -181,26 +202,26 @@ class AbstractVirtualShortenFactor(eqx.Module):
         ...
         
 
-class BrownShortenFactor(AbstractVirtualShortenFactor):
+class VirtualMuscleShortenFactor(AbstractVirtualMuscleShortenFactor):
     """Shortening factor from Brown et al. 1999."""
     
     def __call__(self, length: Array) -> Array:
         return self.c_v[0] + self.c_v[1] * length
     
 
-class HillShortenFactor(AbstractVirtualShortenFactor):
+class HillShortenFactor(AbstractVirtualMuscleShortenFactor):
     """Hill-type approximation of the shortening factor."""
 
     def __call__(self, length: Array) -> Array:
         return self.c_v[0] + self.c_v[1]
     
 
-class BrownForceVelocity(AbstractForceFunction):
+class VirtualMuscleForceVelocity(AbstractForceFunction):
     """Force-velocity function from Brown et al. 1999."""
     a_v: Tuple[float, float, float]
     b_v: float
     v_max: float
-    shorten_denom_factor_func: AbstractVirtualShortenFactor
+    shorten_denom_factor_func: AbstractVirtualMuscleShortenFactor
     
     def __call__(self, length: Array, velocity: Array) -> Array:
         f_lengthen = (self.b_v - velocity * (
@@ -218,7 +239,7 @@ class BrownForceVelocity(AbstractForceFunction):
         return lengthen_idxs * f_lengthen + ~lengthen_idxs * f_shorten
     
     
-class BrownForcePassive1(AbstractForceFunction):
+class VirtualMuscleForcePassive1(AbstractForceFunction):
     """Passive force function PE1 from Brown et al. 1999."""
     c1: float
     k1: float
@@ -230,7 +251,7 @@ class BrownForcePassive1(AbstractForceFunction):
         ))
 
 
-class BrownForcePassive2(AbstractForceFunction):
+class VirtualMuscleForcePassive2(AbstractForceFunction):
     """Passive force function PE2 from Brown et al. 1999."""
     c2: float
     k2: float
@@ -254,8 +275,8 @@ class AbstractActivationFunction(eqx.Module):
         ...
         
 
-class BrownActivationFunction(AbstractActivationFunction):
-    """Activation function from Brown et al. 1999."""
+class VirtualMuscleActivationFunction(AbstractActivationFunction):
+    """Activation for the Virtual Muscle Model (Brown et al. 1999)."""
     a_f: float
     n_f: Tuple[float, float]
     
@@ -293,7 +314,7 @@ class BrownActivationFunction(AbstractActivationFunction):
         )
 
 
-class BrownFLVFunction(AbstractFLVFunction):
+class VirtualMuscleFLVFunction(AbstractFLVFunction):
     
     force_length: AbstractForceFunction 
     force_velocity: AbstractForceFunction 
@@ -307,15 +328,14 @@ class BrownFLVFunction(AbstractFLVFunction):
         force_pe1 = self.force_passive_1(state.length, state.velocity)
         force_pe2 = self.force_passive_2(state.length, state.velocity)
         #! technically "frequency" (of stimulation) is the input, here
-        A_f = self.activation_func(state.activation, state.length)
+        A_f = self.activation_func(input, state.length)
         # assumes 100% fibre recruitment, linear factor R=1:
         force = A_f * (force_l * force_v + force_pe2) + force_pe1  
         
         return force
 
 
-# TODO: These shouldn't be dicts if we're using getattr access!
-_BROWN_FAST_TWITCH_PARAMS = dict(
+BROWN_FAST_TWITCH_VIRTUALMUSCLE_PARAMS = dict(
     force_length=dict(
         beta=1.55,
         omega=0.81,
@@ -328,7 +348,7 @@ _BROWN_FAST_TWITCH_PARAMS = dict(
     ),
     force_passive_1=dict(
         c1=0.,
-        k1=0.,
+        k1=1.,  # changed from 0. to avoid div by zero
         l_r1=0.,
     ),
     force_passive_2=dict(
@@ -361,7 +381,7 @@ _BROWN_FAST_TWITCH_PARAMS = dict(
 )
 
 
-_BROWN_SLOW_TWITCH_PARAMS = dict(
+BROWN_SLOW_TWITCH_VIRTUALMUSCLE_PARAMS = dict(
     force_length=dict(
         beta=2.30,
         omega=1.26,
@@ -374,7 +394,7 @@ _BROWN_SLOW_TWITCH_PARAMS = dict(
     ),
     force_passive_1=dict(
         c1=0.,
-        k1=0., 
+        k1=1.,  # changed from 0. to avoid div by zero
         l_r1=0.,
     ),
     force_passive_2=dict(
@@ -407,10 +427,10 @@ _BROWN_SLOW_TWITCH_PARAMS = dict(
 )
         
 
-_BROWN_SLOWFAST_AVG_PARAMS = jax.tree_map(
+BROWN_SLOWFAST_AVG_VIRTUALMUSCLE_PARAMS = jax.tree_map(
     lambda x, y: (x + y) / 2,
-    _BROWN_SLOW_TWITCH_PARAMS,
-    _BROWN_FAST_TWITCH_PARAMS,
+    BROWN_SLOW_TWITCH_VIRTUALMUSCLE_PARAMS,
+    BROWN_FAST_TWITCH_VIRTUALMUSCLE_PARAMS,
 )
 
 
@@ -418,7 +438,9 @@ _BROWN_SLOWFAST_AVG_PARAMS = jax.tree_map(
 # some combination of the slow and fast twitch parameters from 
 # Brown et al. 1999, or averages thereof. This is indicated by comments 
 # inside the parameter trees.
-_TODOROV_LI_PARAMS = dict(
+
+
+TODOROV_LI_VIRTUALMUSCLE_PARAMS = dict(
     force_length=dict(
         beta=1.93,  # slow/fast avg
         omega=1.03,  # slow/fast avg is 1.035
@@ -429,12 +451,7 @@ _TODOROV_LI_PARAMS = dict(
         b_v=0.62,  # slow/fast avg
         v_max=-5.72,  # slow/fast avg is -5.725
     ),
-    # force_passive_1=dict(
-    #     c1=0.,
-    #     k1=0., 
-    #     l_r1=0.,
-    # ),
-    force_passive_2=dict(
+    force_passive_2=dict(  # identical for slow/fast
         c2=-0.02,  
         k2=-18.7,  
         l_r2=0.79,
@@ -445,11 +462,18 @@ _TODOROV_LI_PARAMS = dict(
     activation=dict(
         n_f=(2.11, 4.16),  # slow/fast avg (2.11, 4.155),
         a_f=0.56,
-    )
+    ),
+    
+    #! unused 
+    force_passive_1=dict(
+        c1=0.,
+        k1=1., 
+        l_r1=0.,
+    ),
 )
 
 
-_LILLICRAP_SCOTT_PARAMS = dict(
+LILLICRAP_SCOTT_VIRTUALMUSCLE_PARAMS = dict(
     force_length=dict(
         beta = 1.55,  # fast
         omega = 0.81,  # fast 
@@ -463,59 +487,71 @@ _LILLICRAP_SCOTT_PARAMS = dict(
     shorten=dict(
         c_v=(-3.21, 4.17),  # fast
     ),
-    # force_passive_1=dict(
-    #     c1=0.,
-    #     k1=0.,
-    #     l_r1=0.,
-    # ),
-    # force_passive_2=dict(
-    #     c2=0.,
-    #     k2=0.,
-    #     l_r2=0.,
-    # ),
-    # activation=dict(
-    #     n_f=0.,
-    #     a_f=0.,
-    # ),
+    
+    #! unused
+    force_passive_1=dict(
+        c1=0.,
+        k1=1.,
+        l_r1=0.,
+    ),
+    force_passive_2=dict(
+        c2=0.,
+        k2=0.,
+        l_r2=0.,
+    ),
+    activation=dict(
+        n_f=0.,
+        a_f=0.,
+    ),
 )
     
 
-
-def brown_1999_virtual_muscle(
+def brown_1999_virtualmuscle(
     n_muscles: int = 1, 
     noise_func=None,
-    params=_BROWN_SLOWFAST_AVG_PARAMS,
+    params=BROWN_SLOWFAST_AVG_VIRTUALMUSCLE_PARAMS,
 ):
     return VirtualMuscle(
         n_muscles,
-        force_func=BrownFLVFunction(
-            force_length=BrownForceLength(**params.force_length),
-            force_velocity=BrownForceVelocity(
-                **params.force_velocity,
-                shorten_denom_factor_func=BrownShortenFactor(params.shorten),
+        force_func=VirtualMuscleFLVFunction(
+            force_length=VirtualMuscleForceLength(**params["force_length"]),
+            force_velocity=VirtualMuscleForceVelocity(
+                **params["force_velocity"],
+                shorten_denom_factor_func=VirtualMuscleShortenFactor(**params["shorten"]),
             ),
-            force_passive_1=BrownForcePassive1(**params.force_passive_1),
-            force_passive_2=BrownForcePassive2(**params.force_passive_2),
+            force_passive_1=VirtualMuscleForcePassive1(**params["force_passive_1"]),
+            # force_passive_1=lambda length, velocity: 0,
+            force_passive_2=VirtualMuscleForcePassive2(**params["force_passive_2"]),
+            activation_func=VirtualMuscleActivationFunction(**params["activation"]),
         ),
         noise_func=noise_func,
     )
     
     
-def todorov_li_2004_muscle(
+def todorov_li_2004_virtualmuscle(
     n_muscles: int = 1, 
     noise_func=None,
-    params=_TODOROV_LI_PARAMS,
+    params=TODOROV_LI_VIRTUALMUSCLE_PARAMS,
 ):
+    """Muscle model from Todorov & Li 2004.
+    
+    Simplification of the Brown et al. 1999 Virtual Muscle Model:
+    
+    1. Omits the first passive element, PE1.
+    2. Uses averages of the fast and slow twitch parameters from Brown 1999.
+    
+    """
     return VirtualMuscle(
         n_muscles,
-        force_func=BrownFLVFunction(
-            force_length=BrownForceLength(**params.force_length),
-            force_velocity=BrownForceVelocity(
-                **params.force_velocity,
-                shorten_denom_factor_func=BrownShortenFactor(params.shorten),
+        force_func=VirtualMuscleFLVFunction(
+            force_length=VirtualMuscleForceLength(**params["force_length"]),
+            force_velocity=VirtualMuscleForceVelocity(
+                **params["force_velocity"],
+                shorten_denom_factor_func=VirtualMuscleShortenFactor(**params["shorten"]),
             ),
             force_passive_1=lambda length, velocity: 0,
-            force_passive_2=BrownForcePassive2(**params.force_velocity),
+            force_passive_2=VirtualMuscleForcePassive2(**params["force_passive_2"]),
+            activation_func=VirtualMuscleActivationFunction(**params["activation"]),
         ),
         noise_func=noise_func,
     )
@@ -536,29 +572,32 @@ class LillicrapScottForceLength(AbstractForceFunction):
         ))
 
 
-def lillicrap_scott_2013_muscle(
+def lillicrap_scott_2013_virtualmuscle(
     n_muscles: int = 1,
     noise_func=None, 
-    params=_LILLICRAP_SCOTT_PARAMS,
+    params=LILLICRAP_SCOTT_VIRTUALMUSCLE_PARAMS,
 ):
     """Muscle model from Lillicrap & Scott 2013.
     
     Simplification of the Brown et al. 1999 Virtual Muscle Model:
     
     1. Uses the Hill approximation (removes denominator `l` dependency) 
-       for `f_shorten`.
-    2. Omits the passive elements, PE1 and PE2.
-    3. Uses the activation directly for the activation frequency: `A_f = a`,
-       thus also omits the Y and l_eff filters.
+       for FV shortening.
+    2. Omits both passive elements, PE1 and PE2.
+    3. Uses the activation directly: `A_f = a`, thus also omits any 
+       `Y` and `l_eff` filters.
+    4. Uses a mixture of fast twitch and averaged slow/fast twitch 
+       parameters from Brown 1999; see `LILLICRAP_SCOTT_VIRTUALMUSCLE_PARAMS`.
     """
-
     
     return VirtualMuscle(
         n_muscles,
-        force_func=BrownFLVFunction(
+        force_func=VirtualMuscleFLVFunction(
             # force_length=LillicrapScottForceLength(params.force_length),
-            force_velocity=BrownForceVelocity(
-                shorten_denom_factor=HillShortenFactor(params.shorten),
+            force_length=VirtualMuscleForceLength(**params["force_length"]),
+            force_velocity=VirtualMuscleForceVelocity(
+                **params["force_velocity"],
+                shorten_denom_factor=HillShortenFactor(**params["shorten"]),
             ),
             force_passive_1=lambda length, velocity: 0,
             force_passive_2=lambda length, velocity: 0,
@@ -568,226 +607,24 @@ def lillicrap_scott_2013_muscle(
     )
     
 
+#     def _Y_field(self, t, y, args):
+#         #! currently unused
+#         Y = y
+#         v = args 
+#         c_Y, tau_Y, v_Y = self.c_y, self.tau_y, self.v_y
+#         d_Y = 1 - Y - c_Y * (1 - jnp.exp(-jnp.abs(v) / v_Y)) / tau_Y
+#         return d_Y
     
-
-class VirtualMuscleOld(AbstractMuscle):
-    """Virtual Muscle Model from Brown et al. 1999.
-    
-    TODO:
-    - Multiplicative noise option
-    - Static element (SE) model
-    - Y and l_eff filters. See `_Y_field` and `_l_eff_field` methods.
-        - None of the simplified models I'm citing implement these.
-    """
-    # beta: float 
-    # omega: float
-    # rho: float
-    # v_max: float
-    # c_v: Tuple[float, float]
-    # a_v: Tuple[float, float, float]
-    # b_v: float
-    # n_f: Tuple[float, float]
-    # a_f: float
-    # c1: Optional[float] = None 
-    # c2: Optional[float] = None
-    # k1: Optional[float] = None
-    # k2: Optional[float] = None
-    # l_r1: Optional[float] = None
-    # l_r2: Optional[float] = None
-    tau_l: Optional[float] = None 
-    c_y: Optional[float] = None
-    v_y: Optional[float] = None
-    tau_y: Optional[float] = None
-    # n_muscles: int = 1
-    # hill_shorten_approx: bool = True  # use Hill approx for f_shorten 
-    # noise_std: Optional[float] = None  # add noise to force output
-
-    # @jax.named_scope("fbx.VirtualMuscle")
-    # def __call__(self, input, state, *, key: Optional[Array] = None):
-    #     """Calculates the force generated by the muscle.
-        
-    #     Note that the muscle "input" is `state.activation`, and not part of 
-    #     `input`, which as an argument is meant for task inputs and not for
-    #     state variables determined elsewhere in the model, as the muscle
-    #     activation is by the controller and the activation dynamics 
-    #     (managed by concrete instances of `AbstractPlant`).
-    #     """
-    #     force_l = self.force_length(state.length)
-    #     force_v = self.force_velocity(state.length, state.velocity)
-    #     force_pe1, force_pe2 = self.force_passive(state.length)
-    #     #! technically "frequency" (of stimulation) is the input, here
-    #     A_f = self.activation_frequency(input, state.length)
-    #     # assumes 100% fibre recruitment, linear factor R=1:
-    #     force = A_f * (force_l * force_v + force_pe2) + force_pe1  
-    #     if self.noise_std is not None:
-    #         force = force + self.noise(force, input, key)
-    #     return eqx.tree_at(
-    #         lambda state: state.tension,
-    #         state,
-    #         force,
-    #     )
-
-    # def init(self, *, key: Optional[Array] = None):
-    #     state = VirtualMuscleState(
-    #         activation=jnp.zeros(self.n_muscles),
-    #         length=jnp.ones(self.n_muscles),  
-    #         velocity=jnp.zeros(self.n_muscles),
-    #         tension=None,
-    #     )
-        
-    #     return self(state.activation, state)
-
-    # @cached_property 
-    # def bounds(self):
-    #     return StateBounds(
-    #         low=VirtualMuscleState(
-    #             activation=0.,
-    #             length=None,
-    #             velocity=None,
-    #             tension=None,
-    #         ),
-    #         high=VirtualMuscleState(
-    #             activation=None,
-    #             length=self.n_f[1] / (self.n_f[1] - self.n_f[0]),
-    #             velocity=None,
-    #             tension=None,
-    #         ),
-    #     )
-
-    # def force_length(self, l):
-    #     return jnp.exp(-jnp.abs((l ** self.beta - 1) / self.omega) ** self.rho)
-    
-    # def force_velocity(self, l, v):
-    #     a_v, b_v, v_max = self.a_v, self.b_v, self.v_max
-    #     f_lengthen = (b_v - v * (a_v[0] + a_v[1] * l + a_v[2] * l ** 2)) / (b_v + v)
-    #     f_shorten = (v_max - v) / (v_max + v * self._shorten_denom_factor(l)) 
-    #     lengthen_idxs = v > 0
-    #     return lengthen_idxs * f_lengthen + ~lengthen_idxs * f_shorten
-
-    # @cached_property    
-    # def _shorten_denom_factor(self):
-    #     if self.hill_shorten_approx:
-    #         return self._hill_shorten_denom_factor
-    #     else:
-    #         return self._full_shorten_denom_factor
-    
-    # def _full_shorten_denom_factor(self, l):
-    #     return self.c_v[0] + self.c_v[1] * l 
-
-    # def _hill_shorten_denom_factor(self, l):
-    #     return self._cv_sum 
-    
-    # @cached_property
-    # def _cv_sum(self):
-    #     return self.c_v[0] + self.c_v[1]
-    
-    # def force_passive(self, l):
-    #     return self.force_passive_1(l), self.force_passive_2(l)
-    
-    # def force_passive_1(self, l):
-    #     """Model of passive element PE1."""
-    #     c1, k1, l_r1 = self.c1, self.k1, self.l_r1
-    #     f_pe1 = c1 * k1 * jnp.log(jnp.exp((l - l_r1) / k1) + 1)  
-    #     return f_pe1
-    
-    # def force_passive_2(self, l):
-    #     """Model of passive element PE2."""
-    #     c2, k2, l_r2 = self.c2, self.k2, self.l_r2
-    #     f_pe2 = c2 * jnp.exp(k2 * (l - l_r2))  # TODO: optional Hill approx without l dep
-    #     return f_pe2
-    
-    # def activation_frequency(self, a, l): 
-    #     """Model of the relationship between stimulus frequency `a` and muscle activation.
-        
-    #     The notation may be confusing. The input to this function is sometimes called the 
-    #     "activation", hence the name `a`. But this model is based on a muscle being activated
-    #     by stimulation at some frequency by an electrode.
-    #     """
-    #     n_f, a_f = self.n_f, self.a_f
-    #     n_f = n_f[0] + n_f[1] * (1 / l - 1)  # TODO: l_eff filter option (see method _l_eff_field)
-    #     Y = 1  # TODO: Y filter option (see method _Y_field)
-    #     A_f = 1 - jnp.exp(-(a / (a_f * n_f)) ** n_f)
-    #     # A_f = 1 - jnp.exp(-((a * Y) / (a_f * n_f)) ** n_f)
-    #     return A_f
-    
-    def noise(self, force, activation, key):
-        noise = jr.normal(key, shape=force.shape, dtype=force.dtype)
-        return self.noise_std * noise
-
-    def _Y_field(self, t, y, args):
-        #! currently unused
-        Y = y
-        v = args 
-        c_Y, tau_Y, v_Y = self.c_y, self.tau_y, self.v_y
-        d_Y = 1 - Y - c_Y * (1 - jnp.exp(-jnp.abs(v) / v_Y)) / tau_Y
-        return d_Y
-    
-    def _l_eff_field(self, t, y, args):
-        #! currently unused
-        # TODO: to do this, need to track A_f from last step...
-        l_eff = y
-        l, A_f = args 
-        tau_l = self.tau_l
-        d_l_eff = (l - l_eff) ** 3 / (tau_l * (1 - A_f))
-        return d_l_eff
-
-# class TodorovLiVirtualMuscle:
-    
-#     def __init__(self):
-#         self._wrapped = VirtualMuscle(**_TODOROV_LI_PARAMS)
-    
-#     def __getattr__(self, attr):
-#         return getattr(self._wrapped, attr)
-    
-#     def force_passive(self, l):
-#         # omit f_pe1
-#         print("bar")
-#         return 0, self.force_passive_2(l)
-
-# class TodorovLiVirtualMuscle(VirtualMuscle):
-#     """Muscle model from Todorov & Li 2004.
-    
-#     Simplification of the Brown et al. 1999 Virtual Muscle Model, omitting the 
-#     first passive element (PE1) and the Y and l_eff filters.
-#     """
-    
-#     def __init__(self):
-#         super().__init__(**_TODOROV_LI_PARAMS)
-    
-#     def force_passive(self, l):
-#         # omit f_pe1
-#         return 0, self.force_passive_2(l)
+#     def _l_eff_field(self, t, y, args):
+#         #! currently unused
+#         # TODO: to do this, need to track A_f from last step...
+#         l_eff = y
+#         l, A_f = args 
+#         tau_l = self.tau_l
+#         d_l_eff = (l - l_eff) ** 3 / (tau_l * (1 - A_f))
+#         return d_l_eff    
 
 
-# class LillicrapScottVirtualMuscle(VirtualMuscle): 
-#     """Muscle model from Lillicrap & Scott 2013.
-    
-#     Simplification of the Brown et al. 1999 Virtual Muscle Model:
-    
-#     1. Uses the Hill approximation (removes denominator `l` dependency) 
-#        for `f_shorten`.
-#     2. Omits the passive elements, PE1 and PE2.
-#     3. Uses the activation directly for the activation frequency: `A_f = a`,
-#        thus also omits the Y and l_eff filters.
-    
-#     TODO:
-#     - Figure out if they actually use a modified form of `force_length` with 
-#       the sign inside the exponential reversed.
-#     """
-#     hill_shorten_approx: bool = True  # 1. use Hill approx for f_shorten
-    
-#     def __init__(self):
-#         super().__init__(**_LILLICRAP_SCOTT_PARAMS)
-    
-#     def force_passive(self, l):
-#         return 0, 0
-    
-#     def activation_frequency(self, a, l):
-#         return a 
-
-#     #! this is the (wrong?) equation reported in the paper supplement    
-#     # def force_length(self, l):
-#     #     return jnp.exp(jnp.abs((l ** self.beta - 1) / self.omega))
 
     
 

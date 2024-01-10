@@ -373,27 +373,35 @@ class RandomReaches(AbstractTask):
         """Random reach endpoints in a 2D rectangular workspace.
         """
         
-        pos_endpoints = uniform_tuples(key, n=2, bounds=self.workspace)
+        effector_pos_endpoints = uniform_tuples(key, n=2, bounds=self.workspace)
                 
-        init_state, target_state = \
-            _pos_only_states(pos_endpoints)
+        effector_init_state, effector_target_state = \
+            _pos_only_states(effector_pos_endpoints)
         
         # Broadcast the fixed targets to a sequence with the desired number of 
         # time steps, since that's what `Iterator` and `Loss` will expect.
         # Hopefully this should not use up any extra memory. 
-        target_state = jax.tree_map(
+        effector_target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
-            target_state,
+            effector_target_state,
         )
-        task_input = _forceless_task_inputs(target_state)
+        task_input = _forceless_task_inputs(effector_target_state)
 
+        # TODO: It might be better here to use an `Intervenor`-like callable
+        # instead of `InitSpecDict`, which is slow. 
+        # def init_func(state):
+        #     return eqx.tree_at(
+        #         lambda state: state.mechanics.effector,
+        #         state,
+        #         effector_init_state,
+        #     )
         
         return ReachTrialSpec(
             init=InitSpecDict({
-               lambda state: state.mechanics.effector: init_state 
+               lambda state: state.mechanics.effector: effector_init_state 
             }),
             input=task_input, 
-            target=target_state,
+            target=effector_target_state,
         ), None
         
     @cached_property

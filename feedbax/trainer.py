@@ -447,7 +447,6 @@ class TaskTrainer(eqx.Module):
                 init_substates, 
             )
             
-        # TODO: consistency check/update after applying task inits (e.g. joint state)
         init_states = jax.vmap(model.step.state_consistency_update)(
             init_states
         )

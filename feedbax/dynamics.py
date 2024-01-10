@@ -4,6 +4,7 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from abc import abstractmethod, abstractproperty
 import logging 
 from typing import Generic, Optional, Protocol, TypeVar
 
@@ -35,6 +36,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
       well.
     """
     
+    @abstractmethod
     def __call__(
         self, 
         t: float, 
@@ -44,11 +46,12 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         """Vector field of the system."""
         ...
 
-    @property
+    @abstractproperty
     def control_size(self) -> int:
         """Number of control inputs."""
         ...
     
+    @abstractmethod
     def init(self, *, key: Optional[Array] = None) -> StateT:
         """Initial state of the system.
         
@@ -59,7 +62,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         """
         ...
     
-    @property
+    @abstractproperty
     def bounds(self) -> StateBounds[StateT]:
         """Suggested bounds on the state.
         
