@@ -13,16 +13,23 @@ description = "Optimal feedback control in JAX."
 authors = [
     {name = "MLL", email = "mll@mll.bio"}
 ]
-license = {text = "Apache 2.0"}
+license = {file = "LICENSE"}
 readme = "README.md"
 keywords = [
-    'optimal control',
-    'optimal feedback control',
+    'jax',
+    'neural-networks',
+    'optimal-control',
+    'optimal-feedback-control',
     'pytorch',
     'biomechanics'
 ]
 requires-python = ">=3.10.6"
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
@@ -38,9 +45,7 @@ dependencies = [
 ]
 
 [project.urls]
-# homepage = ""
-# documentation = ""
-# repository = ""
+    repository = "https://github.com/i-m-mll/feedbax"
 
 [project.optional-dependencies]
 analysis = [

@@ -316,8 +316,8 @@ def plot_pos_vel_force_2D(
         elif force_label_type == 'torques':
             force_labels = ("Control torques", r"$\tau_1$", r"$\tau_2$")
         
-    labels = [("Position", "$x$", "$y$"),
-              ("Velocity", "$\dot x$", "$\dot y$"),
+    labels = [("Position", r"$x$", r"$y$"),
+              ("Velocity", r"$\dot x$", r"$\dot y$"),
               force_labels]
     
     if workspace is not None:

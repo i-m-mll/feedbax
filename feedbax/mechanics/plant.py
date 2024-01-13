@@ -44,7 +44,20 @@ class AbstractPlant(AbstractStagedModel[PlantState]):
     
     clip_states: AbstractVar[bool]
     skeleton: AbstractVar[AbstractSkeleton]
+    muscle_model: AbstractVar[Optional[AbstractMuscle]]
     
+    def vector_field(self, t, state, input):       
+        d_state = jax.tree_map(jnp.zeros_like, state)
+        
+        for vf, input_func, state_where in self.dynamics_spec.values():
+            d_state = eqx.tree_at(
+                state_where,
+                d_state,
+                vf(t, state_where(state), input_func(input, state))
+            )
+            
+        return d_state 
+
     @abstractproperty
     def model_spec(self):
         ...
@@ -65,18 +78,6 @@ class AbstractPlant(AbstractStagedModel[PlantState]):
     def input_size(self) -> int:
         ...
         
-    def vector_field(self, t, state, input):       
-        d_state = jax.tree_map(jnp.zeros_like, state)
-        
-        for vf, input_func, state_where in self.dynamics_spec.values():
-            d_state = eqx.tree_at(
-                state_where,
-                d_state,
-                vf(t, state_where(state), input_func(input, state))
-            )
-            
-        return d_state 
-    
     @property 
     def bounds(self) -> PyTree[StateBounds]:
         return PlantState(
@@ -107,6 +108,7 @@ class SimplePlant(AbstractPlant):
     skeleton: AbstractSkeleton 
     clip_states: bool 
     intervenors: Dict[str, AbstractIntervenor]
+    muscle_model: None = None
     
     def __init__(
         self, 

@@ -388,7 +388,8 @@ class RandomReaches(AbstractTask):
         task_input = _forceless_task_inputs(effector_target_state)
 
         # TODO: It might be better here to use an `Intervenor`-like callable
-        # instead of `InitSpecDict`, which is slow. 
+        # instead of `InitSpecDict`, which is slow. Though the callable would
+        # ideally provide the initial state as a 
         # def init_func(state):
         #     return eqx.tree_at(
         #         lambda state: state.mechanics.effector,
@@ -408,34 +409,34 @@ class RandomReaches(AbstractTask):
     def trials_validation(self) -> [ReachTrialSpec, None]:
         """Center-out reaches across a regular workspace grid."""
         
-        pos_endpoints = _centerout_endpoints_grid(
+        effector_pos_endpoints = _centerout_endpoints_grid(
             self.workspace,
             self.eval_grid_n,
             self.eval_n_directions,
             self.eval_reach_length,
         )
         
-        init_states, target_states = \
-            _pos_only_states(pos_endpoints)
+        effector_init_states, effector_target_states = \
+            _pos_only_states(effector_pos_endpoints)
         
         # Broadcast to the desired number of time steps. Awkwardly, we also 
         # need to use `swapaxes` because the batch dimension is explicit, here.
-        target_states = jax.tree_map(
+        effector_target_states = jax.tree_map(
             lambda x: jnp.swapaxes(
                 jnp.broadcast_to(x, (self.n_steps, *x.shape)),
                 0, 1
             ),
-            target_states,
+            effector_target_states,
         )
         
-        task_inputs = _forceless_task_inputs(target_states)
+        task_inputs = _forceless_task_inputs(effector_target_states)
         
         return ReachTrialSpec(
             init=InitSpecDict({
-               lambda state: state.mechanics.effector: init_states 
+               lambda state: state.mechanics.effector: effector_init_states 
             }),
             input=task_inputs, 
-            target=target_states,
+            target=effector_target_states,
         ), None
         
     @property
@@ -485,22 +486,25 @@ class RandomReachesDelayed(AbstractTask):
         """Random reach endpoints in a 2D rectangular workspace."""
         
         key1, key2 = jr.split(key)
-        pos_endpoints = uniform_tuples(key1, n=2, bounds=self.workspace)
+        effector_pos_endpoints = uniform_tuples(
+            key1, n=2, bounds=self.workspace
+        )
                 
-        init_state, target_state = \
-            _pos_only_states(pos_endpoints)
+        effector_init_state, effector_target_state = \
+            _pos_only_states(effector_pos_endpoints)
         
-        task_inputs, target_states, epoch_start_idxs = self.get_sequences(
-            init_state, target_state, key2
-        )      
+        task_inputs, effector_target_states, epoch_start_idxs = \
+            self.get_sequences(
+                effector_init_state, effector_target_state, key2
+            )      
         
         return (
             ReachTrialSpec(
                 init=InitSpecDict({
-                    lambda state: state.mechanics.effector: init_state 
+                    lambda state: state.mechanics.effector: effector_init_state 
                 }),
                 input=task_inputs, 
-                target=target_states,
+                target=effector_target_states,
             ), 
             epoch_start_idxs,
         )
@@ -509,28 +513,28 @@ class RandomReachesDelayed(AbstractTask):
     def trials_validation(self):
         """Center-out reaches across a regular workspace grid."""
         
-        pos_endpoints = _centerout_endpoints_grid(
+        effector_pos_endpoints = _centerout_endpoints_grid(
             self.workspace,
             self.eval_grid_n,
             self.eval_n_directions,
             self.eval_reach_length,
         )
         
-        init_states, target_states = \
-            _pos_only_states(pos_endpoints)
+        effector_init_states, effector_target_states = \
+            _pos_only_states(effector_pos_endpoints)
         
-        epochs_keys = jr.split(self.key_eval, init_states.pos.shape[0])
-        task_inputs, target_states, epoch_start_idxs = jax.vmap(self.get_sequences)(
-            init_states, target_states, epochs_keys
+        epochs_keys = jr.split(self.key_eval, effector_init_states.pos.shape[0])
+        task_inputs, effector_target_states, epoch_start_idxs = jax.vmap(self.get_sequences)(
+            effector_init_states, effector_target_states, epochs_keys
         )    
            
         return (
             ReachTrialSpec(
                 init=InitSpecDict({
-                    lambda state: state.mechanics.effector: init_states 
+                    lambda state: state.mechanics.effector: effector_init_states 
                 }),
                 input=task_inputs, 
-                target=target_states,
+                target=effector_target_states,
             ), 
             epoch_start_idxs,
         )
@@ -542,6 +546,8 @@ class RandomReachesDelayed(AbstractTask):
         key: jax.Array,
     ) -> Tuple[DelayTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
+        
+        TODO: This could be split up?
         """        
         epoch_lengths = gen_epoch_lengths(key, self.epoch_len_ranges)
         epoch_start_idxs = jnp.pad(
@@ -578,6 +584,7 @@ class RandomReachesDelayed(AbstractTask):
     def n_trials_validation(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n ** 2 * self.eval_n_directions
+
 
 class Stabilization(AbstractTask):
     """Postural stabilization task at random points in workspace.
