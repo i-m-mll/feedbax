@@ -438,7 +438,7 @@ class TaskTrainer(eqx.Module):
         
         model = jtu.tree_unflatten(treedef_model, flat_model)
         
-        init_states = jax.vmap(model.step.init)(key=keys_init) 
+        init_states = jax.vmap(model._step.init)(key=keys_init) 
         
         for where_substate, init_substates in trial_specs.init.items():
             init_states = eqx.tree_at(
@@ -446,8 +446,8 @@ class TaskTrainer(eqx.Module):
                 init_states,
                 init_substates, 
             )
-            
-        init_states = jax.vmap(model.step.state_consistency_update)(
+        
+        init_states = jax.vmap(model._step.state_consistency_update)(
             init_states
         )
         
@@ -677,12 +677,12 @@ class HebbianGRUUpdate(eqx.Module):
         dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
         
         # Build the update for the candidate activation weights of the GRU.
-        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
+        weight_hh = jnp.zeros_like(model._step.net.hidden.weight_hh)
         weight_idxs = slice(2 * weight_hh.shape[-2] // 3, None)        
         weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
         
         update = eqx.tree_at(
-            lambda model: model.step.net.hidden.weight_hh, 
+            lambda model: model._step.net.hidden.weight_hh, 
             jax.tree_map(lambda x: None, model),
             weight_hh,
             is_leaf=lambda x: x is None,

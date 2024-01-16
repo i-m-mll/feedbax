@@ -78,6 +78,7 @@ def clip_state(
       especially since it might require we make a bizarre
       `StateBounds[Callable]` for the operations...
     """
+
     if bounds.low is not None:
         state = clip_state_to_bound(
             state, bounds.low, bounds.filter_spec.low, jnp.greater

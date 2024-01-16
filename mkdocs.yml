@@ -12,11 +12,13 @@ theme:
     - toc.integrate
     - header.autohide
   icon:
-    logo: "material/all-inclusive"  #rotate-left, directory-sync, all-inclusive
+    logo: "material/arm-flex"  #rotate-left, directory-sync, all-inclusive
 
 markdown_extensions:
   - pymdownx.arithmatex:  # Render LaTeX via MathJax
       generic: true
+  - pymdownx.superfences  # Enables syntax highlighting
+  # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
   - admonition
   
 extra_css:
@@ -29,7 +31,8 @@ extra_javascript:
   
 plugins:
   - search 
-  - mknotebooks  # Jupyter notebooks
+  - mknotebooks:  # Jupyter notebooks
+      # write_markdown: true  # Write markdown files for notebooks
   - mkdocstrings:
       handlers:
           python: 
@@ -44,7 +47,6 @@ plugins:
 nav:
   - 'index.md'
   - Examples:
-      - TestMD: '../README.md'
-      - TestNB: 'notebooks/1_pointmass.ipynb'
+      - TestNB: 'tmp/8c_pm_simple_xabdeef_hi.ipynb'
     
   

@@ -3,4 +3,5 @@ mkdocs-material==9.5.3
 mkdocstrings==0.24.0
 mkdocstrings-python==1.8.0
 mknotebooks==0.8.0
+pygments==2.17.2
 pymdown-extensions==10.7

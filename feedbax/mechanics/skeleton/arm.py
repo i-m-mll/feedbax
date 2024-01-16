@@ -144,13 +144,11 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         
         TODO:
         - Try to generalize to n-link arm using Jacobian of forward kinematics?
-        - Unit test round trip with `forward_kinematics`.
         """
         pos = effector_state.pos
         l, lsqpm = self.l, self._lsqpm
         dsq = jnp.sum(pos ** 2)
-
-       
+        
         alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
         gamma = jnp.arctan2(pos[1], pos[0])
         theta0 = gamma - alpha

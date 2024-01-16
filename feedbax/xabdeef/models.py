@@ -20,8 +20,7 @@ from feedbax.model import AbstractModel, SimpleFeedback
 from feedbax.iterate import Iterator, SimpleIterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.mechanics.muscle import ActivationFilter, TodorovLiVirtualMuscle
-from feedbax.mechanics.muscled_arm import TwoLinkMuscled
+from feedbax.mechanics.muscle import ActivationFilter
 from feedbax.networks import SimpleNetwork
 from feedbax.task import AbstractTask, RandomReaches
 from feedbax.trainer import TaskTrainer

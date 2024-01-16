@@ -22,6 +22,7 @@ import jax
 import jax.random as jr
 import jax.numpy as jnp
 from jaxtyping import Float, Array
+import numpy as np
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import AbstractModelState
@@ -89,8 +90,22 @@ class VirtualMuscleState(AbstractMuscleState):
     tension: Array
 
 
+# TODO: maybe `AbstractFLVFunction` and `AbstractActivationFunction` can be joined
 class AbstractFLVFunction(eqx.Module):
     """Base class for muscle total force (force-length-velocity) functions."""
+    
+    @abstractmethod
+    def __call__(self, input: Array, state: AbstractMuscleState) -> Array:
+        ...
+
+
+class AbstractActivationFunction(eqx.Module):
+    """Base class for muscle input -> activation functions.
+    
+    Note that this is not the same as (say) a first-order filter that
+    approximates calcium dynamics, which would be applied to `input` before it
+    arrives here.
+    """
     
     @abstractmethod
     def __call__(self, input: Array, state: AbstractMuscleState) -> Array:
@@ -106,6 +121,7 @@ class AbstractMuscle(eqx.Module):
     """
     
     n_muscles: AbstractVar[int]
+    activation_func: AbstractVar[AbstractActivationFunction]
     force_func: AbstractVar[AbstractFLVFunction]
     noise_func: AbstractVar[Optional[Callable[[Array, Array, Array], Array]]]
     
@@ -119,13 +135,14 @@ class AbstractMuscle(eqx.Module):
         activation is by the controller and the activation dynamics 
         (managed by concrete instances of `AbstractPlant`).
         """
-        force = self.force_func(input, state)
+        activation = self.activation_func(input, state)
+        force = self.force_func(activation, state)
         if self.noise_func is not None:
             force = force + self.noise_func(input, force, key)
         return eqx.tree_at(
-            lambda state: state.tension,
+            lambda state: (state.activation, state.tension),
             state,
-            force,
+            (activation, force),
         )               
   
     def change_n_muscles(self, n_muscles) -> "AbstractMuscle":
@@ -139,6 +156,7 @@ class AbstractMuscle(eqx.Module):
 class VirtualMuscle(AbstractMuscle):
     
     n_muscles: int
+    activation_func: AbstractActivationFunction
     force_func: AbstractFLVFunction
     noise_func: Optional[Callable[[Array, Array, Array], Array]] = None
     
@@ -154,6 +172,16 @@ class VirtualMuscle(AbstractMuscle):
     
     @property
     def bounds(self) -> StateBounds[VirtualMuscleState]:
+        
+        # TODO: this would be more general if n_f behaviour is generalized
+        # if n_f := getattr(self.activation_func, "n_f", None) is not None:
+        
+        if isinstance(self.activation_func, VirtualMuscleActivationFunction):
+            n_f = self.activation_func.n_f
+            length_ub = 0.95 * n_f[1] / (n_f[1] - n_f[0])
+        else:
+            length_ub = None
+        
         return StateBounds(
             low=VirtualMuscleState(
                 activation=0.,
@@ -163,13 +191,13 @@ class VirtualMuscle(AbstractMuscle):
             ),
             high=VirtualMuscleState(
                 activation=None,
-                length=None,
+                length=length_ub,
                 velocity=None,
                 tension=None,
             ),
         )
-    
-    
+
+
 class AbstractForceFunction(eqx.Module):
     """Base class for muscle force-length, force-velocity, and passive force functions.
     
@@ -260,19 +288,6 @@ class VirtualMuscleForcePassive2(AbstractForceFunction):
     def __call__(self, length: Array, velocity: Array) -> Array:
         # TODO: optional Hill approx without l dep
         return self.c2 * jnp.exp(self.k2 * (length - self.l_r2))
-
-
-class AbstractActivationFunction(eqx.Module):
-    """Base class for muscle input -> activation functions.
-    
-    Note that this is not the same as (say) a first-order filter that
-    approximates calcium dynamics, which would be applied to `input` before it
-    arrives here.
-    """
-    
-    @abstractmethod
-    def __call__(self, input: Array, length: Array) -> Array:
-        ...
         
 
 class VirtualMuscleActivationFunction(AbstractActivationFunction):
@@ -280,38 +295,18 @@ class VirtualMuscleActivationFunction(AbstractActivationFunction):
     a_f: float
     n_f: Tuple[float, float]
     
-    def __call__(self, input: Array, length: Array) -> Array: 
+    def __call__(self, input: Array, state: AbstractMuscleState) -> Array: 
         """Model of the relationship between stimulus frequency `a` and muscle activation.
         
         The notation may be confusing. The input to this function is sometimes called the 
         "activation", hence the name `a`. But this model is based on a muscle being activated
         by stimulation at some frequency by an electrode.
         """
-        l_eff = length # TODO: l_eff filter option (see method _l_eff_field)
+        l_eff = state.length # TODO: l_eff filter option (see method _l_eff_field)
         n_f = self.n_f[0] + self.n_f[1] * (1 / l_eff - 1)  
         Y = 1  # TODO: Y filter option (see method _Y_field)
         A_f = 1 - jnp.exp(-((input * Y) / (self.a_f * n_f)) ** n_f)
         return A_f
-
-    @cached_property 
-    def bounds(self):
-        """
-        TODO: This is here because of `n_f`, but it's not implemented.
-        """
-        return StateBounds(
-            low=VirtualMuscleState(
-                activation=0.,
-                length=None,
-                velocity=None,
-                tension=None,
-            ),
-            high=VirtualMuscleState(
-                activation=None,
-                length=self.n_f[1] / (self.n_f[1] - self.n_f[0]),
-                velocity=None,
-                tension=None,
-            ),
-        )
 
 
 class VirtualMuscleFLVFunction(AbstractFLVFunction):
@@ -320,17 +315,14 @@ class VirtualMuscleFLVFunction(AbstractFLVFunction):
     force_velocity: AbstractForceFunction 
     force_passive_1: AbstractForceFunction 
     force_passive_2: AbstractForceFunction 
-    activation_func: AbstractActivationFunction 
     
     def __call__(self, input, state: VirtualMuscleState) -> Array:
         force_l = self.force_length(state.length, state.velocity)
         force_v = self.force_velocity(state.length, state.velocity)
         force_pe1 = self.force_passive_1(state.length, state.velocity)
         force_pe2 = self.force_passive_2(state.length, state.velocity)
-        #! technically "frequency" (of stimulation) is the input, here
-        A_f = self.activation_func(input, state.length)
         # assumes 100% fibre recruitment, linear factor R=1:
-        force = A_f * (force_l * force_v + force_pe2) + force_pe1  
+        force = input * (force_l * force_v + force_pe2) + force_pe1  
         
         return force
 
@@ -513,6 +505,7 @@ def brown_1999_virtualmuscle(
 ):
     return VirtualMuscle(
         n_muscles,
+        activation_func=VirtualMuscleActivationFunction(**params["activation"]),
         force_func=VirtualMuscleFLVFunction(
             force_length=VirtualMuscleForceLength(**params["force_length"]),
             force_velocity=VirtualMuscleForceVelocity(
@@ -522,7 +515,6 @@ def brown_1999_virtualmuscle(
             force_passive_1=VirtualMuscleForcePassive1(**params["force_passive_1"]),
             # force_passive_1=lambda length, velocity: 0,
             force_passive_2=VirtualMuscleForcePassive2(**params["force_passive_2"]),
-            activation_func=VirtualMuscleActivationFunction(**params["activation"]),
         ),
         noise_func=noise_func,
     )
@@ -543,6 +535,7 @@ def todorov_li_2004_virtualmuscle(
     """
     return VirtualMuscle(
         n_muscles,
+        activation_func=VirtualMuscleActivationFunction(**params["activation"]),
         force_func=VirtualMuscleFLVFunction(
             force_length=VirtualMuscleForceLength(**params["force_length"]),
             force_velocity=VirtualMuscleForceVelocity(
@@ -551,7 +544,6 @@ def todorov_li_2004_virtualmuscle(
             ),
             force_passive_1=lambda length, velocity: 0,
             force_passive_2=VirtualMuscleForcePassive2(**params["force_passive_2"]),
-            activation_func=VirtualMuscleActivationFunction(**params["activation"]),
         ),
         noise_func=noise_func,
     )
@@ -592,6 +584,7 @@ def lillicrap_scott_2013_virtualmuscle(
     
     return VirtualMuscle(
         n_muscles,
+        activation_func=lambda input, length: input,
         force_func=VirtualMuscleFLVFunction(
             # force_length=LillicrapScottForceLength(params.force_length),
             force_length=VirtualMuscleForceLength(**params["force_length"]),
@@ -601,7 +594,6 @@ def lillicrap_scott_2013_virtualmuscle(
             ),
             force_passive_1=lambda length, velocity: 0,
             force_passive_2=lambda length, velocity: 0,
-            activation_func=lambda input, length: input,
         ),
         noise_func=noise_func,
     )

@@ -83,7 +83,7 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         ...
 
     @abstractproperty
-    def step(self) -> "AbstractModel[StateT]":
+    def _step(self) -> "AbstractModel[StateT]":
         """Interface to a single model step.
         
         For non-iterated models, this should trivially return `step`.
@@ -270,7 +270,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         ...
         
     @property 
-    def step(self):
+    def _step(self):
         """This assumes all staged models will specify single update steps,
         not iterated models.
         
@@ -435,7 +435,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return eqx.tree_at(
             lambda state: state.mechanics.plant.skeleton,
             state, 
-            jax.vmap(self.mechanics.plant.skeleton.inverse_kinematics)(
+            self.mechanics.plant.skeleton.inverse_kinematics(
                 state.mechanics.effector
             ),
         )

@@ -49,17 +49,17 @@ class AbstractIterator(AbstractModel[StateT]):
         of the signatures of its methods.
     """
     
-    _step: AbstractVar[AbstractModel[StateT]]  
+    step: AbstractVar[AbstractModel[StateT]]  
     n_steps: AbstractVar[int]
 
     def init(self, *, key: Array) -> StateT:
         """Initialize the state of the iterated model.
         """
-        return self._step.init(key=key)
+        return self.step.init(key=key)
     
     @property 
-    def step(self):
-        return self._step
+    def _step(self):
+        return self.step
 
 
 class Iterator(AbstractIterator[StateT]):
@@ -70,7 +70,7 @@ class Iterator(AbstractIterator[StateT]):
     which to store the states across all steps; `states_includes` can be used
     to specify which states to store. By default, all are stored.
     """
-    _step: AbstractModel[StateT]
+    step: AbstractModel[StateT]
     n_steps: int 
     states_includes: PyTree[bool]  # can't do StateT[bool]
     
@@ -82,7 +82,7 @@ class Iterator(AbstractIterator[StateT]):
     ):
         if states_includes is None:
             states_includes = step.memory_spec
-        self._step = step
+        self.step = step
         self.n_steps = n_steps
         self.states_includes = states_includes
     
@@ -100,7 +100,7 @@ class Iterator(AbstractIterator[StateT]):
         state_mem, input = tree_get_idx((states_mem, inputs), i)
         state = eqx.combine(state_mem, state_nomem)
         
-        state = self._step(input, state, key1)
+        state = self.step(input, state, key1)
         
         # Likewise, split the resulting states into those which are stored,
         # which are then assigned to the next index in the trajectory, and 
@@ -146,9 +146,9 @@ class Iterator(AbstractIterator[StateT]):
         init_state: StateT, 
         key: Array,
     ) -> StateT:  #! Adds a batch dimension
-        # Get the shape of the state output by `self._step`
+        # Get the shape of the state output by `self.step`
         outputs = eqx.filter_eval_shape(
-            self._step, 
+            self.step, 
             input, 
             init_state, 
             key=key,
@@ -188,11 +188,11 @@ class SimpleIterator(AbstractIterator[StateT]):
     large state PyTrees, however, it may be preferable to use `Iterator` and
     choose which states are worth discarding to save memory.
     """
-    _step: AbstractModel[StateT]
+    step: AbstractModel[StateT]
     n_steps: int 
     
     def __init__(self, step: AbstractModel[StateT], n_steps: int):
-        self._step = step
+        self.step = step
         self.n_steps = n_steps
     
     def __call__(
@@ -206,7 +206,7 @@ class SimpleIterator(AbstractIterator[StateT]):
         
         def step(state, args): 
             input, key = args
-            state = self._step(input, state, key)
+            state = self.step(input, state, key)
             return state, state
         
         _, states = lax.scan(

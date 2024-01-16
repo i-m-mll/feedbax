@@ -266,7 +266,7 @@ class AbstractTask(eqx.Module):
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on a set of trials.
         """      
-        init_states = jax.vmap(model.step.init)(key=keys)
+        init_states = jax.vmap(model._step.init)(key=keys)
         
         for where_substate, init_substates in trial_specs.init.items():
             init_states = eqx.tree_at(
@@ -275,7 +275,7 @@ class AbstractTask(eqx.Module):
                 init_substates, 
             )
         
-        init_states = jax.vmap(model.step.state_consistency_update)(
+        init_states = jax.vmap(model._step.state_consistency_update)(
             init_states
         )
         
