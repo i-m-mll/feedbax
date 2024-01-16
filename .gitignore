@@ -1,6 +1,8 @@
 .gitmessage
 COMMIT_MSG.txt
 
+models/
+
 # data and media
 *.wav
 *.mp4
