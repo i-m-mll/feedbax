@@ -25,7 +25,7 @@ from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractStagedModel, AbstractModelState
+from feedbax.model import AbstractStagedModel, AbstractModelState, wrap_stateless_callable
 from feedbax.state import CartesianState2D, StateBounds
 
 
@@ -97,8 +97,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
             ),
             "get_effector": (
                 lambda self: \
-                    lambda input, state, key=None: \
-                        self.plant.skeleton.effector(input),
+                    wrap_stateless_callable(self.plant.skeleton.effector, pass_key=False),
                 lambda input, state: state.plant.skeleton,
                 lambda state: state.effector,
             )
@@ -165,7 +164,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         )
         
     
-    def n_vars(self, leaves_func):
+    def n_vars(self, where):
         """
         TODO: Given a function that returns a PyTree of leaves of `mechanics_state`,
         return the sum of the sizes of the last dimensions of the leaves.

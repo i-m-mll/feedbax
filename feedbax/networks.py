@@ -35,7 +35,11 @@ import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractStagedModel, AbstractModelState, wrap_stateless_module
+from feedbax.model import (
+    AbstractStagedModel, 
+    AbstractModelState, 
+    wrap_stateless_callable,
+)
 from feedbax.utils import interleave_unequal, n_positional_args  
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
@@ -84,6 +88,22 @@ class RNNCellProto(Protocol):
         ...
 
 
+def orthogonal_gru_cell(input_size, hidden_size, use_bias=True, scale=1.0, *, key):
+    """Equinox `GRUCell` with orthogonal initialization."""
+    net = eqx.nn.GRUCell(input_size, hidden_size, use_bias=use_bias, key=key)
+    initializer = jax.nn.initializers.orthogonal(scale=scale, column_axis=-1) 
+    ortho_weight_hh = jnp.concatenate(
+        [initializer(k, (hidden_size, hidden_size)) for k in jr.split(key, 3)], 
+        axis=0,
+    )
+    net = eqx.tree_at(
+        lambda net: net.weight_hh,
+        net,
+        ortho_weight_hh,
+    )
+    return net
+
+
 class NetworkState(AbstractModelState):
     """State of a neural network.
     
@@ -96,13 +116,11 @@ class NetworkState(AbstractModelState):
 
 
 class SimpleNetwork(AbstractStagedModel[NetworkState]):
-    """A single step of a noisy network with optional encoding and readout layers.
+    """A single step of a noisy neural network.
+    
+    Has optional encoding and readout layers.
     
     Ultimately derived from https://docs.kidger.site/equinox/examples/train_rnn/
-    
-    TODO:
-    - The user should use `partial` if they want to change `use_bias` for the 
-      encoder or readout.
     """
     out_size: int 
     hidden: eqx.Module
@@ -146,6 +164,9 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         be instantiated as `hidden_type(input_size, hidden_size, use_bias, *,
         key)`, and the called instance should only return its output values, as
         usual.
+        
+        The user should use `partial` if they want to change `use_bias` for the 
+        encoder or readout.
         """
         key1, key2, key3 = jr.split(key, 3)
 
@@ -196,13 +217,19 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         """
         
         if n_positional_args(self.hidden) == 1:
-            hidden_module = lambda self: wrap_stateless_module(self.hidden)
+            hidden_module = lambda self: wrap_stateless_callable(self.hidden)
             if isinstance(self.hidden, eqx.nn.Linear):
                 logger.warning("Network hidden layer is linear but no hidden "
                                 "nonlinearity is defined")
         else:
-            hidden_module = lambda self: self.hidden
-        
+            # #TODO: revert this!
+            # def tmp(self):
+            #     def wrapper(input, state, *, key):
+            #         return self.hidden(input, jnp.zeros_like(state))
+            #     return wrapper
+            # hidden_module = lambda self: tmp(self)
+            hidden_module = lambda self: self.hidden 
+            
         if self.encoder is None:
             spec = OrderedDict({
                 'hidden': (

@@ -17,7 +17,7 @@ from jaxtyping import Array, PyTree
 
 
 logger = logging.getLogger(__name__)
-
+    
 
 class ChannelState(eqx.Module):
     output: PyTree[Array]
@@ -55,7 +55,7 @@ class Channel(eqx.Module):
         input_zeros = jax.tree_map(jnp.zeros_like, self.input_proto)
         return ChannelState(
             input_zeros, 
-            (self.delay - 1) * (input_zeros,) + (self.input_proto,)
+            self.delay * (input_zeros,) + (self.input_proto,)
         )
         
     def change_input(self, input) -> "Channel":

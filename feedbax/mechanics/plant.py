@@ -260,6 +260,8 @@ class MuscledArm(AbstractPlant):
                 lambda input, state: input,  # input to the ODE
                 lambda state: state.muscles.activation,  # state we're returning derivatives for
             ),
+            
+            #! is this applying the torques twice? since arm will do `input_torque + state.torque`
             "skeleton": (
                 self.skeleton,
                 lambda input, state: state.skeleton.torque,

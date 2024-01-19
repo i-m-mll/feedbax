@@ -51,7 +51,7 @@ class ContextManager(eqx.Module):
     """
     model: AbstractModel 
     task: AbstractTask
-    trainable_leaves_func: Optional[Callable] = None
+    where_train: Optional[Callable] = None
     ensembled: bool = False
     
     
@@ -81,7 +81,7 @@ class ContextManager(eqx.Module):
             n_batches=n_batches,
             batch_size=batch_size,
             log_step=log_step,
-            trainable_leaves_func=self.trainable_leaves_func,
+            where_train=self.where_train,
             key=key,
             ensembled=self.ensembled,
         )
@@ -197,12 +197,12 @@ def point_mass_NN_simple_reaches(
     else:
         raise ValueError("n_replicates must be an integer >= 1")
     
-    trainable_leaves_func = lambda model: model.step.net
+    where_train = lambda model: model.step.net
     
     manager = ContextManager(
         model=model,
         task=task,
-        trainable_leaves_func=trainable_leaves_func,
+        where_train=where_train,
         ensembled=ensembled,
     )
     

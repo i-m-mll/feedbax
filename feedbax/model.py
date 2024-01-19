@@ -13,6 +13,7 @@ TODO:
 
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
+from collections.abc import Mapping
 import copy
 from functools import cached_property, wraps
 import logging
@@ -36,6 +37,7 @@ from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree_util as jtu
 from jaxtyping import Array, PyTree
 import numpy as np
 
@@ -155,6 +157,8 @@ class AbstractStagedModel(AbstractModel[StateT]):
         state: StateT, 
         key: jax.Array,
     ) -> StateT:
+        
+        # eqx.tree_pprint(jax.flatten_util.ravel_pytree(input)[0])
         
         with jax.named_scope(type(self).__name__):
             
@@ -285,14 +289,50 @@ class AbstractStagedModel(AbstractModel[StateT]):
 class SimpleFeedbackState(AbstractModelState):
     mechanics: "MechanicsState"
     network: "NetworkState"
-    feedback: ChannelState
+    feedback: PyTree[ChannelState]
+    
+    
+class FeedbackSpec(eqx.Module):
+    where: Callable[[AbstractModelState], PyTree[Array]]
+    delay: int = 0
+    noise_std: Optional[float] = None
+    
+
+DEFAULT_FEEDBACK_SPEC = FeedbackSpec(
+    where=lambda mechanics_state: mechanics_state.plant.skeleton,
+)
 
 
+def _convert_feedback_spec(
+    feedback_spec: Union[PyTree[FeedbackSpec], PyTree[Mapping[str, Any]]] 
+) -> PyTree[FeedbackSpec]:
+    
+    if not isinstance(feedback_spec, PyTree[FeedbackSpec]):
+        feedback_spec_flat, feedback_spec_def = \
+            eqx.tree_flatten_one_level(feedback_spec)
+        
+        if isinstance(feedback_spec_flat, PyTree[Mapping]):
+            feedback_specs_flat = jax.tree_map(
+                lambda spec: FeedbackSpec(**spec), 
+                feedback_spec_flat,
+                is_leaf=lambda x: isinstance(x, Mapping),
+            )
+            return jtu.tree_unflatten(
+                feedback_spec_def,
+                feedback_specs_flat,
+            )
+        else:
+            return [FeedbackSpec(**feedback_spec)] 
+        
+        
 class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     """Simple feedback loop with a single RNN and single mechanical system.
     
     TODO:
     - PyTree of force inputs (in addition to control inputs) to mechanics
+    - It might make more sense to handle multiple feedback channels inside 
+      a single `Channel` object. That could minimize `tree_map` calls 
+      from this class.
     - Could insert intervenors as stages in the model, but I think it makes 
     more sense for modules to be designed-in, which then provides the user 
     with labels for stages at which interventions can be applied, resulting 
@@ -300,20 +340,16 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     """
     net: eqx.Module  
     mechanics: "Mechanics"
-    feedback_channel: Channel
-    delay: int 
-    feedback_leaves_func: Callable[[PyTree], PyTree]  
-    
+    feedback_channels: PyTree[Channel, 'T']
+    feedback_specs: PyTree[FeedbackSpec, 'T']  
     intervenors: Dict[str, Sequence[AbstractIntervenor]]
     
     def __init__(
         self, 
         net: eqx.Module, 
         mechanics: "Mechanics", 
-        delay: int = 0, 
-        feedback_leaves_func: Callable[["MechanicsState"], PyTree] \
-            = lambda mechanics_state: mechanics_state.plant.skeleton,
-        feedback_noise_std: Optional[float] = None,
+        feedback_spec: Union[PyTree[FeedbackSpec], PyTree[Mapping[str, Any]]] = \
+            DEFAULT_FEEDBACK_SPEC,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Dict[str, Sequence[AbstractIntervenor]]]] \
             = None,
@@ -322,12 +358,45 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     ):
         self.net = net
         self.mechanics = mechanics
-        self.feedback_leaves_func = feedback_leaves_func
-        self.delay = delay + 1  # indexing: delay=0 -> storage len=1
-        self.feedback_channel = Channel(delay, feedback_noise_std).change_input(
-            feedback_leaves_func(mechanics.init())
-        )
         self.intervenors = self._get_intervenors_dict(intervenors)
+
+        # If `feedback_spec` is given as a `PyTree[Mapping]`, convert to 
+        # `PyTree[FeedbackSpec]`. 
+        #        
+        # Allow nesting of mappings to one level, to allow the user to provide
+        # (say) a dict of dicts.
+        feedback_specs = _convert_feedback_spec(feedback_spec)
+        
+        init_mechanics_state = mechanics.init()
+        
+        def _build_feedback_channel(spec: FeedbackSpec):
+            return Channel(spec.delay, spec.noise_std).change_input(
+                spec.where(init_mechanics_state)
+            )
+        
+        self.feedback_channels = jax.tree_map(
+            lambda spec: _build_feedback_channel(spec),
+            feedback_specs,
+            is_leaf=lambda x: isinstance(x, FeedbackSpec),
+        )
+        self.feedback_specs = feedback_specs
+
+    def update_feedback(
+        self, 
+        input: "MechanicsState", 
+        state: PyTree[ChannelState, 'T'], 
+        *, 
+        key: Optional[Array] = None
+    ) -> PyTree[ChannelState, 'T']:
+        """Send current feedback states through channels, and return delayed feedback."""
+        # TODO: separate keys for the different channels
+        return jax.tree_map(
+            lambda channel, spec, state: channel(spec.where(input), state, key=key),
+            self.feedback_channels,
+            self.feedback_specs,
+            state,
+            is_leaf=lambda x: isinstance(x, Channel),
+        )
         
     @property
     def model_spec(self):
@@ -338,19 +407,26 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         I'm not sure why the references are kept across model updates...
         """
         return OrderedDict({
-            'get_feedback': (
-                lambda self: self.feedback_channel,  # module that operates on it
-                lambda _, state: self.feedback_leaves_func(state.mechanics),  # inputs
-                lambda state: state.feedback,  # substate it operates on
+            'update_feedback': (
+                lambda self: self.update_feedback,  
+                lambda input, state: state.mechanics,  
+                lambda state: state.feedback,  
             ),
             'nn_step': (
                 lambda self: self.net,
-                lambda input, state: (input, state.feedback.output),
+                lambda input, state: (
+                    input, 
+                    jax.tree_map(
+                        lambda state: state.output,
+                        state.feedback,
+                        is_leaf=lambda x: isinstance(x, ChannelState),
+                    ),
+                ),
                 lambda state: state.network,                
             ),
             'mechanics_step': (
                 lambda self: self.mechanics,
-                lambda _, state: state.network.output,
+                lambda input, state: state.network.output,
                 lambda state: state.mechanics,
             ),
         })       
@@ -372,7 +448,11 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return SimpleFeedbackState(
             mechanics=mechanics_state,
             network=self.net.init(),
-            feedback=self.feedback_channel.init(),
+            feedback=jax.tree_map(
+                lambda channel: channel.init(),
+                self.feedback_channels,
+                is_leaf=lambda x: isinstance(x, Channel),
+            ),
         )
     
     @property
@@ -405,7 +485,8 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     def get_nn_input_size(
         task: AbstractTask, 
         mechanics: "Mechanics", 
-        feedback_leaves_func=lambda mechanics_state: mechanics_state.plant.skeleton,
+        feedback_spec: Union[PyTree[FeedbackSpec], PyTree[Mapping[str, Any]]] = \
+            DEFAULT_FEEDBACK_SPEC,
     ) -> int:
         """Determine how many scalar input features the neural network needs.
         
@@ -415,7 +496,12 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         not an instance method because we want to construct the network
         before we construct `SimpleFeedback`.
         """
-        example_feedback = feedback_leaves_func(mechanics.init())
+        init_mechanics_state = mechanics.init()
+        example_feedback = jax.tree_map(
+            lambda spec: spec.where(init_mechanics_state),
+            _convert_feedback_spec(feedback_spec),
+            is_leaf=lambda x: isinstance(x, FeedbackSpec),
+        )
         n_feedback = tree_sum_n_features(example_feedback)
         example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))[0]
         n_task_inputs = tree_sum_n_features(example_trial_spec.input)
@@ -513,8 +599,8 @@ def remove_intervenors(
     return add_intervenors(model, intervenors=(), keep_existing=False)
 
 
-def wrap_stateless_module(module: eqx.Module):
-    """Makes a 'stateless' module trivially compatible with state-passing.
+def wrap_stateless_callable(callable: Callable, pass_key=True):
+    """Makes a 'stateless' callable trivially compatible with state-passing.
     
     `AbstractModel` defines everything in terms of transformations of parts of
     a state PyTree. In each case, the substate that is operated on is passed
@@ -524,8 +610,61 @@ def wrap_stateless_module(module: eqx.Module):
     on the next iteration, the linear layer's outputs do not conventionally 
     depend on its previous outputs, like an RNN cell's would.
     """
-    @wraps(module)
-    def wrapped(input, state, *args, **kwargs):
-        return module(input, *args, **kwargs)
+    if pass_key:
+        @wraps(callable)
+        def wrapped(input, state, *args, **kwargs):
+            return callable(input, *args, **kwargs)
+        
+    else:
+        @wraps(callable)
+        def wrapped(input, state, *args, key: Optional[Array] = None, **kwargs):
+            return callable(input, *args, **kwargs)
     
     return wrapped
+
+
+def model_spec_tree_format(
+    model: AbstractStagedModel, 
+    indent: int = 2, 
+    newlines: bool = False,
+) -> str:
+    """Return a string representation of the model specification tree.
+    
+    Show what is called by `model`, and by any `AbstractStagedModel`s it calls.
+    
+    This assumes that the model spec is a tree/DAG. If there are cycles in 
+    the model spec, this will recurse until an exception is raised.
+    
+    Args:
+        model: The staged model to format.
+        indent: Number of spaces to indent each nested level of the tree.
+        newlines: Whether to add an extra blank line between each line.
+    """
+       
+    def get_spec_strs(model: AbstractStagedModel):
+        spec_strs = []
+
+        for label, (module_func, _, _) in model.model_spec.items():
+            callable = module_func(model)
+            
+            # Get a meaningful label for `BoundMethod`s
+            if (func := getattr(callable, '__func__', None)) is not None:
+                owner = type(getattr(callable, '__self__')).__name__
+                spec_str = f"{label}: {owner}.{func.__name__}"
+            else: 
+                spec_str = f"{label}: {type(callable).__name__}"
+                
+            spec_strs += [spec_str]
+            
+            if isinstance(callable, AbstractStagedModel):
+                spec_strs += [
+                    ' ' * indent + spec_str
+                    for spec_str in get_spec_strs(callable)
+                ]            
+                            
+        return spec_strs 
+    
+    nl = '\n\n' if newlines else '\n'
+    
+    return nl.join(get_spec_strs(model))
+

@@ -342,6 +342,9 @@ def tree_take(tree: PyTree, idx: int, axis: int):
     """Take elements from the specified axis of each array leaf of `tree`.
     
     Any non-array leaves are returned unchanged.
+    
+    TODO:
+    - Get rid of `tree_get_idx` and just give this a default `axis=0`.
     """
     arrays, other = eqx.partition(tree, eqx.is_array)
     values = jax.tree_map(lambda xs: jnp.take(xs, idx, axis=axis), arrays)

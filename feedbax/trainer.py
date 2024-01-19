@@ -120,7 +120,7 @@ class TaskTrainer(eqx.Module):
         n_batches: int, 
         batch_size: int, 
         key: jax.Array,
-        trainable_leaves_func: Callable[[AbstractModel[StateT]], Any] = \
+        where_train: Callable[[AbstractModel[StateT]], Any] = \
             lambda model: model,
         batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
@@ -139,7 +139,7 @@ class TaskTrainer(eqx.Module):
           to load a checkpoint as a model later may fail. Use `save` and `load`.
         
         TODO:
-        - check that `trainable_leaves_func` contains only trainable stuff   
+        - check that `where_train` contains only trainable stuff   
         - Improve the handling of the flatten/unflatten operations around 
           `train_step`. See its docstring for details. 
         - The first iteration (or two) are much slower due to JIT compilation
@@ -212,7 +212,7 @@ class TaskTrainer(eqx.Module):
             train_step = self.train_step
             evaluate = task.eval
         
-        filter_spec = filter_spec_leaves(model, trainable_leaves_func)
+        filter_spec = filter_spec_leaves(model, where_train)
            
         # Finish the JIT compilation before the first training iteration.
         if not jax.config.jax_disable_jit:
@@ -503,7 +503,10 @@ def grad_wrap_simple_loss_func(
     loss_func: Callable[[Array, Array], Float]
 ):
     """Wraps a loss function taking output and target arrays, to one taking a model
-    that returns a single array.
+    and its input, along with the target array.
+    
+    In particular, this is used to transform the a loss function representation of a 
+    loss function as a norm, to a function that plays nicely with `jax.grad`.
     """
     @wraps(loss_func)
     def wrapper(

@@ -86,31 +86,6 @@ class Iterator(AbstractIterator[StateT]):
         self.n_steps = n_steps
         self.states_includes = states_includes
     
-    @jax.named_scope("fbx.Iterator._body_func")
-    def _body_func(self, i: int, x: Tuple) -> Tuple:
-        inputs, states, key = x
-        
-        key1, key2 = jr.split(key)
-        
-        # Since we optionally store the trajectories of only some of the states,
-        # as specified by `states_includes`, we need to partition these out 
-        # so we can index them, then recombine with the states for which only 
-        # a single time step (the current one) is stored.
-        states_mem, state_nomem = eqx.partition(states, self.states_includes)
-        state_mem, input = tree_get_idx((states_mem, inputs), i)
-        state = eqx.combine(state_mem, state_nomem)
-        
-        state = self.step(input, state, key1)
-        
-        # Likewise, split the resulting states into those which are stored,
-        # which are then assigned to the next index in the trajectory, and 
-        # recombined with the single-timestep states.
-        state_mem, state_nomem = eqx.partition(state, self.states_includes)        
-        states_mem = tree_set_idx(states_mem, state_mem, i + 1)
-        states = eqx.combine(states_mem, state_nomem)
-                
-        return inputs, states, key2
-    
     @jax.named_scope("fbx.Iterator")
     def __call__(
         self, 
@@ -138,7 +113,32 @@ class Iterator(AbstractIterator[StateT]):
         )
         
         return states
-    
+
+    @jax.named_scope("fbx.Iterator._body_func")
+    def _body_func(self, i: int, x: Tuple) -> Tuple:
+        inputs, states, key = x
+        
+        key1, key2 = jr.split(key)
+        
+        # Since we optionally store the trajectories of only some of the states,
+        # as specified by `states_includes`, we need to partition these out 
+        # so we can index them, then recombine with the states for which only 
+        # a single time step (the current one) is stored.
+        states_mem, state_nomem = eqx.partition(states, self.states_includes)
+        state_mem, input = tree_get_idx((states_mem, inputs), i)
+        state = eqx.combine(state_mem, state_nomem)
+        
+        state = self.step(input, state, key1)
+        
+        # Likewise, split the resulting states into those which are stored,
+        # which are then assigned to the next index in the trajectory, and 
+        # recombined with the single-timestep states.
+        state_mem, state_nomem = eqx.partition(state, self.states_includes)        
+        states_mem = tree_set_idx(states_mem, state_mem, i + 1)
+        states = eqx.combine(states_mem, state_nomem)
+                
+        return inputs, states, key2
+
     @jax.named_scope("fbx.Iterator.init_arrays")
     def init_arrays(
         self, 
@@ -213,7 +213,13 @@ class SimpleIterator(AbstractIterator[StateT]):
             step,
             state, 
             (input, keys),
-            length=self.n_steps,
+            length=self.n_steps, # - 1 ?
         )
+
+        return states
         
-        return states 
+        # return jax.tree_map(
+        #     lambda state0, state: jnp.concatenate([state0, state], axis=1),
+        #     state,
+        #     states,
+        # )
