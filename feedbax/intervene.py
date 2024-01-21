@@ -192,30 +192,23 @@ class EffectorVelDepForceField(AbstractAdditiveIntervenor):
 class EffectorCurlForceField(AbstractAdditiveIntervenor):
     """Apply a curl force field to an effector.
     
+    Positive amplitude corresponds to a counterclockwise curl, in keeping
+    with the conventional sign of rotation in the XY plane.
+    
     TODO:
     - Special case of `EffectorVelDepForceField`?
     """
     amplitude: float   # TODO: allow asymmetry 
-    direction: str
-    _scale: jax.Array# = field(static=True)
+    _scale: jax.Array
     
     label: str = "effector_curl_field"
     
     _in = lambda self, tree: tree.mechanics.effector.vel 
     _out = lambda self, tree: tree.mechanics.effector.force
         
-    def __init__(self, amplitude: float = 1.0, direction: str = "cw"):
+    def __init__(self, amplitude: float = 1.0):
         self.amplitude = amplitude
-        self.direction = direction.lower()
-        
-        if self.direction == "cw":
-            _signs = jnp.array([1, -1])
-        elif self.direction == "ccw":
-            _signs = jnp.array([-1, 1])
-        else:
-            raise ValueError(f"Invalid curl field direction: {direction}")
-        
-        self._scale = amplitude * _signs
+        self._scale = amplitude * jnp.array([-1, 1])
 
     def _get_substate_to_add(self, vel: Array, *, key: jax.Array):
         """Returns curl forces."""

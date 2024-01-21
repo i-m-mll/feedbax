@@ -123,7 +123,7 @@ def point_mass_NN(
         out_nonlinearity=out_nonlinearity, 
         key=key1,
     )
-    body = SimpleFeedback(net, mechanics, delay=feedback_delay_steps, key=key2)
+    body = SimpleFeedback(net, mechanics, key=key2)
     
     model = SimpleIterator(body, n_steps)
     

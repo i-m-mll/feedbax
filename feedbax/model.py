@@ -241,7 +241,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
             lambda x, y: (y,) + x, 
             self.model_spec, 
             jax.tree_map(tuple, self.intervenors, 
-                        is_leaf=lambda x: isinstance(x, list)),
+                         is_leaf=lambda x: isinstance(x, list)),
             is_leaf=lambda x: isinstance(x, tuple),
         )
     
@@ -323,6 +323,8 @@ def _convert_feedback_spec(
             )
         else:
             return [FeedbackSpec(**feedback_spec)] 
+    
+    return feedback_spec
         
         
 class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
@@ -370,7 +372,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         init_mechanics_state = mechanics.init()
         
         def _build_feedback_channel(spec: FeedbackSpec):
-            return Channel(spec.delay, spec.noise_std).change_input(
+            return Channel(spec.delay, spec.noise_std, jnp.nan).change_input(
                 spec.where(init_mechanics_state)
             )
         
@@ -497,6 +499,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         before we construct `SimpleFeedback`.
         """
         init_mechanics_state = mechanics.init()
+        eqx.tree_pprint(_convert_feedback_spec(feedback_spec))
         example_feedback = jax.tree_map(
             lambda spec: spec.where(init_mechanics_state),
             _convert_feedback_spec(feedback_spec),
@@ -511,20 +514,59 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         self, 
         state: SimpleFeedbackState
     ) -> SimpleFeedbackState:
-        """Update the plant configuration state, given that the user has 
+        """Adjust the state 
+        
+        Update the plant configuration state, given that the user has 
         initialized the effector state.
+        
+        Also fill the feedback queues with the initial feedback states. This 
+        is less problematic than passing all zeros.
         
         TODO: 
         - Check which of the two is initialized, and update the other one.
           Might require initializing them to NaN or something in `init`.
         """
-        return eqx.tree_at(
+        state = eqx.tree_at(
             lambda state: state.mechanics.plant.skeleton,
             state, 
             self.mechanics.plant.skeleton.inverse_kinematics(
                 state.mechanics.effector
             ),
         )
+        
+        # If the PyTree of feedback channel states is full of NaNs, fill the channel queues
+        # with the current values of the states to be fed back. By initializing `Channel` with
+        # NaN and then performing this check/fill, we avoid passing zeros as feedback, which 
+        # is more incorrect.
+        def _fill_feedback_queues(state):
+            return eqx.tree_at(
+                lambda state: state.feedback,
+                state,
+                jax.tree_map(
+                    lambda channel_state, spec, channel: eqx.tree_at(
+                        lambda channel_state: channel_state.queue,
+                        channel_state,
+                        channel.delay * (spec.where(state.mechanics),),
+                    ),
+                    state.feedback,
+                    self.feedback_specs,
+                    self.feedback_channels,
+                    is_leaf=lambda x: isinstance(x, ChannelState),
+                ),
+            )
+        
+        feedback_state_isnan = jax.flatten_util.ravel_pytree(
+            jax.tree_map(lambda x: jnp.isnan(x), state.feedback)
+        )[0]        
+        
+        state = jax.lax.cond(
+            jnp.all(feedback_state_isnan),
+            _fill_feedback_queues,
+            lambda state: state,
+            state,
+        )
+     
+        return state 
     
 
 def add_intervenor(
@@ -623,7 +665,7 @@ def wrap_stateless_callable(callable: Callable, pass_key=True):
     return wrapped
 
 
-def model_spec_tree_format(
+def model_spec_format(
     model: AbstractStagedModel, 
     indent: int = 2, 
     newlines: bool = False,
@@ -644,24 +686,29 @@ def model_spec_tree_format(
     def get_spec_strs(model: AbstractStagedModel):
         spec_strs = []
 
-        for label, (module_func, _, _) in model.model_spec.items():
+        for label, (intervenors, module_func, _, _) in model._stages.items():
+            intervenor_str = ''.join([
+                f"intervenor: {type(intervenor).__name__}\n" for intervenor in intervenors
+            ])
+
             callable = module_func(model)
             
             # Get a meaningful label for `BoundMethod`s
             if (func := getattr(callable, '__func__', None)) is not None:
                 owner = type(getattr(callable, '__self__')).__name__
                 spec_str = f"{label}: {owner}.{func.__name__}"
+
             else: 
                 spec_str = f"{label}: {type(callable).__name__}"
                 
-            spec_strs += [spec_str]
+            spec_strs += [intervenor_str + spec_str]
             
             if isinstance(callable, AbstractStagedModel):
                 spec_strs += [
                     ' ' * indent + spec_str
                     for spec_str in get_spec_strs(callable)
-                ]            
-                            
+                ]              
+            
         return spec_strs 
     
     nl = '\n\n' if newlines else '\n'
