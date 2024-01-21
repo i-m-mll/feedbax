@@ -26,7 +26,7 @@ from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
-from feedbax.model import AbstractModel, AbstractModelState
+from feedbax.model import AbstractModel, AbstractModelState, ModelInput
 import feedbax.plot as plot
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.utils import (
@@ -356,7 +356,7 @@ class TaskTrainer(eqx.Module):
                 
                 if self._use_tb:
                     # TODO: register plots instead of hard-coding
-                    trial_specs, _ = task.trials_validation
+                    trial_specs, _ = task.validation_trials
                     fig, _ = plot.plot_pos_vel_force_2D(
                         states_plot,
                         endpoints=(
@@ -584,8 +584,13 @@ def grad_wrap_task_loss_func(
         model = eqx.combine(diff_model, static_model) 
         
         #? will `in_axes` ever change? 
-        states = jax.vmap(model)(trial_specs.input, init_states, keys)
+        states = jax.vmap(model)(
+            ModelInput(trial_specs.input, trial_specs.intervene), 
+            init_states, 
+            keys
+        )
         
+        # TODO: Maybe pass `trial_specs` entirely to `loss_func`.
         losses = loss_func(states, trial_specs.target, trial_specs.input)
         
         return losses.total, (losses, states)

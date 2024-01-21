@@ -42,7 +42,7 @@ from jaxtyping import Array, PyTree
 import numpy as np
 
 from feedbax.channel import Channel, ChannelState
-from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput
 if TYPE_CHECKING:
     from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.task import AbstractTask, AbstractTaskInput
@@ -127,14 +127,19 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         ...
     
 
+class ModelInput(eqx.Module):
+    input: AbstractTaskInput
+    intervene: Mapping[AbstractIntervenorInput]
+
+
 class AbstractStagedModel(AbstractModel[StateT]):
-    """Base class for state-dependent models.
+    """Base class for state-dependent models whose stages can be intervened upon.
     
     To define a new model, the following should be implemented:
     
         1. A concrete subclass of `AbstractModelState` that defines the PyTree
            structure of the full model state. The fields may be types of 
-           `AbstractModelState` as well, in the case of nested models.
+           `AbstractModelState`, in the case of nested models.
         2. A concrete subclass of this class with:
             i. the appropriate components for doing state transformations;
             either `eqx.Module`/`AbstractModel`-typed fields, or instance 
@@ -153,12 +158,10 @@ class AbstractStagedModel(AbstractModel[StateT]):
     
     def __call__(
         self, 
-        input, # AbstractTaskInput 
+        input: ModelInput,
         state: StateT, 
         key: jax.Array,
     ) -> StateT:
-        
-        # eqx.tree_pprint(jax.flatten_util.ravel_pytree(input)[0])
         
         with jax.named_scope(type(self).__name__):
             
@@ -188,14 +191,18 @@ class AbstractStagedModel(AbstractModel[StateT]):
                     )                  
                 
                 for intervenor in intervenors:
-                    # TODO: Whether this modifies the state depends on `input`.
-                    state = intervenor(input, state, key=key1)
+                    if intervenor.label in input.intervene:
+                        params = input.intervene[intervenor.label]
+                    else:
+                        params = None
+                    state = intervenor(params, state, key=key1)
                 
                 state = eqx.tree_at(
                     substate_where, 
                     state, 
                     module(self)(
-                        module_input(input, state), 
+                        #! Constructing this each time might be a performance issue
+                        ModelInput(module_input(input, state), input.intervene), 
                         substate_where(state), 
                         key=key2,
                     ),
@@ -284,6 +291,16 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return `self._step` instead.
         """
         return self 
+    
+    @property 
+    def _all_intervenor_labels(self):
+        model_leaves = jax.tree_util.tree_leaves(
+            self, 
+            is_leaf=lambda x: isinstance(x, AbstractIntervenor)
+        )
+        labels = [leaf.label for leaf in model_leaves 
+                  if isinstance(leaf, AbstractIntervenor)]
+        return labels
         
 
 class SimpleFeedbackState(AbstractModelState):
@@ -328,7 +345,7 @@ def _convert_feedback_spec(
         
         
 class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
-    """Simple feedback loop with a single RNN and single mechanical system.
+    """Simple feedback loop with a single RNN and single mechanical model.
     
     TODO:
     - PyTree of force inputs (in addition to control inputs) to mechanics
@@ -463,15 +480,15 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         
         For example, `fbx.Iterator` stores trajectories of states, however it
         doesn't usually make sense to store `states.feedback.queue` for every
-        timestep, because it contains info that is already available to
+        timestep, because it contains info that is already available at the level of
         `Iterator` if `states.mechanics` is stored at every timestep. If the
-        feedback delay is 5 steps, `Iterator` would otherwise end up with 5 
+        feedback delay is 5 steps, `Iterator` could end up with 5 
         extra copies of all the parts of `states.mechanics` that are part of 
-        the feedback.
+        the feedback. So it may be better not to store `states.feedback.queue`.
         
         In particular, this information will be used by `Iterator`, but will
         be ignored by `SimpleIterator`, which remembers the full state 
-        indiscriminately to favour speed over memory usage.
+        indiscriminately---this is faster, but may use more memory. 
         
         NOTE: It makes sense for this to be here since it has to do with the
         logic of the feedback loop, i.e. that queue is just transient internal 
@@ -499,7 +516,6 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         before we construct `SimpleFeedback`.
         """
         init_mechanics_state = mechanics.init()
-        eqx.tree_pprint(_convert_feedback_spec(feedback_spec))
         example_feedback = jax.tree_map(
             lambda spec: spec.where(init_mechanics_state),
             _convert_feedback_spec(feedback_spec),
@@ -702,7 +718,7 @@ def model_spec_format(
                 spec_str = f"{label}: {type(callable).__name__}"
                 
             spec_strs += [intervenor_str + spec_str]
-            
+
             if isinstance(callable, AbstractStagedModel):
                 spec_strs += [
                     ' ' * indent + spec_str

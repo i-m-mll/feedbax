@@ -55,7 +55,7 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.state import CartesianState2D, HasEffectorState
-from feedbax.utils import unzip2
+from feedbax.utils import get_unique_label, unzip2
 
 
 logger = logging.getLogger(__name__)
@@ -134,16 +134,6 @@ class AbstractLoss(eqx.Module):
         
     def __rmul__(self, other):
         return self.__mul__(other)
-   
-
-def get_label(label: str, invalid_labels: Sequence[str]) -> str:
-    """Get a unique label from a base label."""
-    i = 0
-    label_ = label
-    while label_ in invalid_labels:
-        label_ = f"{label}_{i}" 
-        i += 1
-    return label_
 
 
 class CompositeLoss(AbstractLoss):
@@ -213,7 +203,7 @@ class CompositeLoss(AbstractLoss):
             
         # Make sure the simple term labels are unique.
         for i, label in enumerate(all_labels):
-            label = get_label(label, all_labels[:i])
+            label = get_unique_label(label, all_labels[:i])
             all_labels = all_labels[:i] + (label,) + all_labels[i+1:]
             
         # Flatten the composite terms, assuming they have the usual dict 
@@ -233,7 +223,7 @@ class CompositeLoss(AbstractLoss):
             
             # Make sure the labels are unique.
             for label in labels:
-                label = get_label(label, all_labels)
+                label = get_unique_label(label, all_labels)
                 all_labels += (label,)
             
             all_terms += tuple(composite_term.terms.values())

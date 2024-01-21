@@ -6,7 +6,7 @@
 
 from abc import abstractmethod
 from collections import OrderedDict
-from collections.abc import MutableMapping
+from collections.abc import MutableMapping, Sequence
 import dataclasses
 import dis
 import inspect
@@ -468,3 +468,13 @@ def unzip2(
         xs.append(x)
         ys.append(y)
     return tuple(xs), tuple(ys)
+
+
+def get_unique_label(label: str, invalid_labels: Sequence[str]) -> str:
+    """Get a unique string from a base string, while avoiding certain strings."""
+    i = 0
+    label_ = label
+    while label_ in invalid_labels:
+        label_ = f"{label}_{i}" 
+        i += 1
+    return label_

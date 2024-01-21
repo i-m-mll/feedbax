@@ -23,10 +23,12 @@ TODO:
 
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
-from functools import cached_property
+from collections.abc import Mapping, Sequence
+from functools import cached_property, partial
 import logging 
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable, 
     Dict, 
     Optional, 
@@ -42,12 +44,20 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
+from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput, CurlForceFieldParams
 
 from feedbax.loss import AbstractLoss, LossDict
+from feedbax.model import ModelInput
 if TYPE_CHECKING:
+    from feedbax.model import AbstractStagedModel, add_intervenors
     from feedbax.model import AbstractModel, AbstractModelState
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.utils import AbstractTransformedOrderedDict, internal_grid_points, get_where_str
+from feedbax.utils import (
+    AbstractTransformedOrderedDict, 
+    get_unique_label, 
+    internal_grid_points, 
+    get_where_str,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -60,8 +70,8 @@ StateT = TypeVar("StateT", bound=AbstractState)
 
 @jtu.register_pytree_node_class
 class InitSpecDict(AbstractTransformedOrderedDict[
-    Callable[["AbstractModelState"], PyTree[Array]],
-    PyTree[Array]
+    Callable[["AbstractModelState"], PyTree[Array, 'T']],
+    PyTree[Array, 'T']
 ]):
     """An `OrderedDict` that allows attribute-accessing lambdas as keys.
     
@@ -103,27 +113,26 @@ class InitSpecDict(AbstractTransformedOrderedDict[
 
 
 class AbstractTaskInput(eqx.Module):
-    intervenors: AbstractVar[Dict[str, jax.Array]]
-
+    #intervenors: AbstractVar[Dict[str, jax.Array]]
+    ...
 
 class AbstractTaskTrialSpec(eqx.Module):
-    init: InitSpecDict
+    init: AbstractVar[InitSpecDict]
     # init: OrderedDict[Callable[["AbstractModelState"], PyTree[Array]], 
     #                        PyTree[Array]]
-    input: AbstractTaskInput
-    target: PyTree
+    input: AbstractVar[AbstractTaskInput]
+    target: AbstractVar[PyTree]
+    intervene: AbstractVar[Optional[Dict[str, jax.Array]]] 
 
 
-class SimpleReachTaskInput:
-    stim: Float[Array, "time 1"]
-    intervenors: Dict[str, jax.Array]
+class SimpleReachTaskInput(AbstractTaskInput):
+    stim: Float[Array, "time 1"]  #! column vector: why here?
     
 
 class DelayedReachTaskInput(AbstractTaskInput):
     stim: Float[Array, "time 1"]
     hold: Int[Array, "time 1"]
     stim_on: Int[Array, "time 1"]
-    intervenors: Dict[str, jax.Array]
 
 
 # TODO: this same trial spec also applies to tracking and stabilization tasks...
@@ -135,6 +144,7 @@ class ReachTrialSpec(AbstractTaskTrialSpec):
     #                        CartesianState2D] 
     input: AbstractTaskInput
     target: CartesianState2D
+    intervene: Optional[Dict[str, jax.Array]] = None
     
     @cached_property
     def goal(self):
@@ -155,8 +165,26 @@ class AbstractTask(eqx.Module):
       static.
     """
     loss_func: AbstractVar[AbstractLoss]
+    # TODO: The following line is wrong: each entry will have the same PyTree structure as `AbstractIntervenorInput`
+    # but will be filled with callables that specify a trial distribution for the leaves
+    intervention_spec: AbstractVar[Mapping[AbstractIntervenorInput]]
     
-    @abstractmethod
+    @cached_property
+    def _intervention_spec_partition(self):
+        return eqx.partition(self, lambda x: isinstance(x, Callable))
+    
+    def _intervention_params(
+        self, 
+        trial_spec: AbstractTaskTrialSpec, 
+        key: jax.Array,
+    ):
+        callables, other_values = self._intervention_spec_partition
+        callables_values = jax.tree_map(
+            lambda x: x(trial_spec, key),  # TODO: split keys
+            callables, 
+        )
+        return eqx.combine(callables_values, other_values)
+
     def get_train_trial(
         self, 
         key: jax.Array,
@@ -167,10 +195,23 @@ class AbstractTask(eqx.Module):
         useful for plotting or analysis but not for model training or
         evaluation.
         """
-        ...  
+        key, key_intervene = jr.split(key)
+        trial_spec, aux = self._get_train_trial(key)  
+        trial_spec = eqx.tree_at(
+            lambda x: x.intervenors,
+            trial_spec,
+            self._intervention_params(trial_spec, key_intervene),
+        )      
+        return trial_spec, aux
+    
+    @abstractmethod 
+    def _get_train_trial(
+        self,
+        key: jax.Array,
+    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+        ...
         
-    @abstractproperty    
-    def trials_validation(
+    def validation_trials(
         self
     ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
         """Return the batch of validation trials associated with the task.
@@ -178,10 +219,23 @@ class AbstractTask(eqx.Module):
         May also return a pytree of auxiliary data, e.g. that would be 
         useful for plotting or analysis but not for model evaluation.
         """
+        key, key_intervene = jr.split(key)
+        trial_specs, aux = self._validation_trials
+        trial_specs = eqx.tree_at(
+            lambda x: x.intervenors,
+            trial_specs,
+            eqx.filter_vmap(self._intervention_params)(trial_specs, key_intervene),
+        )      
+        return trial_specs, aux
+    
+    @abstractmethod 
+    def _validation_trials(
+        self
+    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
         ...
     
     @abstractproperty 
-    def n_trials_validation(self) -> int:
+    def n_validation_trials(self) -> int:
         """Size of the validation set."""
         ...
 
@@ -192,9 +246,9 @@ class AbstractTask(eqx.Module):
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on the task's validation set of trials."""
         
-        keys = jr.split(key, self.n_trials_validation)
+        keys = jr.split(key, self.n_validation_trials)
         
-        return self.eval_trials(model, self.trials_validation[0], keys)
+        return self.eval_trials(model, self.validation_trials[0], keys)
 
     @eqx.filter_jit
     def eval_ensemble(
@@ -280,7 +334,9 @@ class AbstractTask(eqx.Module):
         )
         
         states = jax.vmap(model, in_axes=(0, 0, 0))(
-            trial_specs.input, init_states, keys
+            ModelInput(trial_specs.input, trial_specs.intervene),
+            init_states, 
+            keys,
         ) 
         
         losses = self.loss_func(
@@ -358,6 +414,7 @@ class RandomReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
+    intervention_spec: Mapping[AbstractIntervenorInput] = field(default_factory=dict)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
@@ -366,7 +423,7 @@ class RandomReaches(AbstractTask):
     
     @eqx.filter_jit
     @jax.named_scope("fbx.RandomReaches.get_train_trial")
-    def get_train_trial(
+    def _get_train_trial(
         self, 
         key: jax.Array
     ) -> [ReachTrialSpec, None]:
@@ -406,7 +463,7 @@ class RandomReaches(AbstractTask):
         ), None
         
     @cached_property
-    def trials_validation(self) -> [ReachTrialSpec, None]:
+    def _validation_trials(self) -> [ReachTrialSpec, None]:
         """Center-out reaches across a regular workspace grid."""
         
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -440,7 +497,7 @@ class RandomReaches(AbstractTask):
         ), None
         
     @property
-    def n_trials_validation(self) -> int:
+    def n_validation_trials(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n ** 2 * self.eval_n_directions
 
@@ -479,7 +536,7 @@ class RandomReachesDelayed(AbstractTask):
 
     @eqx.filter_jit
     @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
-    def get_train_trial(
+    def _get_train_trial(
         self, 
         key: jax.Array
     ) -> [ReachTrialSpec, Int[Array, "n_epochs"]]:
@@ -510,7 +567,7 @@ class RandomReachesDelayed(AbstractTask):
         )
         
     @cached_property
-    def trials_validation(self):
+    def _validation_trials(self):
         """Center-out reaches across a regular workspace grid."""
         
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -581,9 +638,59 @@ class RandomReachesDelayed(AbstractTask):
         
         return task_input, target_states, epoch_start_idxs  
     
-    def n_trials_validation(self) -> int:
+    def n_validation_trials(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n ** 2 * self.eval_n_directions
+
+
+def get_curl_amplitude(sd, trial_spec, *, key):
+    return jr.normal(key, (1,)) / sd 
+       
+
+example_curl_force_field_spec = CurlForceFieldParams(
+    amplitude=partial(get_curl_amplitude, 0.5),
+    active=True,
+)
+
+
+def schedule_intervenor(
+    intervenor: AbstractIntervenor,
+    intervenor_input_spec: AbstractIntervenorInput,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
+    task: AbstractTask,
+    model: "AbstractStagedModel[StateT]",
+    model_where: Callable[["AbstractStagedModel[StateT]"], Any]
+) -> Tuple[AbstractTask, "AbstractStagedModel"]:
+    """Adds an intervention to a model and a task.
+    
+    Args:
+        intervenor: The intervenor to schedule
+        intervenor_input_spec: The input to the intervenor, which may be 
+            a constant or a stochastic per-trial callable
+        task: The task in whose trials the intervention will be scheduled
+        model: The model to which the intervention will be added
+        model_where: Where in the model to insert the intervention
+    """
+    
+    label = get_unique_label(
+        intervenor.label, 
+        invalid_labels=model._all_intervenor_labels
+    )
+    
+    intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor, label)        
+    
+    intervention_spec = {
+        label: intervenor_input_spec
+    }
+    
+    task = eqx.tree_at(
+        lambda task: task.intervention_spec,
+        task,
+        task.intervention_spec | intervention_spec,
+    )   
+    
+    model = add_intervenors(model, intervenor_relabeled, where=model_where)
+    
+    return task, model
 
 
 class Stabilization(AbstractTask):
@@ -638,7 +745,7 @@ class Stabilization(AbstractTask):
         ), None
         
     @cached_property
-    def trials_validation(self) -> [ReachTrialSpec, None]:
+    def validation_trials(self) -> [ReachTrialSpec, None]:
         """Center-out reaches across a regular workspace grid."""
         
         if self.eval_workspace is None:
@@ -676,7 +783,7 @@ class Stabilization(AbstractTask):
             target=target_states
         ), None
     
-    def n_trials_validation(self) -> int:
+    def n_validation_trials(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n ** 2 
 
