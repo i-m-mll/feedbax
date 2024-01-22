@@ -12,19 +12,28 @@ TODO:
 # from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Mapping, Sequence, Callable
+import copy
 import logging
-from typing import TYPE_CHECKING, Callable, Generic, LiteralString, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar, Union, Tuple
 
 import equinox as eqx
-from equinox import AbstractClassVar, AbstractVar, field
+from equinox import AbstractVar, field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 
+from feedbax.utils import get_unique_label
+
 if TYPE_CHECKING:
-    from feedbax.model import AbstractStagedModel
+    from feedbax.model import (
+        AbstractModel, 
+        AbstractStagedModel, 
+        SimpleFeedback,
+    )
     from feedbax.mechanics.mechanics import MechanicsState
     from feedbax.networks import NetworkState
+    from feedbax.task import AbstractTask
 
 from feedbax.state import AbstractState, CartesianState2D
 
@@ -89,7 +98,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
 
 class CurlForceFieldParams(AbstractIntervenorInput):
     amplitude: Optional[float] = 0.
-    active: Optional[bool] = False
+    active: Optional[bool] = True
     
 
 class CurlForceField(AbstractIntervenor["MechanicsState", CurlForceFieldParams]):
@@ -127,3 +136,144 @@ class CurlForceField(AbstractIntervenor["MechanicsState", CurlForceFieldParams])
     #     """Returns curl forces."""
     #     return self._scale * vel[..., ::-1]  
     
+    
+def add_intervenor(
+    model: "AbstractStagedModel[StateT]", 
+    intervenor: AbstractIntervenor,
+    stage_name: Optional[str] = None,
+    **kwargs
+) -> "AbstractStagedModel[StateT]":
+    """Return an updated model with an added intervenor.
+    
+    This is just a convenience for passing a single intervenor to `add_intervenor`.
+    """
+    if stage_name is not None:
+        return add_intervenors(model, {stage_name: [intervenor]}, **kwargs)
+    else:
+        return add_intervenors(model, [intervenor], **kwargs)
+
+
+def add_intervenors(
+    model: "AbstractStagedModel[StateT]", 
+    intervenors: Union[Sequence[AbstractIntervenor],
+                       Mapping[str, Sequence[AbstractIntervenor]]], 
+    where: Callable[["AbstractStagedModel[StateT]"], Any] = lambda model: model,
+    keep_existing: bool = True,
+    *,
+    key: Optional[jax.Array] = None
+) -> "AbstractStagedModel[StateT]":
+    """Return an updated model with added intervenors.
+    
+    Intervenors are added to `where(model)`, which by default is 
+    just `model` itself.
+    
+    If intervenors are passed as a sequence, they are added to the first stage
+    specified in `where(model).model_spec`, otherwise they should be passed in
+    a dict where the keys refer to particular stages in the model spec.
+    
+    TODO:
+    - Could this be generalized to `AbstractModel[StateT]`?
+    """
+    if keep_existing:
+        existing_intervenors = where(model).intervenors
+        
+        if isinstance(intervenors, Sequence):
+            # If a sequence is given, append to the first stage.
+            first_stage_label = next(iter(existing_intervenors))
+            intervenors_dict = eqx.tree_at(
+                lambda intervenors: intervenors[first_stage_label],
+                existing_intervenors,
+                existing_intervenors[first_stage_label] + list(intervenors),
+            )
+        elif isinstance(intervenors, dict):
+            intervenors_dict = copy.deepcopy(existing_intervenors)
+            for label, new_intervenors in intervenors.items():
+                intervenors_dict[label] += list(new_intervenors)
+        else:
+            raise ValueError("intervenors not a sequence or dict of sequences")
+
+    for k in intervenors_dict:
+        if k not in where(model).model_spec:
+            raise ValueError(f"{k} is not a valid model stage for intervention")
+
+    return eqx.tree_at(
+        lambda model: where(model).intervenors,
+        model, 
+        intervenors_dict,
+    )
+
+def remove_intervenors(
+    model: "SimpleFeedback"
+) -> "SimpleFeedback":
+    """Return a model with no intervenors."""
+    return add_intervenors(model, intervenors=(), keep_existing=False)
+    
+
+def schedule_intervenor(
+    intervenor: AbstractIntervenor, # TODO: | Type[AbstractIntervenor],
+    intervenor_spec: AbstractIntervenorInput,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
+    task: "AbstractTask",
+    model: "AbstractModel[StateT]",  # not AbstractStagedModel because it might be wrapped in `Iterator`
+    model_where: Callable[["AbstractModel[StateT]"], Any],
+    validation_same_schedule: bool = True,
+    intervenor_spec_validation: Optional[AbstractIntervenorInput] = None,
+) -> Tuple["AbstractTask", "AbstractModel[StateT]"]:
+    """Adds an intervention to a model and a task.
+    
+    Args:
+        intervenor: The intervenor (or intervenor class) to schedule
+        intervenor_spec: The input to the intervenor, which may be 
+            a constant or a stochastic per-trial callable
+        validation_same_schedule: Whether the interventions should be scheduled
+            in the same way for the validation set as for the training set.
+        intervenor_spec_validation: Same as `intervenor_spec`, but for the 
+            task's validation set. Only applies if `validation_same_schedule`
+            is `False`. 
+        task: The task in whose trials the intervention will be scheduled
+        model: The model to which the intervention will be added
+        model_where: Where in the model to insert the intervention
+        
+    TODO:
+    - If `validation_same_schedule` is `False` and no 
+      `intervenor_spec_validation` is provided, what should happen? Presumably
+      we should set constant `active=False` for the validation set.
+    """
+    
+    label = get_unique_label(
+        intervenor.label, 
+        invalid_labels=model._step._all_intervenor_labels
+    )
+    
+    # if isinstance(intervenor, type(AbstractIntervenor)):
+    #     intervenor = intervenor(tree_call(intervenor_input_spec, ...))
+    
+    intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor, label)        
+    
+    intervention_spec = {
+        label: intervenor_spec
+    }
+    
+    task = eqx.tree_at(
+        lambda task: task.intervention_spec,
+        task,
+        task.intervention_spec | intervention_spec,
+    )   
+    
+    if validation_same_schedule:
+        task = eqx.tree_at(
+            lambda task: task.intervention_spec_validation,
+            task,
+            task.intervention_spec_validation | intervention_spec,
+        )
+    elif intervenor_spec_validation is not None:
+        task = eqx.tree_at(
+            lambda task: task.intervention_spec_validation,
+            task,
+            task.intervention_spec_validation | {
+                label: intervenor_spec_validation
+            },
+        )
+    
+    model = add_intervenors(model, [intervenor_relabeled], where=model_where)
+    
+    return task, model

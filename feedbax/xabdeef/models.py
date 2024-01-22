@@ -109,9 +109,17 @@ def point_mass_NN(
     system = PointMass(mass=mass)
     mechanics = Mechanics(SimplePlant(system), dt)
     
+    feedback_spec = dict(
+        where=lambda state: (
+            state.plant.skeleton.pos,
+            state.plant.skeleton.vel,
+        ),
+        delay=feedback_delay_steps,
+    )
+    
     # automatically determine network input size
     input_size = SimpleFeedback.get_nn_input_size(
-        task, mechanics
+        task, mechanics, feedback_spec=feedback_spec
     )
     
     net = SimpleNetwork(
@@ -123,7 +131,7 @@ def point_mass_NN(
         out_nonlinearity=out_nonlinearity, 
         key=key1,
     )
-    body = SimpleFeedback(net, mechanics, key=key2)
+    body = SimpleFeedback(net, mechanics, feedback_spec=feedback_spec, key=key2)
     
     model = SimpleIterator(body, n_steps)
     

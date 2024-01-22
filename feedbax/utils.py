@@ -19,7 +19,7 @@ from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
 from time import perf_counter
-from typing import Callable, Concatenate, Dict, Iterable, List, Optional, Tuple, TypeVar, TypeVarTuple, Union
+from typing import Any, Callable, Concatenate, Dict, Iterable, List, Optional, Tuple, TypeVar, TypeVarTuple, Union
 
 import equinox as eqx
 import jax
@@ -478,3 +478,43 @@ def get_unique_label(label: str, invalid_labels: Sequence[str]) -> str:
         label_ = f"{label}_{i}" 
         i += 1
     return label_
+
+
+def tree_map_unzip(
+    f: Callable[..., Tuple[Any, ...]], 
+    tree: PyTree, 
+    *rest, 
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+):
+    """Map a function that returns a tuple over a PyTree, unzipping the results.
+    
+    For example, for a function `f(x) -> (y, z)`, we can do 
+    `ys, zs = tree_map_unzip(f, xs)`, whereas with a normal `tree_map` we'd get
+    a PyTree of tuples `(y, z)`. That is, we return a tuple of PyTrees instead 
+    of a PyTree of tuples.
+    """
+    results = jax.tree_map(f, tree, *rest, is_leaf=is_leaf)
+    results_flat, treedef = jax.tree_flatten(
+        results, 
+        is_leaf=lambda x: isinstance(x, tuple)
+    )
+    results_unzip = zip(*results_flat)
+    return tuple(jax.tree_unflatten(treedef, x) for x in results_unzip)
+
+
+def tree_call(tree, *args, **kwargs):
+    """Calls a tree's callable leaves and returns a tree of their return values.
+    
+    Every callable receives identical `*args, **kwargs`.
+    
+    Non-callable leaves are passed through as-is.
+    """
+    callables, other_values = eqx.partition(
+        tree, 
+        lambda x: isinstance(x, Callable)
+    )
+    callables_values = jax.tree_map(
+        lambda x: x(*args, **kwargs),
+        callables,
+    )
+    return eqx.combine(callables_values, other_values)

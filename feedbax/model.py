@@ -45,7 +45,7 @@ from feedbax.channel import Channel, ChannelState
 from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput
 if TYPE_CHECKING:
     from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.task import AbstractTask, AbstractTaskInput
+    from feedbax.task import AbstractTask, AbstractTaskInput
 from feedbax.utils import tree_sum_n_features, tree_pformat_indent
 
 if TYPE_CHECKING:
@@ -128,7 +128,7 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     
 
 class ModelInput(eqx.Module):
-    input: AbstractTaskInput
+    input: "AbstractTaskInput"
     intervene: Mapping[AbstractIntervenorInput]
 
 
@@ -197,12 +197,22 @@ class AbstractStagedModel(AbstractModel[StateT]):
                         params = None
                     state = intervenor(params, state, key=key1)
                 
+                callable = module(self)
+                subinput = module_input(input.input, state)
+                
+                # TODO: What's a less hacky way of doing this?
+                # I was trying to avoid introducing additional parameters to `AbstractStagedModel.__call__`
+                if isinstance(callable, AbstractStagedModel):
+                    callable_input = ModelInput(subinput, input.intervene)
+                else:
+                    callable_input = subinput
+                
                 state = eqx.tree_at(
                     substate_where, 
                     state, 
-                    module(self)(
+                    callable(
                         #! Constructing this each time might be a performance issue
-                        ModelInput(module_input(input, state), input.intervene), 
+                        callable_input, 
                         substate_where(state), 
                         key=key2,
                     ),
@@ -214,7 +224,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
     def model_spec(self) -> OrderedDict[str, Tuple[
         eqx.Module,
         Callable[[StateT], PyTree],
-        Sequence[Callable[[AbstractTaskInput, StateT], PyTree]],
+        Sequence[Callable[["AbstractTaskInput", StateT], PyTree]],
     ]]:
         """Specifies the model in terms of substate operations.
         
@@ -240,7 +250,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         Sequence[AbstractIntervenor],
         eqx.Module,
         Callable[[StateT], PyTree],
-        Sequence[Callable[[AbstractTaskInput, StateT], PyTree]],
+        Sequence[Callable[["AbstractTaskInput", StateT], PyTree]],
     ]]: 
         """Zips up the user-defined intervenors with `model_spec`."""
         #! should not be referred to in `__init__`, at least before defining `intervenors`
@@ -502,7 +512,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
 
     @staticmethod
     def get_nn_input_size(
-        task: AbstractTask, 
+        task: "AbstractTask", 
         mechanics: "Mechanics", 
         feedback_spec: Union[PyTree[FeedbackSpec], PyTree[Mapping[str, Any]]] = \
             DEFAULT_FEEDBACK_SPEC,
@@ -583,78 +593,6 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         )
      
         return state 
-    
-
-def add_intervenor(
-    model: AbstractStagedModel[StateT], 
-    intervenor: AbstractIntervenor,
-    stage_name: Optional[str] = None,
-    **kwargs
-) -> AbstractStagedModel[StateT]:
-    """Return an updated model with an added intervenor.
-    
-    This is just a convenience for passing a single intervenor to `add_intervenor`.
-    """
-    if stage_name is not None:
-        return add_intervenors(model, {stage_name: [intervenor]}, **kwargs)
-    else:
-        return add_intervenors(model, [intervenor], **kwargs)
-
-
-def add_intervenors(
-    model: AbstractStagedModel[StateT], 
-    intervenors: Union[Sequence[AbstractIntervenor],
-                       Dict[str, Sequence[AbstractIntervenor]]], 
-    where: Callable[[AbstractStagedModel[StateT]], Any] = lambda model: model,
-    keep_existing: bool = True,
-    *,
-    key: Optional[jax.Array] = None
-) -> AbstractStagedModel[StateT]:
-    """Return an updated model with added intervenors.
-    
-    Intervenors are added to `where(model)`, which by default is 
-    just `model` itself.
-    
-    If intervenors are passed as a sequence, they are added to the first stage
-    specified in `where(model).model_spec`, otherwise they should be passed in
-    a dict where the keys refer to particular stages in the model spec.
-    
-    TODO:
-    - Could this be generalized to `AbstractModel[StateT]`?
-    """
-    if keep_existing:
-        existing_intervenors = where(model).intervenors
-        
-        if isinstance(intervenors, Sequence):
-            # If a sequence is given, append to the first stage.
-            first_stage_label = next(iter(existing_intervenors))
-            intervenors_dict = eqx.tree_at(
-                lambda intervenors: intervenors[first_stage_label],
-                existing_intervenors,
-                existing_intervenors[first_stage_label] + list(intervenors),
-            )
-        elif isinstance(intervenors, dict):
-            intervenors_dict = copy.deepcopy(existing_intervenors)
-            for label, new_intervenors in intervenors.items():
-                intervenors_dict[label] += list(new_intervenors)
-        else:
-            raise ValueError("intervenors not a sequence or dict of sequences")
-
-    for k in intervenors_dict:
-        if k not in where(model).model_spec:
-            raise ValueError(f"{k} is not a valid model stage for intervention")
-
-    return eqx.tree_at(
-        lambda model: where(model).intervenors,
-        model, 
-        intervenors_dict,
-    )
-
-def remove_intervenors(
-    model: SimpleFeedback
-) -> SimpleFeedback:
-    """Return a model with no intervenors."""
-    return add_intervenors(model, intervenors=(), keep_existing=False)
 
 
 def wrap_stateless_callable(callable: Callable, pass_key=True):
