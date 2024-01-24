@@ -41,7 +41,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         self, 
         t: float, 
         state: StateT, 
-        input: PyTree,  # controls
+        input: PyTree[Array],  # controls
     ) -> StateT:
         """Vector field of the system."""
         ...

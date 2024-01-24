@@ -16,7 +16,9 @@ that it will provide this information to our model trial-by-trial.
 TODO:
 - Could just use `operation` to distinguish `NetworkClamp` from 
   `NetworkConstantInput`. Though might need to rethink the NaN unit spec thing
-
+- Could enforce that `out_where = in_where` for some intervenors, in particular 
+  `AddNoise`, `NetworkClamp`, and `NetworkConstantInput`. These are intended to 
+  make modifications to a part of the state, not to transform between parts.
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
@@ -108,8 +110,8 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
     """
     
     params: AbstractVar[InputT]
-    in_where: AbstractVar[Callable[[StateT], PyTree]]
-    out_where: AbstractVar[Callable[[StateT], PyTree]]
+    in_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "T"]]]
+    out_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "S"]]]
     operation: AbstractVar[Callable[[ArrayLike, ArrayLike], ArrayLike]]
     label: AbstractVar[str]
     
@@ -131,7 +133,12 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
         )
     
     @abstractmethod
-    def intervene(params: InputT, state: StateT, *, key: Optional[Array]) -> PyTree:
+    def intervene(
+        params: InputT, 
+        state: StateT, 
+        *, 
+        key: Optional[Array]
+    ) -> PyTree[ArrayLike, "S"]:
         ...        
         
     @abstractclassmethod
@@ -200,10 +207,11 @@ class AddNoiseParams(AbstractIntervenorInput):
 class AddNoise(AbstractIntervenor[StateT, InputT]):
     """Add noise to a part of the state. 
     
-    Default is standard normal noise."""
+    Default is standard normal noise.
+    """
     params: AddNoiseParams = AddNoiseParams()
-    in_where: Callable[[StateT], PyTree] = lambda state: state
-    out_where: Callable[[StateT], PyTree] = lambda state: state
+    in_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
+    out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: x + y
     label: str = "AddNoise"
     
@@ -215,7 +223,6 @@ class AddNoise(AbstractIntervenor[StateT, InputT]):
         active: bool = True,
         **kwargs,
     ) -> "AddNoise":
-        
         return cls(
             AddNoiseParams(
                 amplitude=amplitude, 
@@ -264,16 +271,16 @@ class NetworkClamp(AbstractIntervenor["NetworkState", InputT]):
     """
     
     params: NetworkIntervenorParams = NetworkIntervenorParams()
-    in_where: Callable[["NetworkState"], PyTree] = lambda state: state.hidden 
-    out_where: Callable[["NetworkState"], PyTree] = lambda state: state.hidden
-    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: y
+    in_where: Callable[["NetworkState"], PyTree[Array, "T"]] = lambda state: state.hidden 
+    out_where: Callable[["NetworkState"], PyTree[Array, "T"]] = lambda state: state.hidden
+    operation: Callable[[Array, Array], Array] = lambda x, y: y
     label: str = "NetworkClamp"
     
     @classmethod 
     def with_params(
         cls,
         active: bool = True,
-        unit_spec: Optional[PyTree] = None,
+        unit_spec: Optional[PyTree[Array, "T"]] = None,
         **kwargs,
     ) -> "NetworkClamp":
         
@@ -288,7 +295,7 @@ class NetworkClamp(AbstractIntervenor["NetworkState", InputT]):
         state: "NetworkState",
         *,
         key: Optional[Array] = None
-    ):
+    ) -> PyTree[Array, "T"]:
         
         return jax.tree_map(
             lambda x, y: jnp.where(jnp.isnan(y), x, y),
@@ -305,20 +312,22 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", InputT]):
     states. See `NetworkClamp` for more details.
     
     Args:
-        unit_spec (PyTree[Array]): A PyTree with the same structure as the
+        unit_spec: A PyTree with the same structure as the
         network state, to be added to the network state.
     """    
     params: NetworkIntervenorParams = NetworkIntervenorParams()
-    in_where: Callable[["NetworkState"], PyTree] = lambda state: state.hidden 
-    out_where: Callable[["NetworkState"], PyTree] = lambda state: state.hidden    
-    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: x + y
+    in_where: Callable[["NetworkState"], PyTree[Array, "T"]] \
+        = lambda state: state.hidden 
+    out_where: Callable[["NetworkState"], PyTree[Array, "T"]] \
+        = lambda state: state.hidden    
+    operation: Callable[[Array, Array], Array] = lambda x, y: x + y
     label: str = "NetworkConstantInput"
     
     @classmethod
     def with_params(
         cls,
         active: bool = True,
-        unit_spec: Optional[PyTree] = None,
+        unit_spec: Optional[PyTree[Array, "T"]] = None,
         **kwargs,
     ) -> "NetworkConstantInput":
         
@@ -333,7 +342,7 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", InputT]):
         state: "NetworkState",
         *,
         key: Optional[Array] = None,
-    ):
+    ) -> PyTree[Array, "T"]:
         return jax.tree_map(jnp.nan_to_num, params.unit_spec)
 
     

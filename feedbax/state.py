@@ -4,11 +4,11 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from collections.abc import Callable
 from copy import deepcopy
 from functools import cached_property
 import logging
 from typing import (
-    Callable,
     Optional, 
     Generic,
     Protocol, 
@@ -92,7 +92,7 @@ def clip_state(
 
 def clip_state_to_bound(
     state: StateT, 
-    bound: StateT,
+    bound: StateT, 
     filter_spec: PyTree[bool],
     op: Callable,
 ) -> StateT:

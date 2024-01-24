@@ -6,7 +6,13 @@
 
 from abc import abstractmethod
 from collections import OrderedDict
-from collections.abc import MutableMapping, Sequence
+from collections.abc import (
+    Callable, 
+    Iterable, 
+    MutableMapping, 
+    MutableSequence, 
+    Sequence,
+)
 import dataclasses
 import dis
 import inspect
@@ -19,7 +25,7 @@ from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
 from time import perf_counter
-from typing import Any, Callable, Concatenate, Dict, Iterable, List, Optional, Tuple, TypeVar, TypeVarTuple, Union
+from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, Union
 
 import equinox as eqx
 import jax
@@ -108,14 +114,6 @@ class AbstractTransformedOrderedDict(MutableMapping[KT, VT]):
 
     def __len__(self):
         return len(self.store)
-    
-    def __repr__(self):
-        # Make a pretty representation of the lambdas
-        items_str = ', '.join(
-            f"(lambda state: state{'.' if k else ''}{k}, {v})" 
-            for k, (_, v) in self.store.items()
-        )
-        return f"{type(self).__name__}([{items_str}])"
 
     @abstractmethod
     def _key_transform(self, key):
@@ -156,7 +154,7 @@ def angle_between_vectors(v2, v1):
     )   
 
 
-def tree_index(tree: PyTree, index: int):
+def tree_index(tree: PyTree[Any, 'T'], index: int) -> PyTree[Any, 'T']:
     """Returns the same PyTree, indexing all of its array leaves.
     """
     models_arrays, models_other = eqx.partition(tree, eqx.is_array)
@@ -296,11 +294,11 @@ def filter_spec_leaves(tree, leaf_func):
 
 
 def normalize(
-    tree: PyTree,
+    tree: PyTree[Array, 'T'],
     min: float = 0, 
     max: float = 1, 
     axis: int = 0,
-):
+) -> PyTree[Array, 'T']:
     """Normalize each input array to [min, max] along the given axis.
     
     Defaults to normalizing columns
@@ -313,7 +311,7 @@ def normalize(
     return jax.tree_map(arr_norm, tree)
 
 
-def device_put_all(tree: PyTree, device=jax.devices()[0]):
+def device_put_all(tree: PyTree[Any, 'T'], device=jax.devices()[0]) -> PyTree[Any, 'T']:
     """Put all array leaves of `tree` on the default device.
     
     TODO: I'm not sure this is actually useful for anything.
@@ -327,7 +325,7 @@ def device_put_all(tree: PyTree, device=jax.devices()[0]):
 
 
 @jax.named_scope("fbx.tree_get_idx")
-def tree_get_idx(tree: PyTree, idx: int):
+def tree_get_idx(tree: PyTree[Any, 'T'], idx: int) -> PyTree[Any, 'T']:
     """Retrieve the `idx`-th element of each array leaf of `tree`.
     
     Any non-array leaves are returned unchanged.
@@ -338,7 +336,7 @@ def tree_get_idx(tree: PyTree, idx: int):
 
 
 @jax.named_scope("fbx.tree_get_idx")
-def tree_take(tree: PyTree, idx: int, axis: int):
+def tree_take(tree: PyTree[Any, 'T'], idx: int, axis: int) -> PyTree[Any, 'T']:
     """Take elements from the specified axis of each array leaf of `tree`.
     
     Any non-array leaves are returned unchanged.
@@ -353,10 +351,10 @@ def tree_take(tree: PyTree, idx: int, axis: int):
 
 @jax.named_scope("fbx.tree_set_idx")
 def tree_set_idx(
-    tree: PyTree, 
-    vals, 
+    tree: PyTree[Any, 'T'], 
+    vals: PyTree[Any, 'T'],
     idx: int
-):
+) -> PyTree[Any, 'T']:
     """Update the `idx`-th element of each array leaf of `tree`.
     
     `vals` should be a pytree with the same structure as `tree`,
@@ -462,8 +460,8 @@ def unzip2(
     """
     # Note: we deliberately don't use zip(*xys) because it is lazily evaluated,
     # is too permissive about inputs, and does not guarantee a length-2 output.
-    xs: List[T1] = []
-    ys: List[T2] = []
+    xs: MutableSequence[T1] = []
+    ys: MutableSequence[T2] = []
     for x, y in xys:
         xs.append(x)
         ys.append(y)
@@ -482,10 +480,10 @@ def get_unique_label(label: str, invalid_labels: Sequence[str]) -> str:
 
 def tree_map_unzip(
     f: Callable[..., Tuple[Any, ...]], 
-    tree: PyTree, 
+    tree: PyTree[Any, 'T'], 
     *rest, 
     is_leaf: Optional[Callable[[Any], bool]] = None,
-):
+) -> Tuple[PyTree[Any, 'T'], ...]:
     """Map a function that returns a tuple over a PyTree, unzipping the results.
     
     For example, for a function `f(x) -> (y, z)`, we can do 

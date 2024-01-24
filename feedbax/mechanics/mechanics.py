@@ -9,9 +9,10 @@ TODO:
 """
 
 from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from functools import cached_property
 import logging
-from typing import Callable, Dict, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import Optional, Type, Union
 
 import diffrax as dfx
 import equinox as eqx
@@ -20,9 +21,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 from feedbax.intervene import AbstractIntervenor
-from feedbax.mechanics.muscle import AbstractMuscleState, VirtualMuscle
 from feedbax.mechanics.plant import AbstractPlant, PlantState
-from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import AbstractStagedModel, AbstractModelState, wrap_stateless_callable
@@ -58,7 +57,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     dt: float 
     solver: dfx.AbstractSolver
     
-    intervenors: Dict[str, AbstractIntervenor] 
+    intervenors: Mapping[str, AbstractIntervenor] 
     
     def __init__(
         self, 
@@ -66,7 +65,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         dt: float, 
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler, 
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                    Dict[str, Sequence[AbstractIntervenor]]]] \
+                                    Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
         *,
         key: Optional[jax.Array] = None,

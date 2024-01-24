@@ -5,8 +5,10 @@
 """
 
 
+from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import equinox as eqx
 from equinox import field
@@ -15,17 +17,20 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, PyTree 
 
+from feedbax.intervene import AbstractIntervenor
+from feedbax.model import AbstractStagedModel
+
 
 logger = logging.getLogger(__name__)
     
 
 class ChannelState(eqx.Module):
-    output: PyTree[Array]
-    queue: Tuple[PyTree[Array], ...]
-    noise: Optional[PyTree[Array]] = None
+    output: PyTree[Array, 'T']
+    queue: Tuple[PyTree[Array, 'T'], ...]
+    noise: Optional[PyTree[Array, 'T']] = None
 
 
-class Channel(eqx.Module):
+class Channel(AbstractStagedModel[ChannelState]):
     """Distant connection implemented as a queue, with optional added noise.
     
     For example, for modeling an axon, tract, or wire.
@@ -37,28 +42,89 @@ class Channel(eqx.Module):
     - Infer delay steps from time.
     - Use a shape dtype struct for `input_proto`.
     """
-    delay: int = field(converter=lambda x: x + 1)
-    noise_std: Optional[float] = None
-    init_value: float = jnp.nan
-    input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
+    delay: int
+    noise_std: Optional[float]
+    init_value: float 
+    input_proto: PyTree[Array] 
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]] 
+        
+    def __init__(
+        self, 
+        delay: int, 
+        noise_std: Optional[float] = None,
+        init_value: float = jnp.nan,
+        input_proto: PyTree[Array] = jnp.zeros(1),
+        intervenors: Optional[Union[
+                Sequence[AbstractIntervenor],
+                Mapping[str, Sequence[AbstractIntervenor]]]
+            ] = None,
+    ):
+        self.delay = delay 
+        self.noise_std = noise_std
+        self.init_value = init_value
+        self.input_proto = input_proto
+        self.intervenors = self._get_intervenors_dict(intervenors)
     
     def __check_init__(self):
         if not isinstance(self.delay, int):
             raise ValueError("Delay must be an integer")
     
-    @jax.named_scope("fbx.Channel")
-    def __call__(self, input, state, key):             
-        queue = state.queue[1:] + (input,)
-        output = state.queue[0]
+    # @jax.named_scope("fbx.Channel")
+    # def __call__(self, input, state, key):             
+    #     queue = state.queue[1:] + (input,)
+    #     output = state.queue[0]
+    #     if self.noise_std is not None:
+    #         noise = jax.tree_map(
+    #             lambda x: self.noise_std * jr.normal(key, x.shape),
+    #             output,
+    #         )
+    #         output = jax.tree_map(lambda x, y: x + y, output, noise)
+    #     else:
+    #         noise = None
+    #     return ChannelState(output, queue, noise)
+    
+    def _update_queue(self, input, state, *, key):
+        return (
+            state.queue[0], 
+            state.queue[1:] + (input,),
+        )
+        
+    def _add_noise(self, input, state, *, key):
+        noise = jax.tree_map(
+            lambda x: self.noise_std * jr.normal(key, x.shape),
+            input,
+        )
+        output = jax.tree_map(lambda x, y: x + y, state.output, noise)
+        return noise, output
+    
+    @property
+    def model_spec(self):
+        spec = OrderedDict({
+            "update_queue": (
+                lambda self: self._update_queue,
+                lambda input, state: input, 
+                lambda state: (state.output, state.queue),
+            ),            
+        })
+        
         if self.noise_std is not None:
-            noise = jax.tree_map(
-                lambda x: self.noise_std * jr.normal(key, x.shape),
-                output,
-            )
-            output = jax.tree_map(lambda x, y: x + y, output, noise)
-        else:
-            noise = None
-        return ChannelState(output, queue, noise)
+            spec |= {
+                "add_noise": (
+                    lambda self: self._add_noise,
+                    lambda input, state: state.output,
+                    lambda state: (state.noise, state.output),
+                ),
+            }
+            
+        return spec
+        
+    @property
+    def memory_spec(self):
+        return ChannelState(
+            output=True, 
+            queue=False,
+            noise=False,
+        )
     
     def init(self, *, key: Optional[Array] = None):
         input_init = jax.tree_map(

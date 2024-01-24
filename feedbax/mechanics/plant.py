@@ -6,9 +6,10 @@
 
 from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 import logging
-from typing import Callable, Dict, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -107,7 +108,7 @@ class SimplePlant(AbstractPlant):
     
     skeleton: AbstractSkeleton 
     clip_states: bool 
-    intervenors: Dict[str, AbstractIntervenor]
+    intervenors: Mapping[str, AbstractIntervenor]
     muscle_model: None = None
     
     def __init__(
@@ -175,7 +176,7 @@ class MuscledArm(AbstractPlant):
     l0: Float[Array, "muscles"] 
     f0: Float[Array, "muscles"] 
     
-    intervenors: Dict[str, AbstractIntervenor] 
+    intervenors: Mapping[str, AbstractIntervenor] 
     
     def __init__(
         self, 
@@ -190,7 +191,7 @@ class MuscledArm(AbstractPlant):
         l0=jnp.array((7.32, 3.26, 6.4, 4.26, 5.95, 4.04)),  # [cm]
         f0=1., #31.8 * jnp.array((22., 12., 18., 14., 5., 10.)),  # [N] = [N/cm^2] * [cm^2]
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                    Dict[str, Sequence[AbstractIntervenor]]]] \
+                                    Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
         *,
         key: Optional[jax.Array] = None,
@@ -252,7 +253,7 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def dynamics_spec(
         self
-    ) -> Dict[str, Tuple[eqx.Module, Callable, Callable]]:
+    ) -> Mapping[str, Tuple[eqx.Module, Callable, Callable]]:
         
         return dict({
             "muscle_activation": (

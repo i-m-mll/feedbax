@@ -56,7 +56,7 @@ tensorboard = [
     'crc32c',
 ]
 typing = [
-    'mypy',
+    'pyright',
     'typeguard',
 ]
 tests = [
@@ -66,6 +66,12 @@ tests = [
 
 [tool.setuptools]
 py-modules = ["feedbax"]
+
+[tool.pyright]
+include = ["feedbax"]
+exclude = ["**/__pycache__"]
+reportMissingImports = true
+reportMissingTypeStubs = true 
 
 [tool.black]
 

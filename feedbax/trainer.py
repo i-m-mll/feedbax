@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from functools import wraps
 import json 
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Sequence, Tuple, TypeVar
+from typing import Any, Optional, Tuple, TypeVar
 
 import equinox as eqx
 from equinox import field
@@ -122,7 +123,7 @@ class TaskTrainer(eqx.Module):
         key: jax.Array,
         where_train: Callable[[AbstractModel[StateT]], Any] = \
             lambda model: model,
-        batch_callbacks: Optional[Dict[int, Sequence[Callable]]] = None,
+        batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
         restore_checkpoint: bool = False,
         disable_tqdm = False,
@@ -604,7 +605,7 @@ def save(
     path: Optional[Path] = None,
     save_dir: Path = Path('.'),
     suffix: Optional[str] = None,
-):
+) -> Path:
     """Save a PyTree to disk along with hyperparameters.
     
     If a path is not specified, a filename will be generated from the current 
@@ -638,9 +639,9 @@ def save(
 
 def load(
     filename: Path | str, 
-    setup_func: Callable[[Any], PyTree[eqx.Module]],
-) -> PyTree[eqx.Module]:
-    """Setup a PyTree of equinox modules from stored state and hyperparameters.
+    setup_func: Callable[[Any], PyTree[eqx.Module | Any, 'T']],
+) -> PyTree[eqx.Module | Any, 'T']:
+    """Setup a PyTree from stored state and hyperparameters.
     
     TODO: 
     - Could provide a simple interface to show the most recently saved files in 

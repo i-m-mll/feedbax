@@ -35,15 +35,12 @@ TODO:
 # from __future__ import annotations
 
 from abc import abstractmethod
-from functools import cache, cached_property
+from collections.abc import Callable, Mapping, Sequence
+from functools import cached_property
 import logging
 from typing import (
-    Callable,
     ClassVar, 
-    Dict,
-    List, 
     Optional, 
-    Sequence,
     Tuple,
 )
 
@@ -152,14 +149,14 @@ class CompositeLoss(AbstractLoss):
     TODO:
     - Different aggregation schemes.
     """
-    terms: Dict[str, AbstractLoss]
-    weights: Dict[str, float]
+    terms: Mapping[str, AbstractLoss]
+    weights: Mapping[str, float]
     label: str 
     
     def __init__(
         self,
-        terms: Dict[str, AbstractLoss] | Sequence[AbstractLoss],
-        weights: Optional[Dict[str, float] | Sequence[float]] = None,
+        terms: Mapping[str, AbstractLoss] | Sequence[AbstractLoss],
+        weights: Optional[Mapping[str, float] | Sequence[float]] = None,
         label: str = "",
     ):
         self.label = label
@@ -179,8 +176,8 @@ class CompositeLoss(AbstractLoss):
             weights = list(weights.values())
             
         # Split into lists of data for simple and composite terms.
-        term_tuples_split: Tuple[List[Tuple[str, AbstractLoss, float]],
-                                 List[Tuple[str, AbstractLoss, float]]] 
+        term_tuples_split: Tuple[Sequence[Tuple[str, AbstractLoss, float]],
+                                 Sequence[Tuple[str, AbstractLoss, float]]] 
         term_tuples_split = eqx.partition(
             list(zip(labels, terms, weights)),
             lambda x: not isinstance(x[1], CompositeLoss),

@@ -9,17 +9,13 @@ TODO:
 """
 
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 import logging
 import math
 from typing import (
-    TYPE_CHECKING,
-    Callable, 
-    Dict, 
     Optional, 
     Protocol, 
-    Sequence, 
-    Tuple, 
     Type, 
     TypeVar,
     Union,
@@ -111,8 +107,8 @@ class NetworkState(AbstractModelState):
     - Rename to `RNNCellState`.
     """
     hidden: PyTree[Float[Array, "unit"]]
-    output: Optional[PyTree]
-    encoding: Optional[PyTree]
+    output: Optional[PyTree[Array]]
+    encoding: Optional[PyTree[Array]]
 
 
 class SimpleNetwork(AbstractStagedModel[NetworkState]):
@@ -132,7 +128,7 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
     readout: Optional[eqx.Module] = None
     out_nonlinearity: Optional[Callable[[Float], Float]] = None 
     
-    intervenors: Dict[str, AbstractIntervenor]
+    intervenors: Mapping[str, AbstractIntervenor]
 
     def __init__(
         self, 
@@ -148,7 +144,7 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
         noise_std: Optional[float] = None,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                    Dict[str, Sequence[AbstractIntervenor]]]] \
+                                    Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
         *,
         key: jax.Array, 
@@ -277,7 +273,7 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
                     lambda self: self._output,
                     lambda _, state: state.hidden,
                     lambda state: state.output,
-                )
+                ),
             }
         
         return spec
@@ -309,8 +305,7 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         )
 
 
-
-
+# TODO: Convert this to AbstractStagedModule
 class LeakyRNNCell(eqx.Module):
     """Custom `RNNCell` with persistent, leaky state.
     

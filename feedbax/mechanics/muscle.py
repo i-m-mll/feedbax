@@ -12,12 +12,13 @@ TODO:
 
 
 from abc import abstractmethod
+from collections.abc import Callable
 from functools import cached_property
 import logging 
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 import equinox as eqx
-from equinox import AbstractVar
+from equinox import AbstractVar, field
 import jax
 import jax.random as jr
 import jax.numpy as jnp
@@ -223,7 +224,7 @@ class VirtualMuscleForceLength(AbstractForceFunction):
 
 
 class AbstractVirtualMuscleShortenFactor(eqx.Module):
-    c_v: Tuple[float, float]
+    c_v: Tuple[float, float] = field(converter=tuple)
     
     @abstractmethod
     def __call__(self, length: Array) -> Array:

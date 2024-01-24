@@ -9,10 +9,11 @@ TODO:
 """
 
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 import io
 from itertools import zip_longest
 import logging 
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -253,7 +254,7 @@ def plot_planes(
 
 
 def plot_pos_vel_force_2D(
-    states: PyTree[Float[Array, "batch time ..."]],
+    states: PyTree[Float[Array, "batch time ..."] | Any],
     leaf_func: Optional[Callable] = None,
     endpoints: Optional[Tuple[Float[Array, "batch xy"],
                               Float[Array, "batch xy"]]] = None, 
@@ -336,7 +337,7 @@ def plot_pos_vel_force_2D(
 
 
 def plot_trajectories(
-    states_tree: PyTree[Float[Array, "batch time ..."]],
+    states: PyTree[Float[Array, "batch time ..."] | Any],
     labels: Optional[Tuple[str, str, str]] = None,
     cmap: str = 'tab10',
     fig=None, 
@@ -344,7 +345,7 @@ def plot_trajectories(
 ):
     """Plot trajectories of states.        
     """    
-    state_arrays = jtu.tree_leaves(states_tree, is_leaf=eqx.is_array)
+    state_arrays = jtu.tree_leaves(states, is_leaf=eqx.is_array)
     
     # TODO: clever row-col layout
     fig, axs = plt.subplots(1, len(state_arrays), figsize=(12, 6))
@@ -594,7 +595,7 @@ def plot_endpoint_pos_with_dists(
 
 def plot_speed_profiles(
     velocity: Float[Array, "batch time xy"], 
-    task_variables: Dict[str, Float[Array, "batch time"]] = dict(), 
+    task_variables: Mapping[str, Float[Array, "batch time"]] = dict(), 
     epoch_start_idxs: Optional[Int[Array, "batch epoch"]] = None,
     cmap: str = 'tab10',
     colors: Optional[Sequence[str | Tuple[float, ...]]] = None,

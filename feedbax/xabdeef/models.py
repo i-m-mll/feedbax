@@ -4,9 +4,10 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from collections.abc import Callable
 from functools import partial
 import logging
-from typing import Callable, Optional, Type
+from typing import Optional, Type
 
 import diffrax
 import equinox as eqx

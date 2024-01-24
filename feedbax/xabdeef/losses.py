@@ -1,6 +1,7 @@
 """Pre-built loss functions for common tasks."""
 
-from typing import Dict, Optional
+from collections.abc import Mapping
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -16,7 +17,7 @@ from feedbax.loss import (
 
 def simple_reach_loss(
     n_steps: int, 
-    loss_term_weights: Optional[Dict[str, float]] = None,
+    loss_term_weights: Optional[Mapping[str, float]] = None,
     discount_exp: int = 6,
 ):
     """A typical loss function for a simple reach task.

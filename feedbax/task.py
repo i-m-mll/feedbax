@@ -22,18 +22,13 @@ TODO:
 
 
 from abc import abstractmethod, abstractproperty
-from collections import OrderedDict
-from collections.abc import Mapping, Sequence
-from functools import cached_property, partial
+from collections.abc import Callable, Mapping
+from functools import cached_property
 import logging 
 from typing import (
     TYPE_CHECKING,
-    Any,
-    Callable, 
-    Dict, 
     Optional, 
     Tuple,
-    Type, 
     TypeVar,
 )
 
@@ -45,17 +40,11 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
-from feedbax.intervene import (
-    AbstractIntervenor, 
-    AbstractIntervenorInput, 
-    CurlFieldParams,
-    add_intervenors,
-)
+from feedbax.intervene import AbstractIntervenorInput
 
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax.model import ModelInput
 if TYPE_CHECKING:
-    from feedbax.model import AbstractStagedModel
     from feedbax.model import AbstractModel, AbstractModelState
     
 from feedbax.state import AbstractState, CartesianState2D
@@ -75,6 +64,7 @@ N_DIM = 2
 
 
 StateT = TypeVar("StateT", bound=AbstractState)
+
 
 @jtu.register_pytree_node_class
 class InitSpecDict(AbstractTransformedOrderedDict[
@@ -114,23 +104,32 @@ class InitSpecDict(AbstractTransformedOrderedDict[
     Optimizations should focus on `get_where_str`.
     """
     
-    def _key_transform(self, key):
+    def _key_transform(self, key: str | Callable) -> str:
         if isinstance(key, Callable):
             return get_where_str(key)
         return key
+    
+    def __repr__(self):
+        # Make a pretty representation of the lambdas
+        items_str = ', '.join(
+            f"(lambda state: state{'.' if k else ''}{k}, {v})" 
+            for k, (_, v) in self.store.items()
+        )
+        return f"{type(self).__name__}([{items_str}])"
 
 
 class AbstractTaskInput(eqx.Module):
-    #intervenors: AbstractVar[Dict[str, jax.Array]]
+    #intervenors: AbstractVar[Mapping[str, jax.Array]]
     ...
+
 
 class AbstractTaskTrialSpec(eqx.Module):
     init: AbstractVar[InitSpecDict]
     # init: OrderedDict[Callable[["AbstractModelState"], PyTree[Array]], 
     #                        PyTree[Array]]
     input: AbstractVar[AbstractTaskInput]
-    target: AbstractVar[PyTree]
-    intervene: AbstractVar[Optional[Dict[str, jax.Array]]] 
+    target: AbstractVar[PyTree[Array]]
+    intervene: AbstractVar[Optional[Mapping[str, Array]]] 
 
 
 class SimpleReachTaskInput(AbstractTaskInput):
@@ -152,7 +151,7 @@ class ReachTrialSpec(AbstractTaskTrialSpec):
     #                        CartesianState2D] 
     input: AbstractTaskInput
     target: CartesianState2D
-    intervene: Dict[str, jax.Array] = field(default_factory=dict)
+    intervene: Mapping[str, jax.Array] = field(default_factory=dict)
     
     @cached_property
     def goal(self):
@@ -537,7 +536,7 @@ class RandomReaches(AbstractTask):
 
 class DelayTaskInput(eqx.Module):
     stim: PyTree[Float[Array, "time ..."]]
-    hold: Int[Array, "time 1"]
+    hold: Int[Array, "time 1"]  # TODO: do these need to be typed as column vectors, here?
     stim_on: Int[Array, "time 1"]
 
 

@@ -34,6 +34,6 @@ def save_checkpoint(
 def load_checkpoint(
     filepath: Union[str, Path],
     like: PyTree,
-) -> Tuple[PyTree, Optional[PyTree], Optional[PyTree]]:
+) -> PyTree:
     with open(filepath, 'rb') as f:
         return eqx.tree_deserialise_leaves(f, like)
