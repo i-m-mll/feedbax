@@ -27,7 +27,7 @@ TODO:
       that have an identical structure.
 - L2 by default, but should allow for other norms
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 

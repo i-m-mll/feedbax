@@ -13,7 +13,7 @@ TODO:
     - Also, the way `seq` and `seqs` are generated is similar to `states` in 
       `Iterator.init`...
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
 
@@ -48,7 +48,7 @@ import numpy as np
 from feedbax.intervene import (
     AbstractIntervenor, 
     AbstractIntervenorInput, 
-    CurlForceFieldParams,
+    CurlFieldParams,
     add_intervenors,
 )
 

@@ -1,6 +1,6 @@
 """Models that iterate other state-updating models.
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 
@@ -208,7 +208,7 @@ class SimpleIterator(AbstractIterator[StateT]):
             input, key = args
             state = self.step(input, state, key)
             return state, state
-        
+                
         _, states = lax.scan(
             step,
             state, 

@@ -1,6 +1,6 @@
 """Basic API providing pre-built models.
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 
@@ -97,6 +97,8 @@ def point_mass_NN(
     encoding_size: Optional[int] = None,
     n_steps: int = 100, 
     feedback_delay_steps: int = 0,
+    feedback_noise_std: float = 0.0,
+    motor_noise_std: float = 0.0,  # TODO
     out_nonlinearity: Callable = lambda x: x,
 ):
     """From nb8"""
@@ -115,6 +117,7 @@ def point_mass_NN(
             state.plant.skeleton.vel,
         ),
         delay=feedback_delay_steps,
+        noise_std=feedback_noise_std,
     )
     
     # automatically determine network input size

@@ -7,7 +7,7 @@ TODO:
 - Maybe this should be renamed... mainly because it might be confused with 
 `AbstractTask` in terms of its purpose.
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 
@@ -507,7 +507,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return SimpleFeedbackState(
             mechanics=self.mechanics.memory_spec, 
             network=self.net.memory_spec,
-            feedback=ChannelState(output=True, queue=False)
+            feedback=ChannelState(output=True, queue=False, noise=False)
         )
 
     @staticmethod
@@ -549,8 +549,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         is less problematic than passing all zeros.
         
         TODO: 
-        - Check which of the two is initialized, and update the other one.
+        - Check which of the two (effector or config) initialized, and update the other one.
           Might require initializing them to NaN or something in `init`.
+        - Only initialize feedback channels whose *queues* are NaN, don't just check if 
+          the entire channel is NaN and updated all-or-none of them.
         """
         state = eqx.tree_at(
             lambda state: state.mechanics.plant.skeleton,

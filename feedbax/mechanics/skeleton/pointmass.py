@@ -1,6 +1,6 @@
 """Modules defining continuous linear dynamical systems.
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
 

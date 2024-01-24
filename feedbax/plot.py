@@ -4,7 +4,7 @@ TODO:
 - Some vmap-like option for plotting batches of trials on a single axis?
 - Optional `fig` or `ax` argument that overrides figure generation
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
 
@@ -442,6 +442,8 @@ def plot_activity_sample_units(
 
     for j in range(cols):
         axs[-1][-j-1].set_xlabel(xlabel)
+        
+    return fig, axs
         
 
 def plot_losses(

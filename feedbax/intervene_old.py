@@ -3,7 +3,7 @@
 TODO:
 - The type signature is backwards, compared to `AbstractModel`.
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 
@@ -55,10 +55,6 @@ class AbstractIntervenor(eqx.Module, Generic[StateT]):
       `_get_substate_to_add` in `AbstractAdditiveIntervenor` serve a similar 
       role and have the same signature, but are defined separately for the 
       sake of clearer naming.
-      
-    TODO:
-    - Should `Intervenor` only operate on a specific array in a state PyTree?    
-      That is, should `_out` and `_in` return `Array` instead of `PyTree`?
     """
     
     label: AbstractVar[str]
@@ -190,7 +186,7 @@ class EffectorVelDepForceField(AbstractAdditiveIntervenor):
         return rot_forces + expand_force
     
 
-class EffectorCurlForceField(AbstractAdditiveIntervenor["MechanicsState"]):
+class CurlField(AbstractAdditiveIntervenor["MechanicsState"]):
     """Apply a curl force field to an effector.
     
     Positive amplitude corresponds to a counterclockwise curl, in keeping

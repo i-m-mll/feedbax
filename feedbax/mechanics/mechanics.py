@@ -4,7 +4,7 @@ TODO:
 - Maybe use generics for `MechanicsState.system`, e.g. so we can type 
   `system_state`
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 

@@ -6,7 +6,7 @@ TODO:
 - Y and l_eff filters. See `_Y_field` and `_l_eff_field` methods.
 - None of the simplified models I'm citing implement these.
   
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
 
