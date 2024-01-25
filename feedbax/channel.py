@@ -59,7 +59,8 @@ class Channel(AbstractStagedModel[ChannelState]):
                 Mapping[str, Sequence[AbstractIntervenor]]]
             ] = None,
     ):
-        self.delay = delay 
+        # TODO: Allow the delay to actually be 0 (i.e. return the input immediately; queue is always empty)
+        self.delay = delay + 1  # otherwise when delay=0, nothing is stored
         self.noise_std = noise_std
         self.init_value = init_value
         self.input_proto = input_proto

@@ -50,7 +50,6 @@ if TYPE_CHECKING:
 from feedbax.state import AbstractState, CartesianState2D
 from feedbax.utils import (
     AbstractTransformedOrderedDict, 
-    get_unique_label, 
     internal_grid_points, 
     get_where_str,
     tree_call,
