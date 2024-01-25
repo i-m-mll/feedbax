@@ -28,7 +28,7 @@ from jaxtyping import Array, PyTree
 import numpy as np
 
 from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput
-from feedbax.utils import tree_pformat_indent
+from feedbax.utils import random_split_like_tree, tree_pformat_indent
 
 if TYPE_CHECKING:
     from feedbax.task import AbstractTaskInput
@@ -45,6 +45,7 @@ class AbstractModelState(eqx.Module):
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
 
+# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractModelState, Array])
 
 class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     """
@@ -106,11 +107,75 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     ) -> StateT:
         """Return an initial state for the model."""
         ...
-    
+
+
 
 class ModelInput(eqx.Module):
     input: "AbstractTaskInput"
     intervene: Mapping[AbstractIntervenorInput]
+
+   
+
+class MultiModel(AbstractModel[StateT]):
+    """  """
+    
+    models: PyTree[AbstractModel[StateT], 'T']
+    
+    def __call__(
+        self,
+        inputs: ModelInput,
+        states: PyTree[StateT, 'T'], 
+        key: Array,
+    ) -> StateT:
+
+        return jax.tree_map(
+            lambda model, input, state, key: model(ModelInput(input, inputs.intervene), state, key),
+            self.models,
+            inputs.input,
+            states,
+            self._get_keys(key),
+            is_leaf=lambda x: isinstance(x, AbstractModel),
+        )
+        
+    def init(
+        self,
+        *,
+        key: Optional[jax.Array] = None,
+    ) -> StateT:
+        return jax.tree_map(
+            lambda model, key: model.init(key=key),
+            self.models,
+            self._get_keys(key),
+            is_leaf=lambda x: isinstance(x, AbstractModel),
+        )
+    
+    def _step(self):
+        return self
+        
+    def _get_keys(self, key):
+        return random_split_like_tree(
+            key, 
+            target=self.models, 
+            is_leaf=lambda x: isinstance(x, AbstractModel)
+        )
+   
+
+
+class ModelStageSpec(eqx.Module, Generic[StateT]):
+    """Specification for a stage in a subclass of `AbstractStagedModel`.
+    
+    To ensure that references remain fresh, `callable` takes a single argument,
+    the instance of `AbstractStagedModel` (i.e. `self`), and typically returns 
+    either an `eqx.Module` owned by that instance, or a method of a module. 
+    However, it may be any callable/function with the appropriate signature. 
+    """
+    callable: Callable[
+        ["AbstractStagedModel[StateT]"], 
+        Callable[[Union[ModelInput, PyTree[Array]], StateT, Array], StateT]
+    ]
+    where_input: Callable[["AbstractTaskInput", StateT], PyTree]
+    where_state: Callable[[StateT], PyTree]
+    intervenors: Optional[Sequence[AbstractIntervenor]] = None
 
 
 class AbstractStagedModel(AbstractModel[StateT]):
@@ -141,25 +206,23 @@ class AbstractStagedModel(AbstractModel[StateT]):
         self, 
         input: ModelInput,
         state: StateT, 
-        key: jax.Array,
+        key: Array,
     ) -> StateT:
         
         with jax.named_scope(type(self).__name__):
             
             keys = jr.split(key, len(self._stages))
             
-            for label, key in zip(self._stages, keys):
-                intervenors, module, module_input, substate_where = \
-                    self._stages[label]
+            for (label, spec), key in zip(self._stages.items(), keys):
                 
                 key1, key2 = jr.split(key)
                 
                 if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
                     debug_strs = [tree_pformat_indent(x, indent=4) for x in 
                         (
-                            module(self),
-                            module_input(input, state),
-                            substate_where(state),
+                            spec.callable(self),
+                            spec.where_input(input, state),
+                            spec.where_state(state),
                         )
                     ]
                     
@@ -171,29 +234,29 @@ class AbstractStagedModel(AbstractModel[StateT]):
                         f"Substate:\n{debug_strs[2]}\n"
                     )                  
                 
-                for intervenor in intervenors:
+                for intervenor in spec.intervenors:
                     if intervenor.label in input.intervene:
                         params = input.intervene[intervenor.label]
                     else:
                         params = None
                     state = intervenor(params, state, key=key1)
                 
-                callable = module(self)
-                subinput = module_input(input.input, state)
+                callable = spec.callable(self)
+                subinput = spec.where_input(input.input, state)
                 
                 # TODO: What's a less hacky way of doing this?
                 # I was trying to avoid introducing additional parameters to `AbstractStagedModel.__call__`
-                if isinstance(callable, AbstractStagedModel):
+                if isinstance(callable, AbstractModel):
                     callable_input = ModelInput(subinput, input.intervene)
                 else:
                     callable_input = subinput
                 
                 state = eqx.tree_at(
-                    substate_where, 
+                    spec.where_state, 
                     state, 
                     callable(
                         callable_input, 
-                        substate_where(state), 
+                        spec.where_state(state), 
                         key=key2,
                     ),
                 )
@@ -201,48 +264,44 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return state
 
     @abstractproperty
-    def model_spec(self) -> OrderedDict[str, Tuple[
-        eqx.Module,
-        Callable[["AbstractTaskInput", StateT], PyTree],
-        Callable[[StateT], PyTree],
-    ]]:
+    def model_spec(self) -> OrderedDict[str, ModelStageSpec]:
         """Specifies the model in terms of substate operations.
         
-        Each tuple in the dict has the following elements:
+        Each entry in the dict has the following elements:
         
             1. A callable (e.g. an `eqx.Module` or method) that takes `input`
-               and a substate of the model state and returns an updated 
-               substate;
+               and a substate of the model state, and returns an updated copy of 
+               that substate.
             2. A function that selects the parts of the model input and state 
-               PyTrees that are passed to the module, i.e. its `input`; and
-            3. A function that selects the part of the model state PyTree to 
-               be updated, i.e. the part of the model state passed as the
-               second (`state`) argument to the callable, and updated by the
-               PyTree returned by the callable.
+               PyTrees that are passed to the module as its `input`. Note that 
+               parts of the state PyTree can also be passed, because they may
+               be inputs to the model stage but should not be part of the state 
+               update associated with the model stage.
+            3. A function that selects the substate PyTree out of the `StateT`
+               PyTree; i.e. the `state` passed to the module, which then returns a
+               PyTree with the same structure and array shapes/dtypes.
                
-        It's necessary to use `OrderedDict` because `jax.tree_util` still
-        sorts `dict` keys, and we can't have that.
+        Note: It's still necessary to use `OrderedDict` because `jax.tree_util`
+        sorts `dict` keys, which puts our stages out of order.
         """
         ...
   
     @cached_property 
-    def _stages(self) -> Tuple[Tuple[
-        Sequence[AbstractIntervenor],
-        eqx.Module,
-        Callable[["AbstractTaskInput", StateT], PyTree],
-        Callable[[StateT], PyTree],
-    ]]: 
-        """Zips up the user-defined intervenors with `model_spec`."""
-        #! should not be referred to in `__init__`, at least before defining `intervenors`
+    def _stages(self) -> OrderedDict[str, ModelStageSpec]: 
+        """Zips up the user-defined intervenors with `model_spec`.
+        
+        This should not be referred to in `__init__` before assigning `self.intervenors`!
+        """
+        
         return jax.tree_map(
-            lambda x, y: (y,) + x, 
+            lambda x, y: eqx.tree_at(lambda x: x.intervenors, x, y),
             self.model_spec, 
             jax.tree_map(tuple, self.intervenors, 
                          is_leaf=lambda x: isinstance(x, list)),
-            is_leaf=lambda x: isinstance(x, tuple),
+            is_leaf=lambda x: isinstance(x, ModelStageSpec),
         )
     
-    # TODO: I'm not sure this needs to be here. Can't we just stick to `add_intervenors`?
+    # TODO: I'm not sure we need to add intervenors, here.
     def _get_intervenors_dict(
         self, intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                           Mapping[str, Sequence[AbstractIntervenor]]]]
@@ -250,7 +309,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         intervenors_dict = jax.tree_map(
             lambda _: [], 
             self.model_spec,
-            is_leaf=lambda x: isinstance(x, tuple),
+            is_leaf=lambda x: isinstance(x, ModelStageSpec),
         )
         
         if intervenors is not None:
@@ -339,12 +398,13 @@ def model_spec_format(
     def get_spec_strs(model: AbstractStagedModel):
         spec_strs = []
 
-        for label, (intervenors, module_func, _, _) in model._stages.items():
+        for label, stage_spec in model._stages.items():
             intervenor_str = ''.join([
-                f"intervenor: {type(intervenor).__name__}\n" for intervenor in intervenors
+                f"intervenor: {type(intervenor).__name__}\n" 
+                for intervenor in stage_spec.intervenors
             ])
 
-            callable = module_func(model)
+            callable = stage_spec.callable(model)
             
             # Get a meaningful label for `BoundMethod`s
             if (func := getattr(callable, '__func__', None)) is not None:

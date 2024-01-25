@@ -18,7 +18,7 @@ import jax.random as jr
 from jaxtyping import Array, PyTree 
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractStagedModel
+from feedbax.model import AbstractStagedModel, ModelStageSpec
 
 
 logger = logging.getLogger(__name__)
@@ -69,24 +69,10 @@ class Channel(AbstractStagedModel[ChannelState]):
         if not isinstance(self.delay, int):
             raise ValueError("Delay must be an integer")
     
-    # @jax.named_scope("fbx.Channel")
-    # def __call__(self, input, state, key):             
-    #     queue = state.queue[1:] + (input,)
-    #     output = state.queue[0]
-    #     if self.noise_std is not None:
-    #         noise = jax.tree_map(
-    #             lambda x: self.noise_std * jr.normal(key, x.shape),
-    #             output,
-    #         )
-    #         output = jax.tree_map(lambda x, y: x + y, output, noise)
-    #     else:
-    #         noise = None
-    #     return ChannelState(output, queue, noise)
-    
     def _update_queue(self, input, state, *, key):
-        return (
-            state.queue[0], 
-            state.queue[1:] + (input,),
+        return ChannelState(
+            output=state.queue[0], 
+            queue=state.queue[1:] + (input,),
         )
         
     def _add_noise(self, input, state, *, key):
@@ -94,25 +80,25 @@ class Channel(AbstractStagedModel[ChannelState]):
             lambda x: self.noise_std * jr.normal(key, x.shape),
             input,
         )
-        output = jax.tree_map(lambda x, y: x + y, state.output, noise)
+        output = jax.tree_map(lambda x, y: x + y, input, noise)
         return noise, output
     
     @property
     def model_spec(self):
         spec = OrderedDict({
-            "update_queue": (
-                lambda self: self._update_queue,
-                lambda input, state: input, 
-                lambda state: (state.output, state.queue),
+            "update_queue": ModelStageSpec(
+                callable=lambda self: self._update_queue,
+                where_input=lambda input, state: input, 
+                where_state=lambda state: state,
             ),            
         })
         
         if self.noise_std is not None:
             spec |= {
-                "add_noise": (
-                    lambda self: self._add_noise,
-                    lambda input, state: state.output,
-                    lambda state: (state.noise, state.output),
+                "add_noise": ModelStageSpec(
+                    callable=lambda self: self._add_noise,
+                    where_input=lambda input, state: state.output,
+                    where_state=lambda state: (state.noise, state.output),
                 ),
             }
             

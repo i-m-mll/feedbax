@@ -22,7 +22,7 @@ from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
-from feedbax.model import AbstractStagedModel, AbstractModelState
+from feedbax.model import AbstractStagedModel, AbstractModelState, ModelStageSpec
 from feedbax.state import StateBounds, clip_state
 
 
@@ -137,10 +137,10 @@ class SimplePlant(AbstractPlant):
     def model_spec(self):
         """Simple plants have no state updates apart from the skeletal ODE."""
         return OrderedDict({
-            "clip_skeleton_state": (
-                lambda self: self._clip_state,
-                lambda input, state: self.bounds.skeleton,
-                lambda state: state.skeleton,
+            "clip_skeleton_state": ModelStageSpec(
+                callable=lambda self: self._clip_state,
+                where_input=lambda input, state: self.bounds.skeleton,
+                where_state=lambda state: state.skeleton,
             ),
         })
         
@@ -219,34 +219,34 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def model_spec(self):
         return OrderedDict({
-            "clip_skeleton_state": (
-                lambda self: self._clip_state,
-                lambda input, state: self.bounds.skeleton,
-                lambda state: state.skeleton,
+            "clip_skeleton_state": ModelStageSpec(
+                callable=lambda self: self._clip_state,
+                where_input=lambda input, state: self.bounds.skeleton,
+                where_state=lambda state: state.skeleton,
             ),
-            "muscle_geometry": (
-                lambda self: self._muscle_geometry,
-                lambda input, state: state.skeleton,
-                lambda state: (
+            "muscle_geometry": ModelStageSpec(
+                callable=lambda self: self._muscle_geometry,
+                where_input=lambda input, state: state.skeleton,
+                where_state=lambda state: (
                     state.muscles.length,
                     state.muscles.velocity,
                 ),
             ),
-            "clip_muscle_state": (
+            "clip_muscle_state": ModelStageSpec(
                 # Activation shouldn't be below 0, and length has an UB.
-                lambda self: self._clip_state,
-                lambda input, state: self.bounds.muscles,
-                lambda state: state.muscles,
+                callable=lambda self: self._clip_state,
+                where_input=lambda input, state: self.bounds.muscles,
+                where_state=lambda state: state.muscles,
             ),
-            "muscle_tension": (
-                lambda self: self.muscle_model,
-                lambda input, state: state.muscles.activation,
-                lambda state: state.muscles,
+            "muscle_tension": ModelStageSpec(
+                callable=lambda self: self.muscle_model,
+                where_input=lambda input, state: state.muscles.activation,
+                where_state=lambda state: state.muscles,
             ),
-            "muscle_torques": (
-                lambda self: self._muscle_torques,
-                lambda input, state: state.muscles,
-                lambda state: state.skeleton.torque,
+            "muscle_torques": ModelStageSpec(
+                callable=lambda self: self._muscle_torques,
+                where_input=lambda input, state: state.muscles,
+                where_state=lambda state: state.skeleton.torque,
             ),
         })
     

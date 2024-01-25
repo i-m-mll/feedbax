@@ -15,9 +15,10 @@ import jax
 import jax.random as jr
 import optax
 
+from feedbax.bodies import SimpleFeedback
 from feedbax.channel import ChannelState
 from feedbax.mechanics.plant import SimplePlant
-from feedbax.model import AbstractModel, SimpleFeedback
+from feedbax.model import AbstractModel
 from feedbax.iterate import Iterator, SimpleIterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass

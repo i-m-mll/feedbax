@@ -24,7 +24,7 @@ from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractStagedModel, AbstractModelState, wrap_stateless_callable
+from feedbax.model import AbstractStagedModel, AbstractModelState, ModelStageSpec, wrap_stateless_callable
 from feedbax.state import CartesianState2D, StateBounds
 
 
@@ -78,27 +78,27 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     @property
     def model_spec(self):
         return OrderedDict({
-            "convert_effector_force": (
-                lambda self: self.plant.skeleton.update_state_given_effector_force,
-                lambda input, state: state.effector.force,
-                lambda state: state.plant.skeleton,
+            "convert_effector_force": ModelStageSpec(
+                callable=lambda self: self.plant.skeleton.update_state_given_effector_force,
+                where_input=lambda input, state: state.effector.force,
+                where_state=lambda state: state.plant.skeleton,
             ),
-            "statics_step": (  
+            "statics_step": ModelStageSpec(  
                 # the `plant` module directly implements non-ODE operations 
-                lambda self: self.plant,
-                lambda input, state: input,
-                lambda state: state.plant,
+                callable=lambda self: self.plant,
+                where_input=lambda input, state: input,
+                where_state=lambda state: state.plant,
             ),
-            "dynamics_step": (
-                lambda self: self._dynamics_step,
-                lambda input, state: input,
-                lambda state: state,
+            "dynamics_step": ModelStageSpec(
+                callable=lambda self: self._dynamics_step,
+                where_input=lambda input, state: input,
+                where_state=lambda state: state,
             ),
-            "get_effector": (
-                lambda self: \
+            "get_effector": ModelStageSpec(
+                callable=lambda self: \
                     wrap_stateless_callable(self.plant.skeleton.effector, pass_key=False),
-                lambda input, state: state.plant.skeleton,
-                lambda state: state.effector,
+                where_input=lambda input, state: state.plant.skeleton,
+                where_state=lambda state: state.effector,
             )
         })
 

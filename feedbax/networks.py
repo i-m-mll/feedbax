@@ -33,7 +33,8 @@ from jaxtyping import Array, Float, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import (
     AbstractStagedModel, 
-    AbstractModelState, 
+    AbstractModelState,
+    ModelStageSpec, 
     wrap_stateless_callable,
 )
 from feedbax.utils import interleave_unequal, n_positional_args  
@@ -228,51 +229,52 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
             
         if self.encoder is None:
             spec = OrderedDict({
-                'hidden': (
-                    hidden_module,
-                    lambda input, _: ravel_pytree(input)[0],
-                    lambda state: state.hidden,
+                'hidden': ModelStageSpec(
+                    callable=hidden_module,
+                    where_input=lambda input, _: ravel_pytree(input)[0],
+                    where_state=lambda state: state.hidden,
                 ),
             })
         else:
             spec = OrderedDict({
-                'encoder': (
-                    lambda self: self._encode,
-                    lambda input, _: ravel_pytree(input)[0],
-                    lambda state: state.encoding,
+                'encoder': ModelStageSpec(
+                    callable=lambda self: self._encode,
+                    where_input=lambda input, _: ravel_pytree(input)[0],
+                    where_state=lambda state: state.encoding,
                 ),
-                'hidden': (
-                    hidden_module,
-                    lambda input, state: state.encoding,
-                    lambda state: state.hidden,
+                'hidden': ModelStageSpec(
+                    callable=hidden_module,
+                    where_input=lambda input, state: state.encoding,
+                    where_state=lambda state: state.hidden,
                 ),
             }) 
         
         if self.hidden_nonlinearity is not None:
             spec |= {
-                'hidden_nonlinearity': (
-                    lambda self: lambda input, state, key: \
-                        self.hidden_nonlinearity(state),
-                    lambda input, state: None,
-                    lambda state: state.hidden,
+                'hidden_nonlinearity': ModelStageSpec(
+                    callable=lambda self: \
+                        lambda input, state, *, key: \
+                            self.hidden_nonlinearity(state),
+                    where_input=lambda input, state: None,
+                    where_state=lambda state: state.hidden,
                 ),
             }
         
         if self.noise_std is not None:
             spec |= {
-                'hidden_noise': (
-                    lambda self: self._add_state_noise,
-                    lambda _, state: state.hidden,
-                    lambda state: state.hidden,
+                'hidden_noise': ModelStageSpec(
+                    callable=lambda self: self._add_state_noise,
+                    where_input=lambda _, state: state.hidden,
+                    where_state=lambda state: state.hidden,
                 ),
             }
         
         if self.readout is not None:
             spec |= {
-                'readout': (
-                    lambda self: self._output,
-                    lambda _, state: state.hidden,
-                    lambda state: state.output,
+                'readout': ModelStageSpec(
+                    callable=lambda self: self._output,
+                    where_input=lambda _, state: state.hidden,
+                    where_state=lambda state: state.output,
                 ),
             }
         

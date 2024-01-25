@@ -5,7 +5,8 @@
 """
 
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence 
+from collections.abc import Callable, Mapping, Sequence
+from functools import cached_property 
 import logging
 from typing import Any, Optional, Union
 
@@ -18,7 +19,7 @@ from jaxtyping import Array, PyTree
 
 from feedbax.channel import Channel, ChannelState
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModel, AbstractModelState, AbstractStagedModel
+from feedbax.model import AbstractModel, AbstractModelState, AbstractStagedModel, ModelStageSpec, MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
 from feedbax.task import AbstractTask
@@ -147,6 +148,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         )
         
     @property
+    def _feedback_module(self):
+        return MultiModel(self.feedback_channels)
+        
+    @property
     def model_spec(self):
         """Specifies the stages of the model in terms of state operations.
         
@@ -155,14 +160,18 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         I'm not sure why the references are kept across model updates...
         """
         return OrderedDict({
-            'update_feedback': (
-                lambda self: self.update_feedback,  
-                lambda input, state: state.mechanics,  
-                lambda state: state.feedback,  
+            'update_feedback': ModelStageSpec(
+                callable=lambda self: self._feedback_module,  
+                where_input=lambda input, state: jax.tree_map(
+                    lambda spec: spec.where(state.mechanics),
+                    self.feedback_specs, 
+                    is_leaf=lambda x: isinstance(x, FeedbackSpec),
+                ),
+                where_state=lambda state: state.feedback,  
             ),
-            'nn_step': (
-                lambda self: self.net,
-                lambda input, state: (
+            'nn_step': ModelStageSpec(
+                callable=lambda self: self.net,
+                where_input=lambda input, state: (
                     input, 
                     jax.tree_map(
                         lambda state: state.output,
@@ -170,12 +179,12 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                         is_leaf=lambda x: isinstance(x, ChannelState),
                     ),
                 ),
-                lambda state: state.network,                
+                where_state=lambda state: state.network,                
             ),
-            'mechanics_step': (
-                lambda self: self.mechanics,
-                lambda input, state: state.network.output,
-                lambda state: state.mechanics,
+            'mechanics_step': ModelStageSpec(
+                callable=lambda self: self.mechanics,
+                where_input=lambda input, state: state.network.output,
+                where_state=lambda state: state.mechanics,
             ),
         })       
 
@@ -191,16 +200,14 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
           available, which may be the case for simpler modules. The 
           `model_spec` could be used to determine the relevant info flow.
         """
-        mechanics_state = self.mechanics.init()
+        keys = jr.split(key, 3) 
+        
+        mechanics_state = self.mechanics.init(key=keys[0])
 
         return SimpleFeedbackState(
             mechanics=mechanics_state,
-            network=self.net.init(),
-            feedback=jax.tree_map(
-                lambda channel: channel.init(),
-                self.feedback_channels,
-                is_leaf=lambda x: isinstance(x, Channel),
-            ),
+            network=self.net.init(key=keys[1]),
+            feedback=self._feedback_module.init(key=keys[2]),
         )
     
     @property

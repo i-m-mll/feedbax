@@ -51,10 +51,10 @@ from feedbax.state import AbstractState, CartesianState2D
 from feedbax.utils import get_unique_label, tree_call
 
 if TYPE_CHECKING:
+    from feedbax.bodies import SimpleFeedback
     from feedbax.model import (
         AbstractModel, 
         AbstractStagedModel, 
-        SimpleFeedback,
     )
     from feedbax.mechanics.mechanics import MechanicsState
     from feedbax.networks import NetworkState

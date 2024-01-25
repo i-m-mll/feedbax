@@ -387,14 +387,14 @@ def tree_set_idx(
 #     )
 #     return eqx.combine(arrays_update, other_update)
 
-def random_split_like_tree(rng_key, target=None, treedef=None):
+def random_split_like_tree(key, target=None, treedef=None, is_leaf=None):
     """Generate a split of PRNG keys with a target PyTree structure.
     
     See https://github.com/google/jax/discussions/9508#discussioncomment-2144076
     """
     if treedef is None:
-        treedef = jax.tree_structure(target)
-    keys = jax.random.split(rng_key, treedef.num_leaves)
+        treedef = jax.tree_structure(target, is_leaf=is_leaf)
+    keys = jr.split(key, treedef.num_leaves)
     return jax.tree_unflatten(treedef, keys)
 
 
