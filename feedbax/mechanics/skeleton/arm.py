@@ -18,7 +18,7 @@ import numpy as np
 
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
 from feedbax.state import CartesianState2D, StateBounds
-from feedbax.utils import SINCOS_GRAD_SIGNS, corners_2d
+from feedbax.misc import SINCOS_GRAD_SIGNS, corners_2d
 
 
 logger = logging.getLogger(__name__)

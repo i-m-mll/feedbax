@@ -23,6 +23,7 @@ TODO:
 
 from abc import abstractmethod, abstractproperty
 from collections.abc import Callable, Mapping
+import dis
 from functools import cached_property
 import logging 
 from typing import (
@@ -43,17 +44,13 @@ import numpy as np
 from feedbax.intervene import AbstractIntervenorInput
 
 from feedbax.loss import AbstractLoss, LossDict
+from feedbax.mapping import AbstractTransformedOrderedDict
 from feedbax.model import ModelInput
 if TYPE_CHECKING:
     from feedbax.model import AbstractModel, AbstractModelState
     
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.utils import (
-    AbstractTransformedOrderedDict, 
-    internal_grid_points, 
-    get_where_str,
-    tree_call,
-)
+from feedbax.tree import tree_call
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +60,24 @@ N_DIM = 2
 
 
 StateT = TypeVar("StateT", bound=AbstractState)
+
+
+def get_where_str(where_func: Callable) -> str:
+    """
+    Given a function that accesses a tree of attributes of a single parameter, 
+    return a string repesenting the attributes.
+    
+    This is useful for getting a unique string representation of a substate 
+    of an `AbstractState` or `AbstractModel` object, as defined by a `where`
+    function, so we can compare two such functions and see if they refer to 
+    the same substate.
+    
+    TODO:
+    - I'm not sure it's best practice to introspect on bytecode like this.
+    """
+    bytecode = dis.Bytecode(where_func)
+    return '.'.join(instr.argrepr for instr in bytecode
+                    if instr.opname == "LOAD_ATTR")
 
 
 @jtu.register_pytree_node_class
@@ -391,6 +406,20 @@ def _pos_only_states(
     )
     
     return states
+
+
+def internal_grid_points(
+    bounds: Float[Array, "bounds=2 ndim=2"], 
+    n: int = 2
+):
+    """Generate an even grid of points inside the given bounds.
+    
+    e.g. if bounds=((0, 0), (9, 9)) and n=2 the return value will be
+    Array([[3., 3.], [6., 3.], [3., 6.], [6., 6.]]).
+    """
+    ticks = jax.vmap(lambda b: jnp.linspace(*b, n + 2)[1:-1])(bounds.T)
+    points = jnp.vstack(jax.tree_map(jnp.ravel, jnp.meshgrid(*ticks))).T
+    return points
 
 
 def _centerout_endpoints_grid(

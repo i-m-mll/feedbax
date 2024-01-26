@@ -23,7 +23,7 @@ from feedbax.model import AbstractModel, AbstractModelState, AbstractStagedModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
 from feedbax.task import AbstractTask
-from feedbax.utils import tree_sum_n_features
+from feedbax.tree import tree_sum_n_features
 
 
 logger = logging.getLogger(__name__)

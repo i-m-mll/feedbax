@@ -175,7 +175,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         
         See `get_model` in notebook 8.
         """
-        # utils.tree_sum_n_features
+        # tree.tree_sum_n_features
         ...
       
 

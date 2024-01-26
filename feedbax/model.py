@@ -8,7 +8,7 @@ from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 import copy
-from functools import cached_property, wraps
+from functools import cached_property, partial, wraps
 import logging
 import os
 from typing import (
@@ -16,7 +16,8 @@ from typing import (
     Generic, 
     Optional, 
     Tuple,
-    TypeVar, 
+    TypeVar,
+    TypeVarTuple, 
     Union,
 )
 
@@ -28,7 +29,8 @@ from jaxtyping import Array, PyTree
 import numpy as np
 
 from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput
-from feedbax.utils import random_split_like_tree, tree_pformat_indent
+from feedbax.tree import random_split_like_tree
+from feedbax.misc import indent_str
 
 if TYPE_CHECKING:
     from feedbax.task import AbstractTaskInput
@@ -218,12 +220,14 @@ class AbstractStagedModel(AbstractModel[StateT]):
                 key1, key2 = jr.split(key)
                 
                 if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
-                    debug_strs = [tree_pformat_indent(x, indent=4) for x in 
-                        (
-                            spec.callable(self),
-                            spec.where_input(input, state),
-                            spec.where_state(state),
-                        )
+                    debug_strs = [
+                        indent_str(eqx.tree_pformat(x), indent=4) 
+                        for x in 
+                            (
+                                spec.callable(self),
+                                spec.where_input(input, state),
+                                spec.where_state(state),
+                            )
                     ]
                     
                     logger.debug(
@@ -428,3 +432,22 @@ def model_spec_format(
     
     return nl.join(get_spec_strs(model))
 
+
+Ts = TypeVarTuple("Ts")
+
+
+def get_model_ensemble(
+    get_model: Callable[[jax.Array, *Ts], eqx.Module], 
+    n_replicates: int, 
+    *args: *Ts, 
+    key: jax.Array
+) -> eqx.Module:
+    """Helper to vmap model generation over a set of PRNG keys.
+    
+    TODO: 
+    - Rename. This works for stuff other than `get_model`. It's basically
+      a helper to split key, then vmap function.
+    """
+    keys = jr.split(key, n_replicates)
+    get_model_ = partial(get_model, *args)
+    return eqx.filter_vmap(get_model_)(keys)

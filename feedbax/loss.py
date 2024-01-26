@@ -51,8 +51,8 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.state import CartesianState2D, HasEffectorState
-from feedbax.utils import get_unique_label, unzip2
+from feedbax.misc import get_unique_label, unzip2
+from feedbax.state import HasEffectorState
 
 
 logger = logging.getLogger(__name__)

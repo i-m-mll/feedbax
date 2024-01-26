@@ -37,7 +37,7 @@ from feedbax.model import (
     ModelStageSpec, 
     wrap_stateless_callable,
 )
-from feedbax.utils import interleave_unequal, n_positional_args  
+from feedbax.misc import interleave_unequal, n_positional_args  
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
     

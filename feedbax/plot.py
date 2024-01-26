@@ -29,10 +29,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from feedbax import utils
 from feedbax.loss import LossDict
 from feedbax.state import CartesianState2D
-
+from feedbax.misc import corners_2d
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +150,7 @@ def plot_2D_joint_positions(
                    marker='.', s=ms_trace, linewidth=0, c=cmap.colors)
 
     if workspace is not None:
-        corners = utils.corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
+        corners = corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
         ax.plot(*corners, 'w--', lw=0.8)
 
     if colorbar:
@@ -322,7 +321,7 @@ def plot_pos_vel_force_2D(
               force_labels]
     
     if workspace is not None:
-        corners = utils.corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
+        corners = corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
         axs[0].plot(*corners, 'w--', lw=0.8)
 
     for i, (title, xlabel, ylabel) in enumerate(labels):
@@ -642,7 +641,7 @@ def plot_speed_profiles(
         axs[i].set_title(label)
         for j in range(arr.shape[0]):
             axs[i].plot(arr[j].T, color=colors[j])
-        axs[i].set_ylim(*utils.padded_bounds(arr))
+        axs[i].set_ylim(*padded_bounds(arr))
     
     axs[-1].set_xlabel('Time step')
     axs[-1].set_ylabel('Speed')
@@ -930,3 +929,10 @@ def vlines(ax, x, **kwargs):
     """Add a vertical line across a plot, preserving the axes limits."""
     with preserve_axes_limits(ax):
         ax.vlines(x, -1e100, 1e100, **kwargs)
+        
+        
+def padded_bounds(x, p=0.2):
+    """Return the lower and upper bounds of `x` with `p` percent padding."""
+    bounds = jnp.array([jnp.min(x), jnp.max(x)])
+    padding = (p * jnp.diff(bounds)).item()
+    return bounds + jnp.array([-padding, padding])

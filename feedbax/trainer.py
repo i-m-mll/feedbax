@@ -27,17 +27,11 @@ from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
+from feedbax.misc import delete_contents, git_commit_id
 from feedbax.model import AbstractModel, AbstractModelState, ModelInput
 import feedbax.plot as plot
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
-from feedbax.utils import (
-    delete_contents,
-    filter_spec_leaves, 
-    git_commit_id,
-    tree_get_idx,
-    tree_set_idx,
-    mask_diagonal,
-)
+from feedbax.tree import filter_spec_leaves, tree_get_idx, tree_set_idx
 
 # if TYPE_CHECKING:
 #     # This is sloow so we'll actually import it only when needed.
@@ -654,7 +648,13 @@ def load(
     
     return tree
     
-    
+
+def mask_diagonal(array):
+    """Set the diagonal of (the last two dimensions of) `array` to zero."""
+    mask = 1 - jnp.eye(array.shape[-1])
+    return array * mask
+
+
 class HebbianGRUUpdate(eqx.Module):
     """Hebbian update rule for the recurrent weights of a GRUCell.
 

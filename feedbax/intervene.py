@@ -46,9 +46,10 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
+from feedbax.misc import get_unique_label
 # from feedbax.model import AbstractModel
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.utils import get_unique_label, tree_call
+from feedbax.tree import tree_call
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedback

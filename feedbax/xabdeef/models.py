@@ -18,7 +18,7 @@ import optax
 from feedbax.bodies import SimpleFeedback
 from feedbax.channel import ChannelState
 from feedbax.mechanics.plant import SimplePlant
-from feedbax.model import AbstractModel
+from feedbax.model import AbstractModel, get_model_ensemble
 from feedbax.iterate import Iterator, SimpleIterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -26,7 +26,6 @@ from feedbax.mechanics.muscle import ActivationFilter
 from feedbax.networks import SimpleNetwork
 from feedbax.task import AbstractTask, RandomReaches
 from feedbax.trainer import TaskTrainer
-from feedbax.utils import get_model_ensemble
 from feedbax.xabdeef.losses import simple_reach_loss
 
 
