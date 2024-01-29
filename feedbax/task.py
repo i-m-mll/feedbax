@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from feedbax.model import AbstractModel, AbstractModelState
     
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.tree import tree_call
+from feedbax.tree import tree_call, tree_get_idx
 
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,7 @@ class AbstractTask(eqx.Module):
         # TODO: Pass the time step to the callables to allow for time-varying interventions.
         # Broadcast the params across the time steps of the task.
         return jax.tree_map(
-            lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+            lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             intervention_params,
         )
 
@@ -502,7 +502,10 @@ class RandomReaches(AbstractTask):
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             effector_target_state,
         )
-        task_input = _forceless_task_inputs(effector_target_state)
+        task_input = _forceless_task_inputs(jax.tree_map(
+            lambda x: x[:-1],
+            effector_target_state,
+        ))
 
         # TODO: It might be better here to use an `Intervenor`-like callable
         # instead of `InitSpecDict`, which is slow. Though the callable would
@@ -546,7 +549,10 @@ class RandomReaches(AbstractTask):
             effector_target_states,
         )
         
-        task_inputs = _forceless_task_inputs(effector_target_states)
+        task_inputs = _forceless_task_inputs(jax.tree_map(
+            lambda x: x[:, :-1],
+            effector_target_states,
+        ))
         
         return ReachTrialSpec(
             init=InitSpecDict({

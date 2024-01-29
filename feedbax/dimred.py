@@ -6,10 +6,16 @@
 
 import logging
 
+import equinox as eqx
 import jax.numpy as jnp
 
 
 logger = logging.getLogger(__name__)
+
+
+# class PCAResults(eqx.Module):
+#     pcs: jnp.ndarray
+    
 
 
 def pca(x):
@@ -22,6 +28,6 @@ def pca(x):
     X = x.reshape(-1, x.shape[-1])
     X -= X.mean(axis=0)
     U, S, Vt = jnp.linalg.svd(X, full_matrices=False)
-    L = S ** 2 / (X.shape[0] - 1)
+    #L = S ** 2 / (X.shape[0] - 1)
     PCs = (U @ jnp.diag(S)).reshape(*x.shape)
-    return L, Vt, PCs 
+    return S, Vt, PCs 

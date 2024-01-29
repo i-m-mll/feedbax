@@ -54,7 +54,7 @@ class RNNCellProto(Protocol):
     Neither mypy nor typeguard currently complain if the `Type[RNNCell]` 
     argument to `RNNCellWithReadout` doesn't satisfy this protocol. I'm 
     not sure if this is because protocols aren't compatible with `Type`, 
-    though no errors are raised to suggest that is so.
+    though no errors are raised to suggest that's so.
     
     I'm leaving this in here because it is currently harmless, and it at 
     least functions as documentation for the interface expected from an

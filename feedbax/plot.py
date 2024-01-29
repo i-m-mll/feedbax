@@ -592,8 +592,8 @@ def plot_endpoint_pos_with_dists(
     return fig, fig.axes
 
 
-def plot_speed_profiles(
-    velocity: Float[Array, "batch time xy"], 
+def plot_task_and_speed_profiles(
+    speed: Float[Array, "batch time"], 
     task_variables: Mapping[str, Float[Array, "batch time"]] = dict(), 
     epoch_start_idxs: Optional[Int[Array, "batch epoch"]] = None,
     cmap: str = 'tab10',
@@ -604,8 +604,6 @@ def plot_speed_profiles(
     
     For example: does the network start moving before the go cue is given?
     """
-    speeds = jnp.sqrt(jnp.sum(velocity ** 2, axis=-1))
-
     task_rows = len(task_variables)
     
     if task_rows > 0:
@@ -615,7 +613,7 @@ def plot_speed_profiles(
 
     if colors is None:
         cmap = plt.get_cmap(cmap)
-        colors = [cmap(i) for i in np.linspace(0, 1, speeds.shape[0])]
+        colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
 
     fig, axs = plt.subplots(1 + task_rows, 1, height_ratios=height_ratios, 
                             sharex=True, constrained_layout=True)
@@ -624,10 +622,10 @@ def plot_speed_profiles(
         axs = [axs]
 
     axs[-1].set_title('speed profiles')
-    for i in range(speeds.shape[0]):
-        axs[-1].plot(speeds[i].T, color=colors[i], **kwargs)
+    for i in range(speed.shape[0]):
+        axs[-1].plot(speed[i].T, color=colors[i], **kwargs)
 
-    ymax = 1.5 * jnp.max(speeds)
+    ymax = 1.5 * jnp.max(speed)
     if epoch_start_idxs is not None:
         axs[-1].vlines(epoch_start_idxs[:, 1], ymin=0, ymax=ymax, colors=colors, 
                        linestyles='dotted', linewidths=1, label='target ON')

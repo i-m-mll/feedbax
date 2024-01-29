@@ -173,6 +173,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 callable=lambda self: self.net,
                 where_input=lambda input, state: (
                     input, 
+                    # Get the output state for each feedback channel.
                     jax.tree_map(
                         lambda state: state.output,
                         state.feedback,

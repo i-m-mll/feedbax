@@ -144,12 +144,17 @@ def tree_map_unzip(
     of a PyTree of tuples.
     """
     results = jax.tree_map(f, tree, *rest, is_leaf=is_leaf)
-    results_flat, treedef = jax.tree_flatten(
-        results, 
-        is_leaf=lambda x: isinstance(x, tuple)
-    )
-    results_unzip = zip(*results_flat)
-    return tuple(jax.tree_unflatten(treedef, x) for x in results_unzip)
+    return tree_unzip(results)
+
+
+def tree_unzip(
+    tree: PyTree[Any, 'T'],
+    is_leaf: Optional[Callable[[Any], bool]] = lambda x: isinstance(x, tuple),
+) -> Tuple[PyTree[Any, 'T'], ...]:
+    """Unzips a PyTree of tuples into a tuple of PyTrees."""
+    tree_flat, treedef = jax.tree_flatten(tree, is_leaf=is_leaf)
+    tree_flat_unzipped = zip(*tree_flat)
+    return tuple(jax.tree_unflatten(treedef, x) for x in tree_flat_unzipped)
 
 
 def tree_call(tree, *args, **kwargs):

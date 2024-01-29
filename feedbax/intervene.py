@@ -420,10 +420,10 @@ def remove_intervenors(
     
 
 def schedule_intervenor(
-    intervenor: AbstractIntervenor | Type[AbstractIntervenor],
     task: "AbstractTask",
-    model: "AbstractModel[StateT]",  # not AbstractStagedModel because it might be wrapped in `Iterator`
+    models: PyTree["AbstractModel[StateT]"],  # not AbstractStagedModel because it might be wrapped in `Iterator`
     model_where: Callable[["AbstractModel[StateT]"], Any],
+    intervenor: AbstractIntervenor | Type[AbstractIntervenor],
     validation_same_schedule: bool = True,
     intervenor_spec: Optional[AbstractIntervenorInput] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
     intervenor_spec_validation: Optional[AbstractIntervenorInput] = None,
@@ -438,6 +438,9 @@ def schedule_intervenor(
     schedule. For example:
     
         schedule_intervenor(
+            task,
+            model,
+            lambda model: model.step.mechanics,
             CurlField.with_params(
                 amplitude=lambda trial_spec, *, key: jr.normal(key, (1,)),
                 active=True,
@@ -477,10 +480,18 @@ def schedule_intervenor(
     # A unique label is needed because `AbstractTask` uses a single dict to 
     # pass intervention parameters for all intervenors in an `AbstractStagedModel`,
     # regardless of where they appear in the model hierarchy.
-    label = get_unique_label(
-        intervenor.label, 
-        invalid_labels=model._step._all_intervenor_labels
-    )     
+    #
+    # The label should be unique across all models it will be registered with.
+    invalid_labels = jax.tree_util.tree_reduce(
+        lambda x, y: x + y,
+        jax.tree_map(
+            lambda model: model._step._all_intervenor_labels, 
+            models, 
+            is_leaf=lambda x: isinstance(x, AbstractModel)
+        ),
+        is_leaf=lambda x: isinstance(x, tuple),
+    )
+    label = get_unique_label(intervenor.label, invalid_labels)    
     
     # Construct training and validation intervention specs, and add to task instance.
     if intervenor_spec is not None:
@@ -537,7 +548,16 @@ def schedule_intervenor(
         intervenor_defaults,
         default_active,
     )
-        
-    model = add_intervenors(model, [intervenor_final], where=model_where)
     
-    return task, model
+    # Add the intervenor to all of the models.
+    models = jax.tree_map(
+        lambda model: add_intervenors(
+            model, 
+            [intervenor_final], 
+            where=model_where,
+        ),
+        models, 
+        is_leaf=lambda x: isinstance(x, AbstractModel),
+    )
+    
+    return task, models

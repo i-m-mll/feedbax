@@ -202,7 +202,7 @@ class SimpleIterator(AbstractIterator[StateT]):
         key: Array,
     ) -> StateT:
         
-        keys = jr.split(key, self.n_steps)
+        keys = jr.split(key, self.n_steps - 1)
         
         def step(state, args): 
             input, key = args
@@ -213,13 +213,10 @@ class SimpleIterator(AbstractIterator[StateT]):
             step,
             state, 
             (input, keys),
-            length=self.n_steps, # - 1 ?
         )
 
-        return states
-        
-        # return jax.tree_map(
-        #     lambda state0, state: jnp.concatenate([state0, state], axis=1),
-        #     state,
-        #     states,
-        # )
+        return jax.tree_map(
+            lambda state0, state: jnp.concatenate([state0[None], state], axis=0),
+            state,
+            states,
+        )
