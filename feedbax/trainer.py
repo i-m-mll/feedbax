@@ -50,8 +50,8 @@ StateT = TypeVar("StateT", bound=AbstractModelState)
 
 
 class TaskTrainerHistory(eqx.Module):
-    losses: LossDict 
-    learning_rates: Array
+    loss: LossDict 
+    learning_rate: Array
     model_trainables: AbstractModel
     trial_specs: Optional[Sequence[AbstractTaskTrialSpec]] = None
 
@@ -179,36 +179,24 @@ class TaskTrainer(eqx.Module):
             )
         else:
             model_train_history = None
-            
-        if save_trial_specs:
-            all_trial_specs = []
-        else:
-            all_trial_specs = None
-            
-        
-        # history = TaskTrainerHistory(
-        #     losses=LossDict(zip(
-        #         task.loss_func.weights.keys(), 
-        #         [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
-        #     )),
-        #     learning_rates=jnp.empty(loss_array_shape),
-        #     model_trainables=model_trainables,
-        #     trial_specs=trial_specs,
-        # )
-        
-        # Prepare to store training trajectories
-        losses_history = LossDict(zip(
-            task.loss_func.weights.keys(), 
-            [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
-        ))
-        learning_rates = jnp.empty(loss_array_shape)
 
+        
+        history = TaskTrainerHistory(
+            loss=LossDict(zip(
+                task.loss_func.weights.keys(), 
+                [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
+            )),
+            learning_rate=jnp.empty(loss_array_shape),
+            model_trainables=model_train_history,
+            trial_specs=() if save_trial_specs else None,
+        )
+        
         start_batch = 0  # except when we load a checkpoint
         
         if restore_checkpoint:
             # TODO: should also restore opt_state, learning_rates...
-            chkpt_path, last_batch, model, losses_history, opt_state, learning_rates = \
-                self._load_last_checkpoint(model, losses_history, opt_state, learning_rates)
+            chkpt_path, last_batch, model, opt_state, history = \
+                self._load_last_checkpoint(model, opt_state, history)
             start_batch = last_batch + 1
             logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}.")
         elif self.checkpointing:
@@ -303,20 +291,37 @@ class TaskTrainer(eqx.Module):
             
             if save_model_trainables:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
-                model_train_history = tree_set_idx(
-                    model_train_history, 
-                    eqx.filter(model, filter_spec), 
-                    batch
+                history = eqx.tree_at(
+                    lambda history: history.model_trainables,
+                    history,
+                    tree_set_idx(
+                        history.model_trainables, 
+                        eqx.filter(model, filter_spec), 
+                        batch
+                    ),
                 )
                 
             if save_trial_specs:
-                all_trial_specs.append(trial_specs)
+                history = eqx.tree_at(
+                    lambda history: history.trial_specs,
+                    history,
+                    history.trial_specs + (trial_specs,),
+                )
             
-            losses_history = tree_set_idx(losses_history, losses, batch)
+            history = eqx.tree_at(
+                lambda history: history.loss,
+                history,
+                tree_set_idx(history.loss, losses, batch),
+            )
+            
             try:
                 # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
                 learning_rate = opt_state.hyperparams['learning_rate']
-                learning_rates = learning_rates.at[batch].set(learning_rate)
+                history = eqx.tree_at(
+                    lambda history: history.learning_rate,
+                    history,
+                    history.learning_rate.at[batch].set(learning_rate),
+                )
             except (AttributeError, KeyError):
                 learning_rate = None 
             
@@ -353,9 +358,9 @@ class TaskTrainer(eqx.Module):
                 # has explicitly requested it.
                 msg = f"NaN loss at batch {batch}! "
                 if (checkpoint := self._load_last_checkpoint(
-                    model, losses_history, opt_state, learning_rates
+                    model, opt_state, history
                 )) is not None:
-                    _, last_batch, model, losses_history, _, learning_rates \
+                    _, last_batch, model, _, history \
                         = checkpoint
                     msg += f"Returning checkpoint from batch {last_batch}."
                 else:
@@ -363,7 +368,7 @@ class TaskTrainer(eqx.Module):
                 
                 logger.warning(msg)
                 
-                return model, losses_history, learning_rates, all_trial_specs, model_train_history
+                return model, train_history
 
             # Checkpoint and validate, occasionally
             if batch % log_step == 0:
@@ -375,7 +380,7 @@ class TaskTrainer(eqx.Module):
                 
                 if self.checkpointing and batch > 0:
                     self._save_checkpoint(
-                        batch, model, losses_history, opt_state, learning_rates
+                        batch, model, opt_state, history
                     )
                 
                 if ensembled:
@@ -430,7 +435,7 @@ class TaskTrainer(eqx.Module):
          
         model = jtu.tree_unflatten(treedef_model, flat_model)
          
-        return model, losses_history, learning_rates, all_trial_specs, model_train_history
+        return model, train_history
     
     @eqx.filter_jit
     @jax.named_scope("fbx.TaskTrainer.train_step")
@@ -520,14 +525,13 @@ class TaskTrainer(eqx.Module):
         self, 
         batch: int,
         model: AbstractModel[StateT],
-        losses_history: LossDict,
         opt_state: optax.OptState,
-        learning_rates: Array,
+        history: TaskTrainerHistory,
     ):
         # TODO: Save `opt_state` after fixing issue with first training iteration
         eqx.tree_serialise_leaves(
             self.chkpt_dir / f'ckpt_{batch}.eqx', 
-            (model, losses_history, None, learning_rates),
+            (model, None, history),
         )
         with open(self.chkpt_dir / "last_batch.txt", 'w') as f:
             f.write(str(batch)) 
@@ -535,10 +539,9 @@ class TaskTrainer(eqx.Module):
     def _load_last_checkpoint(
         self, 
         model: AbstractModel[StateT], 
-        losses_history: LossDict,
         opt_state: optax.OptState,
-        learning_rates: Array,
-    ) -> Tuple[str | Path, int, AbstractModel[StateT], LossDict, optax.OptState, Array]:
+        history: TaskTrainerHistory,
+    ) -> Tuple[str | Path, int, AbstractModel[StateT], optax.OptState, TaskTrainerHistory]:
         try:
             with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
@@ -548,11 +551,11 @@ class TaskTrainer(eqx.Module):
             
         chkpt_path = self.chkpt_dir / f'ckpt_{last_batch}.eqx'
         # TODO: Load `opt_state` after fixing issue with first training iteration
-        model, losses_history, _, learning_rates = eqx.tree_deserialise_leaves(
+        model, _, history = eqx.tree_deserialise_leaves(
             chkpt_path, 
-            (model, losses_history, None, learning_rates),
+            (model, None, history),
         )
-        return chkpt_path, last_batch, model, losses_history, opt_state, learning_rates
+        return chkpt_path, last_batch, model, opt_state, history
 
 
 def grad_wrap_simple_loss_func(
