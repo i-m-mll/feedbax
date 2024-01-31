@@ -12,6 +12,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree_util as jtu
 from jaxtyping import PyTree
 
 
@@ -173,3 +174,29 @@ def tree_call(tree, *args, **kwargs):
         callables,
     )
     return eqx.combine(callables_values, other_values)
+
+
+def tree_array_bytes(tree):
+    """Returns the total number of bytes for all array leaves of a PyTree.
+    
+    Values are as determined by the `nbytes` attribute of each array.
+    
+    It would be a little more complex to write a function that also estimates
+    the 
+    """
+    arrays = eqx.filter(tree, eqx.is_array)
+    array_bytes = jax.tree_map(lambda x: x.nbytes, arrays)
+    return jtu.tree_reduce(
+        lambda x, y: x + y,
+        array_bytes,
+    )
+    
+
+def tree_struct_bytes(tree):
+    """Returns the total number of bytes implied by a PyTree of `ShapeDtypeStruct`s."""
+    structs = eqx.filter(tree, lambda x: isinstance(x, jax.ShapeDtypeStruct))
+    struct_bytes = jax.tree_map(lambda x: x.size * x.dtype.itemsize, structs)
+    return jtu.tree_reduce(
+        lambda x, y: x + y,
+        struct_bytes
+    )

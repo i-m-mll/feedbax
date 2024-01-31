@@ -261,7 +261,7 @@ def plot_pos_vel_force_2D(
     straight_guides: bool = False,
     force_labels: Optional[Tuple[str, str, str]] = None,
     force_label_type: str = 'linear',
-    cmap: str = 'tab10',
+    cmap: str = 'viridis',
     color: Optional[str | Tuple[float, ...]] = None,
     colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,

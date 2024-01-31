@@ -46,9 +46,6 @@ class ContextManager(eqx.Module):
     
     We could choose not to associate `task` with this class. Let users choose 
     tasks from `xabdeef.tasks` and pass them to `train`...
-    
-    TODO:
-    - Rename this, since it conflicts with a common Python pattern.
     """
     model: AbstractModel 
     task: AbstractTask
@@ -64,7 +61,8 @@ class ContextManager(eqx.Module):
         learning_rate: float = DEFAULT_LEARNING_RATE,
         log_step=100,
         optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
-        key
+        key: jax.Array,
+        **kwargs,
     ):
         optimizer = optax.inject_hyperparams(optimizer_cls)(
             learning_rate
@@ -72,7 +70,7 @@ class ContextManager(eqx.Module):
         
         trainer = TaskTrainer(
             optimizer=optimizer,
-            checkpointing=False,
+            checkpointing=True,
         )
         
         """Train the model on the task."""
@@ -85,6 +83,7 @@ class ContextManager(eqx.Module):
             where_train=self.where_train,
             key=key,
             ensembled=self.ensembled,
+            **kwargs,
         )
     
 

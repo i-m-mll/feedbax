@@ -13,6 +13,7 @@ from collections.abc import (
 import inspect
 from itertools import zip_longest, chain
 import logging 
+import os
 from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
@@ -22,6 +23,7 @@ from typing import Optional, Tuple, TypeVar, Union
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
+from tqdm.auto import tqdm
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +62,27 @@ class Timer:
             
     start = __enter__
     stop = __exit__
+
+
+class TqdmLoggingHandler(logging.StreamHandler):
+    """Avoid tqdm progress bar interruption by logger's output to console.
     
+    Source: https://stackoverflow.com/a/67257516
+    """
+    # see logging.StreamHandler.eval method:
+    # https://github.com/python/cpython/blob/d2e2534751fd675c4d5d3adc208bf4fc984da7bf/Lib/logging/__init__.py#L1082-L1091
+    # and tqdm.write method:
+    # https://github.com/tqdm/tqdm/blob/f86104a1f30c38e6f80bfd8fb16d5fcde1e7749f/tqdm/std.py#L614-L620
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg, end=self.terminator)
+        except RecursionError:
+            raise
+        except Exception:
+            self.handleError(record)
+
 
 def delete_contents(path: Union[str, Path]):
     """Delete all subdirectories and files of `path`."""
@@ -115,7 +137,7 @@ def corners_2d(bounds: Float[Array, "2 xy=2"]):
 def indent_str(s: str, indent: int = 4) -> str:
     """Pretty format a PyTree, but indent all lines with `indent` spaces."""
     indent_str = " " * indent
-    return indent_str + s.replace("\n", "\n{indent_str}")
+    return indent_str + s.replace("\n", f"\n{indent_str}")
 
 
 def unzip2(

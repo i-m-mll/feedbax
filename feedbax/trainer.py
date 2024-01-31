@@ -27,7 +27,7 @@ from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
-from feedbax.misc import delete_contents, git_commit_id
+from feedbax.misc import TqdmLoggingHandler, delete_contents, git_commit_id
 from feedbax.model import AbstractModel, AbstractModelState, ModelInput
 import feedbax.plot as plot
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
@@ -43,9 +43,17 @@ LOSS_FMT = ".2e"
 
 
 logger = logging.getLogger(__name__)
+logger.addHandler(TqdmLoggingHandler())
 
 
 StateT = TypeVar("StateT", bound=AbstractModelState)
+
+
+class TaskTrainerHistory(eqx.Module):
+    losses: LossDict 
+    learning_rates: Array
+    model_trainables: AbstractModel
+    trial_specs: Optional[Sequence[AbstractTaskTrialSpec]] = None
 
 
 class TaskTrainer(eqx.Module):
@@ -119,6 +127,8 @@ class TaskTrainer(eqx.Module):
             lambda model: model,
         batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
         log_step: int = 100, 
+        save_model_trainables: Optional[int] = None,
+        save_trial_specs: bool = False,
         restore_checkpoint: bool = False,
         disable_tqdm = False,
         ensembled: bool = False,
@@ -144,6 +154,9 @@ class TaskTrainer(eqx.Module):
           `treedef_opt_state` from `train_step`. So maybe the first call 
           should be separated out from the loop.
         """          
+        
+        filter_spec = filter_spec_leaves(model, where_train)
+        
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
             n_replicates = jax.tree_leaves(
@@ -151,32 +164,55 @@ class TaskTrainer(eqx.Module):
             )[0].shape[0]
             loss_array_shape = (n_batches, n_replicates)
             opt_state = jax.vmap(self.optimizer.init)(
-                eqx.filter(model, eqx.is_array)
+                eqx.filter(model, eqx.is_array) # Is this necessary?
             )
         else:
             loss_array_shape = (n_batches,)
             opt_state = self.optimizer.init(
                 eqx.filter(model, eqx.is_array)
+            )           
+
+        if save_model_trainables:
+            model_train_history = jax.tree_map(
+                lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x, 
+                eqx.filter(model, filter_spec),
             )
+        else:
+            model_train_history = None
+            
+        if save_trial_specs:
+            all_trial_specs = []
+        else:
+            all_trial_specs = None
+            
         
+        # history = TaskTrainerHistory(
+        #     losses=LossDict(zip(
+        #         task.loss_func.weights.keys(), 
+        #         [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
+        #     )),
+        #     learning_rates=jnp.empty(loss_array_shape),
+        #     model_trainables=model_trainables,
+        #     trial_specs=trial_specs,
+        # )
+        
+        # Prepare to store training trajectories
         losses_history = LossDict(zip(
             task.loss_func.weights.keys(), 
             [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
         ))
         learning_rates = jnp.empty(loss_array_shape)
-        
+
         start_batch = 0  # except when we load a checkpoint
         
         if restore_checkpoint:
             # TODO: should also restore opt_state, learning_rates...
-            chkpt_path, last_batch, model, losses_history = \
-                self._load_last_checkpoint(model, losses_history)
+            chkpt_path, last_batch, model, losses_history, opt_state, learning_rates = \
+                self._load_last_checkpoint(model, losses_history, opt_state, learning_rates)
             start_batch = last_batch + 1
             logger.info(f"Restored checkpoint {chkpt_path} from training step {last_batch}.")
-            
         elif self.checkpointing:
             # Delete old checkpoints if checkpointing is on.
-            # TODO: keep old checkpoints for past N runs (env variable?)
             delete_contents(self.chkpt_dir)  
 
         # Passing the flattened pytrees through `train_step` gives a slight
@@ -206,8 +242,6 @@ class TaskTrainer(eqx.Module):
         else:
             train_step = self.train_step
             evaluate = task.eval
-        
-        filter_spec = filter_spec_leaves(model, where_train)
            
         # Finish the JIT compilation before the first training iteration.
         if not jax.config.jax_disable_jit:
@@ -238,13 +272,6 @@ class TaskTrainer(eqx.Module):
 
         keys = jr.split(key, n_batches)
         
-        #! The first step of a run is still slow, even with the above warmup.
-        #! I suspect this might be due to re-compilation that is happening 
-        #! due to the structure of `opt-state` changing *only on the first
-        #! step*. Perhaps we can either 1) figure out why `opt_state` changes,
-        #! and perhaps avoid that, or 2) do the first two actual steps inside 
-        #! the warmup loop, and then continue here from step 3, to give the 
-        #! user more appropriate timing estimates.
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
         for batch in tqdm(
             range(start_batch, n_batches), 
@@ -259,7 +286,7 @@ class TaskTrainer(eqx.Module):
             if ensembled:
                 key_train = jr.split(key_train, n_replicates)
 
-            losses, flat_model, flat_opt_state, treedef_opt_state = train_step(
+            losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state = train_step(
                 task,
                 batch_size,
                 flat_model, 
@@ -273,6 +300,17 @@ class TaskTrainer(eqx.Module):
             if batch_callbacks is not None and batch in batch_callbacks:
                 for func in batch_callbacks[batch]:
                     func()
+            
+            if save_model_trainables:
+                model = jtu.tree_unflatten(treedef_model, flat_model)
+                model_train_history = tree_set_idx(
+                    model_train_history, 
+                    eqx.filter(model, filter_spec), 
+                    batch
+                )
+                
+            if save_trial_specs:
+                all_trial_specs.append(trial_specs)
             
             losses_history = tree_set_idx(losses_history, losses, batch)
             try:
@@ -309,31 +347,36 @@ class TaskTrainer(eqx.Module):
         
             if jnp.isnan(losses_mean.total):
                 model = jtu.tree_unflatten(treedef_model, flat_model)
+                #opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
                 
+                # TODO: Should probably not return a checkpoint automatically unless the user 
+                # has explicitly requested it.
                 msg = f"NaN loss at batch {batch}! "
                 if (checkpoint := self._load_last_checkpoint(
-                    model, losses_history
+                    model, losses_history, opt_state, learning_rates
                 )) is not None:
-                    _, last_batch, model, losses_history = checkpoint
+                    _, last_batch, model, losses_history, _, learning_rates \
+                        = checkpoint
                     msg += f"Returning checkpoint from batch {last_batch}."
                 else:
                     msg += "No checkpoint found, returning model from final iteration."
                 
                 logger.warning(msg)
                 
-                return model, losses_history, learning_rates
+                return model, losses_history, learning_rates, all_trial_specs, model_train_history
 
-            # checkpointing and validation occasionally
+            # Checkpoint and validate, occasionally
             if batch % log_step == 0:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
+                opt_state = jtu.tree_unflatten(
+                    treedef_opt_state, 
+                    flat_opt_state
+                )
                 
-                # model checkpoint
                 if self.checkpointing and batch > 0:
-                    eqx.tree_serialise_leaves(self.chkpt_dir / f'model{batch}.eqx', model)
-                    eqx.tree_serialise_leaves(self.chkpt_dir / f'losses{batch}.eqx', 
-                                              losses_history)
-                    with open(self.chkpt_dir / "last_batch.txt", 'w') as f:
-                        f.write(str(batch)) 
+                    self._save_checkpoint(
+                        batch, model, losses_history, opt_state, learning_rates
+                    )
                 
                 if ensembled:
                     key_eval = jr.split(key_eval, n_replicates)
@@ -387,7 +430,7 @@ class TaskTrainer(eqx.Module):
          
         model = jtu.tree_unflatten(treedef_model, flat_model)
          
-        return model, losses_history, learning_rates
+        return model, losses_history, learning_rates, all_trial_specs, model_train_history
     
     @eqx.filter_jit
     @jax.named_scope("fbx.TaskTrainer.train_step")
@@ -471,27 +514,45 @@ class TaskTrainer(eqx.Module):
         flat_model = jtu.tree_leaves(model)
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
         
-        return losses, flat_model, flat_opt_state, treedef_opt_state
-
+        return losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state
+    
+    def _save_checkpoint(
+        self, 
+        batch: int,
+        model: AbstractModel[StateT],
+        losses_history: LossDict,
+        opt_state: optax.OptState,
+        learning_rates: Array,
+    ):
+        # TODO: Save `opt_state` after fixing issue with first training iteration
+        eqx.tree_serialise_leaves(
+            self.chkpt_dir / f'ckpt_{batch}.eqx', 
+            (model, losses_history, None, learning_rates),
+        )
+        with open(self.chkpt_dir / "last_batch.txt", 'w') as f:
+            f.write(str(batch)) 
+    
     def _load_last_checkpoint(
         self, 
         model: AbstractModel[StateT], 
         losses_history: LossDict,
-    ) -> Tuple[str | Path, int, AbstractModel[StateT], LossDict]:
+        opt_state: optax.OptState,
+        learning_rates: Array,
+    ) -> Tuple[str | Path, int, AbstractModel[StateT], LossDict, optax.OptState, Array]:
         try:
             with open(self.chkpt_dir / "last_batch.txt", 'r') as f:
                 last_batch = int(f.read()) 
         except FileNotFoundError:
-            #! this will just raise another error at checkpoint restore
+            # this will just raise another error at checkpoint restore
             return
             
-        chkpt_path = self.chkpt_dir / f'model{last_batch}.eqx'
-        model = eqx.tree_deserialise_leaves(chkpt_path, model)
-        losses_history = eqx.tree_deserialise_leaves(
-            self.chkpt_dir / f'losses{last_batch}.eqx', 
-            losses_history,
+        chkpt_path = self.chkpt_dir / f'ckpt_{last_batch}.eqx'
+        # TODO: Load `opt_state` after fixing issue with first training iteration
+        model, losses_history, _, learning_rates = eqx.tree_deserialise_leaves(
+            chkpt_path, 
+            (model, losses_history, None, learning_rates),
         )
-        return chkpt_path, last_batch, model, losses_history
+        return chkpt_path, last_batch, model, losses_history, opt_state, learning_rates
 
 
 def grad_wrap_simple_loss_func(
@@ -596,8 +657,8 @@ def grad_wrap_task_loss_func(
 def save(
     tree: PyTree[eqx.Module],
     hyperparams: Optional[dict] = None, 
-    path: Optional[Path] = None,
-    save_dir: Path = Path('.'),
+    path: Optional[str | Path] = None,
+    save_dir: str | Path = Path('.'),
     suffix: Optional[str] = None,
 ) -> Path:
     """Save a PyTree to disk along with hyperparameters.
@@ -614,6 +675,7 @@ def save(
     TODO: 
     - If we leave in the git hash label, allow the user to specify the directory.
     """
+    
     if path is None:      
         # TODO: move to separate function maybe
         timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
@@ -621,7 +683,7 @@ def save(
         name = f"model_{timestr}_{commit_id}"
         if suffix is not None:
             name += f"_{suffix}"
-        path = save_dir / f'{name}.eqx'
+        path = Path(save_dir) / f'{name}.eqx'
     
     with open(path, 'wb') as f:
         hyperparam_str = json.dumps(hyperparams)
@@ -643,6 +705,8 @@ def load(
     """
     with open(filename, "rb") as f:
         hyperparams = json.loads(f.readline().decode())
+        if hyperparams is None:
+            hyperparams = dict()
         tree = setup_func(**hyperparams)
         tree = eqx.tree_deserialise_leaves(f, tree)
     
