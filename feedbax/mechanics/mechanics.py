@@ -24,7 +24,8 @@ from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractStagedModel, AbstractModelState, ModelStageSpec, wrap_stateless_callable
+from feedbax.model import AbstractModelState, wrap_stateless_callable
+from feedbax.staged import AbstractStagedModel, ModelStageSpec
 from feedbax.state import CartesianState2D, StateBounds
 
 

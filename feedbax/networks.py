@@ -31,18 +31,15 @@ import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import (
-    AbstractStagedModel, 
-    AbstractModelState,
-    ModelStageSpec, 
-    wrap_stateless_callable,
-)
+from feedbax.model import AbstractModelState, wrap_stateless_callable
 from feedbax.misc import interleave_unequal, n_positional_args  
+from feedbax.staged import AbstractStagedModel, ModelStageSpec
 
-StateT = TypeVar("StateT", bound=AbstractModelState)
-    
 
 logger = logging.getLogger(__name__)
+
+
+StateT = TypeVar("StateT", bound=AbstractModelState)
 
 
 @runtime_checkable

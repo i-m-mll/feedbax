@@ -6,7 +6,6 @@
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from functools import cached_property 
 import logging
 from typing import Any, Optional, Union
 
@@ -19,9 +18,10 @@ from jaxtyping import Array, PyTree
 
 from feedbax.channel import Channel, ChannelState
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModel, AbstractModelState, AbstractStagedModel, ModelStageSpec, MultiModel
+from feedbax.model import AbstractModelState, MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
+from feedbax.staged import AbstractStagedModel, ModelStageSpec
 from feedbax.task import AbstractTask
 from feedbax.tree import tree_sum_n_features
 

@@ -254,6 +254,7 @@ def plot_planes(
 
 def plot_pos_vel_force_2D(
     states: PyTree[Float[Array, "batch time ..."] | Any],
+    step: int = 1,  # plot every step-th trial
     leaf_func: Optional[Callable] = None,
     endpoints: Optional[Tuple[Float[Array, "batch xy"],
                               Float[Array, "batch xy"]]] = None, 
@@ -293,7 +294,7 @@ def plot_pos_vel_force_2D(
         colors = [cmap_func(i) if color is None else color
                   for i in np.linspace(0, 1, positions.shape[0])]
    
-    for i in range(positions.shape[0]):
+    for i in range(0, positions.shape[0], step):
         # position and 
         axs[0].plot(positions[i, :, 0], positions[i, :, 1], '.', color=colors[i], ms=ms)
         if endpoints is not None:

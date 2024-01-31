@@ -41,12 +41,12 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PyTree, Shaped
 import numpy as np
-from feedbax.intervene import AbstractIntervenorInput
 
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax.mapping import AbstractTransformedOrderedDict
 from feedbax.model import ModelInput
 if TYPE_CHECKING:
+    from feedbax.intervene import AbstractIntervenorInput
     from feedbax.model import AbstractModel, AbstractModelState
     
 from feedbax.state import AbstractState, CartesianState2D
@@ -190,26 +190,42 @@ class AbstractTask(eqx.Module):
     
     # TODO: The following line is wrong: each entry will have the same PyTree structure as `AbstractIntervenorInput`
     # but will be filled with callables that specify a trial distribution for the leaves
-    intervention_spec: AbstractVar[Mapping[AbstractIntervenorInput]]
-    intervention_spec_validation: AbstractVar[Mapping[AbstractIntervenorInput]]
+    intervention_spec: AbstractVar[Mapping["AbstractIntervenorInput"]]
+    intervention_spec_validation: AbstractVar[Mapping["AbstractIntervenorInput"]]
     
     def _intervention_params(
         self, 
-        intervention_spec: Mapping[AbstractIntervenorInput],
+        intervention_spec: Mapping["AbstractIntervenorInput"],
         trial_spec: AbstractTaskTrialSpec, 
         key: jax.Array,
     ):
-        intervention_params = jax.tree_map(
-            jnp.array,
-            tree_call(intervention_spec, trial_spec, key=key),
+        intervention_params = tree_call(intervention_spec, trial_spec, key=key)
+        
+        # Make sure the intervention parameters are broadcast to the right number of time steps.
+        #! This assumes there won't be an intervention parameter that's an array and has a first dimension 
+        #! of size `n_steps - 1`. That isn't assured! It also assumes the user will be sure to pass a 
+        #! time series with length `n_steps - 1` rather than (say) `n_steps`.
+        #
+        #! Also, this is kind of slow.
+        #
+        # TODO: Find a better solution. 
+        timeseries, other = eqx.partition(
+            intervention_params, 
+            lambda x: eqx.is_array(x) and len(x.shape) > 0 and x.shape[0] == self.n_steps - 1
         )
         
-        # TODO: Pass the time step to the callables to allow for time-varying interventions.
-        # Broadcast the params across the time steps of the task.
-        return jax.tree_map(
+        tmp = eqx.combine(timeseries, jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
-            intervention_params,
-        )
+            jax.tree_map(jnp.array, other),
+        ))
+        
+        #eqx.tree_pprint(tmp)
+        return tmp
+        # return jax.tree_map(
+        #     lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
+        #     jax.tree_map(jnp.array, intervention_params),
+        # )
+
 
     def get_train_trial(
         self, 
@@ -471,9 +487,9 @@ class RandomReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
-    intervention_spec: Mapping[AbstractIntervenorInput] = \
+    intervention_spec: Mapping["AbstractIntervenorInput"] = \
         field(default_factory=dict)
-    intervention_spec_validation: Mapping[AbstractIntervenorInput] = \
+    intervention_spec_validation: Mapping["AbstractIntervenorInput"] = \
         field(default_factory=dict)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
@@ -486,7 +502,7 @@ class RandomReaches(AbstractTask):
     def _get_train_trial(
         self, 
         key: jax.Array
-    ) -> [ReachTrialSpec, None]:
+    ) -> tuple[ReachTrialSpec, None]:
         """Random reach endpoints in a 2D rectangular workspace.
         """
         
@@ -526,7 +542,7 @@ class RandomReaches(AbstractTask):
         ), None
         
     @cached_property
-    def _validation_trials(self) -> [ReachTrialSpec, None]:
+    def _validation_trials(self) -> tuple[ReachTrialSpec, None]:
         """Center-out reaches across a regular workspace grid."""
         
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -605,7 +621,7 @@ class RandomReachesDelayed(AbstractTask):
     def _get_train_trial(
         self, 
         key: jax.Array
-    ) -> [ReachTrialSpec, Int[Array, "n_epochs"]]:
+    ) -> tuple[ReachTrialSpec, Int[Array, "n_epochs"]]:
         """Random reach endpoints in a 2D rectangular workspace."""
         
         key1, key2 = jr.split(key)
@@ -732,7 +748,7 @@ class Stabilization(AbstractTask):
     def get_train_trial(
         self, 
         key: jax.Array
-    ) -> [ReachTrialSpec, None]:
+    ) -> tuple[ReachTrialSpec, None]:
         """Random reach endpoints in a 2D rectangular workspace.
         """
         
@@ -761,7 +777,7 @@ class Stabilization(AbstractTask):
         ), None
         
     @cached_property
-    def validation_trials(self) -> [ReachTrialSpec, None]:
+    def validation_trials(self) -> tuple[ReachTrialSpec, None]:
         """Center-out reaches across a regular workspace grid."""
         
         if self.eval_workspace is None:

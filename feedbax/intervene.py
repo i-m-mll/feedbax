@@ -47,19 +47,17 @@ import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax.misc import get_unique_label
-# from feedbax.model import AbstractModel
-from feedbax.state import AbstractState, CartesianState2D
+from feedbax.model import AbstractModel
+from feedbax.state import AbstractState
+from feedbax.task import AbstractTask
 from feedbax.tree import tree_call
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedback
-    from feedbax.model import (
-        AbstractModel, 
-        AbstractStagedModel, 
-    )
+    # from feedbax.model import AbstractModel
     from feedbax.mechanics.mechanics import MechanicsState
     from feedbax.networks import NetworkState
-    from feedbax.task import AbstractTask
+    from feedbax.staged import AbstractStagedModel
 
 
 logger = logging.getLogger(__name__)
@@ -119,6 +117,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
     def __call__(self, input: InputT, state: StateT, *, key) -> StateT:
         """Return a modified state PyTree."""
         params = eqx.combine(input, self.params)
+        
         return jax.lax.cond(
             params.active,
             lambda: eqx.tree_at(
@@ -346,7 +345,55 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", InputT]):
     ) -> PyTree[Array, "T"]:
         return jax.tree_map(jnp.nan_to_num, params.unit_spec)
 
+
+class ConstantInputParams(AbstractIntervenorInput):
+    active: bool = True
+    amplitude: float = 1.0
+    array_mask: Optional[PyTree] = None
+
+
+class ConstantInput(AbstractIntervenor[StateT, InputT]):
+    """Adds a constant input to a state array.
     
+    Args:
+        array_mask: 
+    """    
+    params: NetworkIntervenorParams = NetworkIntervenorParams()
+    in_where: Callable[[StateT], PyTree[Array, "T"]] \
+        = lambda state: state
+    out_where: Callable[[StateT], PyTree[Array, "T"]] \
+        = lambda state: state  
+    operation: Callable[[Array, Array], Array] = lambda x, y: x + y
+    label: str = "ConstantInput"
+    
+    @classmethod
+    def with_params(
+        cls,
+        active: bool = True,
+        amplitude: float = 1.0,
+        array_mask: Optional[PyTree[Array, "T"]] = None,
+        **kwargs,
+    ) -> "ConstantInput":
+        
+        return cls(
+            ConstantInputParams(
+                active=active, 
+                amplitude=amplitude,
+                array_mask=array_mask,
+            ),
+            **kwargs,
+        )
+    
+    def intervene(
+        self, 
+        params: ConstantInputParams, 
+        state: StateT,
+        *,
+        key: Optional[Array] = None,
+    ) -> PyTree[Array, "T"]:
+        return params.amplitude * params.array_mask
+
+
 def add_intervenor(
     model: "AbstractStagedModel[StateT]", 
     intervenor: AbstractIntervenor,
@@ -420,7 +467,7 @@ def remove_intervenors(
     
 
 def schedule_intervenor(
-    task: "AbstractTask",
+    tasks: PyTree["AbstractTask"],
     models: PyTree["AbstractModel[StateT]"],  # not AbstractStagedModel because it might be wrapped in `Iterator`
     model_where: Callable[["AbstractModel[StateT]"], Any],
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
@@ -438,8 +485,8 @@ def schedule_intervenor(
     schedule. For example:
     
         schedule_intervenor(
-            task,
-            model,
+            tasks,
+            models,
             lambda model: model.step.mechanics,
             CurlField.with_params(
                 amplitude=lambda trial_spec, *, key: jr.normal(key, (1,)),
@@ -456,13 +503,14 @@ def schedule_intervenor(
     
     Args:
         intervenor: The intervenor (or intervenor class) to schedule
-        task: The task in whose trials the intervention will be scheduled
-        model: The model to which the intervention will be added
+        task: The task(s) in whose trials the intervention will be scheduled
+        model: The model(s) to which the intervention will be added
         model_where: Where in the model to insert the intervention
         validation_same_schedule: Whether the interventions should be scheduled
             in the same way for the validation set as for the training set.
         intervenor_spec: The input to the intervenor, which may be 
-            a constant or a stochastic per-trial callable
+            a constant, or a callable that is used by `task` to construct the 
+            intervention parameters for each trial.
         intervenor_spec_validation: Same as `intervenor_spec`, but for the 
             task's validation set. Only applies if `validation_same_schedule`
             is `False`. 
@@ -481,8 +529,9 @@ def schedule_intervenor(
     # pass intervention parameters for all intervenors in an `AbstractStagedModel`,
     # regardless of where they appear in the model hierarchy.
     #
-    # The label should be unique across all models it will be registered with.
-    invalid_labels = jax.tree_util.tree_reduce(
+    # The label should be unique across all models and tasks that the intervenor 
+    # will be registered with.
+    invalid_labels_models = jax.tree_util.tree_reduce(
         lambda x, y: x + y,
         jax.tree_map(
             lambda model: model._step._all_intervenor_labels, 
@@ -491,9 +540,19 @@ def schedule_intervenor(
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
+    invalid_labels_tasks = jax.tree_util.tree_reduce(   
+        lambda x, y: x + y,
+        jax.tree_map(
+            lambda task: tuple(task.intervention_spec.keys()), 
+            tasks, 
+            is_leaf=lambda x: isinstance(x, AbstractTask),
+        ),
+        is_leaf=lambda x: isinstance(x, tuple),
+    )
+    invalid_labels = set(invalid_labels_models + invalid_labels_tasks)
     label = get_unique_label(intervenor.label, invalid_labels)    
     
-    # Construct training and validation intervention specs, and add to task instance.
+    # Construct training and validation intervention specs
     if intervenor_spec is not None:
         intervention_specs = {
             label: intervenor_spec
@@ -509,18 +568,23 @@ def schedule_intervenor(
         intervention_specs_validation = intervention_specs
     elif intervenor_spec_validation is not None:
         intervention_specs_validation = {label: intervenor_spec_validation}
-        
-    task = eqx.tree_at(
-        lambda task: (
-            task.intervention_spec, 
-            task.intervention_spec_validation
+    
+    # Add the intervention specs to every task in `tasks`
+    tasks = jax.tree_map(
+        lambda task: eqx.tree_at(
+            lambda task: (
+                task.intervention_spec, 
+                task.intervention_spec_validation
+            ),
+            task,
+            (
+                task.intervention_spec | intervention_specs,
+                task.intervention_spec_validation | intervention_specs_validation,
+            ),
         ),
-        task,
-        (
-            task.intervention_spec | intervention_specs,
-            task.intervention_spec_validation | intervention_specs_validation,
-        ),
-    ) 
+        tasks, 
+        is_leaf=lambda x: isinstance(x, AbstractTask),
+    )
 
     # Instantiate the intervenor if necessary, give it the unique label, 
     # and make sure it has a single set of default param values.
@@ -529,8 +593,10 @@ def schedule_intervenor(
 
     intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor, label)   
     
+    # TODO: Should we let the user pass a `default_intervenor_spec`?
     key_example = jax.random.PRNGKey(0)
-    trial_spec_example = task.get_train_trial(key_example)
+    task_example = jax.tree_leaves(tasks, is_leaf=lambda x: isinstance(x, AbstractTask))[0]
+    trial_spec_example = task_example.get_train_trial(key_example)
     
     # Use the validation spec to construct the defaults.
     intervenor_defaults = eqx.tree_at(
@@ -560,4 +626,4 @@ def schedule_intervenor(
         is_leaf=lambda x: isinstance(x, AbstractModel),
     )
     
-    return task, models
+    return tasks, models

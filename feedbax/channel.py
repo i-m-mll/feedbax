@@ -18,7 +18,8 @@ import jax.random as jr
 from jaxtyping import Array, PyTree 
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractStagedModel, ModelStageSpec
+from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.tree import random_split_like_tree
 
 
 logger = logging.getLogger(__name__)
@@ -78,8 +79,9 @@ class Channel(AbstractStagedModel[ChannelState]):
         
     def _add_noise(self, input, state, *, key):
         noise = jax.tree_map(
-            lambda x: self.noise_std * jr.normal(key, x.shape),
+            lambda x, key: self.noise_std * jr.normal(key, x.shape),
             input,
+            random_split_like_tree(key, input),
         )
         output = jax.tree_map(lambda x, y: x + y, input, noise)
         return noise, output

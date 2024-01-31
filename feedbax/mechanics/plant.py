@@ -22,7 +22,8 @@ from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
-from feedbax.model import AbstractStagedModel, AbstractModelState, ModelStageSpec
+from feedbax.model import AbstractModelState
+from feedbax.staged import AbstractStagedModel, ModelStageSpec
 from feedbax.state import StateBounds, clip_state
 
 
