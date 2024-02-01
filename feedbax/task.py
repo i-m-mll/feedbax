@@ -187,6 +187,7 @@ class AbstractTask(eqx.Module):
     """
     loss_func: AbstractVar[AbstractLoss]
     n_steps: AbstractVar[int]
+    validation_seed: AbstractVar[int]
     
     # TODO: The following line is wrong: each entry will have the same PyTree structure as `AbstractIntervenorInput`
     # but will be filled with callables that specify a trial distribution for the leaves
@@ -218,8 +219,7 @@ class AbstractTask(eqx.Module):
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             jax.tree_map(jnp.array, other),
         ))
-        
-        #eqx.tree_pprint(tmp)
+
         return tmp
         # return jax.tree_map(
         #     lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
@@ -267,8 +267,7 @@ class AbstractTask(eqx.Module):
         May also return a pytree of auxiliary data, e.g. that would be 
         useful for plotting or analysis but not for model evaluation.
         """
-        # TODO: Don't hardcode a key here. 
-        key = jr.PRNGKey(0)
+        key = jr.PRNGKey(self.validation_seed)
         keys = jr.split(key, self.n_validation_trials)
         
         trial_specs, aux = self._validation_trials
@@ -487,6 +486,7 @@ class RandomReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
+    validation_seed: int = 0
     intervention_spec: Mapping["AbstractIntervenorInput"] = \
         field(default_factory=dict)
     intervention_spec_validation: Mapping["AbstractIntervenorInput"] = \

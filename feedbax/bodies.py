@@ -1,4 +1,4 @@
-"""Compositions of mechanics, neural networks, and channels into sensorimotor loops.
+"""Compositions of mechanics, controllers, and channels into sensorimotor loops.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -16,7 +16,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, PyTree
 
-from feedbax.channel import Channel, ChannelState
+from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import AbstractModelState, MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
@@ -30,37 +30,39 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleFeedbackState(AbstractModelState):
+    """State PyTree associated with a `SimpleFeedback` instance."""
     mechanics: "MechanicsState"
     network: "NetworkState"
     feedback: PyTree[ChannelState]
     
     
-class FeedbackSpec(eqx.Module):
+class ChannelSpec(eqx.Module):
+    """Specification for a feedback channel."""
     where: Callable[[AbstractModelState], PyTree[Array]]
     delay: int = 0
     noise_std: Optional[float] = None
     
 
-DEFAULT_FEEDBACK_SPEC = FeedbackSpec(
+DEFAULT_FEEDBACK_SPEC = ChannelSpec(
     where=lambda mechanics_state: mechanics_state.plant.skeleton,
 )
 
 
 def _convert_feedback_spec(
     feedback_spec: Union[
-        FeedbackSpec,
-        PyTree[FeedbackSpec, 'T'], 
+        ChannelSpec,
+        PyTree[ChannelSpec, 'T'], 
         PyTree[Mapping[str, Any], 'T']
     ] 
-) -> PyTree[FeedbackSpec, 'T']:
+) -> PyTree[ChannelSpec, 'T']:
     
-    if not isinstance(feedback_spec, PyTree[FeedbackSpec]):
+    if not isinstance(feedback_spec, PyTree[ChannelSpec]):
         feedback_spec_flat, feedback_spec_def = \
             eqx.tree_flatten_one_level(feedback_spec)
         
         if isinstance(feedback_spec_flat, PyTree[Mapping]):
             feedback_specs_flat = jax.tree_map(
-                lambda spec: FeedbackSpec(**spec), 
+                lambda spec: ChannelSpec(**spec), 
                 feedback_spec_flat,
                 is_leaf=lambda x: isinstance(x, Mapping),
             )
@@ -69,7 +71,7 @@ def _convert_feedback_spec(
                 feedback_specs_flat,
             )
         else:
-            return [FeedbackSpec(**feedback_spec)] 
+            return [ChannelSpec(**feedback_spec)] 
     
     return feedback_spec
         
@@ -90,14 +92,14 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     net: eqx.Module  
     mechanics: "Mechanics"
     feedback_channels: PyTree[Channel, 'T']
-    feedback_specs: PyTree[FeedbackSpec, 'T']  
+    feedback_specs: PyTree[ChannelSpec, 'T']  
     intervenors: Mapping[str, Sequence[AbstractIntervenor]]
     
     def __init__(
         self, 
         net: eqx.Module, 
         mechanics: "Mechanics", 
-        feedback_spec: Union[PyTree[FeedbackSpec], PyTree[Mapping[str, Any]]] = \
+        feedback_spec: Union[PyTree[ChannelSpec], PyTree[Mapping[str, Any]]] = \
             DEFAULT_FEEDBACK_SPEC,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Mapping[str, Sequence[AbstractIntervenor]]]] \
@@ -110,7 +112,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         self.intervenors = self._get_intervenors_dict(intervenors)
 
         # If `feedback_spec` is given as a `PyTree[Mapping]`, convert to 
-        # `PyTree[FeedbackSpec]`. 
+        # `PyTree[ChannelSpec]`. 
         #        
         # Allow nesting of mappings to one level, to allow the user to provide
         # (say) a dict of dicts.
@@ -118,7 +120,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         
         init_mechanics_state = mechanics.init()
         
-        def _build_feedback_channel(spec: FeedbackSpec):
+        def _build_feedback_channel(spec: ChannelSpec):
             return Channel(spec.delay, spec.noise_std, jnp.nan).change_input(
                 spec.where(init_mechanics_state)
             )
@@ -126,7 +128,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         self.feedback_channels = jax.tree_map(
             lambda spec: _build_feedback_channel(spec),
             feedback_specs,
-            is_leaf=lambda x: isinstance(x, FeedbackSpec),
+            is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
         self.feedback_specs = feedback_specs
 
@@ -165,7 +167,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 where_input=lambda input, state: jax.tree_map(
                     lambda spec: spec.where(state.mechanics),
                     self.feedback_specs, 
-                    is_leaf=lambda x: isinstance(x, FeedbackSpec),
+                    is_leaf=lambda x: isinstance(x, ChannelSpec),
                 ),
                 where_state=lambda state: state.feedback,  
             ),
@@ -245,7 +247,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     def get_nn_input_size(
         task: "AbstractTask", 
         mechanics: "Mechanics", 
-        feedback_spec: Union[PyTree[FeedbackSpec], PyTree[Mapping[str, Any]]] = \
+        feedback_spec: Union[PyTree[ChannelSpec], PyTree[Mapping[str, Any]]] = \
             DEFAULT_FEEDBACK_SPEC,
     ) -> int:
         """Determine how many scalar input features the neural network needs.
@@ -260,7 +262,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         example_feedback = jax.tree_map(
             lambda spec: spec.where(init_mechanics_state),
             _convert_feedback_spec(feedback_spec),
-            is_leaf=lambda x: isinstance(x, FeedbackSpec),
+            is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
         n_feedback = tree_sum_n_features(example_feedback)
         example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))[0]

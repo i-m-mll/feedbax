@@ -6,7 +6,7 @@
 
 from collections.abc import Callable
 import logging 
-from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple
+from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, get_type_hints
 
 import equinox as eqx
 import jax
@@ -131,6 +131,30 @@ def tree_sum_n_features(tree):
     )
 
 
+def tree_map(
+    f: Callable[..., Any], 
+    tree: PyTree[Any, 'T'], 
+    *rest, 
+    is_leaf: Optional[Callable[[Any], bool]] = None,
+) -> PyTree[Any, 'T']:
+    """Custom version of `jax.tree_util.tree_map`.
+    
+    The only difference is that by default, it will infer `is_leaf` from 
+    the annotation of the first argument to `f`. This is useful when mapping
+    user-defined functions over PyTrees of user-defined objects, when it is 
+    acceptable to have slightly worse performance of `tree_map` in exchange
+    for not needing to import the objects' class to be able to manually 
+    define `is_leaf` with an `isinstance` check.
+    
+    Unfortunately this doesn't work with string annotations, which I've had to 
+    use in places due to issues with circular imports, so it is not very 
+    useful at the moment...
+    """
+    if is_leaf is None:
+        is_leaf = lambda x: isinstance(x, next(iter(f.__annotations__.values())))
+    return jax.tree_map(f, tree, *rest, is_leaf=is_leaf)
+
+
 def tree_map_unzip(
     f: Callable[..., Tuple[Any, ...]], 
     tree: PyTree[Any, 'T'], 
@@ -144,12 +168,12 @@ def tree_map_unzip(
     a PyTree of tuples `(y, z)`. That is, we return a tuple of PyTrees instead 
     of a PyTree of tuples.
     """
-    results = jax.tree_map(f, tree, *rest, is_leaf=is_leaf)
+    results = tree_map(f, tree, *rest, is_leaf=is_leaf)
     return tree_unzip(results)
 
 
 def tree_unzip(
-    tree: PyTree[Any, 'T'],
+    tree: PyTree[Tuple[Any, ...], 'T'],
     is_leaf: Optional[Callable[[Any], bool]] = lambda x: isinstance(x, tuple),
 ) -> Tuple[PyTree[Any, 'T'], ...]:
     """Unzips a PyTree of tuples into a tuple of PyTrees."""

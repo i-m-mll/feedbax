@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 import io
 from itertools import zip_longest
 import logging 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -32,6 +32,9 @@ import seaborn as sns
 from feedbax.loss import LossDict
 from feedbax.state import CartesianState2D
 from feedbax.misc import corners_2d
+
+if TYPE_CHECKING:
+    from feedbax.trainer import TaskTrainerHistory
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +451,7 @@ def plot_activity_sample_units(
         
 
 def plot_losses(
-    losses: LossDict, 
+    train_history: "TaskTrainerHistory",
     xscale: str = 'log',
     yscale: str = 'log',
     cmap: str = 'Set1',
@@ -471,6 +474,8 @@ def plot_losses(
       the losses in the shape `(replicates, iteration)` from `TaskTrainer`.
     """  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    
+    losses = train_history.loss
     
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]

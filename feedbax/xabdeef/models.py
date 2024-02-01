@@ -136,7 +136,7 @@ def point_mass_NN(
     )
     body = SimpleFeedback(net, mechanics, feedback_spec=feedback_spec, key=key2)
     
-    model = SimpleIterator(body, n_steps)
+    model = Iterator(body, n_steps)
     
     return model
 

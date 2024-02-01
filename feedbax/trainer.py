@@ -368,7 +368,7 @@ class TaskTrainer(eqx.Module):
                 
                 logger.warning(msg)
                 
-                return model, train_history
+                return model, history
 
             # Checkpoint and validate, occasionally
             if batch % log_step == 0:
@@ -435,7 +435,7 @@ class TaskTrainer(eqx.Module):
          
         model = jtu.tree_unflatten(treedef_model, flat_model)
          
-        return model, train_history
+        return model, history
     
     @eqx.filter_jit
     @jax.named_scope("fbx.TaskTrainer.train_step")

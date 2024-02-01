@@ -62,13 +62,56 @@ class AbstractIterator(AbstractModel[StateT]):
         return self.step
 
 
-class Iterator(AbstractIterator[StateT]):
-    """A module that recursively applies another module for `n_steps` steps.
+class SimpleIterator(AbstractIterator[StateT]):
+    """Applies a model for `n_steps` steps, carrying state.
     
-    We automatically determine the shape of the arrays in the PyTree(s) 
-    returned by `step`, and use this to initialize empty trajectory arrays in 
-    which to store the states across all steps; `states_includes` can be used
-    to specify which states to store. By default, all are stored.
+    If memory is not an issue, this class is preferred to `Iterator` as it lacks 
+    the overhead of state partitioning, and is therefore faster. For very
+    large state PyTrees, however, it may be preferable to use `Iterator` and
+    choose which states are worth discarding, to save memory.
+    """
+    step: AbstractModel[StateT]
+    n_steps: int 
+    
+    def __init__(self, step: AbstractModel[StateT], n_steps: int):
+        self.step = step
+        self.n_steps = n_steps
+    
+    def __call__(
+        self, 
+        input,
+        state: StateT, 
+        key: Array,
+    ) -> StateT:
+        
+        keys = jr.split(key, self.n_steps - 1)
+        
+        def step(state, args): 
+            input, key = args
+            state = self.step(input, state, key)
+            return state, state
+                
+        _, states = lax.scan(
+            step,
+            state, 
+            (input, keys),
+        )
+
+        return jax.tree_map(
+            lambda state0, state: jnp.concatenate([state0[None], state], axis=0),
+            state,
+            states,
+        )
+
+
+class Iterator(AbstractIterator[StateT]):
+    """Applies a model for `n_steps` steps, carrying state, but returning
+    the history of only a subset of states.
+    
+    The shape of the arrays in the PyTree(s) returned by `step` is
+    automatically inferred, and used this to initialize empty trajectory arrays
+    in which to store the states across all steps; `states_includes` can be
+    used to specify which states to store. By default, all are stored.
     """
     step: AbstractModel[StateT]
     n_steps: int 
@@ -180,43 +223,4 @@ class Iterator(AbstractIterator[StateT]):
         return states  
 
 
-class SimpleIterator(AbstractIterator[StateT]):
-    """A simple model iterator that stores the entire state.
-    
-    If memory is not an issue, this class is preferred as lacks the overhead
-    of `Iterator` in terms of state partitioning, and is therefore faster. For 
-    large state PyTrees, however, it may be preferable to use `Iterator` and
-    choose which states are worth discarding to save memory.
-    """
-    step: AbstractModel[StateT]
-    n_steps: int 
-    
-    def __init__(self, step: AbstractModel[StateT], n_steps: int):
-        self.step = step
-        self.n_steps = n_steps
-    
-    def __call__(
-        self, 
-        input,
-        state: StateT, 
-        key: Array,
-    ) -> StateT:
-        
-        keys = jr.split(key, self.n_steps - 1)
-        
-        def step(state, args): 
-            input, key = args
-            state = self.step(input, state, key)
-            return state, state
-                
-        _, states = lax.scan(
-            step,
-            state, 
-            (input, keys),
-        )
 
-        return jax.tree_map(
-            lambda state0, state: jnp.concatenate([state0[None], state], axis=0),
-            state,
-            states,
-        )

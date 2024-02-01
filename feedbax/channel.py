@@ -6,7 +6,7 @@
 
 
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import logging
 from typing import Optional, Tuple, Union
 
@@ -18,6 +18,7 @@ import jax.random as jr
 from jaxtyping import Array, PyTree 
 
 from feedbax.intervene import AbstractIntervenor
+from feedbax.model import AbstractModelState
 from feedbax.staged import AbstractStagedModel, ModelStageSpec
 from feedbax.tree import random_split_like_tree
 
@@ -29,15 +30,23 @@ class ChannelState(eqx.Module):
     output: PyTree[Array, 'T']
     queue: Tuple[PyTree[Array, 'T'], ...]
     noise: Optional[PyTree[Array, 'T']] = None
+    
+    
+class ChannelSpec(eqx.Module):
+    """Specification for constructing channel, with `input_proto` obtained from 
+    `where`.
+    """
+    where: Callable[[AbstractModelState], PyTree[Array]]
+    delay: int = 0
+    noise_std: Optional[float] = None
 
 
 class Channel(AbstractStagedModel[ChannelState]):
-    """Distant connection implemented as a queue, with optional added noise.
+    """A connection with delay and noise.
     
-    For example, for modeling an axon, tract, or wire.
+    This can be used for modeling an axon, tract, or wire.
     
-    This uses a tuple implementation since this is significantly faster than
-    using `jnp.roll` and `.at` to shift and update a JAX array.
+    Delay is implemented as a tuple queue. 
     
     TODO: 
     - Infer delay steps from time.

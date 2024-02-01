@@ -1,17 +1,18 @@
-"""Modules that modify parts of model states.
+"""Add-ins to a model that modify its state operations.
 
-Intervenors are intended to be used with `AbstractStagedModel` to patch state
-operations onto existing models. For example, it is common to take an existing
-task and apply a certain force field on the biomechanical effector. Instead of
-rewriting the model itself, which would lead to a proliferation of model
-classes with slightly different task conditions, we can instead use
-`add_intervenor` to do surgery on the model using only a few lines of code, and
-retrieve the modified model. 
+Intervenors are intended to be used with instances of types of `AbstractStagedModel`, to
+patch state operations onto existing models. For example, it is common to take
+an existing task and apply a certain force field on the biomechanical effector.
+Instead of rewriting the biomechanical model itself, which would lead to a
+proliferation of model classes with slightly different task conditions, we can
+instead use `add_intervenor` to do surgery on the model using only a few lines
+of cod. 
 
 Likewise, since the exact parameters of an intervention often change between
-(or within) task trials, we can use `schedule_intervenor` to define the
-distribution of these parameters across trials, and do surgery on our task so
-that it will provide this information to our model trial-by-trial.
+(or within) task trials, it is convenient to be able to specify the distribution 
+of these parameters across trials. The function `schedule_intervenors` does 
+simultaneous surgery on task and model instances so that the model interventions
+are paired with their trial-by-trial parameters, as provided by the task.
 
 TODO:
 - Could just use `operation` to distinguish `NetworkClamp` from 
@@ -19,6 +20,7 @@ TODO:
 - Could enforce that `out_where = in_where` for some intervenors, in particular 
   `AddNoise`, `NetworkClamp`, and `NetworkConstantInput`. These are intended to 
   make modifications to a part of the state, not to transform between parts.
+  
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
@@ -119,7 +121,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
         params = eqx.combine(input, self.params)
         
         return jax.lax.cond(
-            params.active,
+            params.active ,
             lambda: eqx.tree_at(
                 self.out_where,
                 state, 
@@ -130,7 +132,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
                 ),
             ),
             lambda: state,
-        )
+        )        
     
     @abstractmethod
     def intervene(
@@ -520,10 +522,22 @@ def schedule_intervenor(
             for its parameters. 
         
     TODO:
+    - Generalize to scheduling multiple intervenors simultaneously.
+        - Might want to check out how Equinox handles overloaded/PyTree argument types, 
+          e.g. for `in_axes` of `eqx.filter_vmap` or something
     - If `validation_same_schedule` is `False` and no 
       `intervenor_spec_validation` is provided, what should happen? Presumably
       we should set constant `active=False` for the validation set.
     """
+    
+    # TODO: This is temporary, since we currently need to pass intervenor in a `dict`
+    # if we want to choose the model stage it's added before
+    if isinstance(intervenor, Mapping):
+        # Assume a single intervenor
+        intervenor_stage = next(iter(intervenor.keys()))
+        intervenor = next(iter(intervenor.values()))
+    else:
+        intervenor_stage = None
     
     # A unique label is needed because `AbstractTask` uses a single dict to 
     # pass intervention parameters for all intervenors in an `AbstractStagedModel`,
@@ -615,11 +629,17 @@ def schedule_intervenor(
         default_active,
     )
     
+    # TODO: This should be temporary. See TODO at start of function
+    if intervenor_stage is None:
+        intervenors = [intervenor_final]
+    else:
+        intervenors = {intervenor_stage: [intervenor_final]}        
+    
     # Add the intervenor to all of the models.
     models = jax.tree_map(
         lambda model: add_intervenors(
             model, 
-            [intervenor_final], 
+            intervenors, 
             where=model_where,
         ),
         models, 
