@@ -226,10 +226,13 @@ class TaskTrainer(eqx.Module):
                 lambda x: 0 if eqx.is_array(x) else None, 
                 model,
             )
-            evaluate = eqx.filter_vmap(task.eval, in_axes=(model_array_spec, 0)) 
+            evaluate = eqx.filter_vmap(
+                task.eval_with_losses, 
+                in_axes=(model_array_spec, 0)
+            ) 
         else:
             train_step = self.train_step
-            evaluate = task.eval
+            evaluate = task.eval_with_losses
            
         # Finish the JIT compilation before the first training iteration.
         if not jax.config.jax_disable_jit:
@@ -399,8 +402,8 @@ class TaskTrainer(eqx.Module):
                 
                 if self._use_tb:
                     # TODO: register plots instead of hard-coding
-                    trial_specs, _ = task.validation_trials
-                    fig, _ = plot.plot_pos_vel_force_2D(
+                    trial_specs = task.validation_trials
+                    fig, _ = plot.plot_reach_trajectories(
                         states_plot,
                         endpoints=(
                             trial_specs.init['mechanics.effector'].pos, 
@@ -477,7 +480,7 @@ class TaskTrainer(eqx.Module):
         keys_init = jr.split(key_init, batch_size)
         keys_model = jr.split(key_model, batch_size)  
         
-        trial_specs, _ = jax.vmap(task.get_train_trial)(keys_trials)
+        trial_specs = jax.vmap(task.get_train_trial)(keys_trials)
         
         model = jtu.tree_unflatten(treedef_model, flat_model)
         

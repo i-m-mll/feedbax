@@ -24,7 +24,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter
 from feedbax.networks import SimpleNetwork
-from feedbax.task import AbstractTask, RandomReaches
+from feedbax.task import AbstractTask, SimpleReaches
 from feedbax.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
 
@@ -36,7 +36,7 @@ N_DIM = 2
 DEFAULT_LEARNING_RATE = 0.01
 
 
-class ContextManager(eqx.Module):
+class TrainingContext(eqx.Module):
     """Simple interface to pre-built models, losses, and tasks.
     
     Not sure about naming... `Model` conflicts with references to
@@ -59,7 +59,7 @@ class ContextManager(eqx.Module):
         batch_size,
         *,
         learning_rate: float = DEFAULT_LEARNING_RATE,
-        log_step=100,
+        log_step=None,
         optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
         key: jax.Array,
         **kwargs,
@@ -72,6 +72,9 @@ class ContextManager(eqx.Module):
             optimizer=optimizer,
             checkpointing=True,
         )
+        
+        if log_step is None:
+            log_step = n_batches // 10
         
         """Train the model on the task."""
         return trainer(
@@ -87,7 +90,7 @@ class ContextManager(eqx.Module):
         )
     
 
-def point_mass_NN(
+def point_mass_nn(
     task,
     key: Optional[jax.Array] = None,
     dt: float = 0.05, 
@@ -136,27 +139,54 @@ def point_mass_NN(
     )
     body = SimpleFeedback(net, mechanics, feedback_spec=feedback_spec, key=key2)
     
-    model = Iterator(body, n_steps)
+    model = SimpleIterator(body, n_steps)
     
     return model
 
 
-def point_mass_NN_simple_reaches(
-    n_replicates: int = 1,
+def point_mass_nn_simple_reaches(
     n_steps: int = 100, 
     dt: float = 0.05, 
     mass: float = 1., 
     workspace = ((-1., -1.),
                  (1., 1.)),
-    hidden_size: int = 50, 
     encoding_size: Optional[int] = None,
+    hidden_size: int = 50, 
     hidden_type: eqx.Module = eqx.nn.GRUCell,
+    where_train: Optional[Callable] = lambda model: model.step.net,
     feedback_delay_steps: int = 0,
-    eval_grid_n: int = 2,
+    n_replicates: int = 1,
+    eval_grid_n: int = 1,
+    eval_n_directions: int = 7,
     *,
     key: jax.Array,
 ):
-    """
+    """A simple reach task paired with a simple point mass-neural network model.
+    
+    Arguments:
+    
+    - `n_steps` is the number of time steps in each trial.
+    - `dt` is the duration of each time step.
+    - `mass` is the mass of the point mass.
+    - `workspace` gives the bounds of the rectangular workspace.
+    - `encoding_size` is the number of units in the encoding layer of the 
+    network. Defaults to `None` (no encoding layer).
+    - `hidden_size` is the number of units in the hidden layer of the network.
+    - `hidden_type` is the type of the hidden layer of the network. Defaults to 
+    a GRU cell.
+    - `where_train` is a function that takes a model and returns the part of
+    the model that should be trained.
+    - `feedback_delay_steps` is the number of time steps by which sensory 
+    feedback is delayed. Defaults to 0.
+    - `n_replicates` is the number of models to generate, with different random 
+    initializations.
+    - `eval_grid_n` is the number of grid points for center-out reaches in the 
+    validation task. For example, a value of 2 gives a grid of 2x2=4 center-out 
+    reach sets. Defaults to 1.
+    - `eval_n_directions` is the number of evenly-spread reach directions per 
+    set of center-out reaches. 
+    - `key` is a `jax.random.PRNGKey` that determines the pseudo-random 
+    numbers used to initialize the model(s).
     
     TODO: 
     - It would be nice to avoid the vmapping overhead when not ensembling.
@@ -166,17 +196,17 @@ def point_mass_NN_simple_reaches(
       `xabdeef` for the two cases?
     """
     
-    task = RandomReaches(
+    task = SimpleReaches(
         loss_func=simple_reach_loss(n_steps),
         workspace=workspace, 
         n_steps=n_steps,
         eval_grid_n=eval_grid_n,
-        eval_n_directions=8,
+        eval_n_directions=eval_n_directions,
         eval_reach_length=0.5,    
     )
     
     if n_replicates == 1:
-        model = point_mass_NN(
+        model = point_mass_nn(
             task,
             key=key,
             dt=dt,
@@ -191,7 +221,7 @@ def point_mass_NN_simple_reaches(
     elif n_replicates > 1:
         model = get_model_ensemble(
             partial(
-                point_mass_NN,
+                point_mass_nn,
                 task,
                 dt=dt,
                 mass=mass,
@@ -208,13 +238,9 @@ def point_mass_NN_simple_reaches(
     else:
         raise ValueError("n_replicates must be an integer >= 1")
     
-    where_train = lambda model: model.step.net
-    
-    manager = ContextManager(
+    return TrainingContext(
         model=model,
         task=task,
         where_train=where_train,
         ensembled=ensembled,
     )
-    
-    return manager

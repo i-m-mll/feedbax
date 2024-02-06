@@ -35,13 +35,6 @@ class SimpleFeedbackState(AbstractModelState):
     network: "NetworkState"
     feedback: PyTree[ChannelState]
     
-    
-class ChannelSpec(eqx.Module):
-    """Specification for a feedback channel."""
-    where: Callable[[AbstractModelState], PyTree[Array]]
-    delay: int = 0
-    noise_std: Optional[float] = None
-    
 
 DEFAULT_FEEDBACK_SPEC = ChannelSpec(
     where=lambda mechanics_state: mechanics_state.plant.skeleton,
@@ -265,7 +258,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
         n_feedback = tree_sum_n_features(example_feedback)
-        example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))[0]
+        example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))
         n_task_inputs = tree_sum_n_features(example_trial_spec.input)
         return n_feedback + n_task_inputs
     

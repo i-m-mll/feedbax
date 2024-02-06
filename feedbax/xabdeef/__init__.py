@@ -1,1 +1,1 @@
-from .models import point_mass_NN_simple_reaches
+from .models import point_mass_nn_simple_reaches

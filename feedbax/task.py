@@ -143,34 +143,43 @@ class AbstractTaskTrialSpec(eqx.Module):
     #                        PyTree[Array]]
     input: AbstractVar[AbstractTaskInput]
     target: AbstractVar[PyTree[Array]]
-    intervene: AbstractVar[Optional[Mapping[str, Array]]] 
+    intervene: AbstractVar[Mapping[str, Array]]
 
 
-class SimpleReachTaskInput(AbstractTaskInput):
-    stim: Float[Array, "time 1"]  #! column vector: why here?
-    
-
-class DelayedReachTaskInput(AbstractTaskInput):
-    stim: Float[Array, "time 1"]
-    hold: Int[Array, "time 1"]
-    stim_on: Int[Array, "time 1"]
-
-
-# TODO: this same trial spec also applies to tracking and stabilization tasks...
-#? does it apply to all kinds of movement tasks we're interested in?
-# if so we can eliminate the `AbstractTaskTrialSpec`
-class ReachTrialSpec(AbstractTaskTrialSpec):
-    init: InitSpecDict
-    # init: OrderedDict[Callable[["AbstractModelState"], CartesianState2D], 
-    #                        CartesianState2D] 
-    input: AbstractTaskInput
-    target: CartesianState2D
-    intervene: Mapping[str, jax.Array] = field(default_factory=dict)
+class AbstractReachTrialSpec(AbstractTaskTrialSpec):
+    init: AbstractVar[InitSpecDict]
+    input:  AbstractVar[AbstractTaskInput]
+    target:  AbstractVar[CartesianState2D]
+    intervene:  AbstractVar[Mapping[str, jax.Array]] 
     
     @cached_property
     def goal(self):
         return jax.tree_map(lambda x: x[:, -1], self.target)  
+    
 
+class SimpleReachTaskInput(AbstractTaskInput):
+    stim: Float[Array, "time 1"]  #! column vector: why here?
+    
+class DelayedReachTaskInput(eqx.Module):
+    stim: PyTree[Float[Array, "time ..."]]
+    hold: Int[Array, "time 1"]  # TODO: do these need to be typed as column vectors, here?
+    stim_on: Int[Array, "time 1"]
+
+
+class SimpleReachTrialSpec(AbstractReachTrialSpec):
+    init: InitSpecDict
+    input: AbstractTaskInput
+    target: CartesianState2D
+    intervene: Mapping[str, jax.Array] = field(default_factory=dict)
+
+
+class DelayedReachTrialSpec(AbstractReachTrialSpec):
+    init: InitSpecDict
+    input: AbstractTaskInput
+    target: CartesianState2D
+    epoch_start_idxs: Int[Array, "n_epochs"]
+    intervene: Mapping[str, jax.Array] = field(default_factory=dict)
+    
 
 class AbstractTask(eqx.Module):
     """Abstract base class for tasks.
@@ -215,30 +224,19 @@ class AbstractTask(eqx.Module):
             lambda x: eqx.is_array(x) and len(x.shape) > 0 and x.shape[0] == self.n_steps - 1
         )
         
-        tmp = eqx.combine(timeseries, jax.tree_map(
+        return eqx.combine(timeseries, jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             jax.tree_map(jnp.array, other),
         ))
 
-        return tmp
-        # return jax.tree_map(
-        #     lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
-        #     jax.tree_map(jnp.array, intervention_params),
-        # )
-
-
     def get_train_trial(
         self, 
         key: jax.Array,
-    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+    ) -> AbstractTaskTrialSpec:
         """Return a single training trial for the task.
-        
-        May also return a pytree of auxiliary data, e.g. that would be 
-        useful for plotting or analysis but not for model training or
-        evaluation.
         """
         key, key_intervene = jr.split(key)
-        trial_spec, aux = self._get_train_trial(key)  
+        trial_spec = self._get_train_trial(key)  
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
             trial_spec,
@@ -249,28 +247,25 @@ class AbstractTask(eqx.Module):
             ),
             is_leaf=lambda x: x is None,
         )      
-        return trial_spec, aux
+        return trial_spec
     
     @abstractmethod 
     def _get_train_trial(
         self,
         key: jax.Array,
-    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+    ) -> AbstractTaskTrialSpec:
         ...
     
     @property
     def validation_trials(
         self
-    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+    ) -> AbstractTaskTrialSpec:
         """Return the batch of validation trials associated with the task.
-        
-        May also return a pytree of auxiliary data, e.g. that would be 
-        useful for plotting or analysis but not for model evaluation.
         """
         key = jr.PRNGKey(self.validation_seed)
         keys = jr.split(key, self.n_validation_trials)
         
-        trial_specs, aux = self._validation_trials
+        trial_specs = self._validation_trials
         
         # TODO: Define a separate validation intervention spec.
         trial_specs = eqx.tree_at(
@@ -283,91 +278,19 @@ class AbstractTask(eqx.Module):
             ),
             is_leaf=lambda x: x is None,
         )      
-        return trial_specs, aux
+        return trial_specs
     
     @abstractmethod 
     def _validation_trials(
         self
-    ) -> Tuple[AbstractTaskTrialSpec, Optional[PyTree]]:
+    ) -> AbstractTaskTrialSpec:
         ...
     
     @abstractproperty 
     def n_validation_trials(self) -> int:
         """Size of the validation set."""
         ...
-
-    def eval(
-        self, 
-        model: "AbstractModel[StateT]", 
-        key: jax.Array,
-    ) -> Tuple[LossDict, StateT]:
-        """Evaluate a model on the task's validation set of trials."""
         
-        keys = jr.split(key, self.n_validation_trials)
-        trial_specs, _ = self.validation_trials
-        
-        return self.eval_trials(model, trial_specs, keys)
-
-    @eqx.filter_jit
-    def eval_ensemble(
-        self,
-        models,
-        n_replicates,
-        key,
-    ):
-        """Evaluate an ensemble of models on the task's validation set."""
-        models_arrays, models_other = eqx.partition(models, eqx.is_array)
-        def evaluate_single(model_arrays, model_other, key):
-            model = eqx.combine(model_arrays, model_other)
-            return self.eval(model, key)
-        keys_eval = jr.split(key, n_replicates)
-        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
-            models_arrays, models_other, keys_eval
-        )
-        
-    @eqx.filter_jit
-    def eval_train_batch(
-        self, 
-        model: "AbstractModel[StateT]", 
-        batch_size: int, 
-        key: jax.Array,
-    ) -> Tuple[Tuple[LossDict, StateT], 
-               AbstractTaskTrialSpec, 
-               PyTree]:
-        """Evaluate a model on a single batch of training trials."""
-        key_batch, key_eval = jr.split(key)
-        keys_batch = jr.split(key_batch, batch_size)
-        keys_eval = jr.split(key_eval, batch_size)
-        
-        trials, aux = jax.vmap(self.get_train_trial)(keys_batch)
-        
-        return self.eval_trials(model, trials, keys_eval), trials, aux
-    
-    @eqx.filter_jit
-    def eval_ensemble_train_batch(
-        self,
-        models: "AbstractModel[StateT]",
-        n_replicates: int,  
-        batch_size: int,
-        key: jax.Array,
-    ):
-        """Evaluate an ensemble of models on training batches.
-        
-        TODO: 
-        - Infer `n_replicates` from `models_arrays`
-        - Allow user to control whether they are evaluated on the same batch,
-          or different ones (as is currently the case).
-        - Similar functions for evaluating arbitrary trials, and validation set
-        """
-        models_arrays, models_other = eqx.partition(models, eqx.is_array)
-        def evaluate_single(model_arrays, model_other, batch_size, key):
-            model = eqx.combine(model_arrays, model_other)
-            return self.eval_train_batch(model, batch_size, key)  
-        keys_eval = jr.split(key, n_replicates)
-        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
-            models_arrays, models_other, batch_size, keys_eval
-        )
-
     @eqx.filter_jit
     @jax.named_scope("fbx.AbstractTask.eval_trials")
     def eval_trials(
@@ -404,6 +327,90 @@ class AbstractTask(eqx.Module):
         )
         
         return losses, states
+
+    def eval_with_losses(
+        self, 
+        model: "AbstractModel[StateT]", 
+        key: jax.Array,
+    ) -> Tuple[LossDict, StateT]:
+        """Evaluate a model on the task's validation set of trials.
+        
+        Return the losses as well as the evaluated states.
+        """
+        
+        keys = jr.split(key, self.n_validation_trials)
+        trial_specs = self.validation_trials
+        
+        return self.eval_trials(model, trial_specs, keys)
+    
+    def eval(
+        self,
+        model: "AbstractModel[StateT]", 
+        key: jax.Array,
+    ) -> StateT:
+        """Evaluate a model on the task's validation set of trials."""
+        return self.eval_with_losses(model, key)[0]
+
+    @eqx.filter_jit
+    def eval_ensemble(
+        self,
+        models,
+        n_replicates,
+        key,
+    ):
+        """Evaluate an ensemble of models on the task's validation set."""
+        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        def evaluate_single(model_arrays, model_other, key):
+            model = eqx.combine(model_arrays, model_other)
+            return self.eval(model, key)
+        keys_eval = jr.split(key, n_replicates)
+        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
+            models_arrays, models_other, keys_eval
+        )
+        
+    @eqx.filter_jit
+    def eval_train_batch(
+        self, 
+        model: "AbstractModel[StateT]", 
+        batch_size: int, 
+        key: jax.Array,
+    ) -> Tuple[Tuple[LossDict, StateT], 
+               AbstractTaskTrialSpec]:
+        """Evaluate a model on a single batch of training trials."""
+        key_batch, key_eval = jr.split(key)
+        keys_batch = jr.split(key_batch, batch_size)
+        keys_eval = jr.split(key_eval, batch_size)
+        
+        trials = jax.vmap(self.get_train_trial)(keys_batch)
+        
+        return self.eval_trials(model, trials, keys_eval), trials
+    
+    @eqx.filter_jit
+    def eval_ensemble_train_batch(
+        self,
+        models: "AbstractModel[StateT]",
+        n_replicates: int,  
+        batch_size: int,
+        key: jax.Array,
+    ):
+        """Evaluate an ensemble of models on training batches.
+        
+        TODO: 
+        - Infer `n_replicates` from `models_arrays`
+        - Allow user to control whether they are evaluated on the same batch,
+          or different ones (as is currently the case).
+        - Similar functions for evaluating arbitrary trials, and validation set
+        """
+        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        def evaluate_single(model_arrays, model_other, batch_size, key):
+            model = eqx.combine(model_arrays, model_other)
+            return self.eval_train_batch(model, batch_size, key)  
+        keys_eval = jr.split(key, n_replicates)
+        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
+            models_arrays, models_other, batch_size, keys_eval
+        )
+
+
 
 
 def _pos_only_states(
@@ -468,7 +475,7 @@ def _forceless_task_inputs(
     )
 
 
-class RandomReaches(AbstractTask):
+class SimpleReaches(AbstractTask):
     """Reaches between random endpoints in a rectangular workspace.
     
     Validation set is center-out reaches. 
@@ -498,11 +505,11 @@ class RandomReaches(AbstractTask):
     N_DIM = 2
     
     @eqx.filter_jit
-    @jax.named_scope("fbx.RandomReaches.get_train_trial")
+    @jax.named_scope("fbx.SimpleReaches.get_train_trial")
     def _get_train_trial(
         self, 
         key: jax.Array
-    ) -> tuple[ReachTrialSpec, None]:
+    ) -> SimpleReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace.
         """
         
@@ -533,16 +540,16 @@ class RandomReaches(AbstractTask):
         #         effector_init_state,
         #     )
         
-        return ReachTrialSpec(
+        return SimpleReachTrialSpec(
             init=InitSpecDict({
                lambda state: state.mechanics.effector: effector_init_state 
             }),
             input=task_input, 
             target=effector_target_state,
-        ), None
+        )
         
     @cached_property
-    def _validation_trials(self) -> tuple[ReachTrialSpec, None]:
+    def _validation_trials(self) -> SimpleReachTrialSpec:
         """Center-out reaches across a regular workspace grid."""
         
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -570,24 +577,18 @@ class RandomReaches(AbstractTask):
             effector_target_states,
         ))
         
-        return ReachTrialSpec(
+        return SimpleReachTrialSpec(
             init=InitSpecDict({
                lambda state: state.mechanics.effector: effector_init_states 
             }),
             input=task_inputs, 
             target=effector_target_states,
-        ), None
+        )
         
     @property
     def n_validation_trials(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n ** 2 * self.eval_n_directions
-
-
-class DelayTaskInput(eqx.Module):
-    stim: PyTree[Float[Array, "time ..."]]
-    hold: Int[Array, "time 1"]  # TODO: do these need to be typed as column vectors, here?
-    stim_on: Int[Array, "time 1"]
 
 
 class RandomReachesDelayed(AbstractTask):
@@ -621,7 +622,7 @@ class RandomReachesDelayed(AbstractTask):
     def _get_train_trial(
         self, 
         key: jax.Array
-    ) -> tuple[ReachTrialSpec, Int[Array, "n_epochs"]]:
+    ) -> DelayedReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace."""
         
         key1, key2 = jr.split(key)
@@ -637,19 +638,17 @@ class RandomReachesDelayed(AbstractTask):
                 effector_init_state, effector_target_state, key2
             )      
         
-        return (
-            ReachTrialSpec(
-                init=InitSpecDict({
-                    lambda state: state.mechanics.effector: effector_init_state 
-                }),
-                input=task_inputs, 
-                target=effector_target_states,
-            ), 
-            epoch_start_idxs,
+        return DelayedReachTrialSpec(
+            init=InitSpecDict({
+                lambda state: state.mechanics.effector: effector_init_state 
+            }),
+            input=task_inputs, 
+            target=effector_target_states,
+            epoch_start_idxs=epoch_start_idxs,
         )
         
     @cached_property
-    def _validation_trials(self):
+    def _validation_trials(self) -> DelayedReachTrialSpec:
         """Center-out reaches across a regular workspace grid."""
         
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -667,15 +666,13 @@ class RandomReachesDelayed(AbstractTask):
             effector_init_states, effector_target_states, epochs_keys
         )    
            
-        return (
-            ReachTrialSpec(
-                init=InitSpecDict({
-                    lambda state: state.mechanics.effector: effector_init_states 
-                }),
-                input=task_inputs, 
-                target=effector_target_states,
-            ), 
-            epoch_start_idxs,
+        return SimpleReachTrialSpec(
+            init=InitSpecDict({
+                lambda state: state.mechanics.effector: effector_init_states 
+            }),
+            input=task_inputs, 
+            target=effector_target_states,
+            epoch_start_idxs=epoch_start_idxs,
         )
     
     def get_sequences(
@@ -683,7 +680,7 @@ class RandomReachesDelayed(AbstractTask):
         init_states: CartesianState2D, 
         target_states: CartesianState2D, 
         key: jax.Array,
-    ) -> Tuple[DelayTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
+    ) -> Tuple[DelayedReachTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
         
         TODO: This could be split up?
@@ -715,7 +712,7 @@ class RandomReachesDelayed(AbstractTask):
             epoch_start_idxs, self.n_steps, 1., self.hold_epochs
         )
         
-        task_input = DelayTaskInput(stim_seqs, hold_seq, stim_on_seq)
+        task_input = DelayedReachTaskInput(stim_seqs, hold_seq, stim_on_seq)
         target_states = target_seqs
         
         return task_input, target_states, epoch_start_idxs  
@@ -744,11 +741,11 @@ class Stabilization(AbstractTask):
     N_DIM = 2
     
     @eqx.filter_jit
-    @jax.named_scope("fbx.RandomReaches.get_train_trial")
+    @jax.named_scope("fbx.SimpleReaches.get_train_trial")
     def get_train_trial(
         self, 
         key: jax.Array
-    ) -> tuple[ReachTrialSpec, None]:
+    ) -> SimpleReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace.
         """
         
@@ -768,16 +765,16 @@ class Stabilization(AbstractTask):
         )
         task_input = _forceless_task_inputs(target_state)
         
-        return ReachTrialSpec(
+        return SimpleReachTrialSpec(
             init=InitSpecDict({
                 lambda state: state.mechanics.effector: init_state
             }),
             input=task_input, 
             target=target_state
-        ), None
+        )
         
     @cached_property
-    def validation_trials(self) -> tuple[ReachTrialSpec, None]:
+    def validation_trials(self) -> SimpleReachTrialSpec:
         """Center-out reaches across a regular workspace grid."""
         
         if self.eval_workspace is None:
@@ -807,13 +804,13 @@ class Stabilization(AbstractTask):
         
         task_inputs = _forceless_task_inputs(target_states)
         
-        return ReachTrialSpec(
+        return SimpleReachTrialSpec(
             init=InitSpecDict({
                 lambda state: state.mechanics.effector: init_states 
             }),
             input=task_inputs,
             target=target_states
-        ), None
+        )
     
     def n_validation_trials(self) -> int:
         """Size of the validation set."""

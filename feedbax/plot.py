@@ -32,6 +32,7 @@ import seaborn as sns
 from feedbax.loss import LossDict
 from feedbax.state import CartesianState2D
 from feedbax.misc import corners_2d
+from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 
 if TYPE_CHECKING:
     from feedbax.trainer import TaskTrainerHistory
@@ -255,16 +256,17 @@ def plot_planes(
     return axs,
 
 
-def plot_pos_vel_force_2D(
+def plot_reach_trajectories(
     states: PyTree[Float[Array, "batch time ..."] | Any],
     step: int = 1,  # plot every step-th trial
     leaf_func: Optional[Callable] = None,
-    endpoints: Optional[Tuple[Float[Array, "batch xy"],
-                              Float[Array, "batch xy"]]] = None, 
+    endpoints: Optional[Tuple[Float[Array, "batch xy=2"],
+                              Float[Array, "batch xy=2"]]] = None, 
+    trial_specs: Optional[AbstractTaskTrialSpec] = None,
     straight_guides: bool = False,
     force_labels: Optional[Tuple[str, str, str]] = None,
     force_label_type: str = 'linear',
-    cmap: str = 'viridis',
+    cmap: Optional[str] = None,
     color: Optional[str | Tuple[float, ...]] = None,
     colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
@@ -273,11 +275,14 @@ def plot_pos_vel_force_2D(
     ms_source: int = 6, 
     ms_target: int = 7,
 ):
-    """Plot trajectories of position, velocity, network output in 2D subplots.
+    """Plot trajectories of position, velocity, network output.
+    
+    Arguments:
+    - `states` is a PyTree of arrays, with the first dimension being batch.
     
     - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
     - First dim is batch, second dim is time step.
-    """
+    """    
     if leaf_func is None:
         positions, velocities, controls = (
             states.mechanics.effector.pos, 
@@ -286,9 +291,23 @@ def plot_pos_vel_force_2D(
         )
     else:
         positions, velocities, controls = leaf_func(states)
+    
+    if cmap is None:
+        if positions.shape[0] < 10:
+            cmap = 'tab10'
+        else:
+            cmap = 'viridis'
         
     if endpoints is not None:
         endpoints = jnp.asarray(endpoints)
+    else:
+        if trial_specs is not None:
+            endpoints = jnp.asarray(
+                [
+                    trial_specs.init['mechanics.effector'].pos, 
+                    trial_specs.goal.pos,
+                ]
+            )
     
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
@@ -485,7 +504,7 @@ def plot_losses(
     
     xs = 1 + np.arange(len(losses.total))
         
-    total = ax.plot(xs, losses.total, 'white', lw=3)
+    total = ax.plot(xs, losses.total, 'black', lw=3)
     
     all_handles = [total]
     

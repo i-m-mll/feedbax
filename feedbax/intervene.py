@@ -609,7 +609,7 @@ def schedule_intervenor(
     
     # TODO: Should we let the user pass a `default_intervenor_spec`?
     key_example = jax.random.PRNGKey(0)
-    task_example = jax.tree_leaves(tasks, is_leaf=lambda x: isinstance(x, AbstractTask))[0]
+    task_example = jax.tree_leaves(tasks, is_leaf=lambda x: isinstance(x, AbstractTask))
     trial_spec_example = task_example.get_train_trial(key_example)
     
     # Use the validation spec to construct the defaults.
