@@ -416,7 +416,7 @@ def add_intervenors(
     model: "AbstractStagedModel[StateT]", 
     intervenors: Union[Sequence[AbstractIntervenor],
                        Mapping[str, Sequence[AbstractIntervenor]]], 
-    where: Callable[["AbstractStagedModel[StateT]"], Any] = lambda model: model,
+    where: Callable[["AbstractStagedModel[StateT]"], Any] = lambda model: model.step,
     keep_existing: bool = True,
     *,
     key: Optional[jax.Array] = None
@@ -471,8 +471,8 @@ def remove_intervenors(
 def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
     models: PyTree["AbstractModel[StateT]"],  # not AbstractStagedModel because it might be wrapped in `Iterator`
-    model_where: Callable[["AbstractModel[StateT]"], Any],
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
+    where: Callable[["AbstractModel[StateT]"], Any] = lambda model: model.step,
     validation_same_schedule: bool = True,
     intervenor_spec: Optional[AbstractIntervenorInput] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
     intervenor_spec_validation: Optional[AbstractIntervenorInput] = None,
@@ -489,7 +489,6 @@ def schedule_intervenor(
         schedule_intervenor(
             tasks,
             models,
-            lambda model: model.step.mechanics,
             CurlField.with_params(
                 amplitude=lambda trial_spec, *, key: jr.normal(key, (1,)),
                 active=True,
@@ -507,7 +506,7 @@ def schedule_intervenor(
         intervenor: The intervenor (or intervenor class) to schedule
         task: The task(s) in whose trials the intervention will be scheduled
         model: The model(s) to which the intervention will be added
-        model_where: Where in the model to insert the intervention
+        where: Where in the model to insert the intervention
         validation_same_schedule: Whether the interventions should be scheduled
             in the same way for the validation set as for the training set.
         intervenor_spec: The input to the intervenor, which may be 
@@ -599,7 +598,7 @@ def schedule_intervenor(
         tasks, 
         is_leaf=lambda x: isinstance(x, AbstractTask),
     )
-
+    
     # Instantiate the intervenor if necessary, give it the unique label, 
     # and make sure it has a single set of default param values.
     if isinstance(intervenor, type(AbstractIntervenor)):
@@ -609,7 +608,10 @@ def schedule_intervenor(
     
     # TODO: Should we let the user pass a `default_intervenor_spec`?
     key_example = jax.random.PRNGKey(0)
-    task_example = jax.tree_leaves(tasks, is_leaf=lambda x: isinstance(x, AbstractTask))
+    task_example = jax.tree_leaves(
+        tasks, 
+        is_leaf=lambda x: isinstance(x, AbstractTask)
+    )[0]
     trial_spec_example = task_example.get_train_trial(key_example)
     
     # Use the validation spec to construct the defaults.
@@ -640,7 +642,7 @@ def schedule_intervenor(
         lambda model: add_intervenors(
             model, 
             intervenors, 
-            where=model_where,
+            where=where,
         ),
         models, 
         is_leaf=lambda x: isinstance(x, AbstractModel),

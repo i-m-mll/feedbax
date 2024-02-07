@@ -16,7 +16,6 @@ from feedbax.loss import (
 
 
 def simple_reach_loss(
-    n_steps: int, 
     loss_term_weights: Optional[Mapping[str, float]] = None,
     discount_exp: int = 6,
 ):

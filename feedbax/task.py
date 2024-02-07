@@ -47,8 +47,7 @@ from feedbax.mapping import AbstractTransformedOrderedDict
 from feedbax.model import ModelInput
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
-    from feedbax.model import AbstractModel, AbstractModelState
-    
+    from feedbax.model import AbstractModel, AbstractModelState    
 from feedbax.state import AbstractState, CartesianState2D
 from feedbax.tree import tree_call, tree_get_idx
 
@@ -349,7 +348,7 @@ class AbstractTask(eqx.Module):
         key: jax.Array,
     ) -> StateT:
         """Evaluate a model on the task's validation set of trials."""
-        return self.eval_with_losses(model, key)[0]
+        return self.eval_with_losses(model, key)[1]
 
     @eqx.filter_jit
     def eval_ensemble(
@@ -490,9 +489,9 @@ class SimpleReaches(AbstractTask):
     - Could assume a default loss function (e.g. `loss.simple_reach_loss`)
       and allow the user to pass just `loss_term_weights`.
     """
-    loss_func: AbstractLoss
-    workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     n_steps: int
+    loss_func: AbstractLoss 
+    workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     validation_seed: int = 0
     intervention_spec: Mapping["AbstractIntervenorInput"] = \
         field(default_factory=dict)

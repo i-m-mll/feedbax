@@ -321,7 +321,7 @@ def plot_reach_trajectories(
         axs[0].plot(positions[i, :, 0], positions[i, :, 1], '.', color=colors[i], ms=ms)
         if endpoints is not None:
             if straight_guides:
-                axs[0].plot(*endpoints[:, i].T, linestyle='dashed', color=colors[i])
+                axs[0].plot(*endpoints[:, i].T, linestyle='dashed', color=colors[i], lw=0.75)
             axs[0].plot(*endpoints[0, i], linestyle='none', marker='s', fillstyle='none',
                         color=colors[i], ms=ms_source)
             axs[0].plot(*endpoints[1, i], linestyle='none', marker='o', fillstyle='none',
