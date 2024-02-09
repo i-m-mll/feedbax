@@ -7,6 +7,10 @@
 import logging 
 import logging.handlers as loghandlers
 import os 
+import warnings
+
+from feedbax.io import save, load
+
 
 # logging.config.fileConfig('../logging.conf')
 LOG_LEVEL = os.environ.get('FEEDBAX_LOG_LEVEL', 'DEBUG').upper()
@@ -25,7 +29,8 @@ formatter = logging.Formatter(
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
+logging.captureWarnings(True)
+
 logger.info('Logger configured.')
 
 
-from feedbax.io import save, load

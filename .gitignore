@@ -1,7 +1,9 @@
 .gitmessage
 COMMIT_MSG.txt
 
+# saved models
 models/
+*.eqx
 
 # data and media
 *.wav

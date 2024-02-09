@@ -25,8 +25,6 @@ TODO:
 :license: Apache 2.0. See LICENSE for details.
 """
 
-# from __future__ import annotations
-
 from abc import abstractclassmethod, abstractmethod
 from collections.abc import Mapping, Sequence, Callable
 import copy

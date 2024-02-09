@@ -20,7 +20,6 @@ TODO:
 #! Can't do this because `AbstractVar` annotations can't be stringified.
 # from __future__ import annotations
 
-
 from abc import abstractmethod, abstractproperty
 from collections.abc import Callable, Mapping
 import dis

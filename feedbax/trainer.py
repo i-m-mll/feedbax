@@ -4,8 +4,6 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from functools import wraps
@@ -374,7 +372,7 @@ class TaskTrainer(eqx.Module):
                 return model, history
 
             # Checkpoint and validate, occasionally
-            if batch % log_step == 0:
+            if batch % log_step == 0 or batch == n_batches - 1:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
                 opt_state = jtu.tree_unflatten(
                     treedef_opt_state, 
@@ -427,14 +425,21 @@ class TaskTrainer(eqx.Module):
                 # TODO: https://stackoverflow.com/a/69145493
                 if not disable_tqdm:
                     tqdm.write(f"\nTraining iteration: {batch}", file=sys.stdout)
-                    tqdm.write(f"\t{ensembled_str}training loss: "
-                               + f"{losses_mean.total:{LOSS_FMT}}".capitalize(), 
+                    tqdm.write(f"\t{ensembled_str}training loss: ".capitalize()
+                               + f"{losses_mean.total:{LOSS_FMT}}", 
                                file=sys.stdout)
-                    tqdm.write(f"\t{ensembled_str}validation loss: "
-                               + f"{losses_val_mean.total:{LOSS_FMT}}".capitalize(), 
+                    tqdm.write(f"\t{ensembled_str}validation loss: ".capitalize()
+                               + f"{losses_val_mean.total:{LOSS_FMT}}", 
                                file=sys.stdout)
                     # if learning_rate is not None:                    
                     #     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
+                    
+        tqdm.write(
+            "\nCompleted training run on a total of " 
+            + f"{n_batches * batch_size:,} trials"
+            + f"{' per model' if ensembled else ''}.", 
+            file=sys.stdout
+        )
          
         model = jtu.tree_unflatten(treedef_model, flat_model)
          
@@ -658,65 +663,6 @@ def grad_wrap_task_loss_func(
         return losses.total, (losses, states)
     
     return wrapper 
-
-
-def save(
-    tree: PyTree[eqx.Module],
-    hyperparameters: Optional[dict] = None, 
-    path: Optional[str | Path] = None,
-    save_dir: str | Path = Path('.'),
-    suffix: Optional[str] = None,
-) -> Path:
-    """Save a PyTree to disk along with hyperparameters.
-    
-    If a path is not specified, a filename will be generated from the current 
-    time and the commit ID of the `feedbax` repository, and the file will be 
-    saved in `save_dir`, which defaults to the current working directory.
-    
-    Assumes none of the hyperparameters are JAX arrays, as these are not 
-    JSON serializable.
-    
-    Based on https://docs.kidger.site/equinox/examples/serialisation/
-    
-    TODO: 
-    - If we leave in the git hash label, allow the user to specify the directory.
-    """
-    
-    if path is None:      
-        # TODO: move to separate function maybe
-        timestr = datetime.today().strftime("%Y%m%d-%H%M%S") 
-        commit_id = git_commit_id()
-        name = f"model_{timestr}_{commit_id}"
-        if suffix is not None:
-            name += f"_{suffix}"
-        path = Path(save_dir) / f'{name}.eqx'
-    
-    with open(path, 'wb') as f:
-        hyperparam_str = json.dumps(hyperparams)
-        f.write((hyperparam_str + '\n').encode())
-        eqx.tree_serialise_leaves(f, tree)
-    
-    return path
-    
-
-def load(
-    filename: Path | str, 
-    setup_func: Callable[[Any], PyTree[eqx.Module | Any, 'T']],
-) -> PyTree[eqx.Module | Any, 'T']:
-    """Setup a PyTree from stored state and hyperparameters.
-    
-    TODO: 
-    - Could provide a simple interface to show the most recently saved files in 
-      a directory, according to the default naming rules from `save`.
-    """
-    with open(filename, "rb") as f:
-        hyperparams = json.loads(f.readline().decode())
-        if hyperparams is None:
-            hyperparams = dict()
-        tree = setup_func(**hyperparams)
-        tree = eqx.tree_deserialise_leaves(f, tree)
-    
-    return tree
     
 
 def mask_diagonal(array):
