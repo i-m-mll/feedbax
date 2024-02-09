@@ -472,6 +472,7 @@ def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
     models: PyTree["AbstractModel[StateT]"],  # not AbstractStagedModel because it might be wrapped in `Iterator`
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
+    # TODO: intervenor_validation
     where: Callable[["AbstractModel[StateT]"], Any] = lambda model: model.step,
     validation_same_schedule: bool = True,
     intervenor_spec: Optional[AbstractIntervenorInput] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
@@ -513,8 +514,7 @@ def schedule_intervenor(
             a constant, or a callable that is used by `task` to construct the 
             intervention parameters for each trial.
         intervenor_spec_validation: Same as `intervenor_spec`, but for the 
-            task's validation set. Only applies if `validation_same_schedule`
-            is `False`. 
+            task's validation set. Overrides `validation_same_schedule`.
         default_active: If the intervenor added to the model should have 
             `active=True` by default, so that the intervention will be 
             turned on even if the intervenor doesn't explicitly receives values
@@ -577,11 +577,13 @@ def schedule_intervenor(
             label: intervenor.params
         }
         
-    if validation_same_schedule:
-        intervention_specs_validation = intervention_specs
-    elif intervenor_spec_validation is not None:
+    if intervenor_spec_validation is not None:
         intervention_specs_validation = {label: intervenor_spec_validation}
-    
+    elif validation_same_schedule:
+        intervention_specs_validation = intervention_specs
+    else:
+        intervention_specs_validation = dict()
+
     # Add the intervention specs to every task in `tasks`
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(

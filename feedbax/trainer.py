@@ -662,7 +662,7 @@ def grad_wrap_task_loss_func(
 
 def save(
     tree: PyTree[eqx.Module],
-    hyperparams: Optional[dict] = None, 
+    hyperparameters: Optional[dict] = None, 
     path: Optional[str | Path] = None,
     save_dir: str | Path = Path('.'),
     suffix: Optional[str] = None,
