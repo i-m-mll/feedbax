@@ -225,12 +225,12 @@ class TaskTrainer(eqx.Module):
                 model,
             )
             evaluate = eqx.filter_vmap(
-                task.eval_with_losses, 
+                task.eval_with_loss, 
                 in_axes=(model_array_spec, 0)
             ) 
         else:
             train_step = self.train_step
-            evaluate = task.eval_with_losses
+            evaluate = task.eval_with_loss
            
         # Finish the JIT compilation before the first training iteration.
         if not jax.config.jax_disable_jit:
@@ -657,8 +657,7 @@ def grad_wrap_task_loss_func(
             keys
         )
         
-        # TODO: Maybe pass `trial_specs` entirely to `loss_func`.
-        losses = loss_func(states, trial_specs.target, trial_specs.input)
+        losses = loss_func(states, trial_specs)
         
         return losses.total, (losses, states)
     

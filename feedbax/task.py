@@ -318,15 +318,11 @@ class AbstractTask(eqx.Module):
             keys,
         ) 
         
-        losses = self.loss_func(
-            states, 
-            trial_specs.target, 
-            trial_specs.input
-        )
+        losses = self.loss_func(states, trial_specs)
         
         return losses, states
 
-    def eval_with_losses(
+    def eval_with_loss(
         self, 
         model: "AbstractModel[StateT]", 
         key: jax.Array,
@@ -347,7 +343,7 @@ class AbstractTask(eqx.Module):
         key: jax.Array,
     ) -> StateT:
         """Evaluate a model on the task's validation set of trials."""
-        return self.eval_with_losses(model, key)[1]
+        return self.eval_with_loss(model, key)[1]
 
     @eqx.filter_jit
     def eval_ensemble(

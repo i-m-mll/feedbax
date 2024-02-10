@@ -39,6 +39,7 @@ from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 import logging
 from typing import (
+    TYPE_CHECKING,
     ClassVar, 
     Optional, 
     Tuple,
@@ -53,6 +54,8 @@ from jaxtyping import Array, Float, PyTree
 
 from feedbax.misc import get_unique_label, unzip2
 from feedbax.state import HasEffectorState
+if TYPE_CHECKING: 
+    from feedbax.task import AbstractTaskTrialSpec
 
 
 logger = logging.getLogger(__name__)
@@ -95,14 +98,21 @@ class AbstractLoss(eqx.Module):
     """
     label: AbstractVar[str]
     
-    @abstractmethod
     def __call__(
         self,
         states: PyTree, 
-        targets: PyTree, 
-        task_inputs: Optional[PyTree] = None,
+        trial_specs: "AbstractTaskTrialSpec",
     ) -> LossDict:
-        ...        
+        return LossDict({self.label: self.term(states, trial_specs)})       
+    
+    @abstractmethod
+    def term(
+        self,
+        states: PyTree, 
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
+        """Calculates the value of this loss term."""
+        ...
 
     def __add__(self, other: "AbstractLoss") -> "CompositeLoss":
         return CompositeLoss(terms=(self, other), weights=(1., 1.))
@@ -244,19 +254,14 @@ class CompositeLoss(AbstractLoss):
     def __call__(
         self, 
         states: PyTree, 
-        targets: PyTree,
-        task_inputs: Optional[PyTree] = None,
+        trial_specs: "AbstractTaskTrialSpec",
     ) -> LossDict:
         
-        # evaluate loss terms and merge resulting `LossDict`s
-        losses = jtu.tree_reduce(
-            lambda x, y: x | y,
-            jax.tree_map(
-                lambda term: term(states, targets, task_inputs), 
-                self.terms,
-                is_leaf=lambda x: isinstance(x, AbstractLoss),
-            ),
-            is_leaf=lambda x: isinstance(x, LossDict),
+        # Evaluate all loss terms
+        losses = jax.tree_map(
+            lambda loss: loss.term(states, trial_specs), 
+            self.terms,
+            is_leaf=lambda x: isinstance(x, AbstractLoss),
         )
 
         # aggregate over batch 
@@ -271,6 +276,13 @@ class CompositeLoss(AbstractLoss):
             )
             
         return LossDict(losses)
+    
+    def term(
+        self,
+        states: PyTree, 
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
+        return self(states, trial_specs).total
 
 
 class EffectorPositionLoss(AbstractLoss):
@@ -296,16 +308,15 @@ class EffectorPositionLoss(AbstractLoss):
     discount_func: Optional[Callable[[int], Float[Array, "time"]]] = \
         lambda n_steps: power_discount(n_steps, discount_exp=6)[None, :]
 
-    def __call__(
+    def term(
         self, 
         states: HasEffectorState, 
-        targets: PyTree,
-        task_inputs: Optional[PyTree] = None,
-    ) -> LossDict:
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
         
-        # sum over xyz
+        # Sum over X, Y, giving the squared Euclidean distance
         loss = jnp.sum(
-            (states.mechanics.effector.pos - targets.pos) ** 2, 
+            (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, 
             axis=-1
         )
         
@@ -316,7 +327,7 @@ class EffectorPositionLoss(AbstractLoss):
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return LossDict({self.label: loss})
+        return loss
     
     #@cache
     def discount(self, n_steps):
@@ -338,12 +349,11 @@ class EffectorStraightPathLoss(AbstractLoss):
     label: str = "effector_straight_path"
     normalize_by: str = "actual"
 
-    def __call__(
+    def term(
         self, 
         states: HasEffectorState, 
-        targets: PyTree,
-        task_inputs: Optional[PyTree] = None,
-    ) -> LossDict:
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
         
         effector_pos = states.mechanics.effector.pos
         pos_diff = jnp.diff(effector_pos, axis=1)
@@ -352,37 +362,36 @@ class EffectorStraightPathLoss(AbstractLoss):
         if self.normalize_by == "actual":
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
-            final_pos = targets.pos
+            final_pos = trial_specs.target.pos
         init_final_diff = final_pos - effector_pos[:, 0]
         straight_length = jnp.linalg.norm(init_final_diff, axis=-1)
         
         loss = path_length / straight_length
         
-        return LossDict({self.label: loss})
+        return loss
 
 
 class EffectorFixationLoss(AbstractLoss):
     """"""
     label: str = "effector_fixation"
     
-    def __call__(
+    def term(
         self, 
         states: PyTree, 
-        targets: PyTree,
-        task_inputs: PyTree,
-    ) -> LossDict:
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
         
         loss = jnp.sum(
-            (states.mechanics.effector.pos - targets.pos) ** 2, 
+            (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, 
             axis=-1
         )
         
-        loss = loss * jnp.squeeze(task_inputs.hold)
+        loss = loss * jnp.squeeze(trial_specs.input.hold)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return LossDict({self.label: loss})
+        return loss
 
 
 class EffectorFinalVelocityLoss(AbstractLoss):
@@ -393,59 +402,56 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     """
     label: str = "effector_final_velocity"
 
-    def __call__(
+    def term(
         self, 
         states: PyTree, 
-        targets: PyTree,
-        task_inputs: Optional[PyTree] = None,
-    ) -> LossDict:
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
         
         loss = jnp.sum(
-            (states.mechanics.effector.vel[:, -1] - targets.vel[:, -1]) ** 2, 
+            (states.mechanics.effector.vel[:, -1] - trial_specs.target.vel[:, -1]) ** 2, 
             axis=-1
         )
         
-        return LossDict({self.label: loss})
+        return loss
 
 
 class NetworkOutputLoss(AbstractLoss):
     """"""
     label: str = "nn_output"
 
-    def __call__(
+    def term(
         self, 
         states: PyTree, 
-        #! **kwargs?
-        targets: PyTree,
-        task_inputs: Optional[PyTree] = None,
-    ) -> LossDict:
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
         
-        #loss = jnp.sum(states.network.output ** 2, axis=-1)
+        # Sum over output channels
         loss = jnp.sum(states.network.output ** 2, axis=-1)
         
-        # sum over time
+        # Sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return LossDict({self.label: loss})
+        return loss
 
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
     label: str = "nn_hidden"
 
-    def __call__(
+    def term(
         self, 
         states: PyTree, 
-        targets: PyTree,
-        task_inputs: Optional[PyTree] = None,
-    ) -> LossDict:
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
         
+        # Sum over hidden units
         loss = jnp.sum(states.network.hidden ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)
         
-        return LossDict({self.label: loss})
+        return loss
 
         
 def power_discount(n_steps, discount_exp=6):
