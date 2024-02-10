@@ -33,6 +33,12 @@ plugins:
   - search 
   - mknotebooks:  # Jupyter notebooks
       # write_markdown: true  # Write markdown files for notebooks
+      # execute: true
+      # allow_errors: true
+      # binder: true  # Enable Binder integration
+      # binder_service_name: "gh"
+      # binder_branch: "develop"
+      # binder_ui: "lab"
   - mkdocstrings:
       handlers:
           python: 
@@ -46,7 +52,19 @@ plugins:
 
 nav:
   - 'index.md'
-  - Examples:
-      - TestNB: 'tmp/8c_pm_simple_xabdeef_hi.ipynb'
-    
+  - Tutorials:
+    - Training a pre-built model: 'examples/0_train_simple.ipynb'
+    - From automatic to manual: 'examples/1_train.ipynb'
+    - PyTrees: 'examples/2_pytrees.ipynb'
+    - Intervening on a model: 'examples/3_intervening.ipynb'
+    - Designing models with stages: 'examples/4_model_stages.ipynb'
+    - Advanced interventions: 'examples/6_intervening_2.ipynb'
+    - Training ensembles of models: 'examples/7_ensembles.ipynb'
+    - Advanced analyses: 'examples/8_advanced.ipynb'
+  - Features:
+    - Saving and loading: 'examples/saving_and_loading.ipynb'
+    - Composable loss functions: 'examples/losses.ipynb'
+    - Debugging: 'examples/debugging.ipynb'
+  - API:
+    - 'api/staged.md'
   

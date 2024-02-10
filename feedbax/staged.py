@@ -79,17 +79,16 @@ class AbstractStagedModel(AbstractModel[StateT]):
     
     To define a new model, the following should be implemented:
     
-        1. A concrete subclass of `AbstractModelState` that defines the PyTree
-           structure of the full model state. The fields may be types of 
-           `AbstractModelState`, in the case of nested models.
-        2. A concrete subclass of this class with:
-            i. the appropriate components for doing state transformations;
-            either `eqx.Module`/`AbstractModel`-typed fields, or instance 
-            methods, each with the signature `input, state, *, key`;
-            ii. a `model_spec` property that specifies a series of named 
-            operations on parts of the full model state, using those component 
-            modules; and
-            iii. an `init` method that returns an initial model state.
+    1. A concrete subclass of `AbstractModelState` that defines the PyTree
+        structure of the full model state. The fields may be types of
+        `AbstractModelState`, in the case of nested models.
+    2. A concrete subclass of this class with:
+        i. the appropriate components for doing state transformations;
+        either `eqx.Module`/`AbstractModel`-typed fields, or instance methods,
+        each with the signature `input, state, *, key`; ii. a `model_spec`
+        property that specifies a series of named operations on parts of the
+        full model state, using those component modules; and iii. an `init`
+        method that returns an initial model state.
             
     The motivation behind the level of abstraction of this class is that it
     gives a name to each functional stage of a composite model, so that after 
@@ -112,25 +111,6 @@ class AbstractStagedModel(AbstractModel[StateT]):
             for (label, spec), key in zip(self._stages.items(), keys):
                 
                 key1, key2 = jr.split(key)
-                
-                if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
-                    debug_strs = [
-                        indent_str(eqx.tree_pformat(x), indent=4) 
-                        for x in 
-                            (
-                                spec.callable(self),
-                                spec.where_input(input, state),
-                                spec.where_state(state),
-                            )
-                    ]
-                    
-                    logger.debug(
-                        f"Module: {type(self).__name__} \n"
-                        f"Stage: {label} \n"
-                        f"Stage module:\n{debug_strs[0]}\n"
-                        f"Input:\n{debug_strs[1]}\n"
-                        f"Substate:\n{debug_strs[2]}\n"
-                    )                  
                 
                 for intervenor in spec.intervenors:
                     if intervenor.label in input.intervene:
@@ -158,6 +138,27 @@ class AbstractStagedModel(AbstractModel[StateT]):
                         key=key2,
                     ),
                 )
+    
+                if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
+                    debug_strs = [
+                        indent_str(eqx.tree_pformat(x), indent=4) 
+                        for x in 
+                            (
+                                spec.callable(self),
+                                spec.where_input(input, state),
+                                spec.where_state(state),
+                            )
+                    ]
+                    
+                    log_str = '\n'.join([
+                        f"Model type: {type(self).__name__}",
+                        f"Stage: \"{label}\"",
+                        f"Callable:\n{debug_strs[0]}",
+                        f"Input:\n{debug_strs[1]}",
+                        f"Substate:\n{debug_strs[2]}",
+                    ])
+                    
+                    logger.debug(f'\n{indent_str(log_str, indent=2)}\n')    
         
         return state
 
@@ -167,17 +168,17 @@ class AbstractStagedModel(AbstractModel[StateT]):
         
         Each entry in the dict has the following elements:
         
-            1. A callable (e.g. an `eqx.Module` or method) that takes `input`
-               and a substate of the model state, and returns an updated copy of 
-               that substate.
-            2. A function that selects the parts of the model input and state 
-               PyTrees that are passed to the module as its `input`. Note that 
-               parts of the state PyTree can also be passed, because they may
-               be inputs to the model stage but should not be part of the state 
-               update associated with the model stage.
-            3. A function that selects the substate PyTree out of the `StateT`
-               PyTree; i.e. the `state` passed to the module, which then returns a
-               PyTree with the same structure and array shapes/dtypes.
+        1. A callable (e.g. an `eqx.Module` or method) that takes `input`
+            and a substate of the model state, and returns an updated copy of
+            that substate.
+        2. A function that selects the parts of the model input and state 
+            PyTrees that are passed to the module as its `input`. Note that
+            parts of the state PyTree can also be passed, because they may be
+            inputs to the model stage but should not be part of the state
+            update associated with the model stage.
+        3. A function that selects the substate PyTree out of the `StateT`
+            PyTree; i.e. the `state` passed to the module, which then returns a
+            PyTree with the same structure and array shapes/dtypes.
                
         Note: It's still necessary to use `OrderedDict` because `jax.tree_util`
         sorts `dict` keys, which puts our stages out of order.
@@ -256,14 +257,14 @@ def model_spec_format(
     indent: int = 2, 
     newlines: bool = False,
 ) -> str:
-    """Return a string representation of the model specification tree.
+    """Returns a string representation of the model specification tree.
     
-    Show what is called by `model`, and by any `AbstractStagedModel`s it calls.
+    Shows what is called by `model`, and by any `AbstractStagedModel`s it calls.
     
     This assumes that the model spec is a tree/DAG. If there are cycles in 
     the model spec, this will recurse until an exception is raised.
     
-    Args:
+    Arguments:
         model: The staged model to format.
         indent: Number of spaces to indent each nested level of the tree.
         newlines: Whether to add an extra blank line between each line.
