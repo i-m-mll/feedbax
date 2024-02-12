@@ -468,20 +468,20 @@ def remove_intervenors(
 
 def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
-    models: PyTree["AbstractModel[StateT]"],  # not AbstractStagedModel because it might be wrapped in `Iterator`
+    models: PyTree["AbstractModel[StateT]"],  # not AbstractStagedModel because it might be wrapped in `ForgetfulIterator`
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
     # TODO: intervenor_validation
     where: Callable[["AbstractModel[StateT]"], Any] = lambda model: model.step,
     validation_same_schedule: bool = True,
-    intervenor_spec: Optional[AbstractIntervenorInput] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
-    intervenor_spec_validation: Optional[AbstractIntervenorInput] = None,
+    intervention_spec: Optional[AbstractIntervenorInput] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
+    intervention_spec_validation: Optional[AbstractIntervenorInput] = None,
     default_active: bool = False,
 ) -> Tuple["AbstractTask", "AbstractModel[StateT]"]:
     """Adds an intervention to a model and a task.
     
     The user can pass an intervenor instance or an intervenor class. If they
-    pass an intervenor instance but no `intervenor_spec`, the instance's
-    `params` attribute will be used as `intervenor_spec`. This can be combined
+    pass an intervenor instance but no `intervention_spec`, the instance's
+    `params` attribute will be used as `intervention_spec`. This can be combined
     with the intervenor's `with_params` constructor to quickly define the 
     schedule. For example:
     
@@ -495,10 +495,10 @@ def schedule_intervenor(
             ...
         )
     
-    If they pass an intervenor instance and an `intervenor_spec`, the
-    instance's `params` will be replaced with the `intervenor_spec` before
+    If they pass an intervenor instance and an `intervention_spec`, the
+    instance's `params` will be replaced with the `intervention_spec` before
     adding it to the model. If they pass an intervenor class but no
-    `intervenor_spec`, an error is raised due to insufficient information to
+    `intervention_spec`, an error is raised due to insufficient information to
     schedule the intervention.
     
     Args:
@@ -508,10 +508,10 @@ def schedule_intervenor(
         where: Where in the model to insert the intervention
         validation_same_schedule: Whether the interventions should be scheduled
             in the same way for the validation set as for the training set.
-        intervenor_spec: The input to the intervenor, which may be 
+        intervention_spec: The input to the intervenor, which may be 
             a constant, or a callable that is used by `task` to construct the 
             intervention parameters for each trial.
-        intervenor_spec_validation: Same as `intervenor_spec`, but for the 
+        intervention_spec_validation: Same as `intervention_spec`, but for the 
             task's validation set. Overrides `validation_same_schedule`.
         default_active: If the intervenor added to the model should have 
             `active=True` by default, so that the intervention will be 
@@ -523,7 +523,7 @@ def schedule_intervenor(
         - Might want to check out how Equinox handles overloaded/PyTree argument types, 
           e.g. for `in_axes` of `eqx.filter_vmap` or something
     - If `validation_same_schedule` is `False` and no 
-      `intervenor_spec_validation` is provided, what should happen? Presumably
+      `intervention_spec_validation` is provided, what should happen? Presumably
       we should set constant `active=False` for the validation set.
     """
     
@@ -564,19 +564,19 @@ def schedule_intervenor(
     label = get_unique_label(intervenor.label, invalid_labels)    
     
     # Construct training and validation intervention specs
-    if intervenor_spec is not None:
+    if intervention_spec is not None:
         intervention_specs = {
-            label: intervenor_spec
+            label: intervention_spec
         }
     else:
         if isinstance(intervenor, type(AbstractIntervenor)):
-            raise ValueError("Must pass intervenor_spec if intervenor is a class")
+            raise ValueError("Must pass intervention_spec if intervenor is a class")
         intervention_specs = {
             label: intervenor.params
         }
         
-    if intervenor_spec_validation is not None:
-        intervention_specs_validation = {label: intervenor_spec_validation}
+    if intervention_spec_validation is not None:
+        intervention_specs_validation = {label: intervention_spec_validation}
     elif validation_same_schedule:
         intervention_specs_validation = intervention_specs
     else:
@@ -606,7 +606,7 @@ def schedule_intervenor(
 
     intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor, label)   
     
-    # TODO: Should we let the user pass a `default_intervenor_spec`?
+    # TODO: Should we let the user pass a `default_intervention_spec`?
     key_example = jax.random.PRNGKey(0)
     task_example = jax.tree_leaves(
         tasks, 

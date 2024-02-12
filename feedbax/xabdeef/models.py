@@ -14,13 +14,13 @@ import jax
 import jax.random as jr
 
 from feedbax.bodies import SimpleFeedback
-from feedbax.mechanics.plant import SimplePlant
+from feedbax.mechanics.plant import DirectForceInput
 from feedbax.model import AbstractModel, get_model_ensemble
-from feedbax.iterate import Iterator, SimpleIterator
+from feedbax.iterate import ForgetfulIterator, Iterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter
-from feedbax.networks import SimpleNetwork
+from feedbax.networks import SimpleStagedNetwork
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def point_mass_nn(
     key1, key2 = jr.split(key)
     
     system = PointMass(mass=mass)
-    mechanics = Mechanics(SimplePlant(system), dt)
+    mechanics = Mechanics(DirectForceInput(system), dt)
     
     feedback_spec = dict(
         where=lambda state: (
@@ -67,7 +67,7 @@ def point_mass_nn(
         task, mechanics, feedback_spec=feedback_spec
     )
     
-    net = SimpleNetwork(
+    net = SimpleStagedNetwork(
         input_size,
         hidden_size,
         out_size=system.control_size, 
@@ -78,7 +78,7 @@ def point_mass_nn(
     )
     body = SimpleFeedback(net, mechanics, feedback_spec=feedback_spec, key=key2)
     
-    model = SimpleIterator(body, n_steps)
+    model = Iterator(body, n_steps)
     
     return model
 

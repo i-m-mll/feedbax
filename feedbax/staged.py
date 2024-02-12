@@ -25,9 +25,10 @@ import jax.random as jr
 from jaxtyping import Array, PyTree
 import numpy as np
 
-from feedbax.model import AbstractModel, AbstractModelState, ModelInput
+from feedbax.model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.misc import indent_str
+from feedbax.state import AbstractState
 
 if TYPE_CHECKING:
     from feedbax.task import AbstractTaskInput
@@ -39,9 +40,9 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-StateT = TypeVar("StateT", bound=AbstractModelState)
+StateT = TypeVar("StateT", bound=AbstractState)
 
-# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractModelState, Array])
+# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
 
 class ModelStageSpec(eqx.Module, Generic[StateT]):
@@ -79,9 +80,9 @@ class AbstractStagedModel(AbstractModel[StateT]):
     
     To define a new model, the following should be implemented:
     
-    1. A concrete subclass of `AbstractModelState` that defines the PyTree
+    1. A concrete subclass of `AbstractState` that defines the PyTree
         structure of the full model state. The fields may be types of
-        `AbstractModelState`, in the case of nested models.
+        `AbstractState`, in the case of nested models.
     2. A concrete subclass of this class with:
         i. the appropriate components for doing state transformations;
         either `eqx.Module`/`AbstractModel`-typed fields, or instance methods,
@@ -236,7 +237,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         
         This allows classes like `AbstractTask` and `TaskTrainer` to refer
         to methods of a single step of the model, without having to know whether
-        the model step is wrapped in an iterator; `AbstractIterator` concretes will 
+        the model step is wrapped in an ForgetfulIterator; `AbstractIterator` concretes will 
         return `self._step` instead.
         """
         return self 

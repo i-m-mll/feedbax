@@ -172,8 +172,8 @@ def plot_2D_joint_positions(
 
 
 def plot_3D_paths(
-    paths: Float[Array, "batch steps 3"], 
-    epoch_start_idxs: Int[Array, "batch epochs"],  
+    paths: Float[Array, "trial steps 3"], 
+    epoch_start_idxs: Int[Array, "trial epochs"],  
     epoch_linestyles: Tuple[str, ...],  # epochs
     cmap: str = 'tab10',
 ):
@@ -210,7 +210,7 @@ def plot_3D_paths(
 
 
 def plot_planes(
-    x: Float[Array, "batch time components"],
+    x: Float[Array, "trial time components"],
     epoch_start_idxs,  
     epoch_linestyles,  # epochs
     # marker='-o', 
@@ -257,11 +257,11 @@ def plot_planes(
 
 
 def plot_reach_trajectories(
-    states: PyTree[Float[Array, "batch time ..."] | Any],
+    states: PyTree[Float[Array, "trial time ..."] | Any],
     step: int = 1,  # plot every step-th trial
     leaf_func: Optional[Callable] = None,
-    endpoints: Optional[Tuple[Float[Array, "batch xy=2"],
-                              Float[Array, "batch xy=2"]]] = None, 
+    endpoints: Optional[Tuple[Float[Array, "trial xy=2"],
+                              Float[Array, "trial xy=2"]]] = None, 
     trial_specs: Optional[AbstractTaskTrialSpec] = None,
     straight_guides: bool = False,
     force_labels: Optional[Tuple[str, str, str]] = None,
@@ -359,7 +359,7 @@ def plot_reach_trajectories(
 
 
 def plot_trajectories(
-    states: PyTree[Float[Array, "batch time ..."] | Any],
+    states: PyTree[Float[Array, "trial time ..."] | Any],
     labels: Optional[Tuple[str, str, str]] = None,
     cmap: str = 'tab10',
     fig=None, 
@@ -414,7 +414,7 @@ def plot_activity_heatmap(
 
 
 def plot_activity_sample_units(
-    activities: Float[Array, "batch time unit"],
+    activities: Float[Array, "trial time unit"],
     n_samples: int, 
     cols: int = 2, 
     cmap: str = 'tab10', 
@@ -618,9 +618,9 @@ def plot_endpoint_pos_with_dists(
 
 
 def plot_task_and_speed_profiles(
-    speed: Float[Array, "batch time"], 
-    task_variables: Mapping[str, Float[Array, "batch time"]] = dict(), 
-    epoch_start_idxs: Optional[Int[Array, "batch epoch"]] = None,
+    speed: Float[Array, "trial time"], 
+    task_variables: Mapping[str, Float[Array, "trial time"]] = dict(), 
+    epoch_start_idxs: Optional[Int[Array, "trial epoch"]] = None,
     cmap: str = 'tab10',
     colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     **kwargs,

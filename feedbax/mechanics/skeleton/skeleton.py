@@ -12,14 +12,13 @@ import jax
 from jax import Array
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractModelState
 from feedbax.state import AbstractState, CartesianState2D
 
 
 logger = logging.getLogger(__name__)
 
 
-class AbstractSkeletonState(AbstractModelState):
+class AbstractSkeletonState(AbstractState):
     pass
 
 

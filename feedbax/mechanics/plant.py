@@ -22,15 +22,14 @@ from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
-from feedbax.model import AbstractModelState
 from feedbax.staged import AbstractStagedModel, ModelStageSpec
-from feedbax.state import StateBounds, clip_state
+from feedbax.state import AbstractState, StateBounds, clip_state
 
 
 logger = logging.getLogger(__name__)
     
     
-class PlantState(AbstractModelState):
+class PlantState(AbstractState):
     skeleton: AbstractSkeletonState
     muscles: Optional[AbstractMuscleState] = None
 
@@ -97,7 +96,7 @@ class AbstractPlant(AbstractStagedModel[PlantState]):
             return state
         
 
-class SimplePlant(AbstractPlant):
+class DirectForceInput(AbstractPlant):
     """A skeleton that is controlled by direct forces or torques.
     
     This is essentially a wrapper for `AbstractSkeleton`, to make sure a

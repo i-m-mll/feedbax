@@ -11,7 +11,7 @@ TODO:
 - Some of the private functions could be public.
 - Refactor `get_target_seq` and `get_scalar_epoch_seq` redundancy.
     - Also, the way `seq` and `seqs` are generated is similar to `states` in 
-      `Iterator.init`...
+      `ForgetfulIterator.init`...
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -46,7 +46,7 @@ from feedbax.mapping import AbstractTransformedOrderedDict
 from feedbax.model import ModelInput
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
-    from feedbax.model import AbstractModel, AbstractModelState    
+    from feedbax.model import AbstractModel    
 from feedbax.state import AbstractState, CartesianState2D
 from feedbax.tree import tree_call, tree_get_idx
 
@@ -80,7 +80,7 @@ def get_where_str(where_func: Callable) -> str:
 
 @jtu.register_pytree_node_class
 class InitSpecDict(AbstractTransformedOrderedDict[
-    Callable[["AbstractModelState"], PyTree[Array, 'T']],
+    Callable[[AbstractState], PyTree[Array, 'T']],
     PyTree[Array, 'T']
 ]):
     """An `OrderedDict` that allows attribute-accessing lambdas as keys.
@@ -137,7 +137,7 @@ class AbstractTaskInput(eqx.Module):
 
 class AbstractTaskTrialSpec(eqx.Module):
     init: AbstractVar[InitSpecDict]
-    # init: OrderedDict[Callable[["AbstractModelState"], PyTree[Array]], 
+    # init: OrderedDict[Callable[[AbstractState], PyTree[Array]], 
     #                        PyTree[Array]]
     input: AbstractVar[AbstractTaskInput]
     target: AbstractVar[PyTree[Array]]
@@ -194,20 +194,20 @@ class AbstractTask(eqx.Module):
     """
     loss_func: AbstractVar[AbstractLoss]
     n_steps: AbstractVar[int]
-    validation_seed: AbstractVar[int]
+    seed_validation: AbstractVar[int]
     
     # TODO: The following line is wrong: each entry will have the same PyTree structure as `AbstractIntervenorInput`
     # but will be filled with callables that specify a trial distribution for the leaves
-    intervention_spec: AbstractVar[Mapping["AbstractIntervenorInput"]]
-    intervention_spec_validation: AbstractVar[Mapping["AbstractIntervenorInput"]]
+    intervention_specs: AbstractVar[Mapping["AbstractIntervenorInput"]]
+    intervention_specs_validation: AbstractVar[Mapping["AbstractIntervenorInput"]]
     
     def _intervention_params(
         self, 
-        intervention_spec: Mapping["AbstractIntervenorInput"],
+        intervention_specs: Mapping["AbstractIntervenorInput"],
         trial_spec: AbstractTaskTrialSpec, 
         key: jax.Array,
     ):
-        intervention_params = tree_call(intervention_spec, trial_spec, key=key)
+        intervention_params = tree_call(intervention_specs, trial_spec, key=key)
         
         # Make sure the intervention parameters are broadcast to the right number of time steps.
         #! This assumes there won't be an intervention parameter that's an array and has a first dimension 
@@ -239,7 +239,7 @@ class AbstractTask(eqx.Module):
             lambda x: x.intervene,
             trial_spec,
             self._intervention_params(
-                self.intervention_spec, 
+                self.intervention_specs, 
                 trial_spec, 
                 key_intervene,
             ),
@@ -260,7 +260,7 @@ class AbstractTask(eqx.Module):
     ) -> AbstractTaskTrialSpec:
         """Return the batch of validation trials associated with the task.
         """
-        key = jr.PRNGKey(self.validation_seed)
+        key = jr.PRNGKey(self.seed_validation)
         keys = jr.split(key, self.n_validation_trials)
         
         trial_specs = self._validation_trials
@@ -270,7 +270,7 @@ class AbstractTask(eqx.Module):
             lambda x: x.intervene,
             trial_specs,
             eqx.filter_vmap(self._intervention_params, in_axes=(None, 0, 0))(
-                self.intervention_spec_validation,
+                self.intervention_specs_validation,
                 trial_specs, 
                 keys,
             ),
@@ -405,8 +405,6 @@ class AbstractTask(eqx.Module):
         )
 
 
-
-
 def _pos_only_states(
     pos_endpoints: Float[Array, "... ndim=2"]
 ):
@@ -487,10 +485,10 @@ class SimpleReaches(AbstractTask):
     n_steps: int
     loss_func: AbstractLoss 
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
-    validation_seed: int = 0
-    intervention_spec: Mapping["AbstractIntervenorInput"] = \
+    seed_validation: int = 0
+    intervention_specs: Mapping["AbstractIntervenorInput"] = \
         field(default_factory=dict)
-    intervention_spec_validation: Mapping["AbstractIntervenorInput"] = \
+    intervention_specs_validation: Mapping["AbstractIntervenorInput"] = \
         field(default_factory=dict)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
@@ -513,7 +511,7 @@ class SimpleReaches(AbstractTask):
             _pos_only_states(effector_pos_endpoints)
         
         # Broadcast the fixed targets to a sequence with the desired number of 
-        # time steps, since that's what `Iterator` and `Loss` will expect.
+        # time steps, since that's what `ForgetfulIterator` and `Loss` will expect.
         # Hopefully this should not use up any extra memory. 
         effector_target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
@@ -751,7 +749,7 @@ class Stabilization(AbstractTask):
         init_state = target_state
         
         # Broadcast the fixed targets to a sequence with the desired number of 
-        # time steps, since that's what `Iterator` and `Loss` will expect.
+        # time steps, since that's what `ForgetfulIterator` and `Loss` will expect.
         # Hopefully this should not use up any extra memory. 
         target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),

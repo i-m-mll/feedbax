@@ -157,7 +157,7 @@ class CompositeLoss(AbstractLoss):
     them unique. 
     
     TODO:
-    - Different aggregation schemes.
+    - Different aggregation functions.
     """
     terms: Mapping[str, AbstractLoss]
     weights: Mapping[str, float]
@@ -304,7 +304,7 @@ class EffectorPositionLoss(AbstractLoss):
     
     TODO: do we handle the temporal discount here? or return the sequence of losses
     """
-    label: str = "effector_position"
+    label: str = "Effector position"
     discount_func: Optional[Callable[[int], Float[Array, "time"]]] = \
         lambda n_steps: power_discount(n_steps, discount_exp=6)[None, :]
 
@@ -346,7 +346,7 @@ class EffectorStraightPathLoss(AbstractLoss):
     Euclidean distance between the actual initial & final states, or the 
     actual initial state & the task-specified goal state.
     """
-    label: str = "effector_straight_path"
+    label: str = "Effector path straightness"
     normalize_by: str = "actual"
 
     def term(
@@ -373,7 +373,7 @@ class EffectorStraightPathLoss(AbstractLoss):
 
 class EffectorFixationLoss(AbstractLoss):
     """"""
-    label: str = "effector_fixation"
+    label: str = "Effector maintains fixation"
     
     def term(
         self, 
@@ -400,7 +400,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     TODO:
     - For tracking, an ongoing (not just final) velocity loss might make sense
     """
-    label: str = "effector_final_velocity"
+    label: str = "Effector final velocity"
 
     def term(
         self, 
@@ -418,7 +418,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
 
 class NetworkOutputLoss(AbstractLoss):
     """"""
-    label: str = "nn_output"
+    label: str = "NN output"
 
     def term(
         self, 
@@ -437,7 +437,7 @@ class NetworkOutputLoss(AbstractLoss):
 
 class NetworkActivityLoss(AbstractLoss):
     """"""
-    label: str = "nn_hidden"
+    label: str = "NN hidden activity"
 
     def term(
         self, 

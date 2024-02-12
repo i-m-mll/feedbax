@@ -18,8 +18,8 @@ import jax.random as jr
 from jaxtyping import Array, PyTree 
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModelState
 from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.state import AbstractState
 from feedbax.tree import random_split_like_tree
 
 
@@ -36,7 +36,7 @@ class ChannelSpec(eqx.Module):
     """Specification for constructing channel, with `input_proto` obtained from 
     `where`.
     """
-    where: Callable[[AbstractModelState], PyTree[Array]]
+    where: Callable[[AbstractState], PyTree[Array]]
     delay: int = 0
     noise_std: Optional[float] = None
 

@@ -18,10 +18,11 @@ from jaxtyping import Array, PyTree
 
 from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModelState, MultiModel
+from feedbax.model import MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
 from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.state import AbstractState
 from feedbax.task import AbstractTask
 from feedbax.tree import tree_sum_n_features
 
@@ -29,7 +30,7 @@ from feedbax.tree import tree_sum_n_features
 logger = logging.getLogger(__name__)
 
 
-class SimpleFeedbackState(AbstractModelState):
+class SimpleFeedbackState(AbstractState):
     """State PyTree associated with a `SimpleFeedback` instance."""
     mechanics: "MechanicsState"
     network: "NetworkState"
@@ -210,16 +211,16 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     def memory_spec(self) -> SimpleFeedbackState:
         """Specifies which states should typically be remembered by callers.
         
-        For example, `fbx.Iterator` stores trajectories of states, however it
+        For example, `fbx.ForgetfulIterator` stores trajectories of states, however it
         doesn't usually make sense to store `states.feedback.queue` for every
         timestep, because it contains info that is already available at the level of
-        `Iterator` if `states.mechanics` is stored at every timestep. If the
-        feedback delay is 5 steps, `Iterator` could end up with 5 
+        `ForgetfulIterator` if `states.mechanics` is stored at every timestep. If the
+        feedback delay is 5 steps, `ForgetfulIterator` could end up with 5 
         extra copies of all the parts of `states.mechanics` that are part of 
         the feedback. So it may be better not to store `states.feedback.queue`.
         
-        In particular, this information will be used by `Iterator`, but will
-        be ignored by `SimpleIterator`, which remembers the full state 
+        In particular, this information will be used by `ForgetfulIterator`, but will
+        be ignored by `Iterator`, which remembers the full state 
         indiscriminately---this is faster, but may use more memory. 
         
         NOTE: It makes sense for this to be here since it has to do with the

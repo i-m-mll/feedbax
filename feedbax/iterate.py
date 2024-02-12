@@ -17,13 +17,14 @@ import jax.random as jr
 from jaxtyping import Array, PyTree, Shaped
 from tqdm.auto import tqdm
 
-from feedbax.model import AbstractModel, AbstractModelState
+from feedbax.model import AbstractModel
+from feedbax.state import AbstractState
 from feedbax.tree import tree_get_idx, tree_set_idx
 
 logger = logging.getLogger(__name__)
 
 
-StateT = TypeVar("StateT", bound=AbstractModelState)
+StateT = TypeVar("StateT", bound=AbstractState)
 # ModelT = TypeVar("ModelT", bound=AbstractModel)
 
 
@@ -35,11 +36,11 @@ class AbstractIterator(AbstractModel[StateT]):
     interested in the methods belonging to the model defined as a single step. 
     
     Some issues with inheriting from `AbstractModel`: 
-    - `Iterator.__call__` adds a batch dimension to the returned `StateT`.
+    - `ForgetfulIterator.__call__` adds a batch dimension to the returned `StateT`.
       Technically I don't think we can (should?) type this differently anyway,
       but in principle it is not the same type.
     - `AbstractModel` is a generic over a type variable `StateT` of
-      `AbstractModelState`; whereas `AbstractIterator` should be a generic over
+      `AbstractState`; whereas `AbstractIterator` should be a generic over
       `AbstractModel[StateT]`, I think. I don't know that there is a way to achieve
       this without higher-kinded types. 
       - We could make this class a generic of both `AbstractModel[StateT]` 
@@ -62,12 +63,12 @@ class AbstractIterator(AbstractModel[StateT]):
         return self.step
 
 
-class SimpleIterator(AbstractIterator[StateT]):
+class Iterator(AbstractIterator[StateT]):
     """Applies a model for `n_steps` steps, carrying state.
     
-    If memory is not an issue, this class is preferred to `Iterator` as it lacks 
+    If memory is not an issue, this class is preferred to `ForgetfulIterator` as it lacks 
     the overhead of state partitioning, and is therefore faster. For very
-    large state PyTrees, however, it may be preferable to use `Iterator` and
+    large state PyTrees, however, it may be preferable to use `ForgetfulIterator` and
     choose which states are worth discarding, to save memory.
     """
     step: AbstractModel[StateT]
@@ -104,7 +105,7 @@ class SimpleIterator(AbstractIterator[StateT]):
         )
 
 
-class Iterator(AbstractIterator[StateT]):
+class ForgetfulIterator(AbstractIterator[StateT]):
     """Applies a model for `n_steps` steps, carrying state, but returning
     the history of only a subset of states.
     
@@ -129,7 +130,7 @@ class Iterator(AbstractIterator[StateT]):
         self.n_steps = n_steps
         self.states_includes = states_includes
     
-    @jax.named_scope("fbx.Iterator")
+    @jax.named_scope("fbx.ForgetfulIterator")
     def __call__(
         self, 
         input: PyTree[Shaped[Array, "n_steps ..."]],  #! should have a batch dimension corresponding to time steps
@@ -157,7 +158,7 @@ class Iterator(AbstractIterator[StateT]):
         
         return states
 
-    @jax.named_scope("fbx.Iterator._body_func")
+    @jax.named_scope("fbx.ForgetfulIterator._body_func")
     def _body_func(self, i: int, x: Tuple) -> Tuple:
         inputs, states, key = x
         
@@ -182,7 +183,7 @@ class Iterator(AbstractIterator[StateT]):
                 
         return inputs, states, key2
 
-    @jax.named_scope("fbx.Iterator.init_arrays")
+    @jax.named_scope("fbx.ForgetfulIterator.init_arrays")
     def init_arrays(
         self, 
         input,  #! No batch dimension 

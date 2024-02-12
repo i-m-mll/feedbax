@@ -1,4 +1,4 @@
-"""Pre-built 
+"""Pairings of pre-built models and tasks for easy setup and training.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -23,16 +23,11 @@ from feedbax.xabdeef.models import point_mass_nn
 logger = logging.getLogger(__name__)
 
 
+N_LOG_STEPS_DEFAULT = 10
+
+
 class TrainingContext(eqx.Module):
-    """Simple interface to pre-built models, losses, and tasks.
-    
-    Not sure about naming... `Model` conflicts with references to
-    `AbstractModel` instances as `model` elsewhere, which would be confusing
-    to refer to as `context`. Also the task isn't part of the model, whereas a
-    task is associated with an instance of this class.
-    
-    We could choose not to associate `task` with this class. Let users choose 
-    tasks from `xabdeef.tasks` and pass them to `train`...
+    """A model-task pairing with automatic instantiation of a trainer.
     """
     model: AbstractModel 
     task: AbstractTask
@@ -61,7 +56,7 @@ class TrainingContext(eqx.Module):
         )
         
         if log_step is None:
-            log_step = n_batches // 10
+            log_step = n_batches // N_LOG_STEPS_DEFAULT
         
         """Train the model on the task."""
         return trainer(

@@ -31,15 +31,16 @@ import jax.random as jr
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import AbstractModelState, wrap_stateless_callable
+from feedbax.model import wrap_stateless_callable
 from feedbax.misc import interleave_unequal, n_positional_args  
 from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.state import AbstractState
 
 
 logger = logging.getLogger(__name__)
 
 
-StateT = TypeVar("StateT", bound=AbstractModelState)
+StateT = TypeVar("StateT", bound=AbstractState)
 
 
 @runtime_checkable
@@ -98,7 +99,7 @@ def orthogonal_gru_cell(input_size, hidden_size, use_bias=True, scale=1.0, *, ke
     return net
 
 
-class NetworkState(AbstractModelState):
+class NetworkState(AbstractState):
     """State of a neural network.
     
     TODO:
@@ -109,17 +110,20 @@ class NetworkState(AbstractModelState):
     encoding: Optional[PyTree[Array]]
 
 
-class SimpleNetwork(AbstractStagedModel[NetworkState]):
-    """A single step of a noisy neural network.
+class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
+    """A single step of a noisy neural network, with optional encoder and readout.
     
-    Has optional encoding and readout layers.
+    Any neural network type with a similar interface to `eqx.nn.GRUCell` can be 
+    used as the `hidden_type`. However, only the output of the hidden layer (typically 
+    the final layer activities) will be stored in `NetworkState` and available for 
+    intervening on.
     
     Ultimately derived from https://docs.kidger.site/equinox/examples/train_rnn/
     """
     out_size: int 
     hidden: eqx.Module
     hidden_size: int
-    noise_std: Optional[float]
+    hidden_noise_std: Optional[float]
     hidden_nonlinearity: Optional[Callable[[Float], Float]] = None
     encoder: Optional[eqx.Module] = None
     encoding_size: Optional[int] = None
@@ -140,7 +144,7 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         use_bias: bool = True,
         hidden_nonlinearity: Callable[[Float], Float] = None,
         out_nonlinearity: Callable[[Float], Float] = lambda x: x,
-        noise_std: Optional[float] = None,
+        hidden_noise_std: Optional[float] = None,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
@@ -173,7 +177,7 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
         
         self.hidden_size = hidden_size
         self.hidden_nonlinearity = hidden_nonlinearity
-        self.noise_std = noise_std 
+        self.hidden_noise_std = hidden_noise_std 
         
         if out_size is not None:
             readout = readout_type(hidden_size, out_size, use_bias=True, key=key3)
@@ -195,10 +199,10 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
     def _encode(self, input, state, *, key):
         return self.encoder(input)
     
-    def _add_state_noise(self, input, state, *, key):
-        if self.noise_std is None:
+    def _add_hidden_noise(self, input, state, *, key):
+        if self.hidden_noise_std is None:
             return state
-        return state + self.noise_std * jr.normal(key, state.shape)      
+        return state + self.hidden_noise_std * jr.normal(key, state.shape)      
     
     @cached_property
     def model_spec(self):
@@ -257,10 +261,10 @@ class SimpleNetwork(AbstractStagedModel[NetworkState]):
                 ),
             }
         
-        if self.noise_std is not None:
+        if self.hidden_noise_std is not None:
             spec |= {
                 'hidden_noise': ModelStageSpec(
-                    callable=lambda self: self._add_state_noise,
+                    callable=lambda self: self._add_hidden_noise,
                     where_input=lambda _, state: state.hidden,
                     where_state=lambda state: state.hidden,
                 ),

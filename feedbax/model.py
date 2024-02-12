@@ -22,6 +22,7 @@ import jax.random as jr
 from jaxtyping import Array, PyTree
 import numpy as np
 
+from feedbax.state import AbstractState
 from feedbax.tree import random_split_like_tree
 
 if TYPE_CHECKING:
@@ -35,13 +36,9 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class AbstractModelState(eqx.Module):
-    ...
-    
+StateT = TypeVar("StateT", bound=AbstractState)
 
-StateT = TypeVar("StateT", bound=AbstractModelState)
-
-# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractModelState, Array])
+# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
 class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     """

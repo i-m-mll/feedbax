@@ -26,8 +26,7 @@ from jaxtyping import Float, Array
 import numpy as np
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractModelState
-from feedbax.state import StateBounds
+from feedbax.state import AbstractState, StateBounds
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +76,7 @@ class ActivationFilter(AbstractDynamicalSystem):
         ... 
 
 
-class AbstractMuscleState(AbstractModelState):
+class AbstractMuscleState(AbstractState):
     activation: AbstractVar[Array]
     length: AbstractVar[Array]
     velocity: AbstractVar[Array]

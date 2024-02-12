@@ -20,7 +20,9 @@ markdown_extensions:
   - pymdownx.superfences  # Enables syntax highlighting
   # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
   - admonition
-  
+  # - toc:
+  #     permalink: 
+    
 extra_css:
   - _static/custom.css
   
@@ -59,7 +61,7 @@ nav:
     - Intervening on a model: 'examples/3_intervening.ipynb'
     - Designing models with stages: 'examples/4_model_stages.ipynb'
     - Advanced interventions: 'examples/6_intervening_2.ipynb'
-    - Training ensembles of models: 'examples/7_ensembles.ipynb'
+    - Training ensembles of models: 'examples/7_vmap.ipynb'
     - Advanced analyses: 'examples/8_advanced.ipynb'
   - Features:
     - Saving and loading: 'examples/saving_and_loading.ipynb'

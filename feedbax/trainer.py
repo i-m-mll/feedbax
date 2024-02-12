@@ -19,15 +19,16 @@ import jax
 import jax.numpy as jnp 
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float
 import optax
 from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
-from feedbax.misc import TqdmLoggingHandler, delete_contents, git_commit_id
-from feedbax.model import AbstractModel, AbstractModelState, ModelInput
+from feedbax.misc import TqdmLoggingHandler, delete_contents
+from feedbax.model import AbstractModel, ModelInput
 import feedbax.plot as plot
+from feedbax.state import AbstractState
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.tree import filter_spec_leaves, tree_get_idx, tree_set_idx
 
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(TqdmLoggingHandler())
 
 
-StateT = TypeVar("StateT", bound=AbstractModelState)
+StateT = TypeVar("StateT", bound=AbstractState)
 
 
 class TaskTrainerHistory(eqx.Module):
