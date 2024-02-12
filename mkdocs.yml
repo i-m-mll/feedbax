@@ -4,6 +4,7 @@ site_url: https://docs.lprt.ca/feedbax
 
 repo_url: https://github.com/i-m-mll/feedbax
 repo_name: i-m-mll/feedbax
+edit_uri: ""  # No edit buttons
 
 theme:
   name: material 
@@ -13,10 +14,16 @@ theme:
     - header.autohide
   icon:
     logo: "material/arm-flex"  #rotate-left, directory-sync, all-inclusive
+  palette:
+    scheme: fbx
+    
 
 markdown_extensions:
   - pymdownx.arithmatex:  # Render LaTeX via MathJax
       generic: true
+  - pymdownx.details  # Enables collapsible admonitions
+  # - pymdownx.highlight
+  - pymdownx.inlinehilite
   - pymdownx.superfences  # Enables syntax highlighting
   # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
   - admonition

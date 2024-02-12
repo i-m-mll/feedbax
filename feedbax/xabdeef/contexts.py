@@ -13,7 +13,7 @@ import equinox as eqx
 import jax
 import optax
 
-from feedbax.model import AbstractModel, get_model_ensemble
+from feedbax.model import AbstractModel, get_ensemble
 from feedbax.task import AbstractTask, SimpleReaches
 from feedbax.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -133,6 +133,7 @@ def point_mass_nn_simple_reaches(
         eval_reach_length=0.5,    
     )
     
+    # TODO: Generalize this for all pre-built models
     if n_replicates == 1:
         model = point_mass_nn(
             task,
@@ -147,7 +148,7 @@ def point_mass_nn_simple_reaches(
         )
         ensembled = False
     elif n_replicates > 1:
-        model = get_model_ensemble(
+        model = get_ensemble(
             partial(
                 point_mass_nn,
                 task,

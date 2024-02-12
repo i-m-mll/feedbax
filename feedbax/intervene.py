@@ -554,7 +554,7 @@ def schedule_intervenor(
     invalid_labels_tasks = jax.tree_util.tree_reduce(   
         lambda x, y: x + y,
         jax.tree_map(
-            lambda task: tuple(task.intervention_spec.keys()), 
+            lambda task: tuple(task.intervention_specs.keys()), 
             tasks, 
             is_leaf=lambda x: isinstance(x, AbstractTask),
         ),
@@ -586,13 +586,13 @@ def schedule_intervenor(
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
             lambda task: (
-                task.intervention_spec, 
-                task.intervention_spec_validation
+                task.intervention_specs, 
+                task.intervention_specs_validation
             ),
             task,
             (
-                task.intervention_spec | intervention_specs,
-                task.intervention_spec_validation | intervention_specs_validation,
+                task.intervention_specs | intervention_specs,
+                task.intervention_specs_validation | intervention_specs_validation,
             ),
         ),
         tasks, 

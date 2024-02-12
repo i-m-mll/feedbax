@@ -10,6 +10,7 @@ from collections.abc import (
     MutableSequence, 
     Sequence,
 )
+import difflib
 import inspect
 from itertools import zip_longest, chain
 import logging 
@@ -169,3 +170,27 @@ def get_unique_label(label: str, invalid_labels: Sequence[str]) -> str:
         label_ = f"{label}_{i}" 
         i += 1
     return label_
+
+
+def highlight_string_diff(obj1, obj2):
+    """Given two objects, give a string that highlights the differences in 
+    their string representations.
+    
+    This can be useful for identifying slight differences in large PyTrees.
+    
+    Source: https://stackoverflow.com/a/76946768    
+    """
+    str1 = repr(obj1)
+    str2 = repr(obj2)
+    
+    matcher = difflib.SequenceMatcher(None, str1, str2)
+    
+    str2_new = ""
+    i = 0
+    for m in matcher.get_matching_blocks():
+        if m.b > i:
+            str2_new += str2[i:m.b]
+        str2_new += f"\033[91m{str2[m.b:m.b + m.size]}\033[0m"
+        i = m.b + m.size
+        
+    return str2_new

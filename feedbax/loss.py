@@ -168,11 +168,28 @@ class CompositeLoss(AbstractLoss):
         terms: Mapping[str, AbstractLoss] | Sequence[AbstractLoss],
         weights: Optional[Mapping[str, float] | Sequence[float]] = None,
         label: str = "",
+        user_labels: bool = True,
     ):
+        """
+        Arguments:
+            - `terms` is the sequence or mapping of loss terms to be included.
+            - `weights` is a float PyTree of the same structure as `terms`,
+              giving the scalar term weights. By default, all terms have equal weight.
+            - `label` is the label for the composite loss.
+            - `user_labels` controls whether the keys in `terms`, if it is a mapping,
+              should be used as term labels, rather than the `label` field of each term.
+              This is useful because it may be convenient for the user to match up 
+              the PyTree structure of `terms` and `weights`, but have the option of 
+              using the default labels.
+        """
         self.label = label
         
         if isinstance(terms, dict):
-            labels, terms = list(zip(*terms.items()))
+            if user_labels:
+                labels, terms = list(zip(*terms.items()))
+            else:
+                labels = [term.label for term in terms.values()]
+                terms = list(terms.values())
         else:
             labels = [term.label for term in terms]
         

@@ -92,9 +92,7 @@ class TaskTrainer(eqx.Module):
             self.model_update_funcs = model_update_funcs
         
         self._use_tb = enable_tensorboard
-        if self._use_tb:
-            # from torch.utils.tensorboard import SummaryWriter
-            
+        if self._use_tb:           
             self.writer = SummaryWriter(tensorboard_logdir)
             # display loss terms in the same figure under "Custom Scalars"
             # layout = {

@@ -178,21 +178,22 @@ def wrap_stateless_callable(callable: Callable, pass_key=True):
     return wrapped
 
 
+T = TypeVar('T')
 Ts = TypeVarTuple("Ts")
 
 
-def get_model_ensemble(
-    get_model: Callable[[jax.Array, *Ts], eqx.Module], 
-    n_replicates: int, 
+def get_ensemble(
+    get_func: Callable[[jax.Array, *Ts], T], 
+    n_ensemble: int, 
     *args: *Ts, 
     key: jax.Array
 ) -> eqx.Module:
-    """Helper to vmap model generation over a set of PRNG keys.
+    """Helper to vmap model generation over a set of random keys.
     
     TODO: 
     - Rename. This works for stuff other than `get_model`. It's basically
       a helper to split key, then vmap function.
     """
-    keys = jr.split(key, n_replicates)
-    get_model_ = partial(get_model, *args)
-    return eqx.filter_vmap(get_model_)(keys)
+    keys = jr.split(key, n_ensemble)
+    get_func_ = partial(get_func, *args)
+    return eqx.filter_vmap(get_func_)(keys)

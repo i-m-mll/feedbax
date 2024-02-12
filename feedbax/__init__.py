@@ -11,6 +11,7 @@ import warnings
 
 from feedbax.io import save, load
 
+from feedbax.model import get_ensemble
 
 # logging.config.fileConfig('../logging.conf')
 LOG_LEVEL = os.environ.get('FEEDBAX_LOG_LEVEL', 'DEBUG').upper()

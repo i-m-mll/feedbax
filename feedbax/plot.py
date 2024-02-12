@@ -493,39 +493,35 @@ def plot_losses(
       the losses in the shape `(replicates, iteration)` from `TaskTrainer`.
     """  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    
-    losses = train_history.loss
+    ax.set(xscale=xscale, yscale=yscale)
     
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
     
-    ax.set_xscale(xscale)
-    ax.set_yscale(yscale)
+    losses = train_history.loss
     
     xs = 1 + np.arange(len(losses.total))
         
     total = ax.plot(xs, losses.total, 'black', lw=3)
     
     all_handles = [total]
-    
     for i, loss_term in enumerate(losses.values()):
         handles = ax.plot(xs, loss_term, lw=0.75, color=colors[i])
         all_handles.append(handles)
-        
-    ax.set_xlabel('Training iteration')
-    ax.set_ylabel('Loss')
-    
     ax.legend(
         # Only include the first plot for each loss term.
+        # (Don't include duplicate legend entries across batch dim.)
         [handles[0] for handles in all_handles],
         ['Total', *losses.keys()]
     )
+    
+    ax.set(xlabel='Training iteration', ylabel='Loss')
     
     return fig, ax
 
 
 def plot_mean_losses(
-    losses: LossDict,
+    train_history: "TaskTrainerHistory",
 ):
     """Similar to `plot_loss`, with mean-std over a batch dimension.
     
@@ -533,6 +529,8 @@ def plot_mean_losses(
     - This is pretty slow. Maybe there's a way to construct only one 
     dataframe.
     """
+    losses = train_history.loss
+    
     losses_terms_df = jax.tree_map(
         lambda losses: pd.DataFrame(
             losses.T, 
@@ -541,7 +539,7 @@ def plot_mean_losses(
             var_name='Time step', 
             value_name='Loss'
         ),
-        dict(losses, total=losses.total),
+        dict(losses) | {"Total": losses.total},
     )
     
     fig, ax = plt.subplots()

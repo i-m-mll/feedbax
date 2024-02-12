@@ -15,7 +15,7 @@ import jax.random as jr
 
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
-from feedbax.model import AbstractModel, get_model_ensemble
+from feedbax.model import AbstractModel, get_ensemble
 from feedbax.iterate import ForgetfulIterator, Iterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
