@@ -22,7 +22,7 @@ import equinox as eqx
 from equinox import AbstractVar
 import jax
 import jax.random as jr
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
 from feedbax.model import AbstractModel, ModelInput
@@ -45,7 +45,7 @@ StateT = TypeVar("StateT", bound=AbstractState)
 # StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
 
-class ModelStageSpec(eqx.Module, Generic[StateT]):
+class ModelStage(eqx.Module, Generic[StateT]):
     """Specification for a stage in a subclass of `AbstractStagedModel`.
     
     Each stage of a model is a callable that performs a modification to part 
@@ -102,9 +102,9 @@ class AbstractStagedModel(AbstractModel[StateT]):
         self, 
         input: ModelInput,
         state: StateT, 
-        key: Array,
+        key: PRNGKeyArray,
     ) -> StateT:
-        
+        """Smee"""
         with jax.named_scope(type(self).__name__):
             
             keys = jr.split(key, len(self._stages))
@@ -164,7 +164,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return state
 
     @abstractproperty
-    def model_spec(self) -> OrderedDict[str, ModelStageSpec]:
+    def model_spec(self) -> OrderedDict[str, ModelStage]:
         """Specifies the model in terms of substate operations.
         
         Each entry in the dict has the following elements:
@@ -187,7 +187,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         ...
   
     @cached_property 
-    def _stages(self) -> OrderedDict[str, ModelStageSpec]: 
+    def _stages(self) -> OrderedDict[str, ModelStage]: 
         """Zips up the user-defined intervenors with `model_spec`.
         
         This should not be referred to in `__init__` before assigning `self.intervenors`!
@@ -198,7 +198,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
             self.model_spec, 
             jax.tree_map(tuple, self.intervenors, 
                          is_leaf=lambda x: isinstance(x, list)),
-            is_leaf=lambda x: isinstance(x, ModelStageSpec),
+            is_leaf=lambda x: isinstance(x, ModelStage),
         )
     
     # TODO: I'm not sure we need to add intervenors, here.
@@ -209,7 +209,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         intervenors_dict = jax.tree_map(
             lambda _: [], 
             self.model_spec,
-            is_leaf=lambda x: isinstance(x, ModelStageSpec),
+            is_leaf=lambda x: isinstance(x, ModelStage),
         )
         
         if intervenors is not None:

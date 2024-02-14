@@ -12,7 +12,7 @@ import equinox as eqx
 from equinox import AbstractVar
 import jax 
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.state import AbstractState, CartesianState2D, StateBounds
 
@@ -52,7 +52,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         ...
     
     @abstractmethod
-    def init(self, *, key: Optional[Array] = None) -> StateT:
+    def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
         """Initial state of the system.
         
         TODO:
@@ -113,6 +113,6 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
     def init(
         self,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> CartesianState2D:
         return CartesianState2D()

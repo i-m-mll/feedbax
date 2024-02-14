@@ -16,13 +16,13 @@ from equinox import AbstractVar
 import jax
 from jax import Array
 import jax.numpy as jnp
-from jaxtyping import Float, PyTree
+from jaxtyping import Float, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
-from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateBounds, clip_state
 
 
@@ -72,7 +72,7 @@ class AbstractPlant(AbstractStagedModel[PlantState]):
         ...
     
     @abstractmethod
-    def init(self, *, key: Optional[jax.Array] = None) -> PlantState:
+    def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
         ...
         
     @abstractproperty 
@@ -89,7 +89,7 @@ class AbstractPlant(AbstractStagedModel[PlantState]):
             ),
         )
     
-    def _clip_state(self, input, state, *, key: Optional[Array] = None):
+    def _clip_state(self, input, state, *, key: Optional[PRNGKeyArray] = None):
         if self.clip_states:
             return clip_state(input, state)
         else:
@@ -137,7 +137,7 @@ class DirectForceInput(AbstractPlant):
     def model_spec(self):
         """Simple plants have no state updates apart from the skeletal ODE."""
         return OrderedDict({
-            "clip_skeleton_state": ModelStageSpec(
+            "clip_skeleton_state": ModelStage(
                 callable=lambda self: self._clip_state,
                 where_input=lambda input, state: self.bounds.skeleton,
                 where_state=lambda state: state.skeleton,
@@ -152,7 +152,7 @@ class DirectForceInput(AbstractPlant):
             muscles=False,
         )
     
-    def init(self, *, key: Optional[jax.Array] = None) -> PlantState:
+    def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
         return PlantState(
             skeleton=self.skeleton.init(),
             muscles=None,
@@ -194,7 +194,7 @@ class MuscledArm(AbstractPlant):
                                     Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ):
         self.skeleton = skeleton
         self.activator = activator
@@ -219,12 +219,12 @@ class MuscledArm(AbstractPlant):
     @cached_property
     def model_spec(self):
         return OrderedDict({
-            "clip_skeleton_state": ModelStageSpec(
+            "clip_skeleton_state": ModelStage(
                 callable=lambda self: self._clip_state,
                 where_input=lambda input, state: self.bounds.skeleton,
                 where_state=lambda state: state.skeleton,
             ),
-            "muscle_geometry": ModelStageSpec(
+            "muscle_geometry": ModelStage(
                 callable=lambda self: self._muscle_geometry,
                 where_input=lambda input, state: state.skeleton,
                 where_state=lambda state: (
@@ -232,18 +232,18 @@ class MuscledArm(AbstractPlant):
                     state.muscles.velocity,
                 ),
             ),
-            "clip_muscle_state": ModelStageSpec(
+            "clip_muscle_state": ModelStage(
                 # Activation shouldn't be below 0, and length has an UB.
                 callable=lambda self: self._clip_state,
                 where_input=lambda input, state: self.bounds.muscles,
                 where_state=lambda state: state.muscles,
             ),
-            "muscle_tension": ModelStageSpec(
+            "muscle_tension": ModelStage(
                 callable=lambda self: self.muscle_model,
                 where_input=lambda input, state: state.muscles.activation,
                 where_state=lambda state: state.muscles,
             ),
-            "muscle_torques": ModelStageSpec(
+            "muscle_torques": ModelStage(
                 callable=lambda self: self._muscle_torques,
                 where_input=lambda input, state: state.muscles,
                 where_state=lambda state: state.skeleton.torque,
@@ -305,7 +305,7 @@ class MuscledArm(AbstractPlant):
             muscles=True,
         )
     
-    def init(self, *, key: Optional[jax.Array] = None) -> PlantState:
+    def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
         return PlantState(
             skeleton=self.skeleton.init(),
             muscles=self.muscle_model.init(),

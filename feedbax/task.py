@@ -38,7 +38,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, Float, Int, PyTree, Shaped
+from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
 from feedbax.loss import AbstractLoss, LossDict
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
     from feedbax.model import AbstractModel    
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.tree import tree_call, tree_get_idx
+from feedbax.tree import tree_call, tree_take
 
 
 logger = logging.getLogger(__name__)
@@ -205,7 +205,7 @@ class AbstractTask(eqx.Module):
         self, 
         intervention_specs: Mapping["AbstractIntervenorInput"],
         trial_spec: AbstractTaskTrialSpec, 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ):
         intervention_params = tree_call(intervention_specs, trial_spec, key=key)
         
@@ -229,7 +229,7 @@ class AbstractTask(eqx.Module):
 
     def get_train_trial(
         self, 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> AbstractTaskTrialSpec:
         """Return a single training trial for the task.
         """
@@ -250,7 +250,7 @@ class AbstractTask(eqx.Module):
     @abstractmethod 
     def _get_train_trial(
         self,
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> AbstractTaskTrialSpec:
         ...
     
@@ -325,7 +325,7 @@ class AbstractTask(eqx.Module):
     def eval_with_loss(
         self, 
         model: "AbstractModel[StateT]", 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on the task's validation set of trials.
         
@@ -340,7 +340,7 @@ class AbstractTask(eqx.Module):
     def eval(
         self,
         model: "AbstractModel[StateT]", 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> StateT:
         """Evaluate a model on the task's validation set of trials."""
         return self.eval_with_loss(model, key)[1]
@@ -367,7 +367,7 @@ class AbstractTask(eqx.Module):
         self, 
         model: "AbstractModel[StateT]", 
         batch_size: int, 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> Tuple[Tuple[LossDict, StateT], 
                AbstractTaskTrialSpec]:
         """Evaluate a model on a single batch of training trials."""
@@ -385,7 +385,7 @@ class AbstractTask(eqx.Module):
         models: "AbstractModel[StateT]",
         n_replicates: int,  
         batch_size: int,
-        key: jax.Array,
+        key: PRNGKeyArray,
     ):
         """Evaluate an ensemble of models on training batches.
         
@@ -500,7 +500,7 @@ class SimpleReaches(AbstractTask):
     @jax.named_scope("fbx.SimpleReaches.get_train_trial")
     def _get_train_trial(
         self, 
-        key: jax.Array
+        key: PRNGKeyArray
     ) -> SimpleReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace.
         """
@@ -613,7 +613,7 @@ class RandomReachesDelayed(AbstractTask):
     @jax.named_scope("fbx.RandomReachesDelayed.get_train_trial")
     def _get_train_trial(
         self, 
-        key: jax.Array
+        key: PRNGKeyArray
     ) -> DelayedReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace."""
         
@@ -671,7 +671,7 @@ class RandomReachesDelayed(AbstractTask):
         self,  
         init_states: CartesianState2D, 
         target_states: CartesianState2D, 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> Tuple[DelayedReachTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
         
@@ -736,7 +736,7 @@ class Stabilization(AbstractTask):
     @jax.named_scope("fbx.SimpleReaches.get_train_trial")
     def get_train_trial(
         self, 
-        key: jax.Array
+        key: PRNGKeyArray
     ) -> SimpleReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace.
         """
@@ -830,7 +830,7 @@ def points_grid(
 
 
 def uniform_tuples(
-    key: jax.Array,
+    key: PRNGKeyArray,
     n: int,
     bounds: Float[Array, "bounds=2 ndim=2"],
 ):
@@ -906,7 +906,7 @@ def get_masked_seqs(
         lambda x: init_fn((masks.shape[1], *x.shape)),
         arrays
     )
-    # seqs = tree_set_idx(seqs, targets, slice(*epoch_idxs[target_epoch:target_epoch + 2]))
+    # seqs = tree_set(seqs, targets, slice(*epoch_idxs[target_epoch:target_epoch + 2]))
     mask = jnp.prod(masks, axis=0)
     seqs = jax.tree_map(
         lambda x, y: jnp.where(

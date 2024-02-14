@@ -13,10 +13,12 @@ theme:
     - toc.integrate
     - header.autohide
   icon:
-    logo: "material/arm-flex"  #rotate-left, directory-sync, all-inclusive
+    logo: material/arm-flex  #rotate-left, directory-sync, all-inclusive
   palette:
     scheme: fbx
-    
+
+watch:
+  - feedbax  # automatically update docs when running `mkdocs serve` and source files change
 
 markdown_extensions:
   - pymdownx.arithmatex:  # Render LaTeX via MathJax
@@ -27,8 +29,9 @@ markdown_extensions:
   - pymdownx.superfences  # Enables syntax highlighting
   # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
   - admonition
-  # - toc:
-  #     permalink: 
+  - toc:
+      toc_depth: 4  # Only show root objects; i.e. no methods, properties...
+      permalink: ¤
     
 extra_css:
   - _static/custom.css
@@ -49,31 +52,51 @@ plugins:
       # binder_branch: "develop"
       # binder_ui: "lab"
   - mkdocstrings:
+      enable_inventory: true
+      custom_templates: docs/_templates
       handlers:
           python: 
               options:
+                  show_root_toc_entry: true
                   heading_level: 4  # Heading level for the object name 
                   show_root_heading: true  # Show the object name 
                   show_root_full_path: true  # Show the full path of the object
+                  show_bases: true
+                  # show_symbol_type_toc: true  
+                  show_signature_annotations: true
+                  # separate_signature: true    # This and `merge_init_into_class` go together
+                  signature_crossrefs: true  # This doesn't appear to do anything
+                  # merge_init_into_class: true
+                  docstring_section_style: list
+                  filters: ["!^_", "__call__"]  # Exclude private but not dunder methods
+                  inherited_members: ['__call__']
                   show_source: false
                   members_order: source  # Same member ordering as in source code
+                  # all_members: true
+                  extensions:
+                  - docs/_griffe_extensions/inherited_crossrefs.py:InheritedMethodCrossrefs
                   
 
 nav:
   - 'index.md'
-  - Tutorials:
-    - Training a pre-built model: 'examples/0_train_simple.ipynb'
-    - From automatic to manual: 'examples/1_train.ipynb'
-    - PyTrees: 'examples/2_pytrees.ipynb'
-    - Intervening on a model: 'examples/3_intervening.ipynb'
-    - Designing models with stages: 'examples/4_model_stages.ipynb'
-    - Advanced interventions: 'examples/6_intervening_2.ipynb'
-    - Training ensembles of models: 'examples/7_vmap.ipynb'
-    - Advanced analyses: 'examples/8_advanced.ipynb'
-  - Features:
-    - Saving and loading: 'examples/saving_and_loading.ipynb'
+  - JAX and Pytrees: 'examples/pytrees.ipynb'
+  - Top-down view of Feedbax: 'examples/structure.ipynb'
+  - Examples:
+    - 1. Training a pre-built model: 'examples/0_train_simple.ipynb'
+    - 2. From automatic to manual: 'examples/1_train.ipynb'
+    - 3. Intervening on a model: 'examples/3_intervening.ipynb'
+    - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
+    - 5. Designing models with stages: 'examples/5_model_stages.ipynb'
+    - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
+    - 7. Advanced analyses: 'examples/8_advanced.ipynb'
     - Composable loss functions: 'examples/losses.ipynb'
+    - Saving and loading: 'examples/saving_and_loading.ipynb'
     - Debugging: 'examples/debugging.ipynb'
+    - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
   - API:
     - 'api/staged.md'
+    - 'api/serialisation.md'
+    - 'api/tree.md'
+    - 'api/iterate.md'
+    - 'api/bodies.md'
   

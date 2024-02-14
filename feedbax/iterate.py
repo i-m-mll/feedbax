@@ -14,12 +14,12 @@ import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, PyTree, Shaped
+from jaxtyping import Array, PRNGKeyArray, PyTree, Shaped
 from tqdm.auto import tqdm
 
 from feedbax.model import AbstractModel
 from feedbax.state import AbstractState
-from feedbax.tree import tree_get_idx, tree_set_idx
+from feedbax.tree import tree_take, tree_set
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class AbstractIterator(AbstractModel[StateT]):
     step: AbstractVar[AbstractModel[StateT]]  
     n_steps: AbstractVar[int]
 
-    def init(self, *, key: Array) -> StateT:
+    def init(self, *, key: PRNGKeyArray) -> StateT:
         """Initialize the state of the iterated model.
         """
         return self.step.init(key=key)
@@ -64,17 +64,25 @@ class AbstractIterator(AbstractModel[StateT]):
 
 
 class Iterator(AbstractIterator[StateT]):
-    """Applies a model for `n_steps` steps, carrying state.
+    """Applies a model repeatedly, carrying state. Returns history for all states.
     
-    If memory is not an issue, this class is preferred to `ForgetfulIterator` as it lacks 
-    the overhead of state partitioning, and is therefore faster. For very
-    large state PyTrees, however, it may be preferable to use `ForgetfulIterator` and
-    choose which states are worth discarding, to save memory.
+    !!! NOTE
+        If memory is not an issue, this class is preferred to
+        `ForgetfulIterator` as it lacks the overhead of state partitioning, and
+        is therefore faster. 
+        
+        For very large state PyTrees, however, it may be preferable to use
+        `ForgetfulIterator` to save memory.
     """
     step: AbstractModel[StateT]
     n_steps: int 
     
     def __init__(self, step: AbstractModel[StateT], n_steps: int):
+        """**Arguments**:
+        
+        - `step` is the model to be iterated.
+        - `n_steps` is the number of steps to iterate for.
+        """
         self.step = step
         self.n_steps = n_steps
     
@@ -82,8 +90,13 @@ class Iterator(AbstractIterator[StateT]):
         self, 
         input,
         state: StateT, 
-        key: Array,
+        key: PRNGKeyArray,
     ) -> StateT:
+        """
+        **Arguments**:
+        
+        - `input` is the 
+        """
         
         keys = jr.split(key, self.n_steps - 1)
         
@@ -106,13 +119,7 @@ class Iterator(AbstractIterator[StateT]):
 
 
 class ForgetfulIterator(AbstractIterator[StateT]):
-    """Applies a model for `n_steps` steps, carrying state, but returning
-    the history of only a subset of states.
-    
-    The shape of the arrays in the PyTree(s) returned by `step` is
-    automatically inferred, and used this to initialize empty trajectory arrays
-    in which to store the states across all steps; `states_includes` can be
-    used to specify which states to store. By default, all are stored.
+    """Applies a model repeatedly, carrying state. Returns history for a subset of states.
     """
     step: AbstractModel[StateT]
     n_steps: int 
@@ -124,6 +131,12 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         n_steps: int,
         states_includes: Optional[PyTree[bool]] = None,
     ):
+        """**Arguments**:
+        
+        - `step`: is the model to be iterated.
+        - `n_steps`: is the number of steps to iterate for.
+        - `states_includes`: is a PyTree of bools indicating which states to store.
+        """
         if states_includes is None:
             states_includes = step.memory_spec
         self.step = step
@@ -135,11 +148,11 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         self, 
         input: PyTree[Shaped[Array, "n_steps ..."]],  #! should have a batch dimension corresponding to time steps
         state: StateT,   # initial state
-        key: Array,
+        key: PRNGKeyArray,
     ) -> StateT:  #! Adds a batch dimension, actually.
         key1, key2, key3 = jr.split(key, 3)
         
-        init_input = tree_get_idx(input, 0)
+        init_input = tree_take(input, 0)
         states = self.init_arrays(init_input, state, key2)
         
         if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
@@ -169,7 +182,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         # so we can index them, then recombine with the states for which only 
         # a single time step (the current one) is stored.
         states_mem, state_nomem = eqx.partition(states, self.states_includes)
-        state_mem, input = tree_get_idx((states_mem, inputs), i)
+        state_mem, input = tree_take((states_mem, inputs), i)
         state = eqx.combine(state_mem, state_nomem)
         
         state = self.step(input, state, key1)
@@ -178,7 +191,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         # which are then assigned to the next index in the trajectory, and 
         # recombined with the single-timestep states.
         state_mem, state_nomem = eqx.partition(state, self.states_includes)        
-        states_mem = tree_set_idx(states_mem, state_mem, i + 1)
+        states_mem = tree_set(states_mem, state_mem, i + 1)
         states = eqx.combine(states_mem, state_nomem)
                 
         return inputs, states, key2
@@ -186,10 +199,17 @@ class ForgetfulIterator(AbstractIterator[StateT]):
     @jax.named_scope("fbx.ForgetfulIterator.init_arrays")
     def init_arrays(
         self, 
-        input,  #! No batch dimension 
-        init_state: StateT, 
-        key: Array,
-    ) -> StateT:  #! Adds a batch dimension
+        input,  
+        init_state: StateT,  
+        key: PRNGKeyArray,
+    ) -> StateT:  #! Adds a batch dimension re: `init_state`
+        """Initialize the 
+        
+        The shape of the arrays in the PyTree(s) returned by `step` is
+        automatically inferred, and used to initialize empty history arrays
+        in which to store the states across all steps; `states_includes` can be
+        used to specify which states to store. By default, all are stored.
+        """
         # Get the shape of the state output by `self.step`
         outputs = eqx.filter_eval_shape(
             self.step, 
@@ -217,7 +237,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
             init_state, self.states_includes
         )
         states = eqx.combine(
-            tree_set_idx(states, init_state_mem, 0), 
+            tree_set(states, init_state_mem, 0), 
             init_state_nomem
         )
         

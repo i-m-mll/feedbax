@@ -15,10 +15,10 @@ from equinox import field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, PyTree 
+from jaxtyping import Array, PRNGKeyArray, PyTree 
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
 from feedbax.tree import random_split_like_tree
 
@@ -98,7 +98,7 @@ class Channel(AbstractStagedModel[ChannelState]):
     @property
     def model_spec(self):
         spec = OrderedDict({
-            "update_queue": ModelStageSpec(
+            "update_queue": ModelStage(
                 callable=lambda self: self._update_queue,
                 where_input=lambda input, state: input, 
                 where_state=lambda state: state,
@@ -107,7 +107,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         
         if self.noise_std is not None:
             spec |= {
-                "add_noise": ModelStageSpec(
+                "add_noise": ModelStage(
                     callable=lambda self: self._add_noise,
                     where_input=lambda input, state: state.output,
                     where_state=lambda state: (state.noise, state.output),
@@ -124,7 +124,7 @@ class Channel(AbstractStagedModel[ChannelState]):
             noise=False,
         )
     
-    def init(self, *, key: Optional[Array] = None):
+    def init(self, *, key: Optional[PRNGKeyArray] = None):
         input_init = jax.tree_map(
             lambda x: jnp.full_like(x, self.init_value), 
             self.input_proto

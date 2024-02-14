@@ -19,13 +19,13 @@ import equinox as eqx
 from equinox import field
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import wrap_stateless_callable
-from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, CartesianState2D, StateBounds
 
 
@@ -69,7 +69,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
                                     Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ):
         self.plant = plant
         self.solver = solver_type()
@@ -79,23 +79,23 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     @property
     def model_spec(self):
         return OrderedDict({
-            "convert_effector_force": ModelStageSpec(
+            "convert_effector_force": ModelStage(
                 callable=lambda self: self.plant.skeleton.update_state_given_effector_force,
                 where_input=lambda input, state: state.effector.force,
                 where_state=lambda state: state.plant.skeleton,
             ),
-            "statics_step": ModelStageSpec(  
+            "statics_step": ModelStage(  
                 # the `plant` module directly implements non-ODE operations 
                 callable=lambda self: self.plant,
                 where_input=lambda input, state: input,
                 where_state=lambda state: state.plant,
             ),
-            "dynamics_step": ModelStageSpec(
+            "dynamics_step": ModelStage(
                 callable=lambda self: self._dynamics_step,
                 where_input=lambda input, state: input,
                 where_state=lambda state: state,
             ),
-            "get_effector": ModelStageSpec(
+            "get_effector": ModelStage(
                 callable=lambda self: \
                     wrap_stateless_callable(self.plant.skeleton.effector, pass_key=False),
                 where_input=lambda input, state: state.plant.skeleton,
@@ -113,7 +113,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         input, 
         state: MechanicsState,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ):
         
         plant_state, _, _, solver_state, _ = self.solver.step(

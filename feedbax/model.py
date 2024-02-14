@@ -19,7 +19,7 @@ from typing import (
 import equinox as eqx
 import jax
 import jax.random as jr
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
 from feedbax.state import AbstractState
@@ -54,7 +54,7 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         self,
         input,
         state: StateT, 
-        key: jax.Array,
+        key: PRNGKeyArray,
     ) -> StateT:
         """Update the model state given inputs and a prior state."""
         ...
@@ -96,7 +96,7 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
     def init(
         self,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> StateT:
         """Return an initial state for the model."""
         ...
@@ -118,7 +118,7 @@ class MultiModel(AbstractModel[StateT]):
         self,
         inputs: ModelInput,
         states: PyTree[StateT, 'T'], 
-        key: Array,
+        key: PRNGKeyArray,
     ) -> StateT:
 
         # TODO: This is hacky, because I want to pass intervenor stuff through entirely. See `staged`
@@ -134,7 +134,7 @@ class MultiModel(AbstractModel[StateT]):
     def init(
         self,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> StateT:
         return jax.tree_map(
             lambda model, key: model.init(key=key),
@@ -149,7 +149,7 @@ class MultiModel(AbstractModel[StateT]):
     def _get_keys(self, key):
         return random_split_like_tree(
             key, 
-            target=self.models, 
+            tree=self.models, 
             is_leaf=lambda x: isinstance(x, AbstractModel)
         )
         
@@ -172,7 +172,7 @@ def wrap_stateless_callable(callable: Callable, pass_key=True):
         
     else:
         @wraps(callable)
-        def wrapped(input, state, *args, key: Optional[Array] = None, **kwargs):
+        def wrapped(input, state, *args, key: Optional[PRNGKeyArray] = None, **kwargs):
             return callable(input, *args, **kwargs)
     
     return wrapped
@@ -186,7 +186,7 @@ def get_ensemble(
     get_func: Callable[[jax.Array, *Ts], T], 
     n_ensemble: int, 
     *args: *Ts, 
-    key: jax.Array
+    key: PRNGKeyArray
 ) -> eqx.Module:
     """Helper to vmap model generation over a set of random keys.
     

@@ -11,6 +11,7 @@ from typing import Optional, Type
 
 import equinox as eqx
 import jax
+from jaxtyping import PRNGKeyArray
 import optax
 
 from feedbax.model import AbstractModel, get_ensemble
@@ -43,7 +44,7 @@ class TrainingContext(eqx.Module):
         learning_rate: float = 0.01,
         log_step=None,
         optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
-        key: jax.Array,
+        key: PRNGKeyArray,
         **kwargs,
     ):
         optimizer = optax.inject_hyperparams(optimizer_cls)(
@@ -87,7 +88,7 @@ def point_mass_nn_simple_reaches(
     eval_grid_n: int = 1,
     eval_n_directions: int = 7,
     *,
-    key: jax.Array,
+    key: PRNGKeyArray,
 ):
     """A simple reach task paired with a simple point mass-neural network model.
     

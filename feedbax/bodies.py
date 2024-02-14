@@ -14,14 +14,14 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
-from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask
 from feedbax.tree import tree_sum_n_features
@@ -31,16 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleFeedbackState(AbstractState):
-    """State PyTree associated with a `SimpleFeedback` instance."""
+    """Type of state PyTree operated on by `SimpleFeedback` instances.
+    
+    Attributes:
+        mechanics: The state PyTree for a `Mechanics` instance.
+        net: The state PyTree for a staged neural network.
+        feedback: A PyTree of state PyTrees for each feedback channel.
+    """
     mechanics: "MechanicsState"
-    network: "NetworkState"
+    net: "NetworkState"
     feedback: PyTree[ChannelState]
     
-
-DEFAULT_FEEDBACK_SPEC = ChannelSpec(
-    where=lambda mechanics_state: mechanics_state.plant.skeleton,
-)
-
 
 def _convert_feedback_spec(
     feedback_spec: Union[
@@ -94,10 +95,13 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         net: eqx.Module, 
         mechanics: "Mechanics", 
         feedback_spec: Union[PyTree[ChannelSpec], PyTree[Mapping[str, Any]]] = \
-            DEFAULT_FEEDBACK_SPEC,
-        intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                    Mapping[str, Sequence[AbstractIntervenor]]]] \
-            = None,
+            ChannelSpec(
+                where=lambda mechanics_state: mechanics_state.plant.skeleton,
+            ),
+        intervenors: Optional[Union[
+            Sequence[AbstractIntervenor],
+            Mapping[str, Sequence[AbstractIntervenor]]
+        ]] = None,
         *,
         key: Optional[Array] = None,
     ):
@@ -156,7 +160,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         I'm not sure why the references are kept across model updates...
         """
         return OrderedDict({
-            'update_feedback': ModelStageSpec(
+            'update_feedback': ModelStage(
                 callable=lambda self: self._feedback_module,  
                 where_input=lambda input, state: jax.tree_map(
                     lambda spec: spec.where(state.mechanics),
@@ -165,7 +169,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 ),
                 where_state=lambda state: state.feedback,  
             ),
-            'nn_step': ModelStageSpec(
+            'nn_step': ModelStage(
                 callable=lambda self: self.net,
                 where_input=lambda input, state: (
                     input, 
@@ -176,11 +180,11 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                         is_leaf=lambda x: isinstance(x, ChannelState),
                     ),
                 ),
-                where_state=lambda state: state.network,                
+                where_state=lambda state: state.net,                
             ),
-            'mechanics_step': ModelStageSpec(
+            'mechanics_step': ModelStage(
                 callable=lambda self: self.mechanics,
-                where_input=lambda input, state: state.network.output,
+                where_input=lambda input, state: state.net.output,
                 where_state=lambda state: state.mechanics,
             ),
         })       
@@ -203,7 +207,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
 
         return SimpleFeedbackState(
             mechanics=mechanics_state,
-            network=self.net.init(key=keys[1]),
+            net=self.net.init(key=keys[1]),
             feedback=self._feedback_module.init(key=keys[2]),
         )
     
@@ -229,7 +233,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         """
         return SimpleFeedbackState(
             mechanics=self.mechanics.memory_spec, 
-            network=self.net.memory_spec,
+            net=self.net.memory_spec,
             feedback=jax.tree_map(
                 lambda channel: channel.memory_spec,
                 self.feedback_channels,
@@ -242,7 +246,9 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         task: "AbstractTask", 
         mechanics: "Mechanics", 
         feedback_spec: Union[PyTree[ChannelSpec], PyTree[Mapping[str, Any]]] = \
-            DEFAULT_FEEDBACK_SPEC,
+            ChannelSpec(
+                where=lambda mechanics_state: mechanics_state.plant.skeleton
+            ),
     ) -> int:
         """Determine how many scalar input features the neural network needs.
         

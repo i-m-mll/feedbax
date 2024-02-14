@@ -13,6 +13,18 @@ from feedbax.io import save, load
 
 from feedbax.model import get_ensemble
 
+from feedbax.tree import (
+    random_split_like_tree,
+    tree_array_bytes, 
+    tree_call,
+    tree_map_unzip,
+    tree_set, 
+    tree_stack,
+    tree_struct_bytes,
+    tree_take,
+    tree_unzip,
+)
+
 # logging.config.fileConfig('../logging.conf')
 LOG_LEVEL = os.environ.get('FEEDBAX_LOG_LEVEL', 'DEBUG').upper()
 

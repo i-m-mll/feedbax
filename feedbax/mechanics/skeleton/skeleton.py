@@ -10,6 +10,7 @@ from typing import Optional, TypeVar
 
 import jax
 from jax import Array
+from jaxtyping import PRNGKeyArray
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.state import AbstractState, CartesianState2D
@@ -51,7 +52,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         effector_force: Array, 
         state: StateT,
         *,
-        key: Optional[Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> StateT:
         """Update the state of the skeleton given an effector force."""
         ...

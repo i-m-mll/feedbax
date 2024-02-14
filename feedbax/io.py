@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 def save(
-    path: Optional[str | Path],
+    path: str | Path,
     tree: PyTree[eqx.Module],
     hyperparameters: Optional[dict] = None, 
-) -> Path:
+) -> None:
     """Save a PyTree to disk along with hyperparameters used to generate it.
     
     Assumes none of the hyperparameters are JAX arrays, as these are not 
@@ -39,15 +39,16 @@ def save(
     
     Based on https://docs.kidger.site/equinox/examples/serialisation/
     
-    Arguments:
-        - `path` is the path of the file to be saved. Note that this file will
-          be overwritten if it already exists. 
-        - `tree` is the PyTree to save. Its structure should match the return
-          type of a function `setup_func`, which will be passed to `load`. 
-        - `hyperparameters` is an optional dictionary of arguments for
-          `setup_func` that were used to generate the PyTree, and upon loading,
-          will be used to regenerate an appropriate skeleton to populate with
-          the saved values from `tree`.
+    **Arguments**:
+    
+    - `path` is the path of the file to be saved. Note that the file at this path will
+        be overwritten if it exists. 
+    - `tree` is the PyTree to save. Its structure should match the return
+        type of a function `setup_func`, which will be passed to `load`. 
+    - `hyperparameters` is an optional dictionary of arguments for
+        `setup_func` that were used to generate the PyTree, and upon loading,
+        will be used to regenerate an appropriate skeleton to populate with
+        the saved values from `tree`.
     """    
     with open(path, 'wb') as f:
         hyperparameter_str = json.dumps(hyperparameters)
@@ -57,16 +58,17 @@ def save(
 
 def load(
     path: Path | str, 
-    setup_func: Callable[[Any], PyTree[eqx.Module | Any, 'T']],
-) -> PyTree[eqx.Module | Any, 'T']:
+    setup_func: Callable[[Any], PyTree[Any, 'T']],
+) -> PyTree[Any, 'T']:
     """Setup a PyTree from stored data and hyperparameters.
     
-    Arguments:
-        - `path` is the path of the file to be loaded.
-        - `setup_func` is a function that returns a PyTree of the same structure
-           as the PyTree that was saved to `path`, and which may take as arguments 
-           `hyperparameters` which `save` may have saved to the same file. It must
-           take a keyword argument `key`.
+    **Arguments**:
+    
+    - `path` is the path of the file to be loaded.
+    - `setup_func` is a function that returns a PyTree of the same structure
+        as the PyTree that was saved to `path`, and which may take as arguments 
+        `hyperparameters` which `save` may have saved to the same file. It must
+        take a keyword argument `key`.
     """
     with open(path, "rb") as f:
         hyperparameters = json.loads(f.readline().decode())

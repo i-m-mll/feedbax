@@ -13,7 +13,7 @@ import equinox as eqx
 from equinox import field
 import jax
 import jax.numpy as jnp
-from jaxtyping import Float, Array
+from jaxtyping import Array, Float, PRNGKeyArray
 import numpy as np
 
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
@@ -95,7 +95,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     def init(
         self, 
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> TwoLinkState:
         return TwoLinkState()
 
@@ -173,7 +173,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         effector_force: jax.Array,
         state: TwoLinkState, 
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> TwoLinkState:
         """Add torques inferred from effector force to the state PyTree.
         

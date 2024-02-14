@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp 
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PRNGKeyArray
 import optax
 from tqdm.auto import tqdm
 
@@ -30,7 +30,7 @@ from feedbax.model import AbstractModel, ModelInput
 import feedbax.plot as plot
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
-from feedbax.tree import filter_spec_leaves, tree_get_idx, tree_set_idx
+from feedbax.tree import filter_spec_leaves, tree_take, tree_set
 
 # if TYPE_CHECKING:
 #     # This is sloow so we'll actually import it only when needed.
@@ -119,7 +119,7 @@ class TaskTrainer(eqx.Module):
         model: AbstractModel[StateT],
         n_batches: int, 
         batch_size: int, 
-        key: jax.Array,
+        key: PRNGKeyArray,
         where_train: Callable[[AbstractModel[StateT]], Any] = \
             lambda model: model,
         batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
@@ -294,7 +294,7 @@ class TaskTrainer(eqx.Module):
                 history = eqx.tree_at(
                     lambda history: history.model_trainables,
                     history,
-                    tree_set_idx(
+                    tree_set(
                         history.model_trainables, 
                         eqx.filter(model, filter_spec), 
                         batch
@@ -311,7 +311,7 @@ class TaskTrainer(eqx.Module):
             history = eqx.tree_at(
                 lambda history: history.loss,
                 history,
-                tree_set_idx(history.loss, losses, batch),
+                tree_set(history.loss, losses, batch),
             )
             
             try:
@@ -392,7 +392,7 @@ class TaskTrainer(eqx.Module):
                     losses_val_mean = jax.tree_map(lambda x: jnp.mean(x, axis=-1), 
                                                    losses_val)
                     # Only log a validation plot for the first replicate.
-                    states_plot = tree_get_idx(states, 0)            
+                    states_plot = tree_take(states, 0)            
                 else:
                     losses_val_mean = losses_val
                     states_plot = states
@@ -455,7 +455,7 @@ class TaskTrainer(eqx.Module):
         flat_opt_state, 
         treedef_opt_state,
         filter_spec,  #! can't do AbstractModel[StateT[bool]]
-        key: jax.Array,
+        key: PRNGKeyArray,
     ):
         """Executes a single training step of the model.
         
@@ -688,7 +688,7 @@ class HebbianGRUUpdate(eqx.Module):
         states: StateT
     ) -> AbstractModel[StateT]:
         
-        x = states.network.hidden
+        x = states.net.hidden
         
         # Hebbian learning rule
         dW = self.scale * x[..., :, None] @ x[..., None, :]

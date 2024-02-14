@@ -12,6 +12,7 @@ from typing import Optional
 import equinox as eqx
 import jax
 import jax.random as jr
+from jaxtyping import PRNGKeyArray
 
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
@@ -31,7 +32,7 @@ N_DIM = 2
 
 def point_mass_nn(
     task,
-    key: Optional[jax.Array] = None,
+    key: Optional[PRNGKeyArray] = None,
     dt: float = 0.05, 
     mass: float = 1., 
     hidden_size: int = 50, 

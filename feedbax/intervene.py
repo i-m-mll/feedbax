@@ -44,7 +44,7 @@ import equinox as eqx
 from equinox import AbstractVar, field
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, ArrayLike, Float, PyTree
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
 from feedbax.misc import get_unique_label
 from feedbax.model import AbstractModel
@@ -137,7 +137,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
         params: InputT, 
         state: StateT, 
         *, 
-        key: Optional[Array]
+        key: Optional[PRNGKeyArray]
     ) -> PyTree[ArrayLike, "S"]:
         ...        
         
@@ -192,7 +192,7 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
         params: CurlFieldParams, 
         state: "MechanicsState", 
         *, 
-        key: Optional[Array] = None 
+        key: Optional[PRNGKeyArray] = None 
     ):
         scale = params.amplitude * jnp.array([-1, 1]) 
         return scale * self.in_where(state)[..., ::-1]
@@ -237,7 +237,7 @@ class AddNoise(AbstractIntervenor[StateT, InputT]):
         params: AddNoiseParams, 
         state: StateT, 
         *,
-        key: Optional[Array] = None
+        key: Optional[PRNGKeyArray] = None
     ):
         
         return jax.tree_map(
@@ -294,7 +294,7 @@ class NetworkClamp(AbstractIntervenor["NetworkState", InputT]):
         params: NetworkIntervenorParams, 
         state: "NetworkState",
         *,
-        key: Optional[Array] = None
+        key: Optional[PRNGKeyArray] = None
     ) -> PyTree[Array, "T"]:
         
         return jax.tree_map(
@@ -341,7 +341,7 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", InputT]):
         params: NetworkIntervenorParams, 
         state: "NetworkState",
         *,
-        key: Optional[Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> PyTree[Array, "T"]:
         return jax.tree_map(jnp.nan_to_num, params.unit_spec)
 
@@ -389,7 +389,7 @@ class ConstantInput(AbstractIntervenor[StateT, InputT]):
         params: ConstantInputParams, 
         state: StateT,
         *,
-        key: Optional[Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> PyTree[Array, "T"]:
         return params.amplitude * params.array_mask
 
@@ -417,7 +417,7 @@ def add_intervenors(
     where: Callable[["AbstractStagedModel[StateT]"], Any] = lambda model: model.step,
     keep_existing: bool = True,
     *,
-    key: Optional[jax.Array] = None
+    key: Optional[PRNGKeyArray] = None
 ) -> "AbstractStagedModel[StateT]":
     """Return an updated model with added intervenors.
     

@@ -1,0 +1,11 @@
+{% extends '_base/function.html' %}
+
+{% block docstring %}
+{% with docstring_sections = function.docstring.parsed %}
+  {% if obj.inherited %}
+    <!-- TODO: Figure out how to modify docstring with cross-ref using a Griffe extension -->
+    Inherited from <code>{{ obj.parent.bases[0].canonical_path }}</code>.
+  {% endif %}
+  {% include "docstring.html" with context %}
+{% endwith %}
+{% endblock docstring %}

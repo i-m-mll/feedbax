@@ -28,12 +28,12 @@ import jax
 from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import wrap_stateless_callable
 from feedbax.misc import interleave_unequal, n_positional_args  
-from feedbax.staged import AbstractStagedModel, ModelStageSpec
+from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
 
 
@@ -70,7 +70,7 @@ class RNNCellProto(Protocol):
         hidden_size: int, 
         use_bias: bool, 
         *, 
-        key: jax.Array,
+        key: PRNGKeyArray,
         **kwargs, 
     ):
         ...
@@ -149,7 +149,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                                     Mapping[str, Sequence[AbstractIntervenor]]]] \
             = None,
         *,
-        key: jax.Array, 
+        key: PRNGKeyArray, 
     ):
         """
         If an integer is passed for `encoding_size`, input encoding is enabled.
@@ -230,7 +230,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             
         if self.encoder is None:
             spec = OrderedDict({
-                'hidden': ModelStageSpec(
+                'hidden': ModelStage(
                     callable=hidden_module,
                     where_input=lambda input, _: ravel_pytree(input)[0],
                     where_state=lambda state: state.hidden,
@@ -238,12 +238,12 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             })
         else:
             spec = OrderedDict({
-                'encoder': ModelStageSpec(
+                'encoder': ModelStage(
                     callable=lambda self: self._encode,
                     where_input=lambda input, _: ravel_pytree(input)[0],
                     where_state=lambda state: state.encoding,
                 ),
-                'hidden': ModelStageSpec(
+                'hidden': ModelStage(
                     callable=hidden_module,
                     where_input=lambda input, state: state.encoding,
                     where_state=lambda state: state.hidden,
@@ -252,7 +252,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         
         if self.hidden_nonlinearity is not None:
             spec |= {
-                'hidden_nonlinearity': ModelStageSpec(
+                'hidden_nonlinearity': ModelStage(
                     callable=lambda self: \
                         lambda input, state, *, key: \
                             self.hidden_nonlinearity(state),
@@ -263,7 +263,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         
         if self.hidden_noise_std is not None:
             spec |= {
-                'hidden_noise': ModelStageSpec(
+                'hidden_noise': ModelStage(
                     callable=lambda self: self._add_hidden_noise,
                     where_input=lambda _, state: state.hidden,
                     where_state=lambda state: state.hidden,
@@ -272,7 +272,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         
         if self.readout is not None:
             spec |= {
-                'readout': ModelStageSpec(
+                'readout': ModelStage(
                     callable=lambda self: self._output,
                     where_input=lambda _, state: state.hidden,
                     where_state=lambda state: state.output,
@@ -289,7 +289,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             encoding=True,
         )        
     
-    def init(self, *, key: Optional[jax.Array] = None):
+    def init(self, *, key: Optional[PRNGKeyArray] = None):
         
         if self.out_size is None:
             output = None
@@ -344,7 +344,7 @@ class LeakyRNNCell(eqx.Module):
         dt: float = 1.,
         tau: float = 1.,
         *,  # this forces the user to pass the following as keyword arguments
-        key: jax.Array,
+        key: PRNGKeyArray,
         **kwargs
     ):
         ihkey, hhkey, bkey = jr.split(key, 3)
@@ -376,7 +376,7 @@ class LeakyRNNCell(eqx.Module):
         self, 
         input: jax.Array, 
         state: jax.Array,
-        key: jax.Array
+        key: PRNGKeyArray
     ):
         """Vanilla RNN cell."""
         if self.use_bias:

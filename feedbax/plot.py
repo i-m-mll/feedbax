@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Float, Array, Int, PyTree
+from jaxtyping import Float, Array, Int, PRNGKeyArray, PyTree
 import matplotlib as mpl
 from matplotlib import animation, gridspec
 from matplotlib.ticker import FormatStrFormatter
@@ -287,7 +287,7 @@ def plot_reach_trajectories(
         positions, velocities, controls = (
             states.mechanics.effector.pos, 
             states.mechanics.effector.vel,
-            states.network.output,
+            states.net.output,
         )
     else:
         positions, velocities, controls = leaf_func(states)
@@ -420,7 +420,7 @@ def plot_activity_sample_units(
     cmap: str = 'tab10', 
     unit_includes = None,
     *, 
-    key: jax.Array
+    key: PRNGKeyArray
 ):
     """Plot activity of a random sample of units over time.
     
@@ -495,10 +495,10 @@ def plot_losses(
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.set(xscale=xscale, yscale=yscale)
     
+    losses = train_history.losses
+    
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
-    
-    losses = train_history.loss
     
     xs = 1 + np.arange(len(losses.total))
         

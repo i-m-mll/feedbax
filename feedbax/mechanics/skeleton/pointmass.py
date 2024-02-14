@@ -12,7 +12,7 @@ import equinox as eqx
 from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from feedbax.dynamics import AbstractLTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
@@ -99,7 +99,7 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState2D]):
         effector_force: jax.Array,
         system_state: CartesianState2D,
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ) -> CartesianState2D:
         return eqx.tree_at(
             lambda state: state.force,

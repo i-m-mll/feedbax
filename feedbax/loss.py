@@ -444,7 +444,7 @@ class NetworkOutputLoss(AbstractLoss):
     ) -> Array:
         
         # Sum over output channels
-        loss = jnp.sum(states.network.output ** 2, axis=-1)
+        loss = jnp.sum(states.net.output ** 2, axis=-1)
         
         # Sum over time
         loss = jnp.sum(loss, axis=-1)
@@ -463,7 +463,7 @@ class NetworkActivityLoss(AbstractLoss):
     ) -> Array:
         
         # Sum over hidden units
-        loss = jnp.sum(states.network.hidden ** 2, axis=-1)
+        loss = jnp.sum(states.net.hidden ** 2, axis=-1)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)
