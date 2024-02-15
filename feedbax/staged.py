@@ -180,9 +180,17 @@ class AbstractStagedModel(AbstractModel[StateT]):
         3. A function that selects the substate PyTree out of the `StateT`
             PyTree; i.e. the `state` passed to the module, which then returns a
             PyTree with the same structure and array shapes/dtypes.
-               
-        Note: It's still necessary to use `OrderedDict` because `jax.tree_util`
-        sorts `dict` keys, which puts our stages out of order.
+        
+        !!! Warning        
+            It's necessary to return `OrderedDict` because `jax.tree_util`
+            still sorts `dict` keys, which usually puts the stages out of order.
+        
+        !!! NOTE
+        The callable has to be given as a function that takes `self` and returns
+        a callable, 
+        otherwise it won't use modules that have been updated during training.
+        I'm not sure why the references are kept across model updates...
+        
         """
         ...
   

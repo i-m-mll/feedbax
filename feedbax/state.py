@@ -80,17 +80,17 @@ def clip_state(
     """
 
     if bounds.low is not None:
-        state = clip_state_to_bound(
+        state = _clip_state_to_bound(
             state, bounds.low, bounds.filter_spec.low, jnp.greater
         )
     if bounds.high is not None:
-        state = clip_state_to_bound(
+        state = _clip_state_to_bound(
             state, bounds.high, bounds.filter_spec.high, jnp.less
         )
     return state
 
 
-def clip_state_to_bound(
+def _clip_state_to_bound(
     state: StateT, 
     bound: StateT, 
     filter_spec: PyTree[bool],

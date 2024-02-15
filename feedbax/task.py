@@ -42,7 +42,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
 from feedbax.loss import AbstractLoss, LossDict
-from feedbax.mapping import AbstractTransformedOrderedDict
+from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax.model import ModelInput
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput

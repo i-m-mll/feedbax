@@ -506,7 +506,7 @@ class TaskTrainer(eqx.Module):
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
         
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
-            grad_wrap_task_loss_func(task.loss_func), has_aux=True
+            _grad_wrap_task_loss_func(task.loss_func), has_aux=True
         )(
             diff_model, 
             static_model, 
@@ -565,7 +565,7 @@ class TaskTrainer(eqx.Module):
         return chkpt_path, last_batch, model, opt_state, history
 
 
-def grad_wrap_simple_loss_func(
+def _grad_wrap_simple_loss_func(
     loss_func: Callable[[Array, Array], Float]
 ):
     """Wraps a loss function taking output and target arrays, to one taking a model
@@ -596,7 +596,7 @@ class SimpleTrainer(eqx.Module):
     """
     
     loss_func: Callable[[eqx.Module, Array, Array], Float] = field(
-        default=grad_wrap_simple_loss_func(loss.mse),
+        default=_grad_wrap_simple_loss_func(loss.mse),
     )
     optimizer: optax.GradientTransformation = field(
         default=optax.sgd(1e-2),
@@ -613,7 +613,7 @@ class SimpleTrainer(eqx.Module):
         return model
           
     
-def grad_wrap_task_loss_func(
+def _grad_wrap_task_loss_func(
     loss_func: AbstractLoss
 ):
     """Wraps a task loss function taking state to a `grad`-able one taking a model.

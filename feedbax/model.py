@@ -188,11 +188,7 @@ def get_ensemble(
     *args: *Ts, 
     key: PRNGKeyArray
 ) -> eqx.Module:
-    """Helper to vmap model generation over a set of random keys.
-    
-    TODO: 
-    - Rename. This works for stuff other than `get_model`. It's basically
-      a helper to split key, then vmap function.
+    """Helper to vmap a function over a set of random keys.
     """
     keys = jr.split(key, n_ensemble)
     get_func_ = partial(get_func, *args)

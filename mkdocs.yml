@@ -65,9 +65,9 @@ plugins:
                   # show_symbol_type_toc: true  
                   show_signature_annotations: true
                   # separate_signature: true    # This and `merge_init_into_class` go together
-                  signature_crossrefs: true  # This doesn't appear to do anything
                   # merge_init_into_class: true
-                  docstring_section_style: list
+                  # signature_crossrefs: true  # This doesn't appear to do anything
+                  docstring_section_style: table
                   filters: ["!^_", "__call__"]  # Exclude private but not dunder methods
                   inherited_members: ['__call__']
                   show_source: false
@@ -94,9 +94,24 @@ nav:
     - Debugging: 'examples/debugging.ipynb'
     - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
   - API:
-    - 'api/staged.md'
-    - 'api/serialisation.md'
+    - Models:
+      - 'api/model.md'
+      - 'api/staged.md'  # should this be separate from the previous entry?
+      - 'api/intervene.md'
+      - 'api/iterate.md'
+      - 'api/bodies.md'
+      - 'api/channel.md'
+      - 'api/networks.md'
+      - 'api/mechanics.md'
+      - 'api/plant.md'
+      - 'api/dynamics.md'
+      - 'api/skeleton.md'
+      - 'api/muscle.md'
+    - 'api/trainer.md'
+    - 'api/task.md'
+    - 'api/loss.md'
+    - 'api/dimred.md'
     - 'api/tree.md'
-    - 'api/iterate.md'
-    - 'api/bodies.md'
+    - 'api/serialisation.md'
+    - 'api/plot.md'
   

@@ -217,7 +217,7 @@ class MuscledArm(AbstractPlant):
         self.intervenors = self._get_intervenors_dict(intervenors)        
     
     @cached_property
-    def model_spec(self):
+    def model_spec(self) -> OrderedDict[str, ModelStage]:
         return OrderedDict({
             "clip_skeleton_state": ModelStage(
                 callable=lambda self: self._clip_state,

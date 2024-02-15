@@ -72,22 +72,19 @@ def _convert_feedback_spec(
         
         
 class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
-    """Simple feedback loop with a single RNN and single mechanical model.
+    """Models one step around a single feedback loop between a neural network 
+    and a mechanical model.
     
-    TODO:
-    - PyTree of force inputs (in addition to control inputs) to mechanics
-    - It might make more sense to handle multiple feedback channels inside 
-      a single `Channel` object. That could minimize `tree_map` calls 
-      from this class.
-    - Could insert intervenors as stages in the model, but I think it makes 
-    more sense for modules to be designed-in, which then provides the user 
-    with labels for stages at which interventions can be applied, resulting 
-    in a dict of interventions that mirrors the dict of stages.
+    Attributes:
+        net: The neural network that outputs commands for the mechanical model.
+        mechanics: The discretized model of plant dynamics.
+        feedback_channels: A PyTree of feedback channels which may be delayed
+            and noisy.
     """
-    net: eqx.Module  
+    net: eqx.Module  # TODO: should be stateful
     mechanics: "Mechanics"
-    feedback_channels: PyTree[Channel, 'T']
-    feedback_specs: PyTree[ChannelSpec, 'T']  
+    feedback_channels: PyTree[Channel]
+    _feedback_specs: PyTree[ChannelSpec]  
     intervenors: Mapping[str, Sequence[AbstractIntervenor]]
     
     def __init__(
@@ -105,6 +102,12 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         *,
         key: Optional[Array] = None,
     ):
+        """
+        Arguments:
+            net: The neural network that outputs commands for the mechanical model.
+            mechanics: The discretized model of plant dynamics.
+            feedback_spec: A PyTree of `ChannelSpec` instances,           
+        """
         self.net = net
         self.mechanics = mechanics
         self.intervenors = self._get_intervenors_dict(intervenors)
@@ -128,43 +131,39 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             feedback_specs,
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
-        self.feedback_specs = feedback_specs
+        self._feedback_specs = feedback_specs
 
-    def update_feedback(
-        self, 
-        input: "MechanicsState", 
-        state: PyTree[ChannelState, 'T'], 
-        *, 
-        key: Optional[Array] = None
-    ) -> PyTree[ChannelState, 'T']:
-        """Send current feedback states through channels, and return delayed feedback."""
-        # TODO: separate keys for the different channels
-        return jax.tree_map(
-            lambda channel, spec, state: channel(spec.where(input), state, key=key),
-            self.feedback_channels,
-            self.feedback_specs,
-            state,
-            is_leaf=lambda x: isinstance(x, Channel),
-        )
+    # def update_feedback(
+    #     self, 
+    #     input: "MechanicsState", 
+    #     state: PyTree[ChannelState, 'T'], 
+    #     *, 
+    #     key: Optional[Array] = None
+    # ) -> PyTree[ChannelState, 'T']:
+    #     """Send current feedback states through channels, and return delayed feedback."""
+    #     # TODO: separate keys for the different channels
+    #     return jax.tree_map(
+    #         lambda channel, spec, state: channel(spec.where(input), state, key=key),
+    #         self.feedback_channels,
+    #         self._feedback_specs,
+    #         state,
+    #         is_leaf=lambda x: isinstance(x, Channel),
+    #     )
         
     @property
     def _feedback_module(self):
         return MultiModel(self.feedback_channels)
         
     @property
-    def model_spec(self):
+    def model_spec(self) -> OrderedDict[str, ModelStage]:
         """Specifies the stages of the model in terms of state operations.
-        
-        Note that the module has to be given as a function that obtains it from `self`, 
-        otherwise it won't use modules that have been updated during training.
-        I'm not sure why the references are kept across model updates...
         """
         return OrderedDict({
             'update_feedback': ModelStage(
                 callable=lambda self: self._feedback_module,  
                 where_input=lambda input, state: jax.tree_map(
                     lambda spec: spec.where(state.mechanics),
-                    self.feedback_specs, 
+                    self._feedback_specs, 
                     is_leaf=lambda x: isinstance(x, ChannelSpec),
                 ),
                 where_state=lambda state: state.feedback,  
@@ -310,7 +309,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                         channel.delay * (spec.where(state.mechanics),),
                     ),
                     state.feedback,
-                    self.feedback_specs,
+                    self._feedback_specs,
                     self.feedback_channels,
                     is_leaf=lambda x: isinstance(x, ChannelState),
                 ),

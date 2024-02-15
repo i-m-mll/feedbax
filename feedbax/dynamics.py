@@ -24,16 +24,10 @@ StateT = TypeVar("StateT", bound=AbstractState)
 
 
 class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
-    """Base class for continuous dynamical systems
+    """Base class for continuous dynamical systems.
     
-    TODO:
-    - Signature of `init`. Versus the Diffrax documentation, I'm using `state` 
-      for `y` and `input` for `args`. Unfortunately this is reversed from the 
-      signature of `AbstractModel`. Perhaps we could automatically wrap all 
-      subclasses of `AbstractDynamicalSystem` to make this consistent.
-    - All of the biomechanical models (so far) are time invariant, i.e. they 
-      don't vary with time itself. Perhaps exclude it from the signature as 
-      well.
+    This is a module that provides a vector field for use as
+    with `diffrax.ODETerm`.
     """
     
     @abstractmethod
@@ -53,12 +47,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
     
     @abstractmethod
     def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
-        """Initial state of the system.
-        
-        TODO:
-        
-        - This is shared with `AbstractModel`, so perhaps they should have 
-          a common abstract parent.
+        """Returns the initial state of the system.
         """
         ...
     
@@ -72,13 +61,9 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         
 
 class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
-    """Linear, continuous, time-invariant system.
+    """A linear, continuous, time-invariant system.
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
-    
-    TODO:
-    - Don't hardcode the state split.
-    - Might the state be non-Cartesian?
     """
     A: AbstractVar[Float[Array, "state state"]]  # state evolution matrix
     B: AbstractVar[Float[Array, "state input"]]  # control matrix

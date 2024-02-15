@@ -29,7 +29,7 @@ Pip TODO.
 
 ## Development
 
-I've developed Feedbax over the last few months, as I've learned JAX. In doing so, I've made a number of design choices in pursuit of flexibility and generality. 
+I've developed Feedbax over the last few months, as I've learned JAX. My short-term objective has been to serve my own use case---graduate research in the neuroscience of motor control---but I have also tried to make design choices in pursuit of reusability and generality.
 
 By making the library open source now, I hope to receive some feedback about those decisions, and perhaps make some structural improvements. To make that easier I've created several GitHub issues documenting my choices and uncertainties. 
 
