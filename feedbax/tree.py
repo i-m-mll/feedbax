@@ -53,20 +53,18 @@ def tree_take(
     
     Any non-array leaves are returned unchanged.
     
-    **Arguments**:
-    
-    - `tree` is any PyTree whose array leaves are equivalently indexable,
-    according to the other arguments to this function. For example, `axis=0` 
-    could be used when the first dimension of every array leaf is a batch 
-    dimension, and `indices` specifies a subset of examples from the batch.
-    - `indices` are the indices of the values to take from each array leaf.
-    - `axis` is the axis of the array leaves over which to take their values.
-    Defaults to 0.
-    
-    **Returns**:
-    
-    A PyTree with the same structure as `tree`, where array leaves from `tree`
-    have been replaced by indexed-out elements.
+    Arguments:
+        tree: Any PyTree whose array leaves are equivalently indexable,
+            according to the other arguments to this function. For example,
+            `axis=0` could be used when the first dimension of every array leaf
+            is a batch dimension, and `indices` specifies a subset of examples
+            from the batch.
+        indices: The indices of the values to take from each array leaf. 
+        axis: The axis of the array leaves over which to take their values.
+            Defaults to 0.
+
+    Returns:
+        A PyTree with the same structure as `tree`, where array leaves from `tree` have been replaced by indexed-out elements.
     """
     arrays, other = eqx.partition(tree, eqx.is_array)
     values = jax.tree_map(
@@ -90,20 +88,17 @@ def tree_set(
     is the time step, and `items` is a PyTree of states for a single time step,
     this function can be used to insert the latter into the former at a given time index.
     
-    **Arguments**:
+    Arguments:
+        tree: Any PyTree whose array leaves share a first dimension of the same
+            length, for example a batch dimension.
+        items: Any PyTree with the same structure as `tree`, and whose array
+            leaves have the same shape as the corresponding leaves in `tree`, 
+            but lacking the first dimension.
+        idx: The index along the first dimension of the array leaves of `tree`
+            into which to insert the array leaves of `items`.
     
-    - `tree` is any PyTree whose array leaves share a first dimension of the same length,
-    for example a batch dimension.
-    - `items` is any PyTree with the same structure as `tree`, and whose array leaves 
-    have the same shape as the corresponding leaves in `tree`, but lacking the first 
-    dimension.
-    - `idx` is the index along the first dimension of the array leaves of `tree` into which 
-    to insert the array leaves of `items`.
-    
-    **Returns**:  
-    
-    A PyTree with the same structure as `tree`, where the array leaves of `items` have
-    been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
+    Returns:  
+        A PyTree with the same structure as `tree`, where the array leaves of `items` have been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
     """
     arrays = eqx.filter(tree, eqx.is_array)
     vals_update, other_update = eqx.partition(
@@ -119,17 +114,17 @@ def random_split_like_tree(
     key: PRNGKeyArray, 
     tree: PyTree[Any, 'T'], 
     is_leaf: Optional[Callable[[Any], bool]] = None,
-) -> PyTree[Array | None, 'T']:
+) -> PyTree[PRNGKeyArray | None, 'T']:
     """Returns a split of random keys, as leaves of a target PyTree structure.
     
-    [Source](https://github.com/google/jax/discussions/9508#discussioncomment-2144076).
+    Derived from [this](https://github.com/google/jax/discussions/9508#discussioncomment-2144076) comment
+    on a discussion in the JAX GitHub repository.
     
-    **Arguments**:
-    
-    - `key` is a `jax.random.PRNGKey` from which to split the returned random keys.
-    - `tree` is any PyTree. 
-    - `is_leaf` is an optional function that decides whether each node in `tree` should be 
-    treated as a leaf, or traversed as a subtree. 
+    Arguments:
+        key: The random key from which to split the tree of random keys. 
+        tree: Any PyTree. 
+        is_leaf: An optional function that decides whether each node in `tree` 
+            should be treated as a leaf, or traversed as a subtree. 
     """
     treedef = jax.tree_structure(tree, is_leaf=is_leaf)
     return _random_split_like_treedef(key, treedef)
@@ -158,13 +153,13 @@ def tree_stack(
         # [jnp.array([[1, 2], [5, 6]]), jnp.array([[3, 4], [7, 8]])]
         ```
     
-    [Source](https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75?permalink_comment_id=4634557#gistcomment-4634557).
+    Derived from [this](https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75?permalink_comment_id=4634557#gistcomment-4634557)
+    GitHub gist.
     
-    **Arguments**:
-    
-    - `trees` is a sequence of PyTrees with the same structure, and whose array leaves 
-    have the same shape.
-    - `axis` is the axis along which to stack the array leaves.
+    Arguments:
+        trees: A sequence of PyTrees with the same structure, and whose array
+            leaves have the same shape.
+        axis: The axis along which to stack the array leaves.
     """
     return jax.tree_util.tree_map(lambda *v: jnp.stack(v, axis=axis), *trees)
 

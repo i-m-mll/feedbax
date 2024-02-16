@@ -16,7 +16,7 @@ import optax
 
 from feedbax.model import AbstractModel, get_ensemble
 from feedbax.task import AbstractTask, SimpleReaches
-from feedbax.trainer import TaskTrainer
+from feedbax.train import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
 

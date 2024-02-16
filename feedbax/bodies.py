@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleFeedbackState(AbstractState):
-    """Type of state PyTree operated on by `SimpleFeedback` instances.
+    """Type of state PyTree operated on by [`SimpleFeedback`][feedbax.bodies.SimpleFeedback] instances.
     
     Attributes:
         mechanics: The state PyTree for a `Mechanics` instance.
@@ -106,7 +106,9 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         Arguments:
             net: The neural network that outputs commands for the mechanical model.
             mechanics: The discretized model of plant dynamics.
-            feedback_spec: A PyTree of `ChannelSpec` instances,           
+            feedback_spec: A PyTree of `ChannelSpec` instances,   
+            intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add 
+                to the model at construction time.       
         """
         self.net = net
         self.mechanics = mechanics

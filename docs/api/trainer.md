@@ -1,9 +1,9 @@
 # Training
 
-::: feedbax.trainer.TaskTrainerHistory
+::: feedbax.train.TaskTrainerHistory
 
-::: feedbax.trainer.TaskTrainer
+::: feedbax.train.TaskTrainer
 
-::: feedbax.trainer.SimpleTrainer
+<!-- ::: feedbax.train.SimpleTrainer -->
 
-<!-- feedbax.trainer.HebbianGRUUpdate -->
+<!-- feedbax.train.HebbianGRUUpdate -->

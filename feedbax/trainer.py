@@ -1,4 +1,4 @@
-"""
+"""Facilities for training models.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -21,6 +21,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PRNGKeyArray
 import optax
+from tensorboardX import SummaryWriter
 from tqdm.auto import tqdm
 
 from feedbax import loss
@@ -31,11 +32,6 @@ import feedbax.plot as plot
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax.tree import filter_spec_leaves, tree_take, tree_set
-
-# if TYPE_CHECKING:
-#     # This is sloow so we'll actually import it only when needed.
-#     from torch.utils.tensorboard import SummaryWriter
-from tensorboardX import SummaryWriter
 
 
 LOSS_FMT = ".2e"
@@ -49,25 +45,22 @@ StateT = TypeVar("StateT", bound=AbstractState)
 
 
 class TaskTrainerHistory(eqx.Module):
+    """
+    Attributes:
+        loss: The training losses.
+        learning_rate: The optimizer's learning rate.
+        model_trainables: The model's trainable parameters. Non-trainable 
+            leaves appear in the model PyTree as `None`.
+        trial_specs: The training trial specifications.
+    """
     loss: LossDict 
-    learning_rate: Array
-    model_trainables: AbstractModel
+    learning_rate: Optional[Array] = None
+    model_trainables: Optional[AbstractModel] = None
     trial_specs: Optional[Sequence[AbstractTaskTrialSpec]] = None
 
 
 class TaskTrainer(eqx.Module):
-    """A class 
-    
-    NOTE: 
-    - I don't think it makes sense to use this to train (say) jPCA or linear
-      regressions, which might not use a `AbstractTask` but operate directly
-      on an entire dataset/single array at once. I should try writing another
-      training for those cases, and see if perhaps an `AbstractTrainer` makes
-      sense to capture the common aspects.  
-      
-    TODO:
-    - Maybe `model_update_funcs` should be passed to `__call__` since their typing
-      depends on `StateT` of the model/task.
+    """Trains a model, given task specifications.
     """
     optimizer: optax.GradientTransformation
     checkpointing: bool
@@ -79,12 +72,25 @@ class TaskTrainer(eqx.Module):
     def __init__(
         self,
         optimizer: optax.GradientTransformation,    
-        model_update_funcs: Optional[Sequence[Callable]] = None,
         checkpointing: bool = True,
-        chkpt_dir: str | Path ="/tmp/fbx-checkpoints",
+        chkpt_dir: str | Path ="/tmp/feedbax-checkpoints",
         enable_tensorboard: bool = False,
-        tensorboard_logdir: str | Path = "/tmp/fbx-tensorboard",
+        tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
+        model_update_funcs: Optional[Sequence[Callable]] = None,
     ):
+        """
+        Arguments:
+            optimizer: The Optax optimizer to use for training.
+            checkpointing: Whether to save model checkpoints during training.
+            chkpt_dir: The directory in which to save model checkpoints. 
+            enable_tensorboard: Whether to keep logs for Tensorboard.
+            tensorboard_logdir: The directory in which to save Tensorboard logs.
+            model_update_funcs: At the end of each training step/batch, each of these 
+                functions is passed 1) the model, and 2) the model states for all 
+                trials in the batch, and returns a model update. These
+                can be used for implementing state-dependent offline learning rules 
+                such as batch-averaged Hebbian learning.
+        """
         self.optimizer = optimizer 
         if model_update_funcs is None:
             self.model_update_funcs = ()
@@ -119,37 +125,57 @@ class TaskTrainer(eqx.Module):
         model: AbstractModel[StateT],
         n_batches: int, 
         batch_size: int, 
-        key: PRNGKeyArray,
-        where_train: Callable[[AbstractModel[StateT]], Any] = \
-            lambda model: model,
-        batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
+        where_train: Callable[[AbstractModel[StateT]], Any],
+        ensembled: bool = False,
         log_step: int = 100, 
         save_model_trainables: Optional[int] = None,
         save_trial_specs: bool = False,
         restore_checkpoint: bool = False,
         disable_tqdm = False,
-        ensembled: bool = False,
+        batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
+        *,
+        key: PRNGKeyArray,
     ):
         """Train a model on a task for a fixed number of batches of trials.
         
-        NOTE:
-        - Model checkpointing only saves model state, not the task or 
-          hyperparameters. That is, it assumes that the model and task passed 
-          to this method are, aside from their trainable state, identical to 
-          those from the time of checkpointing. This is typically the case 
-          when a checkpoint is used locally to resume training. However, trying
-          to load a checkpoint as a model later may fail. Use `save` and `load`.
-        
-        TODO:
-        - check that `where_train` contains only trainable stuff   
-        - Improve the handling of the flatten/unflatten operations around 
-          `train_step`. See its docstring for details. 
-        - The first iteration (or two) are much slower due to JIT compilation
-          of `train_step`, which distorts the smoothed it/s estimate of tqdm. 
-          Also, `opt_state` seems to change shape only on the first step call 
-          to `optimizer.update`, which is why we need to recompute and return 
-          `treedef_opt_state` from `train_step`. So maybe the first call 
-          should be separated out from the loop.
+        !!! Warning
+            Model checkpointing only saves model parameters, and not the task or other
+            hyperparameters. That is, we assume that the model and task passed 
+            to this method are, aside from their trainable state, identical to 
+            those from the original training run. This is typically the case 
+            when a checkpoint is used immediately to resume training. 
+            
+            Trying to load a checkpoint as a model at a later time may fail. 
+            Use [`feedbax.save`][feedbax.save] and 
+            [`feedbax.load`][feedbax.load] for longer-term storage.
+            
+        Arguments:
+            task: The task to train the model on.
+            model: The model—or, vmapped batch/ensemble of models—to train.
+            n_batches: The number of batches of trials to train on.
+            batch_size: The number of trials in each batch.
+            where_train: Selects the arrays from the model PyTree to be trained.
+            ensembled: Should be set to `True` if `model` is a vmapped ensemble
+                of models that should be trained in parallel.
+            log_step: Interval at which to evaluate model on the validation set,
+                print losses to the console, log to tensorboard (if enabled),
+                and save checkpoints.
+            save_model_trainables: Whether to return the entire history of the 
+                trainable leaves of the model (e.g. network weights) across
+                training iterations, as part of the `TaskTrainerHistory` object.
+            save_trial_specs: Whether to return the trial specifications for 
+                all batches in the training run, as part of the `TaskTrainerHistory`
+                object. This may use a lot of memory.
+            restore_checkpoint: Whether to attempt to restore from the last saved
+                checkpoint in the checkpoint directory. Typically, this option is
+                toggled to continue a long training run immediately after it was 
+                interrupted.
+            disable_tqdm: If `True`, tqdm progress bars are disabled.
+            batch_callbacks: A mapping from batch number to a sequence of 
+                functions (without parameters) to be called immediately after the training step is 
+                performed for that batch. This can be used (say) for profiling
+                parts of the training run.
+            key: The random key.
         """          
         
         filter_spec = filter_spec_leaves(model, where_train)
@@ -200,8 +226,8 @@ class TaskTrainer(eqx.Module):
             # Delete old checkpoints if checkpointing is on.
             delete_contents(self.chkpt_dir)  
 
-        # Passing the flattened pytrees through `train_step` gives a slight
-        # performance improvement. See the docstring of `train_step`.
+        # Passing the flattened pytrees through `_train_step` gives a slight
+        # performance improvement. See the docstring of `_train_step`.
         flat_model, treedef_model = jtu.tree_flatten(model)
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
          
@@ -212,7 +238,7 @@ class TaskTrainer(eqx.Module):
                 flat_model,
             )
             train_step = eqx.filter_vmap(
-                self.train_step, 
+                self._train_step, 
                 in_axes=(None, None, flat_model_array_spec, None, 0, None, None, 0), 
                 #out_axes=(0, 0, 0, None),
             )
@@ -228,7 +254,7 @@ class TaskTrainer(eqx.Module):
                 in_axes=(model_array_spec, 0)
             ) 
         else:
-            train_step = self.train_step
+            train_step = self._train_step
             evaluate = task.eval_with_loss
            
         # Finish the JIT compilation before the first training iteration.
@@ -274,7 +300,11 @@ class TaskTrainer(eqx.Module):
             if ensembled:
                 key_train = jr.split(key_train, n_replicates)
 
-            losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state = train_step(
+            (losses, 
+             trial_specs, 
+             flat_model, 
+             flat_opt_state, 
+             treedef_opt_state) = train_step(
                 task,
                 batch_size,
                 flat_model, 
@@ -445,8 +475,8 @@ class TaskTrainer(eqx.Module):
         return model, history
     
     @eqx.filter_jit
-    @jax.named_scope("fbx.TaskTrainer.train_step")
-    def train_step(
+    @jax.named_scope("fbx.TaskTrainer._train_step")
+    def _train_step(
         self, 
         task: AbstractTask,
         batch_size: int,

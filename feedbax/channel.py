@@ -7,6 +7,7 @@
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from functools import cached_property
 import logging
 from typing import Optional, Tuple, Union
 
@@ -27,14 +28,25 @@ logger = logging.getLogger(__name__)
     
 
 class ChannelState(eqx.Module):
+    """Type of state PyTree operated on by [`Channel`][feedbax.channel.Channel] instances.
+    
+    Attributes:
+        output: The current output of the channel.
+        queue: A tuple of previous inputs to the channel, with the most recent appearing last.
+        noise: The noise added to the current output, if any.
+    """
     output: PyTree[Array, 'T']
     queue: Tuple[PyTree[Array, 'T'], ...]
     noise: Optional[PyTree[Array, 'T']] = None
     
     
 class ChannelSpec(eqx.Module):
-    """Specification for constructing channel, with `input_proto` obtained from 
-    `where`.
+    """Specifies how to build a [`Channel`][feedbax.channel.Channel], with respect to the state PyTree of its owner.
+    
+    Attributes:
+        where: A function that selects the subtree of feedback states.
+        delay: The number of previous inputs to store in the queue.
+        noise_std: The standard deviation of the noise to add to the output.
     """
     where: Callable[[AbstractState], PyTree[Array]]
     delay: int = 0
@@ -42,21 +54,25 @@ class ChannelSpec(eqx.Module):
 
 
 class Channel(AbstractStagedModel[ChannelState]):
-    """A connection with delay and noise.
+    """A noisy queue.
     
-    This can be used for modeling an axon, tract, or wire.
-    
-    Delay is implemented as a tuple queue. 
-    
-    TODO: 
-    - Infer delay steps from time.
-    - Use a shape dtype struct for `input_proto`.
+    !!! NOTE
+        This can be used for modeling an axon, tract, wire, or other delayed 
+        and semi-reliable connection between model components.
+        
+    Attributes:
+        delay: The number of previous inputs stored in the queue.
+        noise_std: The standard deviation of the noise added to the output.
+        input_proto: A PyTree of arrays with the same structure/shapes as the
+            inputs to the channel will have.
+        intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add 
+            to the model at construction time.
     """
     delay: int
     noise_std: Optional[float]
-    init_value: float 
     input_proto: PyTree[Array] 
     intervenors: Mapping[str, Sequence[AbstractIntervenor]] 
+    _init_value: float 
         
     def __init__(
         self, 
@@ -72,7 +88,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         # TODO: Allow the delay to actually be 0 (i.e. return the input immediately; queue is always empty)
         self.delay = delay + 1  # otherwise when delay=0, nothing is stored
         self.noise_std = noise_std
-        self.init_value = init_value
+        self._init_value = init_value
         self.input_proto = input_proto
         self.intervenors = self._get_intervenors_dict(intervenors)
     
@@ -95,8 +111,14 @@ class Channel(AbstractStagedModel[ChannelState]):
         output = jax.tree_map(lambda x, y: x + y, input, noise)
         return noise, output
     
-    @property
+    @cached_property
     def model_spec(self):
+        """Returns an `OrderedDict` that specifies the stages of the channel model.
+        
+        Always includes a queue input-output stage. Optionally includes 
+        a stage that adds noise to the output, if `noise_std` was not 
+        `None` at construction time.
+        """
         spec = OrderedDict({
             "update_queue": ModelStage(
                 callable=lambda self: self._update_queue,
@@ -117,16 +139,17 @@ class Channel(AbstractStagedModel[ChannelState]):
         return spec
         
     @property
-    def memory_spec(self):
+    def memory_spec(self) -> ChannelState:  # type: ignore
         return ChannelState(
             output=True, 
             queue=False,
             noise=False,
         )
     
-    def init(self, *, key: Optional[PRNGKeyArray] = None):
+    def init(self, *, key: Optional[PRNGKeyArray] = None) -> ChannelState:
+        """Returns an empty `ChannelState` for the channel."""
         input_init = jax.tree_map(
-            lambda x: jnp.full_like(x, self.init_value), 
+            lambda x: jnp.full_like(x, self._init_value), 
             self.input_proto
         )
         if self.noise_std is not None:
@@ -140,10 +163,10 @@ class Channel(AbstractStagedModel[ChannelState]):
             noise_init,
         )
         
-    def change_input(self, input) -> "Channel":
-        """Returns a similar `Channel` object for a different input type."""
+    def change_input(self, input_proto: PyTree[Array]) -> "Channel":
+        """Returns a similar `Channel` with a changed input structure."""
         return eqx.tree_at(
             lambda channel: channel.input_proto,
             self,
-            input
+            input_proto
         )       

@@ -49,18 +49,15 @@ class RNNCellProto(Protocol):
     
     Based on `eqx.nn.GRUCell` and `eqx.nn.LSTMCell`.
     
-    Neither mypy nor typeguard currently complain if the `Type[RNNCell]` 
-    argument to `RNNCellWithReadout` doesn't satisfy this protocol. I'm 
-    not sure if this is because protocols aren't compatible with `Type`, 
-    though no errors are raised to suggest that's so.
-    
-    I'm leaving this in here because it is currently harmless, and it at 
-    least functions as documentation for the interface expected from an
-    RNN cell. 
-    
-    Alternatively, we could maybe use a protocol `RNNCellType` that 
-    defines `__call__` for `__init__`, whose return satisfies another protocol 
-    `RNNCell` that specifies the fields expected in the returned class.
+    !!! Bug "Development note"
+        Neither mypy nor typeguard currently complain if the `Type[RNNCell]` 
+        argument to `SimpleStagedNetwork` doesn't satisfy this protocol. I'm 
+        not sure if this is because protocols aren't compatible with `Type`, 
+        though no errors are raised to suggest that's so.
+        
+        I'm leaving this in here because it seems harmless, and for now it 
+        functions as documentation for the interface expected from an
+        RNN cell. 
     """
     hidden_size: int
     
@@ -77,14 +74,15 @@ class RNNCellProto(Protocol):
     
     def __call__(
         self, 
-        input: jax.Array, 
-        state: jax.Array, 
-    ) -> jax.Array:
+        input: Float[Array, "channel"], 
+        state: Float[Array, "unit"],
+    ) -> Float[Array, "unit"]:
         ...
 
 
 def orthogonal_gru_cell(input_size, hidden_size, use_bias=True, scale=1.0, *, key):
-    """Equinox `GRUCell` with orthogonal initialization."""
+    """Returns an `eqx.nn.GRUCell` with orthogonal weight matrix initialization.
+    """
     net = eqx.nn.GRUCell(input_size, hidden_size, use_bias=use_bias, key=key)
     initializer = jax.nn.initializers.orthogonal(scale=scale, column_axis=-1) 
     ortho_weight_hh = jnp.concatenate(
@@ -100,25 +98,30 @@ def orthogonal_gru_cell(input_size, hidden_size, use_bias=True, scale=1.0, *, ke
 
 
 class NetworkState(AbstractState):
-    """State of a neural network.
+    """Type of state PyTree operated on by [`SimpleStagedNetwork`][feedbax.networks.SimpleStagedNetwork] instances.
     
-    TODO:
-    - Rename to `RNNCellState`.
+    Attributes:
+        hidden: The (output) activity of the hidden layer units.
+        output: The activity of the readout layer, if the network has one.
+        encoding: The activity of the encoding layer, if the network has one.
     """
     hidden: PyTree[Float[Array, "unit"]]
-    output: Optional[PyTree[Array]]
-    encoding: Optional[PyTree[Array]]
+    output: Optional[PyTree[Array]] = None
+    encoding: Optional[PyTree[Array]] = None 
 
 
 class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
-    """A single step of a noisy neural network, with optional encoder and readout.
+    """A single step of a neural network layer, with optional encoder and readout layers.
     
-    Any neural network type with a similar interface to `eqx.nn.GRUCell` can be 
-    used as the `hidden_type`. However, only the output of the hidden layer (typically 
-    the final layer activities) will be stored in `NetworkState` and available for 
-    intervening on.
-    
-    Ultimately derived from https://docs.kidger.site/equinox/examples/train_rnn/
+    Attributes:
+        hidden_size: The number of units in the hidden layer.
+        out_size: The number of readout units, if the network has a readout layer. Otherwise
+            this is equal to `hidden_size`.
+        encoding_size: The number of encoder units, if the network has an encoder layer.
+        hidden: The module implementing the hidden layer.
+        hidden_nonlinearity: The nonlinearity applied to the hidden layer output.
+        encoder: The module implementing the encoder layer, if present.
+        readout: The module implementing the readout layer, if present.
     """
     out_size: int 
     hidden: eqx.Module
@@ -152,24 +155,42 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         key: PRNGKeyArray, 
     ):
         """
-        If an integer is passed for `encoding_size`, input encoding is enabled.
-        Otherwise network inputs are passed directly to the hidden layer.
+        !!! Note
+            If an integer is passed for `encoding_size`, input encoding is enabled.
+            Otherwise network inputs are passed directly to the hidden layer.
+                
+            If an integer is passed for `out_size`, readout is enabled. Otherwise
+            the network's outputs are the outputs of the hidden units.
             
-        If an integer is passed for `out_size`, readout is enabled. Otherwise
-        the network's outputs are the outputs of the "hidden" units.
+            In principle `hidden_type` can be class defining a multi-layer network, 
+            as long as it is instantiated as `hidden_type(input_size, hidden_size, use_bias, *,
+            key)`.
+            
+            Use `partial` to set `use_bias` for the encoder or readout types, before 
+            passing them to this constructor.
         
-        In principle `hidden_type` can be a multi-layer network class, but must
-        be instantiated as `hidden_type(input_size, hidden_size, use_bias, *,
-        key)`, and the called instance should only return its output values, as
-        usual.
-        
-        The user should use `partial` if they want to change `use_bias` for the 
-        encoder or readout.
+        Arguments:
+            input_size: The number of input channels in the network.
+                If `encoder_type` is not `None`, this is the number of inputs 
+                to the encoder layer—otherwise, the hidden layer.
+            hidden_size: The number of units in the hidden layer.
+            out_size: The number of readout units. If `None`, do not add a readout layer.
+            encoding_size: The number of encoder units. If `None`, do not add an encoder layer.
+            hidden_type: The type of hidden layer to use. 
+            encoder_type: The type of encoder layer to use.
+            use_bias: Whether the hidden layer should have a bias term.
+            hidden_nonlinearity: A function to apply unitwise to the hidden layer output. This is 
+                typically not used if `hidden_type` is `GRUCell` or `LSTMCell`.
+            out_nonlinearity: A function to apply unitwise to the readout layer output.
+            hidden_noise_std: Standard deviation of Gaussian noise to add to the hidden layer output.
+            intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add 
+                to the model at construction time.
+            key: Random key for initialising the network.
         """
         key1, key2, key3 = jr.split(key, 3)
 
         if encoding_size is not None:
-            self.encoder = encoder_type(input_size, encoding_size, use_bias=True, key=key2)
+            self.encoder = encoder_type(input_size, encoding_size, key=key2)
             self.encoding_size = encoding_size
             self.hidden = hidden_type(encoding_size, hidden_size, use_bias=use_bias, key=key1)
         else:
@@ -180,7 +201,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         self.hidden_noise_std = hidden_noise_std 
         
         if out_size is not None:
-            readout = readout_type(hidden_size, out_size, use_bias=True, key=key3)
+            readout = readout_type(hidden_size, out_size, key=key3)
             self.readout = eqx.tree_at(
                 lambda layer: layer.bias,
                 readout,
@@ -205,13 +226,19 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         return state + self.hidden_noise_std * jr.normal(key, state.shape)      
     
     @cached_property
-    def model_spec(self):
-        """
-        Inspects the instantiated hidden layer to determine if it is a stateful
-        network (e.g. an RNN). If not (e.g. Linear), it wraps the layer so that
-        it plays well with the state-passing of `AbstractModel`. Assumes that 
-        stateful layers will take 2 positional arguments, and stateless layers
-        only 1.
+    def model_spec(self) -> OrderedDict[str, ModelStage]:
+        """Specifies the network model stages: layers, nonlinearities, and noise.
+        
+        Only includes stages for the encoding layer, readout layer, hidden noise, and
+        hidden nonlinearity, if the user respectively requests them at the time of 
+        construction.
+        
+        !!! NOTE
+            Inspects the instantiated hidden layer to determine if it is a stateful
+            network (e.g. an RNN). If not (e.g. Linear), it wraps the layer so that
+            it plays well with the state-passing of `AbstractStagedModel`. This assumes 
+            that stateful layers will take 2 positional arguments, and stateless layers
+            only 1.
         """
         
         if n_positional_args(self.hidden) == 1:
@@ -290,7 +317,6 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         )        
     
     def init(self, *, key: Optional[PRNGKeyArray] = None):
-        
         if self.out_size is None:
             output = None
         else:
@@ -301,6 +327,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         else:
             encoding = jnp.zeros(self.encoding_size)
         
+        # TODO: Try eval_shape
         return NetworkState(
             hidden=jnp.zeros(self.hidden_size), 
             output=output, 

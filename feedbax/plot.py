@@ -35,7 +35,7 @@ from feedbax.misc import corners_2d
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 
 if TYPE_CHECKING:
-    from feedbax.trainer import TaskTrainerHistory
+    from feedbax.train import TaskTrainerHistory
 
 logger = logging.getLogger(__name__)
 

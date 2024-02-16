@@ -63,19 +63,20 @@ plugins:
                   show_root_full_path: true  # Show the full path of the object
                   show_bases: true
                   # show_symbol_type_toc: true  
-                  show_signature_annotations: true
+                  # show_signature_annotations: true
+                  annotations_path: brief
                   # separate_signature: true    # This and `merge_init_into_class` go together
                   # merge_init_into_class: true
                   # signature_crossrefs: true  # This doesn't appear to do anything
                   docstring_section_style: table
-                  filters: ["!^_", "__call__"]  # Exclude private but not dunder methods
-                  inherited_members: ['__call__']
+                  filters: ["!^_", "__init__", "__call__", "model_spec", "dynamics_spec"]  # Exclude private but not dunder methods
+                  inherited_members: ["__call__"]
                   show_source: false
                   members_order: source  # Same member ordering as in source code
                   # all_members: true
                   extensions:
-                  - docs/_griffe_extensions/inherited_crossrefs.py:InheritedMethodCrossrefs
-                  
+                  - griffe_inherited_method_crossrefs
+          
 
 nav:
   - 'index.md'
