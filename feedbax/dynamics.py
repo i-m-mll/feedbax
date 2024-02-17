@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
+from feedbax.model import AbstractModel
 from feedbax.state import AbstractState, CartesianState2D, StateBounds
 
 
@@ -23,17 +24,26 @@ logger = logging.getLogger(__name__)
 StateT = TypeVar("StateT", bound=AbstractState)
 
 
-class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
+class AbstractDynamicalSystem(AbstractModel[StateT]):
     """Base class for continuous dynamical systems.
     
     This is a module that provides a vector field for use as
     with `diffrax.ODETerm`.
     """
     
-    @abstractmethod
     def __call__(
+        self,
+        input: PyTree[Array],
+        state: StateT, 
+        key: PRNGKeyArray,
+    ) -> StateT:
+        """Alias for `vector_field`, with a modified signature."""
+        return self.vector_field(None, state, input)
+    
+    @abstractmethod
+    def vector_field(
         self, 
-        t: float, 
+        t: Optional[float], 
         state: StateT, 
         input: PyTree[Array],  # controls
     ) -> StateT:
@@ -41,7 +51,7 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         ...
 
     @abstractproperty
-    def control_size(self) -> int:
+    def input_size(self) -> int:
         """Number of control inputs."""
         ...
     
@@ -51,13 +61,8 @@ class AbstractDynamicalSystem(eqx.Module, Generic[StateT]):
         """
         ...
     
-    @abstractproperty
-    def bounds(self) -> StateBounds[StateT]:
-        """Suggested bounds on the state.
-        
-        These will only be applied if...
-        """
-        ...
+    def _step(self) -> "AbstractDynamicalSystem[StateT]":
+        return self
         
 
 class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
@@ -70,7 +75,7 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
     C: AbstractVar[Float[Array, "obs state"]]  # observation matrix
     
     @jax.named_scope("fbx.AbstractLTISystem")
-    def __call__(
+    def vector_field(
         self, 
         t: float, 
         state: StateT,
@@ -84,7 +89,7 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
         return CartesianState2D(pos=d_pos, vel=d_vel)
     
     @property
-    def control_size(self) -> int:
+    def input_size(self) -> int:
         return self.B.shape[1]
     
     @property 

@@ -24,7 +24,7 @@ from feedbax.networks import NetworkState
 from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask
-from feedbax.tree import tree_sum_n_features
+from feedbax._tree import tree_sum_n_features
 
 
 logger = logging.getLogger(__name__)
@@ -195,12 +195,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         *,
         key: Optional[jax.Array] = None,
     ): 
-        """Return an initial state for the model.
-        
-        TODO:
-        - We can probably use `eval_shape` more generally when an init is not 
-          available, which may be the case for simpler modules. The 
-          `model_spec` could be used to determine the relevant info flow.
+        """Return an empty/default state for the model.
         """
         keys = jr.split(key, 3) 
         
@@ -214,23 +209,20 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     
     @property
     def memory_spec(self) -> SimpleFeedbackState:
-        """Specifies which states should typically be remembered by callers.
+        """Specifies which states should typically be remembered.
         
-        For example, `fbx.ForgetfulIterator` stores trajectories of states, however it
-        doesn't usually make sense to store `states.feedback.queue` for every
-        timestep, because it contains info that is already available at the level of
-        `ForgetfulIterator` if `states.mechanics` is stored at every timestep. If the
-        feedback delay is 5 steps, `ForgetfulIterator` could end up with 5 
-        extra copies of all the parts of `states.mechanics` that are part of 
-        the feedback. So it may be better not to store `states.feedback.queue`.
+        For example, [`ForgetfulIterator`][feedbax.iterate.ForgetfulIterator]
+        stores trajectories of states. However it doesn't usually make sense to
+        store `states.feedback.queue` for every timestep, because it contains
+        info that is already available if `states.mechanics` is stored at every
+        timestep. If the feedback delay is 5 steps, `ForgetfulIterator` could
+        end up with 5 extra copies of all the parts of `states.mechanics` that
+        are part of the feedback. So it may be better not to store
+        `states.feedback.queue`.
         
-        In particular, this information will be used by `ForgetfulIterator`, but will
-        be ignored by `Iterator`, which remembers the full state 
-        indiscriminately---this is faster, but may use more memory. 
-        
-        NOTE: It makes sense for this to be here since it has to do with the
-        logic of the feedback loop, i.e. that queue is just transient internal 
-        memory of another variable in the loop. 
+        This property will be used by `ForgetfulIterator`, but will be ignored
+        by [`Iterator`][feedbax.iterate.Iterator], which remembers the full
+        state indiscriminately—it's faster, but may use more memory. 
         """
         return SimpleFeedbackState(
             mechanics=self.mechanics.memory_spec, 

@@ -47,7 +47,7 @@ class ActivationFilter(AbstractDynamicalSystem):
         self.tau_deact = tau_deact
         self.tau_diff  
 
-    def __call__(
+    def vector_field(
         self, 
         t, 
         state, 
@@ -65,12 +65,8 @@ class ActivationFilter(AbstractDynamicalSystem):
     def tau_diff(self):
         return self.tau_act - self.tau_deact
     
-    def control_size(self):
+    def input_size(self):
         return 1
-
-    @property
-    def bounds(self):
-        ...
     
     def init(self):
         ... 

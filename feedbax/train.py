@@ -31,7 +31,7 @@ from feedbax.model import AbstractModel, ModelInput
 import feedbax.plot as plot
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
-from feedbax.tree import filter_spec_leaves, tree_take, tree_set
+from feedbax._tree import filter_spec_leaves, tree_take, tree_set
 
 
 LOSS_FMT = ".2e"
@@ -194,7 +194,8 @@ class TaskTrainer(eqx.Module):
             opt_state = self.optimizer.init(
                 eqx.filter(model, eqx.is_array)
             )           
-
+        
+        # TODO: ensembling
         if save_model_trainables:
             model_train_history = jax.tree_map(
                 lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x, 
@@ -518,7 +519,7 @@ class TaskTrainer(eqx.Module):
         
         model = jtu.tree_unflatten(treedef_model, flat_model)
         
-        init_states = jax.vmap(model._step.init)(key=keys_init) 
+        init_states = jax.vmap(model.init)(key=keys_init) 
         
         for where_substate, init_substates in trial_specs.init.items():
             init_states = eqx.tree_at(

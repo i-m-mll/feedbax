@@ -9,11 +9,11 @@ import logging.handlers as loghandlers
 import os 
 import warnings
 
-from feedbax.io import save, load
+from feedbax._io import save, load
 
 from feedbax.model import get_ensemble
 
-from feedbax.tree import (
+from feedbax._tree import (
     random_split_like_tree,
     tree_array_bytes, 
     tree_call,

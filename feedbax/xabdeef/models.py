@@ -71,7 +71,7 @@ def point_mass_nn(
     net = SimpleStagedNetwork(
         input_size,
         hidden_size,
-        out_size=system.control_size, 
+        out_size=system.input_size, 
         encoding_size=encoding_size,
         hidden_type=hidden_type,
         out_nonlinearity=out_nonlinearity, 

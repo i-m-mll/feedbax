@@ -16,17 +16,14 @@ from typing import Optional, Type, Union
 
 import diffrax as dfx
 import equinox as eqx
-from equinox import field
-import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
-from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.model import wrap_stateless_callable
 from feedbax.staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import AbstractState, CartesianState2D
 
 
 logger = logging.getLogger(__name__)

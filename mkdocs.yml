@@ -69,7 +69,13 @@ plugins:
                   # merge_init_into_class: true
                   # signature_crossrefs: true  # This doesn't appear to do anything
                   docstring_section_style: table
-                  filters: ["!^_", "__init__", "__call__", "model_spec", "dynamics_spec"]  # Exclude private but not dunder methods
+                  filters: [
+                      "!^_", 
+                      "__init__", 
+                      "__call__",
+                      "model_spec", 
+                      "dynamics_spec",
+                  ]  # Exclude private but not dunder methods
                   inherited_members: ["__call__"]
                   show_source: false
                   members_order: source  # Same member ordering as in source code

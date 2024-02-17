@@ -21,7 +21,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
-from feedbax.tree import random_split_like_tree
+from feedbax._tree import random_split_like_tree
 
 
 logger = logging.getLogger(__name__)

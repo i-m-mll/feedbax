@@ -50,7 +50,7 @@ from feedbax.misc import get_unique_label
 from feedbax.model import AbstractModel
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask
-from feedbax.tree import tree_call
+from feedbax._tree import tree_call
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedback

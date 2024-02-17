@@ -76,10 +76,10 @@ def tree_take(
 
 @jax.named_scope("fbx.tree_set")
 def tree_set(
-    tree: PyTree[Any | Shaped[Array, "x *?dims"], 'T'], 
+    tree: PyTree[Any | Shaped[Array, "batch *?dims"], 'T'], 
     items: PyTree[Any | Shaped[Array, "*?dims"], 'T'],
-    idx: int
-) -> PyTree[Any | Shaped[Array, "x *?dims"], 'T']:
+    idx: int,
+) -> PyTree[Any | Shaped[Array, "batch *?dims"], 'T']:
     """Perform an out-of-place update of each array leaf of a PyTree.
     
     Non-array leaves are simply replaced by their matching leaves in `items`.

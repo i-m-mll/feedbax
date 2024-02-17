@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
     from feedbax.model import AbstractModel    
 from feedbax.state import AbstractState, CartesianState2D
-from feedbax.tree import tree_call, tree_take
+from feedbax._tree import tree_call, tree_take
 
 
 logger = logging.getLogger(__name__)

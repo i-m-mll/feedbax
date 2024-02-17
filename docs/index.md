@@ -31,7 +31,11 @@ Pip TODO.
 
 I've developed Feedbax over the last few months, as I've learned JAX. My short-term objective has been to serve my own use case---graduate research in the neuroscience of motor control---but I have also tried to make design choices in pursuit of reusability and generality.
 
-By making the library open source now, I hope to receive some feedback about those decisions, and perhaps make some structural improvements. To make that easier I've created several GitHub issues documenting my choices and uncertainties. 
+By making the library open source now, I hope to receive some feedback about those decisions, and perhaps make some structural improvements. To make that easier I've created several GitHub issues documenting my choices and uncertainties. The issues largely belong to one of a few categories:
+
+1. Structural issues: these are the most critical.
+2. Typing issues: I'm not confident these can be resolved. Mostly I'm still learning to use typing in Python to the fullest.
+3. 
 
 Anyone is welcome to ask questions or make suggestions about any part of the code or documentation!
 

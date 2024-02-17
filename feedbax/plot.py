@@ -495,7 +495,7 @@ def plot_losses(
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.set(xscale=xscale, yscale=yscale)
     
-    losses = train_history.losses
+    losses = train_history.loss
     
     cmap = plt.get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]

@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 
 from feedbax.model import AbstractModel
 from feedbax.state import AbstractState
-from feedbax.tree import tree_take, tree_set
+from feedbax._tree import tree_take, tree_set
 
 logger = logging.getLogger(__name__)
 
@@ -123,25 +123,25 @@ class ForgetfulIterator(AbstractIterator[StateT]):
     """
     step: AbstractModel[StateT]
     n_steps: int 
-    states_includes: PyTree[bool]  # can't do StateT[bool]
+    memory_spec: PyTree[bool]  # can't do StateT[bool]
     
     def __init__(
         self,
         step: AbstractModel[StateT],
         n_steps: int,
-        states_includes: Optional[PyTree[bool]] = None,
+        memory_spec: Optional[PyTree[bool]] = None,
     ):
         """**Arguments**:
         
         - `step`: is the model to be iterated.
         - `n_steps`: is the number of steps to iterate for.
-        - `states_includes`: is a PyTree of bools indicating which states to store.
+        - `memory_spec`: is a PyTree of bools indicating which states to store.
         """
-        if states_includes is None:
-            states_includes = step.memory_spec
+        if memory_spec is None:
+            memory_spec = step.memory_spec
         self.step = step
         self.n_steps = n_steps
-        self.states_includes = states_includes
+        self.memory_spec = memory_spec
     
     @jax.named_scope("fbx.ForgetfulIterator")
     def __call__(
@@ -178,10 +178,10 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         key1, key2 = jr.split(key)
         
         # Since we optionally store the trajectories of only some of the states,
-        # as specified by `states_includes`, we need to partition these out 
+        # as specified by `memory_spec`, we need to partition these out 
         # so we can index them, then recombine with the states for which only 
         # a single time step (the current one) is stored.
-        states_mem, state_nomem = eqx.partition(states, self.states_includes)
+        states_mem, state_nomem = eqx.partition(states, self.memory_spec)
         state_mem, input = tree_take((states_mem, inputs), i)
         state = eqx.combine(state_mem, state_nomem)
         
@@ -190,7 +190,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         # Likewise, split the resulting states into those which are stored,
         # which are then assigned to the next index in the trajectory, and 
         # recombined with the single-timestep states.
-        state_mem, state_nomem = eqx.partition(state, self.states_includes)        
+        state_mem, state_nomem = eqx.partition(state, self.memory_spec)        
         states_mem = tree_set(states_mem, state_mem, i + 1)
         states = eqx.combine(states_mem, state_nomem)
                 
@@ -207,7 +207,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         
         The shape of the arrays in the PyTree(s) returned by `step` is
         automatically inferred, and used to initialize empty history arrays
-        in which to store the states across all steps; `states_includes` can be
+        in which to store the states across all steps; `memory_spec` can be
         used to specify which states to store. By default, all are stored.
         """
         # Get the shape of the state output by `self.step`
@@ -220,7 +220,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         
         # Generate empty trajectories for mem states
         scalars, array_structs = eqx.partition(
-            eqx.filter(outputs, self.states_includes), 
+            eqx.filter(outputs, self.memory_spec), 
             eqx.is_array_like  # False for jax.ShapeDtypeStruct
         )
         asarrays = eqx.combine(
@@ -234,7 +234,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
     
         # Insert the init state for mem states; combine with no mem state
         init_state_mem, init_state_nomem = eqx.partition(
-            init_state, self.states_includes
+            init_state, self.memory_spec
         )
         states = eqx.combine(
             tree_set(states, init_state_mem, 0), 

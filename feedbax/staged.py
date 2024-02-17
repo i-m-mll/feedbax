@@ -232,11 +232,6 @@ class AbstractStagedModel(AbstractModel[StateT]):
                 raise ValueError("intervenors not a sequence or dict of sequences")
         
         return intervenors_dict
-    
-    @abstractproperty
-    def memory_spec(self) -> PyTree[bool]:
-        """Specifies which states should typically be remembered by callers."""
-        ...
         
     @property 
     def _step(self):

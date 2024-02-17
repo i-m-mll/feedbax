@@ -17,6 +17,7 @@ import jax
 from jax import Array
 import jax.numpy as jnp
 from jaxtyping import Float, PRNGKeyArray, PyTree
+from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
@@ -34,27 +35,31 @@ class PlantState(AbstractState):
     muscles: Optional[AbstractMuscleState] = None
 
 
-class AbstractPlant(AbstractStagedModel[PlantState]):
+class AbstractPlant(
+    AbstractStagedModel[PlantState], 
+    AbstractDynamicalSystem[PlantState]
+):
     """
     Static updates are specified in `model_spec` (i.e. `__call__`), and 
     dynamic updates (i.e. parts of the ODE/vector field) in `dynamics_spec`.
-    
-    TODO:
-    - Could inherit from `AbstractDynamicalSystem` as well?
     """
     
     clip_states: AbstractVar[bool]
     skeleton: AbstractVar[AbstractSkeleton]
     muscle_model: AbstractVar[Optional[AbstractMuscle]]
     
-    def vector_field(self, t, state, input):       
+    def vector_field(self, t: float, state: PlantState, input: PyTree[Array]):       
         d_state = jax.tree_map(jnp.zeros_like, state)
         
-        for vf, input_func, state_where in self.dynamics_spec.values():
+        for dynamics, input_func, state_where in self.dynamics_spec.values():
             d_state = eqx.tree_at(
                 state_where,
                 d_state,
-                vf(t, state_where(state), input_func(input, state))
+                dynamics.vector_field(
+                    t, 
+                    state_where(state), 
+                    input_func(input, state)
+                ),
             )
             
         return d_state 
@@ -73,14 +78,17 @@ class AbstractPlant(AbstractStagedModel[PlantState]):
     
     @abstractmethod
     def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
+        """Returns the initial state of the plant."""
         ...
         
     @abstractproperty 
     def input_size(self) -> int:
+        """Number of control inputs."""
         ...
         
     @property 
     def bounds(self) -> PyTree[StateBounds]:
+        """Suggested bounds on the state."""
         return PlantState(
             skeleton=self.skeleton.bounds,
             muscles=StateBounds(
@@ -160,7 +168,7 @@ class DirectForceInput(AbstractPlant):
     
     @property
     def input_size(self):
-        return self.skeleton.control_size
+        return self.skeleton.input_size
     
 
 

@@ -22,8 +22,8 @@ import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
-from feedbax.state import AbstractState
-from feedbax.tree import random_split_like_tree
+from feedbax.state import AbstractState, StateBounds
+from feedbax._tree import random_split_like_tree
 
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
@@ -40,7 +40,7 @@ StateT = TypeVar("StateT", bound=AbstractState)
 
 # StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
-class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
+class AbstractModel(eqx.Module, Generic[StateT]):
     """
     
     TODO:
@@ -101,6 +101,14 @@ class AbstractModel(eqx.nn.StatefulLayer, Generic[StateT]):
         """Return an initial state for the model."""
         ...
 
+    def bounds(self) -> PyTree[StateBounds]:  # type: ignore
+        """Suggested bounds on the state.
+        """
+        return None
+    
+    def memory_spec(self) -> PyTree[bool]:
+        """Specifies which states should typically be remembered by callers."""
+        return True
 
 
 class ModelInput(eqx.Module):

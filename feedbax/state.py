@@ -63,7 +63,7 @@ class HasEffectorState(Protocol):
 
 
 @runtime_checkable
-class HasMechanicsState(Protocol):
+class HasMechanicsEffectorState(Protocol):
     mechanics: HasEffectorState
   
         

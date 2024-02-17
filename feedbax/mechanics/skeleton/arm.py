@@ -62,7 +62,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         self._a  
     
     @jax.named_scope("fbx.TwoLink")
-    def __call__(self, t, state, input):
+    def vector_field(self, t, state, input):
         angle, d_angle = state.angle, state.d_angle
         input_torque = input
 
@@ -114,7 +114,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         return (lsq[0] - lsq[1], lsq[0] + lsq[1])
     
     @property 
-    def control_size(self) -> int:
+    def input_size(self) -> int:
         return 2
     
     @property
