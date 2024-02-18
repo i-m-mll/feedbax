@@ -22,8 +22,8 @@ from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
 from feedbax.model import wrap_stateless_callable
-from feedbax.staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, CartesianState2D
+from feedbax._staged import AbstractStagedModel, ModelStage
+from feedbax.state import AbstractState, CartesianState
 
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ N_DIM = 2
 
 class MechanicsState(AbstractState):
     plant: PlantState
-    effector: CartesianState2D
+    effector: CartesianState
     solver: PyTree 
 
 

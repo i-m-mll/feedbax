@@ -30,7 +30,7 @@ import pandas as pd
 import seaborn as sns
 
 from feedbax.loss import LossDict
-from feedbax.state import CartesianState2D
+from feedbax.state import CartesianState
 from feedbax.misc import corners_2d
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 
@@ -584,7 +584,7 @@ def plot_endpoint_pos_with_dists(
     endpoint_pos_dfs = jax.tree_map(
         lambda arr: pd.DataFrame(arr.pos, columns=('x', 'y')),
         endpoints,
-        is_leaf=lambda x: isinstance(x, CartesianState2D),
+        is_leaf=lambda x: isinstance(x, CartesianState),
     )
     
     gs = gridspec.GridSpec(1, len(endpoint_pos_dfs))

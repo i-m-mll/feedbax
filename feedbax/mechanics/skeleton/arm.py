@@ -17,7 +17,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 import numpy as np
 
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
-from feedbax.state import CartesianState2D, StateBounds
+from feedbax.state import CartesianState, StateBounds
 from feedbax.misc import SINCOS_GRAD_SIGNS, corners_2d
 
 
@@ -128,7 +128,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     @jax.named_scope("fbx.TwoLink.inverse_kinematics")
     def inverse_kinematics(
             self,
-            effector_state: CartesianState2D
+            effector_state: CartesianState
     ) -> TwoLinkState: 
         """Convert Cartesian effector position to joint angles for a two-link arm.
         
@@ -218,7 +218,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     def forward_kinematics(
         self,
         state: TwoLinkState
-    ) -> CartesianState2D:
+    ) -> CartesianState:
         """Convert angular state to Cartesian state.
         
         NOTE:
@@ -243,13 +243,13 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         # is passed to the next time step and converted to torques, then
         # converted to effector forces and added back to the torques, etc.
 
-        return CartesianState2D(
+        return CartesianState(
             pos=xy_pos, 
             vel=xy_vel,
             force=jnp.zeros_like(xy_vel),
         )
 
-    def effector(self, state: TwoLinkState) -> CartesianState2D:
+    def effector(self, state: TwoLinkState) -> CartesianState:
         """Return the Cartesian state of the end of the arm."""
         return jax.tree_map(
             lambda x: x[-1],  # last link

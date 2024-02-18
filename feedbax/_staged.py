@@ -14,7 +14,6 @@ from typing import (
     TYPE_CHECKING,
     Generic, 
     Optional, 
-    TypeVar,
     Union,
 )
 
@@ -28,7 +27,7 @@ import numpy as np
 from feedbax.model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.misc import indent_str
-from feedbax.state import AbstractState
+from feedbax.state import StateT
 
 if TYPE_CHECKING:
     from feedbax.task import AbstractTaskInput
@@ -40,18 +39,25 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-StateT = TypeVar("StateT", bound=AbstractState)
-
-# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
-
-
 class ModelStage(eqx.Module, Generic[StateT]):
     """Specification for a stage in a subclass of `AbstractStagedModel`.
     
     Each stage of a model is a callable that performs a modification to part 
     of the model state. 
     
-    Fields: 
+    !!! Note
+        To ensure that references to parts of the model instance remain fresh, 
+        `callable_` takes the instance of `AbstractStagedModel` (i.e. `self`)
+        and returns the callable associated with the stage.
+        
+        It is possible for references to become stale. For example, if we 
+        assign `callable_=self.net` for the neural network update in 
+        [`SimpleFeedback`][feedbax.bodies.SimpleFeedback], then it will 
+        continue to refer to the neural network assigned to `self.net` 
+        upon the model's construction, even after the network weights
+        have been updated during training—so, the model will not train.
+    
+    Attributes: 
         callable_: The module, method, or function that transforms part of the 
           model state.
         where_input: Selects the  parts of the input and state to be passed 
@@ -59,12 +65,7 @@ class ModelStage(eqx.Module, Generic[StateT]):
         where_state: Selects the substate that passed and return as state to 
           `callable_`.
         intervenors: Optionally, a sequence of state interventions to be
-          applied at the beginning of this model stage.
-    
-    To ensure that references remain fresh, `callable_` takes a single argument,
-    the instance of `AbstractStagedModel` (i.e. `self`), and typically returns 
-    either an `eqx.Module` owned by that instance, or a method of some module. 
-    However, it may be any callable/function with the appropriate signature. 
+          applied at the beginning of this model stage. 
     """
     callable: Callable[
         ["AbstractStagedModel[StateT]"], 
@@ -111,14 +112,16 @@ class AbstractStagedModel(AbstractModel[StateT]):
             
             for (label, spec), key in zip(self._stages.items(), keys):
                 
-                key1, key2 = jr.split(key)
+                key_intervene, key_stage = jr.split(key)
                 
-                for intervenor in spec.intervenors:
+                keys_intervene = jr.split(key_intervene, len(spec.intervenors))
+                
+                for (intervenor, k) in zip(spec.intervenors, keys_intervene):
                     if intervenor.label in input.intervene:
                         params = input.intervene[intervenor.label]
                     else:
                         params = None
-                    state = intervenor(params, state, key=key1)
+                    state = intervenor(params, state, key=k)
                 
                 callable_ = spec.callable(self)
                 subinput = spec.where_input(input.input, state)
@@ -136,7 +139,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
                     callable_(
                         callable_input, 
                         spec.where_state(state), 
-                        key=key2,
+                        key=key_stage,
                     ),
                 )
     
@@ -183,14 +186,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         
         !!! Warning        
             It's necessary to return `OrderedDict` because `jax.tree_util`
-            still sorts `dict` keys, which usually puts the stages out of order.
-        
-        !!! NOTE
-        The callable has to be given as a function that takes `self` and returns
-        a callable, 
-        otherwise it won't use modules that have been updated during training.
-        I'm not sure why the references are kept across model updates...
-        
+            still sorts `dict` keys, which usually puts the stages out of order.        
         """
         ...
   
@@ -234,13 +230,13 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return intervenors_dict
         
     @property 
-    def _step(self):
+    def step(self):
         """This assumes all staged models will specify single update steps,
         not iterated models.
         
         This allows classes like `AbstractTask` and `TaskTrainer` to refer
         to methods of a single step of the model, without having to know whether
-        the model step is wrapped in an ForgetfulIterator; `AbstractIterator` concretes will 
+        the model step is wrapped in an ForgetfulIterator; `AbstractIterator`s will 
         return `self._step` instead.
         """
         return self 
@@ -256,7 +252,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return tuple(labels)
 
 
-def model_spec_format(
+def pformat_model_spec(
     model: AbstractStagedModel, 
     indent: int = 2, 
     newlines: bool = False,
@@ -265,8 +261,9 @@ def model_spec_format(
     
     Shows what is called by `model`, and by any `AbstractStagedModel`s it calls.
     
-    This assumes that the model spec is a tree/DAG. If there are cycles in 
-    the model spec, this will recurse until an exception is raised.
+    !!! Warning     
+        This assumes that the model spec is a tree/DAG. If there are cycles in 
+        the model spec, this will recurse until an exception is raised.
     
     Arguments:
         model: The staged model to format.
@@ -307,3 +304,23 @@ def model_spec_format(
     
     return nl.join(get_spec_strs(model))
 
+
+def pprint_model_spec(
+    model: AbstractStagedModel, 
+    indent: int = 2, 
+    newlines: bool = False,
+):
+    """Prints a string representation of the model specification tree.
+    
+    Shows what is called by `model`, and by any `AbstractStagedModel`s it calls.
+    
+    !!! Warning     
+        This assumes that the model spec is a tree/DAG. If there are cycles in 
+        the model spec, this will recurse until an exception is raised.
+    
+    Arguments:
+        model: The staged model to format.
+        indent: Number of spaces to indent each nested level of the tree.
+        newlines: Whether to add an extra blank line between each line.
+    """
+    print(pformat_model_spec(model, indent=indent, newlines=newlines))

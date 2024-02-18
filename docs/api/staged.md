@@ -1,7 +1,10 @@
 # Staged models
 
-::: feedbax.staged.AbstractStagedModel
+::: feedbax.AbstractStagedModel
+
+::: feedbax.ModelStage
 
 ## Pretty printing of model stages
 
-::: feedbax.staged.model_spec_format
+::: feedbax.pprint_model_spec
+

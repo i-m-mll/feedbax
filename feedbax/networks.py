@@ -17,7 +17,6 @@ from typing import (
     Optional, 
     Protocol, 
     Type, 
-    TypeVar,
     Union,
     runtime_checkable,
 )
@@ -33,14 +32,11 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import wrap_stateless_callable
 from feedbax.misc import interleave_unequal, n_positional_args  
-from feedbax.staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState
+from feedbax._staged import AbstractStagedModel, ModelStage
+from feedbax.state import AbstractState, StateT
 
 
 logger = logging.getLogger(__name__)
-
-
-StateT = TypeVar("StateT", bound=AbstractState)
 
 
 @runtime_checkable

@@ -14,6 +14,7 @@ theme:
     - header.autohide
   icon:
     logo: material/arm-flex  #rotate-left, directory-sync, all-inclusive
+    annotation: material/arrow-right-circle 
   palette:
     scheme: fbx
 
@@ -25,6 +26,10 @@ markdown_extensions:
       generic: true
   - pymdownx.details  # Enables collapsible admonitions
   # - pymdownx.highlight
+  # - attr_list 
+  # - md_in_html
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.inlinehilite
   - pymdownx.superfences  # Enables syntax highlighting
   # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
@@ -63,10 +68,10 @@ plugins:
                   show_root_full_path: true  # Show the full path of the object
                   show_bases: true
                   # show_symbol_type_toc: true  
-                  # show_signature_annotations: true
                   annotations_path: brief
-                  # separate_signature: true    # This and `merge_init_into_class` go together
                   # merge_init_into_class: true
+                  # separate_signature: true    # This and `merge_init_into_class` go together
+                  # show_signature_annotations: true
                   # signature_crossrefs: true  # This doesn't appear to do anything
                   docstring_section_style: table
                   filters: [
@@ -93,7 +98,7 @@ nav:
     - 2. From automatic to manual: 'examples/1_train.ipynb'
     - 3. Intervening on a model: 'examples/3_intervening.ipynb'
     - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
-    - 5. Designing models with stages: 'examples/5_model_stages.ipynb'
+    - 5. Models with stages: 'examples/5_model_stages.ipynb'
     - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
     - 7. Advanced analyses: 'examples/8_advanced.ipynb'
     - Composable loss functions: 'examples/losses.ipynb'
@@ -114,6 +119,7 @@ nav:
       - 'api/dynamics.md'
       - 'api/skeleton.md'
       - 'api/muscle.md'
+    - 'api/state.md'
     - 'api/trainer.md'
     - 'api/task.md'
     - 'api/loss.md'

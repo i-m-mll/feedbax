@@ -29,7 +29,6 @@ from typing import (
     TYPE_CHECKING,
     Optional, 
     Tuple,
-    TypeVar,
 )
 
 import equinox as eqx
@@ -47,17 +46,14 @@ from feedbax.model import ModelInput
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
     from feedbax.model import AbstractModel    
-from feedbax.state import AbstractState, CartesianState2D
-from feedbax._tree import tree_call, tree_take
+from feedbax.state import AbstractState, CartesianState, StateT
+from feedbax._tree import tree_call
 
 
 logger = logging.getLogger(__name__)
 
 
 N_DIM = 2
-
-
-StateT = TypeVar("StateT", bound=AbstractState)
 
 
 def get_where_str(where_func: Callable) -> str:
@@ -147,7 +143,7 @@ class AbstractTaskTrialSpec(eqx.Module):
 class AbstractReachTrialSpec(AbstractTaskTrialSpec):
     init: AbstractVar[InitSpecDict]
     input:  AbstractVar[AbstractTaskInput]
-    target:  AbstractVar[CartesianState2D]
+    target:  AbstractVar[CartesianState]
     intervene:  AbstractVar[Mapping[str, jax.Array]] 
     
     @cached_property
@@ -167,14 +163,14 @@ class DelayedReachTaskInput(eqx.Module):
 class SimpleReachTrialSpec(AbstractReachTrialSpec):
     init: InitSpecDict
     input: AbstractTaskInput
-    target: CartesianState2D
+    target: CartesianState
     intervene: Mapping[str, jax.Array] = field(default_factory=dict)
 
 
 class DelayedReachTrialSpec(AbstractReachTrialSpec):
     init: InitSpecDict
     input: AbstractTaskInput
-    target: CartesianState2D
+    target: CartesianState
     epoch_start_idxs: Int[Array, "n_epochs"]
     intervene: Mapping[str, jax.Array] = field(default_factory=dict)
     
@@ -299,7 +295,7 @@ class AbstractTask(eqx.Module):
     ) -> Tuple[LossDict, StateT]:
         """Evaluate a model on a set of trials.
         """      
-        init_states = jax.vmap(model._step.init)(key=keys)
+        init_states = jax.vmap(model.init)(key=keys)
         
         for where_substate, init_substates in trial_specs.init.items():
             init_states = eqx.tree_at(
@@ -308,7 +304,7 @@ class AbstractTask(eqx.Module):
                 init_substates, 
             )
         
-        init_states = jax.vmap(model._step.state_consistency_update)(
+        init_states = jax.vmap(model.step.state_consistency_update)(
             init_states
         )
         
@@ -414,7 +410,7 @@ def _pos_only_states(
     forces = jnp.zeros_like(pos_endpoints)
     
     states = jax.tree_map(
-        lambda x: CartesianState2D(*x),
+        lambda x: CartesianState(*x),
         list(zip(pos_endpoints, vel_endpoints, forces)),
         is_leaf=lambda x: isinstance(x, tuple)
     )
@@ -456,11 +452,11 @@ def _centerout_endpoints_grid(
 
 
 def _forceless_task_inputs(
-    target_states: CartesianState2D,
-) -> CartesianState2D:
+    target_states: CartesianState,
+) -> CartesianState:
     """Only position and velocity of targets are supplied to the model.
     """
-    return CartesianState2D(
+    return CartesianState(
         pos=target_states.pos, 
         vel=target_states.vel,
         force=None,
@@ -669,10 +665,10 @@ class RandomReachesDelayed(AbstractTask):
     
     def get_sequences(
         self,  
-        init_states: CartesianState2D, 
-        target_states: CartesianState2D, 
+        init_states: CartesianState, 
+        target_states: CartesianState, 
         key: PRNGKeyArray,
-    ) -> Tuple[DelayedReachTaskInput, CartesianState2D, Int[Array, "n_epochs"]]:
+    ) -> Tuple[DelayedReachTaskInput, CartesianState, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
         
         TODO: This could be split up?

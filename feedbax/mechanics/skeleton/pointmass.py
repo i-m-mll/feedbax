@@ -6,23 +6,19 @@
 
 from functools import cached_property
 import logging 
-from typing import Any, Optional, TypeVar
+from typing import Optional
 
 import equinox as eqx
-from equinox import AbstractVar
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from feedbax.dynamics import AbstractLTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
-from feedbax.state import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
-
-
-StateT = TypeVar("StateT", bound=AbstractState)
 
 
 # global defaults
@@ -30,7 +26,7 @@ ORDER = 2  # maximum ORDER of the state derivatives
 N_DIM = 2  # number of spatial dimensions
 
 
-class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState2D]):
+class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
     """An LTI system where the effector is assumed identical to the system.
     
     This generally makes sense for linear systems with only one moving part, 
@@ -74,21 +70,21 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState2D]):
     
     def inverse_kinematics(
         self, 
-        effector_state: CartesianState2D
-    ) -> CartesianState2D:
+        effector_state: CartesianState
+    ) -> CartesianState:
         return effector_state
     
     def effector(
         self, 
-        system_state: CartesianState2D,
-    ) -> CartesianState2D:
+        system_state: CartesianState,
+    ) -> CartesianState:
         """Return the effector state given the system state.
         
         For a point mass, these are identical. However, we make sure to return
         zero `force` to avoid positive feedback loops as effector forces are
         converted back to system forces by `Mechanics` on the next time step.
         """
-        return CartesianState2D(
+        return CartesianState(
             pos=system_state.pos,
             vel=system_state.vel,
             # force=jnp.zeros_like(system_state.force),
@@ -97,10 +93,10 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState2D]):
     def update_state_given_effector_force(
         self, 
         effector_force: jax.Array,
-        system_state: CartesianState2D,
+        system_state: CartesianState,
         *,
         key: Optional[PRNGKeyArray] = None,
-    ) -> CartesianState2D:
+    ) -> CartesianState:
         return eqx.tree_at(
             lambda state: state.force,
             system_state,

@@ -27,22 +27,32 @@ logger = logging.getLogger(__name__)
 
 
 class AbstractState(eqx.Module):
-    """Base class for model states."""
+    """Base class for model states.
     
-    def copy(self):
-        return deepcopy(self)
+    !!! NOTE
+        Currently this is empty, and only used for typing.
+    """
+    
+    ...
 
 
 StateT = TypeVar("StateT", bound=AbstractState)
 
 
 class StateBounds(eqx.Module, Generic[StateT]):
-    """Bounds on a state."""
+    """Specifies bounds on a state.
+    
+    Attributes:
+        low: A state PyTree giving lower bounds.
+        high: A state PyTree giving upper bounds.
+    """
     low: Optional[StateT]
     high: Optional[StateT] 
     
     @cached_property
     def filter_spec(self) -> PyTree[bool]:
+        """A matching PyTree, indicated which parts of the state are bounded.
+        """
         return jax.tree_map(
             lambda x: x is not None, 
             self, 
@@ -50,8 +60,14 @@ class StateBounds(eqx.Module, Generic[StateT]):
         )
 
 
-class CartesianState2D(AbstractState):
-    """Cartesian state of a system."""
+class CartesianState(AbstractState):
+    """Cartesian state of a mechanical system in two spatial dimensions.
+    
+    Attributes:
+        pos: The position coordinates of the point(s) in the system.
+        vel: The respective velocities.
+        force: The respective forces.
+    """
     pos: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
     vel: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
     force: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
@@ -59,7 +75,7 @@ class CartesianState2D(AbstractState):
 
 @runtime_checkable
 class HasEffectorState(Protocol):
-    effector: CartesianState2D
+    effector: CartesianState
 
 
 @runtime_checkable
@@ -71,12 +87,11 @@ def clip_state(
     bounds: StateBounds[StateT],
     state: StateT, 
 ) -> StateT:
-    """Constrain a state to the given bounds.
+    """Returns a state clipped to the given bounds.
     
-    TODO: 
-    - Maybe we can `tree_map` this, but I'm not sure it matters,
-      especially since it might require we make a bizarre
-      `StateBounds[Callable]` for the operations...
+    Arguments:
+        bounds: The lower and upper bounds to clip the state to.
+        state: The state to clip.
     """
 
     if bounds.low is not None:

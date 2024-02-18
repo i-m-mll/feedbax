@@ -13,15 +13,12 @@ import jax
 import jax.tree_util as jtu
 import pytest
 
-from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState, PointMass
+from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState, PointMass, StateT
 from feedbax.mechanics.skeleton.arm import TwoLink, TwoLinkState
-from feedbax.state import CartesianState2D 
+from feedbax.state import CartesianState 
 
 
 logger = logging.getLogger(__name__)
-
-
-StateT = TypeVar("StateT", bound=AbstractSkeletonState)
 
 
 # TODO: examine twolink forward consistency so we can make this lower!
@@ -39,8 +36,8 @@ def forward_cycle(
 
 def inverse_cycle(
     skeleton: AbstractSkeleton[StateT], 
-    cartesian_state: CartesianState2D
-) -> CartesianState2D:
+    cartesian_state: CartesianState
+) -> CartesianState:
     """Inverse kinematics followed by forward kinematics."""
     return skeleton.effector(skeleton.inverse_kinematics(cartesian_state))
 
@@ -65,7 +62,7 @@ def test_twolink_forward_consistency():
     
 def test_twolink_inverse_consistency():
     
-    effector_state = CartesianState2D(pos=jnp.array([0.0, 0.5]))
+    effector_state = CartesianState(pos=jnp.array([0.0, 0.5]))
     effector_state_cycle = inverse_cycle(twolink, effector_state)
     
     eqx.tree_pprint(effector_state, short_arrays=False)
@@ -89,7 +86,7 @@ def test_pointmass_forward_consistency():
     These are identity functions for a point mass, so this should be trivial,
     but in the future we should test several points just to be sure.
     """    
-    skeleton_state = CartesianState2D(pos=jnp.array([0.0, 0.5]))
+    skeleton_state = CartesianState(pos=jnp.array([0.0, 0.5]))
     skeleton_state_cycle = forward_cycle(pointmass, skeleton_state)
     
     assert all(jtu.tree_leaves(jax.tree_map(
@@ -101,7 +98,7 @@ def test_pointmass_forward_consistency():
 
 def test_pointmass_inverse_consistency():
 
-    effector_state = CartesianState2D(pos=jnp.array([0.0, 0.5]))
+    effector_state = CartesianState(pos=jnp.array([0.0, 0.5]))
     effector_state_cycle = inverse_cycle(pointmass, effector_state)
     
     assert all(jtu.tree_leaves(jax.tree_map(

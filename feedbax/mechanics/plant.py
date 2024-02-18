@@ -9,7 +9,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 import logging
-from typing import Optional, Tuple, TypeVar, Union
+from typing import Optional, Tuple, Union
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -23,7 +23,7 @@ from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
 from feedbax.mechanics.skeleton.arm import TwoLink
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
-from feedbax.staged import AbstractStagedModel, ModelStage
+from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateBounds, clip_state
 
 

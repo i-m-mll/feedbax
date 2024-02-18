@@ -5,13 +5,11 @@
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
 from functools import wraps
-import json 
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Optional, Tuple, TypeVar
+from typing import Any, Optional, Tuple
 
 import equinox as eqx
 from equinox import field
@@ -29,7 +27,7 @@ from feedbax.loss import AbstractLoss, LossDict
 from feedbax.misc import TqdmLoggingHandler, delete_contents
 from feedbax.model import AbstractModel, ModelInput
 import feedbax.plot as plot
-from feedbax.state import AbstractState
+from feedbax.state import StateT
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax._tree import filter_spec_leaves, tree_take, tree_set
 
@@ -41,16 +39,15 @@ logger = logging.getLogger(__name__)
 logger.addHandler(TqdmLoggingHandler())
 
 
-StateT = TypeVar("StateT", bound=AbstractState)
-
-
 class TaskTrainerHistory(eqx.Module):
-    """
+    """A record of training history over a call to a 
+    [`TaskTrainer`][feedbax.train.TaskTrainer] instance.
+    
     Attributes:
         loss: The training losses.
         learning_rate: The optimizer's learning rate.
         model_trainables: The model's trainable parameters. Non-trainable 
-            leaves appear in the model PyTree as `None`.
+            leaves appear as `None`.
         trial_specs: The training trial specifications.
     """
     loss: LossDict 
@@ -60,7 +57,7 @@ class TaskTrainerHistory(eqx.Module):
 
 
 class TaskTrainer(eqx.Module):
-    """Trains a model, given task specifications.
+    """Manages resources needed to train models, given task specifications.
     """
     optimizer: optax.GradientTransformation
     checkpointing: bool
@@ -136,14 +133,15 @@ class TaskTrainer(eqx.Module):
         *,
         key: PRNGKeyArray,
     ):
-        """Train a model on a task for a fixed number of batches of trials.
+        """Train a model on a fixed number of batches of task trials.
         
         !!! Warning
             Model checkpointing only saves model parameters, and not the task or other
             hyperparameters. That is, we assume that the model and task passed 
             to this method are, aside from their trainable state, identical to 
             those from the original training run. This is typically the case 
-            when a checkpoint is used immediately to resume training. 
+            when `restore_checkpoint=True` is toggled immediately after the 
+            interruption of a training run, to resume it.
             
             Trying to load a checkpoint as a model at a later time may fail. 
             Use [`feedbax.save`][feedbax.save] and 
@@ -528,7 +526,7 @@ class TaskTrainer(eqx.Module):
                 init_substates, 
             )
         
-        init_states = jax.vmap(model._step.state_consistency_update)(
+        init_states = jax.vmap(model.step.state_consistency_update)(
             init_states
         )
         
@@ -731,12 +729,12 @@ class HebbianGRUUpdate(eqx.Module):
         dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
         
         # Build the update for the candidate activation weights of the GRU.
-        weight_hh = jnp.zeros_like(model._step.net.hidden.weight_hh)
+        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
         weight_idxs = slice(2 * weight_hh.shape[-2] // 3, None)        
         weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
         
         update = eqx.tree_at(
-            lambda model: model._step.net.hidden.weight_hh, 
+            lambda model: model.step.net.hidden.weight_hh, 
             jax.tree_map(lambda x: None, model),
             weight_hh,
             is_leaf=lambda x: x is None,

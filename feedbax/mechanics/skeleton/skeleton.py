@@ -8,19 +8,20 @@ from abc import abstractmethod
 import logging
 from typing import Optional, TypeVar
 
-import jax
 from jax import Array
 from jaxtyping import PRNGKeyArray
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.state import AbstractState, CartesianState2D
+from feedbax.state import AbstractState, CartesianState
 
 
 logger = logging.getLogger(__name__)
 
 
 class AbstractSkeletonState(AbstractState):
-    pass
+    ...
+    # effector: CartesianState
+    # config: PyTree
 
 
 StateT = TypeVar("StateT", bound=AbstractSkeletonState)
@@ -29,17 +30,17 @@ StateT = TypeVar("StateT", bound=AbstractSkeletonState)
 class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     
     @abstractmethod
-    def forward_kinematics(self, state: StateT) -> CartesianState2D:
+    def forward_kinematics(self, state: StateT) -> CartesianState:
         """Compute the Cartesian state of the skeleton."""
         ...
         
     @abstractmethod 
-    def inverse_kinematics(self, state: CartesianState2D) -> StateT:
+    def inverse_kinematics(self, state: CartesianState) -> StateT:
         """Compute the joint angles of the skeleton."""
         ...
         
     @abstractmethod
-    def effector(self, state: StateT) -> CartesianState2D:
+    def effector(self, state: StateT) -> CartesianState:
         """
         
         TODO: should this really be here?

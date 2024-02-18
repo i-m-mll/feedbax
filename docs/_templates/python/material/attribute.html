@@ -1,0 +1,13 @@
+{% extends '_base/attribute.html' %}
+
+{% block heading %}
+    {% if config.separate_signature %}
+    <span class="doc doc-object-name doc-attribute-name"><code>{% if show_full_path %}{{ attribute.path }}{% else %}{{ attribute.name }}{% endif %}</code></span>
+    {% else %}
+    {% filter highlight(language="python", inline=True) %}
+        {% if show_full_path %}{{ attribute.path }}{% else %}{{ attribute.name }}{% endif %}
+        {% if attribute.annotation %}: {{ attribute.annotation }}{% endif %}
+        {% if attribute.value %} = {{ attribute.value }}{% endif %}
+    {% endfilter %}
+    {% endif %}
+{% endblock %}

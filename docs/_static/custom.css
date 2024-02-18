@@ -111,6 +111,16 @@ div.doc-contents {
     border-left: 4px solid rgb(245, 245, 245);
 }
 
+/* div.doc-children doc-contents {
+    padding-left: 20px;
+    border-left: 4px solid rgba(245, 245, 245, 0);
+} */
+
+div.doc-signature {
+    padding-left: 20px;
+    /* border-left: 4px solid rgb(245, 245, 245); */
+}
+
 /* Highlight functions, classes etc. type signatures. Really helps to make clear where
    one item ends and another begins. */
 

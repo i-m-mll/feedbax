@@ -5,6 +5,4 @@
 ::: feedbax.iterate.ForgetfulIterator
 
 ::: feedbax.iterate.AbstractIterator
-    members: ['step']
-                
     

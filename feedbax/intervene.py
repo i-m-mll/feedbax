@@ -48,7 +48,7 @@ from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
 from feedbax.misc import get_unique_label
 from feedbax.model import AbstractModel
-from feedbax.state import AbstractState
+from feedbax.state import StateT
 from feedbax.task import AbstractTask
 from feedbax._tree import tree_call
 
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     # from feedbax.model import AbstractModel
     from feedbax.mechanics.mechanics import MechanicsState
     from feedbax.networks import NetworkState
-    from feedbax.staged import AbstractStagedModel
+    from feedbax._staged import AbstractStagedModel
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,6 @@ class AbstractIntervenorInput(eqx.Module):
     active: AbstractVar[bool]
     
     
-StateT = TypeVar("StateT", bound=AbstractState)
 InputT = TypeVar("InputT", bound=AbstractIntervenorInput)    
 
 
@@ -545,7 +544,7 @@ def schedule_intervenor(
     invalid_labels_models = jax.tree_util.tree_reduce(
         lambda x, y: x + y,
         jax.tree_map(
-            lambda model: model._step._all_intervenor_labels, 
+            lambda model: model.step._all_intervenor_labels, 
             models, 
             is_leaf=lambda x: isinstance(x, AbstractModel)
         ),

@@ -1,6 +1,6 @@
 # Model base classes
 
-::: feedbax.model
+<!-- ::: feedbax.model -->
 
 <!-- ::: feedbax.model.AbstractModel
 

@@ -19,7 +19,7 @@ import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree 
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.staged import AbstractStagedModel, ModelStage
+from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
 from feedbax._tree import random_split_like_tree
 
@@ -27,7 +27,7 @@ from feedbax._tree import random_split_like_tree
 logger = logging.getLogger(__name__)
     
 
-class ChannelState(eqx.Module):
+class ChannelState(AbstractState):
     """Type of state PyTree operated on by [`Channel`][feedbax.channel.Channel] instances.
     
     Attributes:

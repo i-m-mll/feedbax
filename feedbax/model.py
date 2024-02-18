@@ -22,7 +22,7 @@ import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
-from feedbax.state import AbstractState, StateBounds
+from feedbax.state import StateBounds, StateT
 from feedbax._tree import random_split_like_tree
 
 if TYPE_CHECKING:
@@ -35,8 +35,6 @@ logger = logging.getLogger(__name__)
 
 N_DIM = 2
 
-
-StateT = TypeVar("StateT", bound=AbstractState)
 
 # StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
@@ -60,7 +58,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         ...
 
     @abstractproperty
-    def _step(self) -> "AbstractModel[StateT]":
+    def step(self) -> "AbstractModel[StateT]":
         """Interface to a single model step.
         
         For non-iterated models, this should trivially return `step`.
@@ -151,7 +149,7 @@ class MultiModel(AbstractModel[StateT]):
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )
     
-    def _step(self):
+    def step(self):
         return self
         
     def _get_keys(self, key):

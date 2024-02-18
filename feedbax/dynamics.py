@@ -6,7 +6,7 @@
 
 from abc import abstractmethod, abstractproperty
 import logging 
-from typing import Generic, Optional, Protocol, TypeVar
+from typing import Optional
 
 import equinox as eqx
 from equinox import AbstractVar
@@ -15,20 +15,14 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.model import AbstractModel
-from feedbax.state import AbstractState, CartesianState2D, StateBounds
+from feedbax.state import CartesianState, StateBounds, StateT
 
 
 logger = logging.getLogger(__name__)
 
-    
-StateT = TypeVar("StateT", bound=AbstractState)
-
 
 class AbstractDynamicalSystem(AbstractModel[StateT]):
     """Base class for continuous dynamical systems.
-    
-    This is a module that provides a vector field for use as
-    with `diffrax.ODETerm`.
     """
     
     def __call__(
@@ -43,11 +37,11 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
     @abstractmethod
     def vector_field(
         self, 
-        t: Optional[float], 
+        t: float, 
         state: StateT, 
         input: PyTree[Array],  # controls
     ) -> StateT:
-        """Vector field of the system."""
+        """Returns the time derivatives of the system's states."""
         ...
 
     @abstractproperty
@@ -61,11 +55,11 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         """
         ...
     
-    def _step(self) -> "AbstractDynamicalSystem[StateT]":
+    def step(self) -> "AbstractDynamicalSystem[StateT]":
         return self
         
 
-class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
+class AbstractLTISystem(AbstractDynamicalSystem[CartesianState]):
     """A linear, continuous, time-invariant system.
     
     Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
@@ -86,7 +80,7 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
         d_y = self.A @ state_ + self.B @ force
         d_pos, d_vel = d_y[:2], d_y[2:]
         
-        return CartesianState2D(pos=d_pos, vel=d_vel)
+        return CartesianState(pos=d_pos, vel=d_vel)
     
     @property
     def input_size(self) -> int:
@@ -97,12 +91,12 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState2D]):
         return self.A.shape[1]
     
     @property
-    def bounds(self) -> StateBounds[CartesianState2D]:
+    def bounds(self) -> StateBounds[CartesianState]:
         return StateBounds(low=None, high=None)
     
     def init(
         self,
         *,
         key: Optional[PRNGKeyArray] = None,
-    ) -> CartesianState2D:
-        return CartesianState2D()
+    ) -> CartesianState:
+        return CartesianState()

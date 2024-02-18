@@ -21,7 +21,7 @@ from feedbax.intervene import AbstractIntervenor
 from feedbax.model import MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
-from feedbax.staged import AbstractStagedModel, ModelStage
+from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState
 from feedbax.task import AbstractTask
 from feedbax._tree import tree_sum_n_features
@@ -72,7 +72,7 @@ def _convert_feedback_spec(
         
         
 class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
-    """Models one step around a single feedback loop between a neural network 
+    """Model of one step around a feedback loop between a neural network 
     and a mechanical model.
     
     Attributes:
