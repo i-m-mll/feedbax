@@ -31,20 +31,19 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     
     @abstractmethod
     def forward_kinematics(self, state: StateT) -> CartesianState:
-        """Compute the Cartesian state of the skeleton."""
+        """Return the Cartesian state of the joints given the configuration
+        of the skeleton."""
         ...
         
     @abstractmethod 
     def inverse_kinematics(self, state: CartesianState) -> StateT:
-        """Compute the joint angles of the skeleton."""
+        """Return the configuration of the skeleton given the Cartesian state 
+        of the final joint (usually, the effector)."""
         ...
         
     @abstractmethod
     def effector(self, state: StateT) -> CartesianState:
-        """
-        
-        TODO: should this really be here?
-        """
+        """Return the Cartesian state of the effector."""
         ...
     
     @abstractmethod
@@ -57,4 +56,10 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     ) -> StateT:
         """Update the state of the skeleton given an effector force."""
         ...
+        
+    # @abstractmethod
+    # def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
+    #     """Returns the initial state of the system.
+    #     """
+    #     ...
     

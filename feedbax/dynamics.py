@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 class AbstractDynamicalSystem(AbstractModel[StateT]):
     """Base class for continuous dynamical systems.
+    
+    ??? dev-note "Development note"
+        Vector fields for biomechanical models are generally not
+        time-dependent. That is, the argument `t` to `vector_field` is
+        typically unused. This is apparent in the way we alias `vector_field`
+        to `__call__`, which is a method that `AbstractModel` requires.
+        
+        Perhaps it is unnecessary to inherit from `AbstractModel`, though.
     """
     
     def __call__(
@@ -37,7 +45,7 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
     @abstractmethod
     def vector_field(
         self, 
-        t: float, 
+        t: float | None, 
         state: StateT, 
         input: PyTree[Array],  # controls
     ) -> StateT:
@@ -59,35 +67,39 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         return self
         
 
-class AbstractLTISystem(AbstractDynamicalSystem[CartesianState]):
+class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
     """A linear, continuous, time-invariant system.
     
-    Inspired by https://docs.kidger.site/diffrax/examples/kalman_filter/
+    Inspired by [this Diffrax example](https://docs.kidger.site/diffrax/examples/kalman_filter/).
+    
+    Attributes:
+        A: The state evolution matrix.
+        B: The control matrix.
+        C: The observation matrix.
     """
-    A: AbstractVar[Float[Array, "state state"]]  # state evolution matrix
-    B: AbstractVar[Float[Array, "state input"]]  # control matrix
-    C: AbstractVar[Float[Array, "obs state"]]  # observation matrix
+    A: AbstractVar[Float[Array, "state state"]] 
+    B: AbstractVar[Float[Array, "state input"]]  
+    C: AbstractVar[Float[Array, "obs state"]]  
     
     @jax.named_scope("fbx.AbstractLTISystem")
     def vector_field(
         self, 
         t: float, 
-        state: StateT,
+        state: Array,
         input: Float[Array, "input"]
-    ) -> Float[Array, "state"]:
-        force = input + state.force
-        state_ = jnp.concatenate([state.pos, state.vel])       
-        d_y = self.A @ state_ + self.B @ force
-        d_pos, d_vel = d_y[:2], d_y[2:]
-        
-        return CartesianState(pos=d_pos, vel=d_vel)
+    ) -> Array:
+        """Returns time derivatives of the system's states.        
+        """ 
+        return self.A @ state + self.B @ input
     
     @property
     def input_size(self) -> int:
+        """Number of control variables."""
         return self.B.shape[1]
     
     @property 
     def state_size(self) -> int:
+        """Number of state variables."""
         return self.A.shape[1]
     
     @property
@@ -99,4 +111,5 @@ class AbstractLTISystem(AbstractDynamicalSystem[CartesianState]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> CartesianState:
+        """Return a default state for the linear system."""
         return CartesianState()

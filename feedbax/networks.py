@@ -263,7 +263,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             spec = OrderedDict({
                 'encoder': ModelStage(
                     callable=lambda self: \
-                        lambda input, state: self.encoder(input),
+                        lambda input, state, *, key: self.encoder(input),
                     where_input=lambda input, _: ravel_pytree(input)[0],
                     where_state=lambda state: state.encoding,
                 ),
@@ -298,7 +298,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             spec |= {
                 'readout': ModelStage(
                     callable=lambda self: \
-                        lambda input, state: self.out_nonlinearity(
+                        lambda input, state, *, key: self.out_nonlinearity(
                             self.readout(input)
                         ),
                     where_input=lambda input, state: state.hidden,

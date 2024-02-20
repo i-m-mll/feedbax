@@ -1,9 +1,9 @@
 # Muscle models
 
-!!! Note    
+!!! Info  ""  
     Currently, only variants of the Virtual Muscle Model (Brown et al., 1999) are implemented.
 
-## Constructors for specific parametrizations of the Virtual Muscle Model
+## Constructors for specific variants of the Virtual Muscle Model
 
 ::: feedbax.mechanics.muscle.brown_1999_virtualmuscle
 

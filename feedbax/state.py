@@ -36,7 +36,7 @@ class AbstractState(eqx.Module):
     ...
 
 
-StateT = TypeVar("StateT", bound=AbstractState)
+StateT = TypeVar("StateT", AbstractState, Array)
 
 
 class StateBounds(eqx.Module, Generic[StateT]):

@@ -62,6 +62,20 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
     def C(self):
         return 1  # TODO 
     
+    def vector_field(
+        self, 
+        t: float, 
+        state: CartesianState,
+        input: Float[Array, "input"]
+    ) -> CartesianState:
+        """Returns time derivatives of the system's states.        
+        """
+        force = input + state.force
+        state_ = jnp.concatenate([state.pos, state.vel])       
+        d_y = super().vector_field(t, state_, force)
+
+        return CartesianState(pos=d_y[:2], vel=d_y[2:])
+    
     def forward_kinematics(
         self, 
         state: Float[Array, "state"]
