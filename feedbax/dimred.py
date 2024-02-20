@@ -14,13 +14,19 @@ from jaxtyping import Array, Shaped
 logger = logging.getLogger(__name__)
 
 
-# class PCAResults(eqx.Module):
-#     pcs: jnp.ndarray
-    
+class PCAResults(eqx.Module):
+    """
+    Attributes:
+        components: Principal components.
+        singular_values: Singular values $S$.
+    """
+    components: Array
+    singular_values: Array    
 
 
 def pca(
-    x: Shaped[Array, "*batch features"]
+    x: Shaped[Array, "*batch features"],
+    **kwargs,
 ) -> tuple[Array, Array, Shaped[Array, "*batch features"]]:
     """Principal component analysis.
     
@@ -30,11 +36,14 @@ def pca(
     
     Arguments:
         x: Input features.
+        **kwargs: Additional arguments for `jax.numpy.linalg.svd`.
     """    
     X = x.reshape(-1, x.shape[-1])
     X -= X.mean(axis=0)
-    U, S, Vt = jnp.linalg.svd(X, full_matrices=False)
+    U, S, Vt = jnp.linalg.svd(X, full_matrices=False, **kwargs)
     #L = S ** 2 / (X.shape[0] - 1)
-    PCs = (U @ jnp.diag(S)).reshape(*x.shape)
     
-    return S, Vt, PCs 
+    return PCAResults(
+        components=(U @ jnp.diag(S)).reshape(*x.shape),
+        singular_values=S,
+    )

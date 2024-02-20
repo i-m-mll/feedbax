@@ -22,7 +22,7 @@ from feedbax.model import MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.networks import NetworkState
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState
+from feedbax.state import AbstractState, StateBounds
 from feedbax.task import AbstractTask
 from feedbax._tree import tree_sum_n_features
 
@@ -195,7 +195,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         *,
         key: Optional[jax.Array] = None,
     ): 
-        """Return an empty/default state for the model.
+        """Return a default state for the model.
         """
         keys = jr.split(key, 3) 
         
@@ -230,7 +230,21 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             feedback=jax.tree_map(
                 lambda channel: channel.memory_spec,
                 self.feedback_channels,
-                is_leaf=lambda x: isinstance(x, Channel),
+                is_leaf=lambda x: isinstance(x, eqx.Module),
+            ),
+        )
+        
+    @property 
+    def bounds(self) -> PyTree[StateBounds]:
+        """Specifies the bounds of the state.
+        """
+        return SimpleFeedbackState(
+            mechanics=self.mechanics.bounds,
+            net=self.net.bounds,
+            feedback=jax.tree_map(
+                lambda channel: channel.bounds,
+                self.feedback_channels,
+                is_leaf=lambda x: isinstance(x, eqx.Module),
             ),
         )
 

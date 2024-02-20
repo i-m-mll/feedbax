@@ -39,7 +39,7 @@ N_DIM = 2
 # StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
 class AbstractModel(eqx.Module, Generic[StateT]):
-    """
+    """Base class for 
     
     TODO:
     - Should this be a generic of `StateT | Array`, or something?
@@ -96,7 +96,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> StateT:
-        """Return an initial state for the model."""
+        """Return a default state for the model."""
         ...
 
     def bounds(self) -> PyTree[StateBounds]:  # type: ignore

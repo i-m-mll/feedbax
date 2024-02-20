@@ -1,10 +1,10 @@
-"""Base classes for stateful models.
+"""Base classes for stateful models with stages.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from abc import abstractproperty
+from abc import abstractmethod, abstractproperty
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
@@ -79,23 +79,31 @@ class ModelStage(eqx.Module, Generic[StateT]):
 class AbstractStagedModel(AbstractModel[StateT]):
     """Base class for state-dependent models whose stages can be intervened upon.
     
-    To define a new model, the following should be implemented:
-    
-    1. A concrete subclass of `AbstractState` that defines the PyTree
-        structure of the full model state. The fields may be types of
-        `AbstractState`, in the case of nested models.
-    2. A concrete subclass of this class with:
-        i. the appropriate components for doing state transformations;
-        either `eqx.Module`/`AbstractModel`-typed fields, or instance methods,
-        each with the signature `input, state, *, key`; ii. a `model_spec`
-        property that specifies a series of named operations on parts of the
-        full model state, using those component modules; and iii. an `init`
-        method that returns an initial model state.
-            
-    The motivation behind the level of abstraction of this class is that it
-    gives a name to each functional stage of a composite model, so that after 
-    model instantiation or training, the user can choose to insert additional 
-    state interventions to be executed prior to any of the named stages. 
+    !!! Info 
+        To define a new staged model, the following complementary components 
+        must be implemented:
+        
+        1. A [final](https://docs.kidger.site/equinox/pattern/) subclass of
+           `AbstractState` that defines the PyTree structure of the model
+           state. The type of the fields of this PyTree are typically JAX
+           arrays, or else other `AbstractState` types associated with the
+           model's components.     
+        2. A final subclass of
+           [`AbstractStagedModel`][feedbax.AbstractStagedModel]. Note that the
+           abstract class is a `Generic`, and for proper type checking, the
+           type argument of the subclass should be the type of `AbstractState`
+           defined in (1).
+           
+            This subclass must implement the following:
+           
+            1. A `model_spec` property giving a mapping from stage labels 
+               to [`ModelStage`][feedbax.ModelStage] instances, each
+               specifying an operation performed on the model state.
+            2. An `init` method that takes a random key and returns a default 
+               model state.
+                 
+        For an example, consider 1) [`SimpleFeedbackState`][feedbax.bodies.SimpleFeedbackState] 
+        and 2) [`SimpleFeedback`][feedbax.bodies.SimpleFeedback].
     """
     intervenors: AbstractVar[Mapping[str, Sequence[AbstractIntervenor]]]
     
@@ -105,7 +113,14 @@ class AbstractStagedModel(AbstractModel[StateT]):
         state: StateT, 
         key: PRNGKeyArray,
     ) -> StateT:
-        """Smee"""
+        """Return an updated model state, given input and a prior state.
+        
+        Arguments:
+            input: The input to the model.
+            state: The prior state of the model.
+            key: A random key which will be split to provide separate keys for 
+              each model stage and intervenor.
+        """
         with jax.named_scope(type(self).__name__):
             
             keys = jr.split(key, len(self._stages))
@@ -166,23 +181,18 @@ class AbstractStagedModel(AbstractModel[StateT]):
         
         return state
 
+    @abstractmethod
+    def init(
+        self,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> StateT:
+        """Return a default state for the model."""
+        ...
+
     @abstractproperty
     def model_spec(self) -> OrderedDict[str, ModelStage]:
-        """Specifies the model in terms of substate operations.
-        
-        Each entry in the dict has the following elements:
-        
-        1. A callable (e.g. an `eqx.Module` or method) that takes `input`
-            and a substate of the model state, and returns an updated copy of
-            that substate.
-        2. A function that selects the parts of the model input and state 
-            PyTrees that are passed to the module as its `input`. Note that
-            parts of the state PyTree can also be passed, because they may be
-            inputs to the model stage but should not be part of the state
-            update associated with the model stage.
-        3. A function that selects the substate PyTree out of the `StateT`
-            PyTree; i.e. the `state` passed to the module, which then returns a
-            PyTree with the same structure and array shapes/dtypes.
+        """Specify the model's computation in terms of state operations.
         
         !!! Warning        
             It's necessary to return `OrderedDict` because `jax.tree_util`
@@ -205,7 +215,6 @@ class AbstractStagedModel(AbstractModel[StateT]):
             is_leaf=lambda x: isinstance(x, ModelStage),
         )
     
-    # TODO: I'm not sure we need to add intervenors, here.
     def _get_intervenors_dict(
         self, intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                           Mapping[str, Sequence[AbstractIntervenor]]]]
@@ -231,13 +240,9 @@ class AbstractStagedModel(AbstractModel[StateT]):
         
     @property 
     def step(self):
-        """This assumes all staged models will specify single update steps,
-        not iterated models.
+        """The model step.
         
-        This allows classes like `AbstractTask` and `TaskTrainer` to refer
-        to methods of a single step of the model, without having to know whether
-        the model step is wrapped in an ForgetfulIterator; `AbstractIterator`s will 
-        return `self._step` instead.
+        For `AbstractStagedModel`s, this is trivially the model itself.
         """
         return self 
     
@@ -315,7 +320,7 @@ def pprint_model_spec(
     Shows what is called by `model`, and by any `AbstractStagedModel`s it calls.
     
     !!! Warning     
-        This assumes that the model spec is a tree/DAG. If there are cycles in 
+        This assumes that the model spec is a tree. If there are cycles in 
         the model spec, this will recurse until an exception is raised.
     
     Arguments:

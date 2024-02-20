@@ -1,14 +1,7 @@
 # Muscle models
 
-Currently, only variants of the Virtual Muscle Model (Brown et al., 1999) are implemented.
-
----
-
-<!-- ::: feedbax.mechanics.muscle.AbstractMuscleState -->
-
-::: feedbax.mechanics.muscle.VirtualMuscleState
-
-::: feedbax.mechanics.muscle.VirtualMuscle
+!!! Note    
+    Currently, only variants of the Virtual Muscle Model (Brown et al., 1999) are implemented.
 
 ## Constructors for specific parametrizations of the Virtual Muscle Model
 
@@ -18,7 +11,19 @@ Currently, only variants of the Virtual Muscle Model (Brown et al., 1999) are im
 
 ::: feedbax.mechanics.muscle.lillicrap_scott_2013_virtualmuscle
 
+## Virtual Muscle Model
+
+::: feedbax.mechanics.muscle.VirtualMuscleState
+
+::: feedbax.mechanics.muscle.VirtualMuscle
+
 ## Muscle input signal filters
 
 ::: feedbax.mechanics.muscle.ActivationFilter
+    options:
+        members: ['__call__', 'vector_field']
+        
+## Abstract base classes
+
+::: feedbax.mechanics.muscle.AbstractMuscleState
 

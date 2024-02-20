@@ -40,7 +40,8 @@ from functools import cached_property
 import logging
 from typing import (
     TYPE_CHECKING,
-    ClassVar, 
+    ClassVar,
+    Literal, 
     Optional, 
     Tuple,
 )
@@ -53,7 +54,7 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.misc import get_unique_label, unzip2
-from feedbax.state import HasEffectorState
+from feedbax.state import AbstractState, HasEffectorState
 if TYPE_CHECKING: 
     from feedbax.task import AbstractTaskTrialSpec
 
@@ -62,10 +63,11 @@ logger = logging.getLogger(__name__)
 
 @jtu.register_pytree_node_class
 class LossDict(dict[str, Array]):
-    """Stores loss terms and automatically calculates the sum."""
+    """Dictionary that provides a sum over its values."""
     
     @cached_property
     def total(self):
+        """Elementwise sum over all values in the dictionary."""
         loss_term_values = list(self.values())
         return jax.tree_util.tree_reduce(lambda x, y: x + y, loss_term_values)
         # return jnp.sum(jtu.tree_map(
@@ -111,7 +113,7 @@ class AbstractLoss(eqx.Module):
         states: PyTree, 
         trial_specs: "AbstractTaskTrialSpec",
     ) -> Array:
-        """Calculates the value of this loss term."""
+        """Implement this to calculate a loss term."""
         ...
 
     def __add__(self, other: "AbstractLoss") -> "CompositeLoss":
@@ -144,20 +146,7 @@ class AbstractLoss(eqx.Module):
 
 
 class CompositeLoss(AbstractLoss):
-    """Composite of simpler loss functions.
-    
-    During construction the user may pass dictionaries and/or sequences of 
-    `AbstractLoss` instances ("terms") and weights. Any `CompositeLoss` terms 
-    are flattened, incorporating their simple terms into the new composite
-    loss, and multiplying through their component weights by the single weight
-    passed as an argument for that composite term. If a composite term has a
-    user-specified label, that label will be prepended to the labels of its 
-    component terms, on flattening. If the flattened terms still do not have
-    unique labels, they will be suffixed with the lowest integer that makes 
-    them unique. 
-    
-    TODO:
-    - Different aggregation functions.
+    """Incorporates multiple simple loss terms and their relative weights.
     """
     terms: Mapping[str, AbstractLoss]
     weights: Mapping[str, float]
@@ -170,17 +159,31 @@ class CompositeLoss(AbstractLoss):
         label: str = "",
         user_labels: bool = True,
     ):
-        """
+        """    
+        !!! Note  
+            During construction the user may pass dictionaries and/or sequences
+            of `AbstractLoss` instances (`terms`) and weights. 
+            
+            Any `CompositeLoss` instances in `terms` are flattened, and their
+            simple terms incorporated directly into the new composite loss,
+            with the weights of those simple terms multiplied by the weight 
+            given in `weights` for their parent composite term.
+            
+            If a composite term has a user-specified label, that label will be
+            prepended to the labels of its component terms, on flattening. If
+            the flattened terms still do not have unique labels, they will be
+            suffixed with the lowest integer that makes them unique. 
+        
         Arguments:
-            - `terms` is the sequence or mapping of loss terms to be included.
-            - `weights` is a float PyTree of the same structure as `terms`,
-              giving the scalar term weights. By default, all terms have equal weight.
-            - `label` is the label for the composite loss.
-            - `user_labels` controls whether the keys in `terms`, if it is a mapping,
-              should be used as term labels, rather than the `label` field of each term.
+            terms: The sequence or mapping of loss terms to be included.
+            weights: A float PyTree of the same structure as `terms`, giving 
+                the scalar term weights. By default, all terms have equal weight.
+            label: The label for the composite loss.
+            user_labels: If `True`, the keys in `terms`---if it is a mapping---
+              are used as term labels, instead of the `label` field of each term.
               This is useful because it may be convenient for the user to match up 
-              the PyTree structure of `terms` and `weights`, but have the option of 
-              using the default labels.
+              the structure of `terms` and `weights` in a PyTree such as a dict, 
+              which provides labels, yet continue to use the default labels.
         """
         self.label = label
         
@@ -270,10 +273,15 @@ class CompositeLoss(AbstractLoss):
     @jax.named_scope("fbx.CompositeLoss")
     def __call__(
         self, 
-        states: PyTree, 
+        states: AbstractState, 
         trial_specs: "AbstractTaskTrialSpec",
     ) -> LossDict:
+        """Evaluate, weight, and return all component terms.
         
+        Arguments:
+            states: Trajectories of system states for a set of trials.
+            trial_specs: Task specifications for the set of trials.
+        """
         # Evaluate all loss terms
         losses = jax.tree_map(
             lambda loss: loss.term(states, trial_specs), 
@@ -303,23 +311,33 @@ class CompositeLoss(AbstractLoss):
 
 
 class EffectorPositionLoss(AbstractLoss):
-    """
+    """Penalizes the effector's squared distance from the target position 
+    across the trial.
     
-    Note that if discount is shaped such that it gives non-zero weight to the
-    position error during the fixation period of (say) a delayed reach task,
-    then typically the target will be specified as the fixation point during
-    that period, and `EffectorPositionLoss` will also act as a fixation loss.
-    However, when we are using certain kinds of goal error discounting (e.g.
-    exponential, favouring errors near the end of the trial) then the fixation
-    loss may not be weighed into `EffectorPositionLoss`, and it may be
-    appropriate to add `EffectorFixationLoss` to the composite loss. However,
-    in that case the same result could still be achieved using a single
-    instance of `EffectorPositionLoss`, by passing a `discount` that's the sum
-    of the goal error discount (say, non-zero only near the end of the trial)
-    and the hold signal (non-zero only during the fixation period) scaled by
-    the relative weights of the goal and fixation error losses.
+    Attributes:
+        label: The label for the loss term.
+        discount_func: Returns a trajectory with which to weight (discount)
+            the loss values calculated for each time step of the trial.
+            Defaults to a power-law curve that puts most of the weight on 
+            time steps near the end of the trial.
     
-    TODO: do we handle the temporal discount here? or return the sequence of losses
+    !!! Note
+        If the return value of `discount_func` is shaped such that it gives
+        non-zero weight to the position error during the fixation period of
+        (say) a delayed reach task, then typically the target will be specified
+        as the fixation point during that period, and `EffectorPositionLoss`
+        will also act as a fixation loss. 
+        
+        On the other hand, when using certain kinds of goal error discounting
+        (e.g. exponential, favouring errors near the end of the trial) then the
+        fixation loss may not be weighed into `EffectorPositionLoss`, and it
+        may be appropriate to add `EffectorFixationLoss` to the composite loss.
+        However, in that case the same result could still be achieved using a
+        single instance of `EffectorPositionLoss`, by passing a `discount`
+        that's the sum of the goal error discount (say, non-zero only near the
+        end of the trial) and the hold signal (non-zero only during the
+        fixation period) scaled by the relative weights of the goal and
+        fixation error losses.
     """
     label: str = "Effector position"
     discount_func: Optional[Callable[[int], Float[Array, "time"]]] = \
@@ -354,17 +372,21 @@ class EffectorPositionLoss(AbstractLoss):
 
 
 class EffectorStraightPathLoss(AbstractLoss):
-    """Penalize non-straight paths between initial and final state.
+    """Penalizes non-straight paths followed by the effector between initial 
+    and final position.
     
-    Calculates the length of the paths followed, and normalizes by the
-    Euclidean (straight-line) distance between the initial and final state.
+    !!! Info ""
+        Calculates the length of the paths followed, and normalizes by the
+        Euclidean (straight-line) distance between the initial and final state.
     
-    The parameter `normalize_by` controls whether to normalize by the 
-    Euclidean distance between the actual initial & final states, or the 
-    actual initial state & the task-specified goal state.
+    Attributes:
+        label: The label for the loss term.
+        normalize_by: Controls whether to normalize by the distance between the 
+            initial position & actual final position, or the initial position 
+            & task-specified goal position.
     """
     label: str = "Effector path straightness"
-    normalize_by: str = "actual"
+    normalize_by: Literal["actual", "goal"] = "actual"
 
     def term(
         self, 
@@ -389,7 +411,16 @@ class EffectorStraightPathLoss(AbstractLoss):
 
 
 class EffectorFixationLoss(AbstractLoss):
-    """"""
+    """Penalizes the effector's squared distance from the fixation position.
+    
+    !!! Info ""    
+        Similar to `EffectorPositionLoss`, but only penalizes the position 
+        error during the part of the trial where `trial_specs.input.hold`
+        is non-zero/`True`.
+        
+    Attributes: 
+        label: The label for the loss term.
+    """
     label: str = "Effector maintains fixation"
     
     def term(
@@ -412,10 +443,11 @@ class EffectorFixationLoss(AbstractLoss):
 
 
 class EffectorFinalVelocityLoss(AbstractLoss):
-    """
+    """Penalizes the squared difference between the effector's final velocity
+    and the goal velocity (typically zero) on the final timestep.
     
-    TODO:
-    - For tracking, an ongoing (not just final) velocity loss might make sense
+    Attributes:
+        label: The label for the loss term.
     """
     label: str = "Effector final velocity"
 
@@ -434,7 +466,11 @@ class EffectorFinalVelocityLoss(AbstractLoss):
 
 
 class NetworkOutputLoss(AbstractLoss):
-    """"""
+    """Penalizes the squared values of the network's outputs.
+    
+    Attributes:
+        label: The label for the loss term.
+    """
     label: str = "NN output"
 
     def term(
@@ -453,7 +489,11 @@ class NetworkOutputLoss(AbstractLoss):
 
 
 class NetworkActivityLoss(AbstractLoss):
-    """"""
+    """Penalizes the squared values of the network's hidden activity.
+    
+    Attributes:
+        label: The label for the loss term.
+    """
     label: str = "NN hidden activity"
 
     def term(
@@ -472,7 +512,11 @@ class NetworkActivityLoss(AbstractLoss):
 
         
 def power_discount(n_steps, discount_exp=6):
-    """Discounting vector, a power law curve from 0 to 1, start to end.
+    """A power-law vector that puts most of the weight on its later elements.
+    
+    Arguments:
+        n_steps: The number of time steps in the trajectory to be weighted.
+        discount_exp: The exponent of the power law.
     """
     if discount_exp == 0:
         return 1.

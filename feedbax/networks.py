@@ -45,7 +45,7 @@ class RNNCellProto(Protocol):
     
     Based on `eqx.nn.GRUCell` and `eqx.nn.LSTMCell`.
     
-    !!! Bug "Development note"
+    !!! dev-note "Development note"
         Neither mypy nor typeguard currently complain if the `Type[RNNCell]` 
         argument to `SimpleStagedNetwork` doesn't satisfy this protocol. I'm 
         not sure if this is because protocols aren't compatible with `Type`, 
@@ -210,11 +210,11 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         self.intervenors = self._get_intervenors_dict(intervenors)
     
-    def _output(self, hidden, state, *, key):
-        return self.out_nonlinearity(self.readout(hidden))
+    # def _output(self, hidden, state, *, key):
+    #     return self.out_nonlinearity(self.readout(hidden))
         
-    def _encode(self, input, state, *, key):
-        return self.encoder(input)
+    # def _encode(self, input, state, *, key):
+    #     return self.encoder(input)
     
     def _add_hidden_noise(self, input, state, *, key):
         if self.hidden_noise_std is None:
@@ -262,7 +262,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         else:
             spec = OrderedDict({
                 'encoder': ModelStage(
-                    callable=lambda self: self._encode,
+                    callable=lambda self: \
+                        lambda input, state: self.encoder(input),
                     where_input=lambda input, _: ravel_pytree(input)[0],
                     where_state=lambda state: state.encoding,
                 ),
@@ -288,7 +289,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             spec |= {
                 'hidden_noise': ModelStage(
                     callable=lambda self: self._add_hidden_noise,
-                    where_input=lambda _, state: state.hidden,
+                    where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.hidden,
                 ),
             }
@@ -296,8 +297,11 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if self.readout is not None:
             spec |= {
                 'readout': ModelStage(
-                    callable=lambda self: self._output,
-                    where_input=lambda _, state: state.hidden,
+                    callable=lambda self: \
+                        lambda input, state: self.out_nonlinearity(
+                            self.readout(input)
+                        ),
+                    where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.output,
                 ),
             }

@@ -41,7 +41,7 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         state: StateT, 
         input: PyTree[Array],  # controls
     ) -> StateT:
-        """Returns the time derivatives of the system's states."""
+        """Returns scalar (e.g. time) derivatives of the system's states."""
         ...
 
     @abstractproperty

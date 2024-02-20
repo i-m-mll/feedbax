@@ -1,6 +1,6 @@
 # Getting started
 
-Feedbax is a [JAX](https://jax.readthedocs.io/en/latest/beginner_guide.html#beginner-guide) library for differentiable optimal control.
+Feedbax is a [JAX](https://jax.readthedocs.io/en/latest/beginner_guide.html#beginner-guide) library for optimal control.
 
 Feedbax makes it easy to:
 
@@ -15,7 +15,7 @@ Feedbax makes it easy to:
 - change which parts of the model are trainable, or available to a controller as feedback;
 - track the progress of a training run in Tensorboard.
 
-Feedbax was designed for feedback control of biomechanical models by neural networks, to perform movement tasks in continuous spaces. However, it can be used more generally as a framework for optimal control.
+Feedbax was designed for feedback control of biomechanical models by neural networks, performing movement tasks in continuous spaces. However, it can be used more generally as a framework for optimal control.
 
 ## Feedbax is a JAX library
 
@@ -29,21 +29,30 @@ Pip TODO.
 
 ## Development
 
-I've developed Feedbax over the last few months, as I've learned JAX. My short-term objective has been to serve my own use case---graduate research in the neuroscience of motor control---but I have also tried to make design choices in pursuit of reusability and generality.
+I've developed Feedbax over the last few months, as I've learned JAX. My short-term objective has been to serve my own use case—graduate research in the neuroscience of motor control—but I have also tried to make design choices in pursuit of reusability and generality.
 
-By making the library open source now, I hope to receive some feedback about those decisions, and perhaps make some structural improvements. To make that easier I've created several GitHub issues documenting my choices and uncertainties. The issues largely belong to one of a few categories:
+By making the library open source now, I hope to receive some feedback about those decisions, and perhaps initiate some structural changes. To make that easier I've created GitHub [issues](https://github.com/i-m-mll/feedbax/issues) documenting my choices and uncertainties. The issues largely belong to one of a few categories:
 
 1. Structural issues: these are the most critical.
 2. Typing issues: I'm not confident these can be resolved. Mostly I'm still learning to use typing in Python to the fullest.
-3. 
+3. Feature issues: 
+4. 
 
-Anyone is welcome to ask questions or make suggestions about any part of the code or documentation!
+If you are a researcher in optimal control or reinforcement learning, I'd be particularly interested to hear what you think about 
 
-If you are a researcher in optimal control or reinforcement learning, I'd be particularly interested to hear about...
+- how Feedbax separates 
 
-If you are an experienced JAX user...
+If you are an experienced Python or JAX user:
+
+- Do
+- Any low-hanging fruit re: abstraction
+- Anything obviously clumsy I am doing with PyTrees
+- Performance issues
+
+!!! Success ""
+    Ask questions or make suggestions about any part of the code or documentation!
 
 ## Acknowledgments 
 
-Special thanks to Patrick Kidger whose example I've relied on
+Special thanks to [Patrick Kidger](https://github.com/patrick-kidger), whose JAX libraries and their documentation have often served as an example to me.
 

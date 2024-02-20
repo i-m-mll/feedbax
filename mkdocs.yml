@@ -71,7 +71,7 @@ plugins:
                   annotations_path: brief
                   # merge_init_into_class: true
                   # separate_signature: true    # This and `merge_init_into_class` go together
-                  # show_signature_annotations: true
+                  show_signature_annotations: true
                   # signature_crossrefs: true  # This doesn't appear to do anything
                   docstring_section_style: table
                   filters: [
@@ -91,24 +91,27 @@ plugins:
 
 nav:
   - 'index.md'
-  - JAX and Pytrees: 'examples/pytrees.ipynb'
+  - Why JAX?: 'examples/pytrees.ipynb'
   - Top-down view of Feedbax: 'examples/structure.ipynb'
   - Examples:
-    - 1. Training a pre-built model: 'examples/0_train_simple.ipynb'
-    - 2. From automatic to manual: 'examples/1_train.ipynb'
-    - 3. Intervening on a model: 'examples/3_intervening.ipynb'
-    - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
-    - 5. Models with stages: 'examples/5_model_stages.ipynb'
-    - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
-    - 7. Advanced analyses: 'examples/8_advanced.ipynb'
-    - Composable loss functions: 'examples/losses.ipynb'
-    - Saving and loading: 'examples/saving_and_loading.ipynb'
-    - Debugging: 'examples/debugging.ipynb'
-    - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
+    - Feedbax 101:
+      - 1. Training a pre-built model: 'examples/0_train_simple.ipynb'
+      - 2. From automatic to manual: 'examples/1_train.ipynb'
+      - 3. Intervening on a model: 'examples/3_intervening.ipynb'
+      - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
+      - 5. Models with stages: 'examples/5_model_stages.ipynb'
+      - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
+      - 7. Advanced analyses: 'examples/8_advanced.ipynb'
+    - Features:
+      - Composable loss functions: 'examples/losses.ipynb'
+      - Saving and loading: 'examples/saving_and_loading.ipynb'
+      - Debugging: 'examples/debugging.ipynb'
+      - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
   - API:
     - Models:
-      - 'api/model.md'
+      # - Base classes: 'api/model.md'
       - 'api/staged.md'  # should this be separate from the previous entry?
+      - 'api/ensemble.md'
       - 'api/intervene.md'
       - 'api/iterate.md'
       - 'api/bodies.md'
@@ -119,12 +122,13 @@ nav:
       - 'api/dynamics.md'
       - 'api/skeleton.md'
       - 'api/muscle.md'
-    - 'api/state.md'
-    - 'api/trainer.md'
     - 'api/task.md'
     - 'api/loss.md'
-    - 'api/dimred.md'
+    - 'api/trainer.md'
+    - 'api/state.md'
     - 'api/tree.md'
     - 'api/serialisation.md'
-    - 'api/plot.md'
+    - Analysis and visualisation:
+      - 'api/plot.md'
+      - 'api/dimred.md'
   
