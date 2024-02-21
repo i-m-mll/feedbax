@@ -349,9 +349,9 @@ class LeakyRNNCell(eqx.Module):
     TODO: 
     - If `diffrax` varies `dt`, then `dt` could be passed to update `alpha`.
     """
-    weight_hh: jax.Array
-    weight_ih: jax.Array
-    bias: Optional[jax.Array]
+    weight_hh: Array
+    weight_ih: Array
+    bias: Optional[Array]
     input_size: int 
     hidden_size: int 
     use_bias: bool 
@@ -401,8 +401,8 @@ class LeakyRNNCell(eqx.Module):
         
     def __call__(
         self, 
-        input: jax.Array, 
-        state: jax.Array,
+        input: Array, 
+        state: Array,
         key: PRNGKeyArray
     ):
         """Vanilla RNN cell."""

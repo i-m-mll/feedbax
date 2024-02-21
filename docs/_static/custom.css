@@ -158,6 +158,13 @@ h5.doc-heading, h6.heading {
     text-transform: none !important;  
 }
 
+/* Member label formatting (e.g. "abstractmethod" in header) */
+
+.doc-label {
+    text-decoration-line: underline;
+    /* text-decoration-skip-ink: none; */
+}
+
 /* Signature formatting -- TODO: this is excessively fine-grained */
 
 .md-function-name code {
@@ -165,7 +172,8 @@ h5.doc-heading, h6.heading {
 }
 
 div.md-function-heading {
-    padding: 0 0.2941em 0 0 !important;
+    padding: 0 0 0 0 !important;
+    /* padding: 0 0.2941em 0 0 !important; */
     display: inline;
 }
 
@@ -222,6 +230,9 @@ div.md-function-heading {
 :root {
     --md-admonition-icon--dev-note: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.5.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2023 Fonticons, Inc.--><path d="M392.8 1.2c-17-4.9-34.7 5-39.6 22l-128 448c-4.9 17 5 34.7 22 39.6s34.7-5 39.6-22l128-448c4.9-17-5-34.7-22-39.6zm80.6 120.1c-12.5 12.5-12.5 32.8 0 45.3l89.3 89.4-89.4 89.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l112-112c12.5-12.5 12.5-32.8 0-45.3l-112-112c-12.5-12.5-32.8-12.5-45.3 0zm-306.7 0c-12.5-12.5-32.8-12.5-45.3 0l-112 112c-12.5 12.5-12.5 32.8 0 45.3l112 112c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256l89.4-89.4c12.5-12.5 12.5-32.8 0-45.3z"/></svg>');
     --md-admonition-color-rgb--dev-note: 43, 155, 70;
+    
+    --md-admonition-icon--ref: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24"><path d="M400-280h160v-80H400v80Zm0-160h280v-80H400v80ZM280-600h400v-80H280v80Zm200 120ZM265-80q-79 0-134.5-55.5T75-270q0-57 29.5-102t77.5-68H80v-80h240v240h-80v-97q-37 8-61 38t-24 69q0 46 32.5 78t77.5 32v80Zm135-40v-80h360v-560H200v160h-80v-160q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H400Z"/></svg>');
+    --md-admonition-color-rgb--ref: 130, 130, 130;
 }
 
 .md-typeset .admonition.dev-note,
@@ -237,4 +248,19 @@ div.md-function-heading {
   background-color: rgb(var(--md-admonition-color-rgb--dev-note));
   -webkit-mask-image: var(--md-admonition-icon--dev-note);
           mask-image: var(--md-admonition-icon--dev-note);
+}
+
+.md-typeset .admonition.ref,
+.md-typeset details.ref {
+  border-color: rgb(var(--md-admonition-color-rgb--ref));
+}
+.md-typeset .ref > .admonition-title,
+.md-typeset .ref > summary {
+  background-color: rgba(var(--md-admonition-color-rgb--ref), 0.1);
+}
+.md-typeset .ref > .admonition-title::before,
+.md-typeset .ref > summary::before {
+  background-color: rgb(var(--md-admonition-color-rgb--ref));
+  -webkit-mask-image: var(--md-admonition-icon--ref);
+          mask-image: var(--md-admonition-icon--ref);
 }

@@ -24,21 +24,38 @@ from feedbax.misc import SINCOS_GRAD_SIGNS, corners_2d
 logger = logging.getLogger(__name__)
 
 
-N_DIM = 2
-
-
 class TwoLinkState(AbstractSkeletonState):
-    angle: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
-    d_angle: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
-    torque: Float[Array, "... links=2 ndim=2"] = field(default_factory=lambda: jnp.zeros(2))
+    """The configuration state of a 2D arm with two rotational joints.
+    
+    Attributes:
+        angle: The joint angles.
+        d_angle: The angular velocities.
+        torque: The torques on the joints.
+    """
+    angle: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    d_angle: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    torque: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
             
 
 class TwoLink(AbstractSkeleton[TwoLinkState]):
-    l: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [L] lengths of arm segments
-    m: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [M] masses of segments
-    I: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [M L^2] moments of inertia of segments
-    s: Float[Array, "links=2"] = field(converter=jnp.asarray)  # [L] distance from joint center to segment COM
-    B: Float[Array, "2 2"] = field(converter=jnp.asarray)  # [M L^2 T^-1] joint friction matrix
+    """Model of a 2D arm with two straight rigid segments, and two rotational joints.
+    
+    Attributes:
+        l: The lengths of the arm segments. Units: $[\mathrm{L}]$.
+        m: The masses of the segments. Units: $[\mathrm{M}]$.
+        I: The moments of inertia of the segments. 
+          Units: $[\mathrm{M}\\cdot \mathrm{L}^2]$.
+        s: The distance from the joint center to the segment center of mass
+          for each segment. Units: $[\mathrm{L}]$.
+        B: The joint friction matrix. 
+          Units: $[\mathrm{M}\\cdot \mathrm{L}^2\\cdot \mathrm{T}^{-1}]$.
+    """
+    
+    l: Float[Array, "links=2"] = field(converter=jnp.asarray)  
+    m: Float[Array, "links=2"] = field(converter=jnp.asarray)  
+    I: Float[Array, "links=2"] = field(converter=jnp.asarray)  
+    s: Float[Array, "links=2"] = field(converter=jnp.asarray)  
+    B: Float[Array, "2 2"] = field(converter=jnp.asarray)  
     inertia_gain: float   
     
     def __init__(
@@ -62,9 +79,20 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         self._a  
     
     @jax.named_scope("fbx.TwoLink")
-    def vector_field(self, t, state, input):
+    def vector_field(
+        self, 
+        t: float | None, 
+        state: TwoLinkState, 
+        input: Array,
+    ) -> TwoLinkState:
+        """Return the time derivatives of the arm's configuration state.
+        
+        Arguments:
+            t: The time. Not used.
+            state: The current state of the arm.
+            input: The torques on the joints.
+        """
         angle, d_angle = state.angle, state.d_angle
-        input_torque = input
 
         # centripetal and coriolis torques 
         c_vec = jnp.array((
@@ -79,11 +107,12 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
                                  (tmp, self._a[2] * jnp.ones_like(cs1))))
         
         # Normally, `state.torque` only contains the torque induced by
-        # linear force on the effector, as determined by inverse kinematics;
-        # whereas `input_torque` is direct torque control.
+        # linear force on the effector, as determined by inverse kinematics
+        # during the "convert_effector_force" stage of `Mechanics`,
+        # whereas `input` is the torque from the controller/muscles.
         net_torque = (
             state.torque  
-            + input_torque 
+            + input 
             - c_vec.T 
             - jnp.matmul(d_angle, self.B.T)
         )
@@ -97,6 +126,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> TwoLinkState:
+        """Return a default state for the arm."""
         return TwoLinkState()
 
     @cached_property
@@ -115,14 +145,17 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     @property 
     def input_size(self) -> int:
-        return 2
+        """Number of input variables—in this case, joint torques."""
+        return self.n_links  # per-joint torque
     
-    @property
-    def state_size(self) -> int:
-        return 2 * 2  # two joints, angle and angular velocity
+    # @property
+    # def state_size(self) -> int:
+    #     """Number of configuration state variables."""
+    #     return self.n_links * 2  # per-joint angle and angular velocity
     
     @property 
     def n_links(self) -> int:
+        """Number of arm segments."""
         return 2
 
     @jax.named_scope("fbx.TwoLink.inverse_kinematics")
@@ -130,24 +163,22 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
             self,
             effector_state: CartesianState
     ) -> TwoLinkState: 
-        """Convert Cartesian effector position to joint angles for a two-link arm.
+        """Return the configuration state of the arm, given the Cartesian state
+        of the end effector.
         
-        NOTE: 
-        
-        - This is the "inverse kinematics" problem.
-        - This gives the "elbow down" or "righty" solution. The "elbow up" or
-        "lefty" solution is given by `theta0 = gamma + alpha` and 
-        `theta1 = beta - pi`.
-        - No solution exists if `dsq` is outside of `(l[0] - l[1], l[0] + l[1])`.
-        - See https://robotics.stackexchange.com/a/6393 which also covers
-        how to convert velocity.
-        
-        TODO:
-        - Try to generalize to n-link arm using Jacobian of forward kinematics?
+        !!! Note ""    
+            There are two possible solutions to the inverse kinematics problem,
+            for a two-link arm. This method returns the "elbow down" or 
+            "righty" solution.  
+            
+        Arguments: 
+            effector_state: The state of the end effector.   
         """
         pos = effector_state.pos
         l, lsqpm = self.l, self._lsqpm
         dsq = jnp.sum(pos ** 2)
+        # No solution exists if `dsq` is outside of:
+        #   `(l[0] - l[1], l[0] + l[1])`
         
         alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
         gamma = jnp.arctan2(pos[1], pos[0])
@@ -155,10 +186,14 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         
         beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
         theta1 = np.pi - beta
+        # The "elbow up" or "lefty" solution is given by:
+        #   `theta0 = gamma + alpha` 
+        #   `theta1 = beta - pi`
 
         angle = jnp.stack([theta0, theta1], axis=-1)
         
-        # TODO: don't calculate Jacobian twice, for `d_angle` and `torque`
+        # TODO: Don't calculate Jacobian twice, for `d_angle` and `torque`.
+        # See https://robotics.stackexchange.com/a/6393
         d_angle = jnp.linalg.inv(self.effector_jac(angle)) @ effector_state.vel
         
         if effector_state.force is not None:
@@ -170,16 +205,20 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     def update_state_given_effector_force(
         self, 
-        effector_force: jax.Array,
+        effector_force: Array,
         state: TwoLinkState, 
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> TwoLinkState:
-        """Add torques inferred from effector force to the state PyTree.
+        """Adds torques implied by a force on the end effector, to a
+        configuration state of the arm.
         
-        TODO:
-        
-        - generalize to force anywhere on arm
+        Arguments:
+            effector_force: The force on the end effector.
+            state: The configuration state of the arm to which to add
+              the inferred torques.
+            key: Unused. To satisfy the signature expected by 
+              `AbstractSkeleton`.
         """
         torque = self.effector_force_to_torques(
             state.angle, 
@@ -194,15 +233,28 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     def effector_force_to_torques(
         self, 
-        angle: jax.Array, 
-        effector_force: jax.Array
-    ):
-        """Return the torques induced by a force on the effector."""
+        angle: Float[Array, "links=2"], 
+        effector_force: Float[Array, "ndim=2"],
+    ) -> Float[Array, "links=2"]:
+        """Return the joint torques induced by a force on the end effector.
+        
+        Arguments:
+            angle: The joint angles.
+            effector_force: The force on the end effector.
+        """
         torque = self.effector_jac(angle).T @ effector_force
         return torque
     
-    def effector_jac(self, angle):
-        """Jacobian of effector position with respect to joint angles."""
+    def effector_jac(
+        self, 
+        angle: Float[Array, "links=2"]
+    ) -> Float[Array, "ndim=2 links=2"]:
+        """Return the Jacobian of end effector position with respect to joint
+        angles.
+        
+        Arguments:
+            angle: The joint angles.
+        """
         jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(angle)
         return jac[-1]
     
@@ -219,16 +271,11 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         self,
         state: TwoLinkState
     ) -> CartesianState:
-        """Convert angular state to Cartesian state.
+        """Return the Cartesian state of the joints and end effector, given
+        the arm's configuration state.
         
-        NOTE:
-        - See https://robotics.stackexchange.com/a/6393; which suggests the 
-        Denavit-Hartenberg method, which uses a matrix for each joint, 
-        transforming its angle into a change in position relative to the 
-        preceding joint.
-        
-        TODO:
-        - Any point to reducing memory by only calculating the last link?
+        Arguments:
+            state: The configuration state of the arm.
         """
         xy_pos, length_components = self._forward_pos(state.angle)
         
@@ -250,7 +297,11 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         )
 
     def effector(self, state: TwoLinkState) -> CartesianState:
-        """Return the Cartesian state of the end of the arm."""
+        """Return the Cartesian state of the endpoint of the arm.
+        
+        Arguments:
+            state: The configuration state of the arm.
+        """
         return jax.tree_map(
             lambda x: x[-1],  # last link
             self.forward_kinematics(state),
@@ -258,9 +309,10 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     
     @property
     def bounds(self) -> StateBounds[TwoLinkState]:
-        """Suggested bounds on the state space.
+        """Suggested bounds on the arm state.
         
-        Angle limits adopted from MotorNet (TODO cite).
+        !!! ref "Source"
+            Joint angle limits adopted from [MotorNet](https://github.com/OlivierCodol/MotorNet/blob/9a56e5670d31b06fd0d81932e9bc6a8b1e46ec4b/motornet/skeleton.py#L336).
         """
         return StateBounds(
             low=TwoLinkState(
@@ -275,13 +327,21 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
             ),
         )   
     
-def twolink_workspace_test(workspace: Float[Array, "bounds=2 xy=2"], twolink: TwoLink):
-    """Tests whether a rectangular workspace is reachable by the two-link arm.
-    
-    TODO: Take the angle bounds into account.
-    """
-    r = sum(twolink.l)
-    lengths = jnp.sum(corners_2d(workspace) ** 2, axis=0) ** 0.5
-    if jnp.any(lengths > r):
-        return False 
-    return True
+    def workspace_test(
+        self,
+        workspace: Float[Array, "bounds=2 xy=2"], 
+    ) -> bool:
+        """Tests whether a rectangular workspace is reachable by the arm.
+        
+        !!! Note ""
+            Assumes the arm's joint angles are not bounded.
+            
+        Arguments:
+            workspace: The bounds of the workspace to test.
+            twolink: The arm model.
+        """
+        r = sum(self.l)
+        lengths = jnp.sum(corners_2d(workspace) ** 2, axis=0) ** 0.5
+        if jnp.any(lengths > r):
+            return False 
+        return True

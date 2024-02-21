@@ -1,8 +1,4 @@
-"""Discretize and solve mechanical models.
-
-TODO:
-- Maybe use generics for `MechanicsState.system`, e.g. so we can type 
-  `system_state`
+"""Discretize and step plant models.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -17,7 +13,7 @@ from typing import Optional, Type, Union
 import diffrax as dfx
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
@@ -29,27 +25,27 @@ from feedbax.state import AbstractState, CartesianState
 logger = logging.getLogger(__name__)
 
 
-N_DIM = 2
-
-
 class MechanicsState(AbstractState):
+    """Type of state PyTree operated on by `Mechanics` instances.
+    
+    Attributes:
+        plant: The state of the plant.
+        effector: The state of the end effector.
+        solver: The state of the Diffrax solver.
+    """
     plant: PlantState
     effector: CartesianState
     solver: PyTree 
 
 
 class Mechanics(AbstractStagedModel[MechanicsState]):
-    """Discretizes and iterates the solution of a system with an effector.
+    """Discretizes the dynamics of a plant, and iterates along with the plant statics.
         
-    TODO: 
-    - What does this class do that is distinct from `Plant`?
-        - In principle we could amalgamate `term`, `solver`, and `_dynamics_step` 
-          into `Plant`... or into `AbstractDynamicalSystem` 
-        - This class manages the effector. Is it just an effector wrapper?
-    - Make sure total system forces are in `system.force`/`system.torque`...
-      - It doesn't make sense to update them in the solver step, and they are 
-        a combination of the converted effector forces and the effect of the 
-        inputs (either directly, or through muscles).
+    Attributes:
+        plant: The plant model.
+        dt: The time step duration.
+        solver: The Diffrax solver.
+        intervenors: The intervenors associated with each stage of the model.
     """
     plant: AbstractPlant 
     dt: float 
@@ -62,19 +58,28 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         plant: AbstractPlant,
         dt: float, 
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler, 
-        intervenors: Optional[Union[Sequence[AbstractIntervenor],
-                                    Mapping[str, Sequence[AbstractIntervenor]]]] \
-            = None,
+        intervenors: Optional[Union[
+            Sequence[AbstractIntervenor],
+            Mapping[str, Sequence[AbstractIntervenor]]
+        ]] = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
+        """
+        Arguments:
+            plant: The plant model.
+            dt: The time step duration.
+            solver_type: The type of Diffrax solver to use.
+            intervenors: The intervenors associated with each stage of the model.
+        """
         self.plant = plant
         self.solver = solver_type()
         self.dt = dt        
         self.intervenors = self._get_intervenors_dict(intervenors)         
     
     @property
-    def model_spec(self):
+    def model_spec(self) -> OrderedDict[str, ModelStage]:
+        """Specifies the stages of the model."""
         return OrderedDict({
             "convert_effector_force": ModelStage(
                 callable=lambda self: self.plant.skeleton.update_state_given_effector_force,
@@ -88,7 +93,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
                 where_state=lambda state: state.plant,
             ),
             "dynamics_step": ModelStage(
-                callable=lambda self: self._dynamics_step,
+                callable=lambda self: self.dynamics_step,
                 where_input=lambda input, state: input,
                 where_state=lambda state: state,
             ),
@@ -101,20 +106,20 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         })
 
     @cached_property 
-    def term(self) -> dfx.AbstractTerm:
-        """The total vector field for the plant"""
+    def _term(self) -> dfx.AbstractTerm:
+        """The Diffrax term for the aggregate vector field of the plant."""
         return dfx.ODETerm(self.plant.vector_field) 
     
-    def _dynamics_step(
+    def dynamics_step(
         self, 
-        input, 
+        input: PyTree[Array], 
         state: MechanicsState,
         *,
         key: Optional[PRNGKeyArray] = None,
-    ):
-        
+    ) -> MechanicsState:
+        """Return an updated state after a single step of plant dynamics."""
         plant_state, _, _, solver_state, _ = self.solver.step(
-            self.term, 
+            self._term, 
             0, 
             self.dt, 
             state.plant, 
@@ -152,7 +157,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
             plant=plant_state,
             effector=self.plant.skeleton.effector(plant_state.skeleton), 
             solver=self.solver.init(
-                self.term, 
+                self._term, 
                 0, 
                 self.dt, 
                 plant_state, 
@@ -161,19 +166,19 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         )
         
     
-    def n_vars(self, where):
-        """
-        TODO: Given a function that returns a PyTree of leaves of `mechanics_state`,
-        return the sum of the sizes of the last dimensions of the leaves.
+    # def n_vars(self, where):
+    #     """
+    #     TODO: Given a function that returns a PyTree of leaves of `mechanics_state`,
+    #     return the sum of the sizes of the last dimensions of the leaves.
         
-        Alternatively, just return an empty `mechanics_state`.
+    #     Alternatively, just return an empty `mechanics_state`.
         
-        This is useful to automatically determine the number of feedback inputs 
-        during model construction, when a `mechanics_state` instance isn't yet available.
+    #     This is useful to automatically determine the number of feedback inputs 
+    #     during model construction, when a `mechanics_state` instance isn't yet available.
         
-        See `get_model` in notebook 8.
-        """
-        # tree.tree_sum_n_features
-        ...
+    #     See `get_model` in notebook 8.
+    #     """
+    #     # tree.tree_sum_n_features
+    #     ...
       
 

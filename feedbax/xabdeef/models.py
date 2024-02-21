@@ -27,8 +27,6 @@ from feedbax.networks import SimpleStagedNetwork
 logger = logging.getLogger(__name__)
 
 
-N_DIM = 2
-
 
 def point_mass_nn(
     task,

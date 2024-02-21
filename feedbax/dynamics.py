@@ -25,6 +25,11 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
     """Base class for continuous dynamical systems.
     
     ??? dev-note "Development note"
+        The signature of `vector_field` matches that expected by 
+        `diffrax.ODETerm`. However, the argument that is called 
+        `args` in the Diffrax documentation, we call `input`, since 
+        we use it for input signals (e.g. forces from the controller)
+    
         Vector fields for biomechanical models are generally not
         time-dependent. That is, the argument `t` to `vector_field` is
         typically unused. This is apparent in the way we alias `vector_field`
@@ -54,7 +59,7 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
 
     @abstractproperty
     def input_size(self) -> int:
-        """Number of control inputs."""
+        """Number of input variables."""
         ...
     
     @abstractmethod
@@ -70,7 +75,8 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
 class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
     """A linear, continuous, time-invariant system.
     
-    Inspired by [this Diffrax example](https://docs.kidger.site/diffrax/examples/kalman_filter/).
+    !!! ref ""    
+        Inspired by [this Diffrax example](https://docs.kidger.site/diffrax/examples/kalman_filter/).
     
     Attributes:
         A: The state evolution matrix.
@@ -86,9 +92,9 @@ class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
         self, 
         t: float, 
         state: Array,
-        input: Float[Array, "input"]
+        input: Array,
     ) -> Array:
-        """Returns time derivatives of the system's states.        
+        """Returns time derivatives of the system's states.
         """ 
         return self.A @ state + self.B @ input
     
@@ -103,13 +109,13 @@ class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
         return self.A.shape[1]
     
     @property
-    def bounds(self) -> StateBounds[CartesianState]:
+    def bounds(self) -> StateBounds[Array]:
         return StateBounds(low=None, high=None)
     
     def init(
         self,
         *,
         key: Optional[PRNGKeyArray] = None,
-    ) -> CartesianState:
+    ) -> Array:
         """Return a default state for the linear system."""
-        return CartesianState()
+        return jnp.zeros(self.state_size)

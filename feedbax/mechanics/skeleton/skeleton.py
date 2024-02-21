@@ -28,22 +28,38 @@ StateT = TypeVar("StateT", bound=AbstractSkeletonState)
 
 
 class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
+    """Base class for models of skeletal dynamics."""
+    
+    @abstractmethod
+    def vector_field(
+        self, 
+        t: float | None,
+        state: StateT, 
+        input: Array, 
+    ) -> StateT:
+        """Return the time derivative of the state of the skeleton."""
+        ...
+
+    @abstractmethod
+    def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
+        """Return a default state for the skeleton."""
+        ...
     
     @abstractmethod
     def forward_kinematics(self, state: StateT) -> CartesianState:
-        """Return the Cartesian state of the joints given the configuration
-        of the skeleton."""
+        """Return the Cartesian state of the joints and end effector,
+        given the configuration of the skeleton."""
         ...
         
     @abstractmethod 
     def inverse_kinematics(self, state: CartesianState) -> StateT:
         """Return the configuration of the skeleton given the Cartesian state 
-        of the final joint (usually, the effector)."""
+        of the end effector."""
         ...
         
     @abstractmethod
     def effector(self, state: StateT) -> CartesianState:
-        """Return the Cartesian state of the effector."""
+        """Return the Cartesian state of the end effector."""
         ...
     
     @abstractmethod
@@ -54,7 +70,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> StateT:
-        """Update the state of the skeleton given an effector force."""
+        """Update the state of the skeleton given a force on the end effector."""
         ...
         
     # @abstractmethod

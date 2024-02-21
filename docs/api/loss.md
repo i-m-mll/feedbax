@@ -1,7 +1,5 @@
 # Loss functions
 
-::: feedbax.loss.AbstractLoss
-
 ::: feedbax.loss.CompositeLoss
 
 ::: feedbax.loss.EffectorPositionLoss
@@ -17,3 +15,7 @@
 ::: feedbax.loss.NetworkActivityLoss
 
 ::: feedbax.loss.power_discount
+
+## Abstract base classes 
+
+::: feedbax.loss.AbstractLoss

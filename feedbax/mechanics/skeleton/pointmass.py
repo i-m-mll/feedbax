@@ -1,4 +1,4 @@
-"""Modules defining continuous linear dynamical systems.
+"""Newtonian point mass dynamics, as a trivial skeleton model.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -27,29 +27,25 @@ N_DIM = 2  # number of spatial dimensions
 
 
 class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
-    """An LTI system where the effector is assumed identical to the system.
+    """A point with mass but no spatial extent, that obeys Newton's laws of motion.
     
-    This generally makes sense for linear systems with only one moving part, 
-    such as a point mass.
-    
-    
-    """
-    # A: Float[Array, "state state"]  # state evolution matrix
-    # B: Float[Array, "state input"]  # control matrix
-    # C: Float[Array, "obs state"]  # observation matrix    
+    Attributes:
+        A: The state evolution matrix according to Newton's first law of motion.
+        B: The control matrix according to Newton's second law.   
+    """ 
     mass: float 
 
     def __init__(self, mass):
         self.mass = mass 
     
     @cached_property
-    def A(self):
+    def A(self) -> Array:
         return sum([jnp.diagflat(jnp.ones((ORDER - i) * N_DIM), 
                                  i * N_DIM)
                     for i in range(1, ORDER)])
     
     @cached_property
-    def B(self): 
+    def B(self) -> Array: 
         return jnp.concatenate(
             [
                 jnp.zeros((N_DIM, N_DIM)), 
@@ -59,7 +55,7 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
         )
     
     @cached_property
-    def C(self):
+    def C(self) -> Array:
         return 1  # TODO 
     
     def vector_field(
@@ -68,9 +64,17 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
         state: CartesianState,
         input: Float[Array, "input"]
     ) -> CartesianState:
-        """Returns time derivatives of the system's states.        
+        """Returns time derivatives of the system's states.
+        
+        Arguments:
+            t: The current simulation time. (Unused.)
+            state: The state of the point mass.
+            input: The input force on the point mass.            
         """
-        force = input + state.force
+        # `state.force` may contain forces due to 
+        # `update_state_given_effector_force` executed during the 
+        # "update_effector_force" stage of `Mechanics`
+        force = input + state.force  
         state_ = jnp.concatenate([state.pos, state.vel])       
         d_y = super().vector_field(t, state_, force)
 
@@ -80,39 +84,58 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
         self, 
         state: Float[Array, "state"]
     ) -> Float[Array, "state"]:
+        """Trivially, returns the Cartesian state of the point mass itself."""
         return state 
     
     def inverse_kinematics(
         self, 
         effector_state: CartesianState
     ) -> CartesianState:
+        """Trivially, returns the Cartesian state of the point mass itself."""
         return effector_state
     
     def effector(
         self, 
-        system_state: CartesianState,
+        config_state: CartesianState,
     ) -> CartesianState:
-        """Return the effector state given the system state.
+        """Return the effector state given the configuration state.
         
-        For a point mass, these are identical. However, we make sure to return
-        zero `force` to avoid positive feedback loops as effector forces are
-        converted back to system forces by `Mechanics` on the next time step.
+        !!! Note  ""
+            For a point mass, these are identical. However, we make sure to
+            return zero `force` to avoid positive feedback loops as effector
+            forces are converted back to system forces by `Mechanics` on the
+            next time step.
         """
         return CartesianState(
-            pos=system_state.pos,
-            vel=system_state.vel,
-            # force=jnp.zeros_like(system_state.force),
+            pos=config_state.pos,
+            vel=config_state.vel,
         )
 
     def update_state_given_effector_force(
         self, 
-        effector_force: jax.Array,
+        effector_force: Array,
         system_state: CartesianState,
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> CartesianState:
+        """Updates the force on the point mass.
+        
+        !!! Note ""   
+            Effector forces are equal to configuration forces for a point mass,
+            so this just inserts the effector force into the state directly.
+            This method exists because for more complex skeletons, the 
+            conversion is not trivial.
+        """
         return eqx.tree_at(
             lambda state: state.force,
             system_state,
             effector_force,
         )
+
+    def init(
+        self,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> CartesianState:
+        """Return a default state for the point mass."""
+        return CartesianState()

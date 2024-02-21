@@ -32,7 +32,7 @@ class AbstractTransformedOrderedDict(MutableMapping[KT, VT]):
     it into something else. In particular, by replacing `_key_transform` with 
     a code parsing function, a subclass of this class can take lambdas as keys.
     
-    See `feedbax.task.InitSpecDict` for an example.
+    See `feedbax.task.WhereDict` for an example.
        
     Based on https://stackoverflow.com/a/3387975
     

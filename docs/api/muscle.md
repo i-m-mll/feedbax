@@ -27,3 +27,5 @@
 
 ::: feedbax.mechanics.muscle.AbstractMuscleState
 
+::: feedbax.mechanics.muscle.AbstractMuscle
+

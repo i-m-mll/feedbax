@@ -33,9 +33,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-N_DIM = 2
-
-
 # StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
 
 class AbstractModel(eqx.Module, Generic[StateT]):
@@ -99,11 +96,13 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         """Return a default state for the model."""
         ...
 
+    @property 
     def bounds(self) -> PyTree[StateBounds]:  # type: ignore
         """Suggested bounds on the state.
         """
         return None
     
+    @property
     def memory_spec(self) -> PyTree[bool]:
         """Specifies which states should typically be remembered by callers."""
         return True
@@ -189,13 +188,20 @@ Ts = TypeVarTuple("Ts")
 
 
 def get_ensemble(
-    get_func: Callable[[jax.Array, *Ts], T], 
+    func: Callable[[*Ts, PRNGKeyArray], PyTree[T, 'S']], 
     n_ensemble: int, 
     *args: *Ts, 
     key: PRNGKeyArray
-) -> eqx.Module:
-    """Helper to vmap a function over a set of random keys.
+) -> PyTree[T, 'S']:
+    """Vmap a function over a set of random keys.
+    
+    Arguments:
+        func: A function that takes some positional arguments, and a key.
+        n_ensemble: The number of keys to split; i.e. the size of the batch
+            dimensions in the array leaves of the returned PyTree.
+        *args: The positional arguments to `func`.
+        key: The key to split to perform the vmap.
     """
     keys = jr.split(key, n_ensemble)
-    get_func_ = partial(get_func, *args)
-    return eqx.filter_vmap(get_func_)(keys)
+    func_ = partial(func, *args)
+    return eqx.filter_vmap(func_)(keys)

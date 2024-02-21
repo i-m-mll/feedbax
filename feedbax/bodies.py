@@ -100,7 +100,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             Mapping[str, Sequence[AbstractIntervenor]]
         ]] = None,
         *,
-        key: Optional[Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ):
         """
         Arguments:
@@ -193,7 +193,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     def init(
         self, 
         *,
-        key: Optional[jax.Array] = None,
+        key: Optional[PRNGKeyArray] = None,
     ): 
         """Return a default state for the model.
         """

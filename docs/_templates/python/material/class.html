@@ -12,7 +12,7 @@
     {%- endwith -%}
   {% else %}
     <code>{% if show_full_path %}{{ class.path }}{% else %}{{ class.name }}{% endif %} </code>
-    <code class="doc-class-bases">({% include 'bases.html' %})</code>
+    <code class="doc-class-bases">{% include 'bases.html' %}</code>
   {% endif %}
 {% endblock heading %}
 

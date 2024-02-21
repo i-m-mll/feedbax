@@ -36,9 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-N_DIM = 2
-
-
 class ModelStage(eqx.Module, Generic[StateT]):
     """Specification for a stage in a subclass of `AbstractStagedModel`.
     
@@ -99,6 +96,8 @@ class AbstractStagedModel(AbstractModel[StateT]):
             1. A `model_spec` property giving a mapping from stage labels 
                to [`ModelStage`][feedbax.ModelStage] instances, each
                specifying an operation performed on the model state.
+               Generally it is a good idea to make it a `functools.cached_property`
+               so that it is only generated once.
             2. An `init` method that takes a random key and returns a default 
                model state.
                  
@@ -239,10 +238,10 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return intervenors_dict
         
     @property 
-    def step(self):
+    def step(self) -> "AbstractStagedModel[StateT]":
         """The model step.
         
-        For `AbstractStagedModel`s, this is trivially the model itself.
+        For an `AbstractStagedModel`, this is trivially the model itself.
         """
         return self 
     

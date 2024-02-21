@@ -513,7 +513,9 @@ class TaskTrainer(eqx.Module):
         keys_init = jr.split(key_init, batch_size)
         keys_model = jr.split(key_model, batch_size)  
         
-        trial_specs = jax.vmap(task.get_train_trial)(keys_trials)
+        trial_specs = jax.vmap(
+            task.get_train_trial_with_intervenor_params
+        )(keys_trials)
         
         model = jtu.tree_unflatten(treedef_model, flat_model)
         
@@ -673,7 +675,7 @@ def _grad_wrap_task_loss_func(
         static_model: AbstractModel[StateT],  #! Type is technically not identical to `diff_model`
         trial_specs: AbstractTaskTrialSpec,
         init_states: StateT,  #! has a batch dimension
-        keys: jax.Array,  # per trial
+        keys: PRNGKeyArray,  # per trial
     ) -> Tuple[float, Tuple[LossDict, StateT]]:
         
         model = eqx.combine(diff_model, static_model) 

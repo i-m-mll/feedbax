@@ -7,11 +7,11 @@
         <span class="doc doc-object-name doc-function-name">{{ function_name }}</span>
     {% else %}
         <span class="md-function-name">
-        {%+ filter highlight(language="python", inline=True) %}
+        {%+ filter highlight(language="python", inline=True) -%}
             {{ function_name }}
-        {% endfilter %}
+        {%- endfilter -%}
         </span>
-        {% include "signature.html" with context %}
+        {%- include "signature.html" with context %}
     {% endif %}
     </div>
 {% endblock heading %}

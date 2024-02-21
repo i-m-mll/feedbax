@@ -56,7 +56,7 @@ class StateBounds(eqx.Module, Generic[StateT]):
         return jax.tree_map(
             lambda x: x is not None, 
             self, 
-            is_leaf=lambda x: isinstance(x, jax.Array) or x is None,
+            is_leaf=lambda x: isinstance(x, Array) or x is None,
         )
 
 

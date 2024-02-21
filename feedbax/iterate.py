@@ -39,6 +39,10 @@ class AbstractIterator(AbstractModel[StateT]):
     @property 
     def step(self) -> AbstractModel[StateT]:
         return self._step
+    
+    def state_consistency_update(self, state: StateT) -> StateT:
+        return self._step.state_consistency_update(state)
+    
 
 
 class Iterator(AbstractIterator[StateT]):
@@ -53,7 +57,7 @@ class Iterator(AbstractIterator[StateT]):
         `ForgetfulIterator` to save memory.
 
     Attributes:
-        step: The model to be iterated.
+        step (AbstractModel[StateT]): The model to be iterated.
         n_steps: The number of steps to iterate for.
     """
     _step: AbstractModel[StateT]
