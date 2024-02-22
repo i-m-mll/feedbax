@@ -1,22 +1,32 @@
 # Interventions
 
-## Base classes
-
-::: feedbax.intervene.AbstractIntervenor
-
-## Specific interventions
-
 ::: feedbax.intervene.CurlField
 
 ::: feedbax.intervene.AddNoise
 
-::: feedbax.intervene.ConstantInput
+::: feedbax.intervene.NetworkClamp
+
+::: feedbax.intervene.NetworkConstantInput
+
 
 ## Adding interventions to tasks and models
 
 ::: feedbax.intervene.schedule_intervenor
 
+::: feedbax.intervene.add_intervenors
+
 ::: feedbax.intervene.add_intervenor
 
-::: feedbax.intervene.add_intervenors
+## Base classes
+
+::: feedbax.intervene.AbstractIntervenorInput
+
+::: feedbax.intervene.InputT
+    options:
+        separate_signature: true
+        signature_crossrefs: true
+
+::: feedbax.intervene.AbstractIntervenor
+    options:
+        members: ['__call__', '_transform', 'with_params']
 
