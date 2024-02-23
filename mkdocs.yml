@@ -12,9 +12,11 @@ theme:
     - navigation.sections 
     - toc.integrate
     - header.autohide
+  custom_dir: docs/_overrides
   icon:
-    logo: material/arm-flex  #rotate-left, directory-sync, all-inclusive
-    annotation: material/arrow-right-circle 
+    logo: material/tibia-alt 
+    # logo: material/arm-flex  
+    annotation: material/info-twotone
   palette:
     scheme: fbx
 
@@ -26,8 +28,8 @@ markdown_extensions:
       generic: true
   - pymdownx.details  # Enables collapsible admonitions
   # - pymdownx.highlight
-  # - attr_list 
-  # - md_in_html
+  - attr_list 
+  - md_in_html
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.inlinehilite
@@ -109,8 +111,8 @@ nav:
       - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
   - API:
     - Models:
-      # - Base classes: 'api/model.md'
-      - 'api/staged.md'  # should this be separate from the previous entry?
+      - Base classes: 'api/model.md'
+      - 'api/staged.md'  
       - 'api/ensemble.md'
       - 'api/intervene.md'
       - 'api/iterate.md'
