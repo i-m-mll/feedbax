@@ -3,15 +3,16 @@
 {% block heading scoped %}
     <div class="md-function-heading">
     {% if config.show_symbol_type_heading %}<code class="doc-symbol doc-symbol-heading doc-symbol-{{ symbol_type }}"></code>{% endif %}
-    {% if config.separate_signature %}
-        <span class="doc doc-object-name doc-function-name">{{ function_name }}</span>
-    {% else %}
+
         <span class="md-function-name">
         {%+ filter highlight(language="python", inline=True) -%}
             {{ function_name }}
         {%- endfilter -%}
         </span>
-        {%- include "signature.html" with context %}
+        {% if not config.separate_signature %}
+          {%- include "heading_signature.html" with context %}    
+        {% else %}
+        
     {% endif %}
     </div>
 {% endblock heading %}

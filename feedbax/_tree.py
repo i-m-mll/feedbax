@@ -5,6 +5,7 @@
 """
 
 from collections.abc import Callable, Sequence
+from functools import partial
 import logging 
 from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, get_type_hints
 
@@ -17,6 +18,9 @@ from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 
 
 logger = logging.getLogger(__name__)
+
+
+T = TypeVar('T')
 
 
 def filter_spec_leaves(
@@ -33,13 +37,34 @@ def filter_spec_leaves(
 
 
 def tree_index(tree: PyTree[Any, 'T'], index: int) -> PyTree[Any, 'T']:
-    """Returns the same PyTree, indexing all of its array leaves.
+    """Returns the same PyTree, indexing out all of its array leaves.
     """
     models_arrays, models_other = eqx.partition(tree, eqx.is_array)
     return eqx.combine(
         jax.tree_map(lambda x: x[index], models_arrays),
         models_other,
     )
+
+
+def get_ensemble(
+    func: Callable[..., PyTree[Any, 'S']], 
+    *args, 
+    n_ensemble: int, 
+    key: PRNGKeyArray,
+    **kwargs,
+) -> PyTree[Any, 'S']:
+    """Vmap a function over a set of random keys.
+    
+    Arguments:
+        func: A function that returns a PyTree, and whose final argument is a key.
+        n_ensemble: The number of keys to split; i.e. the size of the batch
+            dimensions in the array leaves of the returned PyTree.
+        *args: The positional arguments to `func`.
+        key: The key to split to perform the vmap.
+    """
+    keys = jr.split(key, n_ensemble)
+    func_ = partial(func, *args, **kwargs)
+    return eqx.filter_vmap(func_)(keys)
 
 
 @jax.named_scope("fbx.tree_take")

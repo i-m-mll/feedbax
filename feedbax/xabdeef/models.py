@@ -14,14 +14,15 @@ import jax
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
+from feedbax import get_ensemble
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
-from feedbax.model import AbstractModel, get_ensemble
-from feedbax.iterate import ForgetfulIterator, Iterator
+from feedbax.model import AbstractModel
+from feedbax.iterate import Iterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter
-from feedbax.networks import SimpleStagedNetwork
+from feedbax.nn import SimpleStagedNetwork
 
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 def point_mass_nn(
     task,
-    key: Optional[PRNGKeyArray] = None,
     dt: float = 0.05, 
     mass: float = 1., 
     hidden_size: int = 50, 
@@ -41,6 +41,7 @@ def point_mass_nn(
     feedback_noise_std: float = 0.0,
     motor_noise_std: float = 0.0,  # TODO
     out_nonlinearity: Callable = lambda x: x,
+    key: Optional[PRNGKeyArray] = None,
 ):
     """From nb8"""
     if key is None:

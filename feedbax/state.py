@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 class AbstractState(eqx.Module):
     """Base class for model states.
     
-    !!! NOTE
-        Currently this is empty, and only used for typing.
+    !!! NOTE ""
+        Currently this is empty, and only used for collectively typing its subclasses.
     """
     
     ...

@@ -94,7 +94,7 @@ def orthogonal_gru_cell(input_size, hidden_size, use_bias=True, scale=1.0, *, ke
 
 
 class NetworkState(AbstractState):
-    """Type of state PyTree operated on by [`SimpleStagedNetwork`][feedbax.networks.SimpleStagedNetwork] instances.
+    """Type of state PyTree operated on by [`SimpleStagedNetwork`][feedbax.nn.SimpleStagedNetwork] instances.
     
     Attributes:
         hidden: The (output) activity of the hidden layer units.

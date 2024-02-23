@@ -15,7 +15,7 @@
 
 ### Simple reaching
 
-::: feedbax.task.SimpleReachTaskInput
+::: feedbax.task.SimpleReachTaskInputs
 
 ::: feedbax.task.SimpleReachTrialSpec
 
@@ -23,7 +23,7 @@
 
 ### Delayed (cued) reaching
 
-::: feedbax.task.DelayedReachTaskInput
+::: feedbax.task.DelayedReachTaskInputs
 
 ::: feedbax.task.DelayedReachTrialSpec
 
@@ -31,7 +31,7 @@
 
 ## Abstract base classes
 
-::: feedbax.task.AbstractTaskInput
+::: feedbax.task.AbstractTaskInputs
 
 ::: feedbax.task.AbstractTaskTrialSpec
 

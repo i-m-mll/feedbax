@@ -432,7 +432,7 @@ class TaskTrainer(eqx.Module):
                     fig, _ = plot.plot_reach_trajectories(
                         states_plot,
                         endpoints=(
-                            trial_specs.init['mechanics.effector'].pos, 
+                            trial_specs.inits['mechanics.effector'].pos, 
                             trial_specs.goal.pos
                         ),
                         workspace=task.workspace,
@@ -521,7 +521,7 @@ class TaskTrainer(eqx.Module):
         
         init_states = jax.vmap(model.init)(key=keys_init) 
         
-        for where_substate, init_substates in trial_specs.init.items():
+        for where_substate, init_substates in trial_specs.inits.items():
             init_states = eqx.tree_at(
                 where_substate, 
                 init_states,
@@ -682,7 +682,7 @@ def _grad_wrap_task_loss_func(
         
         #? will `in_axes` ever change? 
         states = jax.vmap(model)(
-            ModelInput(trial_specs.input, trial_specs.intervene), 
+            ModelInput(trial_specs.inputs, trial_specs.intervene), 
             init_states, 
             keys
         )

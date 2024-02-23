@@ -415,7 +415,7 @@ class EffectorFixationLoss(AbstractLoss):
     
     !!! Info ""    
         Similar to `EffectorPositionLoss`, but only penalizes the position 
-        error during the part of the trial where `trial_specs.input.hold`
+        error during the part of the trial where `trial_specs.inputs.hold`
         is non-zero/`True`.
         
     Attributes: 
@@ -434,7 +434,7 @@ class EffectorFixationLoss(AbstractLoss):
             axis=-1
         )
         
-        loss = loss * jnp.squeeze(trial_specs.input.hold)
+        loss = loss * jnp.squeeze(trial_specs.inputs.hold)
         
         # sum over time
         loss = jnp.sum(loss, axis=-1)

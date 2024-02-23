@@ -103,7 +103,8 @@ nav:
       - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
       - 5. Models with stages: 'examples/5_model_stages.ipynb'
       - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
-      - 7. Advanced analyses: 'examples/8_advanced.ipynb'
+      - 7. Designing custom tasks: 'examples/4_custom_tasks.ipynb'
+      # - 8. Advanced analyses: 'examples/8_advanced.ipynb'
     - Features:
       - Composable loss functions: 'examples/losses.ipynb'
       - Saving and loading: 'examples/saving_and_loading.ipynb'
@@ -113,7 +114,6 @@ nav:
     - Models:
       - Base classes: 'api/model.md'
       - 'api/staged.md'  
-      - 'api/ensemble.md'
       - 'api/intervene.md'
       - 'api/iterate.md'
       - 'api/bodies.md'

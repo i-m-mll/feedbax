@@ -10,6 +10,8 @@ Feedbax collects a few convenient functions which operate on PyTrees, and which 
 
 ## Mapping, unzipping, and stacking
 
+::: feedbax.get_ensemble
+
 ::: feedbax.tree_unzip
 
 ::: feedbax.tree_map_unzip

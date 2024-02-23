@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedback
     # from feedbax.model import AbstractModel
     from feedbax.mechanics.mechanics import MechanicsState
-    from feedbax.networks import NetworkState
+    from feedbax.nn import NetworkState
     from feedbax._staged import AbstractStagedModel
 
 
@@ -602,7 +602,7 @@ def schedule_intervenor(
           task's validation set. Overrides `validation_same_schedule`.
         default_active: If the intervenor added to the model should have 
           `active=True` by default, so that the intervention will be 
-          turned on even if the intervenor doesn't explicitly receives values
+          turned on even if the intervenor doesn't explicitly receive values
           for its parameters. 
     """
     

@@ -1,12 +1,12 @@
-# Neural network models
+# Neural networks
 
-::: feedbax.networks.orthogonal_gru_cell
+::: feedbax.nn.orthogonal_gru_cell
 
-::: feedbax.networks.NetworkState
+::: feedbax.nn.NetworkState
 
-::: feedbax.networks.SimpleStagedNetwork
+::: feedbax.nn.SimpleStagedNetwork
 
-::: feedbax.networks.RNNCellProto
+::: feedbax.nn.RNNCellProto
     options:
         members: ['__init__', '__call__'] 
 

@@ -10,7 +10,6 @@ import os
 import warnings
 
 from feedbax._io import save, load
-from feedbax.model import get_ensemble
 from feedbax._staged import (
     AbstractStagedModel, 
     ModelStage, 
@@ -18,6 +17,7 @@ from feedbax._staged import (
     pprint_model_spec,
 )
 from feedbax._tree import (
+    get_ensemble,
     random_split_like_tree,
     tree_array_bytes, 
     tree_call,

@@ -20,7 +20,7 @@ from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.networks import NetworkState
+from feedbax.nn import NetworkState
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateBounds
 from feedbax.task import AbstractTask
@@ -273,7 +273,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         )
         n_feedback = tree_sum_n_features(example_feedback)
         example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))
-        n_task_inputs = tree_sum_n_features(example_trial_spec.input)
+        n_task_inputs = tree_sum_n_features(example_trial_spec.inputs)
         return n_feedback + n_task_inputs
     
     def state_consistency_update(

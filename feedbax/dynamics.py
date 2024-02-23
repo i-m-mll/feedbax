@@ -73,10 +73,11 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         
 
 class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
-    """A linear, continuous, time-invariant system.
-    
-    !!! ref ""    
+    """    
+    !!! ref inline end ""    
         Inspired by [this Diffrax example](https://docs.kidger.site/diffrax/examples/kalman_filter/).
+    
+    A linear, continuous, time-invariant system.
     
     Attributes:
         A: The state evolution matrix.

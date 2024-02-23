@@ -6,11 +6,17 @@
 ## Constructors for specific variants of the Virtual Muscle Model
 
 ::: feedbax.mechanics.muscle.brown_1999_virtualmuscle
+    options:
+        separate_signature: true
 
 ::: feedbax.mechanics.muscle.todorov_li_2004_virtualmuscle
+    options:
+        separate_signature: true
 
 ::: feedbax.mechanics.muscle.lillicrap_scott_2013_virtualmuscle
-
+    options:
+        separate_signature: true
+        
 ## Virtual Muscle Model
 
 ::: feedbax.mechanics.muscle.VirtualMuscleState

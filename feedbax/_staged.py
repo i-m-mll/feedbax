@@ -30,7 +30,7 @@ from feedbax.misc import indent_str
 from feedbax.state import StateT
 
 if TYPE_CHECKING:
-    from feedbax.task import AbstractTaskInput
+    from feedbax.task import AbstractTaskInputs
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class ModelStage(eqx.Module, Generic[StateT]):
         ["AbstractStagedModel[StateT]"], 
         Callable[[Union[ModelInput, PyTree[Array]], StateT, Array], StateT]
     ]
-    where_input: Callable[["AbstractTaskInput", StateT], PyTree]
+    where_input: Callable[["AbstractTaskInputs", StateT], PyTree]
     where_state: Callable[[StateT], PyTree]
     intervenors: Optional[Sequence[AbstractIntervenor]] = None
 

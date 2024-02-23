@@ -129,7 +129,7 @@ class WhereDict(AbstractTransformedOrderedDict[
         return f"{type(self).__name__}([{items_str}])"
 
 
-class AbstractTaskInput(eqx.Module):
+class AbstractTaskInputs(eqx.Module):
     """Abstract base class for model inputs provided by a task.
     
     !!! Note ""
@@ -141,21 +141,25 @@ class AbstractTaskInput(eqx.Module):
     ...
 
 
+# TODO: One `target` is specified as a `WhereDict` as well, the only thing 
+# that will really change between classes of tasks is `inputs`. In that case,
+# we could just make this `TaskTrialSpec` and have it be a generic of 
+# `AbstractTaskInputs`
 class AbstractTaskTrialSpec(eqx.Module):
     """Abstract base class for trial specifications provided by a task.
     
     Attributes:
-        init: A mapping from `lambdas` that select model substates to be 
+        inits: A mapping from `lambdas` that select model substates to be 
             initialized, to substates to initialize them with.
-        input: A PyTree of inputs to the model.
+        inputs: A PyTree of inputs to the model.
         target: A PyTree of target states.
         intervene: A mapping from unique intervenor names, to per-trial
             intervention parameters.
     """
-    init: AbstractVar[WhereDict]
-    # init: OrderedDict[Callable[[AbstractState], PyTree[Array]], 
+    inits: AbstractVar[WhereDict]
+    # inits: OrderedDict[Callable[[AbstractState], PyTree[Array]], 
     #                        PyTree[Array]]
-    input: AbstractVar[AbstractTaskInput]
+    inputs: AbstractVar[AbstractTaskInputs]
     target: AbstractVar[PyTree[Array]]
     intervene: AbstractVar[Mapping[str, Array]]
 
@@ -164,9 +168,9 @@ class AbstractReachTrialSpec(AbstractTaskTrialSpec):
     """Abstract base class for trial specifications for reaching tasks.
     
     Attributes:
-        init: A mapping from `lambdas` that select model substates to be 
+        inits: A mapping from `lambdas` that select model substates to be 
           initialized, to substates to initialize them with.
-        input: A PyTree of inputs to the model, including data about the
+        inputs: A PyTree of inputs to the model, including data about the
           reach target.
         target: The target trajectory for the mechanical end effector,
           used for computing the loss.
@@ -174,8 +178,8 @@ class AbstractReachTrialSpec(AbstractTaskTrialSpec):
           intervention parameters.
         
     """
-    init: AbstractVar[WhereDict]
-    input:  AbstractVar[AbstractTaskInput]
+    inits: AbstractVar[WhereDict]
+    inputs:  AbstractVar[AbstractTaskInputs]
     target:  AbstractVar[CartesianState]
     intervene:  AbstractVar[Mapping[str, Array]] 
     
@@ -185,43 +189,45 @@ class AbstractReachTrialSpec(AbstractTaskTrialSpec):
         return jax.tree_map(lambda x: x[:, -1], self.target)  
     
 
-class SimpleReachTaskInput(AbstractTaskInput):
+class SimpleReachTaskInputs(AbstractTaskInputs):
     """Model input for a simple reaching task.
     
     Attributes:
-        stim: The trajectory of effector target states to be presented to the model.
+        effector_target: The trajectory of effector target states to be presented to 
+          the model.
     """
-    stim: Float[Array, "time 1"]  #! column vector: why here?
+    effector_target: CartesianState  #! column vector: why here?
     
-class DelayedReachTaskInput(eqx.Module):
+class DelayedReachTaskInputs(eqx.Module):
     """Model input for a delayed reaching task.
     
     Attributes:
-        stim: The trajectory of effector target states to be presented to the model.
+        effector_target: The trajectory of effector target states to be presented to 
+          the model.
         hold: The hold/go (1/0 signal) to be presented to the model.
-        stim_on: A signal indicating to the model when the value of `stim` should be
-          interpreted as a reach target. Otherwise, if zeros are passed for the 
-          target during (say) the hold period, the model may interpret this as 
+        target_on: A signal indicating to the model when the value of `effector_target` 
+          should be interpreted as a reach target. Otherwise, if zeros are passed for 
+          the target during (say) the hold period, the model may interpret this as 
           meaningful—that is, "your reach target is at 0".
     """
-    stim: PyTree[Float[Array, "time ..."]]
+    effector_target: CartesianState # PyTree[Float[Array, "time ..."]]
     hold: Int[Array, "time 1"]  # TODO: do these need to be typed as column vectors, here?
-    stim_on: Int[Array, "time 1"]
+    target_on: Int[Array, "time 1"]
 
 
 class SimpleReachTrialSpec(AbstractReachTrialSpec):
     """Trial specification for a simple reaching task.
     
     Attributes:
-        init: A mapping from `lambdas` that select model substates to be 
+        inits: A mapping from `lambdas` that select model substates to be 
           initialized, to substates to initialize them with at the start of trials.
-        input: For providing the model with the reach target.
+        inputs: For providing the model with the reach target.
         target: The target trajectory for the mechanical end effector.
         intervene: A mapping from unique intervenor names, to per-trial
           intervention parameters.
     """
-    init: WhereDict
-    input: SimpleReachTaskInput
+    inits: WhereDict
+    inputs: SimpleReachTaskInputs
     target: CartesianState
     intervene: Mapping[str, Array] = field(default_factory=dict)
 
@@ -230,16 +236,16 @@ class DelayedReachTrialSpec(AbstractReachTrialSpec):
     """Trial specification for a delayed reaching task.
     
     Attributes:
-        init: A mapping from `lambdas` that select model substates to be 
+        inits: A mapping from `lambdas` that select model substates to be 
           initialized, to substates to initialize them with at the start of trials.
-        input: For providing the model with the reach target and hold signal.
+        inputs: For providing the model with the reach target and hold signal.
         target: The target trajectory for the mechanical end effector.
         epoch_start_idxs: The indices of the start of each epoch in the trial.
         intervene: A mapping from unique intervenor names, to per-trial
           intervention parameters.
     """
-    init: WhereDict
-    input: DelayedReachTaskInput
+    inits: WhereDict
+    inputs: DelayedReachTaskInputs
     target: CartesianState
     epoch_start_idxs: Int[Array, "n_epochs"]
     intervene: Mapping[str, Array] = field(default_factory=dict)
@@ -345,7 +351,7 @@ class AbstractTask(eqx.Module):
     @abstractmethod
     def get_validation_trials(
         self,
-        key: Optional[PRNGKeyArray],
+        key: PRNGKeyArray,
     ) -> AbstractTaskTrialSpec:
         """Return a set of validation trials, given a random key.
         
@@ -402,7 +408,7 @@ class AbstractTask(eqx.Module):
         """      
         init_states = jax.vmap(model.init)(key=keys)
         
-        for where_substate, init_substates in trial_specs.init.items():
+        for where_substate, init_substates in trial_specs.inits.items():
             init_states = eqx.tree_at(
                 where_substate, 
                 init_states,
@@ -414,7 +420,7 @@ class AbstractTask(eqx.Module):
         )
         
         states = eqx.filter_vmap(model)(#), in_axes=(eqx.if_array(0), 0, 0))(
-            ModelInput(trial_specs.input, trial_specs.intervene),
+            ModelInput(trial_specs.inputs, trial_specs.intervene),
             init_states, 
             keys,
         ) 
@@ -695,10 +701,10 @@ class SimpleReaches(AbstractTask):
         #     )
         
         return SimpleReachTrialSpec(
-            init=WhereDict({
+            inits=WhereDict({
                (lambda state: state.mechanics.effector): effector_init_state 
             }),
-            input=task_input, 
+            inputs=task_input, 
             target=effector_target_state,
         )
         
@@ -731,10 +737,10 @@ class SimpleReaches(AbstractTask):
         ))
         
         return SimpleReachTrialSpec(
-            init=WhereDict({
+            inits=WhereDict({
                (lambda state: state.mechanics.effector): effector_init_states 
             }),
-            input=task_inputs, 
+            inputs=task_inputs, 
             target=effector_target_states,
         )
         
@@ -755,8 +761,8 @@ class DelayedReaches(AbstractTask):
         n_steps: The number of time steps in each task trial.
         epoch_len_ranges: The ranges from which to uniformly sample the durations of 
           the task phases for each task trial.
-        stim_epochs: The epochs in which the stimulus is presented.
-        hold_epochs: The epochs in which the hold signal is presented.
+        target_on_epochs: The epochs in which the "target on" signal is turned on.
+        hold_epochs: The epochs in which the hold signal is turned on.
         eval_n_directions: The number of evenly-spread center-out reaches 
           starting from each workspace grid point in the validation set. The number 
           of trials in the validation set is equal to 
@@ -772,11 +778,11 @@ class DelayedReaches(AbstractTask):
     epoch_len_ranges: Tuple[Tuple[int, int], ...] = field(
         default=(
             (5, 15),  # start
-            (10, 20),  # stim
+            (10, 20),  # target on ("stim")
             (10, 25),  # delay
         )
     )
-    stim_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
+    target_on_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
     hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
@@ -807,10 +813,10 @@ class DelayedReaches(AbstractTask):
             )      
         
         return DelayedReachTrialSpec(
-            init=WhereDict({
+            inits=WhereDict({
                 (lambda state: state.mechanics.effector): effector_init_state 
             }),
-            input=task_inputs, 
+            inputs=task_inputs, 
             target=effector_target_states,
             epoch_start_idxs=epoch_start_idxs,
         )
@@ -836,10 +842,10 @@ class DelayedReaches(AbstractTask):
         )    
            
         return DelayedReachTrialSpec(
-            init=WhereDict({
+            inits=WhereDict({
                 (lambda state: state.mechanics.effector): effector_init_states 
             }),
-            input=task_inputs, 
+            inputs=task_inputs, 
             target=effector_target_states,
             epoch_start_idxs=epoch_start_idxs,
         )
@@ -849,7 +855,7 @@ class DelayedReaches(AbstractTask):
         init_states: CartesianState, 
         target_states: CartesianState, 
         key: PRNGKeyArray,
-    ) -> Tuple[DelayedReachTaskInput, CartesianState, Int[Array, "n_epochs"]]:
+    ) -> Tuple[DelayedReachTaskInputs, CartesianState, Int[Array, "n_epochs"]]:
         """Convert static task inputs to sequences, and make hold signal.
         """        
         epoch_lengths = gen_epoch_lengths(key, self.epoch_len_ranges)
@@ -865,7 +871,7 @@ class DelayedReaches(AbstractTask):
         
         stim_seqs = get_masked_seqs(
             _forceless_task_inputs(target_states), 
-            epoch_masks[self.stim_epochs]
+            epoch_masks[self.target_on_epochs]
         )
         target_seqs = jax.tree_map(
             lambda x, y: x + y, 
@@ -873,13 +879,13 @@ class DelayedReaches(AbstractTask):
             get_masked_seqs(init_states, epoch_masks[self.hold_epochs]),
         )
         stim_on_seq = get_scalar_epoch_seq(
-            epoch_start_idxs, self.n_steps, 1., self.stim_epochs
+            epoch_start_idxs, self.n_steps, 1., self.target_on_epochs
         )
         hold_seq = get_scalar_epoch_seq(
             epoch_start_idxs, self.n_steps, 1., self.hold_epochs
         )
         
-        task_input = DelayedReachTaskInput(stim_seqs, hold_seq, stim_on_seq)
+        task_input = DelayedReachTaskInputs(stim_seqs, hold_seq, stim_on_seq)
         target_states = target_seqs
         
         return task_input, target_states, epoch_start_idxs  
@@ -927,10 +933,10 @@ class Stabilization(AbstractTask):
         task_input = _forceless_task_inputs(target_state)
         
         return SimpleReachTrialSpec(
-            init=WhereDict({
+            inits=WhereDict({
                 lambda state: state.mechanics.effector: init_state
             }),
-            input=task_input, 
+            inputs=task_input, 
             target=target_state
         )
         
@@ -965,10 +971,10 @@ class Stabilization(AbstractTask):
         task_inputs = _forceless_task_inputs(target_states)
         
         return SimpleReachTrialSpec(
-            init=WhereDict({
+            inits=WhereDict({
                 lambda state: state.mechanics.effector: init_states 
             }),
-            input=task_inputs,
+            inputs=task_inputs,
             target=target_states
         )
     

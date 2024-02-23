@@ -6,20 +6,17 @@
 
 from abc import abstractmethod, abstractproperty
 from collections.abc import Callable, Mapping
-from functools import partial, wraps
+from functools import wraps
 import logging
 from typing import (
     TYPE_CHECKING,
     Generic, 
     Optional, 
-    TypeVar,
-    TypeVarTuple, 
 )
 
 import equinox as eqx
 import jax
-import jax.random as jr
-from jaxtyping import Array, PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 import numpy as np
 
 from feedbax.state import StateBounds, StateT
@@ -27,7 +24,7 @@ from feedbax._tree import random_split_like_tree
 
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenorInput
-    from feedbax.task import AbstractTaskInput
+    from feedbax.task import AbstractTaskInputs
 
 
 logger = logging.getLogger(__name__)
@@ -109,7 +106,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
 
 
 class ModelInput(eqx.Module):
-    input: "AbstractTaskInput"
+    input: "AbstractTaskInputs"
     intervene: Mapping["AbstractIntervenorInput"]
 
    
@@ -183,25 +180,6 @@ def wrap_stateless_callable(callable: Callable, pass_key=True):
     return wrapped
 
 
-T = TypeVar('T')
-Ts = TypeVarTuple("Ts")
 
 
-def get_ensemble(
-    func: Callable[[*Ts, PRNGKeyArray], PyTree[T, 'S']], 
-    n_ensemble: int, 
-    *args: *Ts, 
-    key: PRNGKeyArray
-) -> PyTree[T, 'S']:
-    """Vmap a function over a set of random keys.
-    
-    Arguments:
-        func: A function that takes some positional arguments, and a key.
-        n_ensemble: The number of keys to split; i.e. the size of the batch
-            dimensions in the array leaves of the returned PyTree.
-        *args: The positional arguments to `func`.
-        key: The key to split to perform the vmap.
-    """
-    keys = jr.split(key, n_ensemble)
-    func_ = partial(func, *args)
-    return eqx.filter_vmap(func_)(keys)
+
