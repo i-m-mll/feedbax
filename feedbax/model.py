@@ -16,7 +16,7 @@ from typing import (
 
 import equinox as eqx
 import jax
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
 from feedbax.state import StateBounds, StateT
@@ -30,15 +30,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# StateOrArrayT = TypeVar("StateOrArrayT", bound=Union[AbstractState, Array])
-
 class AbstractModel(eqx.Module, Generic[StateT]):
-    """Base class for 
-    
-    TODO:
-    - Should this be a generic of `StateT | Array`, or something?
-      - i.e. what about models that return a single array or some other
-        kind of PyTree? As in linear regression, PCA...
+    """Base class for models that operate on `AbstractState` objects.
     """
     
     @abstractmethod
@@ -48,12 +41,18 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         state: StateT, 
         key: PRNGKeyArray,
     ) -> StateT:
-        """Update the model state given inputs and a prior state."""
+        """Return an updated state, given inputs and a prior state.
+        
+        Arguments:
+            input: The inputs to the model.
+            state: The prior state associated with the model.
+            key: A random key used for model operations.
+        """
         ...
 
     @abstractproperty
     def step(self) -> "AbstractModel[StateT]":
-        """Interface to a single model step.
+        """The part of the model PyTree specifying a single time step of the model.
         
         For non-iterated models, this should trivially return `step`.
         """
@@ -65,22 +64,24 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     ) -> StateT:
         """Make sure the model state is self-consistent.
         
-        The default behaviour is to just return the same state. However, in
-        models where it is customary to initialize (say) the effector state 
-        but not the plant configuration state, this method should be used 
-        to ensure that the configuration state is initialized properly. 
-        
-        This avoids having to define how both states should be initialized
-        in `AbstractTask`, which would require knowledge not only of the 
-        structure of the state, but also of the model interface that 
-        provides particular operations for modifying the state. Though, I'm not 
-        sure that would be a bad thing, as the model state objects tend to 
-        mirror the operations done on them anyway.
-        
-        However, this approach also has the advantage that these consistency
-        checks can be arbitrarily complex and important to the model 
-        functioning properly; it is useful for the model to be able to 
-        render a state consistent, with respect to its other normal operations.
+        !!! Info  
+            The default behaviour is to just return the same state that was passed.
+            
+            In some models, multiple representations of the same information are kept,
+            but only one is initialized by the task. A typical example is a task that
+            initializes a model's effector state, e.g. the location of the endpoint of
+            the arm at the start of a reach. In the case of a two-link arm, the location
+            of the arm's endpoint directly constrains the joint angles. For the state to
+            be consistent, the values for the joint angles should match the values for
+            effector position. Importantly, the joint angles are the representation that
+            is used by the ODE describing the arm. Therefore we call
+            `state_consistency_update` after initializing the state and before the first
+            forward pass the model, to make sure the joint angles are consistent with
+            the effector position.
+            
+            In this way we avoid having to specify redundant information in 
+            `AbstractTask`, and each model can handle the logic of what makes 
+            a state consistent, with respect to its own operations.
         """
         return state
     
@@ -95,24 +96,30 @@ class AbstractModel(eqx.Module, Generic[StateT]):
 
     @property 
     def bounds(self) -> PyTree[StateBounds]:  # type: ignore
-        """Suggested bounds on the state.
-        """
+        """Suggested bounds on the state variables."""
         return None
     
     @property
     def memory_spec(self) -> PyTree[bool]:
-        """Specifies which states should typically be remembered by callers."""
+        """Specifies which states should typically be remembered.
+        
+        !!! Info  
+            This is not used by the model itself, but may be used by an
+            `AbstractIterator` model that wraps it. When iterating very large models for
+            many time steps, storing all states may be limiting because of available 
+            memory; not storing certain parts of the state across all time steps may 
+            be helpful.       
+        """
         return True
 
 
 class ModelInput(eqx.Module):
-    input: "AbstractTaskInputs"
+    """PyTree that contains all inputs to a model."""
+    input: PyTree[Array]
     intervene: Mapping["AbstractIntervenorInput"]
-
    
 
 class MultiModel(AbstractModel[StateT]):
-    """  """
     
     models: PyTree[AbstractModel[StateT], 'T']
     
@@ -157,15 +164,27 @@ class MultiModel(AbstractModel[StateT]):
         
 
 def wrap_stateless_callable(callable: Callable, pass_key=True):
-    """Makes a 'stateless' callable trivially compatible with state-passing.
+    """Makes a 'stateless' callable compatible with state-passing.
     
-    `AbstractModel` defines everything in terms of transformations of parts of
-    a state PyTree. In each case, the substate that is operated on is passed
-    to the module that returns the updated substate. However, in some cases
-    the new substate does not depend on the previous substate. For example,
-    a linear network layer takes some inputs and returns some outputs, and
-    on the next iteration, the linear layer's outputs do not conventionally 
-    depend on its previous outputs, like an RNN cell's would.
+    !!! Info   
+        `AbstractStagedModel` defines everything in terms of transformations of parts of
+        a state PyTree. Each stage of a model consists of passing a particular substate
+        of the model to a callable that operates on it, and returns an updated substate.
+        However, in some cases the new substate does not depend on the previous
+        substate; the substate is generated entirely from some other inputs. 
+    
+        For example, a linear neural network layer outputs an array of a certain shape,
+        but only requires some input array—and not its prior output (state) array---to
+        do so. We can use a module like `eqx.nn.Linear` to update a part of a model's
+        state, as the callable of one of its model stages; however, the signature of
+        `Linear` only accepts `input`, and not `state`. By wrapping in this function, we
+        can make it accept `state` as well, though it is simply discarded. 
+        
+    Arguments:
+        callable: The callable to wrap.
+        pass_key: If `True`, the keyword argument `key` will be forwarded to the wrapped
+          callable. If `False`, it will be discarded. Discarding is useful if the wrapped 
+          callable does not accept a `key` argument.
     """
     if pass_key:
         @wraps(callable)

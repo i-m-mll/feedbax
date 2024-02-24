@@ -7,7 +7,6 @@
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from functools import cached_property
 import logging
 from typing import Optional, Tuple, Union
 
@@ -111,7 +110,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         output = jax.tree_map(lambda x, y: x + y, input, noise)
         return noise, output
     
-    @cached_property
+    @property
     def model_spec(self):
         """Returns an `OrderedDict` that specifies the stages of the channel model.
         

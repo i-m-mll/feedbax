@@ -103,7 +103,7 @@ nav:
       - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
       - 5. Models with stages: 'examples/5_model_stages.ipynb'
       - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
-      - 7. Designing custom tasks: 'examples/4_custom_tasks.ipynb'
+      - 7. Designing custom tasks: 'examples/7_custom_tasks.ipynb'
       # - 8. Advanced analyses: 'examples/8_advanced.ipynb'
     - Features:
       - Composable loss functions: 'examples/losses.ipynb'
@@ -111,6 +111,7 @@ nav:
       - Debugging: 'examples/debugging.ipynb'
       - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
   - API:
+    - Prebuilt models: 'api/xabdeef.md'
     - Models:
       - Base classes: 'api/model.md'
       - 'api/staged.md'  

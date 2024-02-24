@@ -4,7 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 import logging
 from typing import Optional, Type
@@ -17,7 +17,7 @@ import optax
 from feedbax import get_ensemble
 from feedbax.model import AbstractModel
 from feedbax.task import AbstractTask, SimpleReaches
-from feedbax.train import TaskTrainer
+from feedbax.train import TaskTrainer, TaskTrainerHistory
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
 
@@ -29,7 +29,14 @@ N_LOG_STEPS_DEFAULT = 10
 
 
 class TrainingContext(eqx.Module):
-    """A model-task pairing with automatic instantiation of a trainer.
+    """A model-task pairing with automatic construction of a `TaskTrainer` instance.
+    
+    Attributes:
+        model: The model.
+        task: The task.
+        where_train: A function that takes the model and returns the parts of the 
+          model to be trained.
+        ensembled: Whether `model` is an ensemble of models.
     """
     model: AbstractModel 
     task: AbstractTask
@@ -39,15 +46,27 @@ class TrainingContext(eqx.Module):
     
     def train(
         self,
-        n_batches,
-        batch_size,
         *,
+        n_batches: int,
+        batch_size: int,
         learning_rate: float = 0.01,
-        log_step=None,
+        log_step: Optional[int] = None,
         optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
         key: PRNGKeyArray,
         **kwargs,
-    ):
+    ) -> tuple[AbstractModel, TaskTrainerHistory]:
+        """Train the model on the task.
+        
+        Arguments:
+            n_batches: The number of batches of trials to train on.
+            batch_size: The number of trials per batch.
+            learning_rate: The learning rate for the optimizer.
+            log_step: The number of batches between logs of training progress.
+                If `None`, 10 evenly-spaced logs will be made along the training run.
+            optimizer_cls: The class of Optax optimizer to use.
+            key: A PRNG key for initializing the model.
+            **kwargs: Additional keyword arguments to pass to the `TaskTrainer`.
+        """
         optimizer = optax.inject_hyperparams(optimizer_cls)(
             learning_rate
         )
@@ -60,7 +79,6 @@ class TrainingContext(eqx.Module):
         if log_step is None:
             log_step = n_batches // N_LOG_STEPS_DEFAULT
         
-        """Train the model on the task."""
         return trainer(
             task=self.task,
             model=self.model, 
@@ -75,55 +93,45 @@ class TrainingContext(eqx.Module):
         
         
 def point_mass_nn_simple_reaches(
+    n_replicates: int = 1,
     n_steps: int = 100, 
     dt: float = 0.05, 
     mass: float = 1., 
-    workspace = ((-1., -1.),
-                 (1., 1.)),
+    workspace: Sequence[tuple[float, float]] = ((-1., -1.),
+                                                (1., 1.)),
     encoding_size: Optional[int] = None,
     hidden_size: int = 50, 
     hidden_type: eqx.Module = eqx.nn.GRUCell,
     where_train: Optional[Callable] = lambda model: model.step.net,
     feedback_delay_steps: int = 0,
-    n_replicates: int = 1,
     eval_grid_n: int = 1,
     eval_n_directions: int = 7,
     *,
     key: PRNGKeyArray,
-):
-    """A simple reach task paired with a simple point mass-neural network model.
+) -> TrainingContext:
+    """A simple reach task paired with a neural network controlling a point mass.
     
     Arguments:
-    
-    - `n_steps` is the number of time steps in each trial.
-    - `dt` is the duration of each time step.
-    - `mass` is the mass of the point mass.
-    - `workspace` gives the bounds of the rectangular workspace.
-    - `encoding_size` is the number of units in the encoding layer of the 
-    network. Defaults to `None` (no encoding layer).
-    - `hidden_size` is the number of units in the hidden layer of the network.
-    - `hidden_type` is the type of the hidden layer of the network. Defaults to 
-    a GRU cell.
-    - `where_train` is a function that takes a model and returns the part of
-    the model that should be trained.
-    - `feedback_delay_steps` is the number of time steps by which sensory 
-    feedback is delayed. Defaults to 0.
-    - `n_replicates` is the number of models to generate, with different random 
-    initializations.
-    - `eval_grid_n` is the number of grid points for center-out reaches in the 
-    validation task. For example, a value of 2 gives a grid of 2x2=4 center-out 
-    reach sets. Defaults to 1.
-    - `eval_n_directions` is the number of evenly-spread reach directions per 
-    set of center-out reaches. 
-    - `key` is a `jax.random.PRNGKey` that determines the pseudo-random 
-    numbers used to initialize the model(s).
-    
-    TODO: 
-    - It would be nice to avoid the vmapping overhead when not ensembling.
-      However, then there's an issue with return values. Should we unsqueeze
-      the model/states in the non-ensembled case to look like the ensembled 
-      case? Or allow different returns? Or make separate functions here in 
-      `xabdeef` for the two cases?
+        n_replicates: The number of models to generate, with different random 
+          initializations.
+        n_steps: The number of time steps in each trial.
+        dt: The duration of each time step.
+        mass: The mass of the point mass.
+        workspace: The bounds of the rectangular workspace.
+        encoding_size: The number of units in the encoding layer of the 
+          network. Defaults to `None` (no encoding layer).
+        hidden_size: The number of units in the hidden layer of the network.
+        hidden_type: The type of the hidden layer of the network.
+        where_train: A function that takes a model and returns the part of
+          the model that should be trained.
+        feedback_delay_steps: The number of time steps by which sensory 
+          feedback is delayed. 
+        eval_grid_n: The number of grid points for center-out reaches in the 
+          validation task. For example, a value of 2 gives a grid of 2x2=4 center-out 
+          reach sets. 
+        eval_n_directions: The number of evenly-spread reach directions per 
+          set of center-out reaches. 
+        key: A random key used to initialize the model(s).
     """
     
     task = SimpleReaches(

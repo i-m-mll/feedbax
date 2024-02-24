@@ -198,7 +198,7 @@ class DirectForceInput(AbstractPlant):
         self.clip_states = clip_states
         self.intervenors = self._get_intervenors_dict(intervenors)        
     
-    @cached_property
+    @property
     def model_spec(self) -> OrderedDict[str, ModelStage]:
         """Specifies at most one model stage: state clipping, if it is enabled.
         """
@@ -338,7 +338,7 @@ class MuscledArm(AbstractPlant):
         
         self.intervenors = self._get_intervenors_dict(intervenors)        
     
-    @cached_property
+    @property
     def model_spec(self) -> OrderedDict[str, ModelStage]:
         """Specifies static updates to the musculoskeletal state."""
         return OrderedDict({

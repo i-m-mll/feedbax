@@ -198,11 +198,9 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         """Return a default state for the model.
         """
         keys = jr.split(key, 3) 
-        
-        mechanics_state = self.mechanics.init(key=keys[0])
 
         return SimpleFeedbackState(
-            mechanics=mechanics_state,
+            mechanics=self.mechanics.init(key=keys[0]),
             net=self.net.init(key=keys[1]),
             feedback=self._feedback_module.init(key=keys[2]),
         )

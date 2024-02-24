@@ -23,16 +23,18 @@ import jax.tree_util as jtu
 from jaxtyping import Float, Array, Int, PRNGKeyArray, PyTree
 import matplotlib as mpl
 from matplotlib import animation, gridspec
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from feedbax.loss import LossDict
+from feedbax.bodies import SimpleFeedbackState
 from feedbax.state import CartesianState
 from feedbax.misc import corners_2d
-from feedbax.task import AbstractTask, AbstractTaskTrialSpec
+from feedbax.task import AbstractReachTrialSpec, AbstractTaskTrialSpec
 
 if TYPE_CHECKING:
     from feedbax.train import TaskTrainerHistory
@@ -257,40 +259,68 @@ def plot_planes(
 
 
 def plot_reach_trajectories(
-    states: PyTree[Float[Array, "trial time ..."] | Any],
+    states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
+    where_data: Optional[Callable] = None,
     step: int = 1,  # plot every step-th trial
-    leaf_func: Optional[Callable] = None,
+    trial_specs: Optional[AbstractTaskTrialSpec] = None,
     endpoints: Optional[Tuple[Float[Array, "trial xy=2"],
                               Float[Array, "trial xy=2"]]] = None, 
-    trial_specs: Optional[AbstractTaskTrialSpec] = None,
     straight_guides: bool = False,
-    force_labels: Optional[Tuple[str, str, str]] = None,
-    force_label_type: str = 'linear',
-    cmap: Optional[str] = None,
-    color: Optional[str | Tuple[float, ...]] = None,
-    colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
-    fig=None, 
+    cmap: Optional[str] = None,
+    colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
+    color: Optional[str | Tuple[float, ...]] = None,
     ms: int = 3, 
     ms_source: int = 6, 
     ms_target: int = 7,
-):
+    control_labels: Optional[Tuple[str, str, str]] = None,
+    control_label_type: str = 'linear',
+) -> Tuple[Figure, Axes]:
     """Plot trajectories of position, velocity, network output.
     
     Arguments:
-    - `states` is a PyTree of arrays, with the first dimension being batch.
-    
-    - [x, y, v_x, v_y] in last dim of `states`; [f_x, f_y] in last dim of `forces`.
-    - First dim is batch, second dim is time step.
+        states: A model state or PyTree of arrays from which the variables to be 
+          plotted can be extracted. 
+        where_data: If `states` is provided as an arbitrary PyTree of arrays, 
+          this function should be provided to extract the relevant arrays. 
+          It should take `states` and return a tuple of three arrays:
+          position, velocity, and controller output/force.
+        step: Plot every `step`-th trial. This is useful when `states` contains
+          information about a very large set of trials, and we only want to 
+          plot a subset of them.
+        trial_specs: The specifications for the trials being plotted. If supplied,
+          this is used to plot markers at the initial and goal positions.
+        endpoints: The initial and goal positions for the trials being plotted.
+          Overrides `trial_specs`.
+        straight_guides: If this is `True` and `endpoints` are provided, straight
+          dashed lines will be drawn between the initial and goal positions.
+        workspace: The workspace bounds. If provided, the bounds are drawn as a 
+          rectangle.
+        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+          to use across trials.
+        colors: A sequence of colors, one for each plotted trial. Overrides `cmap`.
+        color: A single color to use for all trials. Overrides `cmap` but not `colors`.
+        ms: Marker size for plots of states (trajectories).
+        ms_source: Marker size for the initial position, if `trial_specs`/`endpoints`
+          is provided.
+        ms_target: Marker size for the goal position.
+        control_label_type: If `'linear'`, labels the final (controller output/force)
+          plot as showing Cartesian forces. If `'torques'`, labels the plot as showing
+          the torques of a two-segment arm.  
+        control_labels: A tuple giving the labels for the title, x-axis, and y-axis
+          of the final (controller output/force) plot. Overrides `control_label_type`.
     """    
-    if leaf_func is None:
+    if isinstance(states, SimpleFeedbackState):
         positions, velocities, controls = (
             states.mechanics.effector.pos, 
             states.mechanics.effector.vel,
             states.net.output,
         )
+    elif where_data is None:
+        raise ValueError("If `states` is not a `SimpleFeedbackState`, "
+                         "`where_data` must be provided.")
     else:
-        positions, velocities, controls = leaf_func(states)
+        positions, velocities, controls = where_data(states)
     
     if cmap is None:
         if positions.shape[0] < 10:
@@ -333,15 +363,19 @@ def plot_reach_trajectories(
         # force (start at timestep 1; timestep 0 is always 0)
         axs[2].plot(controls[i, :, 0], controls[i, :, 1], '-o', color=colors[i], ms=ms)
 
-    if force_labels is None:
-        if force_label_type == 'linear':
-            force_labels = ("Control force", r"$\mathrm{f}_x$", r"$\mathrm{f}_y$")
-        elif force_label_type == 'torques':
-            force_labels = ("Control torques", r"$\tau_1$", r"$\tau_2$")
+    # TODO: We should be able to infer this from the structure of `states`.
+    # For example, if `states.mechanics.plant.muscle` is None, we know we can use 
+    # 'linear' if `states.mechanics.plant.skeleton` is `CartesianState``, and `torques` 
+    # if it's `TwoLinkState`.
+    if control_labels is None:
+        if control_label_type == 'linear':
+            control_labels = ("Control force", r"$\mathrm{f}_x$", r"$\mathrm{f}_y$")
+        elif control_label_type == 'torques':
+            control_labels = ("Control torques", r"$\tau_1$", r"$\tau_2$")
         
     labels = [("Position", r"$x$", r"$y$"),
               ("Velocity", r"$\dot x$", r"$\dot y$"),
-              force_labels]
+              control_labels]
     
     if workspace is not None:
         corners = corners_2d(workspace)[:, jnp.array([0, 1, 3, 2, 0])]
@@ -404,7 +438,32 @@ def plot_activity_heatmap(
     activity: Float[Array, "time unit"],
     cmap: str = 'viridis',
 ):
-    """Plot activity of network units over time."""
+    """Plot activity of all units in a network layer over time, on a single trial.
+    
+    !!! Note   
+        This is a helper for [`imshow`](https://matplotlib.org/stable/api/_as_gen/matplotlib.pyplot.imshow.html),
+        when the data is an array of neural network unit activities with shape 
+        `(time, unit)`. 
+        
+    !!! Example   
+        When working with a `SimpleFeedback` model built with a `SimpleStagedNetwork` 
+        controller—for example, if we've constructed our `model` using 
+        [`point_mass_nn`][feedbax.xabdeef.models.point_mass_nn]—we can plot the activity 
+        of the hidden layer of the network:
+        
+        ```python
+        from feedbax import tree_take
+        
+        states = task.eval(model, key=key_eval)  # States for all validation trials.
+        states_trial0 = tree_take(states, 0)
+        plot_activity_heatmap(states_trial0.net.hidden)
+        ```
+        
+    Arguments:
+        activity: The array of activity over time for each unit in a network layer.
+        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+          to use. 
+    """
     fig, ax = plt.subplots(1, 1, figsize=(10, 2))
     im = ax.imshow(activity.T, aspect='auto', cmap=cmap)
     ax.set_xlabel('Time')
@@ -416,18 +475,35 @@ def plot_activity_heatmap(
 def plot_activity_sample_units(
     activities: Float[Array, "trial time unit"],
     n_samples: int, 
+    unit_includes: Optional[Sequence[int]] = None,
     cols: int = 2, 
     cmap: str = 'tab10', 
-    unit_includes = None,
+    figsize: tuple[float, float] = (6.4, 4.8),
     *, 
     key: PRNGKeyArray
-):
-    """Plot activity of a random sample of units over time.
+) -> Tuple[Figure, Axes]:
+    """Plot activity over multiple trials for a random sample of network units.
+
+    The result is a figure with `n_samples + len(unit_includes)` subplots, arranged
+    in `cols` columns. 
     
-    TODO:
-    - optional vlines for epoch boundaries
-    - Could generalize this to sampling any kind of time series. Depends
-      on if there is a standard way we shape our state arrays.
+    When this function is called more than once in the course of an analysis, if the 
+    same `key` is passed and the network layer has the same number of units—that 
+    is, the last dimension of `activities` has the same size—then the same subset of 
+    units will be sampled.
+    
+    Arguments:
+        activities: The array of trial-by-trial activity over time for each unit in a 
+          network layer.
+        n_samples: The number of units to sample from the layer. Along with `unit_includes`,
+          this determines the number of subplots in the figure.
+        unit_includes: Indices of specific units to include in the plot, in addition to
+          the `n_samples` randomly sampled units.
+        cols: The number of columns in which to arrange the subplots.
+        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+          to use. Each trial will be plotted in a different color.
+        figsize: The size of the figure.
+        key: A random key used to sample the units to plot.
     """
     xlabel = 'time step'
     
@@ -443,7 +519,7 @@ def plot_activity_sample_units(
 
     #if len(x.shape) == 3:
     rows = int(np.ceil(x.shape[-1] / cols))
-    fig, axs = plt.subplots(rows, cols, sharey=True, sharex=True)
+    fig, axs = plt.subplots(rows, cols, sharey=True, sharex=True, figsize=figsize)
     # else:
     #     rows, cols = 1, 1
     #     fig, axs = plt.subplots(rows, cols, figsize=(6, 6))
@@ -469,28 +545,33 @@ def plot_activity_sample_units(
     return fig, axs
         
 
-def plot_losses(
+def plot_loss_history(
     train_history: "TaskTrainerHistory",
     xscale: str = 'log',
     yscale: str = 'log',
     cmap: str = 'Set1',
-):
-    """Line plot of loss terms and total.
+) -> Tuple[Figure, Axes]:
+    """Line plot of loss terms and their total over a training run.
+ 
+    !!! Note  
+        Each term in `train_history.loss` is an array where the first dimension is the
+        training iteration, with an optional second batch dimension, e.g. for model 
+        replicates. 
     
-    Each term in `losses` is an array where the first dimension is the
-    training iteration, with an optional second batch dimension, e.g.
-    for model replicates. Each term is plotted in a different color,
-    with the same color used across the optional batch dimension.
+        Each term is plotted in a different color. If a batch dimension is present, 
+        multiple curves will be plotted for each term, all in the same color.
+
+    !!! Note ""      
+        Labels for training iteration labels start at 1, so that the first iteration
+        is visible when the x-axis is log-scaled.  
     
-    Uses 1-indexing for the training iteration, so that the first iteration
-    is visible even when the x-axis is log-scaled.
-    
-    TODO:
-    - Currently this assumes that any batch dimension (e.g. during ensembling)
-      appears last, which is at odds with what happens elsewhere. So perhaps
-      this function should assume the batch dimension would be first, check if
-      it exists, and then transpose the data if necessary. Then we could return
-      the losses in the shape `(replicates, iteration)` from `TaskTrainer`.
+    Arguments:
+        train_history: The training history object returned by a call to a 
+          `TaskTrainer`. The function will specifically access `train_history.loss`.
+        xscale: The scale of the x-axis. 
+        yscale: The scale of the y-axis.
+        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html) 
+          to use for line colors.
     """  
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.set(xscale=xscale, yscale=yscale)
@@ -520,14 +601,25 @@ def plot_losses(
     return fig, ax
 
 
-def plot_mean_losses(
+def plot_loss_mean_history(
     train_history: "TaskTrainerHistory",
-):
-    """Similar to `plot_loss`, with mean-std over a batch dimension.
+    xscale: str = 'log',
+    yscale: str = 'log',
+    cmap: str = 'Set1',
+) -> Tuple[Figure, Axes]:
+    """Line plot of the means and standard deviations of loss terms and their total, 
+    over a training run of a batch of multiple models.
     
-    TODO:
-    - This is pretty slow. Maybe there's a way to construct only one 
-    dataframe.
+    !!! Note ""   
+        To plot separate curves for each member of the batch, use `plot_loss_history`.
+    
+    Arguments:
+        train_history: The training history object returned by a call to a
+          `TaskTrainer`. The function will specifically access `train_history.loss`.
+        xscale: The scale of the x-axis.
+        yscale: The scale of the y-axis.
+        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+          to use for line colors.
     """
     losses = train_history.loss
     
@@ -543,8 +635,9 @@ def plot_mean_losses(
     )
     
     fig, ax = plt.subplots()
-    ax.set(xscale='log', yscale='log')
+    ax.set(xscale=xscale, yscale=yscale)
     
+    # TODO: Construct just one dataframe.
     for label, df in losses_terms_df.items():
         sns.lineplot(
             data=df, 
@@ -552,22 +645,26 @@ def plot_mean_losses(
             y='Loss', 
             errorbar='sd', 
             label=label, 
-            ax=ax
+            ax=ax,
+            palette=cmap,
         )
         
     return fig, ax
 
 
-def plot_endpoint_pos_with_dists(
-    trial_specs, 
-    s=7,
-    color=None,
-    **kwargs
-):
-    """Plot the start and goal positions along with distributions.
+def plot_reach_endpoint_dists(
+    trial_specs: AbstractReachTrialSpec, 
+    s: int = 7,
+    color: Optional[str] = None,
+    **kwargs,
+) -> Tuple[Figure, Axes]:
+    """Plot initial and goal positions along with their distributions.
     
-    TODO:
-    - Give the two joint plots the same axes limits.
+    Arguments:
+        trial_specs: The specifications for the reach trials.
+        s: Marker size for the initial and goal positions for all trials.
+        color: The color to use for all points. If `None`, black or white is 
+          automatically chosen based on the current Matplotlib theme.
     """
     if color is None:
         color = get_high_contrast_neutral_shade() 
@@ -622,7 +719,7 @@ def plot_task_and_speed_profiles(
     cmap: str = 'tab10',
     colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     **kwargs,
-):
+) -> Tuple[Figure, Axes]:
     """For visualizing learned movements versus task structure.
     
     For example: does the network start moving before the go cue is given?

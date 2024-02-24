@@ -1,6 +1,11 @@
-"""Pre-built loss functions for common tasks."""
+"""Pre-built loss functions for common tasks.
+
+:copyright: Copyright 2024 by MLL <mll@mll.bio>.
+:license: Apache 2.0. See LICENSE for details.
+"""
 
 from collections.abc import Mapping
+import logging
 from typing import Optional
 
 import jax.numpy as jnp
@@ -15,18 +20,22 @@ from feedbax.loss import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 def simple_reach_loss(
     loss_term_weights: Optional[Mapping[str, float]] = None,
     discount_exp: int = 6,
-):
-    """A typical loss function for a simple reach task.
+) -> CompositeLoss:
+    """A typical loss function for a simple reaching task.
     
-    Includes power function discounting of position error, back in time from
-    the end of trials. If the exponent `discount_exp` is zero, there is no
-    discounting.
-    
-    TODO: 
-    - Maybe activity loss shouldn't be included by default.
+    Arguments:
+        loss_term_weights: Maps loss term names to term weights. If `None`,
+          a typical set of default weights is used.
+        discount_exp: The exponent of the power function used to discount
+          the position error, back in time from the end of trials. Larger
+          values lead to penalties that are more concentrated at the end 
+          of trials. If zero, all time steps are weighted equally.
     """
     if loss_term_weights is None:
         # TODO: maybe move this to a common area for default parameters
