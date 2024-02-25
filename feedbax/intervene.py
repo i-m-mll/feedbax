@@ -28,7 +28,9 @@ TODO:
 from abc import abstractclassmethod, abstractmethod
 from collections.abc import Mapping, Sequence, Callable
 import copy
+from dataclasses import fields
 import logging
+import operator as op
 from typing import (
     TYPE_CHECKING, 
     Any, 
@@ -49,15 +51,14 @@ from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 from feedbax.misc import get_unique_label
 from feedbax.model import AbstractModel
 from feedbax.state import AbstractState, StateT
-from feedbax.task import AbstractTask
 from feedbax._tree import tree_call
 
 if TYPE_CHECKING:
-    from feedbax.bodies import SimpleFeedback
     # from feedbax.model import AbstractModel
     from feedbax.mechanics.mechanics import MechanicsState
     from feedbax.nn import NetworkState
     from feedbax._staged import AbstractStagedModel
+    from feedbax.task import AbstractTask
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,26 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
     operation: AbstractVar[Callable[[ArrayLike, ArrayLike], ArrayLike]]
     label: AbstractVar[str]
     
+    @classmethod 
+    def with_params(cls, **kwargs) -> "AbstractIntervenor[StateT, InputT]":
+        """Constructor that accepts field names of `InputT` as keywords.
+        
+        This is a convenience so we don't need to import the parameter class,
+        to instantiate an intervenor class it is associated with.
+        
+        !!! Example 
+            ```python
+            CurlField.with_params(amplitude=10.0, label="MyCurlField")
+            ```
+        """
+        param_cls = next((f for f in fields(cls) if f.name == 'params')).type
+        param_fields = [f.name for f in fields(param_cls)]
+        
+        return cls(
+            param_cls(**{k: v for k, v in kwargs.items() if k in param_fields}),
+            **{k: v for k, v in kwargs.items() if k not in param_fields},
+        )
+    
     def __call__(self, input: InputT, state: StateT, *, key: PRNGKeyArray) -> StateT:
         """Return a state PyTree modified by the intervention.
         
@@ -118,7 +139,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
                 jax.tree_map(  # With the combined original and altered substates
                     lambda x, y: self.operation(x, y),
                     self.out_where(state),
-                    self._transform(
+                    self.transform(
                         params, 
                         self.in_where(state), 
                         key=key,
@@ -129,7 +150,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
         )        
     
     @abstractmethod
-    def _transform(
+    def transform(
         params: InputT, 
         substate_in: PyTree[ArrayLike, "T"], 
         *, 
@@ -137,12 +158,6 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
     ) -> PyTree[ArrayLike, "S"]:
         """Transforms the input substate to produce an altered output substate."""
         ...        
-        
-    @abstractclassmethod
-    def with_params(cls, **kwargs) -> "AbstractIntervenor":
-        """Constructor that accepts fields of respective `InputT` as keyword arguments.
-        """
-        ...
     
 
 class CurlFieldParams(AbstractIntervenorInput):
@@ -154,7 +169,7 @@ class CurlFieldParams(AbstractIntervenorInput):
         active: Whether the force field is active.
     """
     amplitude: float = 0.
-    active: Optional[bool] = True
+    active: bool = True
     
 
 class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
@@ -170,35 +185,23 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
     """
     
     params: CurlFieldParams = CurlFieldParams()
-    in_where: Callable[["MechanicsState"], Float[Array, '... ndim=2']] \
-        = lambda state: state.effector.vel 
-    out_where: Callable[["MechanicsState"], Float[Array, '... ndim=2']] \
-        = lambda state: state.effector.force
-    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: x + y
+    in_where: Callable[["MechanicsState"], Float[Array, '... ndim=2']] = (
+        lambda state: state.effector.vel 
+    )
+    out_where: Callable[["MechanicsState"], Float[Array, '... ndim=2']] = (
+        lambda state: state.effector.force
+    )
+    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
     label: str = "CurlField"
     
-    @classmethod
-    def with_params(
-        cls,
-        amplitude: Optional[float] = 0.,
-        active: Optional[bool] = True,
-        **kwargs,
-    ) -> "CurlField":
-        """Constructor that accepts fields of `CurlFieldParams` as keyword arguments.
-        """
-        return cls(
-            CurlFieldParams(amplitude=amplitude, active=active),
-            **kwargs,
-        )
-    
-    def _transform(
+    def transform(
         self, 
         params: CurlFieldParams, 
         substate_in: Float[Array, 'ndim=2'], 
         *, 
         key: Optional[PRNGKeyArray] = None 
     ) -> Float[Array, 'ndim=2']:
-        """"""
+        """Transform velocity into curl force."""
         scale = params.amplitude * jnp.array([-1, 1]) 
         return scale * substate_in[..., ::-1]
 
@@ -228,32 +231,14 @@ class AddNoise(AbstractIntervenor[StateT, InputT]):
     """
     params: AddNoiseParams = AddNoiseParams()
     out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
-    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: x + y
+    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
     label: str = "AddNoise"
-    
-    @classmethod
-    def with_params(
-        cls,
-        scale: float = 1.0,
-        noise_func: Callable = jax.random.normal,
-        active: bool = True,
-        **kwargs,
-    ) -> "AddNoise":
-        """Constructor that accepts fields of `AddNoiseParams` as keyword arguments."""
-        return cls(
-            AddNoiseParams(
-                scale=scale,
-                noise_func=noise_func, 
-                active=active
-            ),
-            **kwargs,
-        )
         
     @property
     def in_where(self) -> Callable[[StateT], PyTree[Array, "T"]]:
         return self.out_where
     
-    def _transform(
+    def transform(
         self, 
         params: AddNoiseParams, 
         substate_in: PyTree[Array, "T"], 
@@ -305,25 +290,12 @@ class NetworkClamp(AbstractIntervenor["NetworkState", InputT]):
     out_where: Callable[["NetworkState"], PyTree[Array, "T"]] = lambda state: state.hidden
     operation: Callable[[Array, Array], Array] = lambda x, y: y
     label: str = "NetworkClamp"
-    
-    @classmethod 
-    def with_params(
-        cls,
-        active: bool = True,
-        unit_spec: Optional[PyTree[Array, "T"]] = None,
-        **kwargs,
-    ) -> "NetworkClamp":
-        """Constructor that accepts fields of `NetworkIntervenorParams` as keyword arguments."""
-        return cls(
-            NetworkIntervenorParams(active=active, unit_spec=unit_spec),
-            **kwargs,
-        )
 
     @property
     def in_where(self) -> Callable[[StateT], PyTree[Array, "T"]]:
         return self.out_where
         
-    def _transform(
+    def transform(
         self, 
         params: NetworkIntervenorParams, 
         substate_in: PyTree[Array, "T"],
@@ -350,29 +322,17 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", InputT]):
         label: The intervenor's label.
     """    
     params: NetworkIntervenorParams = NetworkIntervenorParams()
-    out_where: Callable[["NetworkState"], PyTree[Array, "T"]] \
-        = lambda state: state.hidden    
-    operation: Callable[[Array, Array], Array] = lambda x, y: x + y
+    out_where: Callable[["NetworkState"], PyTree[Array, "T"]] = (
+        lambda state: state.hidden    
+    )
+    operation: Callable[[Array, Array], Array] = op.add
     label: str = "NetworkConstantInput"
-    
-    @classmethod
-    def with_params(
-        cls,
-        active: bool = True,
-        unit_spec: Optional[PyTree[Array, "T"]] = None,
-        **kwargs,
-    ) -> "NetworkConstantInput":
-        """Constructor that accepts fields of `NetworkIntervenorParams` as keyword arguments."""
-        return cls(
-            NetworkIntervenorParams(active=active, unit_spec=unit_spec),
-            **kwargs,
-        )
         
     @property
     def in_where(self) -> Callable[[StateT], PyTree[Array, "T"]]:
         return self.out_where    
     
-    def _transform(
+    def transform(
         self, 
         params: NetworkIntervenorParams, 
         substate_in: "NetworkState",
@@ -387,13 +347,13 @@ class ConstantInputParams(AbstractIntervenorInput):
     
     Attributes:
         scale: Constant factor to multiply the input.
-        array_mask: A PyTree of arrays with the same tree structure and array shapes 
+        arrays: A PyTree of arrays with the same tree structure and array shapes 
           as the substate of the state to be intervened upon, specifying the 
           constant input to be added.
         active: Whether the intervention is active.
     """
     scale: float = 1.0
-    array_mask: Optional[PyTree] = None
+    arrays: Optional[PyTree] = None
     active: bool = True
 
 
@@ -407,41 +367,22 @@ class ConstantInput(AbstractIntervenor[StateT, InputT]):
         label: The intervenor's label.
     """    
     params: NetworkIntervenorParams = NetworkIntervenorParams()
-    out_where: Callable[[StateT], PyTree[Array, "T"]] \
-        = lambda state: state  
-    operation: Callable[[Array, Array], Array] = lambda x, y: x + y
+    out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state  
+    operation: Callable[[Array, Array], Array] = op.add
     label: str = "ConstantInput"
-    
-    @classmethod
-    def with_params(
-        cls,
-        active: bool = True,
-        scale: float = 1.0,
-        array_mask: Optional[PyTree[Array, "T"]] = None,
-        **kwargs,
-    ) -> "ConstantInput":
-        """Constructor that accepts fields of `ConstantInputParams` as keyword arguments."""
-        return cls(
-            ConstantInputParams(
-                active=active, 
-                scale=scale,
-                array_mask=array_mask,
-            ),
-            **kwargs,
-        )
 
     @property
     def in_where(self) -> Callable[[StateT], PyTree[Array, "T"]]:
         return self.out_where    
  
-    def _transform(
+    def transform(
         self, 
         params: ConstantInputParams, 
         substate_in: PyTree[Array, "T"],
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> PyTree[Array, "T"]:
-        return params.scale * params.array_mask
+        return params.scale * params.arrays
 
 
 def add_intervenor(
@@ -540,14 +481,28 @@ def remove_intervenors(
             is_leaf=lambda x: getattr(x, "model_spec", None) is not None,
         )
     )
+
+
+class TimeSeriesParam(eqx.Module):
+    """Wraps intervenor parameters that should be interpreted as time series.
     
+    Attributes:
+        param: The parameter to interpret as a time series.
+    """
+    param: Array
+    
+    def __call__(self):
+        """Return the wrapped parameter."""
+        return self.param
+
 
 def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
-    models: PyTree[AbstractModel[StateT]],  # not AbstractStagedModel because it might be wrapped in `ForgetfulIterator`
+    models: PyTree[AbstractModel[StateT]], 
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
     # TODO: intervenor_validation
     where: Callable[[AbstractModel[StateT]], Any] = lambda model: model,
+    stage_name: Optional[str] = None,
     validation_same_schedule: bool = True,
     intervention_spec: Optional[AbstractIntervenorInput] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
     intervention_spec_validation: Optional[AbstractIntervenorInput] = None,
@@ -588,11 +543,13 @@ def schedule_intervenor(
         control over the intervention schedule for the task's validation set. 
     
     Arguments:
-        intervenor: The intervenor (or intervenor class) to schedule.
         tasks: The task(s) in whose trials the intervention will be scheduled
         models: The model(s) to which the intervention will be added
+        intervenor: The intervenor (or intervenor class) to schedule.
         where: Takes `model` and returns the instance of `AbstractStagedModel` within
           it (which may be `model` itself) to which to add the intervenors. 
+        stage_name: The name of the stage in `where(model).model_spec` to which to 
+          add the intervenor. Defaults to the first stage.
         validation_same_schedule: Whether the interventions should be scheduled
           in the same way for the validation set as for the training set.
         intervention_spec: The input to the intervenor, which may be 
@@ -606,15 +563,6 @@ def schedule_intervenor(
           for its parameters. 
     """
     
-    # TODO: This is temporary, since we currently need to pass intervenor in a `dict`
-    # if we want to choose the model stage it's added before
-    if isinstance(intervenor, Mapping):
-        # Assume a single intervenor
-        intervenor_stage = next(iter(intervenor.keys()))
-        intervenor = next(iter(intervenor.values()))
-    else:
-        intervenor_stage = None
-    
     # A unique label is needed because `AbstractTask` uses a single dict to 
     # pass intervention parameters for all intervenors in an `AbstractStagedModel`,
     # regardless of where they appear in the model hierarchy.
@@ -626,7 +574,7 @@ def schedule_intervenor(
         jax.tree_map(
             lambda model: model.step._all_intervenor_labels, 
             models, 
-            is_leaf=lambda x: isinstance(x, AbstractModel)
+            is_leaf=lambda x: isinstance(x, eqx.Module)  # AbstractModel
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
@@ -635,7 +583,7 @@ def schedule_intervenor(
         jax.tree_map(
             lambda task: tuple(task.intervention_specs.keys()), 
             tasks, 
-            is_leaf=lambda x: isinstance(x, AbstractTask),
+            is_leaf=lambda x: isinstance(x, eqx.Module),  # AbstractTask
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
@@ -675,7 +623,7 @@ def schedule_intervenor(
             ),
         ),
         tasks, 
-        is_leaf=lambda x: isinstance(x, AbstractTask),
+        is_leaf=lambda x: isinstance(x, eqx.Module),  # AbstractTask
     )
     
     # Instantiate the intervenor if necessary, give it the unique label, 
@@ -689,7 +637,7 @@ def schedule_intervenor(
     key_example = jax.random.PRNGKey(0)
     task_example = jax.tree_leaves(
         tasks, 
-        is_leaf=lambda x: isinstance(x, AbstractTask)
+        is_leaf=lambda x: isinstance(x, eqx.Module)  # AbstractTask
     )[0]
     trial_spec_example = task_example.get_train_trial(key_example)
     
@@ -697,11 +645,14 @@ def schedule_intervenor(
     intervenor_defaults = eqx.tree_at(
         lambda intervenor: intervenor.params,
         intervenor_relabeled,
-        tree_call(
+        # We apply `tree_call` twice:
+        #   1. evaluate any lambdas;
+        #   2. unwrap any `TimeSeriesParam` instances.
+        tree_call(tree_call(
             intervention_specs_validation[label], 
             trial_spec_example, 
-            key=key_example
-        ),
+            key=key_example, 
+        )),
     )
     
     intervenor_final = eqx.tree_at(
@@ -710,11 +661,10 @@ def schedule_intervenor(
         default_active,
     )
     
-    # TODO: This should be temporary. See TODO at start of function
-    if intervenor_stage is None:
+    if stage_name is None:
         intervenors = [intervenor_final]
     else:
-        intervenors = {intervenor_stage: [intervenor_final]}        
+        intervenors = {stage_name: [intervenor_final]}        
     
     # Add the intervenor to all of the models.
     models = jax.tree_map(

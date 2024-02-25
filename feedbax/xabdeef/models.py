@@ -17,6 +17,7 @@ from jaxtyping import PRNGKeyArray
 from feedbax import get_ensemble
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
+from feedbax.misc import identity_func
 from feedbax.model import AbstractModel
 from feedbax.iterate import Iterator
 from feedbax.mechanics import Mechanics
@@ -36,7 +37,7 @@ def point_mass_nn(
     encoding_size: Optional[int] = None,
     hidden_size: int = 50, 
     hidden_type: eqx.Module = eqx.nn.GRUCell,
-    out_nonlinearity: Callable = lambda x: x,
+    out_nonlinearity: Callable = identity_func,
     feedback_delay_steps: int = 0,
     feedback_noise_std: float = 0.0,
     motor_noise_std: float = 0.0,  # TODO

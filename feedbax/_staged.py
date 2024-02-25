@@ -284,13 +284,22 @@ def pformat_model_spec(
 
             callable = stage_spec.callable(model)
             
-            # Get a meaningful label for `BoundMethod`s
+            spec_str = f"{label}: "
+            
+            if getattr(callable, '__wrapped__', None) is not None:
+                spec_str += "wrapped: "
+                callable = callable.__wrapped__
+            
+            # BoundMethods
             if (func := getattr(callable, '__func__', None)) is not None:
                 owner = type(getattr(callable, '__self__')).__name__
-                spec_str = f"{label}: {owner}.{func.__name__}"
-
-            else: 
-                spec_str = f"{label}: {type(callable).__name__}"
+                spec_str += f"{owner}.{func.__name__}"
+            # Functions
+            elif (name := getattr(callable, '__name__', None)) is not None:
+                spec_str += f"{name}"
+            # Modules and other callable instances
+            else:
+                spec_str += f"{type(callable).__name__}"
                 
             spec_strs += [intervenor_str + spec_str]
 

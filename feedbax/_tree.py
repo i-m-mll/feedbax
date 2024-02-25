@@ -278,20 +278,37 @@ def tree_unzip(
     return tuple(jax.tree_unflatten(treedef, x) for x in tree_flat_unzipped)
 
 
-def tree_call(tree: PyTree[Any, 'T'], *args, **kwargs) -> PyTree[Any, 'T']:
+def tree_call(
+    tree: PyTree[Any, 'T'], 
+    *args, 
+    exclude: Callable = lambda _: False, 
+    is_leaf: Optional[Callable] = None,
+    **kwargs,
+) -> PyTree[Any, 'T']:
     """Returns a tree of the return values of a PyTree's callable leaves.
     
-    Every callable leaf is passed the same `*args, **kwargs`.
+    !!! Note ""
+        Every callable leaf is passed the same `*args, **kwargs`.
     
-    Non-callable leaves are passed through as-is.
+        Non-callable leaves, callable leaves that satisfy `exclude`, are passed through 
+        as-is.
+        
+    Arguments:
+        tree: Any PyTree.
+        *args: Positional arguments to pass to each callable leaf.
+        exclude: A function that returns `True` for any callable leaf that
+          should not be called.
+        **kwargs: Keyword arguments to pass to each callable leaf.   
     """
     callables, other_values = eqx.partition(
         tree, 
-        lambda x: isinstance(x, Callable)
+        lambda x: isinstance(x, Callable) and not exclude(x),
+        is_leaf=is_leaf,
     )
     callables_values = jax.tree_map(
         lambda x: x(*args, **kwargs),
         callables,
+        is_leaf=is_leaf,
     )
     return eqx.combine(callables_values, other_values)
 

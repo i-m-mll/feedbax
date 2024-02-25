@@ -163,15 +163,18 @@ class MultiModel(AbstractModel[StateT]):
         )
         
 
-def wrap_stateless_callable(callable: Callable, pass_key=True):
+def wrap_stateless_callable(
+    callable: Callable, 
+    pass_key: bool = True,
+):
     """Makes a 'stateless' callable compatible with state-passing.
     
     !!! Info   
-        `AbstractStagedModel` defines everything in terms of transformations of parts of
+        `AbstractStagedModel` defines its operations as transformations to parts of
         a state PyTree. Each stage of a model consists of passing a particular substate
-        of the model to a callable that operates on it, and returns an updated substate.
+        of the model to a callable that operates on it, returning an updated substate.
         However, in some cases the new substate does not depend on the previous
-        substate; the substate is generated entirely from some other inputs. 
+        substate, but is generated entirely from some other inputs. 
     
         For example, a linear neural network layer outputs an array of a certain shape,
         but only requires some input array—and not its prior output (state) array---to

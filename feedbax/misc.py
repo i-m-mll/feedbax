@@ -116,6 +116,11 @@ def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
     return commit_id
 
 
+def identity_func(x):
+    """The identity function."""
+    return x
+
+
 def n_positional_args(func: Callable) -> int:
     """Get the number of positional arguments of a function."""
     sig = inspect.signature(func)

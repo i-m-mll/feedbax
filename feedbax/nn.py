@@ -31,7 +31,11 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
 from feedbax.model import wrap_stateless_callable
-from feedbax.misc import interleave_unequal, n_positional_args  
+from feedbax.misc import (
+    identity_func, 
+    interleave_unequal, 
+    n_positional_args,  
+)
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateT
 
@@ -142,7 +146,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         readout_type: Type[eqx.Module] = eqx.nn.Linear,
         use_bias: bool = True,
         hidden_nonlinearity: Callable[[Float], Float] = None,
-        out_nonlinearity: Callable[[Float], Float] = lambda x: x,
+        out_nonlinearity: Callable[[Float], Float] = identity_func,
         hidden_noise_std: Optional[float] = None,
         intervenors: Optional[Union[Sequence[AbstractIntervenor],
                                     Mapping[str, Sequence[AbstractIntervenor]]]] \
@@ -221,7 +225,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             return state
         return state + self.hidden_noise_std * jr.normal(key, state.shape)      
     
-    @cached_property
+    @property
     def model_spec(self) -> OrderedDict[str, ModelStage]:
         """Specifies the network model stages: layers, nonlinearities, and noise.
         
@@ -277,10 +281,10 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if self.hidden_nonlinearity is not None:
             spec |= {
                 'hidden_nonlinearity': ModelStage(
-                    callable=lambda self: \
-                        lambda input, state, *, key: \
-                            self.hidden_nonlinearity(state),
-                    where_input=lambda input, state: None,
+                    callable=lambda self: wrap_stateless_callable(
+                        self.hidden_nonlinearity, pass_key=False
+                    ),
+                    where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.hidden,
                 ),
             }
@@ -297,11 +301,15 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if self.readout is not None:
             spec |= {
                 'readout': ModelStage(
-                    callable=lambda self: \
-                        lambda input, state, *, key: self.out_nonlinearity(
-                            self.readout(input)
-                        ),
+                    callable=lambda self: wrap_stateless_callable(self.readout),
                     where_input=lambda input, state: state.hidden,
+                    where_state=lambda state: state.output,
+                ),
+                'out_nonlinearity': ModelStage(
+                    callable=lambda self: wrap_stateless_callable(
+                        self.out_nonlinearity, pass_key=False
+                    ),
+                    where_input=lambda input, state: state.output,
                     where_state=lambda state: state.output,
                 ),
             }

@@ -28,5 +28,5 @@
 
 ::: feedbax.intervene.AbstractIntervenor
     options:
-        members: ['__call__', '_transform', 'with_params']
+        members: ['__call__', 'transform', 'with_params']
 

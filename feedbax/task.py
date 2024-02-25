@@ -34,15 +34,15 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
+from feedbax.intervene import AbstractIntervenorInput, TimeSeriesParam
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax.model import ModelInput
-if TYPE_CHECKING:
-    from feedbax.intervene import AbstractIntervenorInput
-    from feedbax.model import AbstractModel    
 from feedbax.state import AbstractState, CartesianState, StateT
 from feedbax._tree import tree_call
 
+if TYPE_CHECKING:
+    from feedbax.model import AbstractModel    
 
 logger = logging.getLogger(__name__)
 
@@ -289,25 +289,38 @@ class AbstractTask(eqx.Module):
         trial_spec: AbstractTaskTrialSpec, 
         key: PRNGKeyArray,
     ):
-        intervention_params = tree_call(intervention_specs, trial_spec, key=key)
-        
-        # Make sure the intervention parameters are broadcast to the right number of time steps.
-        #! This assumes there won't be an intervention parameter that's an array and has a first dimension 
-        #! of size `n_steps - 1`. That isn't assured! It also assumes the user will be sure to pass a 
-        #! time series with length `n_steps - 1` rather than (say) `n_steps`.
-        #
-        #! Also, this is kind of slow.
-        #
-        # TODO: Find a better solution. 
-        timeseries, other = eqx.partition(
-            intervention_params, 
-            lambda x: eqx.is_array(x) and len(x.shape) > 0 and x.shape[0] == self.n_steps - 1
+        # Evaluate any parameters that vary by trial.
+        intervention_params = tree_call(
+            intervention_specs, 
+            trial_spec, 
+            key=key,
+            # We don't want to unwrap the time series params, yet.
+            exclude=lambda x: isinstance(x, TimeSeriesParam),
         )
         
-        return eqx.combine(timeseries, jax.tree_map(
+        timeseries, other = eqx.partition(
+            intervention_params, 
+            lambda x: isinstance(x, TimeSeriesParam),
+            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+        )
+        
+        # Unwrap the `TimeSeriesParam` instances.
+        timeseries_arrays = tree_call(
+            timeseries, is_leaf=lambda x: isinstance(x, TimeSeriesParam)
+        )
+        # timeseries_arrays = jax.tree_map(
+        #     lambda x: x(),
+        #     timeseries,
+        #     is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+        # )
+        
+        # Broadcast the non-timeseries arrays.
+        other_broadcasted = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             jax.tree_map(jnp.array, other),
-        ))
+        )
+        
+        return eqx.combine(timeseries_arrays, other_broadcasted)
 
     @eqx.filter_jit
     def get_train_trial_with_intervenor_params(
@@ -384,6 +397,7 @@ class AbstractTask(eqx.Module):
             ),
             is_leaf=lambda x: x is None,
         )      
+        
         return trial_specs
     
     @abstractproperty 

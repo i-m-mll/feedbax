@@ -85,10 +85,6 @@ html {
     font-size: 90% !important;
 }
 
-.md-typeset .admonition {
-    font-size: 90% !important;
-}
-
 .md-typeset details {
     /* Increase font size in details */
     font-size: 100% !important;
@@ -118,7 +114,15 @@ html {
     font-size: 0.8rem;
 }
 
+.md-typeset .admonition {
+    font-size: 90% !important;
+}
+
 /* More styles for admonitions */
+
+.admonition.inline {
+    width: 30% !important;
+}
 
 .admonition.admonition-rhs {
     width: 40% !important;
