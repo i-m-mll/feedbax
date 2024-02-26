@@ -1,3 +1,42 @@
 {
-    "python.useIsolation": false
+    "python.useIsolation": false,
+    "editor.hover.enabled": false,
+    "workbench.colorCustomizations": {
+        // "statusBar.background" : "#2F2F2F",
+        "statusBar.noFolderBackground" : "#212121",
+        "statusBar.debuggingBackground": "#263238",
+        // "editor.background": "#212121",
+    },
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/.mypy_cache": true, 
+        "**/.pytest_cache": true,
+        "**/__pycache__": true,
+        "**/*.egg-info": true
+    },
+    
+    "yaml.schemas": {
+        "https://squidfunk.github.io/mkdocs-material/schema.json": "mkdocs.yml"
+    },
+    "yaml.customTags": [ 
+        "!ENV scalar",
+        "!ENV sequence",
+        "!relative scalar",
+        "tag:yaml.org,2002:python/name:material.extensions.emoji.to_svg",
+        "tag:yaml.org,2002:python/name:material.extensions.emoji.twemoji",
+        "tag:yaml.org,2002:python/name:pymdownx.superfences.fence_code_format"
+    ],
+    "favorites.resources": [
+        {
+            "filePath": "COMMIT_MSG.txt",
+            "group": "Default"
+        }
+    ],
+    "explorer.autoReveal": false,
+    "scm.autoReveal": false
 }

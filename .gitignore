@@ -1,4 +1,9 @@
 .gitmessage
+COMMIT_MSG.txt
+
+# saved models
+models/
+*.eqx
 
 # data and media
 *.wav
@@ -10,9 +15,11 @@
 *.svg
 img/
 _img/
+data/
 
 # logs
 *.log
+*.log.*
 
 # profile data
 *stats

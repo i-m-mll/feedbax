@@ -1,0 +1,137 @@
+site_name: Feedbax
+site_author: MLL <mll@mll.bio> 
+site_url: https://docs.lprt.ca/feedbax 
+
+repo_url: https://github.com/i-m-mll/feedbax
+repo_name: i-m-mll/feedbax
+edit_uri: ""  # No edit buttons
+
+theme:
+  name: material 
+  features:
+    - navigation.sections 
+    - toc.integrate
+    - header.autohide
+  custom_dir: docs/_overrides
+  icon:
+    logo: material/tibia-alt 
+    # logo: material/arm-flex  
+    annotation: material/info-twotone
+  palette:
+    scheme: fbx
+
+watch:
+  - feedbax  # automatically update docs when running `mkdocs serve` and source files change
+
+markdown_extensions:
+  - pymdownx.arithmatex:  # Render LaTeX via MathJax
+      generic: true
+  - pymdownx.details  # Enables collapsible admonitions
+  # - pymdownx.highlight
+  - attr_list 
+  - md_in_html
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences  # Enables syntax highlighting
+  # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
+  - admonition
+  - toc:
+      toc_depth: 4  # Only show root objects; i.e. no methods, properties...
+      permalink: ¤
+    
+extra_css:
+  - _static/custom.css
+  
+extra_javascript:
+  - _static/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  
+plugins:
+  - search 
+  - mknotebooks:  # Jupyter notebooks
+      # write_markdown: true  # Write markdown files for notebooks
+      # execute: true
+      # allow_errors: true
+      # binder: true  # Enable Binder integration
+      # binder_service_name: "gh"
+      # binder_branch: "develop"
+      # binder_ui: "lab"
+  - mkdocstrings:
+      enable_inventory: true
+      custom_templates: docs/_templates
+      handlers:
+          python: 
+              options:
+                  show_root_toc_entry: true
+                  heading_level: 4  # Heading level for the object name 
+                  show_root_heading: true  # Show the object name 
+                  show_root_full_path: true  # Show the full path of the object
+                  show_bases: true
+                  # show_symbol_type_toc: true  
+                  annotations_path: brief
+                  # merge_init_into_class: true
+                  # separate_signature: true    # This and `merge_init_into_class` go together
+                  show_signature_annotations: true
+                  # signature_crossrefs: true  # This doesn't appear to do anything
+                  docstring_section_style: table
+                  filters: [
+                      "!^_", 
+                      "__init__", 
+                      "__call__",
+                      "model_spec", 
+                      "dynamics_spec",
+                  ]  # Exclude private but not dunder methods
+                  inherited_members: ["__call__"]
+                  show_source: false
+                  members_order: source  # Same member ordering as in source code
+                  # all_members: true
+                  extensions:
+                  - griffe_inherited_method_crossrefs
+          
+
+nav:
+  - 'index.md'
+  - Why JAX?: 'examples/pytrees.ipynb'
+  - Top-down view of Feedbax: 'examples/structure.ipynb'
+  - Examples:
+    - Feedbax 101:
+      - 1. Training a pre-built model: 'examples/0_train_simple.ipynb'
+      - 2. From automatic to manual: 'examples/1_train.ipynb'
+      - 3. Intervening on a model: 'examples/3_intervening.ipynb'
+      - 4. Training ensembles of models: 'examples/4_vmap.ipynb'
+      - 5. Models with stages: 'examples/5_model_stages.ipynb'
+      - 6. Advanced interventions: 'examples/6_intervening_2.ipynb'
+      - 7. Designing custom tasks: 'examples/7_custom_tasks.ipynb'
+      # - 8. Advanced analyses: 'examples/8_advanced.ipynb'
+    - Features:
+      - Composable loss functions: 'examples/losses.ipynb'
+      - Saving and loading: 'examples/saving_and_loading.ipynb'
+      - Debugging: 'examples/debugging.ipynb'
+      - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'
+  - API:
+    - Prebuilt models: 'api/xabdeef.md'
+    - Models:
+      - Base classes: 'api/model.md'
+      - 'api/staged.md'  
+      - 'api/intervene.md'
+      - 'api/iterate.md'
+      - 'api/bodies.md'
+      - 'api/channel.md'
+      - 'api/networks.md'
+      - 'api/mechanics.md'
+      - 'api/plant.md'
+      - 'api/dynamics.md'
+      - 'api/skeleton.md'
+      - 'api/muscle.md'
+    - 'api/task.md'
+    - 'api/loss.md'
+    - 'api/trainer.md'
+    - 'api/state.md'
+    - 'api/tree.md'
+    - 'api/serialisation.md'
+    - Analysis and visualisation:
+      - 'api/plot.md'
+      - 'api/dimred.md'
+  

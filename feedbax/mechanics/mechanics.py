@@ -1,83 +1,184 @@
-"""
+"""Discretize and step plant models.
 
-:copyright: Copyright 2023 by MLL <mll@mll.bio>.
+:copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from collections import OrderedDict
+from collections.abc import Mapping, Sequence
+from functools import cached_property
 import logging
-from typing import Optional
+from typing import Optional, Type, Union
 
 import diffrax as dfx
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
+from feedbax.intervene import AbstractIntervenor
+from feedbax.mechanics.plant import AbstractPlant, PlantState
 
-from feedbax.mechanics.system import System
-from feedbax.state import AbstractState
-from feedbax.utils import tree_get_idx
+from feedbax.model import wrap_stateless_callable
+from feedbax._staged import AbstractStagedModel, ModelStage
+from feedbax.state import AbstractState, CartesianState
 
 
 logger = logging.getLogger(__name__)
 
 
 class MechanicsState(AbstractState):
-    system: PyTree[Array]
-    effector: PyTree[Array]
+    """Type of state PyTree operated on by `Mechanics` instances.
+    
+    Attributes:
+        plant: The state of the plant.
+        effector: The state of the end effector.
+        solver: The state of the Diffrax solver.
+    """
+    plant: PlantState
+    effector: CartesianState
     solver: PyTree 
 
 
-class Mechanics(eqx.Module):
-    system: System 
+class Mechanics(AbstractStagedModel[MechanicsState]):
+    """Discretizes the dynamics of a plant, and iterates along with the plant statics.
+        
+    Attributes:
+        plant: The plant model.
+        dt: The time step duration.
+        solver: The Diffrax solver.
+        intervenors: The intervenors associated with each stage of the model.
+    """
+    plant: AbstractPlant 
     dt: float 
-    term: dfx.AbstractTerm 
-    solver: Optional[dfx.AbstractSolver] 
+    solver: dfx.AbstractSolver
     
-    def __init__(self, system, dt, solver=None):
-        self.system = system
-        self.term = dfx.ODETerm(self.system.vector_field)
-        if solver is None:
-            self.solver = dfx.Tsit5()
-        else:
-            self.solver = solver
+    intervenors: Mapping[str, AbstractIntervenor] 
+    
+    def __init__(
+        self, 
+        plant: AbstractPlant,
+        dt: float, 
+        solver_type: Type[dfx.AbstractSolver] = dfx.Euler, 
+        intervenors: Optional[Union[
+            Sequence[AbstractIntervenor],
+            Mapping[str, Sequence[AbstractIntervenor]]
+        ]] = None,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        """
+        Arguments:
+            plant: The plant model.
+            dt: The time step duration.
+            solver_type: The type of Diffrax solver to use.
+            intervenors: The intervenors associated with each stage of the model.
+        """
+        self.plant = plant
+        self.solver = solver_type()
         self.dt = dt        
+        self.intervenors = self._get_intervenors_dict(intervenors)         
     
-    def __call__(self, input, state: MechanicsState):
-        # using (0, dt) for (tprev, tnext) seems fine if there's no t dependency in the system
-        system_state, _, _, solver_state, _ = self.solver.step(
-            self.term, 
+    @property
+    def model_spec(self) -> OrderedDict[str, ModelStage]:
+        """Specifies the stages of the model."""
+        return OrderedDict({
+            "convert_effector_force": ModelStage(
+                callable=lambda self: self.plant.skeleton.update_state_given_effector_force,
+                where_input=lambda input, state: state.effector.force,
+                where_state=lambda state: state.plant.skeleton,
+            ),
+            "statics_step": ModelStage(  
+                # the `plant` module directly implements non-ODE operations 
+                callable=lambda self: self.plant,
+                where_input=lambda input, state: input,
+                where_state=lambda state: state.plant,
+            ),
+            "dynamics_step": ModelStage(
+                callable=lambda self: self.dynamics_step,
+                where_input=lambda input, state: input,
+                where_state=lambda state: state,
+            ),
+            "get_effector": ModelStage(
+                callable=lambda self: \
+                    wrap_stateless_callable(self.plant.skeleton.effector, pass_key=False),
+                where_input=lambda input, state: state.plant.skeleton,
+                where_state=lambda state: state.effector,
+            )
+        })
+
+    @cached_property 
+    def _term(self) -> dfx.AbstractTerm:
+        """The Diffrax term for the aggregate vector field of the plant."""
+        return dfx.ODETerm(self.plant.vector_field) 
+    
+    def dynamics_step(
+        self, 
+        input: PyTree[Array], 
+        state: MechanicsState,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> MechanicsState:
+        """Return an updated state after a single step of plant dynamics."""
+        plant_state, _, _, solver_state, _ = self.solver.step(
+            self._term, 
             0, 
             self.dt, 
-            state.system, 
+            state.plant, 
             input, 
             state.solver, 
             made_jump=False,
         )
-        effector_state = self.system.effector(system_state)
-        return MechanicsState(system_state, effector_state, solver_state)
-    
-    def init(self, effector_state, input=None, key=None):
-        # TODO the tuple structure of pos-vel should be introduced in data generation, and kept throughout
-        #! assumes zero initial velocity; TODO convert initial velocity also
-        system_state = self.system.init(effector_state)
-        args = inputs_empty = jnp.zeros((self.system.control_size,))
- 
-        return MechanicsState(
-            system_state,  # self.system.init()
-            effector_state, 
-            self.solver.init(self.term, 0, self.dt, system_state, args),
+        
+        return eqx.tree_at(
+            lambda state: (state.plant, state.solver),
+            state,
+            (plant_state, solver_state),
         )
     
-    def n_vars(self, leaves_func):
-        """
-        TODO: Given a function that returns a PyTree of leaves of `mechanics_state`,
-        return the sum of the sizes of the last dimensions of the leaves.
+    @property 
+    def memory_spec(self):
+        return MechanicsState(
+            plant=True,
+            effector=True,
+            solver=False,
+        )
+    
+    def init(
+        self, 
+        *,
+        key=None,
+    ):
+        """Returns an initial state for use with the `Mechanics` module.
+        """            
+           
+        plant_state = self.plant.init()
+        init_input = jnp.zeros((self.plant.input_size,))
+
+        return MechanicsState(
+            plant=plant_state,
+            effector=self.plant.skeleton.effector(plant_state.skeleton), 
+            solver=self.solver.init(
+                self._term, 
+                0, 
+                self.dt, 
+                plant_state, 
+                init_input
+            ),
+        )
         
-        Alternatively, just return an empty `mechanics_state`.
+    
+    # def n_vars(self, where):
+    #     """
+    #     TODO: Given a function that returns a PyTree of leaves of `mechanics_state`,
+    #     return the sum of the sizes of the last dimensions of the leaves.
         
-        This is useful to automatically determine the number of feedback inputs 
-        during model construction, when a `mechanics_state` instance isn't yet available.
+    #     Alternatively, just return an empty `mechanics_state`.
         
-        See `get_model` in notebook 8.
-        """
-        # utils.tree_sum_n_features
-        ...
+    #     This is useful to automatically determine the number of feedback inputs 
+    #     during model construction, when a `mechanics_state` instance isn't yet available.
+        
+    #     See `get_model` in notebook 8.
+    #     """
+    #     # tree.tree_sum_n_features
+    #     ...
+      
+

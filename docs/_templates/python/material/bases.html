@@ -1,0 +1,7 @@
+{% block bases scoped %}
+    {% if config.show_bases and class.bases %}
+        ({% for expression in class.bases -%}
+        {% include "expression.html" with context %}{% if not loop.last %}, {% endif %}
+        {% endfor -%})
+    {% endif %}
+{% endblock bases %}
