@@ -10,8 +10,8 @@ from functools import wraps
 import logging
 from typing import (
     TYPE_CHECKING,
-    Generic, 
-    Optional, 
+    Generic,
+    Optional,
 )
 
 import equinox as eqx
@@ -31,18 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 class AbstractModel(eqx.Module, Generic[StateT]):
-    """Base class for models that operate on `AbstractState` objects.
-    """
-    
+    """Base class for models that operate on `AbstractState` objects."""
+
     @abstractmethod
     def __call__(
         self,
         input,
-        state: StateT, 
+        state: StateT,
         key: PRNGKeyArray,
     ) -> StateT:
         """Return an updated state, given inputs and a prior state.
-        
+
         Arguments:
             input: The inputs to the model.
             state: The prior state associated with the model.
@@ -53,20 +52,20 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     @abstractproperty
     def step(self) -> "AbstractModel[StateT]":
         """The part of the model PyTree specifying a single time step of the model.
-        
+
         For non-iterated models, this should trivially return `step`.
         """
         ...
-    
+
     def state_consistency_update(
-        self, 
+        self,
         state: StateT,
     ) -> StateT:
         """Make sure the model state is self-consistent.
-        
-        !!! Info  
+
+        !!! Info
             The default behaviour is to just return the same state that was passed.
-            
+
             In some models, multiple representations of the same information are kept,
             but only one is initialized by the task. A typical example is a task that
             initializes a model's effector state, e.g. the location of the endpoint of
@@ -78,13 +77,13 @@ class AbstractModel(eqx.Module, Generic[StateT]):
             `state_consistency_update` after initializing the state and before the first
             forward pass the model, to make sure the joint angles are consistent with
             the effector position.
-            
-            In this way we avoid having to specify redundant information in 
-            `AbstractTask`, and each model can handle the logic of what makes 
+
+            In this way we avoid having to specify redundant information in
+            `AbstractTask`, and each model can handle the logic of what makes
             a state consistent, with respect to its own operations.
         """
         return state
-    
+
     @abstractmethod
     def init(
         self,
@@ -94,52 +93,55 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         """Return a default state for the model."""
         ...
 
-    @property 
+    @property
     def bounds(self) -> PyTree[StateBounds]:  # type: ignore
         """Suggested bounds on the state variables."""
         return None
-    
+
     @property
     def memory_spec(self) -> PyTree[bool]:
         """Specifies which states should typically be remembered.
-        
-        !!! Info  
+
+        !!! Info
             This is not used by the model itself, but may be used by an
             `AbstractIterator` model that wraps it. When iterating very large models for
-            many time steps, storing all states may be limiting because of available 
-            memory; not storing certain parts of the state across all time steps may 
-            be helpful.       
+            many time steps, storing all states may be limiting because of available
+            memory; not storing certain parts of the state across all time steps may
+            be helpful.
         """
         return True
 
 
 class ModelInput(eqx.Module):
     """PyTree that contains all inputs to a model."""
+
     input: PyTree[Array]
     intervene: Mapping["AbstractIntervenorInput"]
-   
+
 
 class MultiModel(AbstractModel[StateT]):
-    
-    models: PyTree[AbstractModel[StateT], 'T']
-    
+
+    models: PyTree[AbstractModel[StateT], "T"]
+
     def __call__(
         self,
         inputs: ModelInput,
-        states: PyTree[StateT, 'T'], 
+        states: PyTree[StateT, "T"],
         key: PRNGKeyArray,
     ) -> StateT:
 
         # TODO: This is hacky, because I want to pass intervenor stuff through entirely. See `staged`
         return jax.tree_map(
-            lambda model, input, state, key: model(ModelInput(input, inputs.intervene), state, key),
+            lambda model, input, state, key: model(
+                ModelInput(input, inputs.intervene), state, key
+            ),
             self.models,
             inputs.input,
             states,
             self._get_keys(key),
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )
-        
+
     def init(
         self,
         *,
@@ -151,57 +153,52 @@ class MultiModel(AbstractModel[StateT]):
             self._get_keys(key),
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )
-    
+
     def step(self):
         return self
-        
+
     def _get_keys(self, key):
         return random_split_like_tree(
-            key, 
-            tree=self.models, 
-            is_leaf=lambda x: isinstance(x, AbstractModel)
+            key, tree=self.models, is_leaf=lambda x: isinstance(x, AbstractModel)
         )
-        
+
 
 def wrap_stateless_callable(
-    callable: Callable, 
+    callable: Callable,
     pass_key: bool = True,
 ):
     """Makes a 'stateless' callable compatible with state-passing.
-    
-    !!! Info   
+
+    !!! Info
         `AbstractStagedModel` defines its operations as transformations to parts of
         a state PyTree. Each stage of a model consists of passing a particular substate
         of the model to a callable that operates on it, returning an updated substate.
         However, in some cases the new substate does not depend on the previous
-        substate, but is generated entirely from some other inputs. 
-    
+        substate, but is generated entirely from some other inputs.
+
         For example, a linear neural network layer outputs an array of a certain shape,
         but only requires some input array—and not its prior output (state) array---to
         do so. We can use a module like `eqx.nn.Linear` to update a part of a model's
         state, as the callable of one of its model stages; however, the signature of
         `Linear` only accepts `input`, and not `state`. By wrapping in this function, we
-        can make it accept `state` as well, though it is simply discarded. 
-        
+        can make it accept `state` as well, though it is simply discarded.
+
     Arguments:
         callable: The callable to wrap.
         pass_key: If `True`, the keyword argument `key` will be forwarded to the wrapped
-          callable. If `False`, it will be discarded. Discarding is useful if the wrapped 
+          callable. If `False`, it will be discarded. Discarding is useful if the wrapped
           callable does not accept a `key` argument.
     """
     if pass_key:
+
         @wraps(callable)
         def wrapped(input, state, *args, **kwargs):
             return callable(input, *args, **kwargs)
-        
+
     else:
+
         @wraps(callable)
         def wrapped(input, state, *args, key: Optional[PRNGKeyArray] = None, **kwargs):
             return callable(input, *args, **kwargs)
-    
+
     return wrapped
-
-
-
-
-

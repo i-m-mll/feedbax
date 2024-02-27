@@ -25,34 +25,31 @@ logger = logging.getLogger(__name__)
 
 
 class AbstractIterator(AbstractModel[StateT]):
-    """Base class for models which iterate other models.
-    """
-    
-    _step: AbstractVar[AbstractModel[StateT]]  
+    """Base class for models which iterate other models."""
+
+    _step: AbstractVar[AbstractModel[StateT]]
     n_steps: AbstractVar[int]
 
     def init(self, *, key: PRNGKeyArray) -> StateT:
-        """Returns an initial state for the iterated model.
-        """
+        """Returns an initial state for the iterated model."""
         return self._step.init(key=key)
-    
-    @property 
+
+    @property
     def step(self) -> AbstractModel[StateT]:
         return self._step
-    
+
     def state_consistency_update(self, state: StateT) -> StateT:
         return self._step.state_consistency_update(state)
-    
 
 
 class Iterator(AbstractIterator[StateT]):
     """Applies a model repeatedly, carrying state. Returns history for all states.
-    
+
     !!! NOTE
         If memory is not an issue, this class is preferred to
         `ForgetfulIterator` as it lacks the state partitioning overhead, and
-        is therefore faster. 
-        
+        is therefore faster.
+
         For very large state PyTrees, however, it may be preferable to use
         `ForgetfulIterator` to save memory.
 
@@ -60,13 +57,14 @@ class Iterator(AbstractIterator[StateT]):
         step (AbstractModel[StateT]): The model to be iterated.
         n_steps: The number of steps to iterate for.
     """
+
     _step: AbstractModel[StateT]
-    n_steps: int 
-    
+    n_steps: int
+
     def __call__(
-        self, 
+        self,
         input: PyTree,
-        state: StateT, 
+        state: StateT,
         key: PRNGKeyArray,
     ) -> StateT:
         """
@@ -75,17 +73,17 @@ class Iterator(AbstractIterator[StateT]):
             state: The initial state of the model to be iterated.
             key: Determines the pseudo-randomness in model execution.
         """
-        
+
         keys = jr.split(key, self.n_steps - 1)
-        
-        def step(state, args): 
+
+        def step(state, args):
             input, key = args
             state = self._step(input, state, key)
             return state, state
-                
+
         _, states = lax.scan(
             step,
-            state, 
+            state,
             (input, keys),
         )
 
@@ -98,16 +96,17 @@ class Iterator(AbstractIterator[StateT]):
 
 class ForgetfulIterator(AbstractIterator[StateT]):
     """Applies a model repeatedly, carrying state. Returns history for a subset of states.
-    
+
     Attributes:
         n_steps: The number of steps to iterate for.
         step: The model to be iterated.
-        memory_spec: A PyTree of bools—a prefix of `StateT` indicating which states to store.    
+        memory_spec: A PyTree of bools—a prefix of `StateT` indicating which states to store.
     """
+
     _step: AbstractModel[StateT]
-    n_steps: int 
+    n_steps: int
     memory_spec: PyTree[bool]  # can't do StateT[bool]
-    
+
     def __init__(
         self,
         step: AbstractModel[StateT],
@@ -125,12 +124,12 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         self._step = step
         self.n_steps = n_steps
         self.memory_spec = memory_spec
-    
+
     @jax.named_scope("fbx.ForgetfulIterator")
     def __call__(
-        self, 
-        input: PyTree, # [Shaped[Array, "n_steps ..."]],  
-        state: StateT,  
+        self,
+        input: PyTree,  # [Shaped[Array, "n_steps ..."]],
+        state: StateT,
         key: PRNGKeyArray,
     ) -> StateT:  #! Adds a batch dimension, actually.
         """
@@ -140,62 +139,61 @@ class ForgetfulIterator(AbstractIterator[StateT]):
             key: Determines the pseudo-randomness in model execution.
         """
         key1, key2, key3 = jr.split(key, 3)
-        
+
         init_input = tree_take(input, 0)
         states = self._init_arrays(init_input, state, key2)
-        
-        if os.environ.get('FEEDBAX_DEBUG', False) == "True": 
-            for i in tqdm(range(self.n_steps),
-                          desc="steps"):
+
+        if os.environ.get("FEEDBAX_DEBUG", False) == "True":
+            for i in tqdm(range(self.n_steps), desc="steps"):
                 input, states, key3 = self._body_func(i, (input, states, key3))
-                
+
             return states
-                 
+
         _, states, _ = lax.fori_loop(
-            0, 
-            self.n_steps, 
+            0,
+            self.n_steps,
             self._body_func,
             (input, states, key3),
         )
-        
+
         return states
 
     @jax.named_scope("fbx.ForgetfulIterator._body_func")
     def _body_func(self, i: int, x: Tuple) -> Tuple:
         inputs, states, key = x
-        
+
         key1, key2 = jr.split(key)
-        
+
         # Since we optionally store the trajectories of only some of the states,
-        # as specified by `memory_spec`, we need to partition these out 
-        # so we can index them, then recombine with the states for which only 
+        # as specified by `memory_spec`, we need to partition these out
+        # so we can index them, then recombine with the states for which only
         # a single time step (the current one) is stored.
         states_mem, state_nomem = eqx.partition(states, self.memory_spec)
         state_mem, input = tree_take((states_mem, inputs), i)
         state = eqx.combine(state_mem, state_nomem)
-        
+
         state = self._step(input, state, key1)
-        
+
         # Likewise, split the resulting states into those which are stored,
-        # which are then assigned to the next index in the trajectory, and 
+        # which are then assigned to the next index in the trajectory, and
         # recombined with the single-timestep states.
-        state_mem, state_nomem = eqx.partition(state, self.memory_spec)        
+        state_mem, state_nomem = eqx.partition(state, self.memory_spec)
         states_mem = tree_set(states_mem, state_mem, i + 1)
         states = eqx.combine(states_mem, state_nomem)
-                
+
         return inputs, states, key2
 
     @jax.named_scope("fbx.ForgetfulIterator.init_arrays")
     def _init_arrays(
-        self, 
-        input: PyTree,  
-        init_state: StateT,  
+        self,
+        input: PyTree,
+        init_state: StateT,
         key: PRNGKeyArray,
     ) -> StateT:  #! Adds a batch dimension re: `init_state`
         """Returns a model state PyTree with a batch dimension added to store
         history on each iteration, but only for those array leaves specified
         by `self.memory_spec`.
-        
+
         The shape of the arrays in the PyTree(s) returned by `step` is
         automatically inferred, and used to initialize empty history arrays
         in which to store the states across all steps; `memory_spec` can be
@@ -203,36 +201,25 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         """
         # Get the shape of the state output by `self._step`
         outputs = eqx.filter_eval_shape(
-            self._step, 
-            input, 
-            init_state, 
+            self._step,
+            input,
+            init_state,
             key=key,
         )
-        
+
         # Generate empty trajectories for mem states
         scalars, array_structs = eqx.partition(
-            eqx.filter(outputs, self.memory_spec), 
-            eqx.is_array_like  # False for jax.ShapeDtypeStruct
+            eqx.filter(outputs, self.memory_spec),
+            eqx.is_array_like,  # False for jax.ShapeDtypeStruct
         )
-        asarrays = eqx.combine(
-            jax.tree_map(jnp.asarray, scalars), 
-            array_structs
-        )
+        asarrays = eqx.combine(jax.tree_map(jnp.asarray, scalars), array_structs)
         states = jax.tree_map(
             lambda x: jnp.zeros((self.n_steps, *x.shape), dtype=x.dtype),
             asarrays,
         )
-    
+
         # Insert the init state for mem states; combine with no mem state
-        init_state_mem, init_state_nomem = eqx.partition(
-            init_state, self.memory_spec
-        )
-        states = eqx.combine(
-            tree_set(states, init_state_mem, 0), 
-            init_state_nomem
-        )
-        
-        return states  
+        init_state_mem, init_state_nomem = eqx.partition(init_state, self.memory_spec)
+        states = eqx.combine(tree_set(states, init_state_mem, 0), init_state_nomem)
 
-
-
+        return states

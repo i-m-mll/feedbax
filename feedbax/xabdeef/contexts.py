@@ -30,20 +30,20 @@ N_LOG_STEPS_DEFAULT = 10
 
 class TrainingContext(eqx.Module):
     """A model-task pairing with automatic construction of a `TaskTrainer` instance.
-    
+
     Attributes:
         model: The model.
         task: The task.
-        where_train: A function that takes the model and returns the parts of the 
+        where_train: A function that takes the model and returns the parts of the
           model to be trained.
         ensembled: Whether `model` is an ensemble of models.
     """
-    model: AbstractModel 
+
+    model: AbstractModel
     task: AbstractTask
     where_train: Optional[Callable] = None
     ensembled: bool = False
-    
-    
+
     def train(
         self,
         *,
@@ -56,7 +56,7 @@ class TrainingContext(eqx.Module):
         **kwargs,
     ) -> tuple[AbstractModel, TaskTrainerHistory]:
         """Train the model on the task.
-        
+
         Arguments:
             n_batches: The number of batches of trials to train on.
             batch_size: The number of trials per batch.
@@ -67,21 +67,19 @@ class TrainingContext(eqx.Module):
             key: A PRNG key for initializing the model.
             **kwargs: Additional keyword arguments to pass to the `TaskTrainer`.
         """
-        optimizer = optax.inject_hyperparams(optimizer_cls)(
-            learning_rate
-        )
-        
+        optimizer = optax.inject_hyperparams(optimizer_cls)(learning_rate)
+
         trainer = TaskTrainer(
             optimizer=optimizer,
             checkpointing=True,
         )
-        
+
         if log_step is None:
             log_step = n_batches // N_LOG_STEPS_DEFAULT
-        
+
         return trainer(
             task=self.task,
-            model=self.model, 
+            model=self.model,
             n_batches=n_batches,
             batch_size=batch_size,
             log_step=log_step,
@@ -90,17 +88,16 @@ class TrainingContext(eqx.Module):
             ensembled=self.ensembled,
             **kwargs,
         )
-        
-        
+
+
 def point_mass_nn_simple_reaches(
     n_replicates: int = 1,
-    n_steps: int = 100, 
-    dt: float = 0.05, 
-    mass: float = 1., 
-    workspace: Sequence[tuple[float, float]] = ((-1., -1.),
-                                                (1., 1.)),
+    n_steps: int = 100,
+    dt: float = 0.05,
+    mass: float = 1.0,
+    workspace: Sequence[tuple[float, float]] = ((-1.0, -1.0), (1.0, 1.0)),
     encoding_size: Optional[int] = None,
-    hidden_size: int = 50, 
+    hidden_size: int = 50,
     hidden_type: eqx.Module = eqx.nn.GRUCell,
     where_train: Optional[Callable] = lambda model: model.step.net,
     feedback_delay_steps: int = 0,
@@ -110,39 +107,39 @@ def point_mass_nn_simple_reaches(
     key: PRNGKeyArray,
 ) -> TrainingContext:
     """A simple reach task paired with a neural network controlling a point mass.
-    
+
     Arguments:
-        n_replicates: The number of models to generate, with different random 
+        n_replicates: The number of models to generate, with different random
           initializations.
         n_steps: The number of time steps in each trial.
         dt: The duration of each time step.
         mass: The mass of the point mass.
         workspace: The bounds of the rectangular workspace.
-        encoding_size: The number of units in the encoding layer of the 
+        encoding_size: The number of units in the encoding layer of the
           network. Defaults to `None` (no encoding layer).
         hidden_size: The number of units in the hidden layer of the network.
         hidden_type: The type of the hidden layer of the network.
         where_train: A function that takes a model and returns the part of
           the model that should be trained.
-        feedback_delay_steps: The number of time steps by which sensory 
-          feedback is delayed. 
-        eval_grid_n: The number of grid points for center-out reaches in the 
-          validation task. For example, a value of 2 gives a grid of 2x2=4 center-out 
-          reach sets. 
-        eval_n_directions: The number of evenly-spread reach directions per 
-          set of center-out reaches. 
+        feedback_delay_steps: The number of time steps by which sensory
+          feedback is delayed.
+        eval_grid_n: The number of grid points for center-out reaches in the
+          validation task. For example, a value of 2 gives a grid of 2x2=4 center-out
+          reach sets.
+        eval_n_directions: The number of evenly-spread reach directions per
+          set of center-out reaches.
         key: A random key used to initialize the model(s).
     """
-    
+
     task = SimpleReaches(
         loss_func=simple_reach_loss(),
-        workspace=workspace, 
+        workspace=workspace,
         n_steps=n_steps,
         eval_grid_n=eval_grid_n,
         eval_n_directions=eval_n_directions,
-        eval_reach_length=0.5,    
+        eval_reach_length=0.5,
     )
-    
+
     # TODO: Generalize this for all pre-built models
     if n_replicates == 1:
         model = point_mass_nn(
@@ -150,7 +147,7 @@ def point_mass_nn_simple_reaches(
             key=key,
             dt=dt,
             mass=mass,
-            hidden_size=hidden_size, 
+            hidden_size=hidden_size,
             encoding_size=encoding_size,
             hidden_type=hidden_type,
             n_steps=n_steps,
@@ -164,7 +161,7 @@ def point_mass_nn_simple_reaches(
                 task,
                 dt=dt,
                 mass=mass,
-                hidden_size=hidden_size, 
+                hidden_size=hidden_size,
                 encoding_size=encoding_size,
                 hidden_type=hidden_type,
                 n_steps=n_steps,
@@ -176,7 +173,7 @@ def point_mass_nn_simple_reaches(
         ensembled = True
     else:
         raise ValueError("n_replicates must be an integer >= 1")
-    
+
     return TrainingContext(
         model=model,
         task=task,

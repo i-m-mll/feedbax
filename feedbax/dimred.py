@@ -20,8 +20,9 @@ class PCAResults(eqx.Module):
         components: Principal components.
         singular_values: Singular values $S$.
     """
+
     components: Array
-    singular_values: Array    
+    singular_values: Array
 
 
 def pca(
@@ -29,20 +30,20 @@ def pca(
     **kwargs,
 ) -> tuple[Array, Array, Shaped[Array, "*batch features"]]:
     """Principal component analysis.
-    
+
     Takes the last axis of `x` as features. Flattens the preceding dimensions,
     then mean subtracts the features and performs singular value decomposition.
     Unflattens the PCs back to the original shape before returning.
-    
+
     Arguments:
         x: Input features.
         **kwargs: Additional arguments for `jax.numpy.linalg.svd`.
-    """    
+    """
     X = x.reshape(-1, x.shape[-1])
     X -= X.mean(axis=0)
     U, S, Vt = jnp.linalg.svd(X, full_matrices=False, **kwargs)
-    #L = S ** 2 / (X.shape[0] - 1)
-    
+    # L = S ** 2 / (X.shape[0] - 1)
+
     return PCAResults(
         components=(U @ jnp.diag(S)).reshape(*x.shape),
         singular_values=S,
