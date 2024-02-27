@@ -1,3 +1,4 @@
+
 site_name: Feedbax
 site_author: MLL <mll@mll.bio> 
 site_url: https://docs.lprt.ca/feedbax 
@@ -19,6 +20,8 @@ theme:
     annotation: material/info-twotone
   palette:
     scheme: fbx
+    
+# strict: true  # Build fails on warnings 
 
 watch:
   - feedbax  # automatically update docs when running `mkdocs serve` and source files change
@@ -27,14 +30,12 @@ markdown_extensions:
   - pymdownx.arithmatex:  # Render LaTeX via MathJax
       generic: true
   - pymdownx.details  # Enables collapsible admonitions
-  # - pymdownx.highlight
   - attr_list 
   - md_in_html
   - pymdownx.tabbed:
       alternate_style: true
-  - pymdownx.inlinehilite
   - pymdownx.superfences  # Enables syntax highlighting
-  # codehilite (mknotebooks) and pymdownx.highlight (material) actually don't work for highlighting
+  - pymdownx.inlinehilite
   - admonition
   - toc:
       toc_depth: 4  # Only show root objects; i.e. no methods, properties...

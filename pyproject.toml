@@ -78,5 +78,6 @@ reportMissingImports = true
 reportMissingTypeStubs = true 
 
 [tool.black]
-
-
+target-version = ['py310', 'py311']
+include = '\.pyi?$'
+line-length = 88
