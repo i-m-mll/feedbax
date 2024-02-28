@@ -1,7 +1,7 @@
 # Model base classes
 
-::: feedbax.model.AbstractModel
+::: feedbax.AbstractModel
 
-::: feedbax.model.ModelInput
+::: feedbax.ModelInput
 
-::: feedbax.model.wrap_stateless_callable
+::: feedbax.wrap_stateless_callable

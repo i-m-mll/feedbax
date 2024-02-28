@@ -30,7 +30,7 @@ import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import wrap_stateless_callable
+from feedbax._model import wrap_stateless_callable
 from feedbax.misc import (
     identity_func,
     interleave_unequal,

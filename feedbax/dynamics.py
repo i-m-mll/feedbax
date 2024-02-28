@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.model import AbstractModel
+from feedbax._model import AbstractModel
 from feedbax.state import CartesianState, StateBounds, StateT
 
 

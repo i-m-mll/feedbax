@@ -25,6 +25,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 import numpy as np
 
 from feedbax.dynamics import AbstractDynamicalSystem
+from feedbax.model import AbstractModel
 from feedbax.state import AbstractState, StateBounds
 
 
@@ -122,7 +123,7 @@ class AbstractActivationFunction(eqx.Module):
     def __call__(self, input: Array, state: AbstractMuscleState) -> Array: ...
 
 
-class AbstractMuscle(eqx.Module):
+class AbstractMuscle(AbstractModel[AbstractMuscleState]):
     """Base class for muscle models.
 
     Attributes:

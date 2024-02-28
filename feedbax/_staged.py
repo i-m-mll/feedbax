@@ -25,7 +25,7 @@ import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
-from feedbax.model import AbstractModel, ModelInput
+from feedbax._model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.misc import indent_str
 from feedbax.state import AbstractState, StateT

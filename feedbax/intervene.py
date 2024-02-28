@@ -49,7 +49,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
 from feedbax.misc import get_unique_label
-from feedbax.model import AbstractModel
+from feedbax._model import AbstractModel
 from feedbax.state import AbstractState, StateT
 from feedbax._tree import tree_call
 

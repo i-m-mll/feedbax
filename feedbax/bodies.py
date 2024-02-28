@@ -18,7 +18,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
-from feedbax.model import MultiModel
+from feedbax._model import MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.nn import NetworkState
 from feedbax._staged import AbstractStagedModel, ModelStage

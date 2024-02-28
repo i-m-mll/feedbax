@@ -15,7 +15,7 @@ from jaxtyping import PRNGKeyArray
 import optax
 
 from feedbax import get_ensemble
-from feedbax.model import AbstractModel
+from feedbax._model import AbstractModel
 from feedbax.task import AbstractTask, SimpleReaches
 from feedbax.train import TaskTrainer, TaskTrainerHistory
 from feedbax.xabdeef.losses import simple_reach_loss

@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax.misc import TqdmLoggingHandler, delete_contents
-from feedbax.model import AbstractModel, ModelInput
+from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
 from feedbax.state import StateT
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec

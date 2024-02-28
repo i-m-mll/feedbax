@@ -66,11 +66,11 @@ class AbstractPlant(
         a muscle, which is not described by a differential equation but is
         directly dependent in each instant on the skeletal geometry.
 
-        Static updates are specified in `model_spec`, and dynamic updates in
-        `dynamics_spec`. Calling an `AbstractPlant` instance will only perform
-        the static updates defined in `model_spec`. Normally we wrap the
-        instance in a `Mechanics` instance to discretize the dynamics—then,
-        calling the `Mechanics` instance will perform both sets of updates.
+        Kinematic/geometric updates are specified in `model_spec`, and dynamic updates
+        in `dynamics_spec`. Calling an `AbstractPlant` instance will only perform the
+        kinematic updates defined in `model_spec`. Normally we wrap the instance in a
+        `Mechanics` instance to discretize the dynamics—then, calling the `Mechanics`
+        instance will perform both sets of updates.
 
     Attributes:
         skeleton: The model of skeletal dynamics.
@@ -113,7 +113,7 @@ class AbstractPlant(
 
     @abstractproperty
     def model_spec(self) -> OrderedDict[str, ModelStage]:
-        """Specifies static/instantaneous updates to the musculoskeletal state."""
+        """Specifies kinematic updates to the musculoskeletal state."""
         ...
 
     @abstractproperty
@@ -349,7 +349,7 @@ class MuscledArm(AbstractPlant):
 
     @property
     def model_spec(self) -> OrderedDict[str, ModelStage]:
-        """Specifies static updates to the musculoskeletal state."""
+        """Specifies kinematic updates to the musculoskeletal state."""
         return OrderedDict(
             {
                 "clip_skeleton_state": ModelStage(

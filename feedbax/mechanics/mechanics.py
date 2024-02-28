@@ -17,7 +17,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
-from feedbax.model import wrap_stateless_callable
+from feedbax._model import wrap_stateless_callable
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, CartesianState
 
@@ -90,7 +90,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
                     where_input=lambda input, state: state.effector.force,
                     where_state=lambda state: state.plant.skeleton,
                 ),
-                "statics_step": ModelStage(
+                "kinematics_update": ModelStage(
                     # the `plant` module directly implements non-ODE operations
                     callable=lambda self: self.plant,
                     where_input=lambda input, state: input,

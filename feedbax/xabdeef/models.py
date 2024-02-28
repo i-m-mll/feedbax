@@ -18,7 +18,7 @@ from feedbax import get_ensemble
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.misc import identity_func
-from feedbax.model import AbstractModel
+from feedbax._model import AbstractModel
 from feedbax.iterate import Iterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass

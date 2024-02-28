@@ -37,12 +37,12 @@ import numpy as np
 from feedbax.intervene import AbstractIntervenorInput, TimeSeriesParam
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
-from feedbax.model import ModelInput
+from feedbax._model import ModelInput
 from feedbax.state import AbstractState, CartesianState, StateT
 from feedbax._tree import tree_call
 
 if TYPE_CHECKING:
-    from feedbax.model import AbstractModel
+    from feedbax._model import AbstractModel
 
 logger = logging.getLogger(__name__)
 

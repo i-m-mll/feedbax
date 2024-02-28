@@ -17,7 +17,7 @@ import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree, Shaped
 from tqdm.auto import tqdm
 
-from feedbax.model import AbstractModel
+from feedbax._model import AbstractModel
 from feedbax.state import StateT
 from feedbax._tree import tree_take, tree_set
 

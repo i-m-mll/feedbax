@@ -10,7 +10,7 @@ import os
 import warnings
 
 from feedbax._io import save, load
-from feedbax.model import wrap_stateless_callable
+from feedbax._model import AbstractModel, ModelInput, wrap_stateless_callable
 from feedbax._staged import (
     AbstractStagedModel,
     ModelStage,
