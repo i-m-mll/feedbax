@@ -52,7 +52,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         ...
 
     @abstractmethod
-    def inverse_kinematics(self, state: CartesianState) -> StateT:
+    def inverse_kinematics(self, effector_state: CartesianState) -> StateT:
         """Return the configuration of the skeleton given the Cartesian state
         of the end effector."""
         ...

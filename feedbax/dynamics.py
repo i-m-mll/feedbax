@@ -67,11 +67,12 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         """Returns the initial state of the system."""
         ...
 
+    @property
     def step(self) -> "AbstractDynamicalSystem[StateT]":
         return self
 
 
-class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
+class AbstractLTISystem(AbstractDynamicalSystem[Array]):
     """
     !!! ref inline end ""
         Inspired by [this Diffrax example](https://docs.kidger.site/diffrax/examples/kalman_filter/).
@@ -91,7 +92,7 @@ class AbstractLTISystem(AbstractDynamicalSystem[StateT]):
     @jax.named_scope("fbx.AbstractLTISystem")
     def vector_field(
         self,
-        t: float,
+        t: float | None,
         state: Array,
         input: Array,
     ) -> Array:

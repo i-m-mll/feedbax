@@ -5,6 +5,7 @@
 """
 
 import logging
+from typing import Any
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -27,8 +28,8 @@ class PCAResults(eqx.Module):
 
 def pca(
     x: Shaped[Array, "*batch features"],
-    **kwargs,
-) -> tuple[Array, Array, Shaped[Array, "*batch features"]]:
+    **kwargs: Any,
+) -> PCAResults:
     """Principal component analysis.
 
     Takes the last axis of `x` as features. Flattens the preceding dimensions,

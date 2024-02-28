@@ -143,10 +143,10 @@ class Channel(AbstractStagedModel[ChannelState]):
         return spec
 
     @property
-    def memory_spec(self) -> ChannelState:  # type: ignore
+    def memory_spec(self) -> ChannelState:
         return ChannelState(
             output=True,
-            queue=False,
+            queue=False,  # type: ignore
             noise=False,
         )
 

@@ -83,7 +83,7 @@ class AbstractPlant(
     clip_states: AbstractVar[bool]
 
     def vector_field(
-        self, t: float, state: PlantState, input: PyTree[Array]
+        self, t: float | None, state: PlantState, input: PyTree[Array]
     ) -> PlantState:
         """Return the time derivatives of musculoskeletal variables,
         where those derivatives are defined.
@@ -254,7 +254,7 @@ class MuscledArm(AbstractPlant):
         skeleton: The model of skeletal dynamics.
         muscle_model: The muscle model.
         activator: The muscle activator, such as
-          [`ActivationFilter`][feedbax.mechanics.muscle.ActivationFilter].
+            [`ActivationFilter`][feedbax.mechanics.muscle.ActivationFilter].
         clip_states: Whether to clip the states to their bounds.
         n_muscles: The number of muscles.
         moment_arms: The moment arms of the muscles with respect to the joints.

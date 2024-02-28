@@ -31,11 +31,11 @@ def simple_reach_loss(
 
     Arguments:
         loss_term_weights: Maps loss term names to term weights. If `None`,
-          a typical set of default weights is used.
+            a typical set of default weights is used.
         discount_exp: The exponent of the power function used to discount
-          the position error, back in time from the end of trials. Larger
-          values lead to penalties that are more concentrated at the end
-          of trials. If zero, all time steps are weighted equally.
+            the position error, back in time from the end of trials. Larger
+            values lead to penalties that are more concentrated at the end
+            of trials. If zero, all time steps are weighted equally.
     """
     if loss_term_weights is None:
         # TODO: maybe move this to a common area for default parameters

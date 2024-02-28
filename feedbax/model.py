@@ -36,7 +36,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     @abstractmethod
     def __call__(
         self,
-        input,
+        input: PyTree[Array],
         state: StateT,
         key: PRNGKeyArray,
     ) -> StateT:
@@ -88,7 +88,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
     def init(
         self,
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> StateT:
         """Return a default state for the model."""
         ...
@@ -116,7 +116,7 @@ class ModelInput(eqx.Module):
     """PyTree that contains all inputs to a model."""
 
     input: PyTree[Array]
-    intervene: Mapping["AbstractIntervenorInput"]
+    intervene: Mapping[str, "AbstractIntervenorInput"]
 
 
 class MultiModel(AbstractModel[StateT]):
@@ -154,6 +154,7 @@ class MultiModel(AbstractModel[StateT]):
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )
 
+    @property
     def step(self):
         return self
 
@@ -177,7 +178,7 @@ def wrap_stateless_callable(
         substate, but is generated entirely from some other inputs.
 
         For example, a linear neural network layer outputs an array of a certain shape,
-        but only requires some input array—and not its prior output (state) array---to
+        but only requires some input array—and not its prior output (state) array—to
         do so. We can use a module like `eqx.nn.Linear` to update a part of a model's
         state, as the callable of one of its model stages; however, the signature of
         `Linear` only accepts `input`, and not `state`. By wrapping in this function, we
@@ -186,8 +187,8 @@ def wrap_stateless_callable(
     Arguments:
         callable: The callable to wrap.
         pass_key: If `True`, the keyword argument `key` will be forwarded to the wrapped
-          callable. If `False`, it will be discarded. Discarding is useful if the wrapped
-          callable does not accept a `key` argument.
+            callable. If `False`, it will be discarded. Discarding is useful if the
+            wrapped callable does not accept a `key` argument.
     """
     if pass_key:
 

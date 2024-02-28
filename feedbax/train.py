@@ -129,7 +129,7 @@ class TaskTrainer(eqx.Module):
         save_model_trainables: Optional[int] = None,
         save_trial_specs: bool = False,
         restore_checkpoint: bool = False,
-        disable_tqdm=False,
+        disable_tqdm: bool = False,
         batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
         *,
         key: PRNGKeyArray,

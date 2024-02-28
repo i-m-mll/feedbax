@@ -1,7 +1,7 @@
 """Facilities for saving and loading of experimental setups.
 
-TODO: 
-- Could provide a simple interface to show the most recently saved files in 
+TODO:
+- Could provide a simple interface to show the most recently saved files in
   a directory
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
@@ -56,13 +56,13 @@ def save(
 
 def load(
     path: Path | str,
-    setup_func: Callable[[Any], PyTree[Any, "T"]],
+    setup_func: Callable[..., PyTree[Any, "T"]],
 ) -> PyTree[Any, "T"]:
     """Setup a PyTree from stored data and hyperparameters.
 
     Arguments:
-        path: The path of the file to be loaded. setup_func: A function that
-        returns a PyTree of the same structure
+        path: The path of the file to be loaded.
+        setup_func: A function that returns a PyTree of the same structure
             as the PyTree that was saved to `path`, and which may take as
             arguments `hyperparameters` which `save` may have saved to the same
             file. It must take a keyword argument `key`.
@@ -83,7 +83,7 @@ def _save_with_datetime_and_commit_id(
     path: Optional[str | Path] = None,
     save_dir: str | Path = Path("."),
     suffix: Optional[str] = None,
-) -> Path:
+) -> None:
     """Save a PyTree to disk along with hyperparameters used to generate it.
 
     If a path is not specified, a filename will be generated from the current
@@ -108,5 +108,3 @@ def _save_with_datetime_and_commit_id(
         hyperparameter_str = json.dumps(hyperparameters)
         f.write((hyperparameter_str + "\n").encode())
         eqx.tree_serialise_leaves(f, tree)
-
-    return path

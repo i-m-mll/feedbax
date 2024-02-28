@@ -60,7 +60,7 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
         return 1  # TODO
 
     def vector_field(
-        self, t: float, state: CartesianState, input: Float[Array, "input"]
+        self, t: float | None, state: CartesianState, input: Float[Array, "input"]
     ) -> CartesianState:
         """Returns time derivatives of the system's states.
 
@@ -78,7 +78,7 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
 
         return CartesianState(pos=d_y[:2], vel=d_y[2:])
 
-    def forward_kinematics(self, state: Float[Array, "state"]) -> Float[Array, "state"]:
+    def forward_kinematics(self, state: CartesianState) -> CartesianState:
         """Trivially, returns the Cartesian state of the point mass itself."""
         return state
 
@@ -127,7 +127,7 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
     def init(
         self,
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> CartesianState:
         """Return a default state for the point mass."""
         return CartesianState()

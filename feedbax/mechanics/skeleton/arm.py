@@ -1,4 +1,4 @@
-""" 
+"""
 
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
@@ -42,14 +42,14 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
     """Model of a 2D arm with two straight rigid segments, and two rotational joints.
 
     Attributes:
-        l: The lengths of the arm segments. Units: $[\mathrm{L}]$.
-        m: The masses of the segments. Units: $[\mathrm{M}]$.
+        l: The lengths of the arm segments. Units: $[\\mathrm{L}]$.
+        m: The masses of the segments. Units: $[\\mathrm{M}]$.
         I: The moments of inertia of the segments.
-          Units: $[\mathrm{M}\\cdot \mathrm{L}^2]$.
+            Units: $[\\mathrm{M}\\cdot \\mathrm{L}^2]$.
         s: The distance from the joint center to the segment center of mass
-          for each segment. Units: $[\mathrm{L}]$.
+            for each segment. Units: $[\\mathrm{L}]$.
         B: The joint friction matrix.
-          Units: $[\mathrm{M}\\cdot \mathrm{L}^2\\cdot \mathrm{T}^{-1}]$.
+            Units: $[\\mathrm{M}\\cdot \\mathrm{L}^2\\cdot \\mathrm{T}^{-1}]$.
     """
 
     l: Float[Array, "links=2"] = field(converter=jnp.asarray)
@@ -134,11 +134,11 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         # this is a cached_property to avoid polluting the module's fields with private attributes
         return (
             # + m[1]*s[1]**2 + m[0]*s[0]**2
-            self.I[0] + self.I[1] + self.m[1] * self.l[0] ** 2,  
+            self.I[0] + self.I[1] + self.m[1] * self.l[0] ** 2,
             #
             self.m[1] * self.l[0] * self.s[1],
             # + m[1] * s[1] ** 2
-            self.I[1],  
+            self.I[1],
         )
 
     @cached_property
@@ -216,9 +216,9 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         Arguments:
             effector_force: The force on the end effector.
             state: The configuration state of the arm to which to add
-              the inferred torques.
+                the inferred torques.
             key: Unused. To satisfy the signature expected by
-              `AbstractSkeleton`.
+                `AbstractSkeleton`.
         """
         torque = self.effector_force_to_torques(
             state.angle,
@@ -331,7 +331,6 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
 
         Arguments:
             workspace: The bounds of the workspace to test.
-            twolink: The arm model.
         """
         r = sum(self.l)
         lengths = jnp.sum(corners_2d(workspace) ** 2, axis=0) ** 0.5

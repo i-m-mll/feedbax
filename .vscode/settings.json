@@ -38,5 +38,6 @@
         }
     ],
     "explorer.autoReveal": false,
-    "scm.autoReveal": false
+    "scm.autoReveal": false,
+    "files.trimTrailingWhitespace": true
 }

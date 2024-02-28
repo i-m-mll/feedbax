@@ -1,5 +1,7 @@
 # Interventions
 
+::: feedbax.intervene.CurlFieldParams
+
 ::: feedbax.intervene.CurlField
 
 ::: feedbax.intervene.AddNoise

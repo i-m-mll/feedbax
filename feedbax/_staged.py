@@ -14,11 +14,12 @@ from typing import (
     TYPE_CHECKING,
     Generic,
     Optional,
+    Protocol,
     Union,
 )
 
 import equinox as eqx
-from equinox import AbstractVar
+from equinox import AbstractVar, field
 import jax
 import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -27,13 +28,24 @@ import numpy as np
 from feedbax.model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.misc import indent_str
-from feedbax.state import StateT
+from feedbax.state import AbstractState, StateT
 
 if TYPE_CHECKING:
     from feedbax.task import AbstractTaskInputs
 
 
 logger = logging.getLogger(__name__)
+
+
+class ModelStageCallable(Protocol):
+    # This is part of the `ModelInput` hack.
+    def __call__(self, input: ModelInput, state: AbstractState, key: PRNGKeyArray) -> PyTree[Array]:
+        ...
+
+
+class OtherStageCallable(Protocol):
+    def __call__(self, input: PyTree[Array], state: AbstractState, key: PRNGKeyArray) -> PyTree[Array]:
+        ...
 
 
 class ModelStage(eqx.Module, Generic[StateT]):
@@ -56,22 +68,22 @@ class ModelStage(eqx.Module, Generic[StateT]):
 
     Attributes:
         callable_: The module, method, or function that transforms part of the
-          model state.
+            model state.
         where_input: Selects the  parts of the input and state to be passed
-          as input to `callable_`.
+            as input to `callable_`.
         where_state: Selects the substate that passed and return as state to
-          `callable_`.
+            `callable_`.
         intervenors: Optionally, a sequence of state interventions to be
-          applied at the beginning of this model stage.
+            applied at the beginning of this model stage.
     """
 
     callable: Callable[
         ["AbstractStagedModel[StateT]"],
-        Callable[[Union[ModelInput, PyTree[Array]], StateT, Array], StateT],
+        Union[ModelStageCallable, OtherStageCallable],
     ]
     where_input: Callable[["AbstractTaskInputs", StateT], PyTree]
     where_state: Callable[[StateT], PyTree]
-    intervenors: Optional[Sequence[AbstractIntervenor]] = None
+    intervenors: Sequence[AbstractIntervenor] = field(default_factory=tuple)
 
 
 class AbstractStagedModel(AbstractModel[StateT]):
@@ -118,27 +130,27 @@ class AbstractStagedModel(AbstractModel[StateT]):
             input: The input to the model.
             state: The prior state of the model.
             key: A random key which will be split to provide separate keys for
-              each model stage and intervenor.
+                each model stage and intervenor.
         """
         with jax.named_scope(type(self).__name__):
 
             keys = jr.split(key, len(self._stages))
 
-            for (label, spec), key in zip(self._stages.items(), keys):
+            for (label, stage), key in zip(self._stages.items(), keys):
 
                 key_intervene, key_stage = jr.split(key)
 
-                keys_intervene = jr.split(key_intervene, len(spec.intervenors))
+                keys_intervene = jr.split(key_intervene, len(stage.intervenors))
 
-                for intervenor, k in zip(spec.intervenors, keys_intervene):
+                for intervenor, k in zip(stage.intervenors, keys_intervene):
                     if intervenor.label in input.intervene:
                         params = input.intervene[intervenor.label]
                     else:
                         params = None
                     state = intervenor(params, state, key=k)
 
-                callable_ = spec.callable(self)
-                subinput = spec.where_input(input.input, state)
+                callable_ = stage.callable(self)
+                subinput = stage.where_input(input.input, state)
 
                 # TODO: What's a less hacky way of doing this?
                 # I was trying to avoid introducing additional parameters to `AbstractStagedModel.__call__`
@@ -148,11 +160,11 @@ class AbstractStagedModel(AbstractModel[StateT]):
                     callable_input = subinput
 
                 state = eqx.tree_at(
-                    spec.where_state,
+                    stage.where_state,
                     state,
                     callable_(
                         callable_input,
-                        spec.where_state(state),
+                        stage.where_state(state),
                         key=key_stage,
                     ),
                 )
@@ -160,11 +172,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
                 if os.environ.get("FEEDBAX_DEBUG", False) == "True":
                     debug_strs = [
                         indent_str(eqx.tree_pformat(x), indent=4)
-                        for x in (
-                            spec.callable(self),
-                            spec.where_input(input, state),
-                            spec.where_state(state),
-                        )
+                        for x in (callable_, subinput, stage.where_state(state))
                     ]
 
                     log_str = "\n".join(
@@ -300,7 +308,7 @@ def pformat_model_spec(
 
             if getattr(callable, "__wrapped__", None) is not None:
                 spec_str += "wrapped: "
-                callable = callable.__wrapped__
+                # callable = callable.__wrapped__
 
             # BoundMethods
             if (func := getattr(callable, "__func__", None)) is not None:

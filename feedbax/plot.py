@@ -294,35 +294,35 @@ def plot_reach_trajectories(
 
     Arguments:
         states: A model state or PyTree of arrays from which the variables to be
-          plotted can be extracted.
+            plotted can be extracted.
         where_data: If `states` is provided as an arbitrary PyTree of arrays,
-          this function should be provided to extract the relevant arrays.
-          It should take `states` and return a tuple of three arrays:
-          position, velocity, and controller output/force.
+            this function should be provided to extract the relevant arrays.
+            It should take `states` and return a tuple of three arrays:
+            position, velocity, and controller output/force.
         step: Plot every `step`-th trial. This is useful when `states` contains
-          information about a very large set of trials, and we only want to
-          plot a subset of them.
+            information about a very large set of trials, and we only want to
+            plot a subset of them.
         trial_specs: The specifications for the trials being plotted. If supplied,
-          this is used to plot markers at the initial and goal positions.
+            this is used to plot markers at the initial and goal positions.
         endpoints: The initial and goal positions for the trials being plotted.
-          Overrides `trial_specs`.
+            Overrides `trial_specs`.
         straight_guides: If this is `True` and `endpoints` are provided, straight
-          dashed lines will be drawn between the initial and goal positions.
+            dashed lines will be drawn between the initial and goal positions.
         workspace: The workspace bounds. If provided, the bounds are drawn as a
-          rectangle.
+            rectangle.
         cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
-          to use across trials.
+            to use across trials.
         colors: A sequence of colors, one for each plotted trial. Overrides `cmap`.
         color: A single color to use for all trials. Overrides `cmap` but not `colors`.
         ms: Marker size for plots of states (trajectories).
         ms_source: Marker size for the initial position, if `trial_specs`/`endpoints`
-          is provided.
+            is provided.
         ms_target: Marker size for the goal position.
         control_label_type: If `'linear'`, labels the final (controller output/force)
-          plot as showing Cartesian forces. If `'torques'`, labels the plot as showing
-          the torques of a two-segment arm.
+            plot as showing Cartesian forces. If `'torques'`, labels the plot as showing
+            the torques of a two-segment arm.
         control_labels: A tuple giving the labels for the title, x-axis, and y-axis
-          of the final (controller output/force) plot. Overrides `control_label_type`.
+            of the final (controller output/force) plot. Overrides `control_label_type`.
     """
     if isinstance(states, SimpleFeedbackState):
         positions, velocities, controls = (
@@ -491,7 +491,7 @@ def plot_activity_heatmap(
     Arguments:
         activity: The array of activity over time for each unit in a network layer.
         cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
-          to use.
+            to use.
     """
     fig, ax = plt.subplots(1, 1, figsize=(10, 2))
     im = ax.imshow(activity.T, aspect="auto", cmap=cmap)
@@ -523,14 +523,14 @@ def plot_activity_sample_units(
 
     Arguments:
         activities: The array of trial-by-trial activity over time for each unit in a
-          network layer.
+            network layer.
         n_samples: The number of units to sample from the layer. Along with `unit_includes`,
-          this determines the number of subplots in the figure.
+            this determines the number of subplots in the figure.
         unit_includes: Indices of specific units to include in the plot, in addition to
-          the `n_samples` randomly sampled units.
+            the `n_samples` randomly sampled units.
         cols: The number of columns in which to arrange the subplots.
         cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
-          to use. Each trial will be plotted in a different color.
+            to use. Each trial will be plotted in a different color.
         figsize: The size of the figure.
         key: A random key used to sample the units to plot.
     """
@@ -594,11 +594,11 @@ def plot_loss_history(
 
     Arguments:
         train_history: The training history object returned by a call to a
-          `TaskTrainer`. The function will specifically access `train_history.loss`.
+            `TaskTrainer`. The function will specifically access `train_history.loss`.
         xscale: The scale of the x-axis.
         yscale: The scale of the y-axis.
         cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
-          to use for line colors.
+            to use for line colors.
     """
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.set(xscale=xscale, yscale=yscale)
@@ -642,11 +642,11 @@ def plot_loss_mean_history(
 
     Arguments:
         train_history: The training history object returned by a call to a
-          `TaskTrainer`. The function will specifically access `train_history.loss`.
+            `TaskTrainer`. The function will specifically access `train_history.loss`.
         xscale: The scale of the x-axis.
         yscale: The scale of the y-axis.
         cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
-          to use for line colors.
+            to use for line colors.
     """
     losses = train_history.loss
 
@@ -687,7 +687,7 @@ def plot_reach_endpoint_dists(
         trial_specs: The specifications for the reach trials.
         s: Marker size for the initial and goal positions for all trials.
         color: The color to use for all points. If `None`, black or white is
-          automatically chosen based on the current Matplotlib theme.
+            automatically chosen based on the current Matplotlib theme.
     """
     if color is None:
         color = get_high_contrast_neutral_shade()

@@ -5,22 +5,22 @@ TODO:
 - `LossDict` only computes the total loss once, but when we append a `LossDict`
   for a single timestep to `losses_history` in `TaskTrainer`, we lose the loss
   total for that time step. When it is needed later (e.g. on plotting the loss)
-  it will be recomputed, once. It is also not serialized along with the 
-  `losses_history`. I doubt this is a significant computational loss 
+  it will be recomputed, once. It is also not serialized along with the
+  `losses_history`. I doubt this is a significant computational loss
   (how many loss terms * training iterations could be involved? 1e6?)
-  to have to compute from time to time, but perhaps it would be nice to 
+  to have to compute from time to time, but perhaps it would be nice to
   include the total as part of flatten/unflatten. It'd probably just require
   that we allow passing the total on instantiation, however that would be kind
   of weird.
-    - Even if we have 6 loss terms with 1e6 iterations, it only takes ~130 ms 
+    - Even if we have 6 loss terms with 1e6 iterations, it only takes ~130 ms
     to compute `losses.total`. Given that we only need to compute this once
     per session or so, it shouldn't be a problem.
 - The time aggregation could be done in `CompositeLoss`, if we unsqueeze
   terms that don't have a time dimension. This would allow time aggregation
-  to be controlled in one place, if for some reason it makes sense to change 
+  to be controlled in one place, if for some reason it makes sense to change
   how this aggregation occurs across all loss terms.
 - Protocols for all the different `state` types/fields?
-    - Alternatively we could make `AbstractLoss` generic over an 
+    - Alternatively we could make `AbstractLoss` generic over an
       `AbstractState` typevar, however that might not make sense for typing
       the compositions (e.g. `__sum__`) since the composite can support any
       state pytrees that have the right combination of fields, not just pytrees
@@ -183,10 +183,10 @@ class CompositeLoss(AbstractLoss):
                 the scalar term weights. By default, all terms have equal weight.
             label: The label for the composite loss.
             user_labels: If `True`, the keys in `terms`---if it is a mapping---
-              are used as term labels, instead of the `label` field of each term.
-              This is useful because it may be convenient for the user to match up
-              the structure of `terms` and `weights` in a PyTree such as a dict,
-              which provides labels, yet continue to use the default labels.
+                are used as term labels, instead of the `label` field of each term.
+                This is useful because it may be convenient for the user to match up
+                the structure of `terms` and `weights` in a PyTree such as a dict,
+                which provides labels, yet continue to use the default labels.
         """
         self.label = label
 
@@ -197,6 +197,7 @@ class CompositeLoss(AbstractLoss):
                 labels = [term.label for term in terms.values()]
                 terms = list(terms.values())
         else:
+            # TODO: if `terms` is a dict, this fails!
             labels = [term.label for term in terms]
 
         if weights is None:
@@ -517,7 +518,7 @@ class NetworkActivityLoss(AbstractLoss):
         return loss
 
 
-def power_discount(n_steps, discount_exp=6):
+def power_discount(n_steps: int, discount_exp: int = 6):
     """A power-law vector that puts most of the weight on its later elements.
 
     Arguments:

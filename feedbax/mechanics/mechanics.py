@@ -151,7 +151,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     def init(
         self,
         *,
-        key=None,
+        key: Optional[PRNGKeyArray] = None,
     ):
         """Returns an initial state for use with the `Mechanics` module."""
 

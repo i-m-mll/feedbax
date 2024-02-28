@@ -7,7 +7,7 @@
 from collections.abc import Callable, Sequence
 from functools import partial
 import logging
-from typing import Optional, Type
+from typing import Any, Optional, Type
 
 import equinox as eqx
 import jax
@@ -35,7 +35,7 @@ class TrainingContext(eqx.Module):
         model: The model.
         task: The task.
         where_train: A function that takes the model and returns the parts of the
-          model to be trained.
+            model to be trained.
         ensembled: Whether `model` is an ensemble of models.
     """
 
@@ -53,7 +53,7 @@ class TrainingContext(eqx.Module):
         log_step: Optional[int] = None,
         optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
         key: PRNGKeyArray,
-        **kwargs,
+        **kwargs: Any,
     ) -> tuple[AbstractModel, TaskTrainerHistory]:
         """Train the model on the task.
 
@@ -110,24 +110,24 @@ def point_mass_nn_simple_reaches(
 
     Arguments:
         n_replicates: The number of models to generate, with different random
-          initializations.
+            initializations.
         n_steps: The number of time steps in each trial.
         dt: The duration of each time step.
         mass: The mass of the point mass.
         workspace: The bounds of the rectangular workspace.
         encoding_size: The number of units in the encoding layer of the
-          network. Defaults to `None` (no encoding layer).
+            network. Defaults to `None` (no encoding layer).
         hidden_size: The number of units in the hidden layer of the network.
         hidden_type: The type of the hidden layer of the network.
         where_train: A function that takes a model and returns the part of
-          the model that should be trained.
+            the model that should be trained.
         feedback_delay_steps: The number of time steps by which sensory
-          feedback is delayed.
+            feedback is delayed.
         eval_grid_n: The number of grid points for center-out reaches in the
-          validation task. For example, a value of 2 gives a grid of 2x2=4 center-out
-          reach sets.
+            validation task. For example, a value of 2 gives a grid of 2x2=4 center-out
+            reach sets.
         eval_n_directions: The number of evenly-spread reach directions per
-          set of center-out reaches.
+            set of center-out reaches.
         key: A random key used to initialize the model(s).
     """
 
@@ -156,18 +156,16 @@ def point_mass_nn_simple_reaches(
         ensembled = False
     elif n_replicates > 1:
         model = get_ensemble(
-            partial(
-                point_mass_nn,
-                task,
-                dt=dt,
-                mass=mass,
-                hidden_size=hidden_size,
-                encoding_size=encoding_size,
-                hidden_type=hidden_type,
-                n_steps=n_steps,
-                feedback_delay_steps=feedback_delay_steps,
-            ),
-            n_replicates=n_replicates,
+            point_mass_nn,
+            task,
+            dt=dt,
+            mass=mass,
+            hidden_size=hidden_size,
+            encoding_size=encoding_size,
+            hidden_type=hidden_type,
+            n_steps=n_steps,
+            feedback_delay_steps=feedback_delay_steps,
+            n_ensemble=n_replicates,
             key=key,
         )
         ensembled = True

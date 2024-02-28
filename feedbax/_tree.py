@@ -47,10 +47,10 @@ def tree_index(tree: PyTree[Any, "T"], index: int) -> PyTree[Any, "T"]:
 
 def get_ensemble(
     func: Callable[..., PyTree[Any, "S"]],
-    *args,
+    *args: Any,
     n_ensemble: int,
     key: PRNGKeyArray,
-    **kwargs,
+    **kwargs: Any,
 ) -> PyTree[Any, "S"]:
     """Vmap a function over a set of random keys.
 
@@ -60,6 +60,7 @@ def get_ensemble(
             dimensions in the array leaves of the returned PyTree.
         *args: The positional arguments to `func`.
         key: The key to split to perform the vmap.
+        **kwargs: The keyword arguments to `func`.
     """
     keys = jr.split(key, n_ensemble)
     func_ = partial(func, *args, **kwargs)
@@ -273,10 +274,10 @@ def tree_unzip(
 
 def tree_call(
     tree: PyTree[Any, "T"],
-    *args,
+    *args: Any,
     exclude: Callable = lambda _: False,
     is_leaf: Optional[Callable] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> PyTree[Any, "T"]:
     """Returns a tree of the return values of a PyTree's callable leaves.
 
@@ -290,7 +291,7 @@ def tree_call(
         tree: Any PyTree.
         *args: Positional arguments to pass to each callable leaf.
         exclude: A function that returns `True` for any callable leaf that
-          should not be called.
+            should not be called.
         **kwargs: Keyword arguments to pass to each callable leaf.
     """
     callables, other_values = eqx.partition(

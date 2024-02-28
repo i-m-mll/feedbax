@@ -5,7 +5,7 @@ TODO:
 - Static element (SE) model
 - Y and l_eff filters. See `_Y_field` and `_l_eff_field` methods.
     - None of the simplified models I've cited implement these.
-  
+
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
@@ -487,7 +487,7 @@ BROWN_SLOW_TWITCH_VIRTUALMUSCLE_PARAMS = dict(
 )
 
 
-"""Averaged slow- and fast-twitch fiber parameters for the Virtual Muscle Model 
+"""Averaged slow- and fast-twitch fiber parameters for the Virtual Muscle Model
 (Brown et al. 1999)."""
 BROWN_SLOWFAST_AVG_VIRTUALMUSCLE_PARAMS = jax.tree_map(
     lambda x, y: (x + y) / 2,
@@ -654,8 +654,8 @@ class LillicrapScottForceLength(AbstractForceFunction):
 
 def lillicrap_scott_2013_virtualmuscle(
     n_muscles: int = 1,
-    noise_func=None,
-    params=LILLICRAP_SCOTT_VIRTUALMUSCLE_PARAMS,
+    noise_func: Callable = None,
+    params: dict = LILLICRAP_SCOTT_VIRTUALMUSCLE_PARAMS,
 ):
     """Muscle model from Lillicrap & Scott 2013.
 

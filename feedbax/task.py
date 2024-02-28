@@ -4,7 +4,7 @@ TODO:
 - Maybe allow initial mods to model parameters, in addition to substates.
 - Some of the private functions could be public.
 - Refactor `get_target_seq` and `get_scalar_epoch_seq` redundancy.
-    - Also, the way `seq` and `seqs` are generated is similar to `states` in 
+    - Also, the way `seq` and `seqs` are generated is similar to `states` in
       `ForgetfulIterator.init`...
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
@@ -172,13 +172,13 @@ class AbstractReachTrialSpec(AbstractTaskTrialSpec):
 
     Attributes:
         inits: A mapping from `lambdas` that select model substates to be
-          initialized, to substates to initialize them with.
+            initialized, to substates to initialize them with.
         inputs: A PyTree of inputs to the model, including data about the
-          reach target.
+            reach target.
         target: The target trajectory for the mechanical end effector,
-          used for computing the loss.
+            used for computing the loss.
         intervene: A mapping from unique intervenor names, to per-trial
-          intervention parameters.
+            intervention parameters.
 
     """
 
@@ -198,7 +198,7 @@ class SimpleReachTaskInputs(AbstractTaskInputs):
 
     Attributes:
         effector_target: The trajectory of effector target states to be presented to
-          the model.
+            the model.
     """
 
     effector_target: CartesianState  #! column vector: why here?
@@ -209,12 +209,12 @@ class DelayedReachTaskInputs(eqx.Module):
 
     Attributes:
         effector_target: The trajectory of effector target states to be presented to
-          the model.
+            the model.
         hold: The hold/go (1/0 signal) to be presented to the model.
         target_on: A signal indicating to the model when the value of `effector_target`
-          should be interpreted as a reach target. Otherwise, if zeros are passed for
-          the target during (say) the hold period, the model may interpret this as
-          meaningful—that is, "your reach target is at 0".
+            should be interpreted as a reach target. Otherwise, if zeros are passed for
+            the target during (say) the hold period, the model may interpret this as
+            meaningful—that is, "your reach target is at 0".
     """
 
     effector_target: CartesianState  # PyTree[Float[Array, "time ..."]]
@@ -229,11 +229,11 @@ class SimpleReachTrialSpec(AbstractReachTrialSpec):
 
     Attributes:
         inits: A mapping from `lambdas` that select model substates to be
-          initialized, to substates to initialize them with at the start of trials.
+            initialized, to substates to initialize them with at the start of trials.
         inputs: For providing the model with the reach target.
         target: The target trajectory for the mechanical end effector.
         intervene: A mapping from unique intervenor names, to per-trial
-          intervention parameters.
+            intervention parameters.
     """
 
     inits: WhereDict
@@ -247,12 +247,12 @@ class DelayedReachTrialSpec(AbstractReachTrialSpec):
 
     Attributes:
         inits: A mapping from `lambdas` that select model substates to be
-          initialized, to substates to initialize them with at the start of trials.
+            initialized, to substates to initialize them with at the start of trials.
         inputs: For providing the model with the reach target and hold signal.
         target: The target trajectory for the mechanical end effector.
         epoch_start_idxs: The indices of the start of each epoch in the trial.
         intervene: A mapping from unique intervenor names, to per-trial
-          intervention parameters.
+            intervention parameters.
     """
 
     inits: WhereDict
@@ -280,10 +280,10 @@ class AbstractTask(eqx.Module):
         n_steps: The number of time steps in the task trials.
         seed_validation: The random seed for generating the validation trials.
         intervention_specs: A mapping from unique intervenor names, to specifications
-          for generating per-trial intervention parameters on training trials.
+            for generating per-trial intervention parameters on training trials.
         intervention_specs_validation: A mapping from unique intervenor names, to
-          specifications for generating per-trial intervention parameters on
-          validation trials.
+            specifications for generating per-trial intervention parameters on
+            validation trials.
     """
 
     loss_func: AbstractVar[AbstractLoss]
@@ -297,7 +297,7 @@ class AbstractTask(eqx.Module):
 
     def _intervention_params(
         self,
-        intervention_specs: Mapping["AbstractIntervenorInput"],
+        intervention_specs: Mapping[str, "AbstractIntervenorInput"],
         trial_spec: AbstractTaskTrialSpec,
         key: PRNGKeyArray,
     ):
@@ -501,7 +501,7 @@ class AbstractTask(eqx.Module):
             models: The ensemble of models to evaluate.
             n_replicates: The number of models in the ensemble.
             key: For providing randomness during model evaluation.
-              Will be split into `n_replicates` keys.
+                Will be split into `n_replicates` keys.
         """
         models_arrays, models_other = eqx.partition(models, eqx.is_array)
 
@@ -659,16 +659,16 @@ class SimpleReaches(AbstractTask):
         workspace: The rectangular workspace in which the reaches are distributed.
         seed_validation: The random seed for generating the validation trials.
         intervention_specs: A mapping from unique intervenor names, to specifications
-          for generating per-trial intervention parameters on training trials.
+            for generating per-trial intervention parameters on training trials.
         intervention_specs_validation: A mapping from unique intervenor names, to
-          specifications for generating per-trial intervention parameters on
-          validation trials.
+            specifications for generating per-trial intervention parameters on
+            validation trials.
         eval_grid_n: The number of evenly-spaced internal grid points of the
-          workspace at which a set of center-out reach is placed.
+            workspace at which a set of center-out reach is placed.
         eval_n_directions: The number of evenly-spread center-out reaches
-          starting from each workspace grid point in the validation set. The number
-          of trials in the validation set is equal to
-          `eval_n_directions * eval_grid_n ** 2`.
+            starting from each workspace grid point in the validation set. The number
+            of trials in the validation set is equal to
+            `eval_n_directions * eval_grid_n ** 2`.
         eval_reach_length: The length (in space) of each reach in the validation set.
     """
 
@@ -676,8 +676,8 @@ class SimpleReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
-    intervention_specs: Mapping["AbstractIntervenorInput"] = field(default_factory=dict)
-    intervention_specs_validation: Mapping["AbstractIntervenorInput"] = field(
+    intervention_specs: Mapping[str, "AbstractIntervenorInput"] = field(default_factory=dict)
+    intervention_specs_validation: Mapping[str, "AbstractIntervenorInput"] = field(
         default_factory=dict
     )
     eval_n_directions: int = 7
@@ -781,16 +781,16 @@ class DelayedReaches(AbstractTask):
         workspace: The rectangular workspace in which the reaches are distributed.
         n_steps: The number of time steps in each task trial.
         epoch_len_ranges: The ranges from which to uniformly sample the durations of
-          the task phases for each task trial.
+            the task phases for each task trial.
         target_on_epochs: The epochs in which the "target on" signal is turned on.
         hold_epochs: The epochs in which the hold signal is turned on.
         eval_n_directions: The number of evenly-spread center-out reaches
-          starting from each workspace grid point in the validation set. The number
-          of trials in the validation set is equal to
-          `eval_n_directions * eval_grid_n ** 2`.
+            starting from each workspace grid point in the validation set. The number
+            of trials in the validation set is equal to
+            `eval_n_directions * eval_grid_n ** 2`.
         eval_reach_length: The length (in space) of each reach in the validation set.
         eval_grid_n: The number of evenly-spaced internal grid points of the
-          workspace at which a set of center-out reach is placed.
+            workspace at which a set of center-out reach is placed.
         seed_validation: The random seed for generating the validation trials.
     """
 

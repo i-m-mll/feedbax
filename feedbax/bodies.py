@@ -7,7 +7,7 @@
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 import logging
-from typing import Any, Optional, Union
+from typing import Any, Optional, Self, Union, overload
 
 import equinox as eqx
 import jax
@@ -46,16 +46,20 @@ class SimpleFeedbackState(AbstractState):
 
 def _convert_feedback_spec(
     feedback_spec: Union[
-        ChannelSpec, PyTree[ChannelSpec, "T"], PyTree[Mapping[str, Any], "T"]
+        PyTree[ChannelSpec, "T"], PyTree[Mapping[str, Any], "T"]
     ]
 ) -> PyTree[ChannelSpec, "T"]:
 
-    if not isinstance(feedback_spec, PyTree[ChannelSpec]):
+    if isinstance(feedback_spec, PyTree[ChannelSpec]):
+        return feedback_spec
+
+    else:
         feedback_spec_flat, feedback_spec_def = eqx.tree_flatten_one_level(
             feedback_spec
         )
-
-        if isinstance(feedback_spec_flat, PyTree[Mapping]):
+        if all(isinstance(spec, Mapping) for spec in feedback_spec_flat):
+            # Specs passed as a PyTree of mappings.
+            # Assume it's only one level deep.
             feedback_specs_flat = jax.tree_map(
                 lambda spec: ChannelSpec(**spec),
                 feedback_spec_flat,
@@ -65,10 +69,12 @@ def _convert_feedback_spec(
                 feedback_spec_def,
                 feedback_specs_flat,
             )
-        else:
-            return [ChannelSpec(**feedback_spec)]
+        elif isinstance(feedback_spec, Mapping):
+            return ChannelSpec(**feedback_spec)
 
-    return feedback_spec
+        else:
+            raise ValueError(f"{type(feedback_spec)} is not a valid specification"
+                              "PyTree for feedback channels.")
 
 
 class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
@@ -95,7 +101,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         feedback_spec: Union[
             PyTree[ChannelSpec], PyTree[Mapping[str, Any]]
         ] = ChannelSpec(
-            where=lambda mechanics_state: mechanics_state.plant.skeleton,
+            where=lambda mechanics_state: mechanics_state.plant.skeleton,  # type: ignore
         ),
         intervenors: Optional[
             Union[
@@ -197,14 +203,15 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     def init(
         self,
         *,
-        key: Optional[PRNGKeyArray] = None,
-    ):
+        key: PRNGKeyArray,
+    ) -> SimpleFeedbackState:
         """Return a default state for the model."""
         keys = jr.split(key, 3)
 
         return SimpleFeedbackState(
             mechanics=self.mechanics.init(key=keys[0]),
-            net=self.net.init(key=keys[1]),
+            # TODO: in case of a wrapped network (i.e. not an `AbstractModel`) a different initialization is needed!
+            net=self.net.init(key=keys[1]),  # type: ignore
             feedback=self._feedback_module.init(key=keys[2]),
         )
 

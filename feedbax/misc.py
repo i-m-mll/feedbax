@@ -9,6 +9,7 @@ from collections.abc import (
     Iterable,
     MutableSequence,
     Sequence,
+    Set,
 )
 import difflib
 import inspect
@@ -168,7 +169,7 @@ def unzip2(xys: Iterable[Tuple[T1, T2]]) -> Tuple[Tuple[T1, ...], Tuple[T2, ...]
     return tuple(xs), tuple(ys)
 
 
-def get_unique_label(label: str, invalid_labels: Sequence[str]) -> str:
+def get_unique_label(label: str, invalid_labels: Sequence[str] | Set[str]) -> str:
     """Get a unique string from a base string, while avoiding certain strings.
 
     Simply appends consecutive integers to the string until a unique string is
