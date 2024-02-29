@@ -330,7 +330,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         return spec
 
     @property
-    def memory_spec(self):
+    def memory_spec(self) -> PyTree[bool]:
         return NetworkState(
             hidden=True,
             output=True,

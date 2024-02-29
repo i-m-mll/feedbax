@@ -435,7 +435,7 @@ class MuscledArm(AbstractPlant):
         return torque
 
     @property
-    def memory_spec(self) -> PlantState:
+    def memory_spec(self) -> PyTree[bool]:
         return PlantState(
             skeleton=True,
             muscles=True,

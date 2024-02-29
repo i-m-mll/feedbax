@@ -18,8 +18,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PRNGKeyArray
-import optax
-from tensorboardX import SummaryWriter
+import optax  # type: ignore
+from tensorboardX import SummaryWriter  # type: ignore
 from tqdm.auto import tqdm
 
 from feedbax import loss

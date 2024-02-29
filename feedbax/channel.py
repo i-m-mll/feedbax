@@ -143,7 +143,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         return spec
 
     @property
-    def memory_spec(self) -> ChannelState:
+    def memory_spec(self) -> PyTree[bool]:
         return ChannelState(
             output=True,
             queue=False,  # type: ignore

@@ -141,7 +141,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         )
 
     @property
-    def memory_spec(self):
+    def memory_spec(self) -> PyTree[bool]:
         return MechanicsState(
             plant=True,
             effector=True,

@@ -119,7 +119,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
 
     _step: AbstractModel[StateT]
     n_steps: int
-    memory_spec: PyTree[bool]  # can't do StateT[bool]
+    memory_spec: PyTree[bool]
 
     def __init__(
         self,

@@ -72,7 +72,7 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         return self
 
 
-class AbstractLTISystem(AbstractDynamicalSystem[Array]):
+class LTISystem(AbstractDynamicalSystem[Array]):
     """
     !!! ref inline end ""
         Inspired by [this Diffrax example](https://docs.kidger.site/diffrax/examples/kalman_filter/).
@@ -85,9 +85,9 @@ class AbstractLTISystem(AbstractDynamicalSystem[Array]):
         C: The observation matrix.
     """
 
-    A: AbstractVar[Float[Array, "state state"]]
-    B: AbstractVar[Float[Array, "state input"]]
-    C: AbstractVar[Float[Array, "obs state"]]
+    A: Float[Array, "state state"]
+    B: Float[Array, "state input"]
+    C: Float[Array, "obs state"]
 
     @jax.named_scope("fbx.AbstractLTISystem")
     def vector_field(

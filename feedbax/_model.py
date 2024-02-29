@@ -94,9 +94,9 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         ...
 
     @property
-    def bounds(self) -> PyTree[StateBounds]:  # type: ignore
+    def bounds(self) -> PyTree[StateBounds]:
         """Suggested bounds on the state variables."""
-        return None
+        return StateBounds(low=None, high=None)
 
     @property
     def memory_spec(self) -> PyTree[bool]:

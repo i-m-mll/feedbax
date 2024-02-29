@@ -503,12 +503,15 @@ class AbstractTask(eqx.Module):
             key: For providing randomness during model evaluation.
                 Will be split into `n_replicates` keys.
         """
+        # TODO: Why not just use `eqx.filter_vmap`? It should handle the array partitioning.
         models_arrays, models_other = eqx.partition(models, eqx.is_array)
 
         def evaluate_single(model_arrays, model_other, key):
             model = eqx.combine(model_arrays, model_other)
             return self.eval(model, key)
 
+        # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
+        # if they are vmapping `eval`.
         keys_eval = jr.split(key, n_replicates)
         return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
             models_arrays, models_other, keys_eval

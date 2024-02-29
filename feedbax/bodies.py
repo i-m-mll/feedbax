@@ -216,7 +216,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         )
 
     @property
-    def memory_spec(self) -> SimpleFeedbackState:
+    def memory_spec(self) -> PyTree[bool]:
         """Specifies which states should typically be remembered.
 
         For example, [`ForgetfulIterator`][feedbax.iterate.ForgetfulIterator]

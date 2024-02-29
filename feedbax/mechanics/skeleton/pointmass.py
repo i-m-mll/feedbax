@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from feedbax.dynamics import AbstractLTISystem
+from feedbax.dynamics import LTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
 from feedbax.state import CartesianState
 
@@ -26,7 +26,7 @@ ORDER = 2  # maximum ORDER of the state derivatives
 N_DIM = 2  # number of spatial dimensions
 
 
-class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
+class PointMass(AbstractSkeleton[CartesianState]):
     """A point with mass but no spatial extent, that obeys Newton's laws of motion.
 
     Attributes:
@@ -59,6 +59,11 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
     def C(self) -> Array:
         return 1  # TODO
 
+    @cached_property
+    def _lti_system(self) -> LTISystem:
+        return LTISystem(self.A, self.B, self.C)
+
+
     def vector_field(
         self, t: float | None, state: CartesianState, input: Float[Array, "input"]
     ) -> CartesianState:
@@ -74,7 +79,7 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
         # "update_effector_force" stage of `Mechanics`
         force = input + state.force
         state_ = jnp.concatenate([state.pos, state.vel])
-        d_y = super().vector_field(t, state_, force)
+        d_y = self._lti_system.vector_field(t, state_, force)
 
         return CartesianState(pos=d_y[:2], vel=d_y[2:])
 
@@ -131,3 +136,8 @@ class PointMass(AbstractLTISystem, AbstractSkeleton[CartesianState]):
     ) -> CartesianState:
         """Return a default state for the point mass."""
         return CartesianState()
+
+    @property
+    def input_size(self) -> int:
+        """Number of control variables."""
+        return self.B.shape[1]
