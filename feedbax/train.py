@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 
 from feedbax import loss
 from feedbax.loss import AbstractLoss, LossDict
-from feedbax.misc import TqdmLoggingHandler, delete_contents
+from feedbax.misc import Timer, TqdmLoggingHandler, delete_contents
 from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
 from feedbax.state import StateT
@@ -177,24 +177,23 @@ class TaskTrainer(eqx.Module):
             key: The random key.
         """
 
-        filter_spec = filter_spec_leaves(model, where_train)
+        where_train_spec = filter_spec_leaves(model, where_train)
+        model_trainables = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
 
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
             n_replicates = jax.tree_leaves(eqx.filter(model, eqx.is_array))[0].shape[0]
             loss_array_shape = (n_batches, n_replicates)
-            opt_state = jax.vmap(self.optimizer.init)(
-                eqx.filter(model, eqx.is_array)  # Is this necessary?
-            )
+            opt_state = jax.vmap(self.optimizer.init)(model_trainables)
         else:
             loss_array_shape = (n_batches,)
-            opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))
+            opt_state = self.optimizer.init(model_trainables)
 
         # TODO: ensembling
         if save_model_trainables:
             model_train_history = jax.tree_map(
                 lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x,
-                eqx.filter(model, filter_spec),
+                model_trainables,
             )
         else:
             model_train_history = None
@@ -258,7 +257,9 @@ class TaskTrainer(eqx.Module):
 
         # Finish the JIT compilation before the first training iteration.
         if not jax.config.jax_disable_jit:
-            for _ in tqdm(range(1), desc="compile", disable=disable_tqdm):
+            timer = Timer()
+
+            with timer:
                 if ensembled:
                     key_compile = jr.split(key, n_replicates)
                 else:
@@ -271,15 +272,17 @@ class TaskTrainer(eqx.Module):
                     treedef_model,
                     flat_opt_state,
                     treedef_opt_state,
-                    filter_spec,
+                    where_train_spec,
                     key_compile,
                 )
-                if not disable_tqdm:
-                    tqdm.write(f"Training step compiled.", file=sys.stdout)
 
+            logger.info(f"Training step compiled in {timer.time:.2f} seconds.")
+
+            with timer:
                 evaluate(model, key_compile)
-                if not disable_tqdm:
-                    tqdm.write(f"Validation step compiled.", file=sys.stdout)
+
+            logger.info(f"Validation step compiled in {timer.time:.2f} seconds.")
+
         else:
             logger.debug("JIT globally disabled, skipping pre-run compilation")
 
@@ -307,7 +310,7 @@ class TaskTrainer(eqx.Module):
                     treedef_model,
                     flat_opt_state,
                     treedef_opt_state,
-                    filter_spec,
+                    where_train_spec,
                     key_train,
                 )
             )
@@ -322,7 +325,7 @@ class TaskTrainer(eqx.Module):
                     lambda history: history.model_trainables,
                     history,
                     tree_set(
-                        history.model_trainables, eqx.filter(model, filter_spec), batch
+                        history.model_trainables, eqx.filter(model, where_train_spec), batch
                     ),
                 )
 
@@ -474,7 +477,7 @@ class TaskTrainer(eqx.Module):
         treedef_model,
         flat_opt_state,
         treedef_opt_state,
-        filter_spec,  #! can't do AbstractModel[StateT[bool]]
+        where_train_spec,  #! can't do AbstractModel[StateT[bool]]
         key: PRNGKeyArray,
     ):
         """Executes a single training step of the model.
@@ -519,7 +522,7 @@ class TaskTrainer(eqx.Module):
 
         init_states = jax.vmap(model.step.state_consistency_update)(init_states)
 
-        diff_model, static_model = eqx.partition(model, filter_spec)
+        diff_model, static_model = eqx.partition(model, where_train_spec)
 
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
@@ -643,10 +646,10 @@ def _grad_wrap_task_loss_func(loss_func: AbstractLoss):
 
     Note that we are assuming that
 
-      1) `TaskTrainer` will manage a `filter_spec` on the trainable parameters.
+      1) `TaskTrainer` will manage a `where_train_spec` on the trainable parameters.
          When `jax.grad` is applied to the wrapper, the gradient will be
          taken with respect to the first argument `diff_model` only, and the
-         `filter_spec` defines this split.
+         `where_train_spec` defines this split.
       2) Model modules will use a `target_state, init_state, key` signature.
 
     TODO:

@@ -41,7 +41,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         ...
 
     @abstractmethod
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
+    def init(self, *, key: PRNGKeyArray) -> StateT:
         """Return a default state for the skeleton."""
         ...
 
@@ -74,7 +74,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         ...
 
     # @abstractmethod
-    # def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
+    # def init(self, *, key: PRNGKeyArray) -> StateT:
     #     """Returns the initial state of the system.
     #     """
     #     ...

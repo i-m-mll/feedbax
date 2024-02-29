@@ -130,11 +130,11 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         # (say) a dict of dicts.
         feedback_specs = _convert_feedback_spec(feedback_spec)
 
-        init_mechanics_state = mechanics.init()
+        example_mechanics_state = mechanics.init(key=jr.PRNGKey(0))
 
         def _build_feedback_channel(spec: ChannelSpec):
             return Channel(spec.delay, spec.noise_std, jnp.nan).change_input(
-                spec.where(init_mechanics_state)
+                spec.where(example_mechanics_state)
             )
 
         self.feedback_channels = jax.tree_map(
@@ -271,9 +271,9 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         not an instance method because we want to construct the network
         before we construct `SimpleFeedback`.
         """
-        init_mechanics_state = mechanics.init()
+        example_mechanics_state = mechanics.init(key=jr.PRNGKey(0))
         example_feedback = jax.tree_map(
-            lambda spec: spec.where(init_mechanics_state),
+            lambda spec: spec.where(example_mechanics_state),
             _convert_feedback_spec(feedback_spec),
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         )

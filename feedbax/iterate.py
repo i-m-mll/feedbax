@@ -36,6 +36,7 @@ class AbstractIterator(AbstractModel[StateT]):
 
     @property
     def step(self) -> AbstractModel[StateT]:
+        """The model to be iterated."""
         return self._step
 
     def state_consistency_update(self, state: StateT) -> StateT:
@@ -60,6 +61,19 @@ class Iterator(AbstractIterator[StateT]):
 
     _step: AbstractModel[StateT]
     n_steps: int
+
+    def __init__(
+        self,
+        step: AbstractModel[StateT],
+        n_steps: int,
+    ):
+        """
+        Arguments:
+            step: The model to be iterated.
+            n_steps: The number of steps to iterate for.
+        """
+        self._step = step
+        self.n_steps = n_steps
 
     def __call__(
         self,

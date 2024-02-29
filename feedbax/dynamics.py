@@ -63,7 +63,7 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         ...
 
     @abstractmethod
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> StateT:
+    def init(self, *, key: PRNGKeyArray) -> StateT:
         """Returns the initial state of the system."""
         ...
 

@@ -123,7 +123,7 @@ class AbstractPlant(
         ...
 
     @abstractmethod
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
+    def init(self, *, key: PRNGKeyArray) -> PlantState:
         """Returns a default state for the plant."""
         ...
 
@@ -234,10 +234,10 @@ class DirectForceInput(AbstractPlant):
             muscles=False,
         )
 
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
+    def init(self, *, key: PRNGKeyArray) -> PlantState:
         """Return a default state for the plant."""
         return PlantState(
-            skeleton=self.skeleton.init(),
+            skeleton=self.skeleton.init(key=key),
             muscles=None,
         )
 
@@ -441,11 +441,12 @@ class MuscledArm(AbstractPlant):
             muscles=True,
         )
 
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> PlantState:
+    def init(self, *, key: PRNGKeyArray) -> PlantState:
         """Return a default state for the muscled arm."""
+        key1, key2 = jax.random.split(key)
         return PlantState(
-            skeleton=self.skeleton.init(),
-            muscles=self.muscle_model.init(),
+            skeleton=self.skeleton.init(key=key1),
+            muscles=self.muscle_model.init(key=key2),
         )
 
     @property

@@ -25,7 +25,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 import numpy as np
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.model import AbstractModel
+from feedbax._model import AbstractModel
 from feedbax.state import AbstractState, StateBounds
 
 
@@ -79,7 +79,7 @@ class ActivationFilter(AbstractDynamicalSystem):
     def input_size(self):
         return 1
 
-    def init(self):
+    def init(self, *, key: PRNGKeyArray) -> Array:
         raise NotImplementedError("No state PyTree associated with ActivationFilter.")
 
 
@@ -234,7 +234,7 @@ class VirtualMuscle(AbstractMuscle):
     force_func: AbstractFLVFunction
     noise_func: Optional[Callable[[Array, Array, Array], Array]] = None
 
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> VirtualMuscleState:
+    def init(self, *, key: PRNGKeyArray) -> VirtualMuscleState:
         """Return a default state for the model."""
         state = VirtualMuscleState(
             activation=jnp.zeros(self.n_muscles),

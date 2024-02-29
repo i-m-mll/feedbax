@@ -150,7 +150,7 @@ class Channel(AbstractStagedModel[ChannelState]):
             noise=False,
         )
 
-    def init(self, *, key: Optional[PRNGKeyArray] = None) -> ChannelState:
+    def init(self, *, key: PRNGKeyArray) -> ChannelState:
         """Returns an empty `ChannelState` for the channel."""
         input_init = jax.tree_map(
             lambda x: jnp.full_like(x, self._init_value), self.input_proto

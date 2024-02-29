@@ -24,7 +24,7 @@ T = TypeVar("T")
 
 
 def filter_spec_leaves(
-    tree: PyTree[Any, "T"], leaf_func: Callable
+    tree: PyTree[Any, "T"], leaf_func: Callable,
 ) -> PyTree[bool, "T"]:
     """Returns a filter specification for tree leaves matching `leaf_func`."""
     filter_spec = jax.tree_util.tree_map(lambda _: False, tree)

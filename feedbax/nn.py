@@ -337,7 +337,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             encoding=True,
         )
 
-    def init(self, *, key: Optional[PRNGKeyArray] = None):
+    def init(self, *, key: PRNGKeyArray):
         if self.out_size is None:
             output = None
         else:
