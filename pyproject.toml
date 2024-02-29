@@ -77,7 +77,7 @@ exclude = ["**/__pycache__"]
 reportMissingImports = true
 reportMissingTypeStubs = true
 # Temporary:
-reportAttributeAccessIssue = false
+# reportAttributeAccessIssue = false
 
 [tool.black]
 target-version = ['py310', 'py311']

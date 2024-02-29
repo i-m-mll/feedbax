@@ -8,7 +8,7 @@ from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from functools import cached_property
 import logging
-from typing import Optional, Type, Union
+from typing import Optional, Self, Type, Union
 
 import diffrax as dfx
 import equinox as eqx
@@ -81,27 +81,29 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         self.intervenors = self._get_intervenors_dict(intervenors)
 
     @property
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, MechanicsState]]:
         """Specifies the stages of the model."""
+        Stage = ModelStage[Self, MechanicsState]
+
         return OrderedDict(
             {
-                "convert_effector_force": ModelStage(
+                "convert_effector_force": Stage(
                     callable=lambda self: self.plant.skeleton.update_state_given_effector_force,
                     where_input=lambda input, state: state.effector.force,
                     where_state=lambda state: state.plant.skeleton,
                 ),
-                "kinematics_update": ModelStage(
+                "kinematics_update": Stage(
                     # the `plant` module directly implements non-ODE operations
                     callable=lambda self: self.plant,
                     where_input=lambda input, state: input,
                     where_state=lambda state: state.plant,
                 ),
-                "dynamics_step": ModelStage(
+                "dynamics_step": Stage(
                     callable=lambda self: self.dynamics_step,
                     where_input=lambda input, state: input,
                     where_state=lambda state: state,
                 ),
-                "get_effector": ModelStage(
+                "get_effector": Stage(
                     callable=lambda self: wrap_stateless_callable(
                         self.plant.skeleton.effector, pass_key=False
                     ),

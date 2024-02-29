@@ -9,7 +9,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 import logging
-from typing import Generic, Optional, Tuple, Union
+from typing import Generic, Optional, Self, Tuple, Union
 
 import equinox as eqx
 from equinox import AbstractVar, field
@@ -112,7 +112,7 @@ class AbstractPlant(
         return d_state
 
     @abstractproperty
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, PlantState]]:
         """Specifies kinematic updates to the musculoskeletal state."""
         ...
 
@@ -196,14 +196,16 @@ class DirectForceInput(AbstractPlant):
         self.intervenors = self._get_intervenors_dict(intervenors)
 
     @property
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, PlantState]]:
         """Specifies at most one model stage: state clipping, if it is enabled."""
+        Stage = ModelStage[Self, PlantState]
+
         spec = OrderedDict()
 
         if self.clip_states:
             spec |= OrderedDict(
                 {
-                    "clip_skeleton_state": ModelStage(
+                    "clip_skeleton_state": Stage(
                         callable=lambda self: self._clip_state,
                         where_input=lambda input, state: self.bounds.skeleton,
                         where_state=lambda state: state.skeleton,
@@ -348,16 +350,18 @@ class MuscledArm(AbstractPlant):
         self.intervenors = self._get_intervenors_dict(intervenors)
 
     @property
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, PlantState]]:
         """Specifies kinematic updates to the musculoskeletal state."""
+        Stage = ModelStage[Self, PlantState]
+
         return OrderedDict(
             {
-                "clip_skeleton_state": ModelStage(
+                "clip_skeleton_state": Stage(
                     callable=lambda self: self._clip_state,
                     where_input=lambda input, state: self.bounds.skeleton,
                     where_state=lambda state: state.skeleton,
                 ),
-                "muscle_geometry": ModelStage(
+                "muscle_geometry": Stage(
                     callable=lambda self: self._muscle_geometry,
                     where_input=lambda input, state: state.skeleton,
                     where_state=lambda state: (
@@ -365,18 +369,18 @@ class MuscledArm(AbstractPlant):
                         state.muscles.velocity,
                     ),
                 ),
-                "clip_muscle_state": ModelStage(
+                "clip_muscle_state": Stage(
                     # Activation shouldn't be below 0, and length has an UB.
                     callable=lambda self: self._clip_state,
                     where_input=lambda input, state: self.bounds.muscles,
                     where_state=lambda state: state.muscles,
                 ),
-                "muscle_tension": ModelStage(
+                "muscle_tension": Stage(
                     callable=lambda self: self.muscle_model,
                     where_input=lambda input, state: state.muscles.activation,
                     where_state=lambda state: state.muscles,
                 ),
-                "muscle_torques": ModelStage(
+                "muscle_torques": Stage(
                     callable=lambda self: self._muscle_torques,
                     where_input=lambda input, state: state.muscles,
                     where_state=lambda state: state.skeleton.torque,

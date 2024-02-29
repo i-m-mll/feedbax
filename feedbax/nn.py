@@ -16,6 +16,7 @@ import math
 from typing import (
     Optional,
     Protocol,
+    Self,
     Type,
     Union,
     runtime_checkable,
@@ -232,7 +233,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         return state + self.hidden_noise_std * jr.normal(key, state.shape)
 
     @property
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, NetworkState]]:
         """Specifies the network model stages: layers, nonlinearities, and noise.
 
         Only includes stages for the encoding layer, readout layer, hidden noise, and
@@ -246,6 +247,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             that stateful layers will take 2 positional arguments, and stateless layers
             only 1.
         """
+        Stage = ModelStage[Self, NetworkState]
 
         if n_positional_args(self.hidden) == 1:
             hidden_module = lambda self: wrap_stateless_callable(self.hidden)
@@ -266,7 +268,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if self.encoder is None:
             spec = OrderedDict(
                 {
-                    "hidden": ModelStage(
+                    "hidden": Stage(
                         callable=hidden_module,
                         where_input=lambda input, _: ravel_pytree(input)[0],
                         where_state=lambda state: state.hidden,
@@ -276,14 +278,14 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         else:
             spec = OrderedDict(
                 {
-                    "encoder": ModelStage(
+                    "encoder": Stage(
                         callable=lambda self: lambda input, state, *, key: self.encoder(
                             input
                         ),
                         where_input=lambda input, _: ravel_pytree(input)[0],
                         where_state=lambda state: state.encoding,
                     ),
-                    "hidden": ModelStage(
+                    "hidden": Stage(
                         callable=hidden_module,
                         where_input=lambda input, state: state.encoding,
                         where_state=lambda state: state.hidden,
@@ -293,7 +295,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         if self.hidden_nonlinearity is not None:
             spec |= {
-                "hidden_nonlinearity": ModelStage(
+                "hidden_nonlinearity": Stage(
                     callable=lambda self: wrap_stateless_callable(
                         self.hidden_nonlinearity, pass_key=False
                     ),
@@ -304,7 +306,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         if self.hidden_noise_std is not None:
             spec |= {
-                "hidden_noise": ModelStage(
+                "hidden_noise": Stage(
                     callable=lambda self: self._add_hidden_noise,
                     where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.hidden,
@@ -313,12 +315,12 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         if self.readout is not None:
             spec |= {
-                "readout": ModelStage(
+                "readout": Stage(
                     callable=lambda self: wrap_stateless_callable(self.readout),
                     where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.output,
                 ),
-                "out_nonlinearity": ModelStage(
+                "out_nonlinearity": Stage(
                     callable=lambda self: wrap_stateless_callable(
                         self.out_nonlinearity, pass_key=False
                     ),

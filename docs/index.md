@@ -39,7 +39,7 @@ I've developed Feedbax over the last few months, as I've learned JAX. My short-t
 
 By making the library open source now, I hope to receive some feedback about those decisions. To make that easier I've created GitHub [issues](https://github.com/i-m-mll/feedbax/issues) documenting my choices and uncertainties. The issues largely fall into a few categories:
 
-1. Structure: Some of the abstractions I've chosen are probably clumsy. It would be good to know about that, at this point. Maybe we can make some changes for the better! In approximate order of significance: #19, #24, #12, #1, #5, #21.
+1. Structure: Some of the abstractions I've chosen are probably clumsy. It would be good to know about that, at this point. Maybe we can make some changes for the better! In approximate order of significance: #19, #24, #12, #20, #1, #5, #21.
 2. Features: There are many small additions that could be made, especially to the pre-built models and tasks. There are also a few major improvements which I am anticipating in the near future, such as *online learning* (#21). #10,
 3. Typing: Typing in Feedbax is a mess, at the moment. I have been learning to use the typing system recently. However, I haven't been constraining myself with type checker errors. I know I've done some things that probably won't work, and that there may not be clever solutions to some of the issues. See issues: (#7, #8, #9, #11)
 

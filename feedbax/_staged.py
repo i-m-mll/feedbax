@@ -15,6 +15,7 @@ from typing import (
     Generic,
     Optional,
     Protocol,
+    TypeVar,
     Union,
 )
 
@@ -37,18 +38,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+ModelT = TypeVar("ModelT", bound=eqx.Module)
+StateT = TypeVar("StateT", bound=eqx.Module)
+
+
 class ModelStageCallable(Protocol):
     # This is part of the `ModelInput` hack.
-    def __call__(self, input: ModelInput, state: AbstractState, key: PRNGKeyArray) -> PyTree[Array]:
+    def __call__(self, input: ModelInput, state: eqx.Module, key: PRNGKeyArray) -> PyTree[Array]:
         ...
 
 
 class OtherStageCallable(Protocol):
-    def __call__(self, input: PyTree[Array], state: AbstractState, key: PRNGKeyArray) -> PyTree[Array]:
+    def __call__(self, input: PyTree[Array], state: eqx.Module, key: PRNGKeyArray) -> PyTree[Array]:
         ...
 
 
-class ModelStage(eqx.Module, Generic[StateT]):
+class ModelStage(eqx.Module, Generic[ModelT, StateT]):
     """Specification for a stage in a subclass of `AbstractStagedModel`.
 
     Each stage of a model is a callable that performs a modification to part
@@ -78,7 +83,7 @@ class ModelStage(eqx.Module, Generic[StateT]):
     """
 
     callable: Callable[
-        ["AbstractStagedModel[StateT]"],
+        [ModelT],
         Union[ModelStageCallable, OtherStageCallable],
     ]
     where_input: Callable[["AbstractTaskInputs", StateT], PyTree]

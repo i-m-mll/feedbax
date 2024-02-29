@@ -7,7 +7,7 @@
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 import logging
-from typing import Optional, Tuple, Union
+from typing import Optional, Self, Tuple, Union
 
 import equinox as eqx
 from equinox import field
@@ -114,16 +114,18 @@ class Channel(AbstractStagedModel[ChannelState]):
         return noise, output
 
     @property
-    def model_spec(self):
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, ChannelState]]:
         """Returns an `OrderedDict` that specifies the stages of the channel model.
 
         Always includes a queue input-output stage. Optionally includes
         a stage that adds noise to the output, if `noise_std` was not
         `None` at construction time.
         """
+        Stage = ModelStage[Self, ChannelState]
+
         spec = OrderedDict(
             {
-                "update_queue": ModelStage(
+                "update_queue": Stage(
                     callable=lambda self: self._update_queue,
                     where_input=lambda input, state: input,
                     where_state=lambda state: state,
@@ -133,7 +135,7 @@ class Channel(AbstractStagedModel[ChannelState]):
 
         if self.noise_std is not None:
             spec |= {
-                "add_noise": ModelStage(
+                "add_noise": Stage(
                     callable=lambda self: self._add_noise,
                     where_input=lambda input, state: state.output,
                     where_state=lambda state: (state.noise, state.output),

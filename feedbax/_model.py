@@ -125,19 +125,19 @@ class MultiModel(AbstractModel[StateT]):
 
     def __call__(
         self,
-        inputs: ModelInput,
-        states: PyTree[StateT, "T"],
+        input: ModelInput,
+        state: PyTree[StateT, "T"],
         key: PRNGKeyArray,
     ) -> StateT:
 
         # TODO: This is hacky, because I want to pass intervenor stuff through entirely. See `staged`
         return jax.tree_map(
-            lambda model, input, state, key: model(
-                ModelInput(input, inputs.intervene), state, key
+            lambda model, input_, state, key: model(
+                ModelInput(input_, input.intervene), state, key
             ),
             self.models,
-            inputs.input,
-            states,
+            input.input,
+            state,
             self._get_keys(key),
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )

@@ -18,7 +18,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
-from feedbax._model import MultiModel
+from feedbax._model import AbstractModel, MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.nn import NetworkState
 from feedbax._staged import AbstractStagedModel, ModelStage
@@ -88,7 +88,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             and noisy.
     """
 
-    net: eqx.Module  # TODO: should be stateful
+    net: AbstractModel[NetworkState]
     mechanics: "Mechanics"
     feedback_channels: PyTree[Channel]
     _feedback_specs: PyTree[ChannelSpec]
@@ -96,7 +96,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
 
     def __init__(
         self,
-        net: eqx.Module,
+        net: AbstractModel[NetworkState],
         mechanics: "Mechanics",
         feedback_spec: Union[
             PyTree[ChannelSpec], PyTree[Mapping[str, Any]]
@@ -166,11 +166,13 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return MultiModel(self.feedback_channels)
 
     @property
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, SimpleFeedbackState]]:
         """Specifies the stages of the model in terms of state operations."""
+        Stage = ModelStage[Self, SimpleFeedbackState]
+
         return OrderedDict(
             {
-                "update_feedback": ModelStage(
+                "update_feedback": Stage(
                     callable=lambda self: self._feedback_module,
                     where_input=lambda input, state: jax.tree_map(
                         lambda spec: spec.where(state.mechanics),
@@ -179,7 +181,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                     ),
                     where_state=lambda state: state.feedback,
                 ),
-                "nn_step": ModelStage(
+                "nn_step": Stage(
                     callable=lambda self: self.net,
                     where_input=lambda input, state: (
                         input,
@@ -192,7 +194,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                     ),
                     where_state=lambda state: state.net,
                 ),
-                "mechanics_step": ModelStage(
+                "mechanics_step": Stage(
                     callable=lambda self: self.mechanics,
                     where_input=lambda input, state: state.net.output,
                     where_state=lambda state: state.mechanics,
