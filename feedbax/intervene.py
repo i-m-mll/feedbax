@@ -36,6 +36,7 @@ from typing import (
     Any,
     Generic,
     Optional,
+    Self,
     Tuple,
     Type,
     TypeVar,
@@ -43,14 +44,14 @@ from typing import (
 )
 
 import equinox as eqx
-from equinox import AbstractVar, field
+from equinox import AbstractVar, Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
 from feedbax.misc import get_unique_label
 from feedbax._model import AbstractModel
-from feedbax.state import AbstractState, StateT
+from feedbax.state import StateT
 from feedbax._tree import tree_call
 
 if TYPE_CHECKING:
@@ -64,7 +65,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AbstractIntervenorInput(eqx.Module):
+class AbstractIntervenorInput(Module):
     """Base class for PyTrees of intervention parameters.
 
     Attributes:
@@ -77,7 +78,7 @@ class AbstractIntervenorInput(eqx.Module):
 InputT = TypeVar("InputT", bound=AbstractIntervenorInput)
 
 
-class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
+class AbstractIntervenor(Module, Generic[StateT, InputT]):
     """Base class for modules that intervene on a model's state.
 
     Attributes:
@@ -102,7 +103,7 @@ class AbstractIntervenor(eqx.Module, Generic[StateT, InputT]):
     label: AbstractVar[str]
 
     @classmethod
-    def with_params(cls, **kwargs) -> "AbstractIntervenor[StateT, InputT]":
+    def with_params(cls, **kwargs) -> Self:
         """Constructor that accepts field names of `InputT` as keywords.
 
         This is a convenience so we don't need to import the parameter class,
@@ -416,7 +417,7 @@ def add_intervenor(
         return add_intervenors(model, [intervenor], **kwargs)
 
 
-StateS = TypeVar("StateS", AbstractState, Array)
+StateS = TypeVar("StateS", Module, Array)
 
 
 def add_intervenors(
@@ -426,7 +427,7 @@ def add_intervenors(
         Mapping[str, Sequence[AbstractIntervenor[StateS, InputT]]],
     ],
     where: Callable[
-        [AbstractModel[StateT]], "AbstractStagedModel[StateS]"
+        [AbstractModel[StateT]], Any  # "AbstractStagedModel[StateS]"
     ] = lambda model: model.step,
     keep_existing: bool = True,
 ) -> "AbstractStagedModel[StateT]":
@@ -445,22 +446,27 @@ def add_intervenors(
             the old intervenors are replaced.
     """
     if keep_existing:
-        existing_intervenors = where(model).intervenors
+        existing_intervenors = {
+            stage_name: list(intervenors)
+            for stage_name, intervenors in where(model).intervenors.items()
+        }
+    else:
+        existing_intervenors = {stage_name: [] for stage_name in where(model).model_spec}
 
-        if isinstance(intervenors, Sequence):
-            # If a sequence is given, append to the first stage.
-            first_stage_label = next(iter(existing_intervenors))
-            intervenors_dict = eqx.tree_at(
-                lambda intervenors: intervenors[first_stage_label],
-                existing_intervenors,
-                existing_intervenors[first_stage_label] + list(intervenors),
-            )
-        elif isinstance(intervenors, dict):
-            intervenors_dict = copy.deepcopy(existing_intervenors)
-            for label, new_intervenors in intervenors.items():
-                intervenors_dict[label] += list(new_intervenors)
-        else:
-            raise ValueError("intervenors not a sequence or dict of sequences")
+    if isinstance(intervenors, Sequence):
+        # If a sequence is given, append to the first stage.
+        first_stage_label = next(iter(existing_intervenors))
+        intervenors_dict = eqx.tree_at(
+            lambda intervenors: intervenors[first_stage_label],
+            existing_intervenors,
+            existing_intervenors[first_stage_label] + list(intervenors),
+        )
+    elif isinstance(intervenors, dict):
+        intervenors_dict = copy.deepcopy(existing_intervenors)
+        for label, new_intervenors in intervenors.items():
+            intervenors_dict[label] += list(new_intervenors)
+    else:
+        raise ValueError("intervenors not a sequence or dict of sequences")
 
     for k in intervenors_dict:
         if k not in where(model).model_spec:
@@ -494,7 +500,7 @@ def remove_intervenors(
     )
 
 
-class TimeSeriesParam(eqx.Module):
+class TimeSeriesParam(Module):
     """Wraps intervenor parameters that should be interpreted as time series.
 
     Attributes:
@@ -576,6 +582,15 @@ def schedule_intervenor(
             turned on even if the intervenor doesn't explicitly receive values
             for its parameters.
     """
+    intervenor_: AbstractIntervenor
+    if isinstance(intervenor, type(AbstractIntervenor)):
+        if intervention_spec is None:
+            raise ValueError("Must pass intervention_spec if intervenor is a class")
+        intervenor_ = intervenor(params=intervention_spec)  # type: ignore
+    elif isinstance(intervenor, AbstractIntervenor):
+        intervenor_ = intervenor
+    else:
+        raise ValueError("intervenor must be an AbstractIntervenor instance or class")
 
     # A unique label is needed because `AbstractTask` uses a single dict to
     # pass intervention parameters for all intervenors in an `AbstractStagedModel`,
@@ -588,7 +603,7 @@ def schedule_intervenor(
         jax.tree_map(
             lambda model: model.step._all_intervenor_labels,
             models,
-            is_leaf=lambda x: isinstance(x, eqx.Module),  # AbstractModel
+            is_leaf=lambda x: isinstance(x, Module),  # AbstractModel
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
@@ -597,20 +612,18 @@ def schedule_intervenor(
         jax.tree_map(
             lambda task: tuple(task.intervention_specs.keys()),
             tasks,
-            is_leaf=lambda x: isinstance(x, eqx.Module),  # AbstractTask
+            is_leaf=lambda x: isinstance(x, Module),  # AbstractTask
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
     invalid_labels = set(invalid_labels_models + invalid_labels_tasks)
-    label = get_unique_label(intervenor.label, invalid_labels)
+    label = get_unique_label(intervenor_.label, invalid_labels)
 
     # Construct training and validation intervention specs
     if intervention_spec is not None:
         intervention_specs = {label: intervention_spec}
     else:
-        if isinstance(intervenor, type(AbstractIntervenor)):
-            raise ValueError("Must pass intervention_spec if intervenor is a class")
-        intervention_specs = {label: intervenor.params}
+        intervention_specs = {label: intervenor_.params}
 
     if intervention_spec_validation is not None:
         intervention_specs_validation = {label: intervention_spec_validation}
@@ -630,20 +643,16 @@ def schedule_intervenor(
             ),
         ),
         tasks,
-        is_leaf=lambda x: isinstance(x, eqx.Module),  # AbstractTask
+        is_leaf=lambda x: isinstance(x, Module),  # AbstractTask
     )
 
-    # Instantiate the intervenor if necessary, give it the unique label,
-    # and make sure it has a single set of default param values.
-    if isinstance(intervenor, type(AbstractIntervenor)):
-        intervenor = intervenor(params=intervention_specs[label])
-
-    intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor, label)
+    # Relabel the intervenor, and make sure it has a single set of default param values.
+    intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor_, label)
 
     # TODO: Should we let the user pass a `default_intervention_spec`?
     key_example = jax.random.PRNGKey(0)
     task_example = jax.tree_leaves(
-        tasks, is_leaf=lambda x: isinstance(x, eqx.Module)  # AbstractTask
+        tasks, is_leaf=lambda x: isinstance(x, Module)  # AbstractTask
     )[0]
     trial_spec_example = task_example.get_train_trial(key_example)
 

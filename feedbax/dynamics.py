@@ -8,14 +8,13 @@ from abc import abstractmethod, abstractproperty
 import logging
 from typing import Optional
 
-import equinox as eqx
-from equinox import AbstractVar
+from equinox import Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax._model import AbstractModel
-from feedbax.state import CartesianState, StateBounds, StateT
+from feedbax.state import StateBounds, StateT
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +67,7 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         ...
 
     @property
-    def step(self) -> "AbstractDynamicalSystem[StateT]":
+    def step(self) -> Module:
         return self
 
 

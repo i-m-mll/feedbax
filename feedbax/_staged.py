@@ -15,12 +15,13 @@ from typing import (
     Generic,
     Optional,
     Protocol,
+    Self,
     TypeVar,
     Union,
 )
 
 import equinox as eqx
-from equinox import AbstractVar, field
+from equinox import AbstractVar, Module, field
 import jax
 import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -38,22 +39,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-ModelT = TypeVar("ModelT", bound=eqx.Module)
-StateT = TypeVar("StateT", bound=eqx.Module)
+ModelT = TypeVar("ModelT", bound=Module)
+StateT = TypeVar("StateT", bound=Module)
 
 
 class ModelStageCallable(Protocol):
     # This is part of the `ModelInput` hack.
-    def __call__(self, input: ModelInput, state: eqx.Module, key: PRNGKeyArray) -> PyTree[Array]:
+    def __call__(self, input: ModelInput, state: PyTree[Array], *, key: PRNGKeyArray) -> PyTree[Array]:
         ...
 
 
 class OtherStageCallable(Protocol):
-    def __call__(self, input: PyTree[Array], state: eqx.Module, key: PRNGKeyArray) -> PyTree[Array]:
+    def __call__(self, input: PyTree[Array], state: PyTree[Array], *, key: PRNGKeyArray) -> PyTree[Array]:
         ...
 
 
-class ModelStage(eqx.Module, Generic[ModelT, StateT]):
+class ModelStage(Module, Generic[ModelT, StateT]):
     """Specification for a stage in a subclass of `AbstractStagedModel`.
 
     Each stage of a model is a callable that performs a modification to part
@@ -198,7 +199,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
     def init(
         self,
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> StateT:
         """Return a default state for the model."""
         ...
@@ -259,13 +260,15 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return intervenors_dict
 
     @property
-    def step(self) -> "AbstractStagedModel[StateT]":
+    def step(self) -> Module:
         """The model step.
 
         For an `AbstractStagedModel`, this is trivially the model itself.
         """
         return self
 
+    # TODO: Avoid referencing `AbstractIntervenor` here, to avoid a circular import
+    # with `feedbax.intervene`.
     @property
     def _all_intervenor_labels(self):
         model_leaves = jax.tree_util.tree_leaves(

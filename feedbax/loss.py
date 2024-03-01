@@ -80,11 +80,8 @@ class LossDict(dict[str, Array]):
     def __setitem__(self, key, value):
         raise TypeError("LossDict does not support item assignment")
 
-    def update(self, dict_):
+    def update(self, other=(), /, **kwargs):
         raise TypeError("LossDict does not support update")
-
-    def __or__(self, other):
-        return LossDict({**self, **other})
 
     def tree_flatten(self):
         """The same flatten function used by JAX for `dict`"""

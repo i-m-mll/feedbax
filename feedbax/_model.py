@@ -12,9 +12,11 @@ from typing import (
     TYPE_CHECKING,
     Generic,
     Optional,
+    Self,
 )
 
 import equinox as eqx
+from equinox import Module
 import jax
 from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
@@ -23,6 +25,7 @@ from feedbax.state import StateBounds, StateT
 from feedbax._tree import random_split_like_tree
 
 if TYPE_CHECKING:
+    from feedbax._staged import AbstractStagedModel
     from feedbax.intervene import AbstractIntervenorInput
     from feedbax.task import AbstractTaskInputs
 
@@ -30,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AbstractModel(eqx.Module, Generic[StateT]):
+class AbstractModel(Module, Generic[StateT]):
     """Base class for models that operate on `AbstractState` objects."""
 
     @abstractmethod
@@ -50,7 +53,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         ...
 
     @abstractproperty
-    def step(self) -> "AbstractModel[StateT]":
+    def step(self) -> Module:
         """The part of the model PyTree specifying a single time step of the model.
 
         For non-iterated models, this should trivially return `step`.
@@ -112,7 +115,7 @@ class AbstractModel(eqx.Module, Generic[StateT]):
         return True
 
 
-class ModelInput(eqx.Module):
+class ModelInput(Module):
     """PyTree that contains all inputs to a model."""
 
     input: PyTree[Array]
@@ -155,7 +158,7 @@ class MultiModel(AbstractModel[StateT]):
         )
 
     @property
-    def step(self):
+    def step(self) -> Module:
         return self
 
     def _get_keys(self, key):
@@ -164,10 +167,7 @@ class MultiModel(AbstractModel[StateT]):
         )
 
 
-def wrap_stateless_callable(
-    callable: Callable,
-    pass_key: bool = True,
-):
+def wrap_stateless_callable(callable: Callable):
     """Makes a 'stateless' callable compatible with state-passing.
 
     !!! Info
@@ -186,20 +186,21 @@ def wrap_stateless_callable(
 
     Arguments:
         callable: The callable to wrap.
-        pass_key: If `True`, the keyword argument `key` will be forwarded to the wrapped
-            callable. If `False`, it will be discarded. Discarding is useful if the
-            wrapped callable does not accept a `key` argument.
     """
-    if pass_key:
+    @wraps(callable)
+    def wrapped(input, state, *args, **kwargs):
+        return callable(input, *args, **kwargs)
 
-        @wraps(callable)
-        def wrapped(input, state, *args, **kwargs):
-            return callable(input, *args, **kwargs)
+    return wrapped
 
-    else:
+def wrap_stateless_keyless_callable(callable: Callable):
+    """Like `wrap_stateless_callable`, for a callable that also takes no `key`.
 
-        @wraps(callable)
-        def wrapped(input, state, *args, key: Optional[PRNGKeyArray] = None, **kwargs):
-            return callable(input, *args, **kwargs)
+    Arguments:
+        callable: The callable to wrap.
+    """
+    @wraps(callable)
+    def wrapped(input, state, *args, key: Optional[PRNGKeyArray] = None, **kwargs):
+        return callable(input, *args, **kwargs)
 
     return wrapped

@@ -17,7 +17,7 @@ from typing import (
 )
 
 import equinox as eqx
-from equinox import field
+from equinox import Module, field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
@@ -26,7 +26,7 @@ from jaxtyping import Array, Float, PyTree
 logger = logging.getLogger(__name__)
 
 
-class AbstractState(eqx.Module):
+class AbstractState(Module):
     """Base class for model states.
 
     !!! NOTE ""
@@ -36,10 +36,10 @@ class AbstractState(eqx.Module):
     ...
 
 
-StateT = TypeVar("StateT", AbstractState, Array)
+StateT = TypeVar("StateT", Module, Array)
 
 
-class StateBounds(eqx.Module, Generic[StateT]):
+class StateBounds(Module, Generic[StateT]):
     """Specifies bounds on a state.
 
     Attributes:

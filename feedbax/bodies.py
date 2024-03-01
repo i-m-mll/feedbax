@@ -287,19 +287,13 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     def state_consistency_update(
         self, state: SimpleFeedbackState
     ) -> SimpleFeedbackState:
-        """Adjust the state
+        """Returns a corrected initial state for the model.
 
-        Update the plant configuration state, given that the user has
+        1. Update the plant configuration state, given that the user has
         initialized the effector state.
-
-        Also fill the feedback queues with the initial feedback states. This
-        is less problematic than passing all zeros.
-
-        TODO:
-        - Check which of the two (effector or config) initialized, and update the other one.
-          Might require initializing them to NaN or something in `init`.
-        - Only initialize feedback channels whose *queues* are NaN, don't just check if
-          the entire channel is NaN and updated all-or-none of them.
+        2. Fill the feedback queues with the initial feedback states. This
+        is less problematic than passing all zeros until the delay elapses
+        for the first time.
         """
         state = eqx.tree_at(
             lambda state: state.mechanics.plant.skeleton,

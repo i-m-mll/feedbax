@@ -9,7 +9,7 @@ import os
 from typing import Optional, Tuple
 
 import equinox as eqx
-from equinox import AbstractVar
+from equinox import AbstractVar, Module
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
@@ -35,7 +35,7 @@ class AbstractIterator(AbstractModel[StateT]):
         return self._step.init(key=key)
 
     @property
-    def step(self) -> AbstractModel[StateT]:
+    def step(self) -> Module:
         """The model to be iterated."""
         return self._step
 

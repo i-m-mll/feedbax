@@ -17,7 +17,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
-from feedbax._model import wrap_stateless_callable
+from feedbax._model import wrap_stateless_keyless_callable
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, CartesianState
 
@@ -104,8 +104,8 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
                     where_state=lambda state: state,
                 ),
                 "get_effector": Stage(
-                    callable=lambda self: wrap_stateless_callable(
-                        self.plant.skeleton.effector, pass_key=False
+                    callable=lambda self: wrap_stateless_keyless_callable(
+                        self.plant.skeleton.effector
                     ),
                     where_input=lambda input, state: state.plant.skeleton,
                     where_state=lambda state: state.effector,

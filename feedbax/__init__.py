@@ -1,5 +1,4 @@
-"""TODO
-
+"""
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
@@ -10,7 +9,12 @@ import os
 import warnings
 
 from feedbax._io import save, load
-from feedbax._model import AbstractModel, ModelInput, wrap_stateless_callable
+from feedbax._model import (
+    AbstractModel,
+    ModelInput,
+    wrap_stateless_callable,
+    wrap_stateless_keyless_callable,
+)
 from feedbax._staged import (
     AbstractStagedModel,
     ModelStage,

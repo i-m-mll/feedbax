@@ -31,7 +31,7 @@ import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
-from feedbax._model import wrap_stateless_callable
+from feedbax._model import wrap_stateless_callable, wrap_stateless_keyless_callable
 from feedbax.misc import (
     identity_func,
     interleave_unequal,
@@ -296,8 +296,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if self.hidden_nonlinearity is not None:
             spec |= {
                 "hidden_nonlinearity": Stage(
-                    callable=lambda self: wrap_stateless_callable(
-                        self.hidden_nonlinearity, pass_key=False
+                    callable=lambda self: wrap_stateless_keyless_callable(
+                        self.hidden_nonlinearity
                     ),
                     where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.hidden,
@@ -321,8 +321,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                     where_state=lambda state: state.output,
                 ),
                 "out_nonlinearity": Stage(
-                    callable=lambda self: wrap_stateless_callable(
-                        self.out_nonlinearity, pass_key=False
+                    callable=lambda self: wrap_stateless_keyless_callable(
+                        self.out_nonlinearity
                     ),
                     where_input=lambda input, state: state.output,
                     where_state=lambda state: state.output,

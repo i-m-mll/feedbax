@@ -98,7 +98,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         if not isinstance(self.delay, int):
             raise ValueError("Delay must be an integer")
 
-    def _update_queue(self, input, state, *, key):
+    def _update_queue(self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray):
         return ChannelState(
             output=state.queue[0],
             queue=state.queue[1:] + (input,),
