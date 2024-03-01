@@ -495,14 +495,14 @@ def plot_activity_heatmap(
     """
     fig, ax = plt.subplots(1, 1, figsize=(10, 2))
     im = ax.imshow(activity.T, aspect="auto", cmap=cmap)
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Time step")
     ax.set_ylabel("Unit")
     fig.colorbar(im)
     return fig, ax
 
 
 def plot_activity_sample_units(
-    activities: Float[Array, "trial time unit"],
+    activities: Float[Array, "*trial time unit"],
     n_samples: int,
     unit_includes: Optional[Sequence[int]] = None,
     cols: int = 2,
@@ -534,7 +534,16 @@ def plot_activity_sample_units(
         figsize: The size of the figure.
         key: A random key used to sample the units to plot.
     """
-    xlabel = "time step"
+    xlabel = "Time step"
+
+    # Make sure `activities` has shape (trials, time steps, units).
+    # If multiple batch dimensions are present, flatten them.
+    if len(activities.shape) == 2:
+        activities = activities[None, ...]
+    elif len(activities.shape) > 3:
+        activities = activities.reshape(-1, *activities.shape[-2:])
+    else:
+        raise ValueError("Invalid shape for ")
 
     unit_idxs = jr.choice(
         key, jnp.arange(activities.shape[-1]), (n_samples,), replace=False

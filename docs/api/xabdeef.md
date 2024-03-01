@@ -1,19 +1,19 @@
 # Pre-built models
 
-These models can be constructed immediately, without needing to build them out of individual model components.
+Feedbax provides models, loss functions, and model-task pairings which can be constructed immediately, without needing to build them out of core components.
 
-## Pairings of models and tasks
+## Model-task pairings
 
 !!! Example
-    All pairings are constructed as `TrainingContext` instances, and can be 
-    trained immediately. 
-    
+    All pairings are provided as [`TrainingContext`][feedbax.xabdeef.TrainingContext] objects, and can be
+    trained immediately.
+
     For example:
-    
+
     ```python
     import jax.random as jr
     from feedbax.xabdeef import point_mass_nn_simple_reaches
-    
+
     context = point_mass_nn_simple_reaches(key=jr.PRNGKey(0))
     model_trained, train_history = context.train()
     ```

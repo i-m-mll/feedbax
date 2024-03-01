@@ -55,7 +55,8 @@ def get_ensemble(
     """Vmap a function over a set of random keys.
 
     Arguments:
-        func: A function that returns a PyTree, and whose final argument is a key.
+        func: A function that returns a PyTree, and whose final keyword argument
+            is `key: PRNGKeyArray`.
         n_ensemble: The number of keys to split; i.e. the size of the batch
             dimensions in the array leaves of the returned PyTree.
         *args: The positional arguments to `func`.
@@ -63,7 +64,7 @@ def get_ensemble(
         **kwargs: The keyword arguments to `func`.
     """
     keys = jr.split(key, n_ensemble)
-    func_ = partial(func, *args, **kwargs)
+    func_ = lambda key: func(*args, **kwargs, key=key)
     return eqx.filter_vmap(func_)(keys)
 
 

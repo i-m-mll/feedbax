@@ -527,7 +527,7 @@ def schedule_intervenor(
     ] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
     intervention_spec_validation: Optional[AbstractIntervenorInput] = None,
     default_active: bool = False,
-) -> Tuple["AbstractTask", AbstractModel[StateT]]:
+) -> Tuple[PyTree["AbstractTask"], PyTree[AbstractModel[StateT]]]:
     """Adds an intervention to a model and a task.
 
     !!! Note ""

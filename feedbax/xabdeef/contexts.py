@@ -29,7 +29,8 @@ N_LOG_STEPS_DEFAULT = 10
 
 
 class TrainingContext(eqx.Module):
-    """A model-task pairing with automatic construction of a `TaskTrainer` instance.
+    """A model-task pairing with automatic construction of a
+    [`TaskTrainer`][feedbax.train.TaskTrainer] instance.
 
     Attributes:
         model: The model.
@@ -144,26 +145,26 @@ def point_mass_nn_simple_reaches(
     if n_replicates == 1:
         model = point_mass_nn(
             task,
-            key=key,
+            n_steps=n_steps,
             dt=dt,
             mass=mass,
-            hidden_size=hidden_size,
             encoding_size=encoding_size,
+            hidden_size=hidden_size,
             hidden_type=hidden_type,
-            n_steps=n_steps,
             feedback_delay_steps=feedback_delay_steps,
+            key=key,
         )
         ensembled = False
     elif n_replicates > 1:
         model = get_ensemble(
             point_mass_nn,
             task,
+            n_steps=n_steps,
             dt=dt,
             mass=mass,
-            hidden_size=hidden_size,
             encoding_size=encoding_size,
+            hidden_size=hidden_size,
             hidden_type=hidden_type,
-            n_steps=n_steps,
             feedback_delay_steps=feedback_delay_steps,
             n_ensemble=n_replicates,
             key=key,
