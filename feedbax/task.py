@@ -70,7 +70,7 @@ def _get_where_str(where_func: Callable) -> str:
 @jtu.register_pytree_node_class
 class WhereDict(
     AbstractTransformedOrderedDict[
-        Callable[[AbstractState], PyTree[Array, "T"]], PyTree[Array, "T"]
+        str, Callable[[PyTree[Array]], PyTree[Array, "T"]], PyTree[Array, "T"]
     ]
 ):
     """An `OrderedDict` that allows limited use of `where` lambdas as keys.
@@ -540,7 +540,7 @@ class AbstractTask(eqx.Module):
         keys_batch = jr.split(key_batch, batch_size)
         keys_eval = jr.split(key_eval, batch_size)
 
-        trials = jax.vmap(self._get_train_trial)(keys_batch)
+        trials = jax.vmap(self.get_train_trial_with_intervenor_params)(keys_batch)
 
         losses, states = self.eval_trials(model, trials, keys_eval)
 
@@ -611,7 +611,7 @@ def internal_grid_points(
         ```
         ```>> Array([[3., 3.], [6., 3.], [3., 6.], [6., 6.]]).```
     """
-    ticks = jax.vmap(lambda b: jnp.linspace(*b, n + 2)[1:-1])(bounds.T)
+    ticks = jax.vmap(lambda b: jnp.linspace(b[0], b[1], n + 2)[1:-1])(bounds.T)
     points = jnp.vstack(jax.tree_map(jnp.ravel, jnp.meshgrid(*ticks))).T
     return points
 
@@ -707,7 +707,7 @@ class SimpleReaches(AbstractTask):
             lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
             effector_target_state,
         )
-        task_input = _forceless_task_inputs(
+        effector_target = _forceless_task_inputs(
             jax.tree_map(
                 lambda x: x[:-1],
                 effector_target_state,
@@ -728,7 +728,7 @@ class SimpleReaches(AbstractTask):
             inits=WhereDict(
                 {(lambda state: state.mechanics.effector): effector_init_state}
             ),
-            inputs=task_input,
+            inputs=SimpleReachTaskInputs(effector_target=effector_target),
             target=effector_target_state,
         )
 
@@ -807,8 +807,8 @@ class DelayedReaches(AbstractTask):
             (10, 25),  # delay
         )
     )
-    target_on_epochs: Tuple[int, ...] = field(default=(1,), converter=jnp.asarray)
-    hold_epochs: Tuple[int, ...] = field(default=(0, 1, 2), converter=jnp.asarray)
+    target_on_epochs: Int[Array, "_"] = field(default=(1,), converter=jnp.asarray)
+    hold_epochs: Int[Array, "_"] = field(default=(0, 1, 2), converter=jnp.asarray)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
@@ -855,7 +855,8 @@ class DelayedReaches(AbstractTask):
             effector_pos_endpoints
         )
 
-        epochs_keys = jr.split(self.key_eval, effector_init_states.pos.shape[0])
+        key_val = jr.PRNGKey(self.seed_validation)
+        epochs_keys = jr.split(key_val, effector_init_states.pos.shape[0])
         task_inputs, effector_target_states, epoch_start_idxs = jax.vmap(
             self._get_sequences
         )(effector_init_states, effector_target_states, epochs_keys)
@@ -980,6 +981,7 @@ class Stabilization(AbstractTask):
             target=target_states,
         )
 
+    @property
     def n_validation_trials(self) -> int:
         """Size of the validation set."""
         return self.eval_grid_n**2
@@ -997,7 +999,7 @@ def _points_grid(
     if isinstance(grid_n, int):
         grid_n = (grid_n, grid_n)
 
-    xy_1d = map(lambda x: jnp.linspace(*x[0], x[1]), zip(workspace.T, grid_n))
+    xy_1d = map(lambda x: jnp.linspace(x[0][0], x[0][1], x[1]), zip(workspace.T, grid_n))
     grid = jnp.stack(jnp.meshgrid(*xy_1d))
     grid_points = grid.reshape(2, -1).T
     return grid_points
@@ -1029,7 +1031,7 @@ def centreout_endpoints(
 
 
 def gen_epoch_lengths(
-    key: jr.PRNGKey,
+    key: PRNGKeyArray,
     ranges: Tuple[Tuple[int, int], ...] = (
         (1, 3),  # (min, max) for first epoch
         (2, 5),  # second epoch
@@ -1037,8 +1039,8 @@ def gen_epoch_lengths(
     ),
 ) -> Int[Array, "n_epochs"]:
     """Generate a random integer in each given ranges."""
-    ranges = jnp.array(ranges, dtype=int)
-    return jr.randint(key, (ranges.shape[0],), *ranges.T)
+    ranges_arr = jnp.array(ranges, dtype=int)
+    return jr.randint(key, (ranges_arr.shape[0],), *ranges_arr.T)
 
 
 def get_masks(
@@ -1054,7 +1056,7 @@ def get_masks(
 
 def get_masked_seqs(
     arrays: PyTree,
-    masks: Tuple[Int[Array, "n"], ...],
+    masks: Tuple[Int[Array, "n"], ...],  # TODO
     init_fn: Callable[[Tuple[int, ...]], Shaped[Array, "..."]] = jnp.zeros,
 ) -> PyTree:
     """Expand arrays with an initial axis of length `n`, and fill with

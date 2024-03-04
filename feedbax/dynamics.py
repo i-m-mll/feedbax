@@ -6,7 +6,7 @@
 
 from abc import abstractmethod, abstractproperty
 import logging
-from typing import Optional
+from typing import Optional, TypeVar
 
 from equinox import Module
 import jax
@@ -18,6 +18,9 @@ from feedbax.state import StateBounds, StateT
 
 
 logger = logging.getLogger(__name__)
+
+
+# StateT = TypeVar("StateT", Module, Array)
 
 
 class AbstractDynamicalSystem(AbstractModel[StateT]):

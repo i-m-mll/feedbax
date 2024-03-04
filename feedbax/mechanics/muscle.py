@@ -17,7 +17,7 @@ import logging
 from typing import Optional, Tuple
 
 import equinox as eqx
-from equinox import AbstractVar, field
+from equinox import AbstractVar, Module, field
 import jax
 import jax.random as jr
 import jax.numpy as jnp
@@ -59,7 +59,7 @@ class ActivationFilter(AbstractDynamicalSystem):
 
     def vector_field(
         self,
-        t: None,
+        t: float | None,
         state: Array,
         input: Array,
     ):
@@ -76,6 +76,7 @@ class ActivationFilter(AbstractDynamicalSystem):
     def _tau_diff(self):
         return self.tau_act - self.tau_deact
 
+    @property
     def input_size(self):
         return 1
 
@@ -83,7 +84,7 @@ class ActivationFilter(AbstractDynamicalSystem):
         raise NotImplementedError("No state PyTree associated with ActivationFilter.")
 
 
-class AbstractMuscleState(AbstractState):
+class AbstractMuscleState(Module):
     """Base class for state PyTrees operated on by muscle models.
 
     !!! Note

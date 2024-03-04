@@ -36,7 +36,7 @@ class AbstractState(Module):
     ...
 
 
-StateT = TypeVar("StateT", Module, Array)
+StateT = TypeVar("StateT", bound=PyTree[Array])
 
 
 class StateBounds(Module, Generic[StateT]):

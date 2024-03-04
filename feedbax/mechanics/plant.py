@@ -12,7 +12,7 @@ import logging
 from typing import Generic, Optional, Self, Tuple, Union
 
 import equinox as eqx
-from equinox import AbstractVar, field
+from equinox import AbstractVar, Module, field
 import jax
 from jax import Array
 import jax.numpy as jnp
@@ -30,7 +30,7 @@ from feedbax.state import AbstractState, StateBounds, StateT, clip_state
 logger = logging.getLogger(__name__)
 
 
-class PlantState(AbstractState):
+class PlantState(Module):
     """The state of a biomechanical model.
 
     Some models may only possess a skeleton, with forces input directly by a
@@ -220,7 +220,7 @@ class DirectForceInput(AbstractPlant):
         """Specifies a single dynamical component: the skeleton."""
         return dict(
             {
-                "skeleton": DynamicsComponent(
+                "skeleton": DynamicsComponent[PlantState](
                     dynamics=self.skeleton,
                     where_input=lambda input, state: input,
                     where_state=lambda state: state.skeleton,

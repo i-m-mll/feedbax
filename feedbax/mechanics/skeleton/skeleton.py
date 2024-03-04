@@ -65,7 +65,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     @abstractmethod
     def update_state_given_effector_force(
         self,
-        effector_force: Array,
+        input: Array,
         state: StateT,
         *,
         key: Optional[PRNGKeyArray] = None,

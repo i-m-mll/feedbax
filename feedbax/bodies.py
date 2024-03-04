@@ -262,8 +262,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         task: "AbstractTask",
         mechanics: "Mechanics",
         feedback_spec: Union[
-            PyTree[ChannelSpec], PyTree[Mapping[str, Any]]
-        ] = ChannelSpec(where=lambda mechanics_state: mechanics_state.plant.skeleton),
+            PyTree[ChannelSpec[MechanicsState]], PyTree[Mapping[str, Any]]
+        ] = ChannelSpec[MechanicsState](
+            where=lambda mechanics_state: mechanics_state.plant.skeleton
+        ),
     ) -> int:
         """Determine how many scalar input features the neural network needs.
 
@@ -322,7 +324,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 ),
             )
 
-        feedback_state_isnan = jax.flatten_util.ravel_pytree(
+        feedback_state_isnan = jax.flatten_util.ravel_pytree(  # type: ignore
             jax.tree_map(lambda x: jnp.isnan(x), state.feedback)
         )[0]
 

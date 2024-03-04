@@ -30,7 +30,7 @@ import numpy as np
 from feedbax._model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.misc import indent_str
-from feedbax.state import AbstractState, StateT
+from feedbax.state import StateT
 
 if TYPE_CHECKING:
     from feedbax.task import AbstractTaskInputs
@@ -40,8 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 ModelT = TypeVar("ModelT", bound=Module)
-StateT = TypeVar("StateT", bound=Module)
-
+T = TypeVar("T", bound=Module)
 
 class ModelStageCallable(Protocol):
     # This is part of the `ModelInput` hack.
@@ -54,7 +53,7 @@ class OtherStageCallable(Protocol):
         ...
 
 
-class ModelStage(Module, Generic[ModelT, StateT]):
+class ModelStage(Module, Generic[ModelT, T]):
     """Specification for a stage in a subclass of `AbstractStagedModel`.
 
     Each stage of a model is a callable that performs a modification to part
@@ -87,8 +86,8 @@ class ModelStage(Module, Generic[ModelT, StateT]):
         [ModelT],
         Union[ModelStageCallable, OtherStageCallable],
     ]
-    where_input: Callable[["AbstractTaskInputs", StateT], PyTree]
-    where_state: Callable[[StateT], PyTree]
+    where_input: Callable[["AbstractTaskInputs", T], PyTree]
+    where_state: Callable[[T], PyTree]
     intervenors: Sequence[AbstractIntervenor] = field(default_factory=tuple)
 
 
@@ -237,7 +236,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
                 Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
             ]
         ],
-    ):
+    ) -> Mapping[str, Sequence[AbstractIntervenor]]:
         intervenors_dict = jax.tree_map(
             lambda _: [],
             self.model_spec,

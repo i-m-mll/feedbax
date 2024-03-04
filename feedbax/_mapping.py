@@ -9,7 +9,7 @@ from collections import OrderedDict
 from collections.abc import MutableMapping
 
 import logging
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 from feedbax.misc import unzip2
 
@@ -17,11 +17,12 @@ from feedbax.misc import unzip2
 logger = logging.getLogger(__name__)
 
 
-KT = TypeVar("KT")
+KT1 = TypeVar("KT1")
+KT2 = TypeVar("KT2")
 VT = TypeVar("VT")
 
 
-class AbstractTransformedOrderedDict(MutableMapping[KT, VT]):
+class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, VT]):
     """Base for `OrderedDict`s which transform keys when getting and setting items.
 
     It stores the original keys, and otherwise behaves (e.g. when iterating)
@@ -35,23 +36,21 @@ class AbstractTransformedOrderedDict(MutableMapping[KT, VT]):
     See `feedbax.task.WhereDict` for an example.
 
     Based on https://stackoverflow.com/a/3387975
-
-    TODO:
-    - I'm not sure how the typing should work. I guess `VT` might need to correspond
-      to a tuple of the original key and the value.
     """
+    store: OrderedDict[KT1, tuple[KT2, VT]]
 
     def __init__(self, *args, **kwargs):
         self.store = OrderedDict()
         self.update(OrderedDict(*args, **kwargs))
 
-    def __getitem__(self, key):
-        return self.store[self._key_transform(key)][1]
+    def __getitem__(self, key: KT2) -> VT:
+        k = self._key_transform(key)
+        return self.store[k][1]
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: KT2, value: VT):
         self.store[self._key_transform(key)] = (key, value)
 
-    def __delitem__(self, key):
+    def __delitem__(self, key: KT2):
         del self.store[self._key_transform(key)]
 
     def __iter__(self):
@@ -59,11 +58,12 @@ class AbstractTransformedOrderedDict(MutableMapping[KT, VT]):
         for key in self.store:
             yield self.store[key][0]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.store)
 
     @abstractmethod
-    def _key_transform(self, key): ...
+    def _key_transform(self, key: KT2) -> KT1:
+        ...
 
     def tree_flatten(self):
         """The same flatten function used by JAX for `dict`"""

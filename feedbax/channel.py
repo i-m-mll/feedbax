@@ -7,10 +7,10 @@
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 import logging
-from typing import Optional, Self, Tuple, Union
+from typing import Generic, Optional, Self, Tuple, Union
 
 import equinox as eqx
-from equinox import field
+from equinox import Module, field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -18,7 +18,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState
+from feedbax.state import AbstractState, StateT
 from feedbax._tree import random_split_like_tree
 
 
@@ -39,7 +39,7 @@ class ChannelState(AbstractState):
     noise: Optional[PyTree[Array, "T"]] = None
 
 
-class ChannelSpec(eqx.Module):
+class ChannelSpec(Module, Generic[StateT]):
     """Specifies how to build a [`Channel`][feedbax.channel.Channel], with respect to the state PyTree of its owner.
 
     Attributes:
@@ -48,7 +48,7 @@ class ChannelSpec(eqx.Module):
         noise_std: The standard deviation of the noise to add to the output.
     """
 
-    where: Callable[[AbstractState], PyTree[Array]]
+    where: Callable[[StateT], PyTree[Array]]
     delay: int = 0
     noise_std: Optional[float] = None
 

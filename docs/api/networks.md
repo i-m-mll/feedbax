@@ -6,7 +6,4 @@
 
 ::: feedbax.nn.SimpleStagedNetwork
 
-::: feedbax.nn.RNNCellProto
-    options:
-        members: ['__init__', '__call__'] 
 

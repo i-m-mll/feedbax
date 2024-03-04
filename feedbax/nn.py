@@ -23,7 +23,7 @@ from typing import (
 )
 
 import equinox as eqx
-from equinox import field
+from equinox import Module, field
 import jax
 from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
@@ -44,43 +44,14 @@ from feedbax.state import AbstractState, StateT
 logger = logging.getLogger(__name__)
 
 
-@runtime_checkable
-class RNNCellProto(Protocol):
-    """Specifies the interface expected from RNN cell instances.
-
-    Based on `eqx.nn.GRUCell` and `eqx.nn.LSTMCell`.
-
-    !!! dev-note "Development note"
-        Neither mypy nor typeguard currently complain if the `Type[RNNCell]`
-        argument to `SimpleStagedNetwork` doesn't satisfy this protocol. I'm
-        not sure if this is because protocols aren't compatible with `Type`,
-        though no errors are raised to suggest that's so.
-
-        I'm leaving this in here because it seems harmless, and for now it
-        functions as documentation for the interface expected from an
-        RNN cell.
-    """
-
-    hidden_size: int
-
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int,
-        use_bias: bool,
-        *,
-        key: PRNGKeyArray,
-        **kwargs,
-    ): ...
-
-    def __call__(
-        self,
-        input: Float[Array, "channel"],
-        state: Float[Array, "unit"],
-    ) -> Float[Array, "unit"]: ...
-
-
-def orthogonal_gru_cell(input_size, hidden_size, use_bias=True, scale=1.0, *, key):
+def orthogonal_gru_cell(
+    input_size: int,
+    hidden_size: int,
+    use_bias: bool = True,
+    scale: float = 1.0,
+    *,
+    key: PRNGKeyArray,
+):
     """Returns an `eqx.nn.GRUCell` with orthogonal weight matrix initialization."""
     net = eqx.nn.GRUCell(input_size, hidden_size, use_bias=use_bias, key=key)
     initializer = jax.nn.initializers.orthogonal(scale=scale, column_axis=-1)
@@ -110,6 +81,11 @@ class NetworkState(AbstractState):
     encoding: Optional[PyTree[Array]] = None
 
 
+@runtime_checkable
+class _HasBias(Protocol):
+    bias: Array
+
+
 class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
     """A single step of a neural network layer, with optional encoder and readout layers.
 
@@ -124,17 +100,17 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         readout: The module implementing the readout layer, if present.
     """
 
-    out_size: int
-    hidden: eqx.Module
+    hidden: Module
     hidden_size: int
     hidden_noise_std: Optional[float]
-    hidden_nonlinearity: Optional[Callable[[Float], Float]] = None
-    encoder: Optional[eqx.Module] = None
+    hidden_nonlinearity: Callable[[Float], Float]
+    out_size: int
+    out_nonlinearity: Callable[[Float], Float]
+    readout: Optional[Module] = None
     encoding_size: Optional[int] = None
-    readout: Optional[eqx.Module] = None
-    out_nonlinearity: Optional[Callable[[Float], Float]] = None
+    encoder: Optional[Module] = None
 
-    intervenors: Mapping[str, AbstractIntervenor]
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -142,11 +118,11 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         hidden_size: int,
         out_size: Optional[int] = None,
         encoding_size: Optional[int] = None,
-        hidden_type: Type[RNNCellProto] = eqx.nn.GRUCell,
-        encoder_type: Type[eqx.Module] = eqx.nn.Linear,
-        readout_type: Type[eqx.Module] = eqx.nn.Linear,
+        hidden_type: Callable[..., Module] = eqx.nn.GRUCell,
+        encoder_type: Callable[..., Module] = eqx.nn.Linear,
+        readout_type: Callable[..., Module] = eqx.nn.Linear,
         use_bias: bool = True,
-        hidden_nonlinearity: Callable[[Float], Float] = None,
+        hidden_nonlinearity: Callable[[Float], Float] = identity_func,
         out_nonlinearity: Callable[[Float], Float] = identity_func,
         hidden_noise_std: Optional[float] = None,
         intervenors: Optional[
@@ -209,23 +185,18 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         if out_size is not None:
             readout = readout_type(hidden_size, out_size, key=key3)
-            self.readout = eqx.tree_at(
-                lambda layer: layer.bias,
-                readout,
-                jnp.zeros_like(readout.bias),
-            )
+            if isinstance(readout, _HasBias):
+                self.readout = eqx.tree_at(
+                    lambda layer: layer.bias,
+                    readout,
+                    jnp.zeros_like(readout.bias),
+                )
             self.out_nonlinearity = out_nonlinearity
             self.out_size = out_size
         else:
             self.out_size = hidden_size
 
         self.intervenors = self._get_intervenors_dict(intervenors)
-
-    # def _output(self, hidden, state, *, key):
-    #     return self.out_nonlinearity(self.readout(hidden))
-
-    # def _encode(self, input, state, *, key):
-    #     return self.encoder(input)
 
     def _add_hidden_noise(self, input, state, *, key):
         if self.hidden_noise_std is None:
@@ -249,7 +220,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         """
         Stage = ModelStage[Self, NetworkState]
 
-        if n_positional_args(self.hidden) == 1:
+        if n_positional_args(self.hidden) == 1:  # type: ignore
             hidden_module = lambda self: wrap_stateless_callable(self.hidden)
             if isinstance(self.hidden, eqx.nn.Linear):
                 logger.warning(
@@ -293,16 +264,15 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                 }
             )
 
-        if self.hidden_nonlinearity is not None:
-            spec |= {
-                "hidden_nonlinearity": Stage(
-                    callable=lambda self: wrap_stateless_keyless_callable(
-                        self.hidden_nonlinearity
-                    ),
-                    where_input=lambda input, state: state.hidden,
-                    where_state=lambda state: state.hidden,
+        spec |= {
+            "hidden_nonlinearity": Stage(
+                callable=lambda self: wrap_stateless_keyless_callable(
+                    self.hidden_nonlinearity
                 ),
-            }
+                where_input=lambda input, state: state.hidden,
+                where_state=lambda state: state.hidden,
+            ),
+        }
 
         if self.hidden_noise_std is not None:
             spec |= {
@@ -316,18 +286,21 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if self.readout is not None:
             spec |= {
                 "readout": Stage(
-                    callable=lambda self: wrap_stateless_callable(self.readout),
+                    callable=lambda self: wrap_stateless_callable(self.readout),  # type: ignore
                     where_input=lambda input, state: state.hidden,
                     where_state=lambda state: state.output,
                 ),
-                "out_nonlinearity": Stage(
-                    callable=lambda self: wrap_stateless_keyless_callable(
-                        self.out_nonlinearity
-                    ),
-                    where_input=lambda input, state: state.output,
-                    where_state=lambda state: state.output,
-                ),
             }
+
+        spec |= {
+            "out_nonlinearity": Stage(
+                callable=lambda self: wrap_stateless_keyless_callable(
+                    self.out_nonlinearity
+                ),
+                where_input=lambda input, state: state.output,
+                where_state=lambda state: state.output,
+            )
+        }
 
         return spec
 
@@ -359,7 +332,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
 
 # TODO: Convert this to AbstractStagedModule
-class LeakyRNNCell(eqx.Module):
+class LeakyRNNCell(Module):
     """Custom `RNNCell` with persistent, leaky state.
 
     Based on `eqx.nn.GRUCell` and the leaky RNN from
@@ -457,7 +430,7 @@ class LeakyRNNCell(eqx.Module):
     def alpha(self):
         return self.dt / self.tau
 
-    @cached_property
+    @cached_property  # type: ignore
     def noise_std(self, noise_strength):
         if self.use_noise:
             return math.sqrt(2 / self.alpha) * noise_strength
@@ -482,7 +455,7 @@ def n_layer_linear(
         for i, (size0, size1) in enumerate(zip(sizes[:-1], sizes[1:]))
     ]
     return eqx.nn.Sequential(
-        interleave_unequal(layers, [nonlinearity] * len(hidden_sizes))
+        list(interleave_unequal(layers, [nonlinearity] * len(hidden_sizes)))
     )
 
 
