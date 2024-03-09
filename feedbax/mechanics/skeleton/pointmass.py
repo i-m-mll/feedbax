@@ -11,7 +11,7 @@ from typing import Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
 from feedbax.dynamics import LTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
@@ -65,7 +65,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
 
 
     def vector_field(
-        self, t: float | None, state: CartesianState, input: Float[Array, "input"]
+        self, t: Scalar, state: CartesianState, input: Float[Array, "input"]
     ) -> CartesianState:
         """Returns time derivatives of the system's states.
 

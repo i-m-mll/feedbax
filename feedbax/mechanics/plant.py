@@ -16,11 +16,11 @@ from equinox import AbstractVar, Module, field
 import jax
 from jax import Array
 import jax.numpy as jnp
-from jaxtyping import Float, PRNGKeyArray, PyTree
+from jaxtyping import Float, PRNGKeyArray, PyTree, Scalar
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.intervene import AbstractIntervenor
-from feedbax.mechanics.muscle import AbstractMuscle, AbstractMuscleState
-from feedbax.mechanics.skeleton.arm import TwoLink
+from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
+from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax._staged import AbstractStagedModel, ModelStage
@@ -42,7 +42,7 @@ class PlantState(Module):
     """
 
     skeleton: AbstractSkeletonState
-    muscles: Optional[AbstractMuscleState] = None
+    muscles: Optional[MuscleState] = None
 
 
 class DynamicsComponent(eqx.Module, Generic[StateT]):
@@ -83,7 +83,7 @@ class AbstractPlant(
     clip_states: AbstractVar[bool]
 
     def vector_field(
-        self, t: float | None, state: PlantState, input: PyTree[Array]
+        self, t: Scalar, state: PlantState, input: PyTree[Array]
     ) -> PlantState:
         """Return the time derivatives of musculoskeletal variables,
         where those derivatives are defined.
@@ -281,7 +281,7 @@ class MuscledArm(AbstractPlant):
         self,
         muscle_model: AbstractMuscle,
         activator: AbstractDynamicalSystem,
-        skeleton: AbstractSkeleton = TwoLink(),
+        skeleton: AbstractSkeleton = TwoLinkArm(),
         clip_states: bool = True,
         moment_arms: Float[Array, "links=2 muscles"] | Sequence[Sequence[float]] = (
             jnp.array(
@@ -289,7 +289,7 @@ class MuscledArm(AbstractPlant):
                     (2.0, -2.0, 0.0, 0.0, 1.50, -2.0),  # [cm]
                     (0.0, 0.0, 2.0, -2.0, 2.0, -1.50),
                 )
-            ),
+            )
         ),
         theta0: Float[Array, "links=2 muscles"] | Sequence[Sequence[float]] = (
             2

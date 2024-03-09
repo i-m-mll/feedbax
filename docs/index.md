@@ -16,7 +16,10 @@ Feedbax makes it easy to:
 - swap out components of models, and write new components.
 <!-- - track the progress of a training run in Tensorboard. -->
 
-Feedbax was designed for feedback control of biomechanical models, to perform movement tasks in continuous spaces. However, it can be used more generally as a framework for optimal control.
+??? Note "What Feedbax can (and can't) do"
+    Feedbax is designed for feedback control of biomechanical models by neural networks, to perform movement tasks in continuous spaces. However, it could also be used for other optimal control problems for which a suitable set of model, cost function, and task trials can be defined.
+
+    Feedbax is *not* designed for finding algebraic solutions to the classic formalisms of optimal control theory, such as the [Linear-Quadratic-Gaussian](https://en.wikipedia.org/wiki/Linear%E2%80%93quadratic%E2%80%93Gaussian_control) (LQG) controller. Similarly, Feedbax does not enforce the [separation principle](https://en.wikipedia.org/wiki/Separation_principle) between model components—that is, models don't *need* to include distinct components (e.g. neural network layers) for the controller and the observer (i.e. state estimator).
 
 ## Feedbax is a JAX library
 
@@ -26,7 +29,7 @@ Feedbax uses JAX and [Equinox](https://docs.kidger.site/equinox/).
 <!--
 One disadvantage of JAX is a lack of GPU support on Windows, though it is possible to use the GPU through the Windows Subsystem for Linux (WSL). -->
 
-For a library that's similar to Feedbax but written in PyTorch, please check out [`MotorNet`](https://github.com/OlivierCodol/MotorNet)!
+For a library that's similar to Feedbax but written in PyTorch, please check out [MotorNet](https://github.com/OlivierCodol/MotorNet)!
 
 ## Installation
 
@@ -36,16 +39,16 @@ Currently requires Python>=3.11.
 
 ## Development
 
-I've developed Feedbax over the last few months, while learning JAX. My short-term objective has been to serve my own use case—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
+I've developed Feedbax over the last few months, while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
 
-I've added GitHub [issues](https://github.com/i-m-mll/feedbax/issues) to document some of my choices and uncertainties, and to open them for discussion. For an overview of major issues in different categories, check out [this GitHub conversation](https://github.com/i-m-mll/feedbax/discussions/27).
+I've added GitHub [issues](https://github.com/i-m-mll/feedbax/issues) to document some of my choices and uncertainties. For an overview of major issues in different categories, check out [this GitHub conversation](https://github.com/i-m-mll/feedbax/discussions/27). Refer also to [this page](/feedbax/examples/structure) of the docs, for an informal overview of how Feedbax objects relate to each other.
 
-There are many features that could be implemented, especially with respect to pre-built models and tasks. So far I've focused more on the overall structure, than on feature-completeness. Anyone can suggest a feature they'd like to see.
+There are many features that could be implemented, especially with respect to pre-built models and tasks. So far I've focused more on the overall structure, than on coverage of all the common use cases I can imagine. If there's a particular model, task, or feature you'd like Feedbax to support, [let us know]([issues](https://github.com/i-m-mll/feedbax/issues)!
 
 You're also welcome to leave feedback on the documentation. GitHub users can comment at the bottom of each page of documentation, or directly on [GitHub](https://github.com/i-m-mll/feedbax/discussions/categories/documentation).
 
 ## Acknowledgments
 
-- Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have influenced this project
+- Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have directly influenced this project
 - Special thanks to [Patrick Kidger](https://github.com/patrick-kidger), whose JAX libraries and their documentation often serve as examples to me
 

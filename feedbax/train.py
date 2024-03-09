@@ -23,7 +23,7 @@ from tensorboardX import SummaryWriter  # type: ignore
 from tqdm.auto import tqdm
 
 from feedbax import loss
-from feedbax.loss import AbstractLoss, LossDict
+from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
 from feedbax.misc import Timer, TqdmLoggingHandler, delete_contents
 from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
@@ -51,10 +51,10 @@ class TaskTrainerHistory(eqx.Module):
         trial_specs: The training trial specifications.
     """
 
-    loss: LossDict
+    loss: LossDict | Array
     learning_rate: Optional[Array] = None
     model_trainables: Optional[AbstractModel] = None
-    trial_specs: Optional[Sequence[AbstractTaskTrialSpec]] = None
+    trial_specs: tuple[AbstractTaskTrialSpec, ...] = ()
 
 
 class TaskTrainer(eqx.Module):
@@ -62,7 +62,7 @@ class TaskTrainer(eqx.Module):
 
     optimizer: optax.GradientTransformation
     checkpointing: bool
-    chkpt_dir: Optional[Path]
+    chkpt_dir: Path
     writer: Optional[SummaryWriter]
     model_update_funcs: Sequence[Callable]
     _use_tb: bool
@@ -97,7 +97,7 @@ class TaskTrainer(eqx.Module):
 
         self._use_tb = enable_tensorboard
         if self._use_tb:
-            self.writer = SummaryWriter(tensorboard_logdir)
+            self.writer = SummaryWriter(str(tensorboard_logdir))
             # display loss terms in the same figure under "Custom Scalars"
             # layout = {
             #     "Loss terms": {
@@ -188,6 +188,14 @@ class TaskTrainer(eqx.Module):
         else:
             loss_array_shape = (n_batches,)
             opt_state = self.optimizer.init(model_trainables)
+            # Unlikely to be used for anything, due to ensembled operations being in
+            # conditionals. Make the type checker happy.
+            n_replicates = 1
+
+
+        if (hyperparams := getattr(opt_state, "hyperparams", None)) is None:
+            logger.info("Optimizer not wrapped in `optax.inject_hyperparameters`; "
+                        "learning rate history will not be returned")
 
         # TODO: ensembling
         if save_model_trainables:
@@ -198,16 +206,25 @@ class TaskTrainer(eqx.Module):
         else:
             model_train_history = None
 
-        history = TaskTrainerHistory(
-            loss=LossDict(
+        if not isinstance(task.loss_func, AbstractLoss):
+            raise ValueError(
+                "The loss function must be an instance of `AbstractLoss`."
+            )
+        if isinstance(task.loss_func, CompositeLoss):
+            loss_history = LossDict(
                 zip(
                     task.loss_func.weights.keys(),
                     [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
                 )
-            ),
+            )
+        else:
+            loss_history = jnp.empty(loss_array_shape)
+
+
+        history = TaskTrainerHistory(
+            loss=loss_history,
             learning_rate=jnp.empty(loss_array_shape),
             model_trainables=model_train_history,
-            trial_specs=() if save_trial_specs else None,
         )
 
         start_batch = 0  # except when we load a checkpoint
@@ -218,9 +235,12 @@ class TaskTrainer(eqx.Module):
                 self._load_last_checkpoint(model, opt_state, history)
             )
             start_batch = last_batch + 1
-            logger.info(
-                f"Restored checkpoint {chkpt_path} from training step {last_batch}."
-            )
+            if chkpt_path is not None:
+                logger.info(
+                    f"Restored checkpoint {chkpt_path} from training step {last_batch}."
+                )
+            else:
+                raise ValueError("restore_checkpoint is True, but no checkpoint found")
         elif self.checkpointing:
             # Delete old checkpoints if checkpointing is on.
             delete_contents(self.chkpt_dir)
@@ -342,16 +362,15 @@ class TaskTrainer(eqx.Module):
                 tree_set(history.loss, losses, batch),
             )
 
-            try:
+            if (hyperparams := getattr(opt_state, "hyperparams", None)) is not None:
                 # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
-                learning_rate = opt_state.hyperparams["learning_rate"]
+                learning_rate = hyperparams["learning_rate"]
                 history = eqx.tree_at(
                     lambda history: history.learning_rate,
                     history,
                     history.learning_rate.at[batch].set(learning_rate),
                 )
-            except (AttributeError, KeyError):
-                learning_rate = None
+
 
             # tensorboard losses on every iteration
             if ensembled:
@@ -363,7 +382,7 @@ class TaskTrainer(eqx.Module):
                 losses_mean = losses
                 ensembled_str = ""
 
-            if self._use_tb:
+            if self._use_tb and self.writer is not None:
                 self.writer.add_scalar(
                     f"loss/{ensembled_str}train", losses_mean.total.item(), batch
                 )
@@ -416,7 +435,7 @@ class TaskTrainer(eqx.Module):
                     losses_val_mean = losses_val
                     states_plot = states
 
-                if self._use_tb:
+                if self._use_tb and self.writer is not None:
                     # TODO: register plots instead of hard-coding
                     trial_specs = task.validation_trials
                     fig, _ = plot.plot_reach_trajectories(
@@ -570,14 +589,13 @@ class TaskTrainer(eqx.Module):
         opt_state: optax.OptState,
         history: TaskTrainerHistory,
     ) -> Tuple[
-        str | Path, int, AbstractModel[StateT], optax.OptState, TaskTrainerHistory
+        Optional[Path], int, AbstractModel[StateT], optax.OptState, TaskTrainerHistory
     ]:
         try:
             with open(self.chkpt_dir / "last_batch.txt", "r") as f:
                 last_batch = int(f.read())
         except FileNotFoundError:
-            # this will just raise another error at checkpoint restore
-            return
+            return None, -1, model, opt_state, history
 
         chkpt_path = self.chkpt_dir / f"ckpt_{last_batch}.eqx"
         # TODO: Load `opt_state` after fixing issue with first training iteration

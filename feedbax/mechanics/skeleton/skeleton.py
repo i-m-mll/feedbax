@@ -9,7 +9,7 @@ import logging
 from typing import Optional, TypeVar
 
 from jax import Array
-from jaxtyping import PRNGKeyArray
+from jaxtyping import PRNGKeyArray, Scalar
 
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.state import AbstractState, CartesianState
@@ -33,7 +33,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     @abstractmethod
     def vector_field(
         self,
-        t: float | None,
+        t: Scalar,
         state: StateT,
         input: Array,
     ) -> StateT:

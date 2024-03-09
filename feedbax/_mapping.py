@@ -43,7 +43,7 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
         self.store = OrderedDict()
         self.update(OrderedDict(*args, **kwargs))
 
-    def __getitem__(self, key: KT2) -> VT:
+    def __getitem__(self, key: KT1 | KT2) -> VT:
         k = self._key_transform(key)
         return self.store[k][1]
 
@@ -62,7 +62,7 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
         return len(self.store)
 
     @abstractmethod
-    def _key_transform(self, key: KT2) -> KT1:
+    def _key_transform(self, key: KT1 | KT2) -> KT1:
         ...
 
     def tree_flatten(self):

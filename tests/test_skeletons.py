@@ -14,14 +14,14 @@ import jax.tree_util as jtu
 import pytest
 
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState, PointMass, StateT
-from feedbax.mechanics.skeleton.arm import TwoLink, TwoLinkState
+from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
 from feedbax.state import CartesianState 
 
 
 logger = logging.getLogger(__name__)
 
 
-# TODO: examine twolink forward consistency so we can make this lower!
+# TODO: examine TwoLinkArm forward consistency so we can make this lower!
 ALL_CLOSE_ATOL = 1e-4
 
 
@@ -42,13 +42,13 @@ def inverse_cycle(
     return skeleton.effector(skeleton.inverse_kinematics(cartesian_state))
 
 
-twolink = TwoLink()
+TwoLinkArm = TwoLinkArm()
 
 
-def test_twolink_forward_consistency():
+def test_TwoLinkArm_forward_consistency():
 
-    skeleton_state = TwoLinkState()
-    skeleton_state_cycle = forward_cycle(twolink, skeleton_state)
+    skeleton_state = TwoLinkArmState()
+    skeleton_state_cycle = forward_cycle(TwoLinkArm, skeleton_state)
     
     if not all(jtu.tree_leaves(jax.tree_map(
             lambda x, y: jnp.allclose(x, y, atol=ALL_CLOSE_ATOL),
@@ -60,10 +60,10 @@ def test_twolink_forward_consistency():
         raise AssertionError(f"Not equal:\n\n{tree1_str}\n{tree2_str}")
     
     
-def test_twolink_inverse_consistency():
+def test_TwoLinkArm_inverse_consistency():
     
     effector_state = CartesianState(pos=jnp.array([0.0, 0.5]))
-    effector_state_cycle = inverse_cycle(twolink, effector_state)
+    effector_state_cycle = inverse_cycle(TwoLinkArm, effector_state)
     
     eqx.tree_pprint(effector_state, short_arrays=False)
     eqx.tree_pprint(effector_state_cycle, short_arrays=False)

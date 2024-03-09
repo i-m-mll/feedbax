@@ -26,7 +26,7 @@ from typing import (
 )
 
 import equinox as eqx
-from equinox import AbstractVar, field
+from equinox import AbstractVar, Module, field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -130,7 +130,7 @@ class WhereDict(
         return f"{type(self).__name__}([{items_str}])"
 
 
-class AbstractTaskInputs(eqx.Module):
+class AbstractTaskInputs(Module):
     """Abstract base class for model inputs provided by a task.
 
     !!! Note ""
@@ -147,7 +147,7 @@ class AbstractTaskInputs(eqx.Module):
 # that will really change between classes of tasks is `inputs`. In that case,
 # we could just make this `TaskTrialSpec` and have it be a generic of
 # `AbstractTaskInputs`
-class AbstractTaskTrialSpec(eqx.Module):
+class AbstractTaskTrialSpec(Module):
     """Abstract base class for trial specifications provided by a task.
 
     Attributes:
@@ -204,7 +204,7 @@ class SimpleReachTaskInputs(AbstractTaskInputs):
     effector_target: CartesianState  #! column vector: why here?
 
 
-class DelayedReachTaskInputs(eqx.Module):
+class DelayedReachTaskInputs(Module):
     """Model input for a delayed reaching task.
 
     Attributes:
@@ -262,7 +262,7 @@ class DelayedReachTrialSpec(AbstractReachTrialSpec):
     intervene: Mapping[str, Array] = field(default_factory=dict)
 
 
-class AbstractTask(eqx.Module):
+class AbstractTask(Module):
     """Abstract base class for tasks.
 
     Provides methods for evaluating suitable models or ensembles of models on

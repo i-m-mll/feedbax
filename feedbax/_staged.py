@@ -204,7 +204,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         ...
 
     @abstractproperty
-    def model_spec(self) -> OrderedDict[str, ModelStage]:
+    def model_spec(self) -> OrderedDict[str, ModelStage[Self, StateT]]:
         """Specify the model's computation in terms of state operations.
 
         !!! Warning
@@ -214,7 +214,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         ...
 
     @cached_property
-    def _stages(self) -> OrderedDict[str, ModelStage]:
+    def _stages(self) -> OrderedDict[str, ModelStage[Self, StateT]]:
         """Zips up the user-defined intervenors with `model_spec`.
 
         This should not be referred to in `__init__` before assigning `self.intervenors`!

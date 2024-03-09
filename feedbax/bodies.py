@@ -90,7 +90,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
 
     net: AbstractModel[NetworkState]
     mechanics: "Mechanics"
-    feedback_channels: PyTree[Channel]
+    channels: MultiModel[ChannelState]
     _feedback_specs: PyTree[ChannelSpec]
     intervenors: Mapping[str, Sequence[AbstractIntervenor]]
 
@@ -137,11 +137,11 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 spec.where(example_mechanics_state)
             )
 
-        self.feedback_channels = jax.tree_map(
+        self.channels = MultiModel(jax.tree_map(
             lambda spec: _build_feedback_channel(spec),
             feedback_specs,
             is_leaf=lambda x: isinstance(x, ChannelSpec),
-        )
+        ))
         self._feedback_specs = feedback_specs
 
     # def update_feedback(
@@ -162,10 +162,6 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     #     )
 
     @property
-    def _feedback_module(self):
-        return MultiModel(self.feedback_channels)
-
-    @property
     def model_spec(self) -> OrderedDict[str, ModelStage[Self, SimpleFeedbackState]]:
         """Specifies the stages of the model in terms of state operations."""
         Stage = ModelStage[Self, SimpleFeedbackState]
@@ -173,7 +169,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return OrderedDict(
             {
                 "update_feedback": Stage(
-                    callable=lambda self: self._feedback_module,
+                    callable=lambda self: self.channels,
                     where_input=lambda input, state: jax.tree_map(
                         lambda spec: spec.where(state.mechanics),
                         self._feedback_specs,
@@ -214,7 +210,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             mechanics=self.mechanics.init(key=keys[0]),
             # TODO: in case of a wrapped network (i.e. not an `AbstractModel`) a different initialization is needed!
             net=self.net.init(key=keys[1]),  # type: ignore
-            feedback=self._feedback_module.init(key=keys[2]),
+            feedback=self.channels.init(key=keys[2]),
         )
 
     @property
@@ -239,7 +235,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             net=self.net.memory_spec,
             feedback=jax.tree_map(
                 lambda channel: channel.memory_spec,
-                self.feedback_channels,
+                self.channels.models,
                 is_leaf=lambda x: isinstance(x, eqx.Module),
             ),
         )
@@ -252,7 +248,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             net=self.net.bounds,
             feedback=jax.tree_map(
                 lambda channel: channel.bounds,
-                self.feedback_channels,
+                self.channels.models,
                 is_leaf=lambda x: isinstance(x, eqx.Module),
             ),
         )
@@ -307,7 +303,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         # with the current values of the states to be fed back. By initializing `Channel` with
         # NaN and then performing this check/fill, we avoid passing zeros as feedback, which
         # is more incorrect.
-        def _fill_feedback_queues(state):
+        def _fill_feedback_queues(state: SimpleFeedbackState) -> SimpleFeedbackState:
             return eqx.tree_at(
                 lambda state: state.feedback,
                 state,
@@ -319,7 +315,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                     ),
                     state.feedback,
                     self._feedback_specs,
-                    self.feedback_channels,
+                    self.channels.models,
                     is_leaf=lambda x: isinstance(x, ChannelState),
                 ),
             )

@@ -13,7 +13,7 @@ import equinox as eqx
 from equinox import field
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 import numpy as np
 
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
@@ -24,7 +24,7 @@ from feedbax.misc import SINCOS_GRAD_SIGNS, corners_2d
 logger = logging.getLogger(__name__)
 
 
-class TwoLinkState(AbstractSkeletonState):
+class TwoLinkArmState(AbstractSkeletonState):
     """The configuration state of a 2D arm with two rotational joints.
 
     Attributes:
@@ -38,7 +38,7 @@ class TwoLinkState(AbstractSkeletonState):
     torque: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
 
 
-class TwoLink(AbstractSkeleton[TwoLinkState]):
+class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
     """Model of a 2D arm with two straight rigid segments, and two rotational joints.
 
     Attributes:
@@ -78,13 +78,13 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         # otherwise their initialization is a side effect
         self._a
 
-    @jax.named_scope("fbx.TwoLink")
+    @jax.named_scope("fbx.TwoLinkArm")
     def vector_field(
         self,
-        t: float | None,
-        state: TwoLinkState,
+        t: Scalar,
+        state: TwoLinkArmState,
         input: Array,
-    ) -> TwoLinkState:
+    ) -> TwoLinkArmState:
         """Return the time derivatives of the arm's configuration state.
 
         Arguments:
@@ -119,15 +119,15 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
 
         dd_angle = jnp.linalg.inv(inertia_mat) @ net_torque
 
-        return TwoLinkState(d_angle, dd_angle)
+        return TwoLinkArmState(d_angle, dd_angle)
 
     def init(
         self,
         *,
         key: Optional[PRNGKeyArray] = None,
-    ) -> TwoLinkState:
+    ) -> TwoLinkArmState:
         """Return a default state for the arm."""
-        return TwoLinkState()
+        return TwoLinkArmState()
 
     @cached_property
     def _a(self):
@@ -161,8 +161,8 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         """Number of arm segments."""
         return 2
 
-    @jax.named_scope("fbx.TwoLink.inverse_kinematics")
-    def inverse_kinematics(self, effector_state: CartesianState) -> TwoLinkState:
+    @jax.named_scope("fbx.TwoLinkArm.inverse_kinematics")
+    def inverse_kinematics(self, effector_state: CartesianState) -> TwoLinkArmState:
         """Return the configuration state of the arm, given the Cartesian state
         of the end effector.
 
@@ -201,15 +201,15 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         else:
             torque = None
 
-        return TwoLinkState(angle=angle, d_angle=d_angle, torque=torque)
+        return TwoLinkArmState(angle=angle, d_angle=d_angle, torque=torque)
 
     def update_state_given_effector_force(
         self,
         effector_force: Array,
-        state: TwoLinkState,
+        state: TwoLinkArmState,
         *,
         key: Optional[PRNGKeyArray] = None,
-    ) -> TwoLinkState:
+    ) -> TwoLinkArmState:
         """Adds torques implied by a force on the end effector, to a
         configuration state of the arm.
 
@@ -262,8 +262,8 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         xy_pos = jnp.cumsum(length_components, axis=1)  # xy, links
         return xy_pos.T, length_components
 
-    @jax.named_scope("fbx.TwoLink.forward_kinematics")
-    def forward_kinematics(self, state: TwoLinkState) -> CartesianState:
+    @jax.named_scope("fbx.TwoLinkArm.forward_kinematics")
+    def forward_kinematics(self, state: TwoLinkArmState) -> CartesianState:
         """Return the Cartesian state of the joints and end effector, given
         the arm's configuration state.
 
@@ -289,7 +289,7 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
             force=jnp.zeros_like(xy_vel),
         )
 
-    def effector(self, state: TwoLinkState) -> CartesianState:
+    def effector(self, state: TwoLinkArmState) -> CartesianState:
         """Return the Cartesian state of the endpoint of the arm.
 
         Arguments:
@@ -301,19 +301,19 @@ class TwoLink(AbstractSkeleton[TwoLinkState]):
         )
 
     @property
-    def bounds(self) -> StateBounds[TwoLinkState]:
+    def bounds(self) -> StateBounds[TwoLinkArmState]:
         """Suggested bounds on the arm state.
 
         !!! ref "Source"
             Joint angle limits adopted from [MotorNet](https://github.com/OlivierCodol/MotorNet/blob/9a56e5670d31b06fd0d81932e9bc6a8b1e46ec4b/motornet/skeleton.py#L336).
         """
         return StateBounds(
-            low=TwoLinkState(
+            low=TwoLinkArmState(
                 angle=jnp.array([0.0, 0.0]),
                 d_angle=None,
                 torque=None,
             ),
-            high=TwoLinkState(
+            high=TwoLinkArmState(
                 angle=jnp.deg2rad(jnp.array([140.0, 160.0])),
                 d_angle=None,
                 torque=None,

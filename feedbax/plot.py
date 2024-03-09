@@ -400,7 +400,7 @@ def plot_reach_trajectories(
     # TODO: We should be able to infer this from the structure of `states`.
     # For example, if `states.mechanics.plant.muscle` is None, we know we can use
     # 'linear' if `states.mechanics.plant.skeleton` is `CartesianState``, and `torques`
-    # if it's `TwoLinkState`.
+    # if it's `TwoLinkArmState`.
     if control_labels is None:
         if control_label_type == "linear":
             control_labels = ("Control force", r"$\mathrm{f}_x$", r"$\mathrm{f}_y$")

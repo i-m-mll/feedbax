@@ -15,9 +15,9 @@ As subclasses ultimately of `AbstractDynamicalSystem`, skeleton models in Feedba
             'update_state_given_effector_force',
         ]
 
-::: feedbax.mechanics.skeleton.TwoLinkState
+::: feedbax.mechanics.skeleton.TwoLinkArmState
 
-::: feedbax.mechanics.skeleton.TwoLink
+::: feedbax.mechanics.skeleton.TwoLinkArm
     options:
         members: [
             'vector_field',

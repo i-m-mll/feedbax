@@ -10,7 +10,7 @@ from functools import cached_property
 import logging
 from typing import Optional, Self, Type, Union
 
-import diffrax as dfx
+import diffrax as dfx  # type: ignore
 import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -53,7 +53,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     dt: float
     solver: dfx.AbstractSolver
 
-    intervenors: Mapping[str, AbstractIntervenor]
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -144,11 +144,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
 
     @property
     def memory_spec(self) -> PyTree[bool]:
-        return MechanicsState(
-            plant=True,
-            effector=True,
-            solver=False,
-        )
+        return MechanicsState(plant=True, effector=True, solver=False)  # type: ignore
 
     def init(
         self,

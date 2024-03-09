@@ -53,6 +53,7 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
+from feedbax.bodies import SimpleFeedbackState
 from feedbax.misc import get_unique_label, unzip2
 from feedbax.state import AbstractState, HasEffectorState
 
@@ -148,8 +149,8 @@ class AbstractLoss(eqx.Module):
 class CompositeLoss(AbstractLoss):
     """Incorporates multiple simple loss terms and their relative weights."""
 
-    terms: Mapping[str, AbstractLoss]
-    weights: Mapping[str, float]
+    terms: dict[str, AbstractLoss]
+    weights: dict[str, float]
     label: str
 
     def __init__(
@@ -187,25 +188,29 @@ class CompositeLoss(AbstractLoss):
         """
         self.label = label
 
-        if isinstance(terms, dict):
+        if isinstance(terms, Mapping):
             if user_labels:
                 labels, terms = list(zip(*terms.items()))
             else:
                 labels = [term.label for term in terms.values()]
                 terms = list(terms.values())
-        else:
+        elif isinstance(terms, Sequence):
             # TODO: if `terms` is a dict, this fails!
             labels = [term.label for term in terms]
+        else:
+            raise ValueError("terms must be a mapping or sequence of AbstractLoss")
 
-        if weights is None:
-            weights = jax.tree_map(lambda _: 1.0, terms)
-        elif not len(terms) == len(weights):
+        if isinstance(weights, Mapping):
+            weight_values = tuple(weights.values())
+        elif isinstance(weights, Sequence):
+            weight_values = tuple(weights)
+        elif weights is None:
+            weight_values = tuple(1.0 for _ in terms)
+
+        if not len(terms) == len(weight_values):
             raise ValueError(
-                "Mismatch between number of loss terms " + "and number of term weights"
+                "Mismatch between number of loss terms and number of term weights"
             )
-
-        if isinstance(weights, dict):
-            weights = list(weights.values())
 
         # Split into lists of data for simple and composite terms.
         term_tuples_split: Tuple[
@@ -213,7 +218,7 @@ class CompositeLoss(AbstractLoss):
             Sequence[Tuple[str, AbstractLoss, float]],
         ]
         term_tuples_split = eqx.partition(
-            list(zip(labels, terms, weights)),
+            list(zip(labels, terms, weight_values)),
             lambda x: not isinstance(x[1], CompositeLoss),
             is_leaf=lambda x: isinstance(x, tuple),
         )
@@ -340,19 +345,19 @@ class EffectorPositionLoss(AbstractLoss):
     """
 
     label: str = "Effector position"
-    discount_func: Optional[Callable[[int], Float[Array, "time"]]] = (
+    discount_func: Callable[[int], Float[Array, "#time"]] = (
         lambda n_steps: power_discount(n_steps, discount_exp=6)[None, :]
     )
 
     def term(
         self,
-        states: HasEffectorState,
+        states: SimpleFeedbackState,
         trial_specs: "AbstractTaskTrialSpec",
     ) -> Array:
 
         # Sum over X, Y, giving the squared Euclidean distance
         loss = jnp.sum(
-            (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, axis=-1
+            (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, axis=-1  # type: ignore
         )
 
         # temporal discount
@@ -364,7 +369,6 @@ class EffectorPositionLoss(AbstractLoss):
 
         return loss
 
-    # @cache
     def discount(self, n_steps):
         # Can't use a cache because of JIT.
         # But we only need to run this once per training iteration...
@@ -391,7 +395,7 @@ class EffectorStraightPathLoss(AbstractLoss):
 
     def term(
         self,
-        states: HasEffectorState,
+        states: SimpleFeedbackState,
         trial_specs: "AbstractTaskTrialSpec",
     ) -> Array:
 
@@ -403,6 +407,8 @@ class EffectorStraightPathLoss(AbstractLoss):
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
             final_pos = trial_specs.target.pos
+        else:
+            raise ValueError("normalize_by must be 'actual' or 'goal'")
         init_final_diff = final_pos - effector_pos[:, 0]
         straight_length = jnp.linalg.norm(init_final_diff, axis=-1)
 
@@ -428,14 +434,14 @@ class EffectorFixationLoss(AbstractLoss):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "AbstractTaskTrialSpec",  # DelayedReachTrialSpec
     ) -> Array:
 
         loss = jnp.sum(
             (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, axis=-1
         )
 
-        loss = loss * jnp.squeeze(trial_specs.inputs.hold)
+        loss = loss * jnp.squeeze(trial_specs.inputs.hold)  # type: ignore
 
         # sum over time
         loss = jnp.sum(loss, axis=-1)
@@ -515,7 +521,7 @@ class NetworkActivityLoss(AbstractLoss):
         return loss
 
 
-def power_discount(n_steps: int, discount_exp: int = 6):
+def power_discount(n_steps: int, discount_exp: int = 6) -> Array:
     """A power-law vector that puts most of the weight on its later elements.
 
     Arguments:
@@ -523,7 +529,7 @@ def power_discount(n_steps: int, discount_exp: int = 6):
         discount_exp: The exponent of the power law.
     """
     if discount_exp == 0:
-        return 1.0
+        return jnp.array(1.0)
     else:
         return jnp.linspace(1.0 / n_steps, 1.0, n_steps) ** discount_exp
 

@@ -11,7 +11,7 @@ from typing import Optional, TypeVar
 from equinox import Module
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
 from feedbax._model import AbstractModel
 from feedbax.state import StateBounds, StateT
@@ -47,12 +47,12 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
         key: PRNGKeyArray,
     ) -> StateT:
         """Alias for `vector_field`, with a modified signature."""
-        return self.vector_field(None, state, input)
+        return self.vector_field(jnp.array(0.), state, input)
 
     @abstractmethod
     def vector_field(
         self,
-        t: float | None,
+        t: Scalar,
         state: StateT,
         input: PyTree[Array],  # controls
     ) -> StateT:
@@ -94,7 +94,7 @@ class LTISystem(AbstractDynamicalSystem[Array]):
     @jax.named_scope("fbx.AbstractLTISystem")
     def vector_field(
         self,
-        t: float | None,
+        t: Scalar,
         state: Array,
         input: Array,
     ) -> Array:
