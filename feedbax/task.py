@@ -15,7 +15,7 @@ TODO:
 # from __future__ import annotations
 
 from abc import abstractmethod, abstractproperty
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import dis
 from functools import cached_property
 import logging
@@ -904,6 +904,7 @@ class DelayedReaches(AbstractTask):
 
         return task_input, target_states, epoch_start_idxs
 
+    @property
     def n_validation_trials(self) -> int:
         """Number of trials in the validation set."""
         return self.eval_grid_n**2 * self.eval_n_directions
@@ -1056,7 +1057,7 @@ def get_masks(
 
 def get_masked_seqs(
     arrays: PyTree,
-    masks: Tuple[Int[Array, "n"], ...],  # TODO
+    masks: Int[Array, "masks n"],  # TODO
     init_fn: Callable[[Tuple[int, ...]], Shaped[Array, "..."]] = jnp.zeros,
 ) -> PyTree:
     """Expand arrays with an initial axis of length `n`, and fill with
@@ -1091,7 +1092,7 @@ def get_scalar_epoch_seq(
     epoch_idxs: Int[Array, "n_epochs-1"],
     n_steps: int,
     hold_value: float,
-    hold_epochs: Tuple[int, ...],
+    hold_epochs: Sequence[int] | Int[Array, "_"],
 ):
     """A scalar sequence with a non-zero value held during `hold_epochs`.
 

@@ -8,17 +8,18 @@ from abc import abstractmethod
 import logging
 from typing import Optional, TypeVar
 
+from equinox import Module
 from jax import Array
 from jaxtyping import PRNGKeyArray, Scalar
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.state import AbstractState, CartesianState
+from feedbax.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
 
 
-class AbstractSkeletonState(AbstractState):
+class AbstractSkeletonState(Module):
     ...
     # effector: CartesianState
     # config: PyTree
@@ -65,7 +66,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     @abstractmethod
     def update_state_given_effector_force(
         self,
-        input: Array,
+        effector_force: Array,
         state: StateT,
         *,
         key: Optional[PRNGKeyArray] = None,
@@ -73,8 +74,3 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         """Update the state of the skeleton given a force on the end effector."""
         ...
 
-    # @abstractmethod
-    # def init(self, *, key: PRNGKeyArray) -> StateT:
-    #     """Returns the initial state of the system.
-    #     """
-    #     ...

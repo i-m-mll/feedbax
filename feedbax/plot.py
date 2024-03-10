@@ -21,20 +21,24 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Float, Array, Int, PRNGKeyArray, PyTree
-import matplotlib as mpl
+import matplotlib.axes as mplax
+import matplotlib.cm as mplcm
+import matplotlib.colors as mplc
 from matplotlib import animation, gridspec
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
+from matplotlib.typing import ColorType
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
 from feedbax.bodies import SimpleFeedbackState
+from feedbax.loss import LossDict
 from feedbax.state import CartesianState
 from feedbax.misc import corners_2d
-from feedbax.task import AbstractReachTrialSpec, AbstractTaskTrialSpec
+from feedbax.task import AbstractReachTrialSpec
 
 if TYPE_CHECKING:
     from feedbax.train import TaskTrainerHistory
@@ -113,7 +117,7 @@ class SeabornFig2Grid:
 def plot_2D_joint_positions(
     xy: Float[Array, "time links ndim=2"],
     t0t1=(0, 1),  # (t0, t1)
-    cmap: str = "viridis",
+    cmap_name: str = "viridis",
     length_unit=None,
     ax=None,
     add_root: bool = True,
@@ -132,16 +136,19 @@ def plot_2D_joint_positions(
         links (bool):
         cmap_func ():
     """
+
     if ax is None:
         fig = plt.figure(figsize=(4, 8))
         ax = fig.add_subplot()
+    else:
+        fig = ax.get_figure()
 
     if add_root:
-        xy = np.pad(xy, ((0, 0), (1, 0), (0, 0)))
+        xy = jnp.pad(xy, ((0, 0), (1, 0), (0, 0)))
 
-    cmap_func = plt.get_cmap(cmap)
+    cmap_func = plt.get_cmap(cmap_name)
     cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
-    cmap = mpl.colors.ListedColormap(cmap)
+    cmap = mplc.ListedColormap(cmap)
 
     # arms: beginning, midpoint, and end of trajectory
     for i in (len(xy), 2, 1):
@@ -164,7 +171,7 @@ def plot_2D_joint_positions(
 
     if colorbar:
         fig.colorbar(
-            mpl.cm.ScalarMappable(mpl.colors.Normalize(*t0t1), cmap),
+            mplcm.ScalarMappable(mplc.Normalize(*t0t1), cmap),
             ax=ax,
             label="Time",
             location="bottom",
@@ -186,7 +193,7 @@ def plot_3D_paths(
     paths: Float[Array, "trial steps 3"],
     epoch_start_idxs: Int[Array, "trial epochs"],
     epoch_linestyles: Tuple[str, ...],  # epochs
-    cmap: str = "tab10",
+    cmap_name: str = "tab10",
 ):
     """Plot a set/batch of 3D trajectories over time.
 
@@ -199,7 +206,7 @@ def plot_3D_paths(
     if not epoch_start_idxs.shape[1] == len(epoch_linestyles):
         raise ValueError("TODO")
 
-    cmap = plt.get_cmap(cmap)
+    cmap = plt.get_cmap(cmap_name)
     colors = [cmap(i) for i in np.linspace(0, 1, paths.shape[0])]
 
     fig = plt.figure(figsize=(8, 8))
@@ -275,13 +282,13 @@ def plot_reach_trajectories(
     states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
     where_data: Optional[Callable] = None,
     step: int = 1,  # plot every step-th trial
-    trial_specs: Optional[AbstractTaskTrialSpec] = None,
+    trial_specs: Optional[AbstractReachTrialSpec] = None,
     endpoints: Optional[
         Tuple[Float[Array, "trial xy=2"], Float[Array, "trial xy=2"]]
     ] = None,
     straight_guides: bool = False,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
-    cmap: Optional[str] = None,
+    cmap_name: Optional[str] = None,
     colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
     color: Optional[str | Tuple[float, ...]] = None,
     ms: int = 3,
@@ -310,10 +317,10 @@ def plot_reach_trajectories(
             dashed lines will be drawn between the initial and goal positions.
         workspace: The workspace bounds. If provided, the bounds are drawn as a
             rectangle.
-        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+        cmap_name: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
             to use across trials.
-        colors: A sequence of colors, one for each plotted trial. Overrides `cmap`.
-        color: A single color to use for all trials. Overrides `cmap` but not `colors`.
+        colors: A sequence of colors, one for each plotted trial. Overrides `cmap_name`.
+        color: A single color to use for all trials. Overrides `cmap_name` but not `colors`.
         ms: Marker size for plots of states (trajectories).
         ms_source: Marker size for the initial position, if `trial_specs`/`endpoints`
             is provided.
@@ -338,42 +345,54 @@ def plot_reach_trajectories(
     else:
         positions, velocities, controls = where_data(states)
 
-    if cmap is None:
+    if cmap_name is None:
         if positions.shape[0] < 10:
-            cmap = "tab10"
+            cmap_name = "tab10"
         else:
-            cmap = "viridis"
+            cmap_name = "viridis"
 
     if endpoints is not None:
-        endpoints = jnp.asarray(endpoints)
+        endpoints_arr = jnp.asarray(endpoints)
     else:
         if trial_specs is not None:
-            endpoints = jnp.asarray(
+            endpoints_arr = jnp.asarray(
                 [
                     trial_specs.inits["mechanics.effector"].pos,
                     trial_specs.goal.pos,
                 ]
             )
+        else:
+            endpoints_arr = None
 
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
     if colors is None:
-        cmap_func = plt.get_cmap(cmap)
+        cmap_func = plt.get_cmap(cmap_name)
         colors = [
             cmap_func(i) if color is None else color
             for i in np.linspace(0, 1, positions.shape[0])
         ]
 
     for i in range(0, positions.shape[0], step):
-        # position and
-        axs[0].plot(positions[i, :, 0], positions[i, :, 1], ".", color=colors[i], ms=ms)
-        if endpoints is not None:
+
+        axs[0].plot(
+            positions[i, :, 0],
+            positions[i, :, 1],
+            ".",
+            color=colors[i],
+            ms=ms,
+        )
+
+        if endpoints_arr is not None:
             if straight_guides:
                 axs[0].plot(
-                    *endpoints[:, i].T, linestyle="dashed", color=colors[i], lw=0.75
+                    *endpoints_arr[:, i].T,
+                    linestyle="dashed",
+                    color=colors[i],
+                    lw=0.75,
                 )
             axs[0].plot(
-                *endpoints[0, i],
+                *endpoints_arr[0, i],
                 linestyle="none",
                 marker="s",
                 fillstyle="none",
@@ -381,7 +400,7 @@ def plot_reach_trajectories(
                 ms=ms_source,
             )
             axs[0].plot(
-                *endpoints[1, i],
+                *endpoints_arr[1, i],
                 linestyle="none",
                 marker="o",
                 fillstyle="none",
@@ -394,8 +413,9 @@ def plot_reach_trajectories(
             velocities[i, :, 0], velocities[i, :, 1], "-o", color=colors[i], ms=ms
         )
 
-        # force (start at timestep 1; timestep 0 is always 0)
-        axs[2].plot(controls[i, :, 0], controls[i, :, 1], "-o", color=colors[i], ms=ms)
+        if controls is not None:
+            # force (start at timestep 1; timestep 0 is always 0)
+            axs[2].plot(controls[i, :, 0], controls[i, :, 1], "-o", color=colors[i], ms=ms)
 
     # TODO: We should be able to infer this from the structure of `states`.
     # For example, if `states.mechanics.plant.muscle` is None, we know we can use
@@ -506,7 +526,7 @@ def plot_activity_sample_units(
     n_samples: int,
     unit_includes: Optional[Sequence[int]] = None,
     cols: int = 2,
-    cmap: str = "tab10",
+    cmap_name: str = "tab10",
     figsize: tuple[float, float] = (6.4, 4.8),
     *,
     key: PRNGKeyArray,
@@ -529,7 +549,7 @@ def plot_activity_sample_units(
         unit_includes: Indices of specific units to include in the plot, in addition to
             the `n_samples` randomly sampled units.
         cols: The number of columns in which to arrange the subplots.
-        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+        cmap_name: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
             to use. Each trial will be plotted in a different color.
         figsize: The size of the figure.
         key: A random key used to sample the units to plot.
@@ -552,7 +572,7 @@ def plot_activity_sample_units(
         unit_idxs = jnp.concatenate([unit_idxs, jnp.array(unit_includes)])
     x = activities[..., unit_idxs]
 
-    cmap = plt.get_cmap(cmap)
+    cmap = plt.get_cmap(cmap_name)
     colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
 
     # if len(x.shape) == 3:
@@ -585,7 +605,7 @@ def plot_loss_history(
     train_history: "TaskTrainerHistory",
     xscale: str = "log",
     yscale: str = "log",
-    cmap: str = "Set1",
+    cmap_name: str = "Set1",
 ) -> Tuple[Figure, Axes]:
     """Line plot of loss terms and their total over a training run.
 
@@ -606,7 +626,7 @@ def plot_loss_history(
             `TaskTrainer`. The function will specifically access `train_history.loss`.
         xscale: The scale of the x-axis.
         yscale: The scale of the y-axis.
-        cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+        cmap_name: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
             to use for line colors.
     """
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
@@ -614,23 +634,32 @@ def plot_loss_history(
 
     losses = train_history.loss
 
-    cmap = plt.get_cmap(cmap)
-    colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
+    if isinstance(losses, Array):
+        xs = 1 + np.arange(losses.shape[0])
+        ax.plot(xs, losses, "black", lw=3)
 
-    xs = 1 + np.arange(len(losses.total))
+    elif isinstance(losses, LossDict):
+        cmap = plt.get_cmap(cmap_name)
+        colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
 
-    total = ax.plot(xs, losses.total, "black", lw=3)
+        xs = 1 + np.arange(len(losses.total))
 
-    all_handles = [total]
-    for i, loss_term in enumerate(losses.values()):
-        handles = ax.plot(xs, loss_term, lw=0.75, color=colors[i])
-        all_handles.append(handles)
-    ax.legend(
-        # Only include the first plot for each loss term.
-        # (Don't include duplicate legend entries across batch dim.)
-        [handles[0] for handles in all_handles],
-        ["Total", *losses.keys()],
-    )
+        total = ax.plot(xs, losses.total, "black", lw=3)
+
+        all_handles = [total]
+        for i, loss_term in enumerate(losses.values()):
+            handles = ax.plot(xs, loss_term, lw=0.75, color=colors[i])
+            all_handles.append(handles)
+        ax.legend(
+            # Only include the first plot for each loss term.
+            # (Don't include duplicate legend entries across batch dim.)
+            [handles[0] for handles in all_handles],
+            ["Total", *losses.keys()],
+        )
+
+    else:
+        # Should never arrive here.
+        raise ValueError("Invalid type encountered in `train_history.loss`")
 
     ax.set(xlabel="Training iteration", ylabel="Loss")
 
@@ -659,18 +688,25 @@ def plot_loss_mean_history(
     """
     losses = train_history.loss
 
-    losses_terms_df = jax.tree_map(
-        lambda losses: pd.DataFrame(losses.T, index=range(losses.shape[1])).melt(
-            var_name="Time step", value_name="Loss"
-        ),
-        dict(losses) | {"Total": losses.total},
-    )
+    if isinstance(losses, Array):
+        losses_terms_dfs = {
+            "Total": pd.DataFrame(losses.T, index=range(losses.shape[1]))
+        }
+    elif isinstance(losses, LossDict):
+        losses_terms_dfs = jax.tree_map(
+            lambda losses: pd.DataFrame(losses.T, index=range(losses.shape[1])).melt(
+                var_name="Time step", value_name="Loss"
+            ),
+            dict(losses) | {"Total": losses.total},
+        )
+    else:
+        raise ValueError("Invalid type encountered for `train_history.loss`")
 
     fig, ax = plt.subplots()
     ax.set(xscale=xscale, yscale=yscale)
 
     # TODO: Construct just one dataframe.
-    for label, df in losses_terms_df.items():
+    for label, df in losses_terms_dfs.items():
         sns.lineplot(
             data=df,
             x="Time step",
@@ -689,7 +725,7 @@ def plot_reach_endpoint_dists(
     s: int = 7,
     color: Optional[str] = None,
     **kwargs,
-) -> Tuple[Figure, Axes]:
+) -> Tuple[Figure, Sequence[Axes]]:
     """Plot initial and goal positions along with their distributions.
 
     Arguments:
@@ -698,10 +734,13 @@ def plot_reach_endpoint_dists(
         color: The color to use for all points. If `None`, black or white is
             automatically chosen based on the current Matplotlib theme.
     """
+
+    color_hc = get_high_contrast_neutral_shade()
+    bbox_fc = dict(white="0.2", black="0.8")[color_hc]
+    bbox_ec = dict(white="0.8", black="0.2")[color_hc]
+
     if color is None:
-        color = get_high_contrast_neutral_shade()
-        bbox_fc = dict(white="0.2", black="0.8")[color]
-        bbox_ec = dict(white="0.8", black="0.2")[color]
+        color = color_hc
 
     fig = plt.figure(figsize=(10, 5))
 
@@ -750,10 +789,10 @@ def plot_task_and_speed_profiles(
     speed: Float[Array, "trial time"],
     task_variables: Mapping[str, Float[Array, "trial time"]] = dict(),
     epoch_start_idxs: Optional[Int[Array, "trial epoch"]] = None,
-    cmap: str = "tab10",
-    colors: Optional[Sequence[str | Tuple[float, ...]]] = None,
+    cmap_name: str = "tab10",
+    colors: Optional[Sequence[ColorType]] = None,
     **kwargs,
-) -> Tuple[Figure, Axes]:
+) -> Tuple[Figure, Sequence[Axes]]:
     """For visualizing learned movements versus task structure.
 
     For example: does the network start moving before the go cue is given?
@@ -766,10 +805,10 @@ def plot_task_and_speed_profiles(
         height_ratios = (1,)
 
     if colors is None:
-        cmap = plt.get_cmap(cmap)
+        cmap = plt.get_cmap(cmap_name)
         colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
 
-    fig, axs = plt.subplots(
+    fig, axs_ = plt.subplots(
         1 + task_rows,
         1,
         height_ratios=height_ratios,
@@ -777,8 +816,11 @@ def plot_task_and_speed_profiles(
         constrained_layout=True,
     )
 
+    axs: Sequence[Axes]
     if task_rows == 0:
-        axs = [axs]
+        axs = [axs_]
+    else:
+        axs = axs_
 
     axs[-1].set_title("speed profiles")
     for i in range(speed.shape[0]):
@@ -835,8 +877,8 @@ def animate_arm2(
 
     ax.set_aspect("equal")
     # TODO: set limits based on arm geometry and angle limits
-    ax.set_xlim([-0.4, 0.75])
-    ax.set_ylim([-0.35, 0.65])
+    ax.set_xlim((-0.4, 0.75))
+    ax.set_ylim((-0.35, 0.65))
 
     (arm_line,) = ax.plot(*cartesian_state[0].T, "k-")
     (traj_line,) = ax.plot(*cartesian_state[0, :, 2].T, "g-")
@@ -847,7 +889,7 @@ def animate_arm2(
         return (fig,)
 
     return animation.FuncAnimation(
-        fig, animate, frames=len(xy), interval=interval, blit=True
+        fig, animate, frames=len(cartesian_state), interval=interval, blit=True
     )
 
 
@@ -907,14 +949,14 @@ def plot_hinton(matrix, max_weight=None, ax=None):
 
     ax.patch.set_facecolor("gray")
     ax.set_aspect("equal", "box")
-    ax.xaxis.set_major_locator(plt.NullLocator())
-    ax.yaxis.set_major_locator(plt.NullLocator())
+    ax.xaxis.set_major_locator(plt.NullLocator())  # type: ignore
+    ax.yaxis.set_major_locator(plt.NullLocator())  # type: ignore
 
     for (x, y), w in np.ndenumerate(matrix):
         color = "white" if w > 0 else "black"
         size = np.sqrt(np.abs(w) / max_weight)
-        rect = plt.Rectangle(
-            [x - size / 2, y - size / 2], size, size, facecolor=color, edgecolor=color
+        rect = plt.Rectangle(  # type: ignore
+            (x - size / 2, y - size / 2), size, size, facecolor=color, edgecolor=color
         )
         ax.add_patch(rect)
 
@@ -1015,6 +1057,8 @@ def circular_hist(
     """
     if ax is None:
         fig, ax = plt.subplots(1, 1, subplot_kw=dict(projection="polar"))
+    else:
+        fig = ax.get_figure()
 
     # Wrap angles to [-pi, pi)
     x = (x + np.pi) % (2 * np.pi) - np.pi
@@ -1076,9 +1120,7 @@ class preserve_axes_limits:
     the one in `__exit__`, but it works.
     """
 
-    def __init__(self, ax: mpl.axes.Axes | PyTree[mpl.axes.Axes]):
-        if isinstance(ax, mpl.axes.Axes):
-            axs = [ax]
+    def __init__(self, axs: PyTree[mplax.Axes]):
         self._axs = axs
         self._lims = jax.tree_map(
             lambda ax: dict(
@@ -1086,7 +1128,7 @@ class preserve_axes_limits:
                 y=ax.get_ylim(),
             ),
             axs,
-            is_leaf=lambda x: isinstance(x, mpl.axes.Axes),
+            is_leaf=lambda x: isinstance(x, mplax.Axes),
         )
 
     def __enter__(self):

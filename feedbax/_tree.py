@@ -17,6 +17,9 @@ import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 
 
+from feedbax.misc import dedupe_by_id
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -308,9 +311,18 @@ def tree_call(
     return eqx.combine(callables_values, other_values)
 
 
-def tree_array_bytes(tree: PyTree) -> int:
-    """Returns the total bytes of memory over all array leaves of a PyTree."""
+def tree_array_bytes(tree: PyTree, dedupe_arrays_by_id: bool = True) -> int:
+    """Returns the total bytes of memory over all array leaves of a PyTree.
+
+    Arguments:
+        tree: The tree with arrays to measure.
+        dedupe_arrays_by_id: If `True`, then leaves that refer to the same array in memory
+            will only be counted once.
+    """
     arrays = eqx.filter(tree, eqx.is_array)
+    if dedupe_arrays_by_id:
+        flat, treedef = jtu.tree_flatten(arrays)
+        arrays = jtu.tree_unflatten(treedef, list(dedupe_by_id(flat)))
     array_bytes = jax.tree_map(lambda x: x.nbytes, arrays)
     return jtu.tree_reduce(
         lambda x, y: x + y,

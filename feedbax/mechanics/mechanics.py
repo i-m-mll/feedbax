@@ -88,7 +88,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         return OrderedDict(
             {
                 "convert_effector_force": Stage(
-                    callable=lambda self: self.plant.skeleton.update_state_given_effector_force,
+                    callable=lambda self: self.plant.skeleton.update_state_given_effector_force,  # type: ignore
                     where_input=lambda input, state: state.effector.force,
                     where_state=lambda state: state.plant.skeleton,
                 ),

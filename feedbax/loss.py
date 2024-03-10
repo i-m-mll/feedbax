@@ -53,11 +53,11 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.bodies import SimpleFeedbackState
 from feedbax.misc import get_unique_label, unzip2
 from feedbax.state import AbstractState, HasEffectorState
 
 if TYPE_CHECKING:
+    from feedbax.bodies import SimpleFeedbackState
     from feedbax.task import AbstractTaskTrialSpec
 
 
@@ -69,7 +69,7 @@ class LossDict(dict[str, Array]):
     """Dictionary that provides a sum over its values."""
 
     @cached_property
-    def total(self):
+    def total(self) -> Array:
         """Elementwise sum over all values in the dictionary."""
         loss_term_values = list(self.values())
         return jax.tree_util.tree_reduce(lambda x, y: x + y, loss_term_values)
@@ -351,7 +351,7 @@ class EffectorPositionLoss(AbstractLoss):
 
     def term(
         self,
-        states: SimpleFeedbackState,
+        states: "SimpleFeedbackState",
         trial_specs: "AbstractTaskTrialSpec",
     ) -> Array:
 
@@ -395,7 +395,7 @@ class EffectorStraightPathLoss(AbstractLoss):
 
     def term(
         self,
-        states: SimpleFeedbackState,
+        states: "SimpleFeedbackState",
         trial_specs: "AbstractTaskTrialSpec",
     ) -> Array:
 

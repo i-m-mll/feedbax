@@ -41,12 +41,12 @@ class PointMass(AbstractSkeleton[CartesianState]):
 
     @cached_property
     def A(self) -> Array:
-        return sum(
+        return jnp.sum(jnp.stack(
             [
                 jnp.diagflat(jnp.ones((ORDER - i) * N_DIM), i * N_DIM)
                 for i in range(1, ORDER)
             ]
-        )
+        ), axis=0)
 
     @cached_property
     def B(self) -> Array:
@@ -57,7 +57,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
 
     @cached_property
     def C(self) -> Array:
-        return 1  # TODO
+        return jnp.array(1)  # TODO
 
     @cached_property
     def _lti_system(self) -> LTISystem:
@@ -91,7 +91,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
         """Trivially, returns the Cartesian state of the point mass itself."""
         return effector_state
 
-    def effector(
+    def effector(  # type: ignore
         self,
         config_state: CartesianState,
     ) -> CartesianState:
@@ -108,7 +108,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
             vel=config_state.vel,
         )
 
-    def update_state_given_effector_force(
+    def update_state_given_effector_force(  # type: ignore
         self,
         effector_force: Array,
         system_state: CartesianState,

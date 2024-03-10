@@ -20,17 +20,17 @@ from jaxtyping import Float, PRNGKeyArray, PyTree, Scalar
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.intervene import AbstractIntervenor
 from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
-from feedbax.mechanics.skeleton.arm import TwoLinkArm
+from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
 
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, StateBounds, StateT, clip_state
+from feedbax.state import StateBounds, StateT, clip_state
 
 
 logger = logging.getLogger(__name__)
 
 
-class PlantState(Module):
+class PlantState(Module, Generic[StateT]):
     """The state of a biomechanical model.
 
     Some models may only possess a skeleton, with forces input directly by a
@@ -41,7 +41,7 @@ class PlantState(Module):
         muscles: The state of the muscles, if included in the model.
     """
 
-    skeleton: AbstractSkeletonState
+    skeleton: StateT
     muscles: Optional[MuscleState] = None
 
 
@@ -79,7 +79,6 @@ class AbstractPlant(
     """
 
     skeleton: AbstractVar[AbstractSkeleton]
-    muscle_model: AbstractVar[Optional[AbstractMuscle]]
     clip_states: AbstractVar[bool]
 
     def vector_field(
@@ -132,24 +131,23 @@ class AbstractPlant(
         """Number of control inputs."""
         ...
 
-    @property
-    def bounds(self) -> PyTree[StateBounds]:
-        """Aggregates the bounds specified by the skeletal and muscle models."""
-        if self.muscle_model is not None:
-            muscle_bounds = self.muscle_model.bounds
-        else:
-            muscle_bounds = StateBounds(low=None, high=None)
-
-        return PlantState(
-            skeleton=self.skeleton.bounds,
-            muscles=muscle_bounds,
-        )
-
     def _clip_state(self, input, state, *, key: Optional[PRNGKeyArray] = None):
         if self.clip_states:
             return clip_state(input, state)
         else:
             return state
+
+
+class AbstractMuscledPlant(AbstractPlant):
+    muscle_model: AbstractVar[AbstractMuscle]
+
+    @property
+    def bounds(self) -> PyTree[StateBounds]:
+        """Aggregates the bounds specified by the skeletal and muscle models."""
+        return PlantState(
+            skeleton=self.skeleton.bounds,
+            muscles=self.muscle_model.bounds,
+        )
 
 
 class DirectForceInput(AbstractPlant):
@@ -169,9 +167,8 @@ class DirectForceInput(AbstractPlant):
     """
 
     skeleton: AbstractSkeleton
-    muscle_model: None = None
     clip_states: bool
-    intervenors: Mapping[str, AbstractIntervenor]
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -215,7 +212,7 @@ class DirectForceInput(AbstractPlant):
 
         return spec
 
-    @cached_property
+    @property
     def dynamics_spec(self) -> dict[str, DynamicsComponent[PlantState]]:
         """Specifies a single dynamical component: the skeleton."""
         return dict(
@@ -244,12 +241,19 @@ class DirectForceInput(AbstractPlant):
         )
 
     @property
+    def bounds(self) -> PyTree[StateBounds]:
+        """Aggregates the bounds specified by the skeletal and muscle models."""
+        return PlantState(
+            skeleton=self.skeleton.bounds,
+        )
+
+    @property
     def input_size(self) -> int:
         """Equal to the skeleton's input size."""
         return self.skeleton.input_size
 
 
-class MuscledArm(AbstractPlant):
+class MuscledArm(AbstractMuscledPlant):
     """Model of a two-link arm actuated by muscles.
 
     Attributes:
@@ -271,11 +275,11 @@ class MuscledArm(AbstractPlant):
     activator: AbstractDynamicalSystem
     clip_states: bool
     n_muscles: int
-    moment_arms: Float[Array, "links=2 muscles"] = field(converter=jnp.array)
-    theta0: Float[Array, "links=2 muscles"] = field(converter=jnp.array)
-    l0: Float[Array, "muscles"] = field(converter=jnp.array)
-    f0: Float[Array, "muscles"] = field(converter=jnp.array)
-    intervenors: Mapping[str, AbstractIntervenor]
+    moment_arms: Float[Array, "links=2 muscles"]
+    theta0: Float[Array, "links=2 muscles"]
+    l0: Float[Array, "muscles"]
+    f0: Float[Array, "muscles"]
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -333,17 +337,17 @@ class MuscledArm(AbstractPlant):
         self.activator = activator
         self.clip_states = clip_states
 
-        if not theta0.shape[1] == l0.shape[0] == moment_arms.shape[1]:
+        self.moment_arms = jnp.array(moment_arms)
+        self.theta0 = jnp.array(theta0)
+        self.l0 = jnp.array(l0)
+        self.f0 = jnp.array(f0)
+        self.n_muscles = self.moment_arms.shape[1]
+
+        if not self.theta0.shape[1] == self.l0.shape[0] == self.moment_arms.shape[1]:
             raise ValueError(
                 "moment_arms, theta0, and l0 must have the same number of "
                 "columns (i.e. number of muscles)"
             )
-
-        self.moment_arms = moment_arms
-        self.theta0 = theta0
-        self.l0 = l0
-        self.f0 = f0
-        self.n_muscles = moment_arms.shape[1]
         # Make sure the muscle model has the right number of muscles.
         self.muscle_model = muscle_model.change_n_muscles(self.n_muscles)
 
@@ -352,7 +356,7 @@ class MuscledArm(AbstractPlant):
     @property
     def model_spec(self) -> OrderedDict[str, ModelStage[Self, PlantState]]:
         """Specifies kinematic updates to the musculoskeletal state."""
-        Stage = ModelStage[Self, PlantState]
+        Stage = ModelStage[Self, PlantState[TwoLinkArmState]]
 
         return OrderedDict(
             {
@@ -388,7 +392,7 @@ class MuscledArm(AbstractPlant):
             }
         )
 
-    @cached_property
+    @property
     def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
         """Specifies the components of the muscled arm dynamics."""
         return dict(
@@ -408,7 +412,7 @@ class MuscledArm(AbstractPlant):
         )
 
     def _muscle_geometry(
-        self, input: AbstractSkeletonState, state: Tuple[Array, Array], *, key=None
+        self, input: TwoLinkArmState, state: Tuple[Array, Array], *, key=None
     ):
         skeleton_state = input
         length = self._muscle_length(skeleton_state.angle)

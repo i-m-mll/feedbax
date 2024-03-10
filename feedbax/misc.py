@@ -205,3 +205,14 @@ def highlight_string_diff(obj1, obj2):
         i = m.b + m.size
 
     return str2_new
+
+
+def dedupe_by_id(seq: Sequence[T1]) -> Iterable[Optional[T1]]:
+    """Remove duplicates from a sequence of objects, based on `id`."""
+    seen = set()
+    for item in seq:
+        if id(item) not in seen:
+            seen.add(id(item))
+            yield item
+        else:
+            yield None

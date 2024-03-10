@@ -5,14 +5,13 @@
 """
 
 from collections.abc import Callable, Sequence
-from functools import partial
 import logging
-from typing import Any, Optional, Type
+from typing import Any, Optional
 
 import equinox as eqx
 import jax
 from jaxtyping import PRNGKeyArray
-import optax
+import optax  # type: ignore
 
 from feedbax import get_ensemble
 from feedbax._model import AbstractModel
@@ -42,7 +41,7 @@ class TrainingContext(eqx.Module):
 
     model: AbstractModel
     task: AbstractTask
-    where_train: Optional[Callable] = None
+    where_train: Callable = lambda model: model.step.net
     ensembled: bool = False
 
     def train(
@@ -52,7 +51,7 @@ class TrainingContext(eqx.Module):
         batch_size: int,
         learning_rate: float = 0.01,
         log_step: Optional[int] = None,
-        optimizer_cls: Optional[Type[optax.GradientTransformation]] = optax.adam,
+        optimizer_cls: Callable[..., optax.GradientTransformation] = optax.adam,
         key: PRNGKeyArray,
         **kwargs: Any,
     ) -> tuple[AbstractModel, TaskTrainerHistory]:
@@ -99,8 +98,8 @@ def point_mass_nn_simple_reaches(
     workspace: Sequence[tuple[float, float]] = ((-1.0, -1.0), (1.0, 1.0)),
     encoding_size: Optional[int] = None,
     hidden_size: int = 50,
-    hidden_type: eqx.Module = eqx.nn.GRUCell,
-    where_train: Optional[Callable] = lambda model: model.step.net,
+    hidden_type: type[eqx.Module] = eqx.nn.GRUCell,
+    where_train: Callable = lambda model: model.step.net,
     feedback_delay_steps: int = 0,
     eval_grid_n: int = 1,
     eval_n_directions: int = 7,

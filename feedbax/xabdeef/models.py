@@ -37,7 +37,7 @@ def point_mass_nn(
     mass: float = 1.0,
     encoding_size: Optional[int] = None,
     hidden_size: int = 50,
-    hidden_type: eqx.Module = eqx.nn.GRUCell,
+    hidden_type: type[eqx.Module] = eqx.nn.GRUCell,
     out_nonlinearity: Callable = identity_func,
     feedback_delay_steps: int = 0,
     feedback_noise_std: float = 0.0,
