@@ -34,6 +34,7 @@ import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
+from feedbax import tree_take
 from feedbax.intervene import AbstractIntervenorInput, TimeSeriesParam
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
@@ -704,15 +705,16 @@ class SimpleReaches(AbstractTask):
         # time steps, since that's what `ForgetfulIterator` and `Loss` will expect.
         # Hopefully this should not use up any extra memory.
         effector_target_state = jax.tree_map(
-            lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+            lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             effector_target_state,
         )
-        effector_target = _forceless_task_inputs(
-            jax.tree_map(
-                lambda x: x[:-1],
-                effector_target_state,
-            )
-        )
+        effector_target = _forceless_task_inputs(effector_target_state)
+        # effector_target = _forceless_task_inputs(
+        #     jax.tree_map(
+        #         lambda x: x[:-1],
+        #         effector_target_state,
+        #     )
+        # )
 
         # TODO: It might be better here to use an `Intervenor`-like callable
         # instead of `WhereDict`, which is slow. Though the callable would
@@ -749,16 +751,18 @@ class SimpleReaches(AbstractTask):
         # Broadcast to the desired number of time steps. Awkwardly, we also
         # need to use `swapaxes` because the batch dimension is explicit, here.
         effector_target_states = jax.tree_map(
-            lambda x: jnp.swapaxes(jnp.broadcast_to(x, (self.n_steps, *x.shape)), 0, 1),
+            lambda x: jnp.swapaxes(jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)), 0, 1),
             effector_target_states,
         )
 
-        task_inputs = _forceless_task_inputs(
-            jax.tree_map(
-                lambda x: x[:, :-1],
-                effector_target_states,
-            )
-        )
+        task_inputs = _forceless_task_inputs(effector_target_states)
+
+        # task_inputs = _forceless_task_inputs(
+        #     jax.tree_map(
+        #         lambda x: x[:, :-1],
+        #         effector_target_states,
+        #     )
+        # )
 
         return SimpleReachTrialSpec(
             inits=WhereDict(
@@ -813,6 +817,10 @@ class DelayedReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
     seed_validation: int = 5555
+    intervention_specs: Mapping[str, "AbstractIntervenorInput"] = field(default_factory=dict)
+    intervention_specs_validation: Mapping[str, "AbstractIntervenorInput"] = field(
+        default_factory=dict
+    )
 
     def get_train_trial(self, key: PRNGKeyArray) -> DelayedReachTrialSpec:
         """Random reach endpoints across the rectangular workspace.
@@ -881,7 +889,7 @@ class DelayedReaches(AbstractTask):
         epoch_start_idxs = jnp.pad(
             jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1)
         )
-        epoch_masks = get_masks(self.n_steps, epoch_start_idxs)
+        epoch_masks = get_masks(self.n_steps - 1, epoch_start_idxs)
         move_epoch_mask = jnp.logical_not(jnp.prod(epoch_masks, axis=0))[None, :]
 
         stim_seqs = get_masked_seqs(
@@ -893,10 +901,10 @@ class DelayedReaches(AbstractTask):
             get_masked_seqs(init_states, epoch_masks[self.hold_epochs]),
         )
         stim_on_seq = get_scalar_epoch_seq(
-            epoch_start_idxs, self.n_steps, 1.0, self.target_on_epochs
+            epoch_start_idxs, self.n_steps - 1, 1.0, self.target_on_epochs
         )
         hold_seq = get_scalar_epoch_seq(
-            epoch_start_idxs, self.n_steps, 1.0, self.hold_epochs
+            epoch_start_idxs, self.n_steps - 1, 1.0, self.hold_epochs
         )
 
         task_input = DelayedReachTaskInputs(stim_seqs, hold_seq, stim_on_seq)

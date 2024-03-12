@@ -34,8 +34,8 @@ class ChannelState(AbstractState):
         noise: The noise added to the current output, if any.
     """
 
-    output: PyTree[Array, "T"]
-    queue: Tuple[PyTree[Array, "T"], ...]
+    output: Optional[PyTree[Array, "T"]]
+    queue: Tuple[Optional[PyTree[Array, "T"]], ...]
     noise: Optional[PyTree[Array, "T"]] = None
 
 
@@ -79,7 +79,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         self,
         delay: int,
         noise_std: Optional[float] = None,
-        init_value: float = jnp.nan,
+        init_value: float = 0.,  # jnp.nan
         input_proto: PyTree[Array] = jnp.zeros(1),
         intervenors: Optional[
             Union[

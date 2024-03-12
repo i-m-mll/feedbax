@@ -194,8 +194,8 @@ class TaskTrainer(eqx.Module):
 
 
         if (hyperparams := getattr(opt_state, "hyperparams", None)) is None:
-            logger.info("Optimizer not wrapped in `optax.inject_hyperparameters`; "
-                        "learning rate history will not be returned")
+            logger.debug("Optimizer not wrapped in `optax.inject_hyperparameters`; "
+                         "learning rate history will not be returned")
 
         # TODO: ensembling
         if save_model_trainables:
@@ -304,7 +304,7 @@ class TaskTrainer(eqx.Module):
             logger.info(f"Validation step compiled in {timer.time:.2f} seconds.")
 
         else:
-            logger.debug("JIT globally disabled, skipping pre-run compilation")
+            logger.debug("JIT globally disabled. Skipping pre-run compilation.")
 
         keys = jr.split(key, n_batches)
 

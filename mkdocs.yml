@@ -108,6 +108,7 @@ nav:
       # - 8. Advanced analyses: 'examples/8_advanced.ipynb'
     - Features:
       - Composable loss functions: 'examples/losses.ipynb'
+      - Biomechanical simulations: 'examples/biomechanics.ipynb'
       - Saving and loading: 'examples/saving_and_loading.ipynb'
       - Debugging: 'examples/debugging.ipynb'
       # - Tracking training progress with tensorboard: 'examples/tensorboard.ipynb'

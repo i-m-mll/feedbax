@@ -29,7 +29,7 @@ Feedbax uses JAX and [Equinox](https://docs.kidger.site/equinox/).
 <!--
 One disadvantage of JAX is a lack of GPU support on Windows, though it is possible to use the GPU through the Windows Subsystem for Linux (WSL). -->
 
-For a library that's similar to Feedbax but written in PyTorch, please check out [MotorNet](https://github.com/OlivierCodol/MotorNet)!
+Please also check out [MotorNet](https://github.com/OlivierCodol/MotorNet), a PyTorch library with many similarities to Feedbax.
 
 ## Installation
 

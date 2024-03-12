@@ -1,4 +1,4 @@
-# Plotting 
+# Plotting
 
 ::: feedbax.plot.plot_loss_history
 
@@ -11,6 +11,8 @@
 ::: feedbax.plot.plot_activity_sample_units
 
 ::: feedbax.plot.plot_activity_heatmap
+
+::: feedbax.plot.plot_joint_pos_trajectory
 
 <!-- ::: feedbax.plot.plot_task_and_speed_profiles -->
 

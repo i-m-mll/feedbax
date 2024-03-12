@@ -223,9 +223,9 @@ class AbstractStagedModel(AbstractModel[StateT]):
         return jax.tree_map(
             lambda x, y: eqx.tree_at(lambda x: x.intervenors, x, y),
             self.model_spec,
-            jax.tree_map(
-                tuple, self.intervenors, is_leaf=lambda x: isinstance(x, list)
-            ),
+            OrderedDict({
+                k: tuple(self.intervenors[k]) for k in self.model_spec
+            }),
             is_leaf=lambda x: isinstance(x, ModelStage),
         )
 

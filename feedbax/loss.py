@@ -357,7 +357,7 @@ class EffectorPositionLoss(AbstractLoss):
 
         # Sum over X, Y, giving the squared Euclidean distance
         loss = jnp.sum(
-            (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, axis=-1  # type: ignore
+            (states.mechanics.effector.pos[:, 1:] - trial_specs.target.pos) ** 2, axis=-1  # type: ignore
         )
 
         # temporal discount
@@ -438,7 +438,7 @@ class EffectorFixationLoss(AbstractLoss):
     ) -> Array:
 
         loss = jnp.sum(
-            (states.mechanics.effector.pos - trial_specs.target.pos) ** 2, axis=-1
+            (states.mechanics.effector.pos[:, 1:] - trial_specs.target.pos) ** 2, axis=-1
         )
 
         loss = loss * jnp.squeeze(trial_specs.inputs.hold)  # type: ignore

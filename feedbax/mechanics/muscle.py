@@ -192,7 +192,7 @@ class VirtualMuscle(AbstractMuscle):
     intervenors: Mapping[str, Sequence[AbstractIntervenor]] = field(init=False)
 
     def __post_init__(self):
-        self.intervenors = OrderedDict({k: [] for k in self.model_spec.keys()})
+        self.intervenors = {k: [] for k in self.model_spec.keys()}
 
     def init(self, *, key: PRNGKeyArray) -> MuscleState:
         """Return a default state for the model."""
@@ -200,7 +200,7 @@ class VirtualMuscle(AbstractMuscle):
             activation=jnp.zeros(self.n_muscles),
             length=jnp.ones(self.n_muscles),
             velocity=jnp.zeros(self.n_muscles),
-            tension=jnp.full(self.n_muscles, jnp.nan),
+            tension=jnp.zeros(self.n_muscles),
         )
 
         # Calculate tension and return full state.

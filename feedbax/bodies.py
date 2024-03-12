@@ -133,7 +133,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         example_mechanics_state = mechanics.init(key=jr.PRNGKey(0))
 
         def _build_feedback_channel(spec: ChannelSpec):
-            return Channel(spec.delay, spec.noise_std, jnp.nan).change_input(
+            return Channel(spec.delay, spec.noise_std, 0.).change_input(
                 spec.where(example_mechanics_state)
             )
 
@@ -299,10 +299,8 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             self.mechanics.plant.skeleton.inverse_kinematics(state.mechanics.effector),
         )
 
-        # If the PyTree of feedback channel states is full of NaNs, fill the channel queues
-        # with the current values of the states to be fed back. By initializing `Channel` with
-        # NaN and then performing this check/fill, we avoid passing zeros as feedback, which
-        # is more incorrect.
+        # If the feedback queues are empty, fill them with the initial feedback values.
+        # This is more correct than feeding back all zeros.
         def _fill_feedback_queues(state: SimpleFeedbackState) -> SimpleFeedbackState:
             return eqx.tree_at(
                 lambda state: state.feedback,
@@ -320,15 +318,15 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 ),
             )
 
-        feedback_state_isnan = jax.flatten_util.ravel_pytree(  # type: ignore
-            jax.tree_map(lambda x: jnp.isnan(x), state.feedback)
-        )[0]
+        state = _fill_feedback_queues(state)
 
-        state = jax.lax.cond(
-            jnp.all(feedback_state_isnan),
-            _fill_feedback_queues,
-            lambda state: state,
-            state,
-        )
+        # feedback_queues_unfilled = jax.tree_map(lambda x: None in x.queue, state.feedback)
+
+        # state = jax.lax.cond(
+        #     any(feedback_queues_unfilled),
+        #     _fill_feedback_queues,
+        #     lambda state: state,
+        #     state,
+        # )
 
         return state

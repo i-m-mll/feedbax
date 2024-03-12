@@ -36,7 +36,13 @@ from feedbax._tree import (
 )
 
 # logging.config.fileConfig('../logging.conf')
-LOG_LEVEL = os.environ.get("FEEDBAX_LOG_LEVEL", "DEBUG").upper()
+
+if os.environ.get("FEEDBAX_DEBUG", False) == "True":
+    DEFAULT_LOG_LEVEL = "DEBUG"
+else:
+    DEFAULT_LOG_LEVEL = "INFO"
+
+LOG_LEVEL = os.environ.get("FEEDBAX_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
 
 logger = logging.getLogger(__package__)
 logger.setLevel(LOG_LEVEL)

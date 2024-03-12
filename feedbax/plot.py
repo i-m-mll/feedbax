@@ -114,27 +114,34 @@ class SeabornFig2Grid:
         self.sg.fig.set_size_inches(self.fig.get_size_inches())
 
 
-def plot_2D_joint_positions(
+def plot_joint_pos_trajectory(
     xy: Float[Array, "time links ndim=2"],
-    t0t1=(0, 1),  # (t0, t1)
     cmap_name: str = "viridis",
-    length_unit=None,
-    ax=None,
+    length_unit: Optional[str] = None,
+    ax: Optional[Axes] = None,
     add_root: bool = True,
     colorbar: bool = True,
     ms_trace: int = 6,
     lw_arm: int = 4,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
-):
-    """Plot paths of joint position for an n-link arm.
+) -> tuple[Figure, Axes]:
+    """Plot joint position for an $n$-link arm over time.
 
-    TODO:
-    - Plot the controls on the joints?
+    Plots the full arm segments at the beginning, middle, and end of the trial, along with
+    joint traces for all time steps.
 
-    Args:
-        xy ():
-        links (bool):
-        cmap_func ():
+    Arguments:
+        xy: The joint positions over time.
+        cmap_name: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
+            to use across time.
+        length_unit: The length unit to display on the axes. By default, axes are unlabeled.
+        ax: The Matplotlib axes to plot on. If `None`, a new figure and axes will be created.
+        add_root: Whether to add a root joint to `xy`; i.e. prepend the origin $(0,0)$
+            to the array of joint positions.
+        colorbar: If `True`, adds a colorbar to the figure.
+        ms_trace: Marker size for the joint position traces over time.
+        lw_arm: Line width of the arm segments.
+        workspace: The workspace bounds. If provided, the bounds are drawn as a rectangle.
     """
 
     if ax is None:
@@ -142,6 +149,8 @@ def plot_2D_joint_positions(
         ax = fig.add_subplot()
     else:
         fig = ax.get_figure()
+        if fig is None:
+            raise ValueError("The provided axes has no figure.")
 
     if add_root:
         xy = jnp.pad(xy, ((0, 0), (1, 0), (0, 0)))
@@ -170,6 +179,7 @@ def plot_2D_joint_positions(
         ax.plot(*corners, "w--", lw=0.8)
 
     if colorbar:
+        t0t1= (0, 1)
         fig.colorbar(
             mplcm.ScalarMappable(mplc.Normalize(*t0t1), cmap),
             ax=ax,
@@ -186,6 +196,7 @@ def plot_2D_joint_positions(
 
     ax.margins(0.1, 0.2)
     ax.set_aspect("equal")
+
     return fig, ax
 
 
@@ -562,7 +573,7 @@ def plot_activity_sample_units(
         activities = activities[None, ...]
     elif len(activities.shape) > 3:
         activities = activities.reshape(-1, *activities.shape[-2:])
-    else:
+    elif len(activities.shape) != 3:
         raise ValueError("Invalid shape for ")
 
     unit_idxs = jr.choice(
@@ -785,8 +796,117 @@ def plot_reach_endpoint_dists(
     return fig, fig.axes
 
 
+def plot_task_profiles(
+    task_variables: Mapping[str, Float[Array, "trial time"]],
+    cmap_name: str = "tab10",
+    colors: Optional[Sequence[ColorType]] = None,
+    **kwargs,
+) -> Tuple[Figure, Sequence[Axes]]:
+    """For visualizing learned movements versus task structure.
+
+    For example: does the network start moving before the go cue is given?
+    """
+    n_trials = next(iter(task_variables.values())).shape[0]
+
+    task_rows = len(task_variables)
+
+    height_ratios = (1,) * task_rows
+
+    if colors is None:
+        cmap = plt.get_cmap(cmap_name)
+        colors = [cmap(i) for i in np.linspace(0, 1, n_trials)]
+
+    fig, axs_ = plt.subplots(
+        task_rows,
+        1,
+        height_ratios=height_ratios,
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    axs: Sequence[Axes]
+    if task_rows == 1:
+        axs = [axs_]
+    else:
+        axs = axs_
+
+    for i, (label, arr) in enumerate(task_variables.items()):
+        arr = jnp.squeeze(arr)
+        axs[i].set_title(label)
+        for j in range(arr.shape[0]):
+            axs[i].plot(arr[j].T, color=colors[j])
+        axs[i].set_ylim(*padded_bounds(arr))
+
+    axs[-1].set_xlabel("Time step")
+
+    return fig, axs
+
+
+def plot_speed_profiles(
+    vel: Float[Array, "trial time"],
+    epoch_start_idxs: Optional[Int[Array, "trial epoch"]] = None,
+    cmap_name: str = "tab10",
+    colors: Optional[Sequence[ColorType]] = None,
+    **kwargs,
+) -> Tuple[Figure, Sequence[Axes]]:
+    """For visualizing learned movements versus task structure.
+
+    For example: does the network start moving before the go cue is given?
+    """
+    speed = jnp.sqrt(jnp.sum(vel ** 2, axis=-1))
+
+    if colors is None:
+        cmap = plt.get_cmap(cmap_name)
+        colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
+
+    fig, ax = plt.subplots(
+        1, 1,
+        constrained_layout=True,
+    )
+
+    for i in range(speed.shape[0]):
+        ax.plot(speed[i].T, color=colors[i], **kwargs)
+
+    ymax = 1.1 * jnp.max(speed)
+    if epoch_start_idxs is not None:
+        # ax.vlines(
+        #     epoch_start_idxs[:, 1],
+        #     ymin=0,
+        #     ymax=ymax,
+        #     colors=colors,
+        #     linestyles="dotted",
+        #     linewidths=1,
+        #     label="target ON",
+        # )
+        ax.vlines(
+            epoch_start_idxs[:, 2],
+            ymin=0,
+            ymax=ymax,
+            colors=colors,
+            linestyles="dotted",
+            linewidths=1,
+            label="Target OFF",
+        )
+        ax.vlines(
+            epoch_start_idxs[:, 3],
+            ymin=0,
+            ymax=ymax,
+            colors=colors,
+            linestyles="dashed",
+            linewidths=1,
+            label="Hold OFF",
+        )
+        plt.legend()
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("Speed")
+
+    return fig, ax
+
+
 def plot_task_and_speed_profiles(
-    speed: Float[Array, "trial time"],
+    vel: Float[Array, "trial time"],
     task_variables: Mapping[str, Float[Array, "trial time"]] = dict(),
     epoch_start_idxs: Optional[Int[Array, "trial epoch"]] = None,
     cmap_name: str = "tab10",
@@ -797,6 +917,8 @@ def plot_task_and_speed_profiles(
 
     For example: does the network start moving before the go cue is given?
     """
+    speed = jnp.sqrt(jnp.sum(vel ** 2, axis=-1))
+
     task_rows = len(task_variables)
 
     if task_rows > 0:
@@ -863,8 +985,9 @@ def plot_task_and_speed_profiles(
 
 
 def animate_arm2(
-    cartesian_state: Float[Array, "time joints xy"],
+    xy: Float[Array, "time joints xy=2"],
     interval: int = 1,
+    add_root: bool = True,
 ):
     """Animated movement of a multi-segment arm.
 
@@ -880,16 +1003,20 @@ def animate_arm2(
     ax.set_xlim((-0.4, 0.75))
     ax.set_ylim((-0.35, 0.65))
 
-    (arm_line,) = ax.plot(*cartesian_state[0].T, "k-")
-    (traj_line,) = ax.plot(*cartesian_state[0, :, 2].T, "g-")
+    if add_root:
+        xy = jnp.pad(xy, ((0, 0), (1, 0), (0, 0)))
+
+
+    arm_line, = ax.plot(*xy[0].T, "k-")
+    traj_line, = ax.plot(*xy[0, -1].T, "g-")
 
     def animate(i):
-        arm_line.set_data(*cartesian_state[i].T)
-        traj_line.set_data(*cartesian_state[: i + 1, :, 2].T)
+        arm_line.set_data(*xy[i].T)
+        traj_line.set_data(*xy[: i + 1, -1].T)
         return (fig,)
 
     return animation.FuncAnimation(
-        fig, animate, frames=len(cartesian_state), interval=interval, blit=True
+        fig, animate, frames=len(xy), interval=interval, blit=True
     )
 
 
