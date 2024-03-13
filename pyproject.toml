@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feedbax"
-version = "0.1.1"
+version = "0.1.2"
 description = "Optimal feedback control + interventions in JAX."
 # url = ""
 authors = [
@@ -70,7 +70,7 @@ tests = [
 ]
 
 [tool.setuptools]
-py-modules = ["feedbax"]
+packages = ["feedbax"]
 
 [tool.pyright]
 include = ["feedbax"]
