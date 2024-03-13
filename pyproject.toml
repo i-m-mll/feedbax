@@ -7,8 +7,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feedbax"
-version = "0.0.1"
-description = "Optimal feedback control in JAX."
+version = "0.1.1"
+description = "Optimal feedback control + interventions in JAX."
 # url = ""
 authors = [
     {name = "MLL", email = "mll@mll.bio"}
@@ -23,7 +23,7 @@ keywords = [
     'pytorch',
     'biomechanics'
 ]
-requires-python = ">=3.10.6"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -46,6 +46,7 @@ dependencies = [
     "optax",
     "seaborn",
     "tqdm",
+    "tensorboardX",
 ]
 
 [project.urls]
@@ -80,6 +81,6 @@ reportMissingTypeStubs = true
 # reportAttributeAccessIssue = false
 
 [tool.black]
-target-version = ['py310', 'py311']
+target-version = ['py310', 'py311', 'py312']
 include = 'feedbax\/.*\.pyi?$'
 line-length = 88

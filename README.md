@@ -32,9 +32,11 @@ Please also check out [MotorNet](https://github.com/OlivierCodol/MotorNet), a Py
 
 Currently requires Python>=3.11.
 
+For best performance, [install JAX](https://jax.readthedocs.io/en/latest/installation.html) with GPU support.
+
 ## Documentation
 
-Documentation is available [here](https://docs.lprt.cd/feedbax).
+Documentation is available [here](https://docs.lprt.ca/feedbax).
 
 ## Development
 

@@ -40,6 +40,8 @@ Please also check out [MotorNet](https://github.com/OlivierCodol/MotorNet), a Py
 
 Currently requires Python>=3.11.
 
+For best performance, [install JAX](https://jax.readthedocs.io/en/latest/installation.html) with GPU support.
+
 ## Development
 
 I've developed Feedbax over the last few months, while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
