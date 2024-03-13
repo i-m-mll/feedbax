@@ -55,10 +55,10 @@ plugins:
       # write_markdown: true  # Write markdown files for notebooks
       # execute: true
       # allow_errors: true
-      binder: true  # Enable Binder integration
-      binder_service_name: "gh"
-      binder_branch: "main"
-      binder_ui: "lab"
+      # binder: true  # Enable Binder integration
+      # binder_service_name: "gh"
+      # binder_branch: "main"
+      # binder_ui: "lab"
   - mkdocstrings:
       enable_inventory: true
       custom_templates: docs/_templates
