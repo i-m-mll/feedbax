@@ -46,7 +46,7 @@ For best performance, [install JAX](https://jax.readthedocs.io/en/latest/install
 
 I've developed Feedbax over the last few months, while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
 
-I've added GitHub [issues](https://github.com/i-m-mll/feedbax/issues) to document some of my choices and uncertainties. For an overview of major issues in different categories, check out [this GitHub conversation](https://github.com/i-m-mll/feedbax/discussions/27). Refer also to [this page](/feedbax/examples/structure) of the docs, for an informal overview of how Feedbax objects relate to each other.
+I've added GitHub [issues](https://github.com/i-m-mll/feedbax/issues) to document some of my choices and uncertainties. For an overview of major issues in different categories, check out [this GitHub conversation](https://github.com/i-m-mll/feedbax/discussions/27). Refer also to [this page](/feedbax/structure) of the docs, for an informal overview of how Feedbax objects relate to each other.
 
 There are many features, especially pre-built models and tasks, that could still be implemented. Some of the models and tasks that *are* implemented, have yet to be fully optimized. So far I've focused more on the overall structure, than on coverage of all the common use cases I can imagine. If there's a particular model, task, or feature you'd like Feedbax to support, [let us know](https://github.com/i-m-mll/feedbax/issues), or contribute some code!
 

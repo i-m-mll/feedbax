@@ -95,7 +95,7 @@ plugins:
 nav:
   - 'index.md'
   - Why JAX?: 'examples/pytrees.ipynb'
-  - Top-down view of Feedbax: 'examples/structure.ipynb'
+  - Top-down view of Feedbax: 'structure.md'
   - Examples:
     - Feedbax 101:
       - 1. Training a pre-built model: 'examples/0_train_simple.ipynb'
