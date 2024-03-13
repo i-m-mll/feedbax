@@ -50,8 +50,6 @@ I've added GitHub [issues](https://github.com/i-m-mll/feedbax/issues) to documen
 
 There are many features, especially pre-built models and tasks, that could still be implemented. Some of the models and tasks that *are* implemented, have yet to be fully optimized. So far I've focused more on the overall structure, than on coverage of all the common use cases I can imagine. If there's a particular model, task, or feature you'd like Feedbax to support, [let us know](https://github.com/i-m-mll/feedbax/issues), or contribute some code!
 
-You're also welcome to leave feedback on the documentation. GitHub users can comment at the bottom of each page of documentation, or directly on [GitHub](https://github.com/i-m-mll/feedbax/discussions/categories/documentation).
-
 ## Acknowledgments
 
 - Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have directly influenced this project
