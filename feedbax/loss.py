@@ -449,6 +449,48 @@ class EffectorFixationLoss(AbstractLoss):
         return loss
 
 
+class EffectorVelocityLoss(AbstractLoss):
+    """Penalizes the squared difference in effector velocity relative to the target
+    velocity across the trial.
+
+    Attributes:
+        label: The label for the loss term.
+        discount_func: Returns a trajectory with which to weight (discount)
+            the loss values calculated for each time step of the trial.
+            Defaults to a power-law curve that puts most of the weight on
+            time steps near the end of the trial.
+    """
+
+    label: str = "Effector position"
+    discount_func: Callable[[int], Float[Array, "#time"]] = lambda n_steps: 1.0    
+
+    def term(
+        self,
+        states: "SimpleFeedbackState",
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
+
+        # Sum over X, Y, giving the squared Euclidean distance
+        loss = jnp.sum(
+            (states.mechanics.effector.vel[:, 1:] - trial_specs.target.vel) ** 2, axis=-1  # type: ignore
+        )
+
+        # temporal discount
+        if self.discount_func is not None:
+            loss = loss * self.discount(loss.shape[-1])
+
+        # sum over time
+        loss = jnp.sum(loss, axis=-1)
+
+        return loss
+
+    def discount(self, n_steps):
+        # Can't use a cache because of JIT.
+        # But we only need to run this once per training iteration...
+        return self.discount_func(n_steps)
+
+
+
 class EffectorFinalVelocityLoss(AbstractLoss):
     """Penalizes the squared difference between the effector's final velocity
     and the goal velocity (typically zero) on the final timestep.

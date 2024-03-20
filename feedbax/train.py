@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PRNGKeyArray
+import numpy as np
 import optax  # type: ignore
 from tensorboardX import SummaryWriter  # type: ignore
 from tqdm.auto import tqdm
@@ -126,7 +127,7 @@ class TaskTrainer(eqx.Module):
         where_train: Callable[[AbstractModel[StateT]], Any],
         ensembled: bool = False,
         log_step: int = 100,
-        save_model_trainables: Optional[int] = None,
+        save_model_trainables: bool = False,
         save_trial_specs: bool = False,
         restore_checkpoint: bool = False,
         disable_tqdm: bool = False,
@@ -138,11 +139,11 @@ class TaskTrainer(eqx.Module):
 
         !!! Warning
             Model checkpointing only saves model parameters, and not the task or other
-            hyperparameters. That is, we assume that the model and task passed
-            to this method are, aside from their trainable state, identical to
-            those from the original training run. This is typically the case
-            when `restore_checkpoint=True` is toggled immediately after the
-            interruption of a training run, to resume it.
+            hyperparameters. That is, we assume that the model and task passed to this
+            method are, aside from their trainable state, identical to those from the
+            original training run. This is typically the case when
+            `restore_checkpoint=True` is toggled immediately after the interruption of a
+            training run, to resume it.
 
             Trying to load a checkpoint as a model at a later time may fail.
             Use [`feedbax.save`][feedbax.save] and
@@ -183,10 +184,10 @@ class TaskTrainer(eqx.Module):
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
             n_replicates = jax.tree_leaves(eqx.filter(model, eqx.is_array))[0].shape[0]
-            loss_array_shape = (n_batches, n_replicates)
+            history_shape = (n_batches, n_replicates)
             opt_state = jax.vmap(self.optimizer.init)(model_trainables)
         else:
-            loss_array_shape = (n_batches,)
+            history_shape = (n_batches,)
             opt_state = self.optimizer.init(model_trainables)
             # Unlikely to be used for anything, due to ensembled operations being in
             # conditionals. Make the type checker happy.
@@ -198,13 +199,31 @@ class TaskTrainer(eqx.Module):
                          "learning rate history will not be returned")
 
         # TODO: ensembling
-        if save_model_trainables:
+        if isinstance(save_model_trainables, Array):
+            if len(save_model_trainables.shape) != 1:
+                raise ValueError(
+                    "If save_model_trainables is an array, it must be 1D"
+                )
+            n_save_steps = save_model_trainables.shape[0]
             model_train_history = jax.tree_map(
-                lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x,
+                lambda x: (
+                    jnp.empty((n_save_steps,) + history_shape[1:] + x.shape)
+                    if eqx.is_array(x) else x
+                ),
                 model_trainables,
             )
+            save_model_trainables_batches = np.array(
+                jnp.zeros(n_batches, dtype=bool).at[save_model_trainables].set(True)
+            )
+        elif save_model_trainables:
+            model_train_history = jax.tree_map(
+                lambda x: jnp.empty(history_shape + x.shape) if eqx.is_array(x) else x,
+                model_trainables,
+            )
+            save_model_trainables_batches = np.ones(n_batches, dtype=bool)
         else:
             model_train_history = None
+            save_model_trainables_batches = np.zeros(n_batches, dtype=bool)
 
         if not isinstance(task.loss_func, AbstractLoss):
             raise ValueError(
@@ -214,16 +233,16 @@ class TaskTrainer(eqx.Module):
             loss_history = LossDict(
                 zip(
                     task.loss_func.weights.keys(),
-                    [jnp.empty(loss_array_shape) for _ in task.loss_func.weights],
+                    [jnp.empty(history_shape) for _ in task.loss_func.weights],
                 )
             )
         else:
-            loss_history = jnp.empty(loss_array_shape)
+            loss_history = jnp.empty(history_shape)
 
 
         history = TaskTrainerHistory(
             loss=loss_history,
-            learning_rate=jnp.empty(loss_array_shape),
+            learning_rate=jnp.empty(history_shape),
             model_trainables=model_train_history,
         )
 
@@ -339,7 +358,7 @@ class TaskTrainer(eqx.Module):
                 for func in batch_callbacks[batch]:
                     func()
 
-            if save_model_trainables:
+            if save_model_trainables_batches[batch]:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
                 history = eqx.tree_at(
                     lambda history: history.model_trainables,

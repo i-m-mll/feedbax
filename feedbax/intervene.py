@@ -25,7 +25,7 @@ TODO:
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from abc import abstractclassmethod, abstractmethod
+from abc import abstractmethod
 from collections.abc import Mapping, Sequence, Callable
 import copy
 from dataclasses import fields
@@ -44,7 +44,7 @@ from typing import (
 )
 
 import equinox as eqx
-from equinox import AbstractVar, Module
+from equinox import AbstractVar, Module, field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
@@ -210,6 +210,52 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
         return scale * substate_in[..., ::-1]
 
 
+class FixedFieldParams(AbstractIntervenorInput):
+    """Parameters for a fixed force field.
+
+    Attributes:
+        amplitude: The scale of the force field.
+        active: Whether the force field is active.
+    """
+
+    amplitude: float = 0.0
+    field: Float[Array, "ndim=2"] = field(default_factory=lambda: jnp.array([0.0, 0.0]))
+    active: bool = True
+
+
+class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
+    """Apply a fixed (state-independent) force field to a mechanical effector.
+
+    Attributes:
+        params: Default force field parameters.
+        in_where: Unused.
+        out_where: Returns the substate corresponding to the force on the effector.
+        operation: How to combine the effector force due to the fixed field,
+            with the existing force on the effector. Default is addition.
+        label: The intervenor's label.
+    """
+
+    params: FixedFieldParams = FixedFieldParams()
+    in_where: Callable[["MechanicsState"], Float[Array, "... ndim=2"]] = (
+        lambda state: state.effector
+    )
+    out_where: Callable[["MechanicsState"], Float[Array, "... ndim=2"]] = (
+        lambda state: state.effector.force
+    )
+    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
+    label: str = "FixedField"
+
+    def transform(
+        self,
+        params: FixedFieldParams,
+        substate_in: Float[Array, "ndim=2"],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> Float[Array, "ndim=2"]:
+        """Return the scaled force."""
+        return params.amplitude * params.field
+
+
 class AddNoiseParams(AbstractIntervenorInput):
     """Parameters for adding noise to a state.
 
@@ -220,7 +266,6 @@ class AddNoiseParams(AbstractIntervenorInput):
     """
 
     scale: float = 1.0
-    noise_func: Callable = jax.random.normal
     active: bool = True
 
 
@@ -236,6 +281,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
     """
 
     params: AddNoiseParams = AddNoiseParams()
+    noise_func: Callable = jax.random.normal
     in_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
@@ -426,6 +472,7 @@ def add_intervenors(
         Sequence[AbstractIntervenor[StateS, InputT]],
         Mapping[str, Sequence[AbstractIntervenor[StateS, InputT]]],
     ],
+    ensembled: bool = False,  # TODO
     where: Callable[
         [AbstractModel[StateT]], Any  # "AbstractStagedModel[StateS]"
     ] = lambda model: model.step,
@@ -518,7 +565,7 @@ def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
     models: PyTree[AbstractModel[StateT]],
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
-    # TODO: intervenor_validation
+    ensembled: bool = False,  # TODO
     where: Callable[[AbstractModel[StateT]], Any] = lambda model: model,
     stage_name: Optional[str] = None,
     validation_same_schedule: bool = True,

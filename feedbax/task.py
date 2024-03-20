@@ -39,7 +39,7 @@ from feedbax.intervene import AbstractIntervenorInput, TimeSeriesParam
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax._model import ModelInput
-from feedbax.state import AbstractState, CartesianState, StateT
+from feedbax.state import CartesianState, StateT
 from feedbax._tree import tree_call
 
 if TYPE_CHECKING:
@@ -580,14 +580,14 @@ class AbstractTask(Module):
         )
 
 
-def _pos_only_states(pos_endpoints: Float[Array, "... ndim=2"]):
+def _pos_only_states(positions: Float[Array, "... ndim=2"]):
     """Construct Cartesian init and target states with zero force and velocity."""
-    vel_endpoints = jnp.zeros_like(pos_endpoints)
-    forces = jnp.zeros_like(pos_endpoints)
+    velocities = jnp.zeros_like(positions)
+    forces = jnp.zeros_like(positions)
 
     states = jax.tree_map(
         lambda x: CartesianState(*x),
-        list(zip(pos_endpoints, vel_endpoints, forces)),
+        list(zip(positions, velocities, forces)),
         is_leaf=lambda x: isinstance(x, tuple),
     )
 
@@ -715,7 +715,6 @@ class SimpleReaches(AbstractTask):
         #         effector_target_state,
         #     )
         # )
-
         # TODO: It might be better here to use an `Intervenor`-like callable
         # instead of `WhereDict`, which is slow. Though the callable would
         # ideally provide the initial state as a
@@ -755,8 +754,6 @@ class SimpleReaches(AbstractTask):
             effector_target_states,
         )
 
-        task_inputs = _forceless_task_inputs(effector_target_states)
-
         # task_inputs = _forceless_task_inputs(
         #     jax.tree_map(
         #         lambda x: x[:, :-1],
@@ -768,7 +765,9 @@ class SimpleReaches(AbstractTask):
             inits=WhereDict(
                 {(lambda state: state.mechanics.effector): effector_init_states}
             ),
-            inputs=task_inputs,
+            inputs=SimpleReachTaskInputs(
+                effector_target=_forceless_task_inputs(effector_target_states)
+            ),
             target=effector_target_states,
         )
 
@@ -924,76 +923,80 @@ class Stabilization(AbstractTask):
     Validation set is center-out reaches.
     """
 
+    n_steps: int
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
-    n_steps: int
-    eval_grid_n: int  # e.g. 2 -> 2x2 grid
+    seed_validation: int = 5555
+    eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid
     eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
         converter=jnp.asarray, default=None
     )
+    intervention_specs: Mapping[str, "AbstractIntervenorInput"] = field(default_factory=dict)
+    intervention_specs_validation: Mapping[str, "AbstractIntervenorInput"] = field(
+        default_factory=dict
+    )
 
-    @eqx.filter_jit
-    @jax.named_scope("fbx.SimpleReaches.get_train_trial")
     def get_train_trial(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace."""
 
         points = uniform_tuples(key, n=1, bounds=self.workspace)
 
-        target_state = _pos_only_states(points)
+        target_state, = _pos_only_states(points)
 
         init_state = target_state
 
-        # Broadcast the fixed targets to a sequence with the desired number of
-        # time steps, since that's what `ForgetfulIterator` and `Loss` will expect.
-        # Hopefully this should not use up any extra memory.
         target_state = jax.tree_map(
-            lambda x: jnp.broadcast_to(x, (self.n_steps, *x.shape)),
+            lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             target_state,
         )
-        task_input = _forceless_task_inputs(target_state)
 
+        # TODO: don't use SimpleReachTrialSpec...
         return SimpleReachTrialSpec(
             inits=WhereDict({lambda state: state.mechanics.effector: init_state}),
-            inputs=task_input,
+            inputs=SimpleReachTaskInputs(
+                effector_target=_forceless_task_inputs(target_state)
+            ),
             target=target_state,
         )
 
     def get_validation_trials(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
         """Center-out reaches across a regular workspace grid."""
 
-        if self.eval_workspace is None:
-            workspace = self.workspace
-        else:
-            workspace = self.eval_workspace
+        # if self.eval_workspace is None:
+        #     workspace = self.workspace
+        # else:
+        #     workspace = self.eval_workspace
 
-        pos_endpoints = _points_grid(
-            workspace,
+        points = _points_grid(
+            self.workspace,
             self.eval_grid_n,
         )
 
-        target_states = _pos_only_states(pos_endpoints)
+        target_states, = _pos_only_states(points)
 
         init_states = target_states
 
         # Broadcast to the desired number of time steps. Awkwardly, we also
         # need to use `swapaxes` because the batch dimension is explicit, here.
         target_states = jax.tree_map(
-            lambda x: jnp.swapaxes(jnp.broadcast_to(x, (self.n_steps, *x.shape)), 0, 1),
+            lambda x: jnp.swapaxes(
+                jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)), 0, 1
+            ),
             target_states,
         )
 
-        task_inputs = _forceless_task_inputs(target_states)
-
         return SimpleReachTrialSpec(
             inits=WhereDict({lambda state: state.mechanics.effector: init_states}),
-            inputs=task_inputs,
+            inputs=SimpleReachTaskInputs(
+                effector_target=_forceless_task_inputs(target_states)
+            ),
             target=target_states,
         )
 
     @property
     def n_validation_trials(self) -> int:
         """Size of the validation set."""
-        return self.eval_grid_n**2
+        return self.eval_grid_n ** 2
 
 
 def _points_grid(
@@ -1010,7 +1013,7 @@ def _points_grid(
 
     xy_1d = map(lambda x: jnp.linspace(x[0][0], x[0][1], x[1]), zip(workspace.T, grid_n))
     grid = jnp.stack(jnp.meshgrid(*xy_1d))
-    grid_points = grid.reshape(2, -1).T
+    grid_points = grid.reshape(2, -1).T[None]
     return grid_points
 
 

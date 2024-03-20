@@ -16,7 +16,7 @@ Feedbax makes it easy to:
 - swap out components of models, and write new components.
 <!-- - track the progress of a training run in Tensorboard. -->
 
-Feedbax is currently in active [development](#development). Expect some changes in the near future!
+Feedbax is in active [development](#development). Expect some changes in the near future!
 
 ## Feedbax is a JAX library
 

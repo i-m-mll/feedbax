@@ -15,6 +15,7 @@ from feedbax.loss import (
     EffectorFixationLoss,
     EffectorPositionLoss,
     EffectorFinalVelocityLoss,
+    EffectorVelocityLoss,
     NetworkOutputLoss,
     NetworkActivityLoss,
     power_discount,
@@ -54,6 +55,35 @@ def simple_reach_loss(
                 discount_func=lambda n_steps: power_discount(n_steps, discount_exp)
             ),
             effector_final_velocity=EffectorFinalVelocityLoss(),
+            nn_output=NetworkOutputLoss(),  # the "control" loss
+            nn_hidden=NetworkActivityLoss(),
+        ),
+        weights=loss_term_weights,
+    )
+
+
+def hold_loss(
+    loss_term_weights: Optional[Mapping[str, float]] = None,
+) -> CompositeLoss:
+    """A typical loss function for a postural stabilization task.
+
+    Arguments:
+        loss_term_weights: Maps loss term names to term weights. If `None`,
+            a typical set of default weights is used.
+    """
+    if loss_term_weights is None:
+        loss_term_weights = dict(
+            effector_position=1.0,
+            effector_velocity=1.0,
+            nn_output=1e-5,
+            nn_hidden=1e-5,
+        )
+    return CompositeLoss(
+        dict(
+            # these assume a particular PyTree structure to the states returned by the model
+            # which is why we simply instantiate them
+            effector_position=EffectorPositionLoss(),
+            effector_velocity=EffectorVelocityLoss(),
             nn_output=NetworkOutputLoss(),  # the "control" loss
             nn_hidden=NetworkActivityLoss(),
         ),

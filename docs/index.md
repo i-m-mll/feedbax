@@ -17,7 +17,7 @@ Feedbax makes it easy to:
 <!-- - track the progress of a training run in Tensorboard. -->
 
 !!! Warning ""
-    Feedbax is currently in active [development](#development). Expect some changes in the near future!
+    Feedbax is in active [development](#development). Expect some changes in the near future!
 
 ??? Note "What Feedbax can (and can't) do"
     Feedbax is designed for feedback control of biomechanical models by neural networks, to perform movement tasks in continuous spaces. However, it could also be used for other optimal control problems for which a suitable set of model, cost function, and task trials can be defined.
