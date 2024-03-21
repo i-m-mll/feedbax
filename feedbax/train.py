@@ -24,6 +24,7 @@ from tensorboardX import SummaryWriter  # type: ignore
 from tqdm.auto import tqdm
 
 from feedbax import loss
+from feedbax.intervene import AbstractIntervenor
 from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
 from feedbax.misc import Timer, TqdmLoggingHandler, delete_contents
 from feedbax._model import AbstractModel, ModelInput
@@ -266,14 +267,18 @@ class TaskTrainer(eqx.Module):
 
         # Passing the flattened pytrees through `_train_step` gives a slight
         # performance improvement. See the docstring of `_train_step`.
-        flat_model, treedef_model = jtu.tree_flatten(model)
+        flat_model, treedef_model = jtu.tree_flatten(
+            model,
+            is_leaf=lambda x: isinstance(x, AbstractIntervenor),
+        )
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
 
         if ensembled:
             # We only vmap over axis 0 of the *array* components of the model.
             flat_model_array_spec = jax.tree_map(
-                lambda x: 0 if eqx.is_array(x) else None,
+                lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
                 flat_model,
+                is_leaf=lambda x: isinstance(x, AbstractIntervenor),
             )
             train_step = eqx.filter_vmap(
                 self._train_step,
@@ -284,8 +289,9 @@ class TaskTrainer(eqx.Module):
             # We can't simply flatten this to get `flat_model_array_spec`,
             # even if we use `is_leaf=lambda x: x is None`.
             model_array_spec = jax.tree_map(
-                lambda x: 0 if eqx.is_array(x) else None,
+                lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
                 model,
+                is_leaf=lambda x: isinstance(x, AbstractIntervenor),
             )
             evaluate = eqx.filter_vmap(
                 task.eval_with_loss, in_axes=(model_array_spec, 0)
@@ -582,7 +588,7 @@ class TaskTrainer(eqx.Module):
             state_dep_updates = update_func(model, states)
             model = eqx.apply_updates(model, state_dep_updates)
 
-        flat_model = jtu.tree_leaves(model)
+        flat_model = jtu.tree_leaves(model, lambda x: isinstance(x, AbstractIntervenor))
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
 
         return losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state

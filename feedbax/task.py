@@ -35,7 +35,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
 from feedbax import tree_take
-from feedbax.intervene import AbstractIntervenorInput, TimeSeriesParam
+from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput, TimeSeriesParam
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax._model import ModelInput
@@ -505,7 +505,11 @@ class AbstractTask(Module):
                 Will be split into `n_replicates` keys.
         """
         # TODO: Why not just use `eqx.filter_vmap`? It should handle the array partitioning.
-        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        models_arrays, models_other = eqx.partition(
+            models,
+            eqx.is_array,
+            is_leaf=lambda x: isinstance(x, AbstractIntervenor),
+        )
 
         def evaluate_single(model_arrays, model_other, key):
             model = eqx.combine(model_arrays, model_other)
@@ -568,7 +572,11 @@ class AbstractTask(Module):
             The evaluated model states, for each trial and each model in the ensemble.
             The trial specifications for the batch.
         """
-        models_arrays, models_other = eqx.partition(models, eqx.is_array)
+        models_arrays, models_other = eqx.partition(
+            models,
+            eqx.is_array,
+            is_leaf=lambda x: isinstance(x, AbstractIntervenor),
+        )
 
         def evaluate_single(model_arrays, model_other, batch_size, key):
             model = eqx.combine(model_arrays, model_other)
