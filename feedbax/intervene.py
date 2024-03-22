@@ -297,7 +297,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
         """Return a PyTree of scaled noise arrays with the same structure/shapes as
         `substate_in`."""
         return jax.tree_map(
-            lambda x:  params.scale * params.noise_func(
+            lambda x:  params.scale * self.noise_func(
                 key,
                 shape=x.shape,
                 dtype=x.dtype,
@@ -715,7 +715,10 @@ def schedule_intervenor(
                 intervention_specs_validation[label],
                 trial_spec_example,
                 key=key_example,
-            )
+                exclude=lambda x: isinstance(x, TimeSeriesParam),
+                is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+            ),
+            is_leaf=lambda x: isinstance(x, TimeSeriesParam),            
         ),
     )
 

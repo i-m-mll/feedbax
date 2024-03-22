@@ -283,7 +283,7 @@ class TaskTrainer(eqx.Module):
             train_step = eqx.filter_vmap(
                 self._train_step,
                 in_axes=(None, None, flat_model_array_spec, None, 0, None, None, 0),
-                # out_axes=(0, 0, 0, None),
+                out_axes=(0, 0, flat_model_array_spec, 0, None),
             )
 
             # We can't simply flatten this to get `flat_model_array_spec`,
@@ -503,7 +503,7 @@ class TaskTrainer(eqx.Module):
         tqdm.write(
             "\nCompleted training run on a total of "
             + f"{n_batches * batch_size:,} trials"
-            + f"{' per model' if ensembled else ''}.",
+            + f"{' per model' if ensembled else ''}.\n",
             file=sys.stdout,
         )
 
@@ -588,9 +588,9 @@ class TaskTrainer(eqx.Module):
             state_dep_updates = update_func(model, states)
             model = eqx.apply_updates(model, state_dep_updates)
 
-        flat_model = jtu.tree_leaves(model, lambda x: isinstance(x, AbstractIntervenor))
+        flat_model = jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AbstractIntervenor))
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
-
+        
         return losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state
 
     def _save_checkpoint(

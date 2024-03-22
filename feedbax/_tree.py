@@ -308,7 +308,7 @@ def tree_call(
         callables,
         is_leaf=is_leaf,
     )
-    return eqx.combine(callables_values, other_values)
+    return eqx.combine(callables_values, other_values, is_leaf=is_leaf)
 
 
 def tree_array_bytes(tree: PyTree, dedupe_arrays_by_id: bool = True) -> int:

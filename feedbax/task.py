@@ -307,8 +307,9 @@ class AbstractTask(Module):
             intervention_specs,
             trial_spec,
             key=key,
-            # We don't want to unwrap the time series params, yet.
+            # Treat `TimeSeriesParam`s as leaves, but don't call (unwrap) them yet.
             exclude=lambda x: isinstance(x, TimeSeriesParam),
+            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
         )
 
         timeseries, other = eqx.partition(
