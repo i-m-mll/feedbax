@@ -7,7 +7,7 @@
 from collections.abc import Callable, Sequence
 from functools import partial
 import logging
-from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, get_type_hints
+from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, Union, get_type_hints
 
 import equinox as eqx
 import jax
@@ -15,9 +15,9 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
+from tqdm.auto import tqdm
 
-
-from feedbax.misc import dedupe_by_id
+from feedbax.misc import dedupe_by_id, is_module
 
 
 logger = logging.getLogger(__name__)
@@ -76,11 +76,15 @@ def tree_take(
     tree: PyTree[Any, "T"],
     indices: ArrayLike,
     axis: int = 0,
-    **kwargs,
+    **kwargs: Any,
 ) -> PyTree[Any, "T"]:
     """Indexes elements out of each array leaf of a PyTree.
 
     Any non-array leaves are returned unchanged.
+    
+    !!! Warning ""
+        This function inherits the default indexing behaviour of JAX. If 
+        out-of-bounds indices are provided, no error will be raised.       
 
     Arguments:
         tree: Any PyTree whose array leaves are equivalently indexable,
@@ -91,6 +95,7 @@ def tree_take(
         indices: The indices of the values to take from each array leaf.
         axis: The axis of the array leaves over which to take their values.
             Defaults to 0.
+        kwargs: Additional arguments to [`jax.numpy.take`](https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.take.html).
 
     Returns:
         A PyTree with the same structure as `tree`, where array leaves from `tree` have been replaced by indexed-out elements.
@@ -229,10 +234,6 @@ def _tree_map(
     return jax.tree_map(f, tree, *rest, is_leaf=is_leaf)
 
 
-def _is_module(obj: Any):
-    return isinstance(obj, eqx.Module)
-
-
 S = TypeVar("S")
 
 
@@ -248,13 +249,44 @@ def tree_map_module(
     to write `is_leaf=lambda x: isinstance(x, eqx.Module)` every time.
     """
 
-    return jax.tree_map(f, tree, *rest, is_leaf=_is_module)
+    return jax.tree_map(f, tree, *rest, is_leaf=is_module)
+
+
+def tree_map_tqdm(
+    f: Callable[..., S], 
+    tree: PyTree[Any, "T"], 
+    *rest: PyTree[Any, "T"], 
+    labels: Optional[PyTree[str, "T"]] = None, 
+    is_leaf: Optional[Callable[..., bool]] = None,
+) -> PyTree[S, "T"]:
+    """Adds a progress bar to `tree_map`.
+    
+    Arguments:
+        f: The function to map over the tree.
+        tree: The PyTree to map over.
+        *rest: Additional arguments to `f`.
+        labels: A PyTree of labels for the leaves of `tree`, to be displayed on the 
+            progress bar.
+        is_leaf: A function that returns `True` for leaves of `tree`.
+    """
+    n_leaves = len(jtu.tree_leaves(tree, is_leaf=is_leaf))
+    pbar = tqdm(total=n_leaves)
+    def _f(leaf, label, *rest):
+        if label is not None:
+            pbar.set_description(f"Processing leaf: {label}")
+        result = f(leaf, *rest)
+        pbar.update(1)
+        return result
+    if labels is None:
+        pbar.set_description("Processing tree leaves")
+        labels = jax.tree_map(lambda _: None, tree, is_leaf=is_leaf)
+    return jax.tree_map(_f, tree, labels, *rest, is_leaf=is_leaf)    
 
 
 def tree_map_unzip(
     f: Callable[..., Tuple[Any, ...]],
     tree: PyTree[Any, "T"],
-    *rest,
+    *rest: PyTree[Any, "T"],
     is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> Tuple[PyTree[Any, "T"], ...]:
     """Maps a tuple-valued function over a PyTree. Returns a tuple of PyTrees.
@@ -335,3 +367,87 @@ def tree_struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
     structs = eqx.filter(tree, lambda x: isinstance(x, jax.ShapeDtypeStruct))
     struct_bytes = jax.tree_map(lambda x: x.size * x.dtype.itemsize, structs)
     return jtu.tree_reduce(lambda x, y: x + y, struct_bytes)
+
+
+BuiltInKeyEntry = Union[jtu.DictKey, jtu.SequenceKey, jtu.GetAttrKey, jtu.FlattenedIndexKey]
+
+
+def _node_key_to_label(node_key: BuiltInKeyEntry) -> str:
+    if isinstance(node_key, jtu.DictKey):
+        label = str(node_key.key)
+    elif isinstance(node_key, jtu.SequenceKey):
+        label = str(node_key.idx)
+    elif isinstance(node_key, jtu.GetAttrKey):
+        label = str(node_key.name)
+    elif isinstance(node_key, jtu.FlattenedIndexKey):
+        label = str(node_key.idx)
+    else:
+        raise ValueError(f"Unknown PyTree node key type: {type(node_key)}")
+    return label
+
+
+def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:
+    return join_with.join(map(_node_key_to_label, path))
+
+
+def tree_labels(
+    tree: PyTree[Any, 'T'], 
+    join_with: str = '_',
+    is_leaf: Optional[Callable[..., bool]] = None,
+) -> PyTree[str, 'T']:
+    """Return a PyTree of labels based on each leaf's key path.
+    
+    !!! Note ""
+        When `tree` is a flat dict:
+        
+        ```python
+        tree_keys(tree) == {k: str(k) for k in tree.keys()}
+        ```
+        
+        When `tree` is a flat list:
+        
+        ```python
+        tree_keys(tree) == [str(i) for i in range(len(tree))]
+        ```
+        
+    !!! Example "Verbose `tree_map`"
+        This function is useful for creating descriptive labels when using `tree_map`
+        to apply an expensive operation to a PyTree.
+        
+        ```python
+        def expensive_op(x):
+            # Something time-consuming 
+            ...
+        
+        def verbose_expensive_op(leaf, label):
+            print(f"Processing leaf: {label}")
+            return expensive_op(leaf)
+        
+        result = tree_map(
+            verbose_expensive_op,
+            tree,
+            tree_labels(tree),
+        )
+        ```
+        
+        A similar use case combines this function with 
+        [`tree_map_tqdm`][feedbax.tree_map_tqdm] to label a progress bar:
+        
+        ```python
+        result = tree_map_tqdm(
+            expensive_op,
+            tree,
+            labels=tree_labels(tree),
+        )
+        ```
+    
+    Arguments: 
+        tree: The PyTree for which to generate labels.
+        join_with: The string with which to join a leaf's path keys, to form its label.
+        is_leaf: An optional function that returns a boolean, which determines whether each
+            node in `tree` should be treated as a leaf.
+    """
+    leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
+    paths, _ = zip(*leaves_with_path)
+    labels = [_path_to_label(path, join_with) for path in paths]
+    return jtu.tree_unflatten(treedef, labels)

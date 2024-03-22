@@ -48,7 +48,7 @@
             {%- set ns.render_kw_only_separator = False -%}
           {%- endif -%}
 
-          
+
           <span class="md-signature-parameter-name">
             {%- filter highlight(language="python", inline=True) -%}
               {% if parameter.kind.value == "variadic positional" %}*{% elif parameter.kind.value == "variadic keyword" %}**{% endif -%}
@@ -65,23 +65,24 @@
           {%- if not loop.last -%}
             {% include "_signature_comma.html" %}
           {%- endif -%}
-    
+
 
         {%- endif -%}
       {%- endfor -%}
     <code class="md-signature-paren highlight language-python"><span class="p">)</span></code>
     <span class='md-signature-return'>
-      {%- filter highlight(language="python", inline=True) -%}
       {%- if config.show_signature_annotations
           and function.annotation
           and not (config.merge_init_into_class and function.name == "__init__" )
-       %} -> {% if config.separate_signature and config.signature_crossrefs -%}
+       %} <code class="md-signature-return-arrow">-> </code>
+      {%- filter highlight(language="python", inline=True) -%}
+      {% if config.separate_signature and config.signature_crossrefs -%}
           {%- with expression = function.annotation %}{% include "expression.html" with context %}{%- endwith -%}
         {%- else -%}
           {{ function.annotation|safe }}
         {%- endif -%}
-      {%- endif -%}
       {%- endfilter -%}
+      {%- endif -%}
     </span>
 
   {%- endwith -%}

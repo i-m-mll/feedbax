@@ -21,12 +21,13 @@ from feedbax._staged import (
     pformat_model_spec,
     pprint_model_spec,
 )
-from feedbax.state import AbstractState
 from feedbax._tree import (
     get_ensemble,
     random_split_like_tree,
     tree_array_bytes,
     tree_call,
+    tree_labels,
+    tree_map_tqdm,
     tree_map_unzip,
     tree_set,
     tree_stack,
@@ -34,6 +35,7 @@ from feedbax._tree import (
     tree_take,
     tree_unzip,
 )
+from feedbax.misc import is_module
 
 # logging.config.fileConfig('../logging.conf')
 

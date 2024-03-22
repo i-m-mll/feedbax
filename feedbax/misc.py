@@ -7,6 +7,8 @@
 from collections.abc import (
     Callable,
     Iterable,
+    Mapping,
+    MutableMapping,
     MutableSequence,
     Sequence,
     Set,
@@ -20,8 +22,9 @@ from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
 from time import perf_counter
-from typing import Optional, Tuple, TypeVar, Union
+from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
+from equinox import Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
@@ -216,3 +219,8 @@ def dedupe_by_id(seq: Sequence[T1]) -> Iterable[Optional[T1]]:
             yield item
         else:
             yield None
+            
+
+def is_module(element: Any) -> bool:
+    """Return `True` if `element` is an Equinox module."""
+    return isinstance(element, Module)

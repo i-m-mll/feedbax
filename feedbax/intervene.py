@@ -49,7 +49,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
-from feedbax.misc import get_unique_label
+from feedbax.misc import get_unique_label, is_module
 from feedbax._model import AbstractModel
 from feedbax.state import StateT
 from feedbax._tree import tree_call
@@ -296,7 +296,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
     ) -> PyTree[Array, "T"]:
         """Return a PyTree of scaled noise arrays with the same structure/shapes as
         `substate_in`."""
-        return jax.tree_map(
+        noise = jax.tree_map(
             lambda x:  params.scale * self.noise_func(
                 key,
                 shape=x.shape,
@@ -304,6 +304,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
             ),
             substate_in,
         )
+        return noise 
 
 
 class NetworkIntervenorParams(AbstractIntervenorInput):
@@ -472,7 +473,7 @@ def add_intervenors(
         Sequence[AbstractIntervenor[StateS, InputT]],
         Mapping[str, Sequence[AbstractIntervenor[StateS, InputT]]],
     ],
-    ensembled: bool = False,  # TODO
+    # ensembled: bool = False,  # TODO
     where: Callable[
         [AbstractModel[StateT]], Any  # "AbstractStagedModel[StateS]"
     ] = lambda model: model.step,
@@ -565,7 +566,7 @@ def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
     models: PyTree[AbstractModel[StateT]],
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
-    ensembled: bool = False,  # TODO
+    # ensembled: bool = False,  # TODO
     where: Callable[[AbstractModel[StateT]], Any] = lambda model: model,
     stage_name: Optional[str] = None,
     validation_same_schedule: bool = True,
@@ -650,7 +651,7 @@ def schedule_intervenor(
         jax.tree_map(
             lambda model: model.step._all_intervenor_labels,
             models,
-            is_leaf=lambda x: isinstance(x, Module),  # AbstractModel
+            is_leaf=is_module,  # AbstractModel
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
@@ -659,7 +660,7 @@ def schedule_intervenor(
         jax.tree_map(
             lambda task: tuple(task.intervention_specs.keys()),
             tasks,
-            is_leaf=lambda x: isinstance(x, Module),  # AbstractTask
+            is_leaf=is_module,  # AbstractTask
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
@@ -690,7 +691,7 @@ def schedule_intervenor(
             ),
         ),
         tasks,
-        is_leaf=lambda x: isinstance(x, Module),  # AbstractTask
+        is_leaf=is_module,  # AbstractTask
     )
 
     # Relabel the intervenor, and make sure it has a single set of default param values.
@@ -699,7 +700,7 @@ def schedule_intervenor(
     # TODO: Should we let the user pass a `default_intervention_spec`?
     key_example = jax.random.PRNGKey(0)
     task_example = jax.tree_leaves(
-        tasks, is_leaf=lambda x: isinstance(x, Module)  # AbstractTask
+        tasks, is_leaf=is_module  # AbstractTask
     )[0]
     trial_spec_example = task_example.get_train_trial(key_example)
 
@@ -718,7 +719,7 @@ def schedule_intervenor(
                 exclude=lambda x: isinstance(x, TimeSeriesParam),
                 is_leaf=lambda x: isinstance(x, TimeSeriesParam),
             ),
-            is_leaf=lambda x: isinstance(x, TimeSeriesParam),            
+            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
         ),
     )
 

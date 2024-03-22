@@ -20,6 +20,7 @@ from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax._model import AbstractModel, MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
+from feedbax.misc import is_module
 from feedbax.nn import NetworkState
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateBounds
@@ -236,7 +237,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             feedback=jax.tree_map(
                 lambda channel: channel.memory_spec,
                 self.channels.models,
-                is_leaf=lambda x: isinstance(x, eqx.Module),
+                is_leaf=is_module,
             ),
         )
 
@@ -249,7 +250,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             feedback=jax.tree_map(
                 lambda channel: channel.bounds,
                 self.channels.models,
-                is_leaf=lambda x: isinstance(x, eqx.Module),
+                is_leaf=is_module,
             ),
         )
 

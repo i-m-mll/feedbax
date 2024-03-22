@@ -251,6 +251,10 @@ div.md-function-heading {
     font-weight: normal;
 }
 
+.md-signature-return-arrow {
+    font-weight: bold;
+}
+
 .md-signature-return code {
     padding: 0 0em !important;
     font-size: 80%;

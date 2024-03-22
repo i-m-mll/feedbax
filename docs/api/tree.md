@@ -16,9 +16,15 @@ Feedbax collects a few convenient functions which operate on PyTrees, and which 
 
 ::: feedbax.tree_map_unzip
 
+::: feedbax.tree_map_tqdm
+
 ::: feedbax.tree_call
 
 ::: feedbax.tree_stack
+
+## Leaf labels
+
+::: feedbax.tree_labels
 
 ## Random keys
 
