@@ -4,7 +4,7 @@
 
 ::: feedbax.plot.plot_loss_mean_history
 
-::: feedbax.plot.plot_reach_trajectories
+::: feedbax.plot.plot_effector_trajectories
 
 ::: feedbax.plot.plot_reach_endpoint_dists
 

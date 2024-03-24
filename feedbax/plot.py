@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 import io
 from itertools import zip_longest
 import logging
-from typing import Any, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Literal, Optional, Tuple, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -29,6 +29,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
+from matplotlib.pyplot import get_cmap  # type: ignore
 from matplotlib.typing import ColorType
 import numpy as np
 import pandas as pd
@@ -155,7 +156,7 @@ def plot_joint_pos_trajectory(
     if add_root:
         xy = jnp.pad(xy, ((0, 0), (1, 0), (0, 0)))
 
-    cmap_func = plt.get_cmap(cmap_name)
+    cmap_func = get_cmap(cmap_name)
     cmap = cmap_func(np.linspace(0, 0.66, num=xy.shape[0], endpoint=True))
     cmap = mplc.ListedColormap(cmap)
 
@@ -217,7 +218,7 @@ def plot_3D_paths(
     if not epoch_start_idxs.shape[1] == len(epoch_linestyles):
         raise ValueError("TODO")
 
-    cmap = plt.get_cmap(cmap_name)
+    cmap = get_cmap(cmap_name)
     colors = [cmap(i) for i in np.linspace(0, 1, paths.shape[0])]
 
     fig = plt.figure(figsize=(8, 8))
@@ -253,7 +254,7 @@ def plot_planes(
     - Subplot columns (with argument)
     """
 
-    cmap = plt.get_cmap(cmap)
+    cmap = get_cmap(cmap)
     colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
 
     n_planes = x.shape[-1] // 2
@@ -289,7 +290,7 @@ def plot_planes(
     return (axs,)
 
 
-def plot_reach_trajectories(
+def plot_effector_trajectories(
     states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
     where_data: Optional[Callable] = None,
     step: int = 1,  # plot every step-th trial
@@ -346,7 +347,7 @@ def plot_reach_trajectories(
         positions, velocities, controls = (
             states.mechanics.effector.pos,
             states.mechanics.effector.vel,
-            states.net.output,
+            states.efferent.output,
         )
     elif where_data is None:
         raise ValueError(
@@ -378,7 +379,7 @@ def plot_reach_trajectories(
     fig, axs = plt.subplots(1, 3, figsize=(12, 6))
 
     if colors is None:
-        cmap_func = plt.get_cmap(cmap_name)
+        cmap_func = get_cmap(cmap_name)
         colors = [
             cmap_func(i) if color is None else color
             for i in np.linspace(0, 1, positions.shape[0])
@@ -472,7 +473,7 @@ def plot_trajectories(
     # TODO: clever row-col layout
     fig, axs = plt.subplots(1, len(state_arrays), figsize=(12, 6))
 
-    cmap_func = plt.get_cmap(cmap)
+    cmap_func = get_cmap(cmap)
     colors = [cmap_func(i) for i in np.linspace(0, 1, state_arrays[0].shape[0])]
 
     for j, array in enumerate(state_arrays):
@@ -583,7 +584,7 @@ def plot_activity_sample_units(
         unit_idxs = jnp.concatenate([unit_idxs, jnp.array(unit_includes)])
     x = activities[..., unit_idxs]
 
-    cmap = plt.get_cmap(cmap_name)
+    cmap = get_cmap(cmap_name)
     colors = [cmap(i) for i in np.linspace(0, 1, x.shape[0])]
 
     # if len(x.shape) == 3:
@@ -645,12 +646,14 @@ def plot_loss_history(
 
     losses = train_history.loss
 
+    # TODO: Remove this conditional, since `train_history` is passed
     if isinstance(losses, Array):
-        xs = 1 + np.arange(losses.shape[0])
-        ax.plot(xs, losses, "black", lw=3)
+        losses_arr: Array = losses
+        xs = 1 + np.arange(losses_arr.shape[0])
+        ax.plot(xs, losses_arr, "black", lw=3)
 
     elif isinstance(losses, LossDict):
-        cmap = plt.get_cmap(cmap_name)
+        cmap = get_cmap(cmap_name)
         colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
 
         xs = 1 + np.arange(len(losses.total))
@@ -700,8 +703,9 @@ def plot_loss_mean_history(
     losses = train_history.loss
 
     if isinstance(losses, Array):
+        losses_arr: Array = losses
         losses_terms_dfs = {
-            "Total": pd.DataFrame(losses.T, index=range(losses.shape[1]))
+            "Total": pd.DataFrame(losses.T, index=range(losses_arr.shape[1]))
         }
     elif isinstance(losses, LossDict):
         losses_terms_dfs = jax.tree_map(
@@ -813,7 +817,7 @@ def plot_task_profiles(
     height_ratios = (1,) * task_rows
 
     if colors is None:
-        cmap = plt.get_cmap(cmap_name)
+        cmap = get_cmap(cmap_name)
         colors = [cmap(i) for i in np.linspace(0, 1, n_trials)]
 
     fig, axs_ = plt.subplots(
@@ -842,13 +846,18 @@ def plot_task_profiles(
     return fig, axs
 
 
+LineStyle = Literal['solid', 'dashed', 'dashdot', 'dotted']
+
+
 def plot_speed_profiles(
     vel: Float[Array, "trial time"],
-    epoch_start_idxs: Optional[Int[Array, "trial epoch"]] = None,
+    vline_idxs: Optional[Int[Array, "trial idx"]] = None,
+    vline_styles: Optional[Sequence[Optional[LineStyle]]] = None,
+    vline_labels: Optional[Sequence[Optional[str]]] = None,
     cmap_name: str = "tab10",
     colors: Optional[Sequence[ColorType]] = None,
     **kwargs,
-) -> Tuple[Figure, Sequence[Axes]]:
+) -> Tuple[Figure, Axes]:
     """For visualizing learned movements versus task structure.
 
     For example: does the network start moving before the go cue is given?
@@ -856,8 +865,20 @@ def plot_speed_profiles(
     speed = jnp.sqrt(jnp.sum(vel ** 2, axis=-1))
 
     if colors is None:
-        cmap = plt.get_cmap(cmap_name)
+        cmap = get_cmap(cmap_name)
         colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
+    else:
+        colors = list(colors)
+    
+    if vline_idxs is not None:
+        n_vlines = vline_idxs.shape[-1]
+        vline_specs = zip(
+            vline_idxs.T,
+            [None] * n_vlines if vline_labels is None else vline_labels, 
+            ["dotted"] * n_vlines if vline_styles is None else vline_styles,
+        )
+    else:
+        vline_specs = ()
 
     fig, ax = plt.subplots(
         1, 1,
@@ -868,35 +889,31 @@ def plot_speed_profiles(
         ax.plot(speed[i].T, color=colors[i], **kwargs)
 
     ymax = 1.1 * jnp.max(speed)
-    if epoch_start_idxs is not None:
-        # ax.vlines(
-        #     epoch_start_idxs[:, 1],
-        #     ymin=0,
-        #     ymax=ymax,
-        #     colors=colors,
-        #     linestyles="dotted",
-        #     linewidths=1,
-        #     label="target ON",
-        # )
-        ax.vlines(
-            epoch_start_idxs[:, 2],
-            ymin=0,
-            ymax=ymax,
-            colors=colors,
-            linestyles="dotted",
-            linewidths=1,
-            label="Target OFF",
-        )
-        ax.vlines(
-            epoch_start_idxs[:, 3],
-            ymin=0,
-            ymax=ymax,
-            colors=colors,
-            linestyles="dashed",
-            linewidths=1,
-            label="Hold OFF",
-        )
-        plt.legend()
+    
+    if vline_idxs is not None:
+        for idxs, label, style in vline_specs:
+            if style is None:
+                style = 'solid'
+                linewidth = 0
+            else:
+                linewidth = 1
+            
+            if label is None:
+                label = ""
+                
+            print(idxs, label, style)
+                
+            ax.vlines(
+                idxs,
+                ymin=0,
+                ymax=ymax,
+                colors=colors,
+                linestyles=style,
+                linewidths=linewidth,
+                label=label,
+            )
+
+    ax.legend()
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
     ax.set_xlabel("Time step")
@@ -927,9 +944,11 @@ def plot_task_and_speed_profiles(
         height_ratios = (1,)
 
     if colors is None:
-        cmap = plt.get_cmap(cmap_name)
+        cmap = get_cmap(cmap_name)
         colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
-
+    else:
+        colors = list(colors)
+        
     fig, axs_ = plt.subplots(
         1 + task_rows,
         1,
@@ -1005,7 +1024,6 @@ def animate_arm2(
 
     if add_root:
         xy = jnp.pad(xy, ((0, 0), (1, 0), (0, 0)))
-
 
     arm_line, = ax.plot(*xy[0].T, "k-")
     traj_line, = ax.plot(*xy[0, -1].T, "g-")
@@ -1227,7 +1245,7 @@ def circular_hist(
         ax.plot([mean_angle, mean_angle], [0, np.max(radius)], "r-", lw=2)
 
     # Set the direction of the zero angle
-    ax.set_theta_offset(offset)
+    ax.set_theta_offset(offset)  # type: ignore
 
     # Remove ylabels for area plots (they are mostly obstructive)
     if density:

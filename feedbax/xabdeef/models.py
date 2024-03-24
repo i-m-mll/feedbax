@@ -94,7 +94,13 @@ def point_mass_nn(
         out_nonlinearity=out_nonlinearity,
         key=key1,
     )
-    body = SimpleFeedback(net, mechanics, feedback_spec=feedback_spec, key=key2)
+    body = SimpleFeedback(
+        net, 
+        mechanics, 
+        feedback_spec=feedback_spec, 
+        motor_noise_std=motor_noise_std,
+        key=key2,
+    )
 
     model = Iterator(body, n_steps)
 

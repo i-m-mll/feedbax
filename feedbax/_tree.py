@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
+import numpy as np
 from tqdm.auto import tqdm
 
 from feedbax.misc import dedupe_by_id, is_module
@@ -257,6 +258,7 @@ def tree_map_tqdm(
     tree: PyTree[Any, "T"], 
     *rest: PyTree[Any, "T"], 
     labels: Optional[PyTree[str, "T"]] = None, 
+    verbose: bool = False,
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[S, "T"]:
     """Adds a progress bar to `tree_map`.
@@ -264,7 +266,7 @@ def tree_map_tqdm(
     Arguments:
         f: The function to map over the tree.
         tree: The PyTree to map over.
-        *rest: Additional arguments to `f`.
+        *rest: Additional arguments to `f`, as PyTrees with the same structure as `tree`.
         labels: A PyTree of labels for the leaves of `tree`, to be displayed on the 
             progress bar.
         is_leaf: A function that returns `True` for leaves of `tree`.
@@ -274,7 +276,11 @@ def tree_map_tqdm(
     def _f(leaf, label, *rest):
         if label is not None:
             pbar.set_description(f"Processing leaf: {label}")
+        if verbose:
+            tqdm.write(f"Processing leaf: {label}")
         result = f(leaf, *rest)
+        if verbose:
+            tqdm.write(u'\u2500' * 80)
         pbar.update(1)
         return result
     if labels is None:
@@ -302,10 +308,21 @@ def tree_map_unzip(
 def tree_unzip(
     tree: PyTree[Tuple[Any, ...], "T"],
 ) -> Tuple[PyTree[Any, "T"], ...]:
-    """Unzips a PyTree of tuples into a tuple of PyTrees."""
-    tree_flat, treedef = jax.tree_flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
+    """Unzips a PyTree of tuples into a tuple of PyTrees.
+    
+    !!! Note 
+        Something similar could be done with `tree_transpose`, but `outer_treedef` 
+        would need to be specified. 
+        
+        This version has `zip`-like behaviour, in that 1) the input tree should be 
+        flattenable to tuples, when tuples are treated as leaves; 2) the shortest 
+        of those tuples determines the length of the output.
+    """
+    tree_flat, treedef = jtu.tree_flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
+    if any(not isinstance(x, tuple) for x in tree_flat):
+        raise ValueError("The input pytree is not flattenable to tuples")
     tree_flat_unzipped = zip(*tree_flat)
-    return tuple(jax.tree_unflatten(treedef, x) for x in tree_flat_unzipped)
+    return tuple(jtu.tree_unflatten(treedef, x) for x in tree_flat_unzipped)
 
 
 def tree_call(
@@ -380,7 +397,7 @@ def _node_key_to_label(node_key: BuiltInKeyEntry) -> str:
     elif isinstance(node_key, jtu.GetAttrKey):
         label = str(node_key.name)
     elif isinstance(node_key, jtu.FlattenedIndexKey):
-        label = str(node_key.idx)
+        label = str(node_key.key)
     else:
         raise ValueError(f"Unknown PyTree node key type: {type(node_key)}")
     return label
@@ -451,3 +468,73 @@ def tree_labels(
     paths, _ = zip(*leaves_with_path)
     labels = [_path_to_label(path, join_with) for path in paths]
     return jtu.tree_unflatten(treedef, labels)
+
+
+def _equal_or_allclose(a, b, rtol, atol):
+    if isinstance(a, Array) and isinstance(b, Array):
+        if not a.shape == b.shape:
+            return False
+        return jnp.allclose(a, b, rtol=rtol, atol=atol)
+    elif isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+        if not a.shape == b.shape:
+            return False
+        return np.allclose(a, b, rtol=rtol, atol=atol)
+    elif type(a) != type(b):
+        return False
+    else:
+        return a == b
+
+
+def tree_paths_of_equal_leaves(
+    tree: PyTree[Any, 'T'], 
+    rtol: float = 1e-5,
+    atol: float = 1e-8,
+    is_leaf: Optional[Callable[..., bool]] = None,
+) -> PyTree[set[tuple[BuiltInKeyEntry]], 'T']:
+    """
+    Returns a PyTree with the same structure, where leaves are sets of paths of other 
+    leaves that are equal.
+    
+    Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in 
+    case of arrays.   
+    
+    Note:
+        This is inefficient and should only be used for small-ish PyTrees. 
+    """
+    leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
+    
+    paths, leaves = zip(*leaves_with_path)
+
+    equal_paths = [
+        set(
+            paths[j] for j in range(len(leaves)) 
+            if i != j and _equal_or_allclose(leaves[i], leaves[j], rtol, atol)
+        )
+        for i in range(len(leaves))
+    ]
+
+    return jtu.tree_unflatten(treedef, equal_paths)
+
+
+def tree_labels_of_equal_leaves(
+    tree: PyTree[Any, 'T'], 
+    rtol: float = 1e-5,
+    atol: float = 1e-8,
+    join_with: str = '_',
+    is_leaf: Optional[Callable[..., bool]] = None,
+) -> PyTree[set[str], 'T']:
+    """Returns a PyTree with the same structure, where leaves are sets of labels of 
+    other leaves that are equal.
+    
+    Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in 
+    case of arrays.
+    """
+    tree_equal_paths = tree_paths_of_equal_leaves(
+        tree, is_leaf=is_leaf, rtol=rtol, atol=atol
+    )
+    return jax.tree_map(
+        lambda xs: set(_path_to_label(x, join_with) for x in xs),
+        tree_equal_paths,
+        is_leaf=lambda x: isinstance(x, set),
+    )
+

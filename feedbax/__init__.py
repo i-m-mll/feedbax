@@ -27,6 +27,7 @@ from feedbax._tree import (
     tree_array_bytes,
     tree_call,
     tree_labels,
+    tree_labels_of_equal_leaves,
     tree_map_tqdm,
     tree_map_unzip,
     tree_set,

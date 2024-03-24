@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 import numpy as np
 import optax  # type: ignore
 from tensorboardX import SummaryWriter  # type: ignore
@@ -128,7 +128,7 @@ class TaskTrainer(eqx.Module):
         where_train: Callable[[AbstractModel[StateT]], Any],
         ensembled: bool = False,
         log_step: int = 100,
-        save_model_trainables: bool = False,
+        save_model_trainables: bool | Int[Array, '_'] = False,
         save_trial_specs: bool = False,
         restore_checkpoint: bool = False,
         disable_tqdm: bool = False,
@@ -201,6 +201,7 @@ class TaskTrainer(eqx.Module):
 
         # TODO: ensembling
         if isinstance(save_model_trainables, Array):
+            # batch_idxs_save_trainables: Array = save_model_trainables
             if len(save_model_trainables.shape) != 1:
                 raise ValueError(
                     "If save_model_trainables is an array, it must be 1D"
@@ -463,7 +464,7 @@ class TaskTrainer(eqx.Module):
                 if self._use_tb and self.writer is not None:
                     # TODO: register plots instead of hard-coding
                     trial_specs = task.validation_trials
-                    fig, _ = plot.plot_reach_trajectories(
+                    fig, _ = plot.plot_effector_trajectories(
                         states_plot,
                         endpoints=(
                             trial_specs.inits["mechanics.effector"].pos,

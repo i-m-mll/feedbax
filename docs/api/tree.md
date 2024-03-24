@@ -14,8 +14,6 @@ Feedbax collects a few convenient functions which operate on PyTrees, and which 
 
 ::: feedbax.tree_unzip
 
-::: feedbax.tree_map_unzip
-
 ::: feedbax.tree_map_tqdm
 
 ::: feedbax.tree_call

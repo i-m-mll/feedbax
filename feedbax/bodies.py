@@ -43,6 +43,7 @@ class SimpleFeedbackState(AbstractState):
     mechanics: "MechanicsState"
     net: "NetworkState"
     feedback: PyTree[ChannelState]
+    efferent: ChannelState
 
 
 def _convert_feedback_spec(
@@ -91,7 +92,8 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
 
     net: AbstractModel[NetworkState]
     mechanics: "Mechanics"
-    channels: MultiModel[ChannelState]
+    feedback_channels: MultiModel[ChannelState]
+    efferent_channel: Channel
     _feedback_specs: PyTree[ChannelSpec]
     intervenors: Mapping[str, Sequence[AbstractIntervenor]]
 
@@ -104,6 +106,8 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         ] = ChannelSpec(
             where=lambda mechanics_state: mechanics_state.plant.skeleton,  # type: ignore
         ),
+        motor_delay: int = 0,
+        motor_noise_std: float = 0.0,
         intervenors: Optional[
             Union[
                 Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
@@ -116,7 +120,12 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         Arguments:
             net: The neural network that outputs commands for the mechanical model.
             mechanics: The discretized model of plant dynamics.
-            feedback_spec: A PyTree of `ChannelSpec` instances,
+            feedback_spec: Specifies the sensory feedback channel(s); i.e. the delay
+                and noise on the states available to the neural network.
+            motor_delay: The number of time steps to delay the neural network output
+                sent to the mechanical model.
+            motor_noise_std: The standard deviation of the Gaussian noise added to 
+                the neural network's output.
             intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add
                 to the model at construction time.
         """
@@ -138,12 +147,16 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 spec.where(example_mechanics_state)
             )
 
-        self.channels = MultiModel(jax.tree_map(
+        self.feedback_channels = MultiModel(jax.tree_map(
             lambda spec: _build_feedback_channel(spec),
             feedback_specs,
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         ))
         self._feedback_specs = feedback_specs
+        
+        self.efferent_channel = Channel(motor_delay, motor_noise_std, 0.).change_input(
+            self.net.init(key=jr.PRNGKey(0)).output
+        )
 
     # def update_feedback(
     #     self,
@@ -170,7 +183,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         return OrderedDict(
             {
                 "update_feedback": Stage(
-                    callable=lambda self: self.channels,
+                    callable=lambda self: self.feedback_channels,
                     where_input=lambda input, state: jax.tree_map(
                         lambda spec: spec.where(state.mechanics),
                         self._feedback_specs,
@@ -191,9 +204,14 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                     ),
                     where_state=lambda state: state.net,
                 ),
+                "update_efferent": Stage(
+                    callable=lambda self: self.efferent_channel,
+                    where_input=lambda input, state: state.net.output,
+                    where_state=lambda state: state.efferent,
+                ),
                 "mechanics_step": Stage(
                     callable=lambda self: self.mechanics,
-                    where_input=lambda input, state: state.net.output,
+                    where_input=lambda input, state: state.efferent.output,
                     where_state=lambda state: state.mechanics,
                 ),
             }
@@ -205,13 +223,14 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         key: PRNGKeyArray,
     ) -> SimpleFeedbackState:
         """Return a default state for the model."""
-        keys = jr.split(key, 3)
+        keys = jr.split(key, 4)
 
         return SimpleFeedbackState(
             mechanics=self.mechanics.init(key=keys[0]),
             # TODO: in case of a wrapped network (i.e. not an `AbstractModel`) a different initialization is needed!
             net=self.net.init(key=keys[1]),  # type: ignore
-            feedback=self.channels.init(key=keys[2]),
+            feedback=self.feedback_channels.init(key=keys[2]),
+            efferent=self.efferent_channel.init(key=keys[3]),
         )
 
     @property
@@ -236,9 +255,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             net=self.net.memory_spec,
             feedback=jax.tree_map(
                 lambda channel: channel.memory_spec,
-                self.channels.models,
+                self.feedback_channels.models,
                 is_leaf=is_module,
             ),
+            efferent=self.efferent_channel.memory_spec,
         )
 
     @property
@@ -249,9 +269,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             net=self.net.bounds,
             feedback=jax.tree_map(
                 lambda channel: channel.bounds,
-                self.channels.models,
+                self.feedback_channels.models,
                 is_leaf=is_module,
             ),
+            efferent=self.efferent_channel.bounds,
         )
 
     @staticmethod
@@ -314,7 +335,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                     ),
                     state.feedback,
                     self._feedback_specs,
-                    self.channels.models,
+                    self.feedback_channels.models,
                     is_leaf=lambda x: isinstance(x, ChannelState),
                 ),
             )
