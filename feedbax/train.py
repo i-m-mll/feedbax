@@ -26,12 +26,21 @@ from tqdm.auto import tqdm
 from feedbax import loss
 from feedbax.intervene import AbstractIntervenor
 from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
-from feedbax.misc import Timer, TqdmLoggingHandler, delete_contents
+from feedbax.misc import (
+    Timer, 
+    TqdmLoggingHandler, 
+    delete_contents,
+)
 from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
 from feedbax.state import StateT
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
-from feedbax._tree import filter_spec_leaves, tree_take, tree_set
+from feedbax._tree import (
+    filter_spec_leaves, 
+    tree_infer_batch_size,
+    tree_take, 
+    tree_set,
+)
 
 
 LOSS_FMT = ".2e"
@@ -164,6 +173,7 @@ class TaskTrainer(eqx.Module):
             save_model_trainables: Whether to return the entire history of the
                 trainable leaves of the model (e.g. network weights) across
                 training iterations, as part of the `TaskTrainerHistory` object.
+                May also pass a 1D array of batch numbers on which to keep history.
             save_trial_specs: Whether to return the trial specifications for
                 all batches in the training run, as part of the `TaskTrainerHistory`
                 object. This may use a lot of memory.
@@ -184,68 +194,38 @@ class TaskTrainer(eqx.Module):
 
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
-            n_replicates = jax.tree_leaves(eqx.filter(model, eqx.is_array))[0].shape[0]
-            history_shape = (n_batches, n_replicates)
+            n_replicates = tree_infer_batch_size(
+                model, exclude=lambda x: isinstance(x, AbstractIntervenor)
+            )
             opt_state = jax.vmap(self.optimizer.init)(model_trainables)
         else:
-            history_shape = (n_batches,)
             opt_state = self.optimizer.init(model_trainables)
             # Unlikely to be used for anything, due to ensembled operations being in
             # conditionals. Make the type checker happy.
             n_replicates = 1
 
-
-        if (hyperparams := getattr(opt_state, "hyperparams", None)) is None:
+        if getattr(opt_state, "hyperparams", None) is None:
             logger.debug("Optimizer not wrapped in `optax.inject_hyperparameters`; "
                          "learning rate history will not be returned")
 
-        # TODO: ensembling
+        # Convert batch numbers to a full-length Boolean mask over training iterations
         if isinstance(save_model_trainables, Array):
-            # batch_idxs_save_trainables: Array = save_model_trainables
-            if len(save_model_trainables.shape) != 1:
-                raise ValueError(
-                    "If save_model_trainables is an array, it must be 1D"
-                )
-            n_save_steps = save_model_trainables.shape[0]
-            model_train_history = jax.tree_map(
-                lambda x: (
-                    jnp.empty((n_save_steps,) + history_shape[1:] + x.shape)
-                    if eqx.is_array(x) else x
-                ),
-                model_trainables,
-            )
             save_model_trainables_batches = np.array(
                 jnp.zeros(n_batches, dtype=bool).at[save_model_trainables].set(True)
             )
         elif save_model_trainables:
-            model_train_history = jax.tree_map(
-                lambda x: jnp.empty(history_shape + x.shape) if eqx.is_array(x) else x,
-                model_trainables,
-            )
             save_model_trainables_batches = np.ones(n_batches, dtype=bool)
         else:
-            model_train_history = None
             save_model_trainables_batches = np.zeros(n_batches, dtype=bool)
 
-        if not isinstance(task.loss_func, AbstractLoss):
-            raise ValueError(
-                "The loss function must be an instance of `AbstractLoss`."
-            )
-        if isinstance(task.loss_func, CompositeLoss):
-            loss_history = LossDict(
-                zip(
-                    task.loss_func.weights.keys(),
-                    [jnp.empty(history_shape) for _ in task.loss_func.weights],
-                )
-            )
-        else:
-            loss_history = jnp.empty(history_shape)
-
-
-        history = TaskTrainerHistory(
-            loss=loss_history,
-            learning_rate=jnp.empty(history_shape),
-            model_trainables=model_train_history,
+        history = init_task_trainer_history(
+            task.loss_func,
+            n_batches,
+            n_replicates, 
+            ensembled,
+            save_model_trainables=save_model_trainables,
+            model=model,
+            where_train=where_train,
         )
 
         start_batch = 0  # except when we load a checkpoint
@@ -390,11 +370,10 @@ class TaskTrainer(eqx.Module):
 
             if (hyperparams := getattr(opt_state, "hyperparams", None)) is not None:
                 # requires that the optimizer was wrapped in `optax.inject_hyperparameters`
-                learning_rate = hyperparams["learning_rate"]
                 history = eqx.tree_at(
                     lambda history: history.learning_rate,
                     history,
-                    history.learning_rate.at[batch].set(learning_rate),
+                    history.learning_rate.at[batch].set(hyperparams["learning_rate"]),
                 )
 
 
@@ -630,6 +609,64 @@ class TaskTrainer(eqx.Module):
             (model, None, history),
         )
         return chkpt_path, last_batch, model, opt_state, history
+
+
+def init_task_trainer_history(
+    loss_func: AbstractLoss,
+    n_batches: int, 
+    n_replicates: int, 
+    ensembled: bool, 
+    save_model_trainables: bool | Int[Array, '_'] = False,
+    model: Optional[AbstractModel[StateT]] = None,
+    where_train: Optional[Callable[[AbstractModel[StateT]], Any]] = None,
+):
+    if ensembled:
+        history_shape = (n_batches, n_replicates)
+    else:
+        history_shape = (n_batches,)
+
+    if isinstance(loss_func, CompositeLoss):
+        loss_history = LossDict(
+            zip(
+                loss_func.weights.keys(),
+                [jnp.empty(history_shape) for _ in loss_func.weights],
+            )
+        )
+    else:
+        loss_history = jnp.empty(history_shape)            
+
+    if not save_model_trainables is False:
+        assert model is not None
+        assert where_train is not None
+        where_train_spec = filter_spec_leaves(model, where_train)
+        model_trainables = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)   
+                    
+        if isinstance(save_model_trainables, Array):
+            if len(save_model_trainables.shape) != 1:
+                raise ValueError(
+                    "If save_model_trainables is an array, it must be 1D"
+                )
+            n_save_steps = save_model_trainables.shape[0]
+            model_train_history = jax.tree_map(
+                lambda x: (
+                    jnp.empty((n_save_steps,) + history_shape[1:] + x.shape)
+                    if eqx.is_array(x) else x
+                ),
+                model_trainables,
+            )            
+        else:
+            model_train_history = jax.tree_map(
+                lambda x: jnp.empty(history_shape + x.shape) if eqx.is_array(x) else x,
+                model_trainables,
+            )
+    else:
+        model_train_history = None
+    
+    return TaskTrainerHistory(
+        loss=loss_history,
+        learning_rate=jnp.empty(history_shape),
+        model_trainables=model_train_history,
+    )
 
 
 def _grad_wrap_simple_loss_func(loss_func: Callable[[Array, Array], Float]):

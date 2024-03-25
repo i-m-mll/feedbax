@@ -24,11 +24,14 @@ import subprocess
 from time import perf_counter
 from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
+import equinox as eqx
 from equinox import Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 from tqdm.auto import tqdm
+
+from feedbax.intervene import AbstractIntervenor
 
 
 logger = logging.getLogger(__name__)
@@ -224,3 +227,8 @@ def dedupe_by_id(seq: Sequence[T1]) -> Iterable[Optional[T1]]:
 def is_module(element: Any) -> bool:
     """Return `True` if `element` is an Equinox module."""
     return isinstance(element, Module)
+
+
+def is_intervenor(element: Any) -> bool:
+    """Return `True` if `element` is an Intervenor."""
+    return isinstance(element, AbstractIntervenor)

@@ -253,6 +253,9 @@ def tree_map_module(
     return jax.tree_map(f, tree, *rest, is_leaf=is_module)
 
 
+# TODO: Use a host callback so this can be wrapped in JAX transformations.
+# See https://github.com/jeremiecoullon/jax-tqdm for a similar example.
+# (Currently I only use this function when `f` is a `TaskTrainer`.)
 def tree_map_tqdm(
     f: Callable[..., S], 
     tree: PyTree[Any, "T"], 
@@ -532,9 +535,37 @@ def tree_labels_of_equal_leaves(
     tree_equal_paths = tree_paths_of_equal_leaves(
         tree, is_leaf=is_leaf, rtol=rtol, atol=atol
     )
-    return jax.tree_map(
+    return jtu.tree_map(
         lambda xs: set(_path_to_label(x, join_with) for x in xs),
         tree_equal_paths,
         is_leaf=lambda x: isinstance(x, set),
     )
 
+
+def tree_infer_batch_size(
+    tree: PyTree, exclude: Callable[..., bool] = lambda _ : False
+) -> int:
+    """Return the size of the first dimension of a tree's array leaves.
+    
+    Raise an error if any of the array leaves differ in the size of their first 
+    dimension.
+    
+    Arguments:
+        tree: The PyTree to infer the batch size of.
+        exclude: A function that returns `True` for nodes that should be treated 
+            as leaves and excluded from the check. This is useful when there are 
+            subtrees of a certain type, that contain array leaves which do not 
+            possess the batch dimension. 
+    """
+    arrays, treedef = jtu.tree_flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
+    array_lens: list[int | None] = [
+        arr.shape[0] if not exclude(arr) else None for arr in arrays
+    ]
+    array_lens_unique = set(x for x in array_lens if x is not None)
+    if not len(array_lens_unique) == 1:
+        tree_array_lens = jtu.tree_unflatten(treedef, array_lens)
+        raise ValueError(
+            "Not all array leaves have the same first dimension size\n\n"
+            f"First dimension sizes:\n\n{tree_array_lens}"
+        )
+    return array_lens_unique.pop()

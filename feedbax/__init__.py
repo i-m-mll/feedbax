@@ -36,7 +36,7 @@ from feedbax._tree import (
     tree_take,
     tree_unzip,
 )
-from feedbax.misc import is_module
+from feedbax.misc import is_module, is_intervenor
 
 # logging.config.fileConfig('../logging.conf')
 

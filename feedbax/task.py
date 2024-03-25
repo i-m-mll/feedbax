@@ -295,6 +295,12 @@ class AbstractTask(Module):
     # but will be filled with callables that specify a trial distribution for the leaves
     intervention_specs: AbstractVar[Mapping[str, "AbstractIntervenorInput"]]
     intervention_specs_validation: AbstractVar[Mapping[str, "AbstractIntervenorInput"]]
+    
+    def __check_init__(self):
+        if not isinstance(self.loss_func, AbstractLoss):
+            raise ValueError(
+                "The loss function must be an instance of `AbstractLoss`"
+            )
 
     def _intervention_params(
         self,
