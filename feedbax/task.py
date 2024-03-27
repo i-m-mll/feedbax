@@ -432,7 +432,7 @@ class AbstractTask(Module):
         model: "AbstractModel[StateT]",
         trial_specs: AbstractTaskTrialSpec,
         keys: PRNGKeyArray,
-    ) -> Tuple[LossDict, StateT]:
+    ) -> Tuple[StateT, LossDict]:
         """Evaluate a model on a set of trials.
 
         Arguments:
@@ -459,13 +459,13 @@ class AbstractTask(Module):
 
         losses = self.loss_func(states, trial_specs)
 
-        return losses, states
+        return states, losses
 
     def eval_with_loss(
         self,
         model: "AbstractModel[StateT]",
         key: PRNGKeyArray,
-    ) -> Tuple[LossDict, StateT]:
+    ) -> Tuple[StateT, LossDict]:
         """Evaluate a model on the task's validation set of trials.
 
         Arguments:
@@ -493,16 +493,17 @@ class AbstractTask(Module):
             model: The model to evaluate.
             key: For providing randomness during model evaluation.
         """
-        return self.eval_with_loss(model, key)[1]
+        states, _ = self.eval_with_loss(model, key)
+        return states
 
     @eqx.filter_jit
-    def eval_ensemble(
+    def eval_ensemble_with_loss(
         self,
         models: "AbstractModel[StateT]",
         n_replicates: int,
         key: PRNGKeyArray,
-    ) -> StateT:
-        """Return states for an ensemble of models evaluated on the tasks's set of
+    ) -> tuple[StateT, LossDict]:
+        """Return states and losses for an ensemble of models evaluated on the tasks's set of
         validation trials.
 
         Arguments:
@@ -520,7 +521,7 @@ class AbstractTask(Module):
 
         def evaluate_single(model_arrays, model_other, key):
             model = eqx.combine(model_arrays, model_other)
-            return self.eval(model, key)
+            return self.eval_with_loss(model, key)
 
         # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
         # if they are vmapping `eval`.
@@ -528,6 +529,24 @@ class AbstractTask(Module):
         return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
             models_arrays, models_other, keys_eval
         )
+        
+    def eval_ensemble(
+        self,
+        models: "AbstractModel[StateT]",
+        n_replicates: int,
+        key: PRNGKeyArray,
+    ) -> StateT:
+        """Return states for an ensemble of models evaluated on the tasks's set of
+        validation trials.
+
+        Arguments:
+            models: The ensemble of models to evaluate.
+            n_replicates: The number of models in the ensemble.
+            key: For providing randomness during model evaluation.
+                Will be split into `n_replicates` keys.
+        """
+        states, _ = self.eval_ensemble_with_loss(models, n_replicates, key)
+        return states
 
     @eqx.filter_jit
     def eval_train_batch(
@@ -535,7 +554,7 @@ class AbstractTask(Module):
         model: "AbstractModel[StateT]",
         batch_size: int,
         key: PRNGKeyArray,
-    ) -> Tuple[LossDict, StateT, AbstractTaskTrialSpec]:
+    ) -> Tuple[StateT, LossDict, AbstractTaskTrialSpec]:
         """Evaluate a model on a single batch of training trials.
 
         Arguments:
@@ -554,9 +573,9 @@ class AbstractTask(Module):
 
         trials = jax.vmap(self.get_train_trial_with_intervenor_params)(keys_batch)
 
-        losses, states = self.eval_trials(model, trials, keys_eval)
+        states, losses = self.eval_trials(model, trials, keys_eval)
 
-        return losses, states, trials
+        return states, losses, trials
 
     @eqx.filter_jit
     def eval_ensemble_train_batch(
@@ -565,7 +584,7 @@ class AbstractTask(Module):
         n_replicates: int,
         batch_size: int,
         key: PRNGKeyArray,
-    ) -> Tuple[LossDict, StateT, AbstractTaskTrialSpec]:
+    ) -> Tuple[StateT, LossDict, AbstractTaskTrialSpec]:
         """Evaluate an ensemble of models on a single training batch.
 
         Arguments:

@@ -26,6 +26,7 @@ from feedbax._tree import (
     random_split_like_tree,
     tree_array_bytes,
     tree_call,
+    tree_infer_batch_size,
     tree_labels,
     tree_labels_of_equal_leaves,
     tree_map_tqdm,
@@ -36,7 +37,9 @@ from feedbax._tree import (
     tree_take,
     tree_unzip,
 )
-from feedbax.misc import is_module, is_intervenor
+from feedbax.intervene import is_intervenor
+from feedbax.loss import is_lossdict
+from feedbax.misc import is_module
 
 # logging.config.fileConfig('../logging.conf')
 

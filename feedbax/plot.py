@@ -912,9 +912,13 @@ def plot_speed_profiles(
                 linewidths=linewidth,
                 label=label,
             )
-
-    ax.legend()
-    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+            
+    if vline_idxs is not None and vline_labels is not None:
+        ax.legend()
+    
+    
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2e"))
+    ax.ticklabel_format(axis='y', style='sci', scilimits=(-2, 3))
 
     ax.set_xlabel("Time step")
     ax.set_ylabel("Speed")

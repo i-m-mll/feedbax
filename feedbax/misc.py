@@ -31,8 +31,6 @@ import jax.numpy as jnp
 from jaxtyping import Float, Array
 from tqdm.auto import tqdm
 
-from feedbax.intervene import AbstractIntervenor
-
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +227,3 @@ def is_module(element: Any) -> bool:
     return isinstance(element, Module)
 
 
-def is_intervenor(element: Any) -> bool:
-    """Return `True` if `element` is an Intervenor."""
-    return isinstance(element, AbstractIntervenor)

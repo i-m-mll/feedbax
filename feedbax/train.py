@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 import numpy as np
 import optax  # type: ignore
 from tensorboardX import SummaryWriter  # type: ignore
@@ -65,7 +65,7 @@ class TaskTrainerHistory(eqx.Module):
     loss: LossDict | Array
     learning_rate: Optional[Array] = None
     model_trainables: Optional[AbstractModel] = None
-    trial_specs: tuple[AbstractTaskTrialSpec, ...] = ()
+    trial_specs: dict[int, AbstractTaskTrialSpec] = field(default_factory=dict)
 
 
 class TaskTrainer(eqx.Module):
@@ -75,7 +75,7 @@ class TaskTrainer(eqx.Module):
     checkpointing: bool
     chkpt_dir: Path
     writer: Optional[SummaryWriter]
-    model_update_funcs: Sequence[Callable]
+    model_update_funcs: PyTree[Callable]
     _use_tb: bool
 
     def __init__(
@@ -85,7 +85,7 @@ class TaskTrainer(eqx.Module):
         chkpt_dir: str | Path = "/tmp/feedbax-checkpoints",
         enable_tensorboard: bool = False,
         tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
-        model_update_funcs: Optional[Sequence[Callable]] = None,
+        model_update_funcs: Sequence[Callable] = (),
     ):
         """
         Arguments:
@@ -101,10 +101,7 @@ class TaskTrainer(eqx.Module):
                 such as batch-averaged Hebbian learning.
         """
         self.optimizer = optimizer
-        if model_update_funcs is None:
-            self.model_update_funcs = ()
-        else:
-            self.model_update_funcs = model_update_funcs
+        self.model_update_funcs = model_update_funcs
 
         self._use_tb = enable_tensorboard
         if self._use_tb:
@@ -138,7 +135,8 @@ class TaskTrainer(eqx.Module):
         ensembled: bool = False,
         log_step: int = 100,
         save_model_trainables: bool | Int[Array, '_'] = False,
-        save_trial_specs: bool = False,
+        save_trial_specs: bool | Int[Array, '_'] = False,
+        toggle_model_update_funcs: bool | PyTree[Int[Array, '_']] = True,
         restore_checkpoint: bool = False,
         disable_tqdm: bool = False,
         batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
@@ -176,7 +174,13 @@ class TaskTrainer(eqx.Module):
                 May also pass a 1D array of batch numbers on which to keep history.
             save_trial_specs: Whether to return the trial specifications for
                 all batches in the training run, as part of the `TaskTrainerHistory`
-                object. This may use a lot of memory.
+                object. This may use a lot of memory. May also pass a 1D array of 
+                batch number on which to keep specifications.
+            toggle_model_update_funcs: Whether to enable the model update functions.
+                May also pass a PyTree with the same structure as the `TaskTrainer`'s
+                `model_update_funcs` attribute, where each leaf is a 1D array of batch
+                numbers on which to enable the respective function.
+                If the `model_update_funcs` attribute is empty, this argument is ignored.
             restore_checkpoint: Whether to attempt to restore from the last saved
                 checkpoint in the checkpoint directory. Typically, this option is
                 toggled to continue a long training run immediately after it was
@@ -213,10 +217,10 @@ class TaskTrainer(eqx.Module):
             save_model_trainables_batches = np.array(
                 jnp.zeros(n_batches, dtype=bool).at[save_model_trainables].set(True)
             )
-        elif save_model_trainables:
-            save_model_trainables_batches = np.ones(n_batches, dtype=bool)
         else:
-            save_model_trainables_batches = np.zeros(n_batches, dtype=bool)
+            save_model_trainables_batches = np.full(
+                n_batches, save_model_trainables, dtype=bool
+            )
 
         history = init_task_trainer_history(
             task.loss_func,
@@ -227,6 +231,15 @@ class TaskTrainer(eqx.Module):
             model=model,
             where_train=where_train,
         )
+        
+        if isinstance(save_trial_specs, Array):
+            save_trial_specs_batches = np.array(
+                jnp.zeros(n_batches, dtype=bool).at[save_trial_specs].set(True)
+            )
+        else: 
+            save_trial_specs_batches = np.full(
+                n_batches, save_trial_specs, dtype=bool
+            )
 
         start_batch = 0  # except when we load a checkpoint
 
@@ -245,6 +258,30 @@ class TaskTrainer(eqx.Module):
         elif self.checkpointing:
             # Delete old checkpoints if checkpointing is on.
             delete_contents(self.chkpt_dir)
+        
+        model_update_funcs_flat = jtu.tree_leaves(
+            self.model_update_funcs,
+            is_leaf=lambda x: isinstance(x, Callable),
+        )
+        if (model_update_funcs_flat == []
+            or not isinstance(toggle_model_update_funcs, PyTree[Array])):
+            n_update_funcs = len(model_update_funcs_flat)
+            model_update_funcs_mask = np.full(
+                (n_batches, n_update_funcs), toggle_model_update_funcs, dtype=bool
+            )
+        else:
+            if not jtu.tree_structure(toggle_model_update_funcs) == jtu.tree_structure(
+                self.model_update_funcs, is_leaf=lambda x: isinstance(x, Callable)
+            ):
+                raise ValueError(
+                    "The structure of `toggle_model_update_funcs` must match that of "
+                    "the `TaskTrainer`'s attribute `model_update_funcs`."
+                )
+            # For 10,000 iterations and 10 update functions, this takes 100 kB.
+            model_update_funcs_mask = np.stack([
+                jnp.zeros(n_batches, dtype=bool).at[idxs].set(True)
+                for idxs in jtu.tree_leaves(toggle_model_update_funcs)
+            ]).T
 
         # Passing the flattened pytrees through `_train_step` gives a slight
         # performance improvement. See the docstring of `_train_step`.
@@ -263,8 +300,8 @@ class TaskTrainer(eqx.Module):
             )
             train_step = eqx.filter_vmap(
                 self._train_step,
-                in_axes=(None, None, flat_model_array_spec, None, 0, None, None, 0),
-                out_axes=(0, 0, flat_model_array_spec, 0, None),
+                in_axes=(None, None, flat_model_array_spec, None, 0, None, None, None, 0),
+                out_axes=(0, 0, flat_model_array_spec, 0),
             )
 
             # We can't simply flatten this to get `flat_model_array_spec`,
@@ -299,6 +336,7 @@ class TaskTrainer(eqx.Module):
                     flat_opt_state,
                     treedef_opt_state,
                     where_train_spec,
+                    model_update_funcs_flat,
                     key_compile,
                 )
 
@@ -328,7 +366,13 @@ class TaskTrainer(eqx.Module):
             if ensembled:
                 key_train = jr.split(key_train, n_replicates)
 
-            (losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state) = (
+            update_funcs_i = [
+                model_update_funcs_flat[i] 
+                for i, b in enumerate(model_update_funcs_mask[batch]) 
+                if b
+            ]
+
+            (losses, trial_specs, flat_model, flat_opt_state) = (
                 train_step(
                     task,
                     batch_size,
@@ -337,6 +381,7 @@ class TaskTrainer(eqx.Module):
                     flat_opt_state,
                     treedef_opt_state,
                     where_train_spec,
+                    update_funcs_i,
                     key_train,
                 )
             )
@@ -355,11 +400,11 @@ class TaskTrainer(eqx.Module):
                     ),
                 )
 
-            if save_trial_specs:
+            if save_trial_specs_batches[batch]:
                 history = eqx.tree_at(
                     lambda history: history.trial_specs,
                     history,
-                    history.trial_specs + (trial_specs,),
+                    history.trial_specs | {batch: trial_specs},
                 )
 
             history = eqx.tree_at(
@@ -416,7 +461,8 @@ class TaskTrainer(eqx.Module):
                 logger.warning(msg)
 
                 return model, history
-
+            
+            # TODO: Is it faster to use a mask beforehand, like with `save_model_trainables`?
             # Checkpoint and validate, occasionally
             if batch % log_step == 0 or batch == n_batches - 1:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
@@ -428,7 +474,7 @@ class TaskTrainer(eqx.Module):
                 if ensembled:
                     key_eval = jr.split(key_eval, n_replicates)
 
-                losses_val, states = evaluate(model, key_eval)
+                states, losses_val = evaluate(model, key_eval)
 
                 if ensembled:
                     losses_val_mean = jax.tree_map(
@@ -502,6 +548,7 @@ class TaskTrainer(eqx.Module):
         flat_opt_state,
         treedef_opt_state,
         where_train_spec,  #! can't do AbstractModel[StateT[bool]]
+        update_funcs,
         key: PRNGKeyArray,
     ):
         """Executes a single training step of the model.
@@ -562,16 +609,16 @@ class TaskTrainer(eqx.Module):
 
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
-
+        
         # For updates computed directly from the state, without loss gradient.
-        for update_func in self.model_update_funcs:
+        for update_func in update_funcs:
             state_dep_updates = update_func(model, states)
             model = eqx.apply_updates(model, state_dep_updates)
 
         flat_model = jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AbstractIntervenor))
-        flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
+        flat_opt_state = jtu.tree_leaves(opt_state)
         
-        return losses, trial_specs, flat_model, flat_opt_state, treedef_opt_state
+        return losses, trial_specs, flat_model, flat_opt_state
 
     def _save_checkpoint(
         self,

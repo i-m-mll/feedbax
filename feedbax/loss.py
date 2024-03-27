@@ -93,6 +93,10 @@ class LossDict(dict[str, Array]):
         return LossDict(zip(keys, values))
 
 
+def is_lossdict(x):
+    return isinstance(x, LossDict)
+
+
 class AbstractLoss(eqx.Module):
     """Abstract base class for loss functions.
 

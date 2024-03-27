@@ -746,3 +746,8 @@ def schedule_intervenor(
     )
 
     return tasks, models
+
+
+def is_intervenor(element: Any) -> bool:
+    """Return `True` if `element` is an Intervenor."""
+    return isinstance(element, AbstractIntervenor)
