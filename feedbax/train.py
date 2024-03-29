@@ -133,9 +133,10 @@ class TaskTrainer(eqx.Module):
         batch_size: int,
         where_train: Callable[[AbstractModel[StateT]], Any],
         ensembled: bool = False,
+        ensemble_random_trials: bool = True,
         log_step: int = 100,
         save_model_trainables: bool | Int[Array, '_'] = False,
-        save_trial_specs: bool | Int[Array, '_'] = False,
+        save_trial_specs: Optional[Int[Array, '_']] = None,
         toggle_model_update_funcs: bool | PyTree[Int[Array, '_']] = True,
         restore_checkpoint: bool = False,
         disable_tqdm: bool = False,
@@ -165,6 +166,10 @@ class TaskTrainer(eqx.Module):
             where_train: Selects the arrays from the model PyTree to be trained.
             ensembled: Should be set to `True` if `model` is a vmapped ensemble
                 of models that should be trained in parallel.
+            ensemble_random_trials: If `False`, every model in an ensemble will 
+                be trained on the same batches of trials. Otherwise, a distinct  
+                batch will be generated for each model. Has no effect if 
+                `ensembled` is `False`.
             log_step: Interval at which to evaluate model on the validation set,
                 print losses to the console, log to tensorboard (if enabled),
                 and save checkpoints.
@@ -172,10 +177,8 @@ class TaskTrainer(eqx.Module):
                 trainable leaves of the model (e.g. network weights) across
                 training iterations, as part of the `TaskTrainerHistory` object.
                 May also pass a 1D array of batch numbers on which to keep history.
-            save_trial_specs: Whether to return the trial specifications for
-                all batches in the training run, as part of the `TaskTrainerHistory`
-                object. This may use a lot of memory. May also pass a 1D array of 
-                batch number on which to keep specifications.
+            save_trial_specs: A 1D array of batch numbers for which to keep
+                trial specifications, and return as part of the training history.
             toggle_model_update_funcs: Whether to enable the model update functions.
                 May also pass a PyTree with the same structure as the `TaskTrainer`'s
                 `model_update_funcs` attribute, where each leaf is a 1D array of batch
@@ -221,17 +224,7 @@ class TaskTrainer(eqx.Module):
             save_model_trainables_batches = np.full(
                 n_batches, save_model_trainables, dtype=bool
             )
-
-        history = init_task_trainer_history(
-            task.loss_func,
-            n_batches,
-            n_replicates, 
-            ensembled,
-            save_model_trainables=save_model_trainables,
-            model=model,
-            where_train=where_train,
-        )
-        
+            
         if isinstance(save_trial_specs, Array):
             save_trial_specs_batches = np.array(
                 jnp.zeros(n_batches, dtype=bool).at[save_trial_specs].set(True)
@@ -240,7 +233,19 @@ class TaskTrainer(eqx.Module):
             save_trial_specs_batches = np.full(
                 n_batches, save_trial_specs, dtype=bool
             )
-
+            
+        history = init_task_trainer_history(
+            task,
+            n_batches,
+            n_replicates, 
+            ensembled,
+            save_model_trainables=save_model_trainables,
+            save_trial_specs=save_trial_specs,
+            batch_size=batch_size,
+            model=model,
+            where_train=where_train,
+        )
+        
         start_batch = 0  # except when we load a checkpoint
 
         if restore_checkpoint:
@@ -298,21 +303,32 @@ class TaskTrainer(eqx.Module):
                 flat_model,
                 is_leaf=lambda x: isinstance(x, AbstractIntervenor),
             )
+            
+            if ensemble_random_trials:
+                in_axes = (None, None, flat_model_array_spec, None, 0, None, None, None, 0)
+                out_axes = (0, 0, flat_model_array_spec, 0)
+            else:
+                in_axes = (None, None, flat_model_array_spec, None, 0, None, None, None, None)
+                out_axes = (0, None, flat_model_array_spec, 0)
+            
             train_step = eqx.filter_vmap(
                 self._train_step,
-                in_axes=(None, None, flat_model_array_spec, None, 0, None, None, None, 0),
-                out_axes=(0, 0, flat_model_array_spec, 0),
+                in_axes=in_axes,
+                out_axes=out_axes,
             )
 
             # We can't simply flatten this to get `flat_model_array_spec`,
             # even if we use `is_leaf=lambda x: x is None`.
-            model_array_spec = jax.tree_map(
-                lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
-                model,
-                is_leaf=lambda x: isinstance(x, AbstractIntervenor),
-            )
-            evaluate = eqx.filter_vmap(
-                task.eval_with_loss, in_axes=(model_array_spec, 0)
+            # model_array_spec = jax.tree_map(
+            #     lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
+            #     model,
+            #     is_leaf=lambda x: isinstance(x, AbstractIntervenor),
+            # )
+            # evaluate = eqx.filter_vmap(
+            #     task.eval_with_loss, in_axes=(model_array_spec, 0)
+            # )
+            evaluate = lambda models, key: task.eval_ensemble_with_loss(
+                models, n_replicates, key, ensemble_random_trials=ensemble_random_trials
             )
         else:
             train_step = self._train_step
@@ -323,7 +339,7 @@ class TaskTrainer(eqx.Module):
             timer = Timer()
 
             with timer:
-                if ensembled:
+                if ensembled and ensemble_random_trials:
                     key_compile = jr.split(key, n_replicates)
                 else:
                     key_compile = key
@@ -343,7 +359,7 @@ class TaskTrainer(eqx.Module):
             logger.info(f"Training step compiled in {timer.time:.2f} seconds.")
 
             with timer:
-                evaluate(model, key_compile)
+                evaluate(model, key)
 
             logger.info(f"Validation step compiled in {timer.time:.2f} seconds.")
 
@@ -363,7 +379,7 @@ class TaskTrainer(eqx.Module):
         ):
             key_train, key_eval = jr.split(keys[batch], 2)
 
-            if ensembled:
+            if ensembled and ensemble_random_trials:
                 key_train = jr.split(key_train, n_replicates)
 
             update_funcs_i = [
@@ -471,8 +487,8 @@ class TaskTrainer(eqx.Module):
                 if self.checkpointing and batch > 0:
                     self._save_checkpoint(batch, model, opt_state, history)
 
-                if ensembled:
-                    key_eval = jr.split(key_eval, n_replicates)
+                # if ensembled and ensemble_random_trials:
+                #     key_eval = jr.split(key_eval, n_replicates)
 
                 states, losses_val = evaluate(model, key_eval)
 
@@ -659,29 +675,61 @@ class TaskTrainer(eqx.Module):
 
 
 def init_task_trainer_history(
-    loss_func: AbstractLoss,
+    task: AbstractLoss,
     n_batches: int, 
     n_replicates: int, 
     ensembled: bool, 
+    ensemble_random_trials: bool = True,
     save_model_trainables: bool | Int[Array, '_'] = False,
+    save_trial_specs: Optional[Int[Array, '_']] = None,
+    batch_size: Optional[int] = None,
     model: Optional[AbstractModel[StateT]] = None,
     where_train: Optional[Callable[[AbstractModel[StateT]], Any]] = None,
 ):
     if ensembled:
-        history_shape = (n_batches, n_replicates)
+        batch_shape = (n_batches, n_replicates)
     else:
-        history_shape = (n_batches,)
+        batch_shape = (n_batches,)
 
+    loss_func = task.loss_func
     if isinstance(loss_func, CompositeLoss):
         loss_history = LossDict(
             zip(
                 loss_func.weights.keys(),
-                [jnp.empty(history_shape) for _ in loss_func.weights],
+                [jnp.empty(batch_shape) for _ in loss_func.weights],
             )
         )
     else:
-        loss_history = jnp.empty(history_shape)            
-
+        loss_history = jnp.empty(batch_shape)    
+    
+    if save_trial_specs is not None:
+        assert batch_size is not None
+        if len(save_trial_specs.shape) != 1:
+            raise ValueError(
+                "If save_trial_specs is an array, it must be 1D"
+            )
+        
+        def get_batch_example(key):
+            keys_trials = jr.split(key, batch_size)
+            return jax.vmap(
+                task.get_train_trial_with_intervenor_params
+            )(keys_trials) 
+            
+        if ensembled and ensemble_random_trials:       
+            trial_specs_example = jax.vmap(get_batch_example)(
+                jr.split(jr.PRNGKey(0), n_replicates)
+            )
+        else:
+            trial_specs_example = get_batch_example(jr.PRNGKey(0))
+        
+        trial_spec_batches = [
+            int(i + (n_batches if i < 0 else 0))
+            for i in save_trial_specs
+        ]
+        trial_spec_history = {int(i): trial_specs_example for i in trial_spec_batches}
+    else:
+        trial_spec_history = {}
+        
     if not save_model_trainables is False:
         assert model is not None
         assert where_train is not None
@@ -696,23 +744,25 @@ def init_task_trainer_history(
             n_save_steps = save_model_trainables.shape[0]
             model_train_history = jax.tree_map(
                 lambda x: (
-                    jnp.empty((n_save_steps,) + history_shape[1:] + x.shape)
+                    jnp.empty((n_save_steps,) + x.shape)
                     if eqx.is_array(x) else x
                 ),
                 model_trainables,
             )            
         else:
             model_train_history = jax.tree_map(
-                lambda x: jnp.empty(history_shape + x.shape) if eqx.is_array(x) else x,
+                lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x,
                 model_trainables,
             )
     else:
         model_train_history = None
     
+    # TODO: Replace arrays with None?
     return TaskTrainerHistory(
         loss=loss_history,
-        learning_rate=jnp.empty(history_shape),
+        learning_rate=jnp.empty(batch_shape), 
         model_trainables=model_train_history,
+        trial_specs=trial_spec_history,
     )
 
 

@@ -502,6 +502,7 @@ class AbstractTask(Module):
         models: "AbstractModel[StateT]",
         n_replicates: int,
         key: PRNGKeyArray,
+        ensemble_random_trials: bool = True,
     ) -> tuple[StateT, LossDict]:
         """Return states and losses for an ensemble of models evaluated on the tasks's set of
         validation trials.
@@ -511,6 +512,8 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             key: For providing randomness during model evaluation.
                 Will be split into `n_replicates` keys.
+            ensemble_random_trials: If `False`, each model in the ensemble will be 
+                evaluated on the same set of trials.
         """
         # TODO: Why not just use `eqx.filter_vmap`? It should handle the array partitioning.
         models_arrays, models_other = eqx.partition(
@@ -525,16 +528,21 @@ class AbstractTask(Module):
 
         # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
         # if they are vmapping `eval`.
-        keys_eval = jr.split(key, n_replicates)
-        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
-            models_arrays, models_other, keys_eval
-        )
+        if ensemble_random_trials:
+            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
+                models_arrays, models_other, jr.split(key, n_replicates)
+            )
+        else:
+            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None))(
+                models_arrays, models_other, key
+            )
         
     def eval_ensemble(
         self,
         models: "AbstractModel[StateT]",
         n_replicates: int,
         key: PRNGKeyArray,
+        ensemble_random_trials: bool = True,
     ) -> StateT:
         """Return states for an ensemble of models evaluated on the tasks's set of
         validation trials.
@@ -544,8 +552,12 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             key: For providing randomness during model evaluation.
                 Will be split into `n_replicates` keys.
+            ensemble_random_trials: If `False`, each model in the ensemble will be 
+                evaluated on the same set of trials.
         """
-        states, _ = self.eval_ensemble_with_loss(models, n_replicates, key)
+        states, _ = self.eval_ensemble_with_loss(
+            models, n_replicates, key, ensemble_random_trials=ensemble_random_trials
+        )
         return states
 
     @eqx.filter_jit
@@ -584,6 +596,7 @@ class AbstractTask(Module):
         n_replicates: int,
         batch_size: int,
         key: PRNGKeyArray,
+        ensemble_random_trials: bool = True,
     ) -> Tuple[StateT, LossDict, AbstractTaskTrialSpec]:
         """Evaluate an ensemble of models on a single training batch.
 
@@ -592,6 +605,8 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             batch_size: The number of trials in the batch to evaluate.
             key: For providing randomness during model evaluation.
+            ensemble_random_trials: If `False`, each model in the ensemble will be 
+                evaluated on the same set of trials.
 
         Returns:
             The losses for the trials in the batch, for each model in the ensemble.
@@ -607,11 +622,15 @@ class AbstractTask(Module):
         def evaluate_single(model_arrays, model_other, batch_size, key):
             model = eqx.combine(model_arrays, model_other)
             return self.eval_train_batch(model, batch_size, key)
-
-        keys_eval = jr.split(key, n_replicates)
-        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
-            models_arrays, models_other, batch_size, keys_eval
-        )
+    
+        if ensemble_random_trials:
+            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
+                models_arrays, models_other, batch_size, jr.split(key, n_replicates)
+            )
+        else:
+            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, None))(
+                models_arrays, models_other, batch_size, key
+            )
 
 
 def _pos_only_states(positions: Float[Array, "... ndim=2"]):
