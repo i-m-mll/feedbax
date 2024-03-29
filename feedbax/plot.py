@@ -680,6 +680,26 @@ def plot_loss_history(
     return fig, ax
 
 
+def _losses_terms_dfs(losses):
+    
+    if isinstance(losses, Array):
+        losses_arr: Array = losses
+        losses_terms_dfs = {
+            "Total": pd.DataFrame(losses.T, index=range(losses_arr.shape[1]))
+        }
+    elif isinstance(losses, LossDict):
+        losses_terms_dfs = jax.tree_map(
+            lambda losses: pd.DataFrame(losses.T, index=range(losses.shape[1])).melt(
+                var_name="Time step", value_name="Loss"
+            ),
+            dict(losses) | {"Total": losses.total},
+        )
+    else:
+        raise ValueError("Invalid type encountered for `train_history.loss`")
+    
+    return losses_terms_dfs
+
+
 def plot_loss_mean_history(
     train_history: "TaskTrainerHistory",
     xscale: str = "log",
@@ -702,20 +722,7 @@ def plot_loss_mean_history(
     """
     losses = train_history.loss
 
-    if isinstance(losses, Array):
-        losses_arr: Array = losses
-        losses_terms_dfs = {
-            "Total": pd.DataFrame(losses.T, index=range(losses_arr.shape[1]))
-        }
-    elif isinstance(losses, LossDict):
-        losses_terms_dfs = jax.tree_map(
-            lambda losses: pd.DataFrame(losses.T, index=range(losses.shape[1])).melt(
-                var_name="Time step", value_name="Loss"
-            ),
-            dict(losses) | {"Total": losses.total},
-        )
-    else:
-        raise ValueError("Invalid type encountered for `train_history.loss`")
+    losses_terms_dfs = _losses_terms_dfs(losses)
 
     fig, ax = plt.subplots()
     ax.set(xscale=xscale, yscale=yscale)

@@ -466,7 +466,7 @@ class EffectorVelocityLoss(AbstractLoss):
     """
 
     label: str = "Effector position"
-    discount_func: Callable[[int], Float[Array, "#time"]] = lambda n_steps: 1.0    
+    discount_func: Callable[[int], Float[Array, "#time"]] = lambda n_steps: 1.0
 
     def term(
         self,

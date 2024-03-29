@@ -57,6 +57,7 @@ def save(
 def load(
     path: Path | str,
     setup_func: Callable[..., PyTree[Any, "T"]],
+    **kwargs,
 ) -> PyTree[Any, "T"]:
     """Setup a PyTree from stored data and hyperparameters.
 
@@ -72,7 +73,7 @@ def load(
         if hyperparameters is None:
             hyperparameters = dict()
         tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
-        tree = eqx.tree_deserialise_leaves(f, tree)
+        tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
     return tree
 
