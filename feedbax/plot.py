@@ -681,7 +681,7 @@ def plot_loss_history(
 
 
 def _losses_terms_dfs(losses):
-    
+
     if isinstance(losses, Array):
         losses_arr: Array = losses
         losses_terms_dfs = {
@@ -690,13 +690,13 @@ def _losses_terms_dfs(losses):
     elif isinstance(losses, LossDict):
         losses_terms_dfs = jax.tree_map(
             lambda losses: pd.DataFrame(losses.T, index=range(losses.shape[1])).melt(
-                var_name="Time step", value_name="Loss"
+                var_name="Iteration", value_name="Loss"
             ),
             dict(losses) | {"Total": losses.total},
         )
     else:
         raise ValueError("Invalid type encountered for `train_history.loss`")
-    
+
     return losses_terms_dfs
 
 
@@ -705,6 +705,7 @@ def plot_loss_mean_history(
     xscale: str = "log",
     yscale: str = "log",
     cmap: str = "Set1",
+    errorbar: str | tuple[str, int] = "sd",
 ) -> Tuple[Figure, Axes]:
     """Line plot of the means and standard deviations of loss terms and their total,
     over a training run of a batch of multiple models.
@@ -725,20 +726,20 @@ def plot_loss_mean_history(
     losses_terms_dfs = _losses_terms_dfs(losses)
 
     fig, ax = plt.subplots()
-    ax.set(xscale=xscale, yscale=yscale)
 
-    # TODO: Construct just one dataframe.
+
     for label, df in losses_terms_dfs.items():
         sns.lineplot(
             data=df,
-            x="Time step",
+            x="Iteration",
             y="Loss",
-            errorbar="sd",
+            errorbar=errorbar,
             label=label,
             ax=ax,
             palette=cmap,
         )
 
+    ax.set(xscale=xscale, yscale=yscale)
     return fig, ax
 
 
@@ -876,12 +877,12 @@ def plot_speed_profiles(
         colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
     else:
         colors = list(colors)
-    
+
     if vline_idxs is not None:
         n_vlines = vline_idxs.shape[-1]
         vline_specs = zip(
             vline_idxs.T,
-            [None] * n_vlines if vline_labels is None else vline_labels, 
+            [None] * n_vlines if vline_labels is None else vline_labels,
             ["dotted"] * n_vlines if vline_styles is None else vline_styles,
         )
     else:
@@ -896,7 +897,7 @@ def plot_speed_profiles(
         ax.plot(speed[i].T, color=colors[i], **kwargs)
 
     ymax = 1.1 * jnp.max(speed)
-    
+
     if vline_idxs is not None:
         for idxs, label, style in vline_specs:
             if style is None:
@@ -904,10 +905,10 @@ def plot_speed_profiles(
                 linewidth = 0
             else:
                 linewidth = 1
-            
+
             if label is None:
                 label = ""
-                
+
             ax.vlines(
                 idxs,
                 ymin=0,
@@ -917,11 +918,11 @@ def plot_speed_profiles(
                 linewidths=linewidth,
                 label=label,
             )
-            
+
     if vline_idxs is not None and vline_labels is not None:
         ax.legend()
-    
-    
+
+
     # ax.yaxis.set_major_formatter(FormatStrFormatter("%.2e"))
     ax.ticklabel_format(axis='y', style='sci', scilimits=(-2, 3))
 
@@ -957,7 +958,7 @@ def plot_task_and_speed_profiles(
         colors = [cmap(i) for i in np.linspace(0, 1, speed.shape[0])]
     else:
         colors = list(colors)
-        
+
     fig, axs_ = plt.subplots(
         1 + task_rows,
         1,
