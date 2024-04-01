@@ -505,7 +505,7 @@ class TaskTrainer(eqx.Module):
                 if self._use_tb and self.writer is not None:
                     # TODO: register plots instead of hard-coding
                     trial_specs = task.validation_trials
-                    fig, _ = plot.plot_effector_trajectories(
+                    fig, _ = plot.effector_trajectories(
                         states_plot,
                         endpoints=(
                             trial_specs.inits["mechanics.effector"].pos,

@@ -53,9 +53,9 @@ def errorbars(col_means_stds: PyTree[pl.DataFrame], n_std: int):
         col_means_stds,
     )
 
-def plot_loss_mean_history(
+def loss_mean_history(
     train_history: "TaskTrainerHistory",
-    colors: list[str] = px.colors.qualitative.Set1,
+    colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.3,
     n_std_plot: int = 1,
 ) -> go.Figure:
@@ -111,13 +111,14 @@ def plot_loss_mean_history(
             showlegend=False,
         ))
 
+    fig.update_layout(width=700, height=600)
     fig.update_xaxes(type="log")
     fig.update_yaxes(type="log")
 
     return fig
 
 
-def plot_activity_heatmap(
+def activity_heatmap(
     activity: Float[Array, "time unit"],
     colorscale: str = 'viridis',
 ) -> go.Figure:
@@ -139,7 +140,7 @@ def plot_activity_heatmap(
 
         states = task.eval(model, key=key_eval)  # States for all validation trials.
         states_trial0 = tree_take(states, 0)
-        plot_activity_heatmap(states_trial0.net.hidden)
+        activity_heatmap(states_trial0.net.hidden)
         ```
 
     Arguments:
@@ -156,7 +157,7 @@ def plot_activity_heatmap(
     return fig
 
 
-def plot_profile(
+def profile(
     var: Float[Array, "*trial timestep"],
     var_label: str = "Value",
     colors: list[str] = px.colors.qualitative.Set1,
@@ -170,7 +171,7 @@ def plot_profile(
     )
 
 
-def plot_activity_sample_units(
+def activity_sample_units(
     activities: Float[Array, "*trial time unit"],
     n_samples: int,
     unit_includes: Optional[Sequence[int]] = None,
@@ -309,7 +310,7 @@ def unshare_axes(fig: go.Figure):
     fig.for_each_xaxis(lambda xaxis: xaxis.update(showticklabels=True))
 
 
-def plot_effector_trajectories(
+def effector_trajectories(
     states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
     where_data: Optional[Callable] = None,
     step: int = 1,  # plot every step-th trial
@@ -320,7 +321,7 @@ def plot_effector_trajectories(
     straight_guides: bool = False,
     workspace: Optional[Float[Array, "bounds=2 xy=2"]] = None,
     cmap_name: Optional[str] = None,
-    colors: Optional[Sequence[str | tuple[float, ...]]] = None,
+    colors: Optional[list[str]] = None,
     color: Optional[str | tuple[float, ...]] = None,
     ms: int = 5,
     ms_source: int = 6,
@@ -368,6 +369,7 @@ def plot_effector_trajectories(
             states.mechanics.effector.vel,
             states.efferent.output,
         )
+
     elif where_data is None:
         raise ValueError(
             "If `states` is not a `SimpleFeedbackState`, "
@@ -383,11 +385,11 @@ def plot_effector_trajectories(
 
     n_vars = df['var'].n_unique()
 
-    if cmap_name is None:
-        if positions.shape[0] < 10:
-            cmap_name = "tab10"
-        else:
-            cmap_name = "viridis"
+    # if cmap_name is None:
+    #     if positions.shape[0] < 10:
+    #         cmap_name = "tab10"
+    #     else:
+    #         cmap_name = "viridis"
 
     fig = px.scatter(
         df,
@@ -396,7 +398,7 @@ def plot_effector_trajectories(
         color='Trial',
         facet_col='var',
         facet_col_spacing=0.05,
-        color_discrete_sequence=px.colors.qualitative.Set1,
+        color_discrete_sequence=colors,
     )
 
     fig.update_traces(marker_size=ms)

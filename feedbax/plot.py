@@ -55,7 +55,7 @@ class SeabornFig2Grid:
     This class decomposes a seaborn plot's gridspec and inserts it in the
     gridspec of a matplotlib figure.
 
-    See `plot_endpoint_dists` for an example.
+    See `endpoint_dists` for an example.
 
     From a stackoverflow answer by Luca Clissa:  https://stackoverflow.com/a/70666592
     """
@@ -115,7 +115,7 @@ class SeabornFig2Grid:
         self.sg.fig.set_size_inches(self.fig.get_size_inches())
 
 
-def plot_joint_pos_trajectory(
+def joint_pos_trajectory(
     xy: Float[Array, "time links ndim=2"],
     cmap_name: str = "viridis",
     length_unit: Optional[str] = None,
@@ -201,7 +201,7 @@ def plot_joint_pos_trajectory(
     return fig, ax
 
 
-def plot_3D_paths(
+def paths_3D(
     paths: Float[Array, "trial steps 3"],
     epoch_start_idxs: Int[Array, "trial epochs"],
     epoch_linestyles: Tuple[str, ...],  # epochs
@@ -237,7 +237,7 @@ def plot_3D_paths(
     return fig, ax
 
 
-def plot_planes(
+def planes(
     x: Float[Array, "trial time components"],
     epoch_start_idxs,
     epoch_linestyles,  # epochs
@@ -290,7 +290,7 @@ def plot_planes(
     return (axs,)
 
 
-def plot_effector_trajectories(
+def effector_trajectories(
     states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
     where_data: Optional[Callable] = None,
     step: int = 1,  # plot every step-th trial
@@ -460,7 +460,7 @@ def plot_effector_trajectories(
     return fig, axs
 
 
-def plot_trajectories(
+def trajectories(
     states: PyTree[Float[Array, "trial time ..."] | Any],
     labels: Optional[Tuple[str, str, str]] = None,
     cmap: str = "tab10",
@@ -495,7 +495,7 @@ def plot_trajectories(
     return fig, axs
 
 
-def plot_activity_heatmap(
+def activity_heatmap(
     activity: Float[Array, "time unit"],
     cmap: str = "viridis",
 ):
@@ -517,7 +517,7 @@ def plot_activity_heatmap(
 
         states = task.eval(model, key=key_eval)  # States for all validation trials.
         states_trial0 = tree_take(states, 0)
-        plot_activity_heatmap(states_trial0.net.hidden)
+        activity_heatmap(states_trial0.net.hidden)
         ```
 
     Arguments:
@@ -533,7 +533,7 @@ def plot_activity_heatmap(
     return fig, ax
 
 
-def plot_activity_sample_units(
+def activity_sample_units(
     activities: Float[Array, "*trial time unit"],
     n_samples: int,
     unit_includes: Optional[Sequence[int]] = None,
@@ -613,7 +613,7 @@ def plot_activity_sample_units(
     return fig, axs
 
 
-def plot_loss_history(
+def loss_history(
     train_history: "TaskTrainerHistory",
     xscale: str = "log",
     yscale: str = "log",
@@ -700,7 +700,7 @@ def _losses_terms_dfs(losses):
     return losses_terms_dfs
 
 
-def plot_loss_mean_history(
+def loss_mean_history(
     train_history: "TaskTrainerHistory",
     xscale: str = "log",
     yscale: str = "log",
@@ -711,7 +711,7 @@ def plot_loss_mean_history(
     over a training run of a batch of multiple models.
 
     !!! Note ""
-        To plot separate curves for each member of the batch, use `plot_loss_history`.
+        To plot separate curves for each member of the batch, use `loss_history`.
 
     Arguments:
         train_history: The training history object returned by a call to a
@@ -743,7 +743,7 @@ def plot_loss_mean_history(
     return fig, ax
 
 
-def plot_reach_endpoint_dists(
+def reach_endpoint_dists(
     trial_specs: AbstractReachTrialSpec,
     s: int = 7,
     color: Optional[str] = None,
@@ -808,7 +808,7 @@ def plot_reach_endpoint_dists(
     return fig, fig.axes
 
 
-def plot_task_profiles(
+def task_profiles(
     task_variables: Mapping[str, Float[Array, "trial time"]],
     cmap_name: str = "tab10",
     colors: Optional[Sequence[ColorType]] = None,
@@ -857,7 +857,7 @@ def plot_task_profiles(
 LineStyle = Literal['solid', 'dashed', 'dashdot', 'dotted']
 
 
-def plot_speed_profiles(
+def speed_profiles(
     vel: Float[Array, "trial time"],
     vline_idxs: Optional[Int[Array, "trial idx"]] = None,
     vline_styles: Optional[Sequence[Optional[LineStyle]]] = None,
@@ -932,7 +932,7 @@ def plot_speed_profiles(
     return fig, ax
 
 
-def plot_task_and_speed_profiles(
+def task_and_speed_profiles(
     vel: Float[Array, "trial time"],
     task_variables: Mapping[str, Float[Array, "trial time"]] = dict(),
     epoch_start_idxs: Optional[Int[Array, "trial epoch"]] = None,
@@ -1070,7 +1070,7 @@ def animate_3D_rotate(
     )
 
 
-def plot_complex(x, fig=None, marker="o"):
+def complex(x, fig=None, marker="o"):
     """Plot complex numbers as points in the complex plane."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.plot(x.real, x.imag, marker)
@@ -1092,7 +1092,7 @@ def add_ax_labels(ax, labels):
     return ax
 
 
-def plot_hinton(matrix, max_weight=None, ax=None):
+def hinton(matrix, max_weight=None, ax=None):
     """Draw Hinton diagram for visualizing a weight matrix.
 
     From https://matplotlib.org/3.1.0/gallery/specialty_plots/hinton_demo.html
@@ -1165,7 +1165,7 @@ def get_high_contrast_neutral_shade():
 
 
 def circular_hist(
-    x, ax=None, bins=16, density=True, offset=0, gaps=True, plot_mean=False
+    x, ax=None, bins=16, density=True, offset=0, gaps=True, mean=False
 ):
     """Produce a circular histogram of angles on ax.
 
@@ -1250,7 +1250,7 @@ def circular_hist(
         linewidth=1,
     )
 
-    if plot_mean:
+    if mean:
         mean_angle = np.mean(x)
         ax.plot([mean_angle, mean_angle], [0, np.max(radius)], "r-", lw=2)
 
