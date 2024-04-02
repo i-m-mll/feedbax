@@ -1,5 +1,17 @@
-.vcenter {
-    display: table-cell;
-    vertical-align: middle;
-    /* align-items: center; */
+H1, H2, H3, H4, H5 {
+    text-align: center;
+}
+
+.info_col {
+    border-left: 2px solid rgba(193, 193, 193, 0.25);
+    text-align: center;
+    font-size: 70%;
+}
+
+.box {
+    display: flex;
+    flex-flow: wrap;
+    align-items: center;
+    justify-content: center;
+    
 }

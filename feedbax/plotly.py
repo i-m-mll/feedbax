@@ -58,8 +58,10 @@ def loss_mean_history(
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.3,
     n_std_plot: int = 1,
+    layout_kws: Optional[dict] = None,
+    **kwargs,
 ) -> go.Figure:
-    fig = go.Figure()
+    fig = go.Figure(**kwargs)
 
     losses = jax.tree_map(
         lambda x: np.array(x),
@@ -114,13 +116,16 @@ def loss_mean_history(
     fig.update_layout(width=700, height=600)
     fig.update_xaxes(type="log")
     fig.update_yaxes(type="log")
-
+    if layout_kws is not None:
+        fig.update_layout(layout_kws)
     return fig
 
 
 def activity_heatmap(
     activity: Float[Array, "time unit"],
     colorscale: str = 'viridis',
+    layout_kws: Optional[dict] = None,
+    **kwargs,
 ) -> go.Figure:
     """Plot activity of all units in a network layer over time, on a single trial.
 
@@ -152,8 +157,11 @@ def activity_heatmap(
         activity.T,
         aspect="auto",
         color_continuous_scale=colorscale,
-        labels=dict(x="Time step", y="Unit"),
+        labels=dict(x="Time step", y="Unit", color="Activity"),
+        **kwargs,
     )
+    if layout_kws is not None:
+        fig.update_layout(layout_kws)
     return fig
 
 
@@ -161,14 +169,18 @@ def profile(
     var: Float[Array, "*trial timestep"],
     var_label: str = "Value",
     colors: list[str] = px.colors.qualitative.Set1,
+    layout_kws: Optional[dict] = None,
     **kwargs,
 ) -> go.Figure:
-    return px.line(
+    fig = px.line(
         var.T,
         color_discrete_sequence=colors,
         labels=dict(x="Time step", y=var_label),
         **kwargs,
     )
+    if layout_kws is not None:
+        fig.update_layout(layout_kws)
+    return fig
 
 
 def activity_sample_units(
@@ -177,9 +189,10 @@ def activity_sample_units(
     unit_includes: Optional[Sequence[int]] = None,
     colors: Optional[list[str]] = None,
     height: Optional[int] = None,
+    layout_kws: Optional[dict] = None,
     *,
     key: PRNGKeyArray,
-    **kwargs
+    **kwargs,
 ) -> go.Figure:
     """Plot activity over multiple trials for a random sample of network units.
 
@@ -263,6 +276,18 @@ def activity_sample_units(
         yref="paper",
     )
 
+    # fig.update_yaxes(zerolinewidth=2, zerolinecolor='rgb(200,200,200)')
+    fig.update_yaxes(zerolinewidth=0.5, zerolinecolor='black')
+
+    # Improve formatting of subplot "Unit=" labels.
+    fig.for_each_annotation(lambda a: a.update(
+        text=a.text.replace("=", " "),
+        font=dict(size=14),
+    ))
+
+    if layout_kws is not None:
+        fig.update_layout(layout_kws)
+
     return fig
 
 
@@ -328,6 +353,8 @@ def effector_trajectories(
     ms_target: int = 7,
     control_labels: Optional[tuple[str, str, str]] = None,
     control_label_type: str = "linear",
+    layout_kws: Optional[dict] = None,
+    **kwargs,
 ):
     """Plot trajectories of position, velocity, network output.
 
@@ -399,7 +426,10 @@ def effector_trajectories(
         facet_col='var',
         facet_col_spacing=0.05,
         color_discrete_sequence=colors,
+        **kwargs,
     )
+
+    fig.for_each_trace(lambda trace: trace.update(mode="markers+lines"))
 
     fig.update_traces(marker_size=ms)
 
@@ -418,6 +448,9 @@ def effector_trajectories(
 
     # Facet plot shares axes by default.
     unshare_axes(fig)
+
+    if layout_kws is not None:
+        fig.update_layout(layout_kws)
 
     return fig
 
