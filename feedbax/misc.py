@@ -13,6 +13,7 @@ from collections.abc import (
     Sequence,
     Set,
 )
+import copy
 import difflib
 import inspect
 from itertools import zip_longest, chain
@@ -227,3 +228,13 @@ def is_module(element: Any) -> bool:
     return isinstance(element, Module)
 
 
+def nested_dict_update(dict_, *args):
+    """Source: https://stackoverflow.com/a/3233356/23918276"""
+    dict_copy = copy.deepcopy(dict_)
+    for arg in args:
+        for k, v in arg.items():
+            if isinstance(v, Mapping):
+                dict_copy[k] = nested_dict_update(dict_copy.get(k, {}), v)
+            else:
+                dict_copy[k] = v
+    return dict_copy

@@ -727,6 +727,7 @@ def loss_mean_history(
 
     fig, ax = plt.subplots()
 
+    ax.set(xscale=xscale, yscale=yscale)
 
     for label, df in losses_terms_dfs.items():
         sns.lineplot(
@@ -739,7 +740,6 @@ def loss_mean_history(
             palette=cmap,
         )
 
-    ax.set(xscale=xscale, yscale=yscale)
     return fig, ax
 
 

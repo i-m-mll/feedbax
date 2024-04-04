@@ -15,11 +15,14 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Shaped
 import numpy as np
+from plotly.basedatatypes import BaseTraceType
+from plotly.colors import convert_colors_to_same_type
 import plotly.express as px
 import plotly.graph_objs as go
+import plotly.io as pio
 import polars as pl
 
-from feedbax import tree_labels
+from feedbax import tree_labels, tree_unzip
 from feedbax.bodies import SimpleFeedbackState
 from feedbax.task import AbstractReachTrialSpec
 
@@ -30,17 +33,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_COLORS = pio.templates[pio.templates.default].layout.colorway
+
+
 def color_add_alpha(rgb_str: str, alpha: float):
     return f"rgba{rgb_str[3:-1]}, {alpha})"
 
 
-def columns_mean_std(dfs: PyTree[pl.DataFrame], index_col: str):
-    return jax.tree_map(
-        lambda df: df.select(**{
+def columns_mean_std(dfs: PyTree[pl.DataFrame], index_col: Optional[str] = None):
+    
+    
+    if index_col is not None:  
+        spec = {
             index_col: pl.col(index_col),
             "mean": pl.concat_list(pl.col('*').exclude(index_col)).list.mean(),
             "std": pl.concat_list(pl.col('*').exclude(index_col)).list.std(),
-        }),
+        }
+    else:
+        spec = {
+            "mean": pl.concat_list(pl.col('*')).list.mean(),
+            "std": pl.concat_list(pl.col('*')).list.std(),
+        }
+    
+    return jax.tree_map(
+        lambda df: df.select(**spec),
         dfs,
     )
 
@@ -71,16 +87,38 @@ def loss_mean_history(
     timesteps = pl.DataFrame({"timestep": range(train_history.loss.total.shape[0])})
 
     dfs = jax.tree_map(
-        lambda losses: timesteps.hstack(pl.DataFrame(losses)),
+        lambda losses: pl.DataFrame(losses),
         dict(losses) | {"Total": losses.total},
     )
+    
+    # TODO: Only apply this when yaxis is log scaled
+    dfs = jax.tree_map(
+        lambda df: df.select([
+            np.log10(pl.all()),
+        ]),
+        dfs,
+    )    
 
-    loss_statistics = columns_mean_std(dfs, "timestep")
+    loss_statistics = columns_mean_std(dfs)
     error_bars_bounds = errorbars(loss_statistics, n_std_plot)
+    
+    # TODO: Only apply this when yaxis is log scaled
+    loss_statistics, error_bars_bounds = jax.tree_map(
+        lambda df: timesteps.hstack(df.select([
+            np.power(10, pl.col("*")),  # type: ignore
+        ])),
+        (loss_statistics, error_bars_bounds),
+    )
+
+    if colors is None:
+        colors = DEFAULT_COLORS
+    
+    colors_rgb: list[str]
+    colors_rgb, _ = convert_colors_to_same_type(colors, colortype='rgb')  # type: ignore
 
     colors_dict = {
         label: 'rgb(0,0,0)' if label == 'Total' else color
-        for label, color in zip(dfs, colors)
+        for label, color in zip(dfs, colors_rgb)
     }
 
     for i, label in enumerate(dfs):
@@ -116,8 +154,10 @@ def loss_mean_history(
     fig.update_layout(width=700, height=600)
     fig.update_xaxes(type="log")
     fig.update_yaxes(type="log")
+    
     if layout_kws is not None:
         fig.update_layout(layout_kws)
+        
     return fig
 
 
@@ -168,14 +208,15 @@ def activity_heatmap(
 def profile(
     var: Float[Array, "*trial timestep"],
     var_label: str = "Value",
-    colors: list[str] = px.colors.qualitative.Set1,
+    colors: Optional[list[str]] = None,
     layout_kws: Optional[dict] = None,
     **kwargs,
 ) -> go.Figure:
+    # TODO: vlines
     fig = px.line(
         var.T,
         color_discrete_sequence=colors,
-        labels=dict(x="Time step", y=var_label),
+        labels=dict(index="Time step", value=var_label, variable='Trial'),
         **kwargs,
     )
     if layout_kws is not None:
@@ -232,22 +273,24 @@ def activity_sample_units(
     )
     if unit_includes is not None:
         unit_idxs = np.concatenate([unit_idxs, np.array(unit_includes)])
+    unit_idxs = np.sort(unit_idxs)
+    unit_idx_strs = [str(i) for i in unit_idxs]
+    
     xs = np.array(activities[..., unit_idxs]).swapaxes(0, -1)
 
     # Join all the data into a dataframe.
     df = pl.concat([
-        pl.DataFrame(dict(
-            Unit=pl.repeat(f"{i}", x.shape[0], eager=True),
-            Timestep=np.arange(x.shape[0]),
-        )).hstack(
-            pl.from_numpy(x, schema=[f"{j}" for j in range(x.shape[1])])
-        ).melt(
-            id_vars=["Timestep", "Unit"],
-            variable_name="Trial",
-            value_name="Activity",
-        )
-        for i, x in zip(unit_idxs, xs)
-    ], how="vertical")
+        # For each trial, construct all timesteps of x, y data.
+        pl.from_numpy(x, schema=unit_idx_strs).hstack(pl.DataFrame({
+            "Timestep": np.arange(x.shape[0]),
+            "Trial": pl.repeat(i, x.shape[0], eager=True),
+        }))
+        for i, x in enumerate(xs)
+    ]).melt(
+        id_vars=["Timestep", "Trial"],
+        value_name="Activity",
+        variable_name="Unit",
+    )
 
     if height is None:
         height = 150 * len(unit_idxs)
@@ -312,7 +355,7 @@ def tree_of_2d_trial_timeseries_to_df(
             # For each trial, construct all timesteps of x, y data.
             pl.from_numpy(x, schema=["x", "y"]).hstack(pl.DataFrame({
                 "Timestep": np.arange(x.shape[0]),
-                "Trial": pl.repeat(str(i), x.shape[0], eager=True),
+                "Trial": pl.repeat(i, x.shape[0], eager=True),
             }))
             for i, x in enumerate(array)
         ])
@@ -422,10 +465,11 @@ def effector_trajectories(
         df,
         x='x',
         y='y',
-        color='Trial',
+        color=df['Trial'].cast(pl.String),
         facet_col='var',
         facet_col_spacing=0.05,
         color_discrete_sequence=colors,
+        labels=dict(color="Trial"),
         **kwargs,
     )
 
@@ -454,3 +498,6 @@ def effector_trajectories(
 
     return fig
 
+
+def is_trace(element):
+    return isinstance(element, BaseTraceType)
