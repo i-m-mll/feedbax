@@ -16,8 +16,8 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 import numpy as np
-from tqdm.auto import tqdm
 
+from feedbax._progress import _tqdm, _tqdm_write
 from feedbax.misc import dedupe_by_id, is_module
 
 
@@ -82,10 +82,10 @@ def tree_take(
     """Indexes elements out of each array leaf of a PyTree.
 
     Any non-array leaves are returned unchanged.
-    
+
     !!! Warning ""
-        This function inherits the default indexing behaviour of JAX. If 
-        out-of-bounds indices are provided, no error will be raised.       
+        This function inherits the default indexing behaviour of JAX. If
+        out-of-bounds indices are provided, no error will be raised.
 
     Arguments:
         tree: Any PyTree whose array leaves are equivalently indexable,
@@ -257,39 +257,39 @@ def tree_map_module(
 # See https://github.com/jeremiecoullon/jax-tqdm for a similar example.
 # (Currently I only use this function when `f` is a `TaskTrainer`.)
 def tree_map_tqdm(
-    f: Callable[..., S], 
-    tree: PyTree[Any, "T"], 
-    *rest: PyTree[Any, "T"], 
-    labels: Optional[PyTree[str, "T"]] = None, 
+    f: Callable[..., S],
+    tree: PyTree[Any, "T"],
+    *rest: PyTree[Any, "T"],
+    labels: Optional[PyTree[str, "T"]] = None,
     verbose: bool = False,
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[S, "T"]:
     """Adds a progress bar to `tree_map`.
-    
+
     Arguments:
         f: The function to map over the tree.
         tree: The PyTree to map over.
         *rest: Additional arguments to `f`, as PyTrees with the same structure as `tree`.
-        labels: A PyTree of labels for the leaves of `tree`, to be displayed on the 
+        labels: A PyTree of labels for the leaves of `tree`, to be displayed on the
             progress bar.
         is_leaf: A function that returns `True` for leaves of `tree`.
     """
     n_leaves = len(jtu.tree_leaves(tree, is_leaf=is_leaf))
-    pbar = tqdm(total=n_leaves)
+    pbar = _tqdm(total=n_leaves)
     def _f(leaf, label, *rest):
         if label is not None:
             pbar.set_description(f"Processing leaf: {label}")
         if verbose:
-            tqdm.write(f"Processing leaf: {label}")
+            _tqdm_write(f"Processing leaf: {label}")
         result = f(leaf, *rest)
         if verbose:
-            tqdm.write(u'\u2500' * 80)
+            _tqdm_write(u'\u2500' * 80)
         pbar.update(1)
         return result
     if labels is None:
         pbar.set_description("Processing tree leaves")
         labels = jax.tree_map(lambda _: None, tree, is_leaf=is_leaf)
-    return jax.tree_map(_f, tree, labels, *rest, is_leaf=is_leaf)    
+    return jax.tree_map(_f, tree, labels, *rest, is_leaf=is_leaf)
 
 
 def tree_map_unzip(
@@ -312,13 +312,13 @@ def tree_unzip(
     tree: PyTree[Tuple[Any, ...], "T"],
 ) -> Tuple[PyTree[Any, "T"], ...]:
     """Unzips a PyTree of tuples into a tuple of PyTrees.
-    
-    !!! Note 
-        Something similar could be done with `tree_transpose`, but `outer_treedef` 
-        would need to be specified. 
-        
-        This version has `zip`-like behaviour, in that 1) the input tree should be 
-        flattenable to tuples, when tuples are treated as leaves; 2) the shortest 
+
+    !!! Note
+        Something similar could be done with `tree_transpose`, but `outer_treedef`
+        would need to be specified.
+
+        This version has `zip`-like behaviour, in that 1) the input tree should be
+        flattenable to tuples, when tuples are treated as leaves; 2) the shortest
         of those tuples determines the length of the output.
     """
     tree_flat, treedef = jtu.tree_flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
@@ -411,48 +411,48 @@ def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:
 
 
 def tree_labels(
-    tree: PyTree[Any, 'T'], 
+    tree: PyTree[Any, 'T'],
     join_with: str = '_',
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[str, 'T']:
     """Return a PyTree of labels based on each leaf's key path.
-    
+
     !!! Note ""
         When `tree` is a flat dict:
-        
+
         ```python
         tree_keys(tree) == {k: str(k) for k in tree.keys()}
         ```
-        
+
         When `tree` is a flat list:
-        
+
         ```python
         tree_keys(tree) == [str(i) for i in range(len(tree))]
         ```
-        
+
     !!! Example "Verbose `tree_map`"
         This function is useful for creating descriptive labels when using `tree_map`
         to apply an expensive operation to a PyTree.
-        
+
         ```python
         def expensive_op(x):
-            # Something time-consuming 
+            # Something time-consuming
             ...
-        
+
         def verbose_expensive_op(leaf, label):
             print(f"Processing leaf: {label}")
             return expensive_op(leaf)
-        
+
         result = tree_map(
             verbose_expensive_op,
             tree,
             tree_labels(tree),
         )
         ```
-        
-        A similar use case combines this function with 
+
+        A similar use case combines this function with
         [`tree_map_tqdm`][feedbax.tree_map_tqdm] to label a progress bar:
-        
+
         ```python
         result = tree_map_tqdm(
             expensive_op,
@@ -460,8 +460,8 @@ def tree_labels(
             labels=tree_labels(tree),
         )
         ```
-    
-    Arguments: 
+
+    Arguments:
         tree: The PyTree for which to generate labels.
         join_with: The string with which to join a leaf's path keys, to form its label.
         is_leaf: An optional function that returns a boolean, which determines whether each
@@ -489,28 +489,28 @@ def _equal_or_allclose(a, b, rtol, atol):
 
 
 def tree_paths_of_equal_leaves(
-    tree: PyTree[Any, 'T'], 
+    tree: PyTree[Any, 'T'],
     rtol: float = 1e-5,
     atol: float = 1e-8,
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[set[tuple[BuiltInKeyEntry]], 'T']:
     """
-    Returns a PyTree with the same structure, where leaves are sets of paths of other 
+    Returns a PyTree with the same structure, where leaves are sets of paths of other
     leaves that are equal.
-    
-    Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in 
-    case of arrays.   
-    
+
+    Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in
+    case of arrays.
+
     Note:
-        This is inefficient and should only be used for small-ish PyTrees. 
+        This is inefficient and should only be used for small-ish PyTrees.
     """
     leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
-    
+
     paths, leaves = zip(*leaves_with_path)
 
     equal_paths = [
         set(
-            paths[j] for j in range(len(leaves)) 
+            paths[j] for j in range(len(leaves))
             if i != j and _equal_or_allclose(leaves[i], leaves[j], rtol, atol)
         )
         for i in range(len(leaves))
@@ -520,16 +520,16 @@ def tree_paths_of_equal_leaves(
 
 
 def tree_labels_of_equal_leaves(
-    tree: PyTree[Any, 'T'], 
+    tree: PyTree[Any, 'T'],
     rtol: float = 1e-5,
     atol: float = 1e-8,
     join_with: str = '_',
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[set[str], 'T']:
-    """Returns a PyTree with the same structure, where leaves are sets of labels of 
+    """Returns a PyTree with the same structure, where leaves are sets of labels of
     other leaves that are equal.
-    
-    Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in 
+
+    Does pairwise equality comparisons between all leaves, using `(j)np.allclose` in
     case of arrays.
     """
     tree_equal_paths = tree_paths_of_equal_leaves(
@@ -546,16 +546,16 @@ def tree_infer_batch_size(
     tree: PyTree, exclude: Callable[..., bool] = lambda _ : False
 ) -> int:
     """Return the size of the first dimension of a tree's array leaves.
-    
-    Raise an error if any of the array leaves differ in the size of their first 
+
+    Raise an error if any of the array leaves differ in the size of their first
     dimension.
-    
+
     Arguments:
         tree: The PyTree to infer the batch size of.
-        exclude: A function that returns `True` for nodes that should be treated 
-            as leaves and excluded from the check. This is useful when there are 
-            subtrees of a certain type, that contain array leaves which do not 
-            possess the batch dimension. 
+        exclude: A function that returns `True` for nodes that should be treated
+            as leaves and excluded from the check. This is useful when there are
+            subtrees of a certain type, that contain array leaves which do not
+            possess the batch dimension.
     """
     arrays, treedef = jtu.tree_flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
     array_lens: list[int | None] = [

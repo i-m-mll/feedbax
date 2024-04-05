@@ -71,6 +71,28 @@ nav.md-nav {
     padding: 0 0rem !important;
 }
 
+/* Notebook figures */
+
+.output_svg {
+    /* width: 85%; */
+    display: flex;
+    justify-content: center;
+}
+
+.output_area svg {
+    width: 90%;
+}
+
+.plotly {
+    display: flex;
+    justify-content: center;
+}
+
+/* .mkdocs-plotly {
+
+} */
+
+
 /* Make errors in notebooks have scrolling */
 
 .output_error > pre {

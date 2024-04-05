@@ -30,7 +30,8 @@ from equinox import Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
-from tqdm.auto import tqdm
+
+from feedbax._progress import _tqdm_write
 
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ class TqdmLoggingHandler(logging.StreamHandler):
     def emit(self, record):
         try:
             msg = self.format(record)
-            tqdm.write(msg, end=self.terminator)
+            _tqdm_write(msg, end=self.terminator)
         except RecursionError:
             raise
         except Exception:
@@ -221,7 +222,7 @@ def dedupe_by_id(seq: Sequence[T1]) -> Iterable[Optional[T1]]:
             yield item
         else:
             yield None
-            
+
 
 def is_module(element: Any) -> bool:
     """Return `True` if `element` is an Equinox module."""

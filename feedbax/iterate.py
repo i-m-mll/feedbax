@@ -15,8 +15,8 @@ import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree, Shaped
-from tqdm.auto import tqdm
 
+from feedbax._progress import _tqdm
 from feedbax._model import AbstractModel
 from feedbax.state import StateT
 from feedbax._tree import tree_take, tree_set
@@ -158,7 +158,7 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         states = self._init_arrays(init_input, state, key2)
 
         if os.environ.get("FEEDBAX_DEBUG", False) == "True":
-            for i in tqdm(range(self.n_steps), desc="steps"):
+            for i in _tqdm(range(self.n_steps), desc="steps"):
                 input, states, key3 = self._body_func(i, (input, states, key3))
 
             return states

@@ -21,14 +21,14 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 import numpy as np
 import optax  # type: ignore
 from tensorboardX import SummaryWriter  # type: ignore
-from tqdm.auto import tqdm
 
 from feedbax import loss
+from feedbax._progress import _tqdm, _tqdm_write
 from feedbax.intervene import AbstractIntervenor
 from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
 from feedbax.misc import (
-    Timer, 
-    TqdmLoggingHandler, 
+    Timer,
+    TqdmLoggingHandler,
     delete_contents,
 )
 from feedbax._model import AbstractModel, ModelInput
@@ -36,9 +36,9 @@ import feedbax.plot as plot
 from feedbax.state import StateT
 from feedbax.task import AbstractTask, AbstractTaskTrialSpec
 from feedbax._tree import (
-    filter_spec_leaves, 
+    filter_spec_leaves,
     tree_infer_batch_size,
-    tree_take, 
+    tree_take,
     tree_set,
 )
 
@@ -166,9 +166,9 @@ class TaskTrainer(eqx.Module):
             where_train: Selects the arrays from the model PyTree to be trained.
             ensembled: Should be set to `True` if `model` is a vmapped ensemble
                 of models that should be trained in parallel.
-            ensemble_random_trials: If `False`, every model in an ensemble will 
-                be trained on the same batches of trials. Otherwise, a distinct  
-                batch will be generated for each model. Has no effect if 
+            ensemble_random_trials: If `False`, every model in an ensemble will
+                be trained on the same batches of trials. Otherwise, a distinct
+                batch will be generated for each model. Has no effect if
                 `ensembled` is `False`.
             log_step: Interval at which to evaluate model on the validation set,
                 print losses to the console, log to tensorboard (if enabled),
@@ -224,20 +224,20 @@ class TaskTrainer(eqx.Module):
             save_model_trainables_batches = np.full(
                 n_batches, save_model_trainables, dtype=bool
             )
-            
+
         if isinstance(save_trial_specs, Array):
             save_trial_specs_batches = np.array(
                 jnp.zeros(n_batches, dtype=bool).at[save_trial_specs].set(True)
             )
-        else: 
+        else:
             save_trial_specs_batches = np.full(
                 n_batches, save_trial_specs, dtype=bool
             )
-            
+
         history = init_task_trainer_history(
             task,
             n_batches,
-            n_replicates, 
+            n_replicates,
             ensembled,
             save_model_trainables=save_model_trainables,
             save_trial_specs=save_trial_specs,
@@ -245,7 +245,7 @@ class TaskTrainer(eqx.Module):
             model=model,
             where_train=where_train,
         )
-        
+
         start_batch = 0  # except when we load a checkpoint
 
         if restore_checkpoint:
@@ -263,7 +263,7 @@ class TaskTrainer(eqx.Module):
         elif self.checkpointing:
             # Delete old checkpoints if checkpointing is on.
             delete_contents(self.chkpt_dir)
-        
+
         model_update_funcs_flat = jtu.tree_leaves(
             self.model_update_funcs,
             is_leaf=lambda x: isinstance(x, Callable),
@@ -303,14 +303,14 @@ class TaskTrainer(eqx.Module):
                 flat_model,
                 is_leaf=lambda x: isinstance(x, AbstractIntervenor),
             )
-            
+
             if ensemble_random_trials:
                 in_axes = (None, None, flat_model_array_spec, None, 0, None, None, None, 0)
                 out_axes = (0, 0, flat_model_array_spec, 0)
             else:
                 in_axes = (None, None, flat_model_array_spec, None, 0, None, None, None, None)
                 out_axes = (0, None, flat_model_array_spec, 0)
-            
+
             train_step = eqx.filter_vmap(
                 self._train_step,
                 in_axes=in_axes,
@@ -366,12 +366,21 @@ class TaskTrainer(eqx.Module):
         else:
             logger.debug("JIT globally disabled. Skipping pre-run compilation.")
 
+        log_batches_mask = np.zeros(n_batches, dtype=bool)
+        log_batches = np.linspace(
+            0, n_batches, n_batches // log_step, endpoint=False, dtype=int
+        )
+        # Could also use `np.in1d` to do this out-of-place, but it's slightly slower
+        log_batches_mask[log_batches] = True
+        log_batches_mask[-1] = True
+
         keys = jr.split(key, n_batches)
 
+        _tqdm_write('\n')
         # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
-        for batch in tqdm(
+        for batch in _tqdm(
             range(start_batch, n_batches),
-            desc="train batch",
+            desc="Training iteration:",
             initial=start_batch,
             total=n_batches,
             smoothing=0.1,
@@ -383,8 +392,8 @@ class TaskTrainer(eqx.Module):
                 key_train = jr.split(key_train, n_replicates)
 
             update_funcs_i = [
-                model_update_funcs_flat[i] 
-                for i, b in enumerate(model_update_funcs_mask[batch]) 
+                model_update_funcs_flat[i]
+                for i, b in enumerate(model_update_funcs_mask[batch])
                 if b
             ]
 
@@ -472,15 +481,14 @@ class TaskTrainer(eqx.Module):
                     _, last_batch, model, _, history = checkpoint
                     msg += f"Returning checkpoint from batch {last_batch}."
                 else:
-                    msg += "No checkpoint found, returning model from final iteration."
+                    msg += "No checkpoint found, returning model from last iteration."
 
                 logger.warning(msg)
 
                 return model, history
-            
-            # TODO: Is it faster to use a mask beforehand, like with `save_model_trainables`?
+
             # Checkpoint and validate, occasionally
-            if batch % log_step == 0 or batch == n_batches - 1:
+            if log_batches_mask[batch]:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
                 opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
@@ -527,26 +535,30 @@ class TaskTrainer(eqx.Module):
                         )
 
                 # TODO: https://stackoverflow.com/a/69145493
+
+                if batch == n_batches - 1:
+                    loss_str_head = f"Final training iteration ({batch}):"
+                else:
+                    loss_str_head = f"Training iteration {batch}:"
+
                 if not disable_tqdm:
-                    tqdm.write(f"\nTraining iteration: {batch}", file=sys.stdout)
-                    tqdm.write(
-                        f"\t{ensembled_str}training loss: ".capitalize()
-                        + f"{losses_mean.total:{LOSS_FMT}}",
-                        file=sys.stdout,
-                    )
-                    tqdm.write(
-                        f"\t{ensembled_str}validation loss: ".capitalize()
-                        + f"{losses_val_mean.total:{LOSS_FMT}}",
-                        file=sys.stdout,
+                    _tqdm_write(
+                        (
+                            loss_str_head
+                            + f"\n\t{ensembled_str}training loss: ".capitalize()
+                            + f"{losses_mean.total:{LOSS_FMT}}"
+                            + f"\n\t{ensembled_str}validation loss: ".capitalize()
+                            + f"{losses_val_mean.total:{LOSS_FMT}}"
+                            + '\n\n'
+                        ),
                     )
                     # if learning_rate is not None:
-                    #     tqdm.write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
+                    #     _tqdm_write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
 
-        tqdm.write(
+        _tqdm_write(
             "\nCompleted training run on a total of "
             + f"{n_batches * batch_size:,} trials"
             + f"{' per model' if ensembled else ''}.\n",
-            file=sys.stdout,
         )
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
@@ -625,7 +637,7 @@ class TaskTrainer(eqx.Module):
 
         updates, opt_state = self.optimizer.update(grads, opt_state)
         model = eqx.apply_updates(model, updates)
-        
+
         # For updates computed directly from the state, without loss gradient.
         for update_func in update_funcs:
             state_dep_updates = update_func(model, states)
@@ -633,7 +645,7 @@ class TaskTrainer(eqx.Module):
 
         flat_model = jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AbstractIntervenor))
         flat_opt_state = jtu.tree_leaves(opt_state)
-        
+
         return losses, trial_specs, flat_model, flat_opt_state
 
     def _save_checkpoint(
@@ -675,10 +687,10 @@ class TaskTrainer(eqx.Module):
 
 
 def init_task_trainer_history(
-    task: AbstractLoss,
-    n_batches: int, 
-    n_replicates: int, 
-    ensembled: bool, 
+    task: AbstractTask,
+    n_batches: int,
+    n_replicates: int,
+    ensembled: bool,
     ensemble_random_trials: bool = True,
     save_model_trainables: bool | Int[Array, '_'] = False,
     save_trial_specs: Optional[Int[Array, '_']] = None,
@@ -700,28 +712,28 @@ def init_task_trainer_history(
             )
         )
     else:
-        loss_history = jnp.empty(batch_shape)    
-    
+        loss_history = jnp.empty(batch_shape)
+
     if save_trial_specs is not None:
         assert batch_size is not None
         if len(save_trial_specs.shape) != 1:
             raise ValueError(
                 "If save_trial_specs is an array, it must be 1D"
             )
-        
+
         def get_batch_example(key):
             keys_trials = jr.split(key, batch_size)
             return jax.vmap(
                 task.get_train_trial_with_intervenor_params
-            )(keys_trials) 
-            
-        if ensembled and ensemble_random_trials:       
+            )(keys_trials)
+
+        if ensembled and ensemble_random_trials:
             trial_specs_example = jax.vmap(get_batch_example)(
                 jr.split(jr.PRNGKey(0), n_replicates)
             )
         else:
             trial_specs_example = get_batch_example(jr.PRNGKey(0))
-        
+
         trial_spec_batches = [
             int(i + (n_batches if i < 0 else 0))
             for i in save_trial_specs
@@ -729,13 +741,13 @@ def init_task_trainer_history(
         trial_spec_history = {int(i): trial_specs_example for i in trial_spec_batches}
     else:
         trial_spec_history = {}
-        
+
     if not save_model_trainables is False:
         assert model is not None
         assert where_train is not None
         where_train_spec = filter_spec_leaves(model, where_train)
-        model_trainables = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)   
-                    
+        model_trainables = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
+
         if isinstance(save_model_trainables, Array):
             if len(save_model_trainables.shape) != 1:
                 raise ValueError(
@@ -748,7 +760,7 @@ def init_task_trainer_history(
                     if eqx.is_array(x) else x
                 ),
                 model_trainables,
-            )            
+            )
         else:
             model_train_history = jax.tree_map(
                 lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x,
@@ -756,11 +768,11 @@ def init_task_trainer_history(
             )
     else:
         model_train_history = None
-    
+
     # TODO: Replace arrays with None?
     return TaskTrainerHistory(
         loss=loss_history,
-        learning_rate=jnp.empty(batch_shape), 
+        learning_rate=jnp.empty(batch_shape),
         model_trainables=model_train_history,
         trial_specs=trial_spec_history,
     )

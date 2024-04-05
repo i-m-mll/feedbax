@@ -4,6 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 import logging
 from typing import TYPE_CHECKING, Any, Optional
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+pio.templates.default = "plotly_white"
 DEFAULT_COLORS = pio.templates[pio.templates.default].layout.colorway
 
 
@@ -41,9 +43,9 @@ def color_add_alpha(rgb_str: str, alpha: float):
 
 
 def columns_mean_std(dfs: PyTree[pl.DataFrame], index_col: Optional[str] = None):
-    
-    
-    if index_col is not None:  
+
+
+    if index_col is not None:
         spec = {
             index_col: pl.col(index_col),
             "mean": pl.concat_list(pl.col('*').exclude(index_col)).list.mean(),
@@ -54,7 +56,7 @@ def columns_mean_std(dfs: PyTree[pl.DataFrame], index_col: Optional[str] = None)
             "mean": pl.concat_list(pl.col('*')).list.mean(),
             "std": pl.concat_list(pl.col('*')).list.std(),
         }
-    
+
     return jax.tree_map(
         lambda df: df.select(**spec),
         dfs,
@@ -69,7 +71,7 @@ def errorbars(col_means_stds: PyTree[pl.DataFrame], n_std: int):
         col_means_stds,
     )
 
-def loss_mean_history(
+def loss_history(
     train_history: "TaskTrainerHistory",
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.3,
@@ -88,20 +90,20 @@ def loss_mean_history(
 
     dfs = jax.tree_map(
         lambda losses: pl.DataFrame(losses),
-        dict(losses) | {"Total": losses.total},
+        OrderedDict({"Total": losses.total}) | dict(losses),
     )
-    
+
     # TODO: Only apply this when yaxis is log scaled
     dfs = jax.tree_map(
         lambda df: df.select([
             np.log10(pl.all()),
         ]),
         dfs,
-    )    
+    )
 
     loss_statistics = columns_mean_std(dfs)
     error_bars_bounds = errorbars(loss_statistics, n_std_plot)
-    
+
     # TODO: Only apply this when yaxis is log scaled
     loss_statistics, error_bars_bounds = jax.tree_map(
         lambda df: timesteps.hstack(df.select([
@@ -112,7 +114,7 @@ def loss_mean_history(
 
     if colors is None:
         colors = DEFAULT_COLORS
-    
+
     colors_rgb: list[str]
     colors_rgb, _ = convert_colors_to_same_type(colors, colortype='rgb')  # type: ignore
 
@@ -121,7 +123,7 @@ def loss_mean_history(
         for label, color in zip(dfs, colors_rgb)
     }
 
-    for i, label in enumerate(dfs):
+    for i, label in enumerate(reversed(dfs)):
         # Mean
         fig.add_trace(go.Scatter(
             name=label,
@@ -151,13 +153,22 @@ def loss_mean_history(
             showlegend=False,
         ))
 
-    fig.update_layout(width=700, height=600)
+    fig.update_layout(
+        width=800,
+        height=500,
+        xaxis_title="Training iteration",
+        yaxis_title="Loss",
+        # yaxis_tickformat="e",
+        yaxis_exponentformat="E",
+        margin=dict(l=80, r=10, t=30, b=60),
+        legend_traceorder="reversed",
+    )
     fig.update_xaxes(type="log")
     fig.update_yaxes(type="log")
-    
+
     if layout_kws is not None:
         fig.update_layout(layout_kws)
-        
+
     return fig
 
 
@@ -275,8 +286,8 @@ def activity_sample_units(
         unit_idxs = np.concatenate([unit_idxs, np.array(unit_includes)])
     unit_idxs = np.sort(unit_idxs)
     unit_idx_strs = [str(i) for i in unit_idxs]
-    
-    xs = np.array(activities[..., unit_idxs]).swapaxes(0, -1)
+
+    xs = np.array(activities[..., unit_idxs])
 
     # Join all the data into a dataframe.
     df = pl.concat([
