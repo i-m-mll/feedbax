@@ -22,6 +22,7 @@ import logging
 from typing import (
     TYPE_CHECKING,
     Optional,
+    Self,
     Tuple,
 )
 
@@ -35,10 +36,22 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
 from feedbax import tree_take
-from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput, TimeSeriesParam
+from feedbax.intervene import (
+    AbstractIntervenor,
+    AbstractIntervenorInput,
+    IntervenorSpec,
+    TimeSeriesParam,
+    _eval_intervenor_param_spec,
+    add_intervenor,
+    add_intervenors,
+    remove_all_intervenors,
+    schedule_intervenor,
+)
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax._model import ModelInput
+from feedbax._staged import AbstractStagedModel
+from feedbax.misc import get_unique_label, is_module
 from feedbax.state import CartesianState, StateT
 from feedbax._tree import tree_call
 
@@ -144,7 +157,7 @@ class AbstractTaskInputs(Module):
     ...
 
 
-# TODO: One `target` is specified as a `WhereDict` as well, the only thing
+# TODO: Once `target` is specified as a `WhereDict` as well, the only thing
 # that will really change between classes of tasks is `inputs`. In that case,
 # we could just make this `TaskTrialSpec` and have it be a generic of
 # `AbstractTaskInputs`
@@ -280,6 +293,7 @@ class AbstractTask(Module):
         loss_func: The loss function that grades task performance.
         n_steps: The number of time steps in the task trials.
         seed_validation: The random seed for generating the validation trials.
+        # TODO
         intervention_specs: A mapping from unique intervenor names, to specifications
             for generating per-trial intervention parameters on training trials.
         intervention_specs_validation: A mapping from unique intervenor names, to
@@ -291,26 +305,66 @@ class AbstractTask(Module):
     n_steps: AbstractVar[int]
     seed_validation: AbstractVar[int]
 
-    # TODO: The following line is wrong: each entry will have the same PyTree structure as `AbstractIntervenorInput`
-    # but will be filled with callables that specify a trial distribution for the leaves
-    intervention_specs: AbstractVar[Mapping[str, "AbstractIntervenorInput"]]
-    intervention_specs_validation: AbstractVar[Mapping[str, "AbstractIntervenorInput"]]
-    
+    intervenor_specs: AbstractVar[Mapping[str, IntervenorSpec]]
+    intervenor_specs_validation: AbstractVar[Mapping[str, IntervenorSpec]]
+
     def __check_init__(self):
         if not isinstance(self.loss_func, AbstractLoss):
             raise ValueError(
                 "The loss function must be an instance of `AbstractLoss`"
             )
 
-    def _intervention_params(
+    @abstractmethod
+    def get_train_trial(
         self,
-        intervention_specs: Mapping[str, "AbstractIntervenorInput"],
+        key: PRNGKeyArray,
+    ) -> AbstractTaskTrialSpec:
+        """Return a single training trial specification.
+
+        Arguments:
+            key: A random key for generating the trial.
+        """
+        ...
+
+    @eqx.filter_jit
+    def get_train_trial_with_intervenor_params(
+        self,
+        key: PRNGKeyArray,
+    ) -> AbstractTaskTrialSpec:
+        """Return a single training trial specification, including intervention parameters.
+
+        Arguments:
+            key: A random key for generating the trial.
+        """
+        key, key_intervene = jr.split(key)
+
+        with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
+            trial_spec = self.get_train_trial(key)
+
+        trial_spec = eqx.tree_at(
+            lambda x: x.intervene,
+            trial_spec,
+            self._intervenor_params(
+                self.intervenor_specs,
+                trial_spec,
+                key_intervene,
+            ),
+            is_leaf=lambda x: x is None,
+        )
+        return trial_spec
+
+    def _intervenor_params(
+        self,
+        intervenor_specs: Mapping[str, IntervenorSpec],
         trial_spec: AbstractTaskTrialSpec,
         key: PRNGKeyArray,
     ):
+        spec_intervenor_params = {k: v.intervenor.params for k, v in intervenor_specs.items()}
+
+        # TODO: Try not to repeat `intervene._eval_intervenor_param_spec`
         # Evaluate any parameters that vary by trial.
-        intervention_params = tree_call(
-            intervention_specs,
+        intervenor_params = tree_call(
+            spec_intervenor_params,
             trial_spec,
             key=key,
             # Treat `TimeSeriesParam`s as leaves, but don't call (unwrap) them yet.
@@ -319,7 +373,7 @@ class AbstractTask(Module):
         )
 
         timeseries, other = eqx.partition(
-            intervention_params,
+            intervenor_params,
             lambda x: isinstance(x, TimeSeriesParam),
             is_leaf=lambda x: isinstance(x, TimeSeriesParam),
         )
@@ -341,45 +395,6 @@ class AbstractTask(Module):
         )
 
         return eqx.combine(timeseries_arrays, other_broadcasted)
-
-    @eqx.filter_jit
-    def get_train_trial_with_intervenor_params(
-        self,
-        key: PRNGKeyArray,
-    ) -> AbstractTaskTrialSpec:
-        """Return a single training trial specification, including intervention parameters.
-
-        Arguments:
-            key: A random key for generating the trial.
-        """
-        key, key_intervene = jr.split(key)
-
-        with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
-            trial_spec = self.get_train_trial(key)
-
-        trial_spec = eqx.tree_at(
-            lambda x: x.intervene,
-            trial_spec,
-            self._intervention_params(
-                self.intervention_specs,
-                trial_spec,
-                key_intervene,
-            ),
-            is_leaf=lambda x: x is None,
-        )
-        return trial_spec
-
-    @abstractmethod
-    def get_train_trial(
-        self,
-        key: PRNGKeyArray,
-    ) -> AbstractTaskTrialSpec:
-        """Return a single training trial specification.
-
-        Arguments:
-            key: A random key for generating the trial.
-        """
-        ...
 
     @abstractmethod
     def get_validation_trials(
@@ -410,8 +425,8 @@ class AbstractTask(Module):
         trial_specs = eqx.tree_at(
             lambda x: x.intervene,
             trial_specs,
-            eqx.filter_vmap(self._intervention_params, in_axes=(None, 0, 0))(
-                self.intervention_specs_validation,
+            eqx.filter_vmap(self._intervenor_params, in_axes=(None, 0, 0))(
+                self.intervenor_specs_validation,
                 trial_specs,
                 keys,
             ),
@@ -512,7 +527,7 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             key: For providing randomness during model evaluation.
                 Will be split into `n_replicates` keys.
-            ensemble_random_trials: If `False`, each model in the ensemble will be 
+            ensemble_random_trials: If `False`, each model in the ensemble will be
                 evaluated on the same set of trials.
         """
         # TODO: Why not just use `eqx.filter_vmap`? It should handle the array partitioning.
@@ -536,7 +551,7 @@ class AbstractTask(Module):
             return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None))(
                 models_arrays, models_other, key
             )
-        
+
     def eval_ensemble(
         self,
         models: "AbstractModel[StateT]",
@@ -552,7 +567,7 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             key: For providing randomness during model evaluation.
                 Will be split into `n_replicates` keys.
-            ensemble_random_trials: If `False`, each model in the ensemble will be 
+            ensemble_random_trials: If `False`, each model in the ensemble will be
                 evaluated on the same set of trials.
         """
         states, _ = self.eval_ensemble_with_loss(
@@ -605,7 +620,7 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             batch_size: The number of trials in the batch to evaluate.
             key: For providing randomness during model evaluation.
-            ensemble_random_trials: If `False`, each model in the ensemble will be 
+            ensemble_random_trials: If `False`, each model in the ensemble will be
                 evaluated on the same set of trials.
 
         Returns:
@@ -622,7 +637,7 @@ class AbstractTask(Module):
         def evaluate_single(model_arrays, model_other, batch_size, key):
             model = eqx.combine(model_arrays, model_other)
             return self.eval_train_batch(model, batch_size, key)
-    
+
         if ensemble_random_trials:
             return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
                 models_arrays, models_other, batch_size, jr.split(key, n_replicates)
@@ -631,6 +646,63 @@ class AbstractTask(Module):
             return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, None))(
                 models_arrays, models_other, batch_size, key
             )
+
+    def add_intervenors_to_base_model(
+        self,
+        model: AbstractStagedModel[StateT],
+    ) -> AbstractStagedModel[StateT]:
+        """Add the task's scheduled intervenors to a model.
+
+        Assumes that the model has the appropriate structure to admit the
+        intervention. This depends on the the `where` and `stage_name`
+        properties stored in the task's `intervenor_specs` field, since the
+        original call to `schedule_intervenor` that added them to the task.
+
+        - `where` should pick out an `AbstractStagedModel` component of `model`.
+        - If defined, `stage_name` should be the name of one of the stages of
+            the `AbstractStagedModel` component picked out by `where`.
+
+        Any existing intervenors in the model that were scheduled with another
+        task, will be removed to prevent conflicts. Other intervenors which were
+        added directly to the model without being scheduled with a task will
+        not be removed.
+
+        !!! Note
+            This method is mostly useful when evaluating a trained model on a task
+            with a different set of interventions than the one it was trained on.
+        """
+        # Remove all intervenors from the model that don't have underscores
+        base_model = remove_all_intervenors(model, scheduled_only=True)
+
+        # Make a copy of `self`, without its spec intervenors
+        base_task = eqx.tree_at(
+            lambda task: (task.intervenor_specs, task.intervenor_specs_validation),
+            self,
+            (dict(), dict()),
+        )
+
+        # Use schedule_intervenors to reproduce `self`, along with the modified model
+        task, model_ = base_task, base_model
+        for label, spec in self.intervenor_specs.items():
+            if label in self.intervenor_specs_validation:
+                intervenor_params_val = (
+                    self.intervenor_specs_validation[label].intervenor.params
+                )
+            else:
+                intervenor_params_val = None
+
+            task, model_ = schedule_intervenor(
+                task,
+                model_,
+                intervenor=spec.intervenor,
+                where=spec.where,
+                default_active=spec.default_active,
+                intervenor_params_validation=intervenor_params_val,
+                # Only applies if `intervenor_params_val` is None:
+                validation_same_schedule=False,
+            )
+
+        return model_
 
 
 def _pos_only_states(positions: Float[Array, "... ndim=2"]):
@@ -733,8 +805,8 @@ class SimpleReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
-    intervention_specs: Mapping[str, "AbstractIntervenorInput"] = field(default_factory=dict)
-    intervention_specs_validation: Mapping[str, "AbstractIntervenorInput"] = field(
+    intervenor_specs: Mapping[str, IntervenorSpec] = field(default_factory=dict)
+    intervenor_specs_validation: Mapping[str, IntervenorSpec] = field(
         default_factory=dict
     )
     eval_n_directions: int = 7
@@ -869,8 +941,8 @@ class DelayedReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
     seed_validation: int = 5555
-    intervention_specs: Mapping[str, "AbstractIntervenorInput"] = field(default_factory=dict)
-    intervention_specs_validation: Mapping[str, "AbstractIntervenorInput"] = field(
+    intervenor_specs: Mapping[str, IntervenorSpec] = field(default_factory=dict)
+    intervenor_specs_validation: Mapping[str, IntervenorSpec] = field(
         default_factory=dict
     )
 
@@ -984,8 +1056,8 @@ class Stabilization(AbstractTask):
     eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
         converter=jnp.asarray, default=None
     )
-    intervention_specs: Mapping[str, "AbstractIntervenorInput"] = field(default_factory=dict)
-    intervention_specs_validation: Mapping[str, "AbstractIntervenorInput"] = field(
+    intervenor_specs: Mapping[str, IntervenorSpec] = field(default_factory=dict)
+    intervenor_specs_validation: Mapping[str, IntervenorSpec] = field(
         default_factory=dict
     )
 

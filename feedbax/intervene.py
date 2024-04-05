@@ -47,6 +47,7 @@ import equinox as eqx
 from equinox import AbstractVar, Module, field
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
 from feedbax.misc import get_unique_label, is_module
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
 
 
 class AbstractIntervenorInput(Module):
@@ -163,6 +165,16 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
         ...
 
 
+class IntervenorSpec(eqx.Module):
+    # TODO: The type of `intervenor` is wrong: each entry will have the same PyTree
+    # structure as `AbstractIntervenorInput` but may be filled with callables that
+    # specify a trial distribution for the leaves
+    intervenor: AbstractIntervenor
+    where: Callable[[AbstractModel], "AbstractStagedModel"]
+    stage_name: Optional[str]
+    default_active: bool
+
+
 class CurlFieldParams(AbstractIntervenorInput):
     """Parameters for a curl force field.
 
@@ -236,7 +248,7 @@ class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
     """
 
     params: FixedFieldParams = FixedFieldParams()
-    in_where: Callable[["MechanicsState"], Float[Array, "... ndim=2"]] = (
+    in_where: Callable[["MechanicsState"], Any] = (
         lambda state: state.effector
     )
     out_where: Callable[["MechanicsState"], Float[Array, "... ndim=2"]] = (
@@ -304,7 +316,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
             ),
             substate_in,
         )
-        return noise 
+        return noise
 
 
 class NetworkIntervenorParams(AbstractIntervenorInput):
@@ -478,6 +490,7 @@ def add_intervenors(
         [AbstractModel[StateT]], Any  # "AbstractStagedModel[StateS]"
     ] = lambda model: model.step,
     keep_existing: bool = True,
+    scheduled: bool = False,
 ) -> "AbstractStagedModel[StateT]":
     """Return an updated model with added intervenors.
 
@@ -492,6 +505,10 @@ def add_intervenors(
             the instance of `AbstractStagedModel` to which the new intervenors are added.
             If `True`, the new intervenors are appended to the existing ones; if `False`,
             the old intervenors are replaced.
+        scheduled: By default, intervenor labels are prepended by an underscore when the
+            intervenor is not associate with trial scheduling, by a task. Functions such
+            as `schedule_intervenor` that pair an intervention with a task schedule
+            should set `scheduled` to `True`.
     """
     if keep_existing:
         existing_intervenors = {
@@ -499,6 +516,7 @@ def add_intervenors(
             for stage_name, intervenors in where(model).intervenors.items()
         }
     else:
+        # TODO: is this necessary?
         existing_intervenors = {stage_name: [] for stage_name in where(model).model_spec}
 
     if isinstance(intervenors, Sequence):
@@ -516,9 +534,22 @@ def add_intervenors(
     else:
         raise ValueError("intervenors not a sequence or dict of sequences")
 
-    for k in intervenors_dict:
-        if k not in where(model).model_spec:
-            raise ValueError(f"{k} is not a valid model stage for intervention")
+    for stage_name in intervenors_dict:
+        if stage_name not in where(model).model_spec:
+            raise ValueError(
+                f"{stage_name} is not a valid model stage for intervention"
+            )
+
+    if not scheduled:
+        intervenors_dict = jax.tree_map(
+            lambda intervenor: eqx.tree_at(
+                lambda x: x.label,
+                intervenor,
+                '_' + intervenor.label,
+            ),
+            intervenors_dict,
+            is_leaf=is_intervenor,
+        )
 
     return eqx.tree_at(
         lambda model: where(model).intervenors,
@@ -527,25 +558,63 @@ def add_intervenors(
     )
 
 
+def _clear_intervenors_dict(
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]],
+    scheduled_only: bool,
+):
+    """Return a new mapping with all intervenors removed."""
+    if scheduled_only:
+        return {
+            stage:
+                [
+                    intervenor for intervenor in stage_intervenors
+                    if intervenor.label[0] == '_'
+                ]
+            for stage, stage_intervenors in intervenors.items()
+        }
+    else:
+        return {stage: [] for stage in intervenors}
+
+
 def remove_intervenors(
     model: AbstractModel,
     where: Callable[[AbstractModel], PyTree] = lambda model: model,
+    scheduled_only: bool = False,
 ) -> AbstractModel:
-    """Return a model with all intervenors removed."""
+    """Return a model with all intervenors removed at `where`."""
     return eqx.tree_at(
         where,
         model,
         jax.tree_map(
-            lambda model: add_intervenors(
-                model,
-                intervenors={stage: [] for stage in model.model_spec},
-                keep_existing=False,
+            lambda submodel: eqx.tree_at(
+                lambda submodel: submodel.intervenors,
+                submodel,
+                _clear_intervenors_dict(submodel.intervenors, scheduled_only),
             ),
             where(model),
             # Can't do `isinstance(x, AbstractModel)` because of circular import
             is_leaf=lambda x: getattr(x, "model_spec", None) is not None,
         ),
     )
+
+
+def remove_all_intervenors(
+    tree: PyTree,
+    scheduled_only: bool = False,
+) -> PyTree:
+    """Return a model with all intervenors removed."""
+    if isinstance(tree, AbstractStagedModel):
+        tree = eqx.tree_at(
+            lambda model: model.intervenors,
+            tree,
+            _clear_intervenors_dict(tree.intervenors, scheduled_only),
+        )
+    leaves, treedef = eqx.tree_flatten_one_level(tree)
+    return jtu.tree_unflatten(treedef, [
+        remove_all_intervenors(leaf, scheduled_only)
+        for leaf in leaves
+        if isinstance(leaf, AbstractModel)
+    ])
 
 
 class TimeSeriesParam(Module):
@@ -562,6 +631,26 @@ class TimeSeriesParam(Module):
         return self.param
 
 
+def _eval_intervenor_param_spec(
+    intervenor_spec: IntervenorSpec,
+    trial_spec, #: AbstractTaskTrialSpec,
+    key: PRNGKeyArray,
+):
+    # Unwrap any `TimeSeriesParam` instances:
+    return tree_call(
+        # Evaluate any trial-generation lambdas:
+        tree_call(
+            intervenor_spec.intervenor.params,
+            trial_spec,
+            key=key,
+            # Don't unwrap `TimeSeriesParam`s yet:
+            exclude=lambda x: isinstance(x, TimeSeriesParam),
+            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+        ),
+        is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+    )
+
+
 def schedule_intervenor(
     tasks: PyTree["AbstractTask"],
     models: PyTree[AbstractModel[StateT]],
@@ -570,18 +659,18 @@ def schedule_intervenor(
     where: Callable[[AbstractModel[StateT]], Any] = lambda model: model,
     stage_name: Optional[str] = None,
     validation_same_schedule: bool = True,
-    intervention_spec: Optional[
+    intervenor_params: Optional[
         AbstractIntervenorInput
     ] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
-    intervention_spec_validation: Optional[AbstractIntervenorInput] = None,
+    intervenor_params_validation: Optional[AbstractIntervenorInput] = None,
     default_active: bool = False,
 ) -> Tuple[PyTree["AbstractTask"], PyTree[AbstractModel[StateT]]]:
     """Adds an intervention to a model and a task.
 
     !!! Note ""
         Accepts either an intervenor instance, or an intervenor class. Passing
-        an intervenor instance but no `intervention_spec`, the instance's
-        `params` attribute is used as `intervention_spec`. This can be combined
+        an intervenor instance but no `intervenor_params`, the instance's
+        `params` attribute is used as `intervenor_params`. This can be combined
         with the intervenor's `with_params` constructor to define the
         schedule. For example:
 
@@ -597,17 +686,17 @@ def schedule_intervenor(
         )
         ```
 
-        Passing an intervenor class and an `intervention_spec`, an instance
+        Passing an intervenor class and an `intervenor_params`, an instance
         will be constructed from the two.
 
-        Passing an intervenor instance *and* an `intervention_spec`, the
-        instance's `params` will be replaced with the `intervention_spec`
+        Passing an intervenor instance *and* an `intervenor_params`, the
+        instance's `params` will be replaced with the `intervenor_params`
         before adding to the model.
 
-        Passing an intervenor class but no `intervention_spec`, an error is
+        Passing an intervenor class but no `intervenor_params`, an error is
         raised due to insufficient information to schedule the intervention.
 
-        Passing a value for `intervention_spec_validation` allows for separate
+        Passing a value for `intervenor_params_validation` allows for separate
         control over the intervention schedule for the task's validation set.
 
     Arguments:
@@ -620,10 +709,10 @@ def schedule_intervenor(
             add the intervenor. Defaults to the first stage.
         validation_same_schedule: Whether the interventions should be scheduled
             in the same way for the validation set as for the training set.
-        intervention_spec: The input to the intervenor, which may be
-            a constant, or a callable that is used by `task` to construct the
-            intervention parameters for each trial.
-        intervention_spec_validation: Same as `intervention_spec`, but for the
+        intervenor_params: The parameters of to the intervenor, which may be
+            constants, or callables that are used by `task` to construct the
+            parameters for the intervention on each trial.
+        intervenor_params_validation: Same as `intervenor_input`, but for the
             task's validation set. Overrides `validation_same_schedule`.
         default_active: If the intervenor added to the model should have
             `active=True` by default, so that the intervention will be
@@ -632,9 +721,9 @@ def schedule_intervenor(
     """
     intervenor_: AbstractIntervenor
     if isinstance(intervenor, type(AbstractIntervenor)):
-        if intervention_spec is None:
-            raise ValueError("Must pass intervention_spec if intervenor is a class")
-        intervenor_ = intervenor(params=intervention_spec)  # type: ignore
+        if intervenor_params is None:
+            raise ValueError("Must pass intervenor_params if intervenor is a class")
+        intervenor_ = intervenor(params=intervenor_params)  # type: ignore
     elif isinstance(intervenor, AbstractIntervenor):
         intervenor_ = intervenor
     else:
@@ -658,7 +747,7 @@ def schedule_intervenor(
     invalid_labels_tasks = jax.tree_util.tree_reduce(
         lambda x, y: x + y,
         jax.tree_map(
-            lambda task: tuple(task.intervention_specs.keys()),
+            lambda task: tuple(task.intervenor_specs.keys()),
             tasks,
             is_leaf=is_module,  # AbstractTask
         ),
@@ -667,60 +756,65 @@ def schedule_intervenor(
     invalid_labels = set(invalid_labels_models + invalid_labels_tasks)
     label = get_unique_label(intervenor_.label, invalid_labels)
 
-    # Construct training and validation intervention specs
-    if intervention_spec is not None:
-        intervention_specs = {label: intervention_spec}
-    else:
-        intervention_specs = {label: intervenor_.params}
+    # Construct specification intervenors
+    intervenor_specs = {label: IntervenorSpec(
+        intervenor=intervenor_,
+        where=where,
+        stage_name=stage_name,
+        default_active=default_active,
+    )}
 
-    if intervention_spec_validation is not None:
-        intervention_specs_validation = {label: intervention_spec_validation}
+    if intervenor_params_validation is not None:
+        intervenor_specs_validation = {label: IntervenorSpec(
+            intervenor=eqx.tree_at(
+                lambda intervenor: intervenor.params,
+                intervenor_,
+                intervenor_params_validation,
+            ),
+            where=where,
+            stage_name=stage_name,
+            default_active=default_active,
+        )}
     elif validation_same_schedule:
-        intervention_specs_validation = intervention_specs
+        intervenor_specs_validation = intervenor_specs
     else:
-        intervention_specs_validation = dict()
+        intervenor_specs_validation = dict()
 
-    # Add the intervention specs to every task in `tasks`
+    # Add the spec intervenors to every task in `tasks`
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
-            lambda task: (task.intervention_specs, task.intervention_specs_validation),
+            lambda task: (task.intervenor_specs, task.intervenor_specs_validation),
             task,
             (
-                task.intervention_specs | intervention_specs,
-                task.intervention_specs_validation | intervention_specs_validation,
+                task.intervenor_specs | intervenor_specs,
+                task.intervenor_specs_validation | intervenor_specs_validation,
             ),
         ),
         tasks,
         is_leaf=is_module,  # AbstractTask
     )
 
-    # Relabel the intervenor, and make sure it has a single set of default param values.
+    # Apply the unique label to the intervenor to be added to the model.
     intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor_, label)
 
-    # TODO: Should we let the user pass a `default_intervention_spec`?
+    # Construct the intervenor with default parameters, to add to the model.
+    # TODO: Should we let the user pass a `default_intervenor_params`?
     key_example = jax.random.PRNGKey(0)
+    # Assume that all the tasks are compatible with the way trial specs are used
+    # to generate trial-by-trial intervenor parameters.
     task_example = jax.tree_leaves(
         tasks, is_leaf=is_module  # AbstractTask
     )[0]
     trial_spec_example = task_example.get_train_trial(key_example)
-
-    # Use the validation spec to construct the defaults.
     intervenor_defaults = eqx.tree_at(
         lambda intervenor: intervenor.params,
         intervenor_relabeled,
-        # We apply `tree_call` twice:
-        #   1. evaluate any lambdas;
-        #   2. unwrap any `TimeSeriesParam` instances.
-        tree_call(
-            tree_call(
-                intervention_specs_validation[label],
-                trial_spec_example,
-                key=key_example,
-                exclude=lambda x: isinstance(x, TimeSeriesParam),
-                is_leaf=lambda x: isinstance(x, TimeSeriesParam),
-            ),
-            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
-        ),
+        _eval_intervenor_param_spec(
+            # Prefer the validation parameters, if they exist.
+            (intervenor_specs | intervenor_specs_validation)[label],
+            trial_spec_example,
+            key_example,
+        )
     )
 
     intervenor_final = eqx.tree_at(
@@ -740,6 +834,7 @@ def schedule_intervenor(
             model,
             intervenors,
             where=where,
+            scheduled=True,
         ),
         models,
         is_leaf=lambda x: isinstance(x, AbstractModel),
