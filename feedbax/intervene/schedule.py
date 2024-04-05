@@ -21,10 +21,9 @@ import equinox as eqx
 from equinox import Module
 import jax
 import jax.numpy as jnp
-import jax.tree_util as jtu
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput
+from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput, is_intervenor
 from feedbax.misc import get_unique_label, is_module
 from feedbax._model import AbstractModel
 from feedbax.state import StateT
@@ -115,6 +114,17 @@ def add_intervenors(
         # TODO: is this necessary?
         existing_intervenors = {stage_name: [] for stage_name in where(model).model_spec}
 
+    if not scheduled:
+        intervenors = jax.tree_map(
+            lambda intervenor: eqx.tree_at(
+                lambda x: x.label,
+                intervenor,
+                '_' + intervenor.label,
+            ),
+            intervenors,
+            is_leaf=is_intervenor,
+        )
+
     if isinstance(intervenors, Sequence):
         # If a sequence is given, append to the first stage.
         first_stage_label = next(iter(existing_intervenors))
@@ -136,81 +146,11 @@ def add_intervenors(
                 f"{stage_name} is not a valid model stage for intervention"
             )
 
-    if not scheduled:
-        intervenors_dict = jax.tree_map(
-            lambda intervenor: eqx.tree_at(
-                lambda x: x.label,
-                intervenor,
-                '_' + intervenor.label,
-            ),
-            intervenors_dict,
-            is_leaf=is_intervenor,
-        )
-
     return eqx.tree_at(
         lambda model: where(model).intervenors,
         model,
         intervenors_dict,
     )
-
-
-def _clear_intervenors_dict(
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]],
-    scheduled_only: bool,
-):
-    """Return a new mapping with all intervenors removed."""
-    if scheduled_only:
-        return {
-            stage:
-                [
-                    intervenor for intervenor in stage_intervenors
-                    if intervenor.label[0] == '_'
-                ]
-            for stage, stage_intervenors in intervenors.items()
-        }
-    else:
-        return {stage: [] for stage in intervenors}
-
-
-def remove_intervenors(
-    model: AbstractModel,
-    where: Callable[[AbstractModel], PyTree] = lambda model: model,
-    scheduled_only: bool = False,
-) -> AbstractModel:
-    """Return a model with all intervenors removed at `where`."""
-    return eqx.tree_at(
-        where,
-        model,
-        jax.tree_map(
-            lambda submodel: eqx.tree_at(
-                lambda submodel: submodel.intervenors,
-                submodel,
-                _clear_intervenors_dict(submodel.intervenors, scheduled_only),
-            ),
-            where(model),
-            # Can't do `isinstance(x, AbstractModel)` because of circular import
-            is_leaf=lambda x: getattr(x, "model_spec", None) is not None,
-        ),
-    )
-
-
-def remove_all_intervenors(
-    tree: PyTree,
-    scheduled_only: bool = False,
-) -> PyTree:
-    """Return a model with all intervenors removed."""
-    if isinstance(tree, AbstractStagedModel):
-        tree = eqx.tree_at(
-            lambda model: model.intervenors,
-            tree,
-            _clear_intervenors_dict(tree.intervenors, scheduled_only),
-        )
-    leaves, treedef = eqx.tree_flatten_one_level(tree)
-    return jtu.tree_unflatten(treedef, [
-        remove_all_intervenors(leaf, scheduled_only)
-        for leaf in leaves
-        if isinstance(leaf, AbstractModel)
-    ])
 
 
 class TimeSeriesParam(Module):

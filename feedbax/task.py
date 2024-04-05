@@ -41,12 +41,12 @@ from feedbax.intervene import (
     AbstractIntervenorInput,
     IntervenorSpec,
     TimeSeriesParam,
-    _eval_intervenor_param_spec,
     add_intervenor,
     add_intervenors,
-    remove_all_intervenors,
     schedule_intervenor,
 )
+from feedbax.intervene.remove import remove_all_intervenors
+from feedbax.intervene.schedule import _eval_intervenor_param_spec
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax._model import ModelInput
