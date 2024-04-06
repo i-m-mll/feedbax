@@ -39,7 +39,7 @@ from feedbax import tree_take
 from feedbax.intervene import (
     AbstractIntervenor,
     AbstractIntervenorInput,
-    IntervenorSpec,
+    InterventionSpec,
     TimeSeriesParam,
     add_intervenor,
     add_intervenors,
@@ -305,8 +305,8 @@ class AbstractTask(Module):
     n_steps: AbstractVar[int]
     seed_validation: AbstractVar[int]
 
-    intervenor_specs: AbstractVar[Mapping[str, IntervenorSpec]]
-    intervenor_specs_validation: AbstractVar[Mapping[str, IntervenorSpec]]
+    intervention_specs: AbstractVar[Mapping[str, InterventionSpec]]
+    intervention_specs_validation: AbstractVar[Mapping[str, InterventionSpec]]
 
     def __check_init__(self):
         if not isinstance(self.loss_func, AbstractLoss):
@@ -345,7 +345,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_spec,
             self._intervenor_params(
-                self.intervenor_specs,
+                self.intervention_specs,
                 trial_spec,
                 key_intervene,
             ),
@@ -355,11 +355,11 @@ class AbstractTask(Module):
 
     def _intervenor_params(
         self,
-        intervenor_specs: Mapping[str, IntervenorSpec],
+        intervention_specs: Mapping[str, InterventionSpec],
         trial_spec: AbstractTaskTrialSpec,
         key: PRNGKeyArray,
     ):
-        spec_intervenor_params = {k: v.intervenor.params for k, v in intervenor_specs.items()}
+        spec_intervenor_params = {k: v.intervenor.params for k, v in intervention_specs.items()}
 
         # TODO: Try not to repeat `intervene._eval_intervenor_param_spec`
         # Evaluate any parameters that vary by trial.
@@ -426,7 +426,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_specs,
             eqx.filter_vmap(self._intervenor_params, in_axes=(None, 0, 0))(
-                self.intervenor_specs_validation,
+                self.intervention_specs_validation,
                 trial_specs,
                 keys,
             ),
@@ -655,7 +655,7 @@ class AbstractTask(Module):
 
         Assumes that the model has the appropriate structure to admit the
         intervention. This depends on the the `where` and `stage_name`
-        properties stored in the task's `intervenor_specs` field, since the
+        properties stored in the task's `intervention_specs` field, since the
         original call to `schedule_intervenor` that added them to the task.
 
         - `where` should pick out an `AbstractStagedModel` component of `model`.
@@ -676,17 +676,17 @@ class AbstractTask(Module):
 
         # Make a copy of `self`, without its spec intervenors
         base_task = eqx.tree_at(
-            lambda task: (task.intervenor_specs, task.intervenor_specs_validation),
+            lambda task: (task.intervention_specs, task.intervention_specs_validation),
             self,
             (dict(), dict()),
         )
 
         # Use schedule_intervenors to reproduce `self`, along with the modified model
         task, model_ = base_task, base_model
-        for label, spec in self.intervenor_specs.items():
-            if label in self.intervenor_specs_validation:
+        for label, spec in self.intervention_specs.items():
+            if label in self.intervention_specs_validation:
                 intervenor_params_val = (
-                    self.intervenor_specs_validation[label].intervenor.params
+                    self.intervention_specs_validation[label].intervenor.params
                 )
             else:
                 intervenor_params_val = None
@@ -805,8 +805,8 @@ class SimpleReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
-    intervenor_specs: Mapping[str, IntervenorSpec] = field(default_factory=dict)
-    intervenor_specs_validation: Mapping[str, IntervenorSpec] = field(
+    intervention_specs: Mapping[str, InterventionSpec] = field(default_factory=dict)
+    intervention_specs_validation: Mapping[str, InterventionSpec] = field(
         default_factory=dict
     )
     eval_n_directions: int = 7
@@ -941,8 +941,8 @@ class DelayedReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
     seed_validation: int = 5555
-    intervenor_specs: Mapping[str, IntervenorSpec] = field(default_factory=dict)
-    intervenor_specs_validation: Mapping[str, IntervenorSpec] = field(
+    intervention_specs: Mapping[str, InterventionSpec] = field(default_factory=dict)
+    intervention_specs_validation: Mapping[str, InterventionSpec] = field(
         default_factory=dict
     )
 
@@ -1056,8 +1056,8 @@ class Stabilization(AbstractTask):
     eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
         converter=jnp.asarray, default=None
     )
-    intervenor_specs: Mapping[str, IntervenorSpec] = field(default_factory=dict)
-    intervenor_specs_validation: Mapping[str, IntervenorSpec] = field(
+    intervention_specs: Mapping[str, InterventionSpec] = field(default_factory=dict)
+    intervention_specs_validation: Mapping[str, InterventionSpec] = field(
         default_factory=dict
     )
 

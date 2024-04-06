@@ -68,6 +68,26 @@ def load(
             arguments `hyperparameters` which `save` may have saved to the same
             file. It must take a keyword argument `key`.
     """
+    tree, _ = load_with_hyperparameters(
+        path=path, setup_func=setup_func, **kwargs
+    )
+    return tree
+
+
+def load_with_hyperparameters(
+    path: Path | str,
+    setup_func: Callable[..., PyTree[Any, "T"]],
+    **kwargs,
+) -> tuple[PyTree[Any, "T"], dict[str, Any]]:
+    """Setup a PyTree from stored data and hyperparameters.
+
+    Arguments:
+        path: The path of the file to be loaded.
+        setup_func: A function that returns a PyTree of the same structure
+            as the PyTree that was saved to `path`, and which may take as
+            arguments `hyperparameters` which `save` may have saved to the same
+            file. It must take a keyword argument `key`.
+    """
     with open(path, "rb") as f:
         hyperparameters = json.loads(f.readline().decode())
         if hyperparameters is None:
@@ -75,7 +95,7 @@ def load(
         tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
-    return tree
+    return tree, hyperparameters
 
 
 def _save_with_datetime_and_commit_id(

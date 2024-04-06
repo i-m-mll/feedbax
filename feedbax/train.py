@@ -556,9 +556,12 @@ class TaskTrainer(eqx.Module):
                     #     _tqdm_write(f"\tlearning rate: {learning_rate:.4f}", file=sys.stdout)
 
         _tqdm_write(
-            "\nCompleted training run on a total of "
+            # Extra newline if progress bar is present.
+            # TODO: Extra newline might only matter for CLI progress bar...
+            "\n" if not disable_tqdm else ""  
+            + "Completed training run on a total of "
             + f"{n_batches * batch_size:,} trials"
-            + f"{' per model' if ensembled else ''}.\n",
+            + f"{' per model' if ensembled else ''}.\n\n",
         )
 
         model = jtu.tree_unflatten(treedef_model, flat_model)

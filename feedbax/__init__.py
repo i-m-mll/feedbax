@@ -8,7 +8,7 @@ import logging.handlers as loghandlers
 import os
 import warnings
 
-from feedbax._io import save, load
+from feedbax._io import save, load, load_with_hyperparameters
 from feedbax._model import (
     AbstractModel,
     ModelInput,

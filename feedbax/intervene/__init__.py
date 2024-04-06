@@ -16,7 +16,7 @@ from feedbax.intervene.intervene import (
 )
 
 from feedbax.intervene.schedule import (
-    IntervenorSpec,
+    InterventionSpec,
     TimeSeriesParam,
     add_intervenor,
     add_intervenors,

@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class IntervenorSpec(eqx.Module):
+class InterventionSpec(eqx.Module):
     # TODO: The type of `intervenor` is wrong: each entry will have the same PyTree
     # structure as `AbstractIntervenorInput` but may be filled with callables that
     # specify a trial distribution for the leaves
@@ -168,7 +168,7 @@ class TimeSeriesParam(Module):
 
 
 def _eval_intervenor_param_spec(
-    intervenor_spec: IntervenorSpec,
+    intervention_spec: InterventionSpec,
     trial_spec, #: AbstractTaskTrialSpec,
     key: PRNGKeyArray,
 ):
@@ -176,7 +176,7 @@ def _eval_intervenor_param_spec(
     return tree_call(
         # Evaluate any trial-generation lambdas:
         tree_call(
-            intervenor_spec.intervenor.params,
+            intervention_spec.intervenor.params,
             trial_spec,
             key=key,
             # Don't unwrap `TimeSeriesParam`s yet:
@@ -283,7 +283,7 @@ def schedule_intervenor(
     invalid_labels_tasks = jax.tree_util.tree_reduce(
         lambda x, y: x + y,
         jax.tree_map(
-            lambda task: tuple(task.intervenor_specs.keys()),
+            lambda task: tuple(task.intervention_specs.keys()),
             tasks,
             is_leaf=is_module,  # AbstractTask
         ),
@@ -293,7 +293,7 @@ def schedule_intervenor(
     label = get_unique_label(intervenor_.label, invalid_labels)
 
     # Construct specification intervenors
-    intervenor_specs = {label: IntervenorSpec(
+    intervention_specs = {label: InterventionSpec(
         intervenor=intervenor_,
         where=where,
         stage_name=stage_name,
@@ -301,7 +301,7 @@ def schedule_intervenor(
     )}
 
     if intervenor_params_validation is not None:
-        intervenor_specs_validation = {label: IntervenorSpec(
+        intervention_specs_validation = {label: InterventionSpec(
             intervenor=eqx.tree_at(
                 lambda intervenor: intervenor.params,
                 intervenor_,
@@ -312,18 +312,18 @@ def schedule_intervenor(
             default_active=default_active,
         )}
     elif validation_same_schedule:
-        intervenor_specs_validation = intervenor_specs
+        intervention_specs_validation = intervention_specs
     else:
-        intervenor_specs_validation = dict()
+        intervention_specs_validation = dict()
 
     # Add the spec intervenors to every task in `tasks`
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
-            lambda task: (task.intervenor_specs, task.intervenor_specs_validation),
+            lambda task: (task.intervention_specs, task.intervention_specs_validation),
             task,
             (
-                task.intervenor_specs | intervenor_specs,
-                task.intervenor_specs_validation | intervenor_specs_validation,
+                task.intervention_specs | intervention_specs,
+                task.intervention_specs_validation | intervention_specs_validation,
             ),
         ),
         tasks,
@@ -347,7 +347,7 @@ def schedule_intervenor(
         intervenor_relabeled,
         _eval_intervenor_param_spec(
             # Prefer the validation parameters, if they exist.
-            (intervenor_specs | intervenor_specs_validation)[label],
+            (intervention_specs | intervention_specs_validation)[label],
             trial_spec_example,
             key_example,
         )

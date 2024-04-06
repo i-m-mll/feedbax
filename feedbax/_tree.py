@@ -253,6 +253,10 @@ def tree_map_module(
     return jax.tree_map(f, tree, *rest, is_leaf=is_module)
 
 
+# Horizontal rule
+HR = u'\u2500' * 80
+
+
 # TODO: Use a host callback so this can be wrapped in JAX transformations.
 # See https://github.com/jeremiecoullon/jax-tqdm for a similar example.
 # (Currently I only use this function when `f` is a `TaskTrainer`.)
@@ -280,10 +284,12 @@ def tree_map_tqdm(
         if label is not None:
             pbar.set_description(f"Processing leaf: {label}")
         if verbose:
-            _tqdm_write(f"Processing leaf: {label}")
+            _tqdm_write(f"Processing leaf: {label}\n\n")
         result = f(leaf, *rest)
         if verbose:
-            _tqdm_write(u'\u2500' * 80)
+            _tqdm_write(f"\n{HR}\n")
+        else:
+            _tqdm_write(f"\n")
         pbar.update(1)
         return result
     if labels is None:
