@@ -213,15 +213,22 @@ def highlight_string_diff(obj1, obj2):
     return str2_new
 
 
-def dedupe_by_id(seq: Sequence[T1]) -> Iterable[Optional[T1]]:
-    """Remove duplicates from a sequence of objects, based on `id`."""
+def unique_generator(
+    seq: Sequence[T1], 
+    replace_duplicates: bool = False, 
+    replace_value: Any = None
+) -> Iterable[Optional[T1]]:
+    """Yields the first occurrence of sequence entries, in order.
+    
+    If `replace_duplicates` is `True`, replaces duplicates with `replace_value`.
+    """
     seen = set()
     for item in seq:
         if id(item) not in seen:
             seen.add(id(item))
             yield item
-        else:
-            yield None
+        elif replace_duplicates:
+            yield replace_value
 
 
 def is_module(element: Any) -> bool:
@@ -229,13 +236,14 @@ def is_module(element: Any) -> bool:
     return isinstance(element, Module)
 
 
-def nested_dict_update(dict_, *args):
+def nested_dict_update(dict_, *args, make_copy: bool = True):
     """Source: https://stackoverflow.com/a/3233356/23918276"""
-    dict_copy = copy.deepcopy(dict_)
+    if make_copy:
+        dict_ = copy.deepcopy(dict_)
     for arg in args:
         for k, v in arg.items():
             if isinstance(v, Mapping):
-                dict_copy[k] = nested_dict_update(dict_copy.get(k, {}), v)
+                dict_[k] = nested_dict_update(dict_.get(k, {}), v, make_copy=make_copy)
             else:
-                dict_copy[k] = v
-    return dict_copy
+                dict_[k] = v
+    return dict_

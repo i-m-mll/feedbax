@@ -18,7 +18,7 @@ from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 import numpy as np
 
 from feedbax._progress import _tqdm, _tqdm_write
-from feedbax.misc import dedupe_by_id, is_module
+from feedbax.misc import unique_generator, is_module
 
 
 logger = logging.getLogger(__name__)
@@ -369,23 +369,25 @@ def tree_call(
     return eqx.combine(callables_values, other_values, is_leaf=is_leaf)
 
 
-def tree_array_bytes(tree: PyTree, dedupe_arrays_by_id: bool = True) -> int:
+def tree_array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     """Returns the total bytes of memory over all array leaves of a PyTree.
 
     Arguments:
         tree: The tree with arrays to measure.
-        dedupe_arrays_by_id: If `True`, then leaves that refer to the same array in memory
+        duplicates: If `False`, then leaves that refer to the same array in memory
             will only be counted once.
     """
     arrays = eqx.filter(tree, eqx.is_array)
-    if dedupe_arrays_by_id:
+    if not duplicates:
         flat, treedef = jtu.tree_flatten(arrays)
-        arrays = jtu.tree_unflatten(treedef, list(dedupe_by_id(flat)))
+        arrays = jtu.tree_unflatten(
+            treedef, 
+            list(unique_generator(flat, replace_duplicates=True))
+        )
     array_bytes = jax.tree_map(lambda x: x.nbytes, arrays)
-    return jtu.tree_reduce(
-        lambda x, y: x + y,
-        array_bytes,
-    )
+    array_bytes_int_leaves = [x for x in jtu.tree_leaves(array_bytes) if x is not None]
+    return sum(array_bytes_int_leaves)
+    
 
 
 def tree_struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:

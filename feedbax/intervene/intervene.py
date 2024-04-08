@@ -164,7 +164,6 @@ class CurlFieldParams(AbstractIntervenorInput):
             is counterclockwise.
         active: Whether the force field is active.
     """
-
     amplitude: float = 0.0
     active: bool = True
 
