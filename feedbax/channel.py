@@ -61,8 +61,9 @@ class Channel(AbstractStagedModel[ChannelState]):
         and semi-reliable connection between model components.
 
     Attributes:
-        delay: The number of previous inputs stored in the queue.
+        delay: The number of previous inputs stored in the queue. May be zero.
         noise_std: The standard deviation of the noise added to the output.
+            If `None`, no noise is added.
         input_proto: A PyTree of arrays with the same structure/shapes as the
             inputs to the channel will have.
         intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add
@@ -88,7 +89,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         ] = None,
     ):
         # TODO: Allow the delay to actually be 0 (i.e. return the input immediately; queue is always empty)
-        self.delay = delay + 1  # otherwise when delay=0, nothing is stored
+        self.delay = delay  # otherwise when delay=0, nothing is stored
         self.noise_std = noise_std
         self._init_value = init_value
         self.input_proto = input_proto
@@ -98,10 +99,20 @@ class Channel(AbstractStagedModel[ChannelState]):
         if not isinstance(self.delay, int):
             raise ValueError("Delay must be an integer")
 
-    def _update_queue(self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray):
+    def _update_queue(
+        self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray
+    ):
         return ChannelState(
             output=state.queue[0],
             queue=state.queue[1:] + (input,),
+        )
+        
+    def _update_queue_zerodelay(
+        self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray
+    ):
+        return ChannelState(
+            output=input,
+            queue=state.queue,
         )
 
     def _add_noise(self, input, state, *, key):
@@ -123,10 +134,16 @@ class Channel(AbstractStagedModel[ChannelState]):
         """
         Stage = ModelStage[Self, ChannelState]
 
+        update_queue = (
+            self._update_queue 
+            if self.delay > 0 
+            else self._update_queue_zerodelay
+        )
+
         spec = OrderedDict(
             {
                 "update_queue": Stage(
-                    callable=lambda self: self._update_queue,
+                    callable=lambda self: update_queue,
                     where_input=lambda input, state: input,
                     where_state=lambda state: state,
                 ),
@@ -163,9 +180,9 @@ class Channel(AbstractStagedModel[ChannelState]):
             noise_init = None
 
         return ChannelState(
-            input_init,
-            self.delay * (input_init,),
-            noise_init,
+            output=input_init,
+            queue=self.delay * (input_init,),
+            noise=noise_init,
         )
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":

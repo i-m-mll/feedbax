@@ -21,6 +21,7 @@ import jax
 from jaxtyping import Array, PRNGKeyArray, PyTree
 import numpy as np
 
+from feedbax.misc import is_module
 from feedbax.state import StateBounds, StateT
 from feedbax._tree import random_split_like_tree
 
@@ -144,6 +145,9 @@ class MultiModel(AbstractModel[StateT]):
             self._get_keys(key),
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )
+    
+    def __getitem__(self, idx):
+        return jax.tree_util.tree_leaves(self.models, is_leaf=is_module)[idx]
 
     def init(
         self,

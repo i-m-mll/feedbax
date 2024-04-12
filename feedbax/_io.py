@@ -20,7 +20,7 @@ from jaxtyping import PyTree
 import equinox as eqx
 
 
-from feedbax.misc import git_commit_id
+from feedbax.misc import git_commit_id, nested_dict_update
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ def load(
 def load_with_hyperparameters(
     path: Path | str,
     setup_func: Callable[..., PyTree[Any, "T"]],
+    missing_hyperparameters: Optional[dict[str, Any]] = None,
     **kwargs,
 ) -> tuple[PyTree[Any, "T"], dict[str, Any]]:
     """Setup a PyTree from stored data and hyperparameters.
@@ -87,11 +88,20 @@ def load_with_hyperparameters(
             as the PyTree that was saved to `path`, and which may take as
             arguments `hyperparameters` which `save` may have saved to the same
             file. It must take a keyword argument `key`.
+        missing_hyperparameters: A dictionary of hyperparameters, whose structure must 
+            contain all the leaves of the loaded hyperparameter dictionary, but may
+            possess additional leaves if the signature of `setup_func` has been expanded
+            since save time, so that we may call it properly here. Note that these
+            additional parameters should not affect the structure of the saved PyTrees,
+            or deserialisation will fail.
     """
+    
     with open(path, "rb") as f:
         hyperparameters = json.loads(f.readline().decode())
         if hyperparameters is None:
             hyperparameters = dict()
+        elif missing_hyperparameters is not None:
+            hyperparameters = nested_dict_update(missing_hyperparameters, hyperparameters)
         tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
