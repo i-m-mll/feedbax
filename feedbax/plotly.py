@@ -403,8 +403,8 @@ def effector_trajectories(
     colors: Optional[list[str]] = None,
     color: Optional[str | tuple[float, ...]] = None,
     ms: int = 5,
-    ms_source: int = 6,
-    ms_target: int = 7,
+    ms_source: int = 12,
+    ms_target: int = 12,
     control_labels: Optional[tuple[str, str, str]] = None,
     control_label_type: str = "linear",
     layout_kws: Optional[dict] = None,
@@ -487,6 +487,62 @@ def effector_trajectories(
     fig.for_each_trace(lambda trace: trace.update(mode="markers+lines"))
 
     fig.update_traces(marker_size=ms)
+
+    if endpoints is not None:
+        endpoints_arr = np.array(endpoints)
+    else:
+        if trial_specs is not None:
+            endpoints_arr = np.array(
+                [
+                    trial_specs.inits["mechanics.effector"].pos,
+                    trial_specs.goal.pos,
+                ]
+            )
+        else:
+            endpoints_arr = None
+
+    if endpoints_arr is not None:
+        colors = [d.marker.color for d in fig.data[::n_vars]]
+        if straight_guides:
+            fig.add_traces(
+                [
+                    go.Scatter(
+                        x=endpoints_arr[:, i, 0],
+                        y=endpoints_arr[:, i, 1].T,
+                        mode="lines",
+                        line_dash='dash',
+                        line_color=colors[i],
+                        showlegend=False,
+                        xaxis="x1",
+                        yaxis="y1",
+                    )
+                    for i in range(endpoints_arr.shape[1])
+                ]
+            )
+
+        for j, ms in enumerate([ms_source, ms_target]):
+            fig.add_traces(
+                [
+                    go.Scatter(
+                        x=endpoints_arr[j, i, 0][None],
+                        y=endpoints_arr[j, i, 1][None],
+                        mode="markers",
+                        marker=dict(
+                            size=ms,
+                            color='rgba(255, 255, 255, 0)',
+                            line=dict(
+                                color=colors[i],
+                                width=2,
+                            ),
+                        ),
+                        xaxis="x1",
+                        yaxis="y1",
+                        # TODO: Show once in legend, for all markers of type j
+                        showlegend=False,
+                    )
+                    for i in range(endpoints_arr.shape[1])
+                ]
+            )
 
     # Constrain the axes of each subplot to be scaled equally.
     # That is, keep square aspect ratios.

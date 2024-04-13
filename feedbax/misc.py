@@ -27,8 +27,10 @@ from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
 import equinox as eqx
 from equinox import Module
+from equinox._pretty_print import tree_pp, bracketed
 import jax
 import jax.numpy as jnp
+import jax._src.pretty_printer as pp
 from jaxtyping import Float, Array
 
 from feedbax._progress import _tqdm_write
@@ -214,12 +216,12 @@ def highlight_string_diff(obj1, obj2):
 
 
 def unique_generator(
-    seq: Sequence[T1], 
-    replace_duplicates: bool = False, 
+    seq: Sequence[T1],
+    replace_duplicates: bool = False,
     replace_value: Any = None
 ) -> Iterable[Optional[T1]]:
     """Yields the first occurrence of sequence entries, in order.
-    
+
     If `replace_duplicates` is `True`, replaces duplicates with `replace_value`.
     """
     seen = set()
@@ -247,3 +249,13 @@ def nested_dict_update(dict_, *args, make_copy: bool = True):
             else:
                 dict_[k] = v
     return dict_
+
+
+def _simple_module_pprint(name, *children, **kwargs):
+    return bracketed(
+        pp.text(name),
+        kwargs['indent'],
+        [tree_pp(child, **kwargs) for child in children],
+        '(',
+        ')'
+    )

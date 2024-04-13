@@ -22,6 +22,7 @@ from feedbax._model import AbstractModel, MultiModel
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.misc import is_module
 from feedbax.nn import NetworkState
+from feedbax.noise import Normal
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateBounds
 from feedbax.task import AbstractTask
@@ -107,7 +108,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             where=lambda mechanics_state: mechanics_state.plant.skeleton,  # type: ignore
         ),
         motor_delay: int = 0,
-        motor_noise_std: float = 0.0,
+        motor_noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal(),
         intervenors: Optional[
             Union[
                 Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
@@ -124,7 +125,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
                 and noise on the states available to the neural network.
             motor_delay: The number of time steps to delay the neural network output
                 sent to the mechanical model.
-            motor_noise_std: The standard deviation of the Gaussian noise added to 
+            motor_noise_std: The standard deviation of the Gaussian noise added to
                 the neural network's output.
             intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add
                 to the model at construction time.
@@ -143,7 +144,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         example_mechanics_state = mechanics.init(key=jr.PRNGKey(0))
 
         def _build_feedback_channel(spec: ChannelSpec):
-            return Channel(spec.delay, spec.noise_std, 0.).change_input(
+            assert spec.noise_func is not None
+            return Channel(
+                delay=spec.delay, noise_func=spec.noise_func, init_value=0.
+            ).change_input(
                 spec.where(example_mechanics_state)
             )
 
@@ -153,8 +157,10 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         ))
         self._feedback_specs = feedback_specs
-        
-        self.efferent_channel = Channel(motor_delay, motor_noise_std, 0.).change_input(
+
+        self.efferent_channel = Channel(
+            delay=motor_delay, noise_func=motor_noise_func, init_value=0.
+        ).change_input(
             self.net.init(key=jr.PRNGKey(0)).output
         )
 

@@ -24,6 +24,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter
 from feedbax.nn import SimpleStagedNetwork
+from feedbax.noise import Multiplicative, Normal
 from feedbax.task import AbstractTask
 
 
@@ -77,7 +78,7 @@ def point_mass_nn(
             state.plant.skeleton.vel,
         ),
         delay=feedback_delay_steps,
-        noise_std=feedback_noise_std,
+        noise_func=Normal(std=feedback_noise_std),
     )
 
     # automatically determine network input size
@@ -95,10 +96,13 @@ def point_mass_nn(
         key=key1,
     )
     body = SimpleFeedback(
-        net, 
-        mechanics, 
-        feedback_spec=feedback_spec, 
-        motor_noise_std=motor_noise_std,
+        net,
+        mechanics,
+        feedback_spec=feedback_spec,
+        motor_noise_func=(
+            # Combine signal-dependent noise with constant noise (e.g. Beer, Haggard, Wolpert 2004)
+            Multiplicative(Normal(motor_noise_std)) + Normal(1.8 * motor_noise_std)
+        ),
         key=key2,
     )
 

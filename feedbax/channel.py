@@ -17,6 +17,7 @@ import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
+from feedbax.noise import Normal
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateT
 from feedbax._tree import random_split_like_tree
@@ -50,7 +51,7 @@ class ChannelSpec(Module, Generic[StateT]):
 
     where: Callable[[StateT], PyTree[Array]]
     delay: int = 0
-    noise_std: Optional[float] = None
+    noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = None
 
 
 class Channel(AbstractStagedModel[ChannelState]):
@@ -71,29 +72,31 @@ class Channel(AbstractStagedModel[ChannelState]):
     """
 
     delay: int
-    noise_std: Optional[float]
-    input_proto: PyTree[Array]
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
-    _init_value: float
+    add_noise: bool = True
+    noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal()
+    input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
+    init_value: float = 0
+    intervenors: Mapping[str, Sequence[AbstractIntervenor]] = field(init=False)
 
-    def __init__(
-        self,
-        delay: int,
-        noise_std: Optional[float] = None,
-        init_value: float = 0.,  # jnp.nan
-        input_proto: PyTree[Array] = jnp.zeros(1),
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
-            ]
-        ] = None,
-    ):
-        # TODO: Allow the delay to actually be 0 (i.e. return the input immediately; queue is always empty)
-        self.delay = delay  # otherwise when delay=0, nothing is stored
-        self.noise_std = noise_std
-        self._init_value = init_value
-        self.input_proto = input_proto
-        self.intervenors = self._get_intervenors_dict(intervenors)
+    # def __init__(
+    #     self,
+    #     delay: int,
+    #     noise_std: Optional[float] = None,
+    #     init_value: float = 0.,  # jnp.nan
+    #     input_proto: PyTree[Array] = jnp.zeros(1),
+    #     intervenors: Optional[
+    #         Union[
+    #             Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+    #         ]
+    #     ] = None,
+    # ):
+    #     self.delay = delay  # otherwise when delay=0, nothing is stored
+    #     self.noise_std = noise_std
+    #     self.init_value = init_value
+    #     self.input_proto = input_proto
+
+    def __post_init__(self):
+        self.intervenors = self._get_intervenors_dict({})
 
     def __check_init__(self):
         if not isinstance(self.delay, int):
@@ -106,7 +109,7 @@ class Channel(AbstractStagedModel[ChannelState]):
             output=state.queue[0],
             queue=state.queue[1:] + (input,),
         )
-        
+
     def _update_queue_zerodelay(
         self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray
     ):
@@ -117,9 +120,9 @@ class Channel(AbstractStagedModel[ChannelState]):
 
     def _add_noise(self, input, state, *, key):
         noise = jax.tree_map(
-            lambda x, key: self.noise_std * jr.normal(key, x.shape),
-            input,
+            self.noise_func,
             random_split_like_tree(key, input),
+            input,
         )
         output = jax.tree_map(lambda x, y: x + y, input, noise)
         return noise, output
@@ -135,8 +138,8 @@ class Channel(AbstractStagedModel[ChannelState]):
         Stage = ModelStage[Self, ChannelState]
 
         update_queue = (
-            self._update_queue 
-            if self.delay > 0 
+            self._update_queue
+            if self.delay > 0
             else self._update_queue_zerodelay
         )
 
@@ -150,7 +153,7 @@ class Channel(AbstractStagedModel[ChannelState]):
             }
         )
 
-        if self.noise_std is not None:
+        if self.add_noise:
             spec |= {
                 "add_noise": Stage(
                     callable=lambda self: self._add_noise,
@@ -172,9 +175,9 @@ class Channel(AbstractStagedModel[ChannelState]):
     def init(self, *, key: PRNGKeyArray) -> ChannelState:
         """Returns an empty `ChannelState` for the channel."""
         input_init = jax.tree_map(
-            lambda x: jnp.full_like(x, self._init_value), self.input_proto
+            lambda x: jnp.full_like(x, self.init_value), self.input_proto
         )
-        if self.noise_std is not None:
+        if self.add_noise:
             noise_init = input_init
         else:
             noise_init = None
