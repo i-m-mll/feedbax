@@ -168,7 +168,7 @@ class DirectForceInput(AbstractPlant):
 
     skeleton: AbstractSkeleton
     clip_states: bool
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -176,7 +176,8 @@ class DirectForceInput(AbstractPlant):
         clip_states: bool = True,
         intervenors: Optional[
             Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+                Sequence[AbstractIntervenor], 
+                Mapping[Optional[str], Sequence[AbstractIntervenor]]
             ]
         ] = None,
         *,
@@ -279,7 +280,7 @@ class MuscledArm(AbstractMuscledPlant):
     theta0: Float[Array, "links=2 muscles"]
     l0: Float[Array, "muscles"]
     f0: Float[Array, "muscles"]
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -315,7 +316,8 @@ class MuscledArm(AbstractMuscledPlant):
         ),
         intervenors: Optional[
             Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+                Sequence[AbstractIntervenor], 
+                Mapping[Optional[str], Sequence[AbstractIntervenor]]
             ]
         ] = None,
         *,

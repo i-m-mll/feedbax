@@ -46,6 +46,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
+from feedbax.noise import Normal
 from feedbax.state import StateT
 
 if TYPE_CHECKING:
@@ -150,7 +151,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
         params: InputT,
         substate_in: PyTree[ArrayLike, "T"],
         *,
-        key: Optional[PRNGKeyArray],
+        key: PRNGKeyArray,
     ) -> PyTree[ArrayLike, "S"]:
         """Transforms the input substate to produce an altered output substate."""
         ...
@@ -195,7 +196,7 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
         params: CurlFieldParams,
         substate_in: Float[Array, "ndim=2"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> Float[Array, "ndim=2"]:
         """Transform velocity into curl force."""
         scale = params.amplitude * jnp.array([-1, 1])
@@ -242,7 +243,7 @@ class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
         params: FixedFieldParams,
         substate_in: Float[Array, "ndim=2"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> Float[Array, "ndim=2"]:
         """Return the scaled force."""
         return params.amplitude * params.field
@@ -273,7 +274,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
     """
 
     params: AddNoiseParams = AddNoiseParams()
-    noise_func: Callable = jax.random.normal
+    noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal()
     in_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
@@ -284,16 +285,12 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
         params: AddNoiseParams,
         substate_in: PyTree[Array, "T"],
         *,
-        key: Optional[PRNGKeyArray],
+        key: PRNGKeyArray,
     ) -> PyTree[Array, "T"]:
         """Return a PyTree of scaled noise arrays with the same structure/shapes as
         `substate_in`."""
         noise = jax.tree_map(
-            lambda x:  params.scale * self.noise_func(
-                key,
-                shape=x.shape,
-                dtype=x.dtype,
-            ),
+            lambda x:  params.scale * self.noise_func(key, x),
             substate_in,
         )
         return noise
@@ -344,7 +341,7 @@ class NetworkClamp(AbstractIntervenor["NetworkState", NetworkIntervenorParams]):
         params: NetworkIntervenorParams,
         substate_in: PyTree[Array, "T"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray
     ) -> PyTree[Array, "T"]:
 
         return jax.tree_map(
@@ -381,7 +378,7 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", NetworkIntervenorP
         params: NetworkIntervenorParams,
         substate_in: "NetworkState",
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> PyTree[Array, "T"]:
         return jax.tree_map(jnp.nan_to_num, params.unit_spec)
 
@@ -423,7 +420,7 @@ class ConstantInput(AbstractIntervenor[StateT, ConstantInputParams]):
         params: ConstantInputParams,
         substate_in: PyTree[Array, "T"],
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
     ) -> PyTree[Array, "T"]:
         return jax.tree_map(
             lambda array: params.scale * array,

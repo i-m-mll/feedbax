@@ -76,24 +76,7 @@ class Channel(AbstractStagedModel[ChannelState]):
     noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal()
     input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
     init_value: float = 0
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]] = field(init=False)
-
-    # def __init__(
-    #     self,
-    #     delay: int,
-    #     noise_std: Optional[float] = None,
-    #     init_value: float = 0.,  # jnp.nan
-    #     input_proto: PyTree[Array] = jnp.zeros(1),
-    #     intervenors: Optional[
-    #         Union[
-    #             Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
-    #         ]
-    #     ] = None,
-    # ):
-    #     self.delay = delay  # otherwise when delay=0, nothing is stored
-    #     self.noise_std = noise_std
-    #     self.init_value = init_value
-    #     self.input_proto = input_proto
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]] = field(init=False)
 
     def __post_init__(self):
         self.intervenors = self._get_intervenors_dict({})

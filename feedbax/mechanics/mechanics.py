@@ -53,7 +53,7 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     dt: float
     solver: dfx.AbstractSolver
 
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -62,7 +62,8 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         intervenors: Optional[
             Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+                Sequence[AbstractIntervenor], 
+                Mapping[Optional[str], Sequence[AbstractIntervenor]]
             ]
         ] = None,
         *,

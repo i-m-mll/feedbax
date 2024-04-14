@@ -189,10 +189,10 @@ class VirtualMuscle(AbstractMuscle):
     activation_func: AbstractActivationFunction
     force_func: AbstractFLVFunction
     noise_func: Optional[Callable[[Array, Array, Array], Array]] = None
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]] = field(init=False)
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]] = field(init=False)
 
     def __post_init__(self):
-        self.intervenors = {k: [] for k in self.model_spec.keys()}
+        self.intervenors = OrderedDict({k: [] for k in self.model_spec.keys()} | {None: []})
 
     def init(self, *, key: PRNGKeyArray) -> MuscleState:
         """Return a default state for the model."""

@@ -39,7 +39,10 @@ class CompositeNoise(AbstractNoise):
 
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
         keys = jr.split(key, len(self.terms))
-        return reduce(jnp.add, [term(key, x) for term, key in zip(self.terms, keys)])
+        return reduce(jnp.add, [
+            term(key, x) 
+            for term, key in zip(self.terms, keys)
+        ])
 
     def __tree_pp__(self, **kwargs):
         _term_sep = pp.concat([pp.brk(), pp.text("+ ")])
@@ -51,13 +54,12 @@ class CompositeNoise(AbstractNoise):
             ')',
         )
 
-
 class Normal(AbstractNoise):
     std: float = 1.0
     mean: float = 0.0
 
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        return self.std * jr.normal(key, x.shape) + self.mean
+        return self.std * jr.normal(key, x.shape, x.dtype) + self.mean
 
 
 class Multiplicative(AbstractNoise):

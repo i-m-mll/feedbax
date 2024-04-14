@@ -96,7 +96,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     feedback_channels: MultiModel[ChannelState]
     efferent_channel: Channel
     _feedback_specs: PyTree[ChannelSpec]
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -111,7 +111,8 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         motor_noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal(),
         intervenors: Optional[
             Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+                Sequence[AbstractIntervenor], 
+                Mapping[Optional[str], Sequence[AbstractIntervenor]]
             ]
         ] = None,
         *,

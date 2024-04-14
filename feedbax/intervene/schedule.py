@@ -4,6 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence, Callable
 import copy
 import logging
@@ -61,14 +62,12 @@ def add_intervenor(
         model: The model to which the intervenor will be added.
         intervenor: The intervenor to add.
         stage_name: The stage named in `model.model_spec` to which the intervenor will
-            be added.
+            be added. The intervenor will execute at the end of the stage.
+            If `None`, the intervenor will execute before the first model stage.
         kwargs: Additional keyword arguments to
             [`add_intervenors`][feedbax.intervene.add_intervenors].
     """
-    if stage_name is not None:
-        return add_intervenors(model, {stage_name: [intervenor]}, **kwargs)
-    else:
-        return add_intervenors(model, [intervenor], **kwargs)
+    return add_intervenors(model, {stage_name: [intervenor]}, **kwargs)
 
 
 StateS = TypeVar("StateS", Module, Array)
@@ -79,7 +78,7 @@ def add_intervenors(
     model: "AbstractStagedModel[StateT]",
     intervenors: Union[
         Sequence[AbstractIntervenor[StateS, InputT]],
-        Mapping[str, Sequence[AbstractIntervenor[StateS, InputT]]],
+        Mapping[Optional[str], Sequence[AbstractIntervenor[StateS, InputT]]],
     ],
     where: Callable[
         [AbstractModel[StateT]], Any  # "AbstractStagedModel[StateS]"
@@ -92,8 +91,9 @@ def add_intervenors(
     Arguments:
         model: The model to which the intervenors will be added.
         intervenors: The intervenors to add. May be a sequence of intervenors to
-            add to the first stage in `model.model_spec`, or a mapping from stage
-            name to a sequence of intervenors to add to that stage.
+            execute before the execution of the first model stage, or a mapping from
+            stage name to the sequence of intervenors to execute at the end of that
+            model stage.
         where: Takes `model` and returns the instance of `AbstractStagedModel` within
             it (which may be `model` itself) to which to add the intervenors.
         keep_existing: Whether to keep the existing intervenors belonging directly to
@@ -126,22 +126,21 @@ def add_intervenors(
         )
 
     if isinstance(intervenors, Sequence):
-        # If a sequence is given, append to the first stage.
-        first_stage_label = next(iter(existing_intervenors))
-        intervenors_dict = eqx.tree_at(
-            lambda intervenors: intervenors[first_stage_label],
-            existing_intervenors,
-            existing_intervenors[first_stage_label] + list(intervenors),
-        )
+        # If a sequence is given, append to the intervenors not associated with a stage
+        intervenors_dict = existing_intervenors | {
+            None: existing_intervenors.get(None, []) + list(intervenors)
+        }
     elif isinstance(intervenors, dict):
         intervenors_dict = copy.deepcopy(existing_intervenors)
         for label, new_intervenors in intervenors.items():
-            intervenors_dict[label] += list(new_intervenors)
+            intervenors_dict[label] = (
+                intervenors_dict.get(label, []) + list(new_intervenors)
+            )
     else:
         raise ValueError("intervenors not a sequence or dict of sequences")
 
     for stage_name in intervenors_dict:
-        if stage_name not in where(model).model_spec:
+        if stage_name not in where(model).model_spec and stage_name is not None:
             raise ValueError(
                 f"{stage_name} is not a valid model stage for intervention"
             )
@@ -149,7 +148,7 @@ def add_intervenors(
     return eqx.tree_at(
         lambda model: where(model).intervenors,
         model,
-        intervenors_dict,
+        OrderedDict(intervenors_dict),
     )
 
 
@@ -241,8 +240,9 @@ def schedule_intervenor(
         intervenor: The intervenor (or intervenor class) to schedule.
         where: Takes `model` and returns the instance of `AbstractStagedModel` within
             it (which may be `model` itself) to which to add the intervenors.
-        stage_name: The name of the stage in `where(model).model_spec` to which to
-            add the intervenor. Defaults to the first stage.
+        stage_name: The name of the stage in `where(model).model_spec` at the end of
+            which the intervenor will be executed. If `None`, executes before the
+            first stage of the model.
         validation_same_schedule: Whether the interventions should be scheduled
             in the same way for the validation set as for the training set.
         intervenor_params: The parameters of to the intervenor, which may be
@@ -292,7 +292,7 @@ def schedule_intervenor(
     invalid_labels = set(invalid_labels_models + invalid_labels_tasks)
     label = get_unique_label(intervenor_.label, invalid_labels)
 
-    # Construct specification intervenors
+    # Construct specification-intervenors
     intervention_specs = {label: InterventionSpec(
         intervenor=intervenor_,
         where=where,
@@ -359,16 +359,11 @@ def schedule_intervenor(
         default_active,
     )
 
-    if stage_name is None:
-        intervenors = [intervenor_final]
-    else:
-        intervenors = {stage_name: [intervenor_final]}
-
     # Add the intervenor to all of the models.
     models = jax.tree_map(
         lambda model: add_intervenors(
             model,
-            intervenors,
+            {stage_name: [intervenor_final]},
             where=where,
             scheduled=True,
         ),

@@ -110,7 +110,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
     encoding_size: Optional[int] = None
     encoder: Optional[Module] = None
 
-    intervenors: Mapping[str, Sequence[AbstractIntervenor]]
+    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
 
     def __init__(
         self,
@@ -127,7 +127,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         hidden_noise_std: Optional[float] = None,
         intervenors: Optional[
             Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+                Sequence[AbstractIntervenor], 
+                Mapping[Optional[str], Sequence[AbstractIntervenor]]
             ]
         ] = None,
         *,

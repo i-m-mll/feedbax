@@ -503,23 +503,8 @@ def effector_trajectories(
 
     if endpoints_arr is not None:
         colors = [d.marker.color for d in fig.data[::n_vars]]
-        if straight_guides:
-            fig.add_traces(
-                [
-                    go.Scatter(
-                        x=endpoints_arr[:, i, 0],
-                        y=endpoints_arr[:, i, 1].T,
-                        mode="lines",
-                        line_dash='dash',
-                        line_color=colors[i],
-                        showlegend=False,
-                        xaxis="x1",
-                        yaxis="y1",
-                    )
-                    for i in range(endpoints_arr.shape[1])
-                ]
-            )
 
+        # Add init and goal markers
         for j, ms in enumerate([ms_source, ms_target]):
             fig.add_traces(
                 [
@@ -539,6 +524,24 @@ def effector_trajectories(
                         yaxis="y1",
                         # TODO: Show once in legend, for all markers of type j
                         showlegend=False,
+                    )
+                    for i in range(endpoints_arr.shape[1])
+                ]
+            )
+
+        # Add dashed straight lines from init to goal.
+        if straight_guides:
+            fig.add_traces(
+                [
+                    go.Scatter(
+                        x=endpoints_arr[:, i, 0],
+                        y=endpoints_arr[:, i, 1].T,
+                        mode="lines",
+                        line_dash='dash',
+                        line_color=colors[i],
+                        showlegend=False,
+                        xaxis="x1",
+                        yaxis="y1",
                     )
                     for i in range(endpoints_arr.shape[1])
                 ]

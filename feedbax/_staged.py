@@ -29,6 +29,7 @@ import numpy as np
 
 from feedbax._model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene.intervene import AbstractIntervenorInput
 from feedbax.misc import indent_str
 from feedbax.state import StateT
 
@@ -121,7 +122,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         and 2) [`SimpleFeedback`][feedbax.bodies.SimpleFeedback].
     """
 
-    intervenors: AbstractVar[Mapping[str, Sequence[AbstractIntervenor]]]
+    intervenors: AbstractVar[Mapping[Optional[str], Sequence[AbstractIntervenor]]]
 
     def __call__(
         self,
@@ -139,20 +140,20 @@ class AbstractStagedModel(AbstractModel[StateT]):
         """
         with jax.named_scope(type(self).__name__):
 
+            # Intervenors without a stage name are applied first.
+            if None in self.intervenors:
+                state = self._apply_intervenors(
+                    self.intervenors[None],
+                    input.intervene,
+                    state,
+                    key,
+                )
+
             keys = jr.split(key, len(self._stages))
 
             for (label, stage), key in zip(self._stages.items(), keys):
 
                 key_intervene, key_stage = jr.split(key)
-
-                keys_intervene = jr.split(key_intervene, len(stage.intervenors))
-
-                for intervenor, k in zip(stage.intervenors, keys_intervene):
-                    if intervenor.label in input.intervene:
-                        params = input.intervene[intervenor.label]
-                    else:
-                        params = None
-                    state = intervenor(params, state, key=k)
 
                 callable_ = stage.callable(self)
                 subinput = stage.where_input(input.input, state)
@@ -174,6 +175,14 @@ class AbstractStagedModel(AbstractModel[StateT]):
                     ),
                 )
 
+                # Intervenors assigned to a stage are applied after the stage.
+                state = self._apply_intervenors(
+                    stage.intervenors,
+                    input.intervene,
+                    state,
+                    key_intervene,
+                )
+
                 if os.environ.get("FEEDBAX_DEBUG", False) == "True":
                     debug_strs = [
                         indent_str(eqx.tree_pformat(x), indent=4)
@@ -191,6 +200,25 @@ class AbstractStagedModel(AbstractModel[StateT]):
                     )
 
                     logger.debug(f"\n{indent_str(log_str, indent=2)}\n")
+
+        return state
+
+    # This is a method rather than a function so we can get the generic `StateT` typing
+    def _apply_intervenors(
+        self,
+        intervenors: Sequence[AbstractIntervenor],
+        params: Mapping[str, AbstractIntervenorInput],
+        state: StateT,
+        key: PRNGKeyArray,
+    ) -> StateT:
+        keys_intervene = jr.split(key, len(intervenors))
+
+        for intervenor, k in zip(intervenors, keys_intervene):
+            if intervenor.label in params:
+                params_ = params[intervenor.label]
+            else:
+                params_ = None
+            state = intervenor(params_, state, key=k)
 
         return state
 
@@ -233,10 +261,11 @@ class AbstractStagedModel(AbstractModel[StateT]):
         self,
         intervenors: Optional[
             Union[
-                Sequence[AbstractIntervenor], Mapping[str, Sequence[AbstractIntervenor]]
+                Sequence[AbstractIntervenor],
+                Mapping[Optional[str], Sequence[AbstractIntervenor]]
             ]
         ],
-    ) -> Mapping[str, Sequence[AbstractIntervenor]]:
+    ) -> OrderedDict[Optional[str], Sequence[AbstractIntervenor]]:
         intervenors_dict = jax.tree_map(
             lambda _: [],
             self.model_spec,
@@ -246,7 +275,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         if intervenors is not None:
             if isinstance(intervenors, Sequence):
                 # By default, place interventions in the first stage.
-                intervenors_dict.update({"get_feedback": list(intervenors)})
+                intervenors_dict.update({None: list(intervenors)})
             elif isinstance(intervenors, dict):
                 intervenors_dict.update(
                     jax.tree_map(
@@ -256,7 +285,9 @@ class AbstractStagedModel(AbstractModel[StateT]):
             else:
                 raise ValueError("intervenors not a sequence or dict of sequences")
 
-        return intervenors_dict
+        # It's necessary to use `OrderedDict` to keep the `Optional[str]` type for
+        # keys; otherwise JAX will try to do sorting operations on `None` vs. strings
+        return OrderedDict(intervenors_dict)
 
     @property
     def step(self) -> Module:

@@ -6,7 +6,7 @@
 
 from collections.abc import Mapping, Sequence, Callable
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import equinox as eqx
 import jax
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def _clear_intervenors_dict(
-    intervenors: Mapping[str, Sequence["AbstractIntervenor"]],
+    intervenors: Mapping[Optional[str], Sequence["AbstractIntervenor"]],
     scheduled_only: bool,
 ):
     """Return a new mapping with all intervenors removed."""

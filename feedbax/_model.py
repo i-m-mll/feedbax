@@ -145,7 +145,7 @@ class MultiModel(AbstractModel[StateT]):
             self._get_keys(key),
             is_leaf=lambda x: isinstance(x, AbstractModel),
         )
-    
+
     def __getitem__(self, idx):
         return jax.tree_util.tree_leaves(self.models, is_leaf=is_module)[idx]
 
@@ -206,5 +206,5 @@ def wrap_stateless_keyless_callable(callable: Callable):
     @wraps(callable)
     def wrapped(input, state, *args, key: Optional[PRNGKeyArray] = None, **kwargs):
         return callable(input, *args, **kwargs)
-
     return wrapped
+
