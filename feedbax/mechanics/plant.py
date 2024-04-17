@@ -19,6 +19,7 @@ import jax.numpy as jnp
 from jaxtyping import Float, PRNGKeyArray, PyTree, Scalar
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene.schedule import ArgIntervenors, ModelIntervenors
 from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
@@ -168,18 +169,13 @@ class DirectForceInput(AbstractPlant):
 
     skeleton: AbstractSkeleton
     clip_states: bool
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
+    intervenors: ModelIntervenors[PlantState]
 
     def __init__(
         self,
         skeleton: AbstractSkeleton,
         clip_states: bool = True,
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor], 
-                Mapping[Optional[str], Sequence[AbstractIntervenor]]
-            ]
-        ] = None,
+        intervenors: Optional[ArgIntervenors] = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
@@ -280,7 +276,7 @@ class MuscledArm(AbstractMuscledPlant):
     theta0: Float[Array, "links=2 muscles"]
     l0: Float[Array, "muscles"]
     f0: Float[Array, "muscles"]
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
+    intervenors: ModelIntervenors[PlantState]
 
     def __init__(
         self,
@@ -314,12 +310,7 @@ class MuscledArm(AbstractMuscledPlant):
             (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)  # [N] = [N/cm^2] * [cm^2]
             # 31.8 * jnp.array((22., 12., 18., 14., 5., 10.)),
         ),
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor], 
-                Mapping[Optional[str], Sequence[AbstractIntervenor]]
-            ]
-        ] = None,
+        intervenors: Optional[ArgIntervenors] = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):

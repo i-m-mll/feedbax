@@ -54,6 +54,7 @@ class CompositeNoise(AbstractNoise):
             ')',
         )
 
+
 class Normal(AbstractNoise):
     std: float = 1.0
     mean: float = 0.0
@@ -71,20 +72,7 @@ class Multiplicative(AbstractNoise):
     def __getattr__(self, name):
         return getattr(self.noise_func, name)
 
-    #! This doesn't affect `eqx.tree_pprint`; nor does overriding `__str__`
-    # def __repr__(self):
     def __tree_pp__(self, **kwargs):
         return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)
-        #return f"Multiplicative({eqx._pretty_print.tree_pp(self.noise_func, **kwargs)})"
 
-
-class DepIndep(AbstractNoise):
-    dep_noise_func: Callable[[PRNGKeyArray, Array], Array]
-    indep_noise_func: Callable[[PRNGKeyArray, Array], Array]
-
-    def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        return x * self.noise_func(key, x)
-
-    def __getattr__(self, name):
-        return getattr(self.noise_func, name)
 

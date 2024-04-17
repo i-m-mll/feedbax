@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene.schedule import ModelIntervenors
 from feedbax.noise import Normal
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import AbstractState, StateT
@@ -35,9 +35,9 @@ class ChannelState(AbstractState):
         noise: The noise added to the current output, if any.
     """
 
-    output: Optional[PyTree[Array, "T"]]
+    output: PyTree[Array, "T"]
     queue: Tuple[Optional[PyTree[Array, "T"]], ...]
-    noise: Optional[PyTree[Array, "T"]] = None
+    noise: PyTree[Array, "T"]
 
 
 class ChannelSpec(Module, Generic[StateT]):
@@ -76,7 +76,7 @@ class Channel(AbstractStagedModel[ChannelState]):
     noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal()
     input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
     init_value: float = 0
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]] = field(init=False)
+    intervenors: ModelIntervenors[ChannelState] = field(init=False)
 
     def __post_init__(self):
         self.intervenors = self._get_intervenors_dict({})
@@ -91,6 +91,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         return ChannelState(
             output=state.queue[0],
             queue=state.queue[1:] + (input,),
+            noise=state.noise,
         )
 
     def _update_queue_zerodelay(
@@ -99,6 +100,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         return ChannelState(
             output=input,
             queue=state.queue,
+            noise=state.noise,
         )
 
     def _add_noise(self, input, state, *, key):
@@ -160,15 +162,11 @@ class Channel(AbstractStagedModel[ChannelState]):
         input_init = jax.tree_map(
             lambda x: jnp.full_like(x, self.init_value), self.input_proto
         )
-        if self.add_noise:
-            noise_init = input_init
-        else:
-            noise_init = None
 
         return ChannelState(
             output=input_init,
             queue=self.delay * (input_init,),
-            noise=noise_init,
+            noise=input_init,
         )
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":

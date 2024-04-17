@@ -29,6 +29,7 @@ from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax._model import AbstractModel, ModelInput
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene.schedule import ModelIntervenors
 from feedbax.state import StateBounds
 
 
@@ -189,10 +190,10 @@ class VirtualMuscle(AbstractMuscle):
     activation_func: AbstractActivationFunction
     force_func: AbstractFLVFunction
     noise_func: Optional[Callable[[Array, Array, Array], Array]] = None
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]] = field(init=False)
+    intervenors: ModelIntervenors[MuscleState] = field(init=False)
 
     def __post_init__(self):
-        self.intervenors = OrderedDict({k: [] for k in self.model_spec.keys()} | {None: []})
+        self.intervenors = self._get_intervenors_dict({})
 
     def init(self, *, key: PRNGKeyArray) -> MuscleState:
         """Return a default state for the model."""

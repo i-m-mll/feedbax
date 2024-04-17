@@ -96,6 +96,19 @@ class TqdmLoggingHandler(logging.StreamHandler):
             self.handleError(record)
 
 
+class StrAlwaysLT(str):
+
+    def __lt__(self, other):
+        return True
+
+    def __gt__(self, other):
+        return False
+
+    # def __repr__(self):
+    #     return self.replace("'", "")
+
+
+
 def delete_contents(path: Union[str, Path]):
     """Delete all subdirectories and files of `path`."""
     for p in Path(path).iterdir():

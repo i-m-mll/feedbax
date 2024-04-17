@@ -19,6 +19,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.intervene import AbstractIntervenor
 from feedbax._model import AbstractModel, MultiModel
+from feedbax.intervene.schedule import ArgIntervenors, ModelIntervenors, StageNameStr
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.misc import is_module
 from feedbax.nn import NetworkState
@@ -96,7 +97,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
     feedback_channels: MultiModel[ChannelState]
     efferent_channel: Channel
     _feedback_specs: PyTree[ChannelSpec]
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
+    intervenors: ModelIntervenors[SimpleFeedbackState]
 
     def __init__(
         self,
@@ -109,12 +110,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
         ),
         motor_delay: int = 0,
         motor_noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal(),
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor], 
-                Mapping[Optional[str], Sequence[AbstractIntervenor]]
-            ]
-        ] = None,
+        intervenors: Optional[ArgIntervenors] = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):

@@ -32,6 +32,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor
 from feedbax._model import wrap_stateless_callable, wrap_stateless_keyless_callable
+from feedbax.intervene.schedule import ArgIntervenors, ModelIntervenors
 from feedbax.misc import (
     identity_func,
     interleave_unequal,
@@ -110,7 +111,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
     encoding_size: Optional[int] = None
     encoder: Optional[Module] = None
 
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
+    intervenors: ModelIntervenors[NetworkState]
 
     def __init__(
         self,
@@ -125,12 +126,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         hidden_nonlinearity: Callable[[Float], Float] = identity_func,
         out_nonlinearity: Callable[[Float], Float] = identity_func,
         hidden_noise_std: Optional[float] = None,
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor], 
-                Mapping[Optional[str], Sequence[AbstractIntervenor]]
-            ]
-        ] = None,
+        intervenors: Optional[ArgIntervenors] = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -187,11 +183,12 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         if out_size is not None:
             readout = readout_type(hidden_size, out_size, key=key3)
             if isinstance(readout, _HasBias):
-                self.readout = eqx.tree_at(
+                readout = eqx.tree_at(
                     lambda layer: layer.bias,
                     readout,
                     jnp.zeros_like(readout.bias),
                 )
+            self.readout = readout
             self.out_nonlinearity = out_nonlinearity
             self.out_size = out_size
         else:
@@ -264,7 +261,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                     ),
                 }
             )
-
+        
+        # TODO: conditional on `self.hidden_nonlinearity is not identity_func`?
         spec |= {
             "hidden_nonlinearity": Stage(
                 callable=lambda self: wrap_stateless_keyless_callable(

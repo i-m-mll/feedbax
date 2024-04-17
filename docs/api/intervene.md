@@ -17,7 +17,7 @@
 
 ::: feedbax.intervene.add_intervenors
 
-::: feedbax.intervene.add_intervenor
+::: feedbax.intervene.add_fixed_intervenor
 
 ## Base classes
 

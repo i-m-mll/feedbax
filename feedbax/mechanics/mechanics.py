@@ -15,6 +15,7 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene.schedule import ArgIntervenors, ModelIntervenors
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 
 from feedbax._model import wrap_stateless_keyless_callable
@@ -53,19 +54,14 @@ class Mechanics(AbstractStagedModel[MechanicsState]):
     dt: float
     solver: dfx.AbstractSolver
 
-    intervenors: Mapping[Optional[str], Sequence[AbstractIntervenor]]
+    intervenors: ModelIntervenors[MechanicsState]
 
     def __init__(
         self,
         plant: AbstractPlant,
         dt: float,
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor], 
-                Mapping[Optional[str], Sequence[AbstractIntervenor]]
-            ]
-        ] = None,
+        intervenors: Optional[ArgIntervenors] = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):

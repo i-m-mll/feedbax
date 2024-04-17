@@ -41,8 +41,8 @@ def point_mass_nn(
     hidden_type: type[eqx.Module] = eqx.nn.GRUCell,
     out_nonlinearity: Callable = identity_func,
     feedback_delay_steps: int = 0,
-    feedback_noise_std: float = 0.0,
-    motor_noise_std: float = 0.0,  # TODO
+    feedback_noise_std: float = 0.025,
+    motor_noise_std: float = 0.025,  # TODO
     *,
     key: PRNGKeyArray,
 ):

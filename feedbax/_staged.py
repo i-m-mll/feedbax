@@ -16,6 +16,7 @@ from typing import (
     Optional,
     Protocol,
     Self,
+    TypeAlias,
     TypeVar,
     Union,
 )
@@ -30,6 +31,7 @@ import numpy as np
 from feedbax._model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.intervene.intervene import AbstractIntervenorInput
+from feedbax.intervene.schedule import ArgIntervenors, Intervenor, IntervenorLabelStr, ModelIntervenors, StageIntervenors, _fixed_intervenor_label, pre_first_stage
 from feedbax.misc import indent_str
 from feedbax.state import StateT
 
@@ -89,7 +91,10 @@ class ModelStage(Module, Generic[ModelT, T]):
     ]
     where_input: Callable[["AbstractTaskInputs", T], PyTree]
     where_state: Callable[[T], PyTree]
-    intervenors: Sequence[AbstractIntervenor] = field(default_factory=tuple)
+    intervenors: StageIntervenors[T] = field(default_factory=tuple)
+
+
+StageNameStr: TypeAlias = str
 
 
 class AbstractStagedModel(AbstractModel[StateT]):
@@ -122,7 +127,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
         and 2) [`SimpleFeedback`][feedbax.bodies.SimpleFeedback].
     """
 
-    intervenors: AbstractVar[Mapping[Optional[str], Sequence[AbstractIntervenor]]]
+    intervenors: AbstractVar[ModelIntervenors[StateT]]
 
     def __call__(
         self,
@@ -140,10 +145,10 @@ class AbstractStagedModel(AbstractModel[StateT]):
         """
         with jax.named_scope(type(self).__name__):
 
-            # Intervenors without a stage name are applied first.
-            if None in self.intervenors:
+            # Intervenors may be scheduled prior to the first model stage.
+            if pre_first_stage in self.intervenors:
                 state = self._apply_intervenors(
-                    self.intervenors[None],
+                    self.intervenors[pre_first_stage],
                     input.intervene,
                     state,
                     key,
@@ -206,20 +211,20 @@ class AbstractStagedModel(AbstractModel[StateT]):
     # This is a method rather than a function so we can get the generic `StateT` typing
     def _apply_intervenors(
         self,
-        intervenors: Sequence[AbstractIntervenor],
+        stage_intervenors: Mapping[IntervenorLabelStr, AbstractIntervenor],
         params: Mapping[str, AbstractIntervenorInput],
         state: StateT,
         key: PRNGKeyArray,
     ) -> StateT:
-        keys_intervene = jr.split(key, len(intervenors))
+        keys_intervene = jr.split(key, len(stage_intervenors))
 
-        for intervenor, k in zip(intervenors, keys_intervene):
-            if intervenor.label in params:
-                params_ = params[intervenor.label]
+        for (label, intervenor), k in zip(stage_intervenors.items(), keys_intervene):
+            if label.startswith("FIXED") or label not in params:
+                # Fixed (trial-invariant) intervenor -- or, no params supplied
+                state = intervenor(None, state, key=k)
             else:
-                params_ = None
-            state = intervenor(params_, state, key=k)
-
+                # Per-trial params provided by the task.
+                state = intervenor(params[label], state, key=k)
         return state
 
     @abstractmethod
@@ -252,42 +257,42 @@ class AbstractStagedModel(AbstractModel[StateT]):
             lambda x, y: eqx.tree_at(lambda x: x.intervenors, x, y),
             self.model_spec,
             OrderedDict({
-                k: tuple(self.intervenors[k]) for k in self.model_spec
+                k: self.intervenors.get(k, {}) for k in self.model_spec
             }),
             is_leaf=lambda x: isinstance(x, ModelStage),
         )
 
     def _get_intervenors_dict(
         self,
-        intervenors: Optional[
-            Union[
-                Sequence[AbstractIntervenor],
-                Mapping[Optional[str], Sequence[AbstractIntervenor]]
-            ]
-        ],
-    ) -> OrderedDict[Optional[str], Sequence[AbstractIntervenor]]:
-        intervenors_dict = jax.tree_map(
-            lambda _: [],
-            self.model_spec,
-            is_leaf=lambda x: isinstance(x, ModelStage),
-        )
+        intervenors: Optional[ArgIntervenors[StateT]],
+    ) -> ModelIntervenors[StateT]:
+        """Specifically for fixed intervenors."""
+        
+        intervenors_dict = {}
 
         if intervenors is not None:
             if isinstance(intervenors, Sequence):
-                # By default, place interventions in the first stage.
-                intervenors_dict.update({None: list(intervenors)})
-            elif isinstance(intervenors, dict):
-                intervenors_dict.update(
-                    jax.tree_map(
-                        list, intervenors, is_leaf=lambda x: isinstance(x, Sequence)
-                    )
-                )
+                # By default, place interventions before the first stage.
+                intervenors_dict |= {pre_first_stage: 
+                    OrderedDict({
+                        _fixed_intervenor_label(intervenor): intervenor 
+                        for intervenor in intervenors
+                    })
+                }
+            elif isinstance(intervenors, Mapping):
+                intervenors_dict |= {
+                    stage_name: OrderedDict({
+                        _fixed_intervenor_label(intervenor): intervenor 
+                        for intervenor in stage_intervenors
+                    })
+                    for stage_name, stage_intervenors in intervenors.items()
+                }
             else:
                 raise ValueError("intervenors not a sequence or dict of sequences")
 
         # It's necessary to use `OrderedDict` to keep the `Optional[str]` type for
         # keys; otherwise JAX will try to do sorting operations on `None` vs. strings
-        return OrderedDict(intervenors_dict)
+        return intervenors_dict
 
     @property
     def step(self) -> Module:
@@ -301,11 +306,12 @@ class AbstractStagedModel(AbstractModel[StateT]):
     # with `feedbax.intervene`.
     @property
     def _all_intervenor_labels(self):
-        model_leaves = jax.tree_util.tree_leaves(
+        model_leaves_with_paths = jax.tree_util.tree_leaves_with_path(
             self, is_leaf=lambda x: isinstance(x, AbstractIntervenor)
         )
         labels = [
-            leaf.label for leaf in model_leaves if isinstance(leaf, AbstractIntervenor)
+            path[-1].key for path, leaf in model_leaves_with_paths 
+            if isinstance(leaf, AbstractIntervenor)
         ]
         return tuple(labels)
 

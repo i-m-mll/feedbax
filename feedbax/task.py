@@ -41,7 +41,7 @@ from feedbax.intervene import (
     AbstractIntervenorInput,
     InterventionSpec,
     TimeSeriesParam,
-    add_intervenor,
+    add_fixed_intervenor,
     add_intervenors,
     schedule_intervenor,
 )

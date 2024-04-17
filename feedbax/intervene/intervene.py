@@ -5,7 +5,7 @@ patch state operations onto existing models. For example, it is common to take
 an existing task and apply a certain force field on the biomechanical effector.
 Instead of rewriting the biomechanical model itself, which would lead to a
 proliferation of model classes with slightly different task conditions, we can
-instead use `add_intervenor` to do surgery on the model using only a few lines
+instead use `add_fixed_intervenor` to do surgery on the model using only a few lines
 of code.
 
 Likewise, since the exact parameters of an intervention often change between
@@ -29,6 +29,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 import copy
 from dataclasses import fields
+from functools import cached_property
 import logging
 import operator as op
 from typing import (
@@ -44,6 +45,7 @@ import equinox as eqx
 from equinox import AbstractVar, Module, field
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
 from feedbax.noise import Normal
@@ -87,14 +89,12 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
             variable to a particular value should use an operation like `lambda x, y: y`
             to replace the original with the altered state. On the other hand, an
             additive intervenor would use the equivalent of `lambda x, y: x + y`.
-        label: The intervenor's label.
     """
 
     params: AbstractVar[InputT]
     in_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "T"]]]
     out_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "S"]]]
     operation: AbstractVar[Callable[[ArrayLike, ArrayLike], ArrayLike]]
-    label: AbstractVar[str]
 
     @classmethod
     def with_params(cls, **kwargs) -> Self:
@@ -105,7 +105,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
 
         !!! Example
             ```python
-            CurlField.with_params(amplitude=10.0, label="MyCurlField")
+            CurlField.with_params(amplitude=10.0)
             ```
         """
         param_cls = next((f for f in fields(cls) if f.name == "params")).type
@@ -115,6 +115,22 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
             param_cls(**{k: v for k, v in kwargs.items() if k in param_fields}),
             **{k: v for k, v in kwargs.items() if k not in param_fields},
         )
+
+    # @cached_property
+    # def _broadcast_output(self, substate, other):
+    #     if not jtu.tree_structure(substate) == jtu.tree_structure(other):
+    #         if (
+    #             isinstance(other, ArrayLike)
+    #             and isinstance(substate, PyTree[type(other)])
+    #         ):
+    #             return lambda substate, other: jax.tree_map(lambda _: other, substate)
+    #         else:
+    #             raise ValueError("Intervenor output structure 1) does not match "
+    #                              "indicated output substate, and 2) is not a "
+    #                              "single `ArrayLike` that can be broadcast to "
+    #                              "match the output substate")
+    #     else:
+    #         return lambda substate, other: other
 
     def __call__(self, input: InputT, state: StateT, *, key: PRNGKeyArray) -> StateT:
         """Return a state PyTree modified by the intervention.
@@ -127,20 +143,20 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
         """
         params: InputT = eqx.combine(input, self.params)
 
+        def _get_updated_substate():
+            substate = self.out_where(state)
+            other = self.transform(params, self.in_where(state), key=key)
+            return jax.tree_map(
+                lambda x, y: self.operation(x, y),
+                substate, other,
+            )
+
         return jax.lax.cond(
             params.active,
             lambda: eqx.tree_at(  # Replace the `out_where` substate
                 self.out_where,
                 state,
-                jax.tree_map(  # With the combined original and altered substates
-                    lambda x, y: self.operation(x, y),
-                    self.out_where(state),
-                    self.transform(
-                        params,
-                        self.in_where(state),
-                        key=key,
-                    ),
-                ),
+                _get_updated_substate(),
             ),
             lambda: state,
         )
@@ -155,6 +171,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
     ) -> PyTree[ArrayLike, "S"]:
         """Transforms the input substate to produce an altered output substate."""
         ...
+
 
 
 class CurlFieldParams(AbstractIntervenorInput):
@@ -178,7 +195,6 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
         out_where: Returns the substate corresponding to the force on the effector.
         operation: How to combine the effector force due to the curl field,
             with the existing force on the effector. Default is addition.
-        label: The intervenor's label.
     """
 
     params: CurlFieldParams = CurlFieldParams()
@@ -189,7 +205,6 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
         lambda state: state.effector.force
     )
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
-    label: str = "CurlField"
 
     def transform(
         self,
@@ -211,7 +226,7 @@ class FixedFieldParams(AbstractIntervenorInput):
         active: Whether the force field is active.
     """
 
-    amplitude: float = 0.0
+    amplitude: float = 1.0
     field: Float[Array, "ndim=2"] = field(default_factory=lambda: jnp.array([0.0, 0.0]))
     active: bool = True
 
@@ -225,7 +240,6 @@ class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
         out_where: Returns the substate corresponding to the force on the effector.
         operation: How to combine the effector force due to the fixed field,
             with the existing force on the effector. Default is addition.
-        label: The intervenor's label.
     """
 
     params: FixedFieldParams = FixedFieldParams()
@@ -236,7 +250,6 @@ class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
         lambda state: state.effector.force
     )
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
-    label: str = "FixedField"
 
     def transform(
         self,
@@ -270,7 +283,6 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
         out_where: Returns the substate to which noise is added.
         operation: How to combine the noise with the substate. Default is
             addition.
-        label: The intervenor's label.
     """
 
     params: AddNoiseParams = AddNoiseParams()
@@ -278,7 +290,6 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
     in_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
-    label: str = "AddNoise"
 
     def transform(
         self,
@@ -323,7 +334,6 @@ class NetworkClamp(AbstractIntervenor["NetworkState", NetworkIntervenorParams]):
             whose activities may be clamped.
         operation: How to combine the original and clamped unit activities. Default
             is to replace the original with the altered.
-        label: The intervenor's label.
     """
 
     params: NetworkIntervenorParams = NetworkIntervenorParams()
@@ -334,7 +344,6 @@ class NetworkClamp(AbstractIntervenor["NetworkState", NetworkIntervenorParams]):
         lambda state: state.hidden
     )
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: y
-    label: str = "NetworkClamp"
 
     def transform(
         self,
@@ -360,7 +369,6 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", NetworkIntervenorP
             to which a constant input may be added.
         operation: How to combine the original and altered unit activities. Default
             is addition.
-        label: The intervenor's label.
     """
 
     params: NetworkIntervenorParams = NetworkIntervenorParams()
@@ -371,7 +379,6 @@ class NetworkConstantInput(AbstractIntervenor["NetworkState", NetworkIntervenorP
         lambda state: state.hidden
     )
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
-    label: str = "NetworkConstantInput"
 
     def transform(
         self,
@@ -406,14 +413,12 @@ class ConstantInput(AbstractIntervenor[StateT, ConstantInputParams]):
         params: Default intervention parameters.
         out_where: Returns the substate of arrays to which a constant input is added.
         operation: How to combine the original and altered substates. Default is addition.
-        label: The intervenor's label.
     """
 
     params: ConstantInputParams = ConstantInputParams()
     in_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     out_where: Callable[[StateT], PyTree[Array, "T"]] = lambda state: state
     operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = op.add
-    label: str = "ConstantInput"
 
     def transform(
         self,
@@ -426,6 +431,25 @@ class ConstantInput(AbstractIntervenor[StateT, ConstantInputParams]):
             lambda array: params.scale * array,
             params.arrays,
         )
+
+
+class CopyParams(AbstractIntervenorInput):
+    active: bool = True
+
+class Copy(AbstractIntervenor[StateT, CopyParams]):
+    in_where: Callable[[StateT], PyTree[Array, "T"]]
+    out_where: Callable[[StateT], PyTree[Array, "T"]]
+    operation: Callable[[ArrayLike, ArrayLike], ArrayLike] = lambda x, y: y
+    params: CopyParams = CopyParams()
+
+    def transform(
+        self,
+        params: CopyParams,
+        substate_in: PyTree[Array, "T"],
+        *,
+        key: PRNGKeyArray,
+    ) -> PyTree[Array, "T"]:
+        return substate_in
 
 
 def is_intervenor(element: Any) -> bool:

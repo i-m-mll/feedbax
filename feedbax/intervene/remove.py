@@ -19,23 +19,24 @@ from feedbax._staged import AbstractStagedModel
 
 if TYPE_CHECKING:
     from feedbax.intervene import AbstractIntervenor
+    from feedbax.intervene.schedule import ModelIntervenors
 
 
 logger = logging.getLogger(__name__)
 
 
 def _clear_intervenors_dict(
-    intervenors: Mapping[Optional[str], Sequence["AbstractIntervenor"]],
-    scheduled_only: bool,
+    intervenors: "ModelIntervenors",
+    keep_fixed: bool = True,
 ):
     """Return a new mapping with all intervenors removed."""
-    if scheduled_only:
+    if keep_fixed:
         return {
             stage:
-                [
-                    intervenor for intervenor in stage_intervenors
-                    if intervenor.label[0] == '_'
-                ]
+                {
+                    label: intervenor for label, intervenor in stage_intervenors.items()
+                    if label.startswith("FIXED")
+                }
             for stage, stage_intervenors in intervenors.items()
         }
     else:
@@ -45,7 +46,7 @@ def _clear_intervenors_dict(
 def remove_intervenors(
     model: AbstractModel,
     where: Callable[[AbstractModel], PyTree] = lambda model: model,
-    scheduled_only: bool = False,
+    keep_fixed: bool = True,
 ) -> AbstractModel:
     """Return a model with all intervenors removed at `where`."""
     return eqx.tree_at(
@@ -55,7 +56,7 @@ def remove_intervenors(
             lambda submodel: eqx.tree_at(
                 lambda submodel: submodel.intervenors,
                 submodel,
-                _clear_intervenors_dict(submodel.intervenors, scheduled_only),
+                _clear_intervenors_dict(submodel.intervenors, keep_fixed),
             ),
             where(model),
             # Can't do `isinstance(x, AbstractModel)` because of circular import
@@ -69,7 +70,6 @@ def remove_all_intervenors(
     scheduled_only: bool = False,
 ) -> PyTree:
     """Return a model with all intervenors removed."""
-    # TODO: Avoid importing `AbstractStagedModel`? (circular import issues)
     if isinstance(tree, AbstractStagedModel):
         tree = eqx.tree_at(
             lambda model: model.intervenors,
