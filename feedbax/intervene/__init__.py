@@ -5,6 +5,8 @@ from feedbax.intervene.intervene import (
     AddNoiseParams,
     ConstantInput,
     ConstantInputParams,
+    Copy,
+    CopyParams,
     CurlField,
     CurlFieldParams,
     FixedField,
@@ -21,6 +23,7 @@ from feedbax.intervene.schedule import (
     add_fixed_intervenor,
     add_intervenors,
     schedule_intervenor,
+    pre_first_stage,
 )
 
 # # This causes a circular import due to `AbstractStagedModel` in `remove.py`

@@ -1,10 +1,3 @@
-[build-system]
-requires = [
-    "setuptools>=61",
-    "wheel"
-]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "feedbax"
 version = "0.1.2"
@@ -44,18 +37,17 @@ dependencies = [
     "matplotlib",
     "numpy",
     "optax",
+    "plotly",
+    "polars",
     "seaborn",
     "tqdm",
-    "tensorboardX",
 ]
 
 [project.urls]
-    repository = "https://github.com/i-m-mll/feedbax"
+repository = "https://github.com/i-m-mll/feedbax"
+documentation = "https://docs.lprt.ca/feedbax"
 
 [project.optional-dependencies]
-analysis = [
-    'pandas',
-]
 tensorboard = [
     'tensorboardX',
     'crc32c',
@@ -69,7 +61,14 @@ tests = [
     'pytest',
 ]
 
-[tool.setuptools]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+packages = ["feedbax"]
+
+[tool.hatch.build.targets.wheel]
 packages = ["feedbax"]
 
 [tool.pyright]

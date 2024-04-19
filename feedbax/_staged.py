@@ -32,7 +32,7 @@ from feedbax._model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.intervene.intervene import AbstractIntervenorInput
 from feedbax.intervene.schedule import ArgIntervenors, Intervenor, IntervenorLabelStr, ModelIntervenors, StageIntervenors, _fixed_intervenor_label, pre_first_stage
-from feedbax.misc import indent_str
+from feedbax.misc import indent_str, is_module
 from feedbax.state import StateT
 
 if TYPE_CHECKING:

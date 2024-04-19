@@ -23,8 +23,9 @@ import plotly.graph_objs as go
 import plotly.io as pio
 import polars as pl
 
-from feedbax import tree_labels, tree_unzip
+from feedbax import tree_labels
 from feedbax.bodies import SimpleFeedbackState
+from feedbax.misc import where_func_to_labels
 from feedbax.task import AbstractReachTrialSpec
 
 if TYPE_CHECKING:
@@ -294,6 +295,7 @@ def activity_sample_units(
         # For each trial, construct all timesteps of x, y data.
         pl.from_numpy(x, schema=unit_idx_strs).hstack(pl.DataFrame({
             "Timestep": np.arange(x.shape[0]),
+            # Note that "trial" here could be between- or within-condition.
             "Trial": pl.repeat(i, x.shape[0], eager=True),
         }))
         for i, x in enumerate(xs)
@@ -345,8 +347,8 @@ def activity_sample_units(
     return fig
 
 
-def tree_of_2d_trial_timeseries_to_df(
-    tree: PyTree[Shaped[Array, "trial timestep xy=2"], 'T'],
+def tree_of_2d_timeseries_to_df(
+    tree: PyTree[Shaped[Array, "condition timestep xy=2"], 'T'],
     labels: Optional[PyTree[str, 'T']] = None,
 ) -> pl.DataFrame:
     """Construct a single dataframe from a PyTree of spatial timeseries arrays,
@@ -366,7 +368,7 @@ def tree_of_2d_trial_timeseries_to_df(
             # For each trial, construct all timesteps of x, y data.
             pl.from_numpy(x, schema=["x", "y"]).hstack(pl.DataFrame({
                 "Timestep": np.arange(x.shape[0]),
-                "Trial": pl.repeat(i, x.shape[0], eager=True),
+                "Condition": pl.repeat(i, x.shape[0], eager=True),
             }))
             for i, x in enumerate(array)
         ])
@@ -391,7 +393,10 @@ def unshare_axes(fig: go.Figure):
 
 def effector_trajectories(
     states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
-    where_data: Optional[Callable] = None,
+    where_data: Optional[
+        Callable[[PyTree[Array]], tuple[Shaped[Array, "*batch trial time xy=2"]]]
+    ] = None,
+    var_labels: Optional[tuple[str, ...]] = None,
     step: int = 1,  # plot every step-th trial
     trial_specs: Optional[AbstractReachTrialSpec] = None,
     endpoints: Optional[
@@ -402,6 +407,7 @@ def effector_trajectories(
     cmap_name: Optional[str] = None,
     colors: Optional[list[str]] = None,
     color: Optional[str | tuple[float, ...]] = None,
+    mode: str = "markers+lines",
     ms: int = 5,
     ms_source: int = 12,
     ms_target: int = 12,
@@ -417,8 +423,8 @@ def effector_trajectories(
             plotted can be extracted.
         where_data: If `states` is provided as an arbitrary PyTree of arrays,
             this function should be provided to extract the relevant arrays.
-            It should take `states` and return a tuple of three arrays:
-            position, velocity, and controller output/force.
+            It should take `states` and return a tuple of arrays.
+        var_labels: Labels for the variables selected by `where_data`.
         step: Plot every `step`-th trial. This is useful when `states` contains
             information about a very large set of trials, and we only want to
             plot a subset of them.
@@ -444,25 +450,52 @@ def effector_trajectories(
         control_labels: A tuple giving the labels for the title, x-axis, and y-axis
             of the final (controller output/force) plot. Overrides `control_label_type`.
     """
-    if isinstance(states, SimpleFeedbackState):
-        positions, velocities, controls = (
+    var_labels_ = var_labels
+
+    if where_data is not None:
+        vars_tuple = where_data(states)
+        if var_labels is None:
+            var_labels = where_func_to_labels(where_data)
+
+        if isinstance(vars_tuple, (Array, np.ndarray)):
+            vars_tuple = (vars_tuple,)
+            var_labels_ = (var_labels,)
+
+    elif isinstance(states, SimpleFeedbackState):
+        vars_tuple = (
             states.mechanics.effector.pos,
             states.mechanics.effector.vel,
             states.efferent.output,
         )
-
-    elif where_data is None:
+        if var_labels is None:
+            var_labels_ = ("Position", "Velocity", "Force")
+    else:
         raise ValueError(
             "If `states` is not a `SimpleFeedbackState`, "
             "`where_data` must be provided."
         )
-    else:
-        positions, velocities, controls = where_data(states)
 
-    df = tree_of_2d_trial_timeseries_to_df(
-        (positions, velocities, controls),
-        labels=("Position", "Velocity", "Force"),
-    )
+    if len(vars_tuple[0].shape) > 3:
+        # Collapse to a single batch dimension
+        vars_tuple = jax.tree_map(
+            lambda arr: np.reshape(arr, (-1, *arr.shape[-3:])),
+            vars_tuple,
+        )
+        dfs = [
+            tree_of_2d_timeseries_to_df(v, labels=var_labels_)
+            for v in zip(*jax.tree_map(tuple, vars_tuple))
+        ]
+        dfs = [
+            df.hstack(pl.DataFrame({"Trial": pl.repeat(i, len(df), eager=True)}))
+            for i, df in enumerate(dfs)
+        ]
+        df = pl.concat(dfs, how='vertical')
+
+    else:
+        df = tree_of_2d_timeseries_to_df(
+            vars_tuple,
+            labels=var_labels_,
+        )
 
     n_vars = df['var'].n_unique()
 
@@ -472,27 +505,33 @@ def effector_trajectories(
     #     else:
     #         cmap_name = "viridis"
 
+    # TODO: Use `go.Figure` for more control over trial vs. condition, in batched case
+    # fig = go.Figure()
+    # fig.add_traces()
+    # TODO: Separate control/indexing of lines vs. markers; e.g. thin line-only traces,
+    # plus markers only at the end of the reach
+
     fig = px.scatter(
         df,
         x='x',
         y='y',
-        color=df['Trial'].cast(pl.String),
+        color=df['Condition'].cast(pl.String),
         facet_col='var',
         facet_col_spacing=0.05,
         color_discrete_sequence=colors,
-        labels=dict(color="Trial"),
+        labels=dict(color="Condition"),
         **kwargs,
     )
 
-    fig.for_each_trace(lambda trace: trace.update(mode="markers+lines"))
+    fig.for_each_trace(lambda trace: trace.update(mode=mode))
 
     fig.update_traces(marker_size=ms)
 
     if endpoints is not None:
-        endpoints_arr = np.array(endpoints)
+        endpoints_arr = np.array(endpoints)  #type: ignore
     else:
         if trial_specs is not None:
-            endpoints_arr = np.array(
+            endpoints_arr = np.array(  # type: ignore
                 [
                     trial_specs.inits["mechanics.effector"].pos,
                     trial_specs.goal.pos,

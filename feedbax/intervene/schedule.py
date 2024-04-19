@@ -33,19 +33,10 @@ from feedbax._tree import tree_call
 
 if TYPE_CHECKING:
     from feedbax._staged import AbstractStagedModel
+    from feedbax.task import AbstractTask
 
 
 logger = logging.getLogger(__name__)
-
-
-class InterventionSpec(eqx.Module):
-    # TODO: The type of `intervenor` is wrong: each entry will have the same PyTree
-    # structure as `AbstractIntervenorInput` but may be filled with callables that
-    # specify a trial distribution for the leaves
-    intervenor: AbstractIntervenor
-    where: Callable[[AbstractModel], "AbstractStagedModel"]
-    stage_name: Optional[str]
-    default_active: bool
 
 
 pre_first_stage = StrAlwaysLT("_pre_first_stage")
@@ -60,7 +51,6 @@ InputT = TypeVar("InputT", bound=AbstractIntervenorInput)
 Intervenor = AbstractIntervenor[StateT, AbstractIntervenorInput]
 StageNameStr: TypeAlias = str
 IntervenorLabelStr: TypeAlias = str
-
 StageIntervenors: TypeAlias = Mapping[IntervenorLabelStr, Intervenor[StateT]]
 # Use to type the `intervenors` field of an `AbstractStagedModel`
 ModelIntervenors: TypeAlias = Mapping[StageNameStr, StageIntervenors[StateT]]
@@ -70,7 +60,17 @@ ArgIntervenors: TypeAlias = Union[
     Mapping[StageNameStr, Sequence[Intervenor[StateT]]]
 ]
 
+
+class InterventionSpec(eqx.Module):
+    # TODO: The type of `intervenor` is wrong: each entry will have the same PyTree
+    # structure as `AbstractIntervenorInput` but may be filled with callables that
+    # specify a trial distribution for the leaves
+    intervenor: AbstractIntervenor
+    where: Callable[[AbstractModel], "AbstractStagedModel"]
+    stage_name: StageNameStr
+    default_active: bool  
     
+
 def _fixed_intervenor_label(intervenor):
     return f"FIXED_{type(intervenor).__name__}"
 
@@ -80,7 +80,7 @@ def add_fixed_intervenor(
     where: Callable[[AbstractModel[StateT]], Any],
     intervenor: AbstractIntervenor,
     stage_name: Optional[StageNameStr] = None,
-    intervenor_label: Optional[IntervenorLabelStr] = None,
+    label: Optional[IntervenorLabelStr] = None,
     **kwargs: Any,
 ) -> "AbstractStagedModel[StateT]":
     """Return an updated model with an added, fixed intervenor.
@@ -102,17 +102,17 @@ def add_fixed_intervenor(
     if stage_name is None:
         stage_name = pre_first_stage
     
-    if intervenor_label is not None:
-        if not intervenor_label.startswith("FIXED"):
-            intervenor_label = f"FIXED_{intervenor_label}"
+    if label is not None:
+        if not label.startswith("FIXED"):
+            label = f"FIXED_{label}"
             logger.debug("Prepending 'FIXED' to user-supplied intervenor label")
     else:
-        intervenor_label = _fixed_intervenor_label(intervenor)
+        label = _fixed_intervenor_label(intervenor)
     
     return add_intervenors(
         model, 
         where, 
-        {stage_name: {intervenor_label: intervenor}}, 
+        {stage_name: {label: intervenor}}, 
         **kwargs
     )
 
@@ -194,7 +194,7 @@ def add_intervenors(
         # doesn't exist, or is currently deactivated.
         if (
             stage_name not in where(model).model_spec
-            and stage_name is not pre_first_stage
+            and stage_name != pre_first_stage
         ):
             raise ValueError(
                 f"{stage_name} is not a valid model stage for intervention"
@@ -269,12 +269,13 @@ def schedule_intervenor(
     where: Callable[[AbstractModel[StateT]], Any],
     intervenor: AbstractIntervenor | Type[AbstractIntervenor],
     stage_name: Optional[str] = None,
+    default_active: bool = False,
+    label: Optional[str] = None,
     validation_same_schedule: bool = True,
     intervenor_params: Optional[
         AbstractIntervenorInput
     ] = None,  #! wrong! distribution functions are allowed. only the PyTree structure is the same
     intervenor_params_validation: Optional[AbstractIntervenorInput] = None,
-    default_active: bool = False,
 ) -> Tuple[PyTree["AbstractTask"], PyTree[AbstractModel[StateT]]]:
     """Adds an intervention to a model and a task.
 
@@ -363,14 +364,17 @@ def schedule_intervenor(
     invalid_labels_tasks = jax.tree_util.tree_reduce(
         lambda x, y: x + y,
         jax.tree_map(
-            lambda task: tuple(task.intervention_specs.keys()),
+            lambda task: tuple(task.all_intervention_specs.keys()),
             tasks,
             is_leaf=is_module,  # AbstractTask
         ),
         is_leaf=lambda x: isinstance(x, tuple),
     )
     invalid_labels = set(invalid_labels_models + invalid_labels_tasks)
-    label = get_unique_label(type(intervenor_).__name__, invalid_labels)
+    
+    if label is None:
+        label = type(intervenor_).__name__
+    label = get_unique_label(label, invalid_labels)
 
     # Construct specification-intervenors
     intervention_specs = {label: InterventionSpec(
@@ -397,13 +401,15 @@ def schedule_intervenor(
         intervention_specs_validation = dict()
 
     # Add the spec intervenors to every task in `tasks`
+    # Assume their schedules should be active by default 
+    # (i.e. add to `True` sequence of task intervention specs)
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
-            lambda task: (task.intervention_specs, task.intervention_specs_validation),
+            lambda task: (task.intervention_specs[True], task.intervention_specs_validation[True]),
             task,
             (
-                task.intervention_specs | intervention_specs,
-                task.intervention_specs_validation | intervention_specs_validation,
+                task.intervention_specs[True] | intervention_specs,
+                task.intervention_specs_validation[True] | intervention_specs_validation,
             ),
         ),
         tasks,
@@ -452,3 +458,59 @@ def schedule_intervenor(
 
     return tasks, models
 
+
+# TODO: take `Sequence[IntervenorSpec]` or `dict[IntervenorLabel, IntervenorSpec]`
+# and take `replace` as constant, sequence, or dict as well
+def update_intervenor_param(
+    model: "AbstractStagedModel", 
+    specs: PyTree[InterventionSpec, 'T'], 
+    param_name: str,
+    replace: Any,
+    labels: Optional[PyTree[str, 'T']] = None,
+):
+    if labels is None:
+        labels = jax.tree_map(
+            lambda spec: type(spec.intervenor).__name__,
+            specs,
+            is_leaf=is_module,
+        )
+    
+    get_params = lambda model: jax.tree_leaves(jax.tree_map(
+        lambda spec, label: spec.where(model).intervenors[spec.stage_name][label].params,
+        specs, labels,
+        is_leaf=is_module,
+    ), is_leaf=is_module)
+    
+    new_params = jax.tree_map(
+        lambda x: eqx.tree_at(
+            lambda params: getattr(params, param_name), 
+            x, 
+            replace=replace,
+        ), 
+        get_params(model), 
+        is_leaf=is_module
+    )
+    
+    return eqx.tree_at(get_params, model, new_params)
+
+# def intervention_toggle(
+#     model: "AbstractStagedModel", 
+#     spec: InterventionSpec, 
+#     active: Optional[bool] = None,
+#     label: Optional[str] = None,
+# ):
+#     if label is None:
+#         label = type(spec.intervenor).__name__
+        
+#     if active is not None:
+#         active_func = lambda _: active 
+#     else:
+#         active_func = lambda active: not active 
+    
+#     params = lambda model: spec.where(model).intervenors[spec.stage_name][label].params
+    
+#     return eqx.tree_at(
+#         lambda model: params(model).active,
+#         model, 
+#         active_func(params(model).active),
+#     )

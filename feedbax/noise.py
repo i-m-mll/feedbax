@@ -40,19 +40,22 @@ class CompositeNoise(AbstractNoise):
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
         keys = jr.split(key, len(self.terms))
         return reduce(jnp.add, [
-            term(key, x) 
+            term(key, x)
             for term, key in zip(self.terms, keys)
         ])
 
-    def __tree_pp__(self, **kwargs):
-        _term_sep = pp.concat([pp.brk(), pp.text("+ ")])
-        return bracketed(
-            None,
-            kwargs['indent'],
-            [pp.join(_term_sep, [tree_pp(term, **kwargs) for term in self.terms])],
-            '(',
-            ')',
-        )
+    def __getitem__(self, idx):
+        return self.terms[idx]
+
+    # def __tree_pp__(self, **kwargs):
+    #     _term_sep = pp.concat([pp.brk(), pp.text("+ ")])
+    #     return bracketed(
+    #         None,
+    #         kwargs['indent'],
+    #         [pp.join(_term_sep, [tree_pp(term, **kwargs) for term in self.terms])],
+    #         '(',
+    #         ')',
+    #     )
 
 
 class Normal(AbstractNoise):
@@ -69,8 +72,8 @@ class Multiplicative(AbstractNoise):
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
         return x * self.noise_func(key, x)
 
-    def __getattr__(self, name):
-        return getattr(self.noise_func, name)
+    # def __getattr__(self, name):
+    #     return getattr(self.noise_func, name)
 
     def __tree_pp__(self, **kwargs):
         return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)

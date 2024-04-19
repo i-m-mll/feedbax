@@ -381,13 +381,13 @@ def tree_array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     if not duplicates:
         flat, treedef = jtu.tree_flatten(arrays)
         arrays = jtu.tree_unflatten(
-            treedef, 
+            treedef,
             list(unique_generator(flat, replace_duplicates=True))
         )
     array_bytes = jax.tree_map(lambda x: x.nbytes, arrays)
     array_bytes_int_leaves = [x for x in jtu.tree_leaves(array_bytes) if x is not None]
     return sum(array_bytes_int_leaves)
-    
+
 
 
 def tree_struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
@@ -415,6 +415,7 @@ def _node_key_to_label(node_key: BuiltInKeyEntry) -> str:
 
 
 def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:
+    # TODO: format based on key type; e.g. f"[{idx}]" for SequenceKey
     return join_with.join(map(_node_key_to_label, path))
 
 

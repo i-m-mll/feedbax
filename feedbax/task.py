@@ -15,43 +15,43 @@ TODO:
 # from __future__ import annotations
 
 from abc import abstractmethod, abstractproperty
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableSequence, Sequence
 import dis
 from functools import cached_property
 import logging
 from typing import (
     TYPE_CHECKING,
+    Literal,
     Optional,
     Self,
     Tuple,
+    TypeAlias,
+    TypeVar,
 )
 
 import equinox as eqx
 from equinox import AbstractVar, Module, field
+from equinox._pretty_print import tree_pp, bracketed
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax._src.pretty_printer as pp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 
-from feedbax import tree_take
 from feedbax.intervene import (
     AbstractIntervenor,
-    AbstractIntervenorInput,
     InterventionSpec,
     TimeSeriesParam,
-    add_fixed_intervenor,
-    add_intervenors,
     schedule_intervenor,
 )
 from feedbax.intervene.remove import remove_all_intervenors
-from feedbax.intervene.schedule import _eval_intervenor_param_spec
 from feedbax.loss import AbstractLoss, LossDict
 from feedbax._mapping import AbstractTransformedOrderedDict
 from feedbax._model import ModelInput
 from feedbax._staged import AbstractStagedModel
-from feedbax.misc import get_unique_label, is_module
+from feedbax.misc import where_func_to_labels
 from feedbax.state import CartesianState, StateT
 from feedbax._tree import tree_call
 
@@ -64,27 +64,38 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-def _get_where_str(where_func: Callable) -> str:
-    """
-    Given a function that accesses a tree of attributes of a single parameter,
-    return a string repesenting the attributes.
+class _QuotelessStr(str):
+    """String that renders without quotation marks."""
+    def __repr__(self):
+        return self
 
-    This is useful for getting a unique string representation of a substate
-    of an `AbstractState` or `AbstractModel` object, as defined by a `where`
-    function, so we can compare two such functions and see if they refer to
-    the same substate.
 
-    TODO:
-    - I'm not sure it's good practice to introspect on bytecode like this.
-    """
-    bytecode = dis.Bytecode(where_func)
-    return ".".join(instr.argrepr for instr in bytecode if instr.opname == "LOAD_ATTR")
+class _WhereKey:
+
+    def __init__(self, where: Callable):
+        bound_vars = dis.Bytecode(where).codeobj.co_varnames
+        if len(bound_vars) != 1:
+            raise ValueError("`WhereDict` keys must be functions of a single argument")
+
+        self.bound_var = bound_vars[0]
+        self.term_strs = where_func_to_labels(where)
+
+    def __repr__(self):
+        terms = jax.tree_map(
+            lambda leaf: _QuotelessStr(".".join([self.bound_var, leaf])),
+            self.term_strs,
+        )
+        # Wrap in parentheses so that the dict colon `:` is easier to distinguish from
+        # the lambda colon.
+        return f"(lambda {self.bound_var}: {terms})"
 
 
 @jtu.register_pytree_node_class
 class WhereDict(
     AbstractTransformedOrderedDict[
-        str, Callable[[PyTree[Array]], PyTree[Array, "T"]], PyTree[Array, "T"]
+        str,
+        Callable[[PyTree[Array]], PyTree[Array, "T"]],
+        PyTree[Array, "T"],
     ]
 ):
     """An `OrderedDict` that allows limited use of `where` lambdas as keys.
@@ -103,45 +114,41 @@ class WhereDict(
     init_spec['mechanics.effector']
     ```
 
-    ??? dev-note "Performance tests"
-        - Construction is about 100x slower than `OrderedDict`. For dicts of
-        size relevant to our use case, this means ~100 us instead of ~1 us.
-        A modest increase in dict size only changes this modestly.
-        - Access is about 800x slower, and as expected this doesn't
-        change with dict size because there's just a constant overhead
-        for doing the key transformation on each access.
-            - Each access is about 26 us, and this is also the duration of
-            a call to `get_where_str`.
-        - `list(init_spec.items())` is about 100x slower (24 us versus 234 ns)
-        for a single-entry `init_spec`, and about 260x slower (149 us versus
-        571 ns) for 6 entries, which is about as many as I expect anyone to use
-        in the near future, when constructing a task.
+    ??? Note "Performance"
+        For typical initialization mappings (1-10 items) construction is on the order
+        of 50x slower than `OrderedDict`. Access is about 2-20x slower, depending
+        whether indexed by string or by callable.
 
-        This is pretty slow, but since we only need to do a single
-        construction and a single access of `init_spec` per batch/evaluation,
-        it shouldn't matter too much in practice—overhead of about 125 us/batch,
-        with a batch normally taking about 20,000+ us to train.
-
-        Optimizations should focus on `get_where_str`.
+        However, we only need to do a single construction and a single access of
+        `init_spec` per batch/evaluation, so performance shouldn't matter too much in
+        practice: the added overhead is <50 us/batch, and a batch normally takes
+        at least 20,000 us to train.
     """
 
     def _key_transform(self, key: str | Callable) -> str:
-        if isinstance(key, Callable):
-            where_str = _get_where_str(key)
-            if not where_str:
-                raise ValueError(
-                    "WhereDict keys must be lambdas that perform " "attribute access."
-                )
+
+        if isinstance(key, str):
+            pass
+        elif not isinstance(key, Callable):
+            raise ValueError("`WhereDict` keys should be supplied as strings or callables")
+        else:
+            terms = where_func_to_labels(key)
+            if isinstance(terms, str):
+                where_str = terms
+            else:
+                where_str = ", ".join(jtu.tree_leaves(terms))
             return where_str
         return key
 
-    def __repr__(self):
-        # Make a pretty representation of the lambdas
-        items_str = ", ".join(
-            f"(lambda state: state{'.' if k else ''}{k}, {v})"
-            for k, (_, v) in self.store.items()
+    def __tree_pp__(self, **kwargs):
+        return tree_pp(
+            {
+                _WhereKey(where): v
+                for _, (where, v) in self.store.items()
+            },
+            **kwargs,
         )
-        return f"{type(self).__name__}([{items_str}])"
+
 
 
 class AbstractTaskInputs(Module):
@@ -276,6 +283,15 @@ class DelayedReachTrialSpec(AbstractReachTrialSpec):
     intervene: Mapping[str, Array] = field(default_factory=dict)
 
 
+T = TypeVar('T')
+# Strings are instances of `Sequence[str]`; we can use the following type to 
+# distinguish sequences of strings (`NonCharSequence[str]`) from single strings
+# (i.e. which might be considered `CharSequence`)
+NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
+
+TaskInterventionSpecs: TypeAlias = Mapping[bool, Mapping[str, InterventionSpec]]
+
+
 class AbstractTask(Module):
     """Abstract base class for tasks.
 
@@ -305,8 +321,8 @@ class AbstractTask(Module):
     n_steps: AbstractVar[int]
     seed_validation: AbstractVar[int]
 
-    intervention_specs: AbstractVar[Mapping[str, InterventionSpec]]
-    intervention_specs_validation: AbstractVar[Mapping[str, InterventionSpec]]
+    intervention_specs: AbstractVar[TaskInterventionSpecs]
+    intervention_specs_validation: AbstractVar[TaskInterventionSpecs]
 
     def __check_init__(self):
         if not isinstance(self.loss_func, AbstractLoss):
@@ -345,7 +361,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_spec,
             self._intervenor_params(
-                self.intervention_specs,
+                self.intervention_specs[True],
                 trial_spec,
                 key_intervene,
             ),
@@ -426,7 +442,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_specs,
             eqx.filter_vmap(self._intervenor_params, in_axes=(None, 0, 0))(
-                self.intervention_specs_validation,
+                self.intervention_specs_validation[True],
                 trial_specs,
                 keys,
             ),
@@ -678,15 +694,15 @@ class AbstractTask(Module):
         base_task = eqx.tree_at(
             lambda task: (task.intervention_specs, task.intervention_specs_validation),
             self,
-            (dict(), dict()),
+            ({True: dict(), False: dict()}, {True: dict(), False: dict()}),
         )
 
         # Use schedule_intervenors to reproduce `self`, along with the modified model
         task, model_ = base_task, base_model
-        for label, spec in self.intervention_specs.items():
-            if label in self.intervention_specs_validation:
+        for label, spec in self.all_intervention_specs.items():
+            if label in self.all_intervention_specs_validation:
                 intervenor_params_val = (
-                    self.intervention_specs_validation[label].intervenor.params
+                    self.all_intervention_specs_validation[label].intervenor.params
                 )
             else:
                 intervenor_params_val = None
@@ -703,6 +719,55 @@ class AbstractTask(Module):
             )
 
         return model_
+    
+    @cached_property
+    def all_intervention_specs(self) -> Mapping[str, InterventionSpec]:
+        return {
+            **self.intervention_specs[True], 
+            **self.intervention_specs[False],
+        }
+
+    @cached_property 
+    def all_intervention_specs_validation(self) -> Mapping[str, InterventionSpec]:
+        return {
+            **self.intervention_specs_validation[True], 
+            **self.intervention_specs_validation[False],
+        }
+    
+    def activate_interventions(
+        self,
+        labels: NonCharSequence[str] | Literal['all', 'none'],
+        labels_validation: Optional[
+            NonCharSequence[str] | Literal['all', 'none']
+        ] = None,
+        validation_same_schedule=False,
+    ) -> Self:
+        """Return a task where scheduling if active only for the interventions with the 
+        given labels.
+        """
+        tree_at_spec = {"": labels}
+        task = self
+        
+        if validation_same_schedule:
+            labels_validation = labels 
+                
+        if labels_validation is not None:
+            tree_at_spec = {"_validation": labels}    
+        
+        for suffix, labels_ in tree_at_spec.items():
+            all_intervention_specs = getattr(self, f"all_intervention_specs{suffix}")
+            
+            task = eqx.tree_at(
+                lambda task: getattr(task, f"intervention_specs{suffix}"),
+                task, 
+                {
+                    True: {k: v for k, v in all_intervention_specs.items() if k in labels_},
+                    False: {k: v for k, v in all_intervention_specs.items() if k not in labels_},
+                }
+            )        
+        
+        return task
+        
 
 
 def _pos_only_states(positions: Float[Array, "... ndim=2"]):
@@ -771,6 +836,10 @@ def _forceless_task_inputs(
     )
 
 
+def _empty_task_intervention_specs():
+    return {True: dict(), False: dict()}
+
+
 class SimpleReaches(AbstractTask):
     """Reaches between random endpoints in a rectangular workspace. No hold signal.
 
@@ -805,9 +874,11 @@ class SimpleReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
-    intervention_specs: Mapping[str, InterventionSpec] = field(default_factory=dict)
-    intervention_specs_validation: Mapping[str, InterventionSpec] = field(
-        default_factory=dict
+    intervention_specs: TaskInterventionSpecs = field(
+        default_factory=_empty_task_intervention_specs
+    )
+    intervention_specs_validation: TaskInterventionSpecs = field(
+        default_factory=_empty_task_intervention_specs
     )
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
@@ -852,7 +923,7 @@ class SimpleReaches(AbstractTask):
 
         return SimpleReachTrialSpec(
             inits=WhereDict(
-                {(lambda state: state.mechanics.effector): effector_init_state}
+                {(lambda state: state.mechanics.effector): effector_init_state},
             ),
             inputs=SimpleReachTaskInputs(effector_target=effector_target),
             target=effector_target_state,
@@ -888,7 +959,7 @@ class SimpleReaches(AbstractTask):
 
         return SimpleReachTrialSpec(
             inits=WhereDict(
-                {(lambda state: state.mechanics.effector): effector_init_states}
+                {(lambda state: state.mechanics.effector): effector_init_states},
             ),
             inputs=SimpleReachTaskInputs(
                 effector_target=_forceless_task_inputs(effector_target_states)
@@ -941,9 +1012,11 @@ class DelayedReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
     seed_validation: int = 5555
-    intervention_specs: Mapping[str, InterventionSpec] = field(default_factory=dict)
-    intervention_specs_validation: Mapping[str, InterventionSpec] = field(
-        default_factory=dict
+    intervention_specs: TaskInterventionSpecs = field(
+        default_factory=_empty_task_intervention_specs
+    )
+    intervention_specs_validation: TaskInterventionSpecs = field(
+        default_factory=_empty_task_intervention_specs
     )
 
     def get_train_trial(self, key: PRNGKeyArray) -> DelayedReachTrialSpec:
@@ -966,7 +1039,7 @@ class DelayedReaches(AbstractTask):
 
         return DelayedReachTrialSpec(
             inits=WhereDict(
-                {(lambda state: state.mechanics.effector): effector_init_state}
+                {(lambda state: state.mechanics.effector): effector_init_state},
             ),
             inputs=task_inputs,
             target=effector_target_states,
@@ -995,7 +1068,7 @@ class DelayedReaches(AbstractTask):
 
         return DelayedReachTrialSpec(
             inits=WhereDict(
-                {(lambda state: state.mechanics.effector): effector_init_states}
+                {(lambda state: state.mechanics.effector): effector_init_states},
             ),
             inputs=task_inputs,
             target=effector_target_states,
@@ -1056,9 +1129,11 @@ class Stabilization(AbstractTask):
     eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
         converter=jnp.asarray, default=None
     )
-    intervention_specs: Mapping[str, InterventionSpec] = field(default_factory=dict)
-    intervention_specs_validation: Mapping[str, InterventionSpec] = field(
-        default_factory=dict
+    intervention_specs: TaskInterventionSpecs = field(
+        default_factory=_empty_task_intervention_specs
+    )
+    intervention_specs_validation: TaskInterventionSpecs = field(
+        default_factory=_empty_task_intervention_specs
     )
 
     def get_train_trial(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
@@ -1077,7 +1152,9 @@ class Stabilization(AbstractTask):
 
         # TODO: don't use SimpleReachTrialSpec...
         return SimpleReachTrialSpec(
-            inits=WhereDict({lambda state: state.mechanics.effector: init_state}),
+            inits=WhereDict(
+                {lambda state: state.mechanics.effector: init_state},
+            ),
             inputs=SimpleReachTaskInputs(
                 effector_target=_forceless_task_inputs(target_state)
             ),
@@ -1111,7 +1188,9 @@ class Stabilization(AbstractTask):
         )
 
         return SimpleReachTrialSpec(
-            inits=WhereDict({lambda state: state.mechanics.effector: init_states}),
+            inits=WhereDict(
+                {lambda state: state.mechanics.effector: init_states},
+            ),
             inputs=SimpleReachTaskInputs(
                 effector_target=_forceless_task_inputs(target_states)
             ),

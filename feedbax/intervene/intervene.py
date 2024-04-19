@@ -26,7 +26,7 @@ TODO:
 """
 
 from abc import abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import copy
 from dataclasses import fields
 from functools import cached_property
@@ -45,6 +45,7 @@ import equinox as eqx
 from equinox import AbstractVar, Module, field
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree
 
@@ -66,9 +67,11 @@ class AbstractIntervenorInput(Module):
 
     Attributes:
         active: Whether the intervention is active.
+        scale: Factor by which the intervenor output is scaled.
     """
 
     active: AbstractVar[bool]
+    scale: AbstractVar[float]
 
 
 InputT = TypeVar("InputT", bound=AbstractIntervenorInput)
@@ -90,7 +93,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
             to replace the original with the altered state. On the other hand, an
             additive intervenor would use the equivalent of `lambda x, y: x + y`.
     """
-
+    
     params: AbstractVar[InputT]
     in_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "T"]]]
     out_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "S"]]]
@@ -147,7 +150,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
             substate = self.out_where(state)
             other = self.transform(params, self.in_where(state), key=key)
             return jax.tree_map(
-                lambda x, y: self.operation(x, y),
+                lambda x, y: self.operation(x, params.scale * y),
                 substate, other,
             )
 
@@ -170,18 +173,19 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
         key: PRNGKeyArray,
     ) -> PyTree[ArrayLike, "S"]:
         """Transforms the input substate to produce an altered output substate."""
-        ...
-
+        ... 
 
 
 class CurlFieldParams(AbstractIntervenorInput):
     """Parameters for a curl force field.
 
     Attributes:
+        scale: Scaling factor on the intervenor output.  
+        active: Whether the force field is active.
         amplitude: The amplitude of the force field. Negative is clockwise, positive
             is counterclockwise.
-        active: Whether the force field is active.
     """
+    scale: float = 1.0
     amplitude: float = 0.0
     active: bool = True
 
@@ -214,8 +218,7 @@ class CurlField(AbstractIntervenor["MechanicsState", CurlFieldParams]):
         key: PRNGKeyArray,
     ) -> Float[Array, "ndim=2"]:
         """Transform velocity into curl force."""
-        scale = params.amplitude * jnp.array([-1, 1])
-        return scale * substate_in[..., ::-1]
+        return params.amplitude * jnp.array([-1, 1]) * substate_in[..., ::-1]
 
 
 class FixedFieldParams(AbstractIntervenorInput):
@@ -225,8 +228,8 @@ class FixedFieldParams(AbstractIntervenorInput):
         amplitude: The scale of the force field.
         active: Whether the force field is active.
     """
-
-    amplitude: float = 1.0
+    
+    scale: float = 1.0
     field: Float[Array, "ndim=2"] = field(default_factory=lambda: jnp.array([0.0, 0.0]))
     active: bool = True
 
@@ -259,7 +262,7 @@ class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
         key: PRNGKeyArray,
     ) -> Float[Array, "ndim=2"]:
         """Return the scaled force."""
-        return params.amplitude * params.field
+        return params.field
 
 
 class AddNoiseParams(AbstractIntervenorInput):
@@ -301,7 +304,7 @@ class AddNoise(AbstractIntervenor[StateT, AddNoiseParams]):
         """Return a PyTree of scaled noise arrays with the same structure/shapes as
         `substate_in`."""
         noise = jax.tree_map(
-            lambda x:  params.scale * self.noise_func(key, x),
+            lambda x:  self.noise_func(key, x),
             substate_in,
         )
         return noise
@@ -320,7 +323,7 @@ class NetworkIntervenorParams(AbstractIntervenorInput):
         Note that `unit_spec` may be a single array—which is just a single-leaf PyTree
         of arrays—when `out_where` of the intervenor is also a single array.
     """
-
+    scale: float = 1.0
     unit_spec: Optional[PyTree] = None
     active: bool = True
 
@@ -427,13 +430,11 @@ class ConstantInput(AbstractIntervenor[StateT, ConstantInputParams]):
         *,
         key: PRNGKeyArray,
     ) -> PyTree[Array, "T"]:
-        return jax.tree_map(
-            lambda array: params.scale * array,
-            params.arrays,
-        )
+        return params.arrays
 
 
 class CopyParams(AbstractIntervenorInput):
+    scale: float = 1.0
     active: bool = True
 
 class Copy(AbstractIntervenor[StateT, CopyParams]):

@@ -15,6 +15,7 @@ from collections.abc import (
 )
 import copy
 import difflib
+import dis
 import inspect
 from itertools import zip_longest, chain
 import logging
@@ -31,7 +32,8 @@ from equinox._pretty_print import tree_pp, bracketed
 import jax
 import jax.numpy as jnp
 import jax._src.pretty_printer as pp
-from jaxtyping import Float, Array
+import jax.tree_util as jtu
+from jaxtyping import Float, Array, PyTree
 
 from feedbax._progress import _tqdm_write
 
@@ -225,7 +227,7 @@ def highlight_string_diff(obj1, obj2):
         str2_new += f"\033[91m{str2[m.b:m.b + m.size]}\033[0m"
         i = m.b + m.size
 
-    return str2_new
+    return str2_new.replace('\\n', '\n')
 
 
 def unique_generator(
@@ -258,7 +260,11 @@ def nested_dict_update(dict_, *args, make_copy: bool = True):
     for arg in args:
         for k, v in arg.items():
             if isinstance(v, Mapping):
-                dict_[k] = nested_dict_update(dict_.get(k, {}), v, make_copy=make_copy)
+                dict_[k] = nested_dict_update(
+                    dict_.get(k, type(v)()), 
+                    v, 
+                    make_copy=make_copy,
+                )
             else:
                 dict_[k] = v
     return dict_
@@ -272,3 +278,106 @@ def _simple_module_pprint(name, *children, **kwargs):
         '(',
         ')'
     )
+
+
+def _get_where_str(where_func: Callable) -> str:
+    """
+    Given a function that accesses a tree of attributes of a single parameter,
+    return a string repesenting the attributes.
+
+    This is useful for getting a unique string representation of a substate
+    of an `AbstractState` or `AbstractModel` object, as defined by a `where`
+    function, so we can compare two such functions and see if they refer to
+    the same substate.
+
+    TODO:
+    - I'm not sure it's good practice to introspect on bytecode like this.
+      In most cases we can probably use pytree path specs; however it is
+      very convenient for the user to specify `where` functions and I'm not
+      sure how to convert from a `where` to a path spec. Maybe `eqx.tree_at`
+      will provide some insight?
+    """
+    bytecode = dis.Bytecode(where_func)
+    return ".".join(instr.argrepr for instr in bytecode if instr.opname == "LOAD_ATTR")
+
+
+class _NodeWrapper:
+    def __init__(self, value):
+        self.value = value
+
+
+class NodePath:
+    def __init__(self, path):
+        self.path = path
+
+    def __iter__(self):
+        return iter(self.path)
+
+
+def where_func_to_paths(where, tree):
+    """
+    Similar to `_get_where_str`, but:
+
+    - returns node paths, not strings;
+    - works for `where` functions that return arbitrary PyTrees of nodes;
+    - works for arbitrary node access (e.g. dict keys, sequence indices)
+      and not just attribute access.
+
+    Limitations:
+
+    - requires a PyTree argument;
+    - assumes the same object does not appear as multiple nodes in the tree;
+    - if `where` specifies a node that is a subtree, it cannot also specify a node
+      within that subtree.
+
+    See [this issue](https://github.com/i-m-mll/feedbax/issues/14).
+    """
+    tree = eqx.tree_at(where, tree, replace_fn=lambda x: _NodeWrapper(x))
+    id_tree = jtu.tree_map(id, tree, is_leaf=lambda x: isinstance(x, _NodeWrapper))
+    node_ids = where(id_tree)
+
+    paths_by_id = {leaf_id: path for path, leaf_id in jtu.tree_leaves_with_path(
+        jtu.tree_map(
+            lambda x: x if x in jax.tree_leaves(node_ids) else None,
+            id_tree,
+        )
+    )}
+
+    paths = jtu.tree_map(lambda node_id: NodePath(paths_by_id[node_id]), node_ids)
+
+    return paths
+
+
+class _WhereStrConstructor:
+    
+    def __init__(self, label: str = ""):
+        self.label = label
+
+    def __getitem__(self, key: Any):
+        if isinstance(key, str):
+            key = f"'{key}'"
+        elif isinstance(key, type):
+            key = key.__name__
+        return _WhereStrConstructor("".join([self.label, f"[{key}]"]))
+        
+    def __getattr__(self, name: str):
+        sep = "." if self.label else ""
+        return _WhereStrConstructor(sep.join([self.label, name]))
+    
+    
+def _get_where_str_constructor_label(x: _WhereStrConstructor) -> str:
+    return x.label
+
+
+def where_func_to_labels(where: Callable) -> PyTree[str]:
+    """Also similar to `_get_where_str` and `where_func_to_paths`, but:
+    
+    - Avoids complicated logic of parsing bytecode, or traversing pytrees;
+    - Works for `where` functions that return arbitrary PyTrees of node references;
+    - Runs significantly (10+ times) faster than the other solutions.
+    """
+
+    try:
+        return jax.tree_map(_get_where_str_constructor_label, where(_WhereStrConstructor()))
+    except TypeError:
+        raise TypeError("`where` must return a PyTree of node references")
