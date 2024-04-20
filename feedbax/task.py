@@ -291,10 +291,17 @@ T = TypeVar('T')
 NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
 
 
-active: TypeAlias = Literal[True]
-inactive: TypeAlias = Literal[False]
-IsActive: TypeAlias = active | inactive
-TaskInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, tuple[IsActive, InterventionSpec]]
+LabeledInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, InterventionSpec]
+
+
+class TaskInterventionSpecs(Module):
+    training: LabeledInterventionSpecs = field(default_factory=dict)
+    validation: LabeledInterventionSpecs = field(default_factory=dict)
+    
+    @cached_property
+    def all(self) -> LabeledInterventionSpecs:
+        # Validation specs are assumed to take precedence, in case of conflicts.
+        return {**self.training, **self.validation}
 
 
 class AbstractTask(Module):
@@ -314,18 +321,15 @@ class AbstractTask(Module):
         loss_func: The loss function that grades task performance.
         n_steps: The number of time steps in the task trials.
         seed_validation: The random seed for generating the validation trials.
-        # TODO
-        intervention_specs: A mapping from unique intervenor names, to specifications
-            for generating per-trial intervention parameters on training trials.
-        intervention_specs_validation: A mapping from unique intervenor names, to
-            specifications for generating per-trial intervention parameters on
-            validation trials.
+        intervention_specs: Mappings from unique intervenor names, to specifications
+            for generating per-trial intervention parameters. Distinct fields provide 
+            mappings for training and validation trials, though the two may be identical
+            depending on scheduling.
     """
 
     loss_func: AbstractVar[AbstractLoss]
     n_steps: AbstractVar[int]
     seed_validation: AbstractVar[int]
-
     intervention_specs: AbstractVar[TaskInterventionSpecs]
 
     def __check_init__(self):
@@ -346,28 +350,6 @@ class AbstractTask(Module):
         """
         ...
 
-    @cached_property 
-    def active_intervention_specs(self):
-        return {
-            k: v for k, (is_active, v) in self.intervention_specs.items() 
-            if is_active
-        }
-        
-    @cached_property 
-    def active_intervention_specs_validation(self):
-        return {
-            k: v for k, (is_active, v) in self.intervention_specs_validation.items() 
-            if is_active
-        }        
-
-    @cached_property
-    def all_intervention_specs(self) -> Mapping[str, InterventionSpec]:
-        return {k: v for k, (_, v) in self.intervention_specs.items()}
-
-    @cached_property 
-    def all_intervention_specs_validation(self) -> Mapping[str, InterventionSpec]:
-        return {k: v for k, (_, v) in self.intervention_specs_validation.items()}
-
     @eqx.filter_jit
     def get_train_trial_with_intervenor_params(
         self,
@@ -387,7 +369,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_spec,
             self._intervenor_params(
-                self.active_intervention_specs,
+                self.intervention_specs.training,
                 trial_spec,
                 key_intervene,
             ),
@@ -468,7 +450,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_specs,
             eqx.filter_vmap(self._intervenor_params, in_axes=(None, 0, 0))(
-                self.active_intervention_specs_validation,
+                self.intervention_specs.validation,
                 trial_specs,
                 keys,
             ),
@@ -725,10 +707,11 @@ class AbstractTask(Module):
 
         # Use schedule_intervenors to reproduce `self`, along with the modified model
         task, model_ = base_task, base_model
-        for label, spec in self.all_intervention_specs.items():
-            if label in self.all_intervention_specs_validation:
+        for label, spec in self.intervention_specs.training.items():
+            #! This won't work if an intervenor spec is only present in the validation dict
+            if label in self.intervention_specs.validation:
                 intervenor_params_val = (
-                    self.all_intervention_specs_validation[label].intervenor.params
+                    self.intervention_specs.validation[label].intervenor.params
                 )
             else:
                 intervenor_params_val = None
@@ -759,7 +742,7 @@ class AbstractTask(Module):
         """
         
         if labels == 'all':
-            labels = list(self.intervention_specs.keys())
+            labels = list(self.intervention_specs.training.keys())
         elif labels == 'none':
             labels = []
 
@@ -769,7 +752,7 @@ class AbstractTask(Module):
         if validation_same_schedule:
             labels_validation = labels 
         elif validation_same_schedule == 'all':
-            labels_validation = list(self.intervention_specs_validation.keys())
+            labels_validation = list(self.intervention_specs.validation.keys())
         elif validation_same_schedule == 'none':
             labels_validation = []
                 
@@ -855,10 +838,6 @@ def _forceless_task_inputs(
     )
 
 
-def _empty_task_intervention_specs():
-    return dict()
-
-
 class SimpleReaches(AbstractTask):
     """Reaches between random endpoints in a rectangular workspace. No hold signal.
 
@@ -893,12 +872,7 @@ class SimpleReaches(AbstractTask):
     loss_func: AbstractLoss
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
-    intervention_specs: TaskInterventionSpecs = field(
-        default_factory=_empty_task_intervention_specs
-    )
-    intervention_specs_validation: TaskInterventionSpecs = field(
-        default_factory=_empty_task_intervention_specs
-    )
+    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
@@ -1031,12 +1005,7 @@ class DelayedReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
     seed_validation: int = 5555
-    intervention_specs: TaskInterventionSpecs = field(
-        default_factory=_empty_task_intervention_specs
-    )
-    intervention_specs_validation: TaskInterventionSpecs = field(
-        default_factory=_empty_task_intervention_specs
-    )
+    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
     def get_train_trial(self, key: PRNGKeyArray) -> DelayedReachTrialSpec:
         """Random reach endpoints across the rectangular workspace.
@@ -1148,12 +1117,7 @@ class Stabilization(AbstractTask):
     eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
         converter=jnp.asarray, default=None
     )
-    intervention_specs: TaskInterventionSpecs = field(
-        default_factory=_empty_task_intervention_specs
-    )
-    intervention_specs_validation: TaskInterventionSpecs = field(
-        default_factory=_empty_task_intervention_specs
-    )
+    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
     def get_train_trial(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace."""

@@ -244,6 +244,10 @@ class TimeSeriesParam(Module):
         return self.param
 
 
+def is_timeseries_param(x):
+    return isinstance(x, TimeSeriesParam)
+
+
 def _eval_intervenor_param_spec(
     intervention_spec: InterventionSpec,
     trial_spec, #: AbstractTaskTrialSpec,
@@ -257,10 +261,10 @@ def _eval_intervenor_param_spec(
             trial_spec,
             key=key,
             # Don't unwrap `TimeSeriesParam`s yet:
-            exclude=lambda x: isinstance(x, TimeSeriesParam),
-            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+            exclude=is_timeseries_param,
+            is_leaf=is_timeseries_param,
         ),
-        is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+        is_leaf=is_timeseries_param,
     )
 
 
@@ -365,7 +369,7 @@ def schedule_intervenor(
     invalid_labels_tasks = jax.tree_util.tree_reduce(
         lambda x, y: x + y,
         jax.tree_map(
-            lambda task: tuple(task.all_intervention_specs.keys()),
+            lambda task: tuple(task.intervention_specs.all.keys()),
             tasks,
             is_leaf=is_module,  # AbstractTask
         ),
@@ -377,17 +381,16 @@ def schedule_intervenor(
         label = type(intervenor_).__name__
     label = get_unique_label(label, invalid_labels)
 
-    # Construct the additions to `AbstractTask.intervenor_specs*`
-    # Set to active (`True`) by default.
-    intervention_specs = {label: (True, InterventionSpec(
+    # Construct the additions to `AbstractTask.intervenor_specs`
+    intervention_specs = {label: InterventionSpec(
         intervenor=intervenor_,
         where=where,
         stage_name=stage_name,
         default_active=default_active,
-    ))}
+    )}
 
     if intervenor_params_validation is not None:
-        intervention_specs_validation = {label: (True, InterventionSpec(
+        intervention_specs_validation = {label: InterventionSpec(
             intervenor=eqx.tree_at(
                 lambda intervenor: intervenor.params,
                 intervenor_,
@@ -396,7 +399,7 @@ def schedule_intervenor(
             where=where,
             stage_name=stage_name,
             default_active=default_active,
-        ))}
+        )}
     elif validation_same_schedule:
         intervention_specs_validation = intervention_specs
     else:
@@ -405,11 +408,14 @@ def schedule_intervenor(
     # Add the spec intervenors to every task in `tasks`
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
-            lambda task: (task.intervention_specs, task.intervention_specs_validation),
+            lambda task: (
+                task.intervention_specs.training, 
+                task.intervention_specs.validation,
+            ),
             task,
             (
-                task.intervention_specs | intervention_specs,
-                task.intervention_specs_validation | intervention_specs_validation,
+                task.intervention_specs.training | intervention_specs,
+                task.intervention_specs.validation | intervention_specs_validation,
             ),
         ),
         tasks,
@@ -433,7 +439,7 @@ def schedule_intervenor(
         intervenor,
         _eval_intervenor_param_spec(
             # Prefer the validation parameters, if they exist.
-            (intervention_specs | intervention_specs_validation)[label][1],
+            (intervention_specs | intervention_specs_validation)[label],
             trial_spec_example,
             key_example,
         )
@@ -459,22 +465,65 @@ def schedule_intervenor(
     return tasks, models
 
 
-# def update_intervenor_param_schedule(
-#     task: "AbstractTask",
-#     params: Mapping[IntervenorLabelStr, dict[str, Any]],
-#     training: bool = True,
-#     validation: bool = True,
-# ) -> "AbstractTask":
-#     for cond, suffix in {training: "", validation: "_validation"}.items():
-#         if cond: 
-#             specs = _get
+def update_intervenor_param_schedule(
+    task: "AbstractTask",
+    params: Mapping[IntervenorLabelStr, Mapping[str, Any]],
+    training: bool = True,
+    validation: bool = True,
+    is_leaf: Optional[Callable[..., bool]] = None,
+) -> "AbstractTask":
+    """Return a task with updated specifications for intervention parameters.
+    
+    This might fail if the parameter is passed, or already assigned, as an `eqx.Module` 
+    or other PyTree, since `tree_leaves` will flatten its contents. In that case you 
+    should set `is_leaf=is_module` (or similar) so that the entire object is treated 
+    as the parameter.
+    TODO: Just... flatten the nested dict instead of using `tree_leaves`, to avoid this issue.
+    
+    Arguments:
+        task: The task to modify.
+        params: A mapping from intervenor labels (a subset of the keys from the fields 
+            of `task.intervention_specs`) to mappings from parameter names to updated
+            parameter values. 
+        training: Whether to apply the update to the training trial intervention 
+            specifications.
+        validation: Whether to apply the update to the validation trial intervention
+            specifications.
+        is_leaf: A function that returns `True` for objects that should be treated
+            as parameters.
+    """
+    if isinstance(is_leaf, Callable):
+        is_leaf_or_timeseries = lambda x: is_leaf(x) or is_timeseries_param(x)
+    else:
+        is_leaf_or_timeseries = is_timeseries_param
+    
+    params_flat = jax.tree_leaves(params, is_leaf=is_leaf_or_timeseries)
+    
+    for cond, suffix in {training: "training", validation: "validation"}.items():
+        if cond: 
+            specs = getattr(task.intervention_specs, suffix)
             
-#             task = eqx.tree_at(
-#                 lambda task: getattr(task, f"intervention_specs{suffix}"),
-#                 task, 
-#                 specs,
-#             )
-#     return task 
+            specs = eqx.tree_at(
+                lambda specs: jax.tree_leaves({
+                    intervenor_label: {
+                        param_name: getattr(
+                            specs[intervenor_label].intervenor.params, 
+                            param_name,
+                        )
+                        for param_name in ps
+                    }
+                    for intervenor_label, ps in params.items()
+                }, is_leaf=is_leaf_or_timeseries),
+                specs, 
+                params_flat,
+            )
+            
+            task = eqx.tree_at(
+                lambda task: getattr(task.intervention_specs, suffix),
+                task, 
+                specs,
+            )
+    return task 
 
 
 # TODO: take `Sequence[IntervenorSpec]` or `dict[IntervenorLabel, IntervenorSpec]`
@@ -485,7 +534,7 @@ def update_fixed_intervenor_param(
     param_name: str,
     replace: Any,
     labels: Optional[PyTree[str, 'T']] = None,
-):
+) -> "AbstractStagedModel":
     if labels is None:
         labels = jax.tree_map(
             lambda spec: f"FIXED_{type(spec.intervenor).__name__}",
