@@ -101,7 +101,9 @@ def point_mass_nn(
         feedback_spec=feedback_spec,
         motor_noise_func=(
             # Combine signal-dependent noise with constant noise (e.g. Beer, Haggard, Wolpert 2004)
-            Multiplicative(Normal(motor_noise_std)) + Normal(1.8 * motor_noise_std)
+            # `broadcast=True` means only a single noise sample -- i.e. scale the vector, not the directions.
+            Multiplicative(Normal(std=motor_noise_std, broadcast=True)) 
+            + Normal(std=1.8 * motor_noise_std, broadcast=True)
         ),
         key=key2,
     )

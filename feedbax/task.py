@@ -32,6 +32,7 @@ from typing import (
 import equinox as eqx
 from equinox import AbstractVar, Module, field
 from equinox._pretty_print import tree_pp, bracketed
+from feedbax.intervene.schedule import IntervenorLabelStr
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -289,7 +290,11 @@ T = TypeVar('T')
 # (i.e. which might be considered `CharSequence`)
 NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
 
-TaskInterventionSpecs: TypeAlias = Mapping[bool, Mapping[str, InterventionSpec]]
+
+active: TypeAlias = Literal[True]
+inactive: TypeAlias = Literal[False]
+IsActive: TypeAlias = active | inactive
+TaskInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, tuple[IsActive, InterventionSpec]]
 
 
 class AbstractTask(Module):
@@ -322,7 +327,6 @@ class AbstractTask(Module):
     seed_validation: AbstractVar[int]
 
     intervention_specs: AbstractVar[TaskInterventionSpecs]
-    intervention_specs_validation: AbstractVar[TaskInterventionSpecs]
 
     def __check_init__(self):
         if not isinstance(self.loss_func, AbstractLoss):
@@ -341,6 +345,28 @@ class AbstractTask(Module):
             key: A random key for generating the trial.
         """
         ...
+
+    @cached_property 
+    def active_intervention_specs(self):
+        return {
+            k: v for k, (is_active, v) in self.intervention_specs.items() 
+            if is_active
+        }
+        
+    @cached_property 
+    def active_intervention_specs_validation(self):
+        return {
+            k: v for k, (is_active, v) in self.intervention_specs_validation.items() 
+            if is_active
+        }        
+
+    @cached_property
+    def all_intervention_specs(self) -> Mapping[str, InterventionSpec]:
+        return {k: v for k, (_, v) in self.intervention_specs.items()}
+
+    @cached_property 
+    def all_intervention_specs_validation(self) -> Mapping[str, InterventionSpec]:
+        return {k: v for k, (_, v) in self.intervention_specs_validation.items()}
 
     @eqx.filter_jit
     def get_train_trial_with_intervenor_params(
@@ -361,7 +387,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_spec,
             self._intervenor_params(
-                self.intervention_specs[True],
+                self.active_intervention_specs,
                 trial_spec,
                 key_intervene,
             ),
@@ -371,7 +397,7 @@ class AbstractTask(Module):
 
     def _intervenor_params(
         self,
-        intervention_specs: Mapping[str, InterventionSpec],
+        intervention_specs: Mapping[IntervenorLabelStr, InterventionSpec],
         trial_spec: AbstractTaskTrialSpec,
         key: PRNGKeyArray,
     ):
@@ -442,7 +468,7 @@ class AbstractTask(Module):
             lambda x: x.intervene,
             trial_specs,
             eqx.filter_vmap(self._intervenor_params, in_axes=(None, 0, 0))(
-                self.intervention_specs_validation[True],
+                self.active_intervention_specs_validation,
                 trial_specs,
                 keys,
             ),
@@ -720,50 +746,43 @@ class AbstractTask(Module):
 
         return model_
     
-    @cached_property
-    def all_intervention_specs(self) -> Mapping[str, InterventionSpec]:
-        return {
-            **self.intervention_specs[True], 
-            **self.intervention_specs[False],
-        }
-
-    @cached_property 
-    def all_intervention_specs_validation(self) -> Mapping[str, InterventionSpec]:
-        return {
-            **self.intervention_specs_validation[True], 
-            **self.intervention_specs_validation[False],
-        }
-    
     def activate_interventions(
         self,
-        labels: NonCharSequence[str] | Literal['all', 'none'],
+        labels: NonCharSequence[IntervenorLabelStr] | Literal['all', 'none'],
         labels_validation: Optional[
-            NonCharSequence[str] | Literal['all', 'none']
+            NonCharSequence[IntervenorLabelStr] | Literal['all', 'none']
         ] = None,
         validation_same_schedule=False,
     ) -> Self:
         """Return a task where scheduling if active only for the interventions with the 
         given labels.
         """
+        
+        if labels == 'all':
+            labels = list(self.intervention_specs.keys())
+        elif labels == 'none':
+            labels = []
+
         tree_at_spec = {"": labels}
         task = self
         
         if validation_same_schedule:
             labels_validation = labels 
+        elif validation_same_schedule == 'all':
+            labels_validation = list(self.intervention_specs_validation.keys())
+        elif validation_same_schedule == 'none':
+            labels_validation = []
                 
         if labels_validation is not None:
             tree_at_spec = {"_validation": labels}    
         
         for suffix, labels_ in tree_at_spec.items():
-            all_intervention_specs = getattr(self, f"all_intervention_specs{suffix}")
+            intervention_specs = getattr(self, f"intervention_specs{suffix}")
             
             task = eqx.tree_at(
                 lambda task: getattr(task, f"intervention_specs{suffix}"),
                 task, 
-                {
-                    True: {k: v for k, v in all_intervention_specs.items() if k in labels_},
-                    False: {k: v for k, v in all_intervention_specs.items() if k not in labels_},
-                }
+                {k: (k in labels_, v) for k, (_, v) in intervention_specs.items()},
             )        
         
         return task
@@ -837,7 +856,7 @@ def _forceless_task_inputs(
 
 
 def _empty_task_intervention_specs():
-    return {True: dict(), False: dict()}
+    return dict()
 
 
 class SimpleReaches(AbstractTask):

@@ -437,6 +437,7 @@ class CopyParams(AbstractIntervenorInput):
     scale: float = 1.0
     active: bool = True
 
+
 class Copy(AbstractIntervenor[StateT, CopyParams]):
     in_where: Callable[[StateT], PyTree[Array, "T"]]
     out_where: Callable[[StateT], PyTree[Array, "T"]]

@@ -123,12 +123,13 @@ def add_intervenors(
         ["AbstractStagedModel[StateT]"], Any  # "AbstractStagedModel[StateS]"
     ],
     intervenors: Union[
-        Sequence[Intervenor[StateT]],
+        # Couldn't bind `AbstractIntervenor[StateT, AbstractIntervenorInput]` 
+        Sequence[AbstractIntervenor], 
         Mapping[
             StageNameStr,
             Union[
-                Sequence[Intervenor[StateT]],
-                Mapping[IntervenorLabelStr, Intervenor[StateT]],
+                Sequence[AbstractIntervenor],
+                Mapping[IntervenorLabelStr, AbstractIntervenor],
             ]
         ],
     ],
@@ -376,16 +377,17 @@ def schedule_intervenor(
         label = type(intervenor_).__name__
     label = get_unique_label(label, invalid_labels)
 
-    # Construct specification-intervenors
-    intervention_specs = {label: InterventionSpec(
+    # Construct the additions to `AbstractTask.intervenor_specs*`
+    # Set to active (`True`) by default.
+    intervention_specs = {label: (True, InterventionSpec(
         intervenor=intervenor_,
         where=where,
         stage_name=stage_name,
         default_active=default_active,
-    )}
+    ))}
 
     if intervenor_params_validation is not None:
-        intervention_specs_validation = {label: InterventionSpec(
+        intervention_specs_validation = {label: (True, InterventionSpec(
             intervenor=eqx.tree_at(
                 lambda intervenor: intervenor.params,
                 intervenor_,
@@ -394,22 +396,20 @@ def schedule_intervenor(
             where=where,
             stage_name=stage_name,
             default_active=default_active,
-        )}
+        ))}
     elif validation_same_schedule:
         intervention_specs_validation = intervention_specs
     else:
         intervention_specs_validation = dict()
 
     # Add the spec intervenors to every task in `tasks`
-    # Assume their schedules should be active by default 
-    # (i.e. add to `True` sequence of task intervention specs)
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
-            lambda task: (task.intervention_specs[True], task.intervention_specs_validation[True]),
+            lambda task: (task.intervention_specs, task.intervention_specs_validation),
             task,
             (
-                task.intervention_specs[True] | intervention_specs,
-                task.intervention_specs_validation[True] | intervention_specs_validation,
+                task.intervention_specs | intervention_specs,
+                task.intervention_specs_validation | intervention_specs_validation,
             ),
         ),
         tasks,
@@ -433,7 +433,7 @@ def schedule_intervenor(
         intervenor,
         _eval_intervenor_param_spec(
             # Prefer the validation parameters, if they exist.
-            (intervention_specs | intervention_specs_validation)[label],
+            (intervention_specs | intervention_specs_validation)[label][1],
             trial_spec_example,
             key_example,
         )
@@ -459,9 +459,27 @@ def schedule_intervenor(
     return tasks, models
 
 
+# def update_intervenor_param_schedule(
+#     task: "AbstractTask",
+#     params: Mapping[IntervenorLabelStr, dict[str, Any]],
+#     training: bool = True,
+#     validation: bool = True,
+# ) -> "AbstractTask":
+#     for cond, suffix in {training: "", validation: "_validation"}.items():
+#         if cond: 
+#             specs = _get
+            
+#             task = eqx.tree_at(
+#                 lambda task: getattr(task, f"intervention_specs{suffix}"),
+#                 task, 
+#                 specs,
+#             )
+#     return task 
+
+
 # TODO: take `Sequence[IntervenorSpec]` or `dict[IntervenorLabel, IntervenorSpec]`
 # and take `replace` as constant, sequence, or dict as well
-def update_intervenor_param(
+def update_fixed_intervenor_param(
     model: "AbstractStagedModel", 
     specs: PyTree[InterventionSpec, 'T'], 
     param_name: str,
@@ -470,7 +488,7 @@ def update_intervenor_param(
 ):
     if labels is None:
         labels = jax.tree_map(
-            lambda spec: type(spec.intervenor).__name__,
+            lambda spec: f"FIXED_{type(spec.intervenor).__name__}",
             specs,
             is_leaf=is_module,
         )

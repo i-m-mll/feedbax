@@ -78,6 +78,7 @@ def loss_history(
     error_bars_alpha: float = 0.3,
     n_std_plot: int = 1,
     layout_kws: Optional[dict] = None,
+    scatter_kws: Optional[dict] = None,
     **kwargs,
 ) -> go.Figure:
     fig = go.Figure(**kwargs)
@@ -126,16 +127,20 @@ def loss_history(
 
     for i, label in enumerate(reversed(dfs)):
         # Mean
-        fig.add_trace(go.Scatter(
+        trace = go.Scatter(
             name=label,
+            legendgroup=str(i),
             x=loss_statistics[label]["timestep"],
             y=loss_statistics[label]['mean'],
-            line=dict(color=colors_dict[label])
-        ))
+            line=dict(color=colors_dict[label]),
+        )
+        trace.update(scatter_kws)
+        fig.add_trace(trace)
 
         # Error bars
         fig.add_trace(go.Scatter(
             name="Upper bound",
+            legendgroup=str(i),
             x=loss_statistics[label]["timestep"],
             y=error_bars_bounds[label]["ub"],
             line=dict(color='rgba(255,255,255,0)'),
@@ -145,6 +150,7 @@ def loss_history(
 
         fig.add_trace(go.Scatter(
             name="Lower bound",
+            legendgroup=str(i),
             x=loss_statistics[label]["timestep"],
             y=error_bars_bounds[label]["lb"],
             line=dict(color='rgba(255,255,255,0)'),
@@ -409,8 +415,8 @@ def effector_trajectories(
     color: Optional[str | tuple[float, ...]] = None,
     mode: str = "markers+lines",
     ms: int = 5,
-    ms_source: int = 12,
-    ms_target: int = 12,
+    ms_init: int = 12,
+    ms_goal: int = 12,
     control_labels: Optional[tuple[str, str, str]] = None,
     control_label_type: str = "linear",
     layout_kws: Optional[dict] = None,
@@ -543,28 +549,40 @@ def effector_trajectories(
     if endpoints_arr is not None:
         colors = [d.marker.color for d in fig.data[::n_vars]]
 
+        n_trials = endpoints_arr.shape[1]
+
         # Add init and goal markers
-        for j, ms in enumerate([ms_source, ms_target]):
+        for j, (label, (ms, symbol)) in enumerate(
+            {
+                "Init": (ms_init, 'square'), 
+                "Goal": (ms_goal, 'circle'),
+            }.items()
+        ):
             fig.add_traces(
                 [
                     go.Scatter(
+                        name=f"{label} {i}",
+                        meta=dict(label=label),
+                        legendgroup=label, #str(i)
+                        hoverinfo="name",
                         x=endpoints_arr[j, i, 0][None],
                         y=endpoints_arr[j, i, 1][None],
                         mode="markers",
                         marker=dict(
                             size=ms,
+                            symbol=symbol,
                             color='rgba(255, 255, 255, 0)',
                             line=dict(
-                                color=colors[i],
+                                color="black",#colors[i],
                                 width=2,
                             ),
                         ),
                         xaxis="x1",
                         yaxis="y1",
                         # TODO: Show once in legend, for all markers of type j
-                        showlegend=False,
+                        showlegend=i < (n_trials - 1),
                     )
-                    for i in range(endpoints_arr.shape[1])
+                    for i in range(n_trials)
                 ]
             )
 

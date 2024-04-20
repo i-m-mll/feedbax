@@ -10,6 +10,7 @@ from functools import reduce
 import logging
 
 import equinox as eqx
+from equinox import AbstractVar
 from equinox._pretty_print import tree_pp, bracketed
 import jax.numpy as jnp
 import jax.random as jr
@@ -61,9 +62,12 @@ class CompositeNoise(AbstractNoise):
 class Normal(AbstractNoise):
     std: float = 1.0
     mean: float = 0.0
+    broadcast: bool = False
 
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        return self.std * jr.normal(key, x.shape, x.dtype) + self.mean
+        shape = (1,) if self.broadcast else x.shape
+        return self.std * jr.normal(key, shape, x.dtype) + self.mean
+
 
 
 class Multiplicative(AbstractNoise):
