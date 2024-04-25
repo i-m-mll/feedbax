@@ -87,6 +87,7 @@ class ActivationFilter(AbstractDynamicalSystem):
     def init(self, *, key: PRNGKeyArray) -> Array:
         raise NotImplementedError("No state PyTree associated with ActivationFilter.")
 
+
 class MuscleState(Module):
     """Type of state PyTree operated on by [`AbstractMuscle`][feedbax.mechanics.muscle.AbstractMuscle]
     instances.

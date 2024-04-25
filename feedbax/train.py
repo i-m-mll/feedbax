@@ -63,6 +63,7 @@ class TaskTrainerHistory(eqx.Module):
     """
 
     loss: LossDict | Array
+    loss_validation: LossDict | Array
     learning_rate: Optional[Array] = None
     model_trainables: Optional[AbstractModel] = None
     trial_specs: dict[int, AbstractTaskTrialSpec] = field(default_factory=dict)
@@ -498,36 +499,36 @@ class TaskTrainer(eqx.Module):
                 # if ensembled and ensemble_random_trials:
                 #     key_eval = jr.split(key_eval, n_replicates)
 
-                states, losses_val = evaluate(model, key_eval)
+                states, losses_validation = evaluate(model, key_eval)
+
+                history = eqx.tree_at(
+                    lambda history: history.loss_validation,
+                    history,
+                    tree_set(history.loss_validation, losses_validation, batch),
+                )
 
                 if ensembled:
-                    losses_val_mean = jax.tree_map(
-                        lambda x: jnp.mean(x, axis=-1), losses_val
+                    losses_validation_mean = jax.tree_map(
+                        lambda x: jnp.mean(x, axis=-1), losses_validation
                     )
                     # Only log a validation plot for the first replicate.
                     states_plot = tree_take(states, 0)
                 else:
-                    losses_val_mean = losses_val
+                    losses_validation_mean = losses_validation
                     states_plot = states
 
                 if self._use_tb and self.writer is not None:
-                    # TODO: register plots instead of hard-coding
+                    # TODO: Allow user to register other plots.
                     trial_specs = task.validation_trials
-                    fig, _ = plot.effector_trajectories(
-                        states_plot,
-                        endpoints=(
-                            trial_specs.inits["mechanics.effector"].pos,
-                            trial_specs.goal.pos,
-                        ),
-                        workspace=task.workspace,
-                    )
-                    self.writer.add_figure("validation/centerout", fig, batch)
+                    figs = task.validation_plots(states_plot, trial_specs=trial_specs)
+                    for label, fig in figs.items():
+                        self.writer.add_figure(f"validation/{label}", fig, batch)
                     self.writer.add_scalar(
                         f"loss/{ensembled_str}validation",
-                        losses_val_mean.total.item(),
+                        losses_validation_mean.total.item(),
                         batch,
                     )
-                    for loss_term_label, loss_term in losses_val_mean.items():
+                    for loss_term_label, loss_term in losses_validation_mean.items():
                         self.writer.add_scalar(
                             f"loss/{ensembled_str}validation/{loss_term_label}",
                             loss_term.item(),
@@ -548,7 +549,7 @@ class TaskTrainer(eqx.Module):
                             + f"\n\t{ensembled_str}training loss: ".capitalize()
                             + f"{losses_mean.total:{LOSS_FMT}}"
                             + f"\n\t{ensembled_str}validation loss: ".capitalize()
-                            + f"{losses_val_mean.total:{LOSS_FMT}}"
+                            + f"{losses_validation_mean.total:{LOSS_FMT}}"
                             + '\n\n'
                         ),
                     )
@@ -661,7 +662,7 @@ class TaskTrainer(eqx.Module):
         # TODO: Save `opt_state` after fixing issue with first training iteration
         eqx.tree_serialise_leaves(
             self.chkpt_dir / f"ckpt_{batch}.eqx",
-            (model, None, history),
+            (model, opt_state, history),
         )
         with open(self.chkpt_dir / "last_batch.txt", "w") as f:
             f.write(str(batch))
@@ -684,7 +685,7 @@ class TaskTrainer(eqx.Module):
         # TODO: Load `opt_state` after fixing issue with first training iteration
         model, _, history = eqx.tree_deserialise_leaves(
             chkpt_path,
-            (model, None, history),
+            (model, opt_state, history),
         )
         return chkpt_path, last_batch, model, opt_state, history
 
@@ -702,20 +703,27 @@ def init_task_trainer_history(
     where_train: Optional[Callable[[AbstractModel[StateT]], Any]] = None,
 ):
     if ensembled:
-        batch_shape = (n_batches, n_replicates)
+        batch_dims = (n_batches, n_replicates)
     else:
-        batch_shape = (n_batches,)
+        batch_dims = (n_batches,)
 
     loss_func = task.loss_func
     if isinstance(loss_func, CompositeLoss):
         loss_history = LossDict(
             zip(
                 loss_func.weights.keys(),
-                [jnp.empty(batch_shape) for _ in loss_func.weights],
+                [jnp.empty(batch_dims) for _ in loss_func.weights],
+            )
+        )
+        loss_history_validation = LossDict(
+            zip(
+                loss_func.weights.keys(),
+                [jnp.empty(batch_dims) for _ in loss_func.weights],
             )
         )
     else:
-        loss_history = jnp.empty(batch_shape)
+        loss_history = jnp.empty(batch_dims)
+        loss_history_validation = jnp.empty(batch_dims)
 
     if save_trial_specs is not None:
         assert batch_size is not None
@@ -775,7 +783,8 @@ def init_task_trainer_history(
     # TODO: Replace arrays with None?
     return TaskTrainerHistory(
         loss=loss_history,
-        learning_rate=jnp.empty(batch_shape),
+        loss_validation=loss_history_validation,
+        learning_rate=jnp.empty(batch_dims),
         model_trainables=model_train_history,
         trial_specs=trial_spec_history,
     )
@@ -820,7 +829,7 @@ class SimpleTrainer(eqx.Module):
     def __call__(self, model, X, y, n_iter=100):
         opt_state = self.optimizer.init(model)
 
-        for _ in tqdm(range(n_iter)):
+        for _ in _tqdm(range(n_iter)):
             loss, grads = jax.value_and_grad(self.loss_func)(model, X, y)
             updates, opt_state = self.optimizer.update(grads, opt_state)
             model = eqx.apply_updates(model, updates)
@@ -861,12 +870,12 @@ def _grad_wrap_task_loss_func(loss_func: AbstractLoss):
         trial_specs: AbstractTaskTrialSpec,
         init_states: StateT,  #! has a batch dimension
         keys: PRNGKeyArray,  # per trial
-    ) -> Tuple[float, Tuple[LossDict, StateT]]:
+    ) -> Tuple[Array, Tuple[LossDict, StateT]]:
 
         model = eqx.combine(diff_model, static_model)
 
         # ? will `in_axes` ever change?
-        states = jax.vmap(model)(
+        states: StateT = jax.vmap(model)(
             ModelInput(trial_specs.inputs, trial_specs.intervene), init_states, keys
         )
 

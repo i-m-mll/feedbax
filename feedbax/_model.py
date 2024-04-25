@@ -28,14 +28,13 @@ from feedbax._tree import random_split_like_tree
 if TYPE_CHECKING:
     from feedbax._staged import AbstractStagedModel
     from feedbax.intervene import AbstractIntervenorInput
-    from feedbax.task import AbstractTaskInputs
 
 
 logger = logging.getLogger(__name__)
 
 
 class AbstractModel(Module, Generic[StateT]):
-    """Base class for models that operate on `AbstractState` objects."""
+    """Base class for all Feedbax models."""
 
     @abstractmethod
     def __call__(

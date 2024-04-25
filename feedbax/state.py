@@ -11,9 +11,8 @@ import logging
 from typing import (
     Optional,
     Generic,
-    Protocol,
+    TypeAlias,
     TypeVar,
-    runtime_checkable,
 )
 
 import equinox as eqx
@@ -26,17 +25,8 @@ from jaxtyping import Array, Float, PyTree
 logger = logging.getLogger(__name__)
 
 
-class AbstractState(Module):
-    """Base class for model states.
-
-    !!! NOTE ""
-        Currently this is empty, and only used for collectively typing its subclasses.
-    """
-
-    ...
-
-
-StateT = TypeVar("StateT", bound=PyTree[Array])
+State: TypeAlias = PyTree #[Array]
+StateT = TypeVar("StateT", bound=State)
 
 
 class StateBounds(Module, Generic[StateT]):
@@ -60,7 +50,7 @@ class StateBounds(Module, Generic[StateT]):
         )
 
 
-class CartesianState(AbstractState):
+class CartesianState(Module):
     """Cartesian state of a mechanical system in two spatial dimensions.
 
     Attributes:
@@ -72,16 +62,6 @@ class CartesianState(AbstractState):
     pos: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
     vel: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
     force: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
-
-
-@runtime_checkable
-class HasEffectorState(Protocol):
-    effector: CartesianState
-
-
-@runtime_checkable
-class HasMechanicsEffectorState(Protocol):
-    mechanics: HasEffectorState
 
 
 def clip_state(

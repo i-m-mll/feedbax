@@ -12,6 +12,7 @@ from typing import Optional, Self, Type, Union
 
 import diffrax as dfx  # type: ignore
 import equinox as eqx
+from equinox import Module
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene import AbstractIntervenor
@@ -20,13 +21,13 @@ from feedbax.mechanics.plant import AbstractPlant, PlantState
 
 from feedbax._model import wrap_stateless_keyless_callable
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, CartesianState
+from feedbax.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
 
 
-class MechanicsState(AbstractState):
+class MechanicsState(Module):
     """Type of state PyTree operated on by `Mechanics` instances.
 
     Attributes:

@@ -7,9 +7,10 @@
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 import logging
-from typing import Any, Optional, Self, Union, overload
+from typing import TYPE_CHECKING, Any, Optional, Self, Union, overload
 
 import equinox as eqx
+from equinox import Module
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -25,15 +26,16 @@ from feedbax.misc import is_module
 from feedbax.nn import NetworkState
 from feedbax.noise import Normal
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, StateBounds
-from feedbax.task import AbstractTask
+from feedbax.state import StateBounds
 from feedbax._tree import tree_sum_n_features
 
+if TYPE_CHECKING:
+    from feedbax.task import AbstractTask
 
 logger = logging.getLogger(__name__)
 
 
-class SimpleFeedbackState(AbstractState):
+class SimpleFeedbackState(Module):
     """Type of state PyTree operated on by [`SimpleFeedback`][feedbax.bodies.SimpleFeedback] instances.
 
     Attributes:

@@ -7,7 +7,7 @@
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import equinox as eqx
 import jax
@@ -16,6 +16,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Shaped
 import numpy as np
+# pyright: reportMissingTypeStubs=false
 from plotly.basedatatypes import BaseTraceType
 from plotly.colors import convert_colors_to_same_type
 import plotly.express as px
@@ -25,10 +26,11 @@ import polars as pl
 
 from feedbax import tree_labels
 from feedbax.bodies import SimpleFeedbackState
+from feedbax.loss import LossDict
 from feedbax.misc import where_func_to_labels
-from feedbax.task import AbstractReachTrialSpec
 
 if TYPE_CHECKING:
+    from feedbax.task import AbstractReachTrialSpec
     from feedbax.train import TaskTrainerHistory
 
 
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 pio.templates.default = "plotly_white"
-DEFAULT_COLORS = pio.templates[pio.templates.default].layout.colorway
+DEFAULT_COLORS = pio.templates[pio.templates.default].layout.colorway  # pyright: ignore
 
 
 def color_add_alpha(rgb_str: str, alpha: float):
@@ -74,6 +76,7 @@ def errorbars(col_means_stds: PyTree[pl.DataFrame], n_std: int):
 
 def loss_history(
     train_history: "TaskTrainerHistory",
+    loss_context: Literal["training", "validation"] = "training",
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.3,
     n_std_plot: int = 1,
@@ -83,16 +86,28 @@ def loss_history(
 ) -> go.Figure:
     fig = go.Figure(**kwargs)
 
-    losses = jax.tree_map(
+    if loss_context == "training":
+        loss_tree = train_history.loss
+        scatter_mode = "markers+lines"
+    elif loss_context == "validation":
+        loss_tree = train_history.loss_validation
+        # Validation losses are usually sparse in time, so don't connect with lines
+        scatter_mode = "markers"
+    else:
+        raise ValueError(f"{loss_context} is not a valid loss context" )
+
+    losses: LossDict | Array = jax.tree_map(
         lambda x: np.array(x),
-        train_history.loss,
+        loss_tree,
     )
 
-    timesteps = pl.DataFrame({"timestep": range(train_history.loss.total.shape[0])})
+    losses_total = losses if isinstance(losses, Array) else losses.total
+
+    timesteps = pl.DataFrame({"timestep": range(losses_total.shape[0])})
 
     dfs = jax.tree_map(
         lambda losses: pl.DataFrame(losses),
-        OrderedDict({"Total": losses.total}) | dict(losses),
+        OrderedDict({"Total": losses_total}) | dict(losses),
     )
 
     # TODO: Only apply this when yaxis is log scaled
@@ -132,6 +147,7 @@ def loss_history(
             legendgroup=str(i),
             x=loss_statistics[label]["timestep"],
             y=loss_statistics[label]['mean'],
+            mode=scatter_mode,
             line=dict(color=colors_dict[label]),
         )
         trace.update(scatter_kws)
@@ -404,7 +420,7 @@ def effector_trajectories(
     ] = None,
     var_labels: Optional[tuple[str, ...]] = None,
     step: int = 1,  # plot every step-th trial
-    trial_specs: Optional[AbstractReachTrialSpec] = None,
+    trial_specs: Optional["AbstractReachTrialSpec"] = None,
     endpoints: Optional[
         tuple[Float[Array, "trial xy=2"], Float[Array, "trial xy=2"]]
     ] = None,
@@ -554,7 +570,7 @@ def effector_trajectories(
         # Add init and goal markers
         for j, (label, (ms, symbol)) in enumerate(
             {
-                "Init": (ms_init, 'square'), 
+                "Init": (ms_init, 'square'),
                 "Goal": (ms_goal, 'circle'),
             }.items()
         ):

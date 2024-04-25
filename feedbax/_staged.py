@@ -35,9 +35,6 @@ from feedbax.intervene.schedule import ArgIntervenors, Intervenor, IntervenorLab
 from feedbax.misc import indent_str, is_module
 from feedbax.state import StateT
 
-if TYPE_CHECKING:
-    from feedbax.task import AbstractTaskInputs
-
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +86,7 @@ class ModelStage(Module, Generic[ModelT, T]):
         [ModelT],
         Union[ModelStageCallable, OtherStageCallable],
     ]
-    where_input: Callable[["AbstractTaskInputs", T], PyTree]
+    where_input: Callable[[PyTree, T], PyTree]
     where_state: Callable[[T], PyTree]
     intervenors: StageIntervenors[T] = field(default_factory=tuple)
 
@@ -104,15 +101,15 @@ class AbstractStagedModel(AbstractModel[StateT]):
         To define a new staged model, the following complementary components
         must be implemented:
 
-        1. A [final](https://docs.kidger.site/equinox/pattern/) subclass of
-           `AbstractState` that defines the PyTree structure of the model
-           state. The type of the fields of this PyTree are typically JAX
-           arrays, or else other `AbstractState` types associated with the
+        1. A PyTree of model states -- typically, a
+           [final](https://docs.kidger.site/equinox/pattern/) subclass of
+           `equinox.Module`. The fields of the PyTree are typically JAX
+           arrays, or else other PyTrees of model states associated with the
            model's components.
         2. A final subclass of
            [`AbstractStagedModel`][feedbax.AbstractStagedModel]. Note that the
            abstract class is a `Generic`, and for proper type checking, the
-           type argument of the subclass should be the type of `AbstractState`
+           type argument of the subclass should be the type of state PyTree
            defined in (1).
 
             This subclass must implement the following:
@@ -267,22 +264,22 @@ class AbstractStagedModel(AbstractModel[StateT]):
         intervenors: Optional[ArgIntervenors[StateT]],
     ) -> ModelIntervenors[StateT]:
         """Specifically for fixed intervenors."""
-        
+
         intervenors_dict = {}
 
         if intervenors is not None:
             if isinstance(intervenors, Sequence):
                 # By default, place interventions before the first stage.
-                intervenors_dict |= {pre_first_stage: 
+                intervenors_dict |= {pre_first_stage:
                     OrderedDict({
-                        _fixed_intervenor_label(intervenor): intervenor 
+                        _fixed_intervenor_label(intervenor): intervenor
                         for intervenor in intervenors
                     })
                 }
             elif isinstance(intervenors, Mapping):
                 intervenors_dict |= {
                     stage_name: OrderedDict({
-                        _fixed_intervenor_label(intervenor): intervenor 
+                        _fixed_intervenor_label(intervenor): intervenor
                         for intervenor in stage_intervenors
                     })
                     for stage_name, stage_intervenors in intervenors.items()
@@ -310,7 +307,7 @@ class AbstractStagedModel(AbstractModel[StateT]):
             self, is_leaf=lambda x: isinstance(x, AbstractIntervenor)
         )
         labels = [
-            path[-1].key for path, leaf in model_leaves_with_paths 
+            path[-1].key for path, leaf in model_leaves_with_paths
             if isinstance(leaf, AbstractIntervenor)
         ]
         return tuple(labels)

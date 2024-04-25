@@ -282,20 +282,10 @@ def _simple_module_pprint(name, *children, **kwargs):
 
 def _get_where_str(where_func: Callable) -> str:
     """
-    Given a function that accesses a tree of attributes of a single parameter,
-    return a string repesenting the attributes.
-
-    This is useful for getting a unique string representation of a substate
-    of an `AbstractState` or `AbstractModel` object, as defined by a `where`
-    function, so we can compare two such functions and see if they refer to
-    the same substate.
-
-    TODO:
-    - I'm not sure it's good practice to introspect on bytecode like this.
-      In most cases we can probably use pytree path specs; however it is
-      very convenient for the user to specify `where` functions and I'm not
-      sure how to convert from a `where` to a path spec. Maybe `eqx.tree_at`
-      will provide some insight?
+    Returns a string representation of the (nested) attributes accessed by a function.
+    
+    Only works for functions that take a single argument, and return the argument 
+    or a single (nested) attribute accessed from the argument.
     """
     bytecode = dis.Bytecode(where_func)
     return ".".join(instr.argrepr for instr in bytecode if instr.opname == "LOAD_ATTR")

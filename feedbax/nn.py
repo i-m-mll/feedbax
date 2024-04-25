@@ -39,7 +39,7 @@ from feedbax.misc import (
     n_positional_args,
 )
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, StateT
+from feedbax.state import StateT
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ def orthogonal_gru_cell(
     return net
 
 
-class NetworkState(AbstractState):
+class NetworkState(Module):
     """Type of state PyTree operated on by [`SimpleStagedNetwork`][feedbax.nn.SimpleStagedNetwork] instances.
 
     Attributes:
@@ -261,7 +261,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                     ),
                 }
             )
-        
+
         # TODO: conditional on `self.hidden_nonlinearity is not identity_func`?
         spec |= {
             "hidden_nonlinearity": Stage(

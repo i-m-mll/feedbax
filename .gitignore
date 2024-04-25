@@ -1,6 +1,10 @@
 .gitmessage
 COMMIT_MSG.txt
 
+# Markdown copies of example notebooks
+# (They are meant to make search-replace easier)
+examples/markdown/
+
 # saved models
 models/
 *.eqx

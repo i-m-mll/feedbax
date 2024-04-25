@@ -19,14 +19,14 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.intervene.schedule import ModelIntervenors
 from feedbax.noise import Normal
 from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import AbstractState, StateT
+from feedbax.state import StateT
 from feedbax._tree import random_split_like_tree
 
 
 logger = logging.getLogger(__name__)
 
 
-class ChannelState(AbstractState):
+class ChannelState(Module):
     """Type of state PyTree operated on by [`Channel`][feedbax.channel.Channel] instances.
 
     Attributes:

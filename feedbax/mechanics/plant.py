@@ -117,7 +117,7 @@ class AbstractPlant(
         ...
 
     @abstractproperty
-    def dynamics_spec(self) -> dict[str, DynamicsComponent[PlantState]]:
+    def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
         """Aggregates differential equations for different substates of the
         musculoskeletal state."""
         ...
@@ -210,7 +210,7 @@ class DirectForceInput(AbstractPlant):
         return spec
 
     @property
-    def dynamics_spec(self) -> dict[str, DynamicsComponent[PlantState]]:
+    def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
         """Specifies a single dynamical component: the skeleton."""
         return dict(
             {

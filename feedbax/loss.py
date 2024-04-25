@@ -20,8 +20,8 @@ TODO:
   to be controlled in one place, if for some reason it makes sense to change
   how this aggregation occurs across all loss terms.
 - Protocols for all the different `state` types/fields?
-    - Alternatively we could make `AbstractLoss` generic over an
-      `AbstractState` typevar, however that might not make sense for typing
+    - Alternatively we could make `AbstractLoss` generic over a
+      `StateT` typevar, however that might not make sense for typing
       the compositions (e.g. `__sum__`) since the composite can support any
       state pytrees that have the right combination of fields, not just pytrees
       that have an identical structure.
@@ -36,25 +36,25 @@ TODO:
 
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
-from functools import cached_property
+from functools import cached_property, partial
 import logging
 from typing import (
     TYPE_CHECKING,
-    ClassVar,
     Literal,
     Optional,
     Tuple,
 )
 
 import equinox as eqx
-from equinox import AbstractVar
+from equinox import AbstractVar, Module, field
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.misc import get_unique_label, unzip2
-from feedbax.state import AbstractState, HasEffectorState
+from feedbax._mapping import WhereDict
+from feedbax.state import State
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedbackState
@@ -97,7 +97,7 @@ def is_lossdict(x):
     return isinstance(x, LossDict)
 
 
-class AbstractLoss(eqx.Module):
+class AbstractLoss(Module):
     """Abstract base class for loss functions.
 
     Instances can be composed by addition and scalar multiplication.
@@ -283,7 +283,7 @@ class CompositeLoss(AbstractLoss):
     @jax.named_scope("fbx.CompositeLoss")
     def __call__(
         self,
-        states: AbstractState,
+        states: State,
         trial_specs: "AbstractTaskTrialSpec",
     ) -> LossDict:
         """Evaluate, weight, and return all component terms.
@@ -316,6 +316,39 @@ class CompositeLoss(AbstractLoss):
         trial_specs: "AbstractTaskTrialSpec",
     ) -> Array:
         return self(states, trial_specs).total
+
+
+class TargetSpec(Module):
+    label: str
+    data: PyTree[Array]
+    norm: Callable = jnp.linalg.norm
+    # TODO: If `time_idxs` is `Array`, it must be 1D or we'll lose the time dimension before we sum over it!
+    time_idxs: Optional[Array | slice] = field(default_factory=lambda: slice(0, None))
+    discount: Optional[Array | slice] = field(default_factory=lambda: jnp.array(1))
+
+
+class TargetSpecLoss(AbstractLoss):
+    label: str
+    where: Callable
+
+    @cached_property
+    def _where_str(self):
+        return WhereDict.key_transform(self.where)
+
+    def term(
+        self,
+        states: PyTree,
+        trial_specs: "AbstractTaskTrialSpec",
+    ) -> Array:
+
+        target_spec = trial_specs.targets[self._where_str]
+
+        state = self.where(states)[..., target_spec.time_idxs, :]
+        target = target_spec.data
+        loss_over_time = target_spec.norm(state - target, axis=-1)
+        discounted_loss_over_time = loss_over_time * target_spec.discount
+
+        return jnp.sum(discounted_loss_over_time, axis=-1)
 
 
 class EffectorPositionLoss(AbstractLoss):
@@ -466,7 +499,7 @@ class EffectorVelocityLoss(AbstractLoss):
     """
 
     label: str = "Effector position"
-    discount_func: Callable[[int], Float[Array, "#time"]] = lambda n_steps: 1.0
+    discount_func: Callable[[int], Float[Array, "#time"]] = lambda n_steps: jnp.float32(1.0)
 
     def term(
         self,

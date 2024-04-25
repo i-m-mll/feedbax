@@ -1,12 +1,12 @@
 # Tasks
 
-!!! Note ""     
-    Feedbax tasks are objects that group together:    
-    
+!!! Note ""
+    Feedbax tasks are objects that group together:
+
     1. A loss function that is used to evaluated performance on a task;
     2. Per-trial data to:
         1. Initialize the state of a model prior to evaluation on task trials;
-        2. Specify the parameters of task trials to the model and to the loss 
+        2. Specify the parameters of task trials to the model and to the loss
            function.
 
 ---
@@ -31,7 +31,7 @@
 
 ## Abstract base classes
 
-::: feedbax.task.AbstractTaskInputs
+<!-- ::: feedbax.task.AbstractTaskInputs -->
 
 ::: feedbax.task.AbstractTaskTrialSpec
 
@@ -41,7 +41,7 @@
 
 ::: feedbax.task.internal_grid_points
 
-## Using lambda functions as dictionary keys 
+## Using lambda functions as dictionary keys
 
 ::: feedbax.task.WhereDict
     options:

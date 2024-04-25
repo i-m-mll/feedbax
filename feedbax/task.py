@@ -31,15 +31,15 @@ from typing import (
 
 import equinox as eqx
 from equinox import AbstractVar, Module, field
-from equinox._pretty_print import tree_pp, bracketed
+from feedbax.intervene.intervene import AbstractIntervenorInput
 from feedbax.intervene.schedule import IntervenorLabelStr
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax._src.pretty_printer as pp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree, Shaped
 import numpy as np
+import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]
 
 from feedbax.intervene import (
     AbstractIntervenor,
@@ -48,11 +48,11 @@ from feedbax.intervene import (
     schedule_intervenor,
 )
 from feedbax.intervene.remove import remove_all_intervenors
-from feedbax.loss import AbstractLoss, LossDict
-from feedbax._mapping import AbstractTransformedOrderedDict
+from feedbax.loss import AbstractLoss, LossDict, TargetSpec, power_discount
+from feedbax._mapping import WhereDict
 from feedbax._model import ModelInput
+import feedbax.plotly as plot
 from feedbax._staged import AbstractStagedModel
-from feedbax.misc import where_func_to_labels
 from feedbax.state import CartesianState, StateT
 from feedbax._tree import tree_call
 
@@ -65,110 +65,13 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-class _QuotelessStr(str):
-    """String that renders without quotation marks."""
-    def __repr__(self):
-        return self
-
-
-class _WhereKey:
-
-    def __init__(self, where: Callable):
-        bound_vars = dis.Bytecode(where).codeobj.co_varnames
-        if len(bound_vars) != 1:
-            raise ValueError("`WhereDict` keys must be functions of a single argument")
-
-        self.bound_var = bound_vars[0]
-        self.term_strs = where_func_to_labels(where)
-
-    def __repr__(self):
-        terms = jax.tree_map(
-            lambda leaf: _QuotelessStr(".".join([self.bound_var, leaf])),
-            self.term_strs,
-        )
-        # Wrap in parentheses so that the dict colon `:` is easier to distinguish from
-        # the lambda colon.
-        return f"(lambda {self.bound_var}: {terms})"
-
-
-@jtu.register_pytree_node_class
-class WhereDict(
-    AbstractTransformedOrderedDict[
-        str,
-        Callable[[PyTree[Array]], PyTree[Array, "T"]],
-        PyTree[Array, "T"],
-    ]
-):
-    """An `OrderedDict` that allows limited use of `where` lambdas as keys.
-
-    In particular, keys can be lambdas that take a single argument,
-    and return a single (nested) attribute accessed from that argument.
-
-    Lambdas are parsed to equivalent strings, which can be used
-    interchangeably as keys. For example, the following are equivalent when
-    `init_spec` is a `WhereDict`:
-
-    ```python
-    init_spec[lambda state: state.mechanics.effector]
-    ```
-    ```python
-    init_spec['mechanics.effector']
-    ```
-
-    ??? Note "Performance"
-        For typical initialization mappings (1-10 items) construction is on the order
-        of 50x slower than `OrderedDict`. Access is about 2-20x slower, depending
-        whether indexed by string or by callable.
-
-        However, we only need to do a single construction and a single access of
-        `init_spec` per batch/evaluation, so performance shouldn't matter too much in
-        practice: the added overhead is <50 us/batch, and a batch normally takes
-        at least 20,000 us to train.
-    """
-
-    def _key_transform(self, key: str | Callable) -> str:
-
-        if isinstance(key, str):
-            pass
-        elif not isinstance(key, Callable):
-            raise ValueError("`WhereDict` keys should be supplied as strings or callables")
-        else:
-            terms = where_func_to_labels(key)
-            if isinstance(terms, str):
-                where_str = terms
-            else:
-                where_str = ", ".join(jtu.tree_leaves(terms))
-            return where_str
-        return key
-
-    def __tree_pp__(self, **kwargs):
-        return tree_pp(
-            {
-                _WhereKey(where): v
-                for _, (where, v) in self.store.items()
-            },
-            **kwargs,
-        )
-
-
-
-class AbstractTaskInputs(Module):
-    """Abstract base class for model inputs provided by a task.
-
-    !!! Note ""
-        Normally, each field of a subclass will be a PyTree of arrays where
-        each array has a leading dimension corresponding to the time step—
-        which becomes the second dimension, when the PyTree describes a batch
-        of trials.
-    """
-
-    ...
+InitsWhereDict: TypeAlias = WhereDict[PyTree[Array]]
+TargetsWhereDict: TypeAlias = WhereDict[TargetSpec]
 
 
 # TODO: Once `target` is specified as a `WhereDict` as well, the only thing
 # that will really change between classes of tasks is `inputs`. In that case,
-# we could just make this `TaskTrialSpec` and have it be a generic of
-# `AbstractTaskInputs`
+# we could just make this `TaskTrialSpec`
 class AbstractTaskTrialSpec(Module):
     """Abstract base class for trial specifications provided by a task.
 
@@ -181,12 +84,12 @@ class AbstractTaskTrialSpec(Module):
             intervention parameters.
     """
 
-    inits: AbstractVar[WhereDict]
-    # inits: OrderedDict[Callable[[AbstractState], PyTree[Array]],
-    #                        PyTree[Array]]
-    inputs: AbstractVar[AbstractTaskInputs]
+    inits: AbstractVar[InitsWhereDict]
+    inputs: AbstractVar[PyTree]
+    # TODO: Rename to `targets`.
     target: AbstractVar[PyTree[Array]]
-    intervene: AbstractVar[Mapping[str, Array]]
+    # targets: AbstractVar[TargetsWhereDict]
+    intervene: AbstractVar[Mapping[IntervenorLabelStr, AbstractIntervenorInput]]
 
 
 class AbstractReachTrialSpec(AbstractTaskTrialSpec):
@@ -204,10 +107,11 @@ class AbstractReachTrialSpec(AbstractTaskTrialSpec):
 
     """
 
-    inits: AbstractVar[WhereDict]
-    inputs: AbstractVar[AbstractTaskInputs]
+    inits: AbstractVar[InitsWhereDict]
+    inputs: AbstractVar[PyTree]
     target: AbstractVar[CartesianState]
-    intervene: AbstractVar[Mapping[str, Array]]
+    # targets: AbstractVar[TargetsWhereDict]
+    intervene: AbstractVar[Mapping[IntervenorLabelStr, AbstractIntervenorInput]]
 
     @cached_property
     def goal(self):
@@ -215,7 +119,7 @@ class AbstractReachTrialSpec(AbstractTaskTrialSpec):
         return jax.tree_map(lambda x: x[:, -1], self.target)
 
 
-class SimpleReachTaskInputs(AbstractTaskInputs):
+class SimpleReachTaskInputs(Module):
     """Model input for a simple reaching task.
 
     Attributes:
@@ -258,10 +162,13 @@ class SimpleReachTrialSpec(AbstractReachTrialSpec):
             intervention parameters.
     """
 
-    inits: WhereDict
+    inits: InitsWhereDict
     inputs: SimpleReachTaskInputs
     target: CartesianState
-    intervene: Mapping[str, Array] = field(default_factory=dict)
+    # targets: TargetsWhereDict
+    intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(
+        default_factory=dict
+    )
 
 
 class DelayedReachTrialSpec(AbstractReachTrialSpec):
@@ -281,11 +188,13 @@ class DelayedReachTrialSpec(AbstractReachTrialSpec):
     inputs: DelayedReachTaskInputs
     target: CartesianState
     epoch_start_idxs: Int[Array, "n_epochs"]
-    intervene: Mapping[str, Array] = field(default_factory=dict)
+    intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(
+        default_factory=dict
+    )
 
 
 T = TypeVar('T')
-# Strings are instances of `Sequence[str]`; we can use the following type to 
+# Strings are instances of `Sequence[str]`; we can use the following type to
 # distinguish sequences of strings (`NonCharSequence[str]`) from single strings
 # (i.e. which might be considered `CharSequence`)
 NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
@@ -297,7 +206,7 @@ LabeledInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, InterventionSp
 class TaskInterventionSpecs(Module):
     training: LabeledInterventionSpecs = field(default_factory=dict)
     validation: LabeledInterventionSpecs = field(default_factory=dict)
-    
+
     @cached_property
     def all(self) -> LabeledInterventionSpecs:
         # Validation specs are assumed to take precedence, in case of conflicts.
@@ -322,7 +231,7 @@ class AbstractTask(Module):
         n_steps: The number of time steps in the task trials.
         seed_validation: The random seed for generating the validation trials.
         intervention_specs: Mappings from unique intervenor names, to specifications
-            for generating per-trial intervention parameters. Distinct fields provide 
+            for generating per-trial intervention parameters. Distinct fields provide
             mappings for training and validation trials, though the two may be identical
             depending on scheduling.
     """
@@ -728,7 +637,7 @@ class AbstractTask(Module):
             )
 
         return model_
-    
+
     def activate_interventions(
         self,
         labels: NonCharSequence[IntervenorLabelStr] | Literal['all', 'none'],
@@ -737,10 +646,10 @@ class AbstractTask(Module):
         ] = None,
         validation_same_schedule=False,
     ) -> Self:
-        """Return a task where scheduling if active only for the interventions with the 
+        """Return a task where scheduling if active only for the interventions with the
         given labels.
         """
-        
+
         if labels == 'all':
             labels = list(self.intervention_specs.training.keys())
         elif labels == 'none':
@@ -748,28 +657,34 @@ class AbstractTask(Module):
 
         tree_at_spec = {"": labels}
         task = self
-        
+
         if validation_same_schedule:
-            labels_validation = labels 
+            labels_validation = labels
         elif validation_same_schedule == 'all':
             labels_validation = list(self.intervention_specs.validation.keys())
         elif validation_same_schedule == 'none':
             labels_validation = []
-                
+
         if labels_validation is not None:
-            tree_at_spec = {"_validation": labels}    
-        
+            tree_at_spec = {"_validation": labels}
+
         for suffix, labels_ in tree_at_spec.items():
             intervention_specs = getattr(self, f"intervention_specs{suffix}")
-            
+
             task = eqx.tree_at(
                 lambda task: getattr(task, f"intervention_specs{suffix}"),
-                task, 
+                task,
                 {k: (k in labels_, v) for k, (_, v) in intervention_specs.items()},
-            )        
-        
+            )
+
         return task
-        
+
+    @abstractmethod
+    def validation_plots(
+        self, states, trial_specs: Optional[AbstractTaskTrialSpec] = None,
+    ) -> Mapping[str, go.Figure]:
+        """Returns a basic set of plots to visualize performance on the task."""
+        ...
 
 
 def _pos_only_states(positions: Float[Array, "... ndim=2"]):
@@ -904,22 +819,29 @@ class SimpleReaches(AbstractTask):
         #         effector_target_state,
         #     )
         # )
-        # TODO: It might be better here to use an `Intervenor`-like callable
-        # instead of `WhereDict`, which is slow. Though the callable would
-        # ideally provide the initial state as a
-        # def init_func(state):
-        #     return eqx.tree_at(
-        #         lambda state: state.mechanics.effector,
-        #         state,
-        #         effector_init_state,
-        #     )
 
         return SimpleReachTrialSpec(
-            inits=WhereDict(
-                {(lambda state: state.mechanics.effector): effector_init_state},
-            ),
+            inits=WhereDict({
+                (lambda state: state.mechanics.effector): effector_init_state
+            }),
             inputs=SimpleReachTaskInputs(effector_target=effector_target),
             target=effector_target_state,
+            # targets=WhereDict({
+            #     (lambda state: state.mechanics.effector.pos): TargetSpec(
+            #         label="Effector position",
+            #         data=effector_target_state.pos,
+            #         discount=power_discount(self.n_steps, discount_exp=6),
+            #     ),
+            #     (lambda state: state.mechanics.effector.vel): TargetSpec(
+            #         label="Effector final velocity",
+            #         data=effector_target_state.vel,
+            #         discount=slice(-1, None),
+            #     ),
+            #     (lambda state: state.efferent.output): TargetSpec(
+            #         label="Command",
+            #         data=jnp.array(0.0),
+            #     )
+            # }),
         )
 
     def get_validation_trials(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
@@ -958,6 +880,7 @@ class SimpleReaches(AbstractTask):
                 effector_target=_forceless_task_inputs(effector_target_states)
             ),
             target=effector_target_states,
+            # targets=None,
         )
 
     @property
@@ -965,6 +888,16 @@ class SimpleReaches(AbstractTask):
         """Number of trials in the validation set."""
         return self.eval_grid_n**2 * self.eval_n_directions
 
+    def validation_plots(
+        self, states, trial_specs: Optional[SimpleReachTrialSpec] = None
+    ) -> dict[str, go.Figure]:
+        return dict(
+            effector_trajectories=plot.effector_trajectories(
+                states,
+                trial_specs=trial_specs,
+                # workspace=self.workspace,
+            )
+        )
 
 class DelayedReaches(AbstractTask):
     """Uniform random endpoints in a rectangular workspace.
