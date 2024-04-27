@@ -30,7 +30,7 @@ from feedbax.loss import LossDict
 from feedbax.misc import where_func_to_labels
 
 if TYPE_CHECKING:
-    from feedbax.task import AbstractReachTrialSpec
+    from feedbax.task import TaskTrialSpec
     from feedbax.train import TaskTrainerHistory
 
 
@@ -420,7 +420,7 @@ def effector_trajectories(
     ] = None,
     var_labels: Optional[tuple[str, ...]] = None,
     step: int = 1,  # plot every step-th trial
-    trial_specs: Optional["AbstractReachTrialSpec"] = None,
+    trial_specs: Optional["TaskTrialSpec"] = None,
     endpoints: Optional[
         tuple[Float[Array, "trial xy=2"], Float[Array, "trial xy=2"]]
     ] = None,
@@ -553,12 +553,16 @@ def effector_trajectories(
         endpoints_arr = np.array(endpoints)  #type: ignore
     else:
         if trial_specs is not None:
-            endpoints_arr = np.array(  # type: ignore
-                [
-                    trial_specs.inits["mechanics.effector"].pos,
-                    trial_specs.goal.pos,
-                ]
-            )
+            target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
+            if target_specs.target_value is not None:
+                endpoints_arr = np.array(  # type: ignore
+                    [
+                        trial_specs.inits["mechanics.effector"].pos,
+                        target_specs.target_value[:, -1],
+                    ]
+                )
+            else:
+                endpoints_arr = None
         else:
             endpoints_arr = None
 

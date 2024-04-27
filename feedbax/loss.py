@@ -58,7 +58,7 @@ from feedbax.state import State
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedbackState
-    from feedbax.task import AbstractTaskTrialSpec
+    from feedbax.task import TaskTrialSpec
 
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ class AbstractLoss(Module):
     def __call__(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> LossDict:
         return LossDict({self.label: self.term(states, trial_specs)})
 
@@ -116,7 +116,7 @@ class AbstractLoss(Module):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
         """Implement this to calculate a loss term."""
         ...
@@ -284,7 +284,7 @@ class CompositeLoss(AbstractLoss):
     def __call__(
         self,
         states: State,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> LossDict:
         """Evaluate, weight, and return all component terms.
 
@@ -313,42 +313,114 @@ class CompositeLoss(AbstractLoss):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
         return self(states, trial_specs).total
 
-
+# Maybe rename TargetValueSpec; I feel like a "`TargetSpec`" would include a `where` field
 class TargetSpec(Module):
-    label: str
-    data: PyTree[Array]
-    norm: Callable = jnp.linalg.norm
+    """Associate a state's target value with time indices and discounting factors."""
+    # `target_value` may be `None` when we specify default values for the other fields
+    target_value: Optional[PyTree[Array]] = None
     # TODO: If `time_idxs` is `Array`, it must be 1D or we'll lose the time dimension before we sum over it!
-    time_idxs: Optional[Array | slice] = field(default_factory=lambda: slice(0, None))
-    discount: Optional[Array | slice] = field(default_factory=lambda: jnp.array(1))
+    time_idxs: Optional[Array] = None
+    discount: Optional[Array] = None # field(default_factory=lambda: jnp.array([1.0]))
+
+    def __and__(self, other):
+        # Allows user to do `target_zero & target_final_state`, for example.
+        return eqx.combine(self, other)
+
+    def __rand__(self, other):
+        # Necessary for edge case of `None & spec`
+        return eqx.combine(other, self)
+
+    @property
+    def batch_axes(self) -> PyTree[None | int]:
+        # Assume that only the target value will vary between trials.
+        # TODO: (Low priority.) It's probably better to give control over this to
+        # `AbstractTask`, since in some cases we might want to vary these parameters
+        # over trials and not just across batches. And if we don't want to vary them
+        # at all, then why are time_idxs and discount not just fields of
+        # `TargetStateLoss`?
+        return TargetSpec(
+            target_value=0,
+            time_idxs=None,
+            discount=None,
+        )
 
 
-class TargetSpecLoss(AbstractLoss):
+"""Useful partial target specs"""
+target_final_state = TargetSpec(None, jnp.array([-1], dtype=int), None)
+target_zero = TargetSpec(jnp.array(0.0), None, None)
+
+
+class TargetStateLoss(AbstractLoss):
+    """Penalize a state variable in comparison to a target value.
+
+    !!! Note ""
+        Currently only supports `where` functions that select a
+        single state array, not a `PyTree[Array]`.
+
+    Arguments:
+        label: The label for the loss term.
+        where: Function that takes the PyTree of model states, and
+            returns the substate to be penalized.
+        norm: Function which takes the difference between
+            the substate and the target, and transforms it into a distance. For example,
+            if the substate is effector position, then the substate-target difference
+            gives the difference between the $x$ and $y$ position components, and the
+            default `norm` function (`jnp.linalg.norm` on `axis=-1`) returns the
+            Euclidean distance between the actual and target positions.
+        spec: Gives default/constant values for the substate target, discount, and
+            time index.
+    """
     label: str
     where: Callable
+    norm: Callable = lambda x: jnp.linalg.norm(x, axis=-1)  # Spatial distance
+    spec: Optional[TargetSpec] = None  # Default/constant values.
 
     @cached_property
-    def _where_str(self):
-        return WhereDict.key_transform(self.where)
+    def key(self):
+        return WhereDict.key_transform((self.where, self.label))
 
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
+        """
+        Arguments:
+            trial_specs: Trial-by-trial information. In particular, if
+                `trial_specs.targets` contains a `TargetSpec` entry mapped by
+                `self.key`, the values of that `TargetSpec` instance will
+                take precedence over the defaults specified by `self.spec`.
+                This allows `AbstractTask` subclasses to specify trial-by-trial
+                targets, where appropriate.
+        """
 
-        target_spec = trial_specs.targets[self._where_str]
+        # TODO: Support PyTrees, not just single arrays
+        state = self.where(states)[:, 1:]
 
-        state = self.where(states)[..., target_spec.time_idxs, :]
-        target = target_spec.data
-        loss_over_time = target_spec.norm(state - target, axis=-1)
-        discounted_loss_over_time = loss_over_time * target_spec.discount
+        if (task_target_spec := trial_specs.targets.get(self.key, None)) is None:
+            if self.spec is None:
+                raise ValueError("`TargetSpec` must be provided on construction of "
+                                 "`TargetStateLoss`, or as part of the trial "
+                                 "specifications")
 
-        return jnp.sum(discounted_loss_over_time, axis=-1)
+            target_spec = self.spec
+        else:
+            # Override default spec with trial-by-trial spec provided by the task, if any
+            target_spec: TargetSpec = eqx.combine(self.spec, task_target_spec)
+
+        if target_spec.time_idxs is not None:
+            state = state[..., target_spec.time_idxs, :]
+
+        loss_over_time = self.norm(state - target_spec.target_value)
+
+        if target_spec.discount is not None:
+            loss_over_time = loss_over_time * target_spec.discount
+
+        return jnp.sum(loss_over_time, axis=-1)
 
 
 class EffectorPositionLoss(AbstractLoss):
@@ -389,7 +461,7 @@ class EffectorPositionLoss(AbstractLoss):
     def term(
         self,
         states: "SimpleFeedbackState",
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
 
         # Sum over X, Y, giving the squared Euclidean distance
@@ -433,7 +505,7 @@ class EffectorStraightPathLoss(AbstractLoss):
     def term(
         self,
         states: "SimpleFeedbackState",
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
 
         effector_pos = states.mechanics.effector.pos
@@ -471,7 +543,7 @@ class EffectorFixationLoss(AbstractLoss):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",  # DelayedReachTrialSpec
+        trial_specs: "TaskTrialSpec",  # DelayedReachTrialSpec
     ) -> Array:
 
         loss = jnp.sum(
@@ -504,7 +576,7 @@ class EffectorVelocityLoss(AbstractLoss):
     def term(
         self,
         states: "SimpleFeedbackState",
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
 
         # Sum over X, Y, giving the squared Euclidean distance
@@ -541,7 +613,7 @@ class EffectorFinalVelocityLoss(AbstractLoss):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
 
         loss = jnp.sum(
@@ -564,7 +636,7 @@ class NetworkOutputLoss(AbstractLoss):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
 
         # Sum over output channels
@@ -588,7 +660,7 @@ class NetworkActivityLoss(AbstractLoss):
     def term(
         self,
         states: PyTree,
-        trial_specs: "AbstractTaskTrialSpec",
+        trial_specs: "TaskTrialSpec",
     ) -> Array:
 
         # Sum over hidden units

@@ -10,7 +10,7 @@ from collections.abc import Callable, MutableMapping
 
 import dis
 import logging
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, overload
 
 import equinox as eqx
 from equinox._pretty_print import tree_pp, bracketed
@@ -23,7 +23,7 @@ from feedbax.misc import unzip2, where_func_to_labels
 
 logger = logging.getLogger(__name__)
 
-
+T = TypeVar("T")
 KT1 = TypeVar("KT1")
 KT2 = TypeVar("KT2")
 VT = TypeVar("VT")
@@ -54,6 +54,13 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
         k = self._key_transform(key)
         return self.store[k][1]
 
+    def get(self, key: KT1 | KT2, /, default: VT | T | None = None) -> VT | T | None:
+        k = self._key_transform(key)
+        if k in self.store:
+            return self.store[k][1]
+        else:
+            return default
+
     def __setitem__(self, key: KT2, value: VT):
         self.store[self._key_transform(key)] = (key, value)
 
@@ -74,7 +81,7 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
 
     def tree_flatten(self):
         """The same flatten function used by JAX for `dict`"""
-        return unzip2(sorted(self.items()))[::-1]
+        return tuple(self.values()), tuple(self.keys())
 
     @classmethod
     def tree_unflatten(cls, keys, values):
@@ -178,11 +185,11 @@ class WhereDict(
         at least 20,000 us to train.
     """
 
-    def _key_transform(self, key: str | Callable) -> str:
+    def _key_transform(self, key: str | Callable | tuple[Callable, str]) -> str:
         return self.key_transform(key)
 
     @staticmethod
-    def key_transform(key: str | Callable) -> str:
+    def key_transform(key: str | Callable | tuple[Callable, str]) -> str:
 
         if isinstance(key, str):
             pass

@@ -250,7 +250,7 @@ def is_timeseries_param(x):
 
 def _eval_intervenor_param_spec(
     intervention_spec: InterventionSpec,
-    trial_spec, #: AbstractTaskTrialSpec,
+    trial_spec, #: TaskTrialSpec,
     key: PRNGKeyArray,
 ):
     # Unwrap any `TimeSeriesParam` instances:

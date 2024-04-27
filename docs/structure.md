@@ -29,7 +29,7 @@ In Feedbax, models are trained to perform tasks. Typically, this means running t
 
 The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
 
-[Trial specifications][feedbax.task.AbstractTaskTrialSpec] are always composed of three things:
+[Trial specifications][feedbax.task.TaskTrialSpec] are always composed of three things:
 
 1. Data with which to initialize one or more parts of a model's state, prior to a trial;
 2. Target data which the loss function will use to score the history of a model's states, over a trial;

@@ -16,11 +16,11 @@ TODO:
 
 from abc import abstractmethod, abstractproperty
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
-import dis
 from functools import cached_property
 import logging
 from typing import (
     TYPE_CHECKING,
+    Generic,
     Literal,
     Optional,
     Self,
@@ -43,14 +43,23 @@ import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]
 
 from feedbax.intervene import (
     AbstractIntervenor,
+    AbstractIntervenorInput,
     InterventionSpec,
     TimeSeriesParam,
     schedule_intervenor,
 )
 from feedbax.intervene.remove import remove_all_intervenors
-from feedbax.loss import AbstractLoss, LossDict, TargetSpec, power_discount
+from feedbax.loss import (
+    AbstractLoss,
+    LossDict,
+    TargetSpec,
+    power_discount,
+    target_final_state,
+    target_zero,
+)
 from feedbax._mapping import WhereDict
 from feedbax._model import ModelInput
+from feedbax.misc import is_module
 import feedbax.plotly as plot
 from feedbax._staged import AbstractStagedModel
 from feedbax.state import CartesianState, StateT
@@ -65,58 +74,62 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-InitsWhereDict: TypeAlias = WhereDict[PyTree[Array]]
-TargetsWhereDict: TypeAlias = WhereDict[TargetSpec]
+TaskInitStateSpec: TypeAlias = WhereDict[PyTree[Array]]
+TaskTargetStateSpecs: TypeAlias = WhereDict[TargetSpec]
 
 
 # TODO: Once `target` is specified as a `WhereDict` as well, the only thing
 # that will really change between classes of tasks is `inputs`. In that case,
 # we could just make this `TaskTrialSpec`
-class AbstractTaskTrialSpec(Module):
-    """Abstract base class for trial specifications provided by a task.
+class TaskTrialSpec(Module):
+    """Trial specification(s) provided by a task.
 
     Attributes:
-        inits: A mapping from `lambdas` that select model substates to be
-            initialized, to substates to initialize them with.
-        inputs: A PyTree of inputs to the model.
-        target: A PyTree of target states.
+        inits: Specifies how to initialize parts of the model state, at the start of
+            the trial(s) -- for example, the starting position of an arm. Given as a
+            mapping from `lambdas` that select model substates (subtrees) to be
+            initialized, to the data to initialize them with.
+        targets: Specifies target values for arbitrary parts of the model state, across
+            the trial(s) -- for example, the goal position of an arm. Given as a mapping
+            from `lambdas` that select model substates, to specifications of how to
+            penalize those parts of the state.
+        inputs: A PyTree of inputs to the model -- the information that is provided
+            to the model, so that it may complete the task.
         intervene: A mapping from unique intervenor names, to per-trial
             intervention parameters.
+        extra: Additional trial information, such as may be useful for plotting or
+            analysis of the task, but which is not appropriate to include in the
+            other fields.
     """
 
-    inits: AbstractVar[InitsWhereDict]
-    inputs: AbstractVar[PyTree]
-    # TODO: Rename to `targets`.
-    target: AbstractVar[PyTree[Array]]
-    # targets: AbstractVar[TargetsWhereDict]
-    intervene: AbstractVar[Mapping[IntervenorLabelStr, AbstractIntervenorInput]]
+    inits: TaskInitStateSpec
+    targets: TaskTargetStateSpecs
+    inputs: PyTree
+    # target: AbstractVar[PyTree[Array]]
+    intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(
+        default_factory=dict
+    )
+    extra: Optional[Mapping[str, Array]] = None
+
+    @property
+    def batch_axes(self) -> PyTree[int]:
+        return type(self)(
+            inits=0,
+            targets=jax.tree_map(
+                lambda x: getattr(x, "batch_axes", 0),
+                self.targets,
+                is_leaf=is_module,
+            ),
+            inputs=0,
+            intervene=0,
+            extra=0,
+        )
 
 
-class AbstractReachTrialSpec(AbstractTaskTrialSpec):
-    """Abstract base class for trial specifications for reaching tasks.
-
-    Attributes:
-        inits: A mapping from `lambdas` that select model substates to be
-            initialized, to substates to initialize them with.
-        inputs: A PyTree of inputs to the model, including data about the
-            reach target.
-        target: The target trajectory for the mechanical end effector,
-            used for computing the loss.
-        intervene: A mapping from unique intervenor names, to per-trial
-            intervention parameters.
-
-    """
-
-    inits: AbstractVar[InitsWhereDict]
-    inputs: AbstractVar[PyTree]
-    target: AbstractVar[CartesianState]
-    # targets: AbstractVar[TargetsWhereDict]
-    intervene: AbstractVar[Mapping[IntervenorLabelStr, AbstractIntervenorInput]]
-
-    @cached_property
-    def goal(self):
-        """The final state in the target trajectory for the mechanical end effector."""
-        return jax.tree_map(lambda x: x[:, -1], self.target)
+def trial_end_targets(trial_spec: TaskTrialSpec):
+    # TODO: Infer from `time_idxs` & `data`, for target spec in `trial_spec.targets`
+    # return jax.tree_map(lambda x: x[:, -1], trial_spec.targets)
+    ...
 
 
 class SimpleReachTaskInputs(Module):
@@ -127,7 +140,7 @@ class SimpleReachTaskInputs(Module):
             the model.
     """
 
-    effector_target: CartesianState  #! column vector: why here?
+    effector_target: CartesianState
 
 
 class DelayedReachTaskInputs(Module):
@@ -148,49 +161,6 @@ class DelayedReachTaskInputs(Module):
         Array, "time 1"
     ]  # TODO: do these need to be typed as column vectors, here?
     target_on: Int[Array, "time 1"]
-
-
-class SimpleReachTrialSpec(AbstractReachTrialSpec):
-    """Trial specification for a simple reaching task.
-
-    Attributes:
-        inits: A mapping from `lambdas` that select model substates to be
-            initialized, to substates to initialize them with at the start of trials.
-        inputs: For providing the model with the reach target.
-        target: The target trajectory for the mechanical end effector.
-        intervene: A mapping from unique intervenor names, to per-trial
-            intervention parameters.
-    """
-
-    inits: InitsWhereDict
-    inputs: SimpleReachTaskInputs
-    target: CartesianState
-    # targets: TargetsWhereDict
-    intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(
-        default_factory=dict
-    )
-
-
-class DelayedReachTrialSpec(AbstractReachTrialSpec):
-    """Trial specification for a delayed reaching task.
-
-    Attributes:
-        inits: A mapping from `lambdas` that select model substates to be
-            initialized, to substates to initialize them with at the start of trials.
-        inputs: For providing the model with the reach target and hold signal.
-        target: The target trajectory for the mechanical end effector.
-        epoch_start_idxs: The indices of the start of each epoch in the trial.
-        intervene: A mapping from unique intervenor names, to per-trial
-            intervention parameters.
-    """
-
-    inits: WhereDict
-    inputs: DelayedReachTaskInputs
-    target: CartesianState
-    epoch_start_idxs: Int[Array, "n_epochs"]
-    intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(
-        default_factory=dict
-    )
 
 
 T = TypeVar('T')
@@ -247,11 +217,16 @@ class AbstractTask(Module):
                 "The loss function must be an instance of `AbstractLoss`"
             )
 
+        # TODO: check that `loss_func` doesn't contain `TargetStateLoss` terms which lack
+        # a default target spec, or have a spec with a missing `spec.target_value', and
+        # for which the `AbstractTask` instance does not
+        # provide target specs trial-by-trial
+
     @abstractmethod
     def get_train_trial(
         self,
         key: PRNGKeyArray,
-    ) -> AbstractTaskTrialSpec:
+    ) -> TaskTrialSpec:
         """Return a single training trial specification.
 
         Arguments:
@@ -263,7 +238,7 @@ class AbstractTask(Module):
     def get_train_trial_with_intervenor_params(
         self,
         key: PRNGKeyArray,
-    ) -> AbstractTaskTrialSpec:
+    ) -> TaskTrialSpec:
         """Return a single training trial specification, including intervention parameters.
 
         Arguments:
@@ -289,12 +264,13 @@ class AbstractTask(Module):
     def _intervenor_params(
         self,
         intervention_specs: Mapping[IntervenorLabelStr, InterventionSpec],
-        trial_spec: AbstractTaskTrialSpec,
+        trial_spec: TaskTrialSpec,
         key: PRNGKeyArray,
-    ):
+    ) -> Mapping[IntervenorLabelStr, AbstractIntervenorInput]:
+        """Returns inter"""
         spec_intervenor_params = {k: v.intervenor.params for k, v in intervention_specs.items()}
 
-        # TODO: Try not to repeat `intervene._eval_intervenor_param_spec`
+        # TODO: Don't repeat `intervene._eval_intervenor_param_spec`
         # Evaluate any parameters that vary by trial.
         intervenor_params = tree_call(
             spec_intervenor_params,
@@ -333,7 +309,7 @@ class AbstractTask(Module):
     def get_validation_trials(
         self,
         key: PRNGKeyArray,
-    ) -> AbstractTaskTrialSpec:
+    ) -> TaskTrialSpec:
         """Return a set of validation trials, given a random key.
 
         !!! Note ""
@@ -348,7 +324,7 @@ class AbstractTask(Module):
         ...
 
     @cached_property
-    def validation_trials(self) -> AbstractTaskTrialSpec:
+    def validation_trials(self) -> TaskTrialSpec:
         """The set of validation trials associated with the task."""
         key = jr.PRNGKey(self.seed_validation)
         keys = jr.split(key, self.n_validation_trials)
@@ -358,7 +334,10 @@ class AbstractTask(Module):
         trial_specs = eqx.tree_at(
             lambda x: x.intervene,
             trial_specs,
-            eqx.filter_vmap(self._intervenor_params, in_axes=(None, 0, 0))(
+            eqx.filter_vmap(
+                self._intervenor_params,
+                in_axes=(None, trial_specs.batch_axes, 0),
+            )(
                 self.intervention_specs.validation,
                 trial_specs,
                 keys,
@@ -378,7 +357,7 @@ class AbstractTask(Module):
     def eval_trials(
         self,
         model: "AbstractModel[StateT]",
-        trial_specs: AbstractTaskTrialSpec,
+        trial_specs: TaskTrialSpec,
         keys: PRNGKeyArray,
     ) -> Tuple[StateT, LossDict]:
         """Evaluate a model on a set of trials.
@@ -477,13 +456,14 @@ class AbstractTask(Module):
         # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
         # if they are vmapping `eval`.
         if ensemble_random_trials:
-            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, 0))(
-                models_arrays, models_other, jr.split(key, n_replicates)
-            )
+            key = jr.split(key, n_replicates)
+            key_in_axis = 0
         else:
-            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None))(
-                models_arrays, models_other, key
-            )
+            key_in_axis = None
+
+        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, key_in_axis))(
+            models_arrays, models_other, key
+        )
 
     def eval_ensemble(
         self,
@@ -514,7 +494,7 @@ class AbstractTask(Module):
         model: "AbstractModel[StateT]",
         batch_size: int,
         key: PRNGKeyArray,
-    ) -> Tuple[StateT, LossDict, AbstractTaskTrialSpec]:
+    ) -> Tuple[StateT, LossDict, TaskTrialSpec]:
         """Evaluate a model on a single batch of training trials.
 
         Arguments:
@@ -545,7 +525,7 @@ class AbstractTask(Module):
         batch_size: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
-    ) -> Tuple[StateT, LossDict, AbstractTaskTrialSpec]:
+    ) -> Tuple[StateT, LossDict, TaskTrialSpec]:
         """Evaluate an ensemble of models on a single training batch.
 
         Arguments:
@@ -572,13 +552,14 @@ class AbstractTask(Module):
             return self.eval_train_batch(model, batch_size, key)
 
         if ensemble_random_trials:
-            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, 0))(
-                models_arrays, models_other, batch_size, jr.split(key, n_replicates)
-            )
+            key = jr.split(key, n_replicates)
+            key_in_axis = 0
         else:
-            return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, None))(
-                models_arrays, models_other, batch_size, key
-            )
+            key_in_axis = None
+
+        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, key_in_axis))(
+            models_arrays, models_other, batch_size, key
+        )
 
     def add_intervenors_to_base_model(
         self,
@@ -681,7 +662,7 @@ class AbstractTask(Module):
 
     @abstractmethod
     def validation_plots(
-        self, states, trial_specs: Optional[AbstractTaskTrialSpec] = None,
+        self, states, trial_specs: Optional[TaskTrialSpec] = None,
     ) -> Mapping[str, go.Figure]:
         """Returns a basic set of plots to visualize performance on the task."""
         ...
@@ -792,7 +773,7 @@ class SimpleReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
 
-    def get_train_trial(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
+    def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Random reach endpoints across the rectangular workspace.
 
         Arguments:
@@ -819,32 +800,30 @@ class SimpleReaches(AbstractTask):
         #         effector_target_state,
         #     )
         # )
-
-        return SimpleReachTrialSpec(
+        return TaskTrialSpec(
             inits=WhereDict({
                 (lambda state: state.mechanics.effector): effector_init_state
             }),
             inputs=SimpleReachTaskInputs(effector_target=effector_target),
-            target=effector_target_state,
-            # targets=WhereDict({
-            #     (lambda state: state.mechanics.effector.pos): TargetSpec(
-            #         label="Effector position",
-            #         data=effector_target_state.pos,
-            #         discount=power_discount(self.n_steps, discount_exp=6),
-            #     ),
-            #     (lambda state: state.mechanics.effector.vel): TargetSpec(
-            #         label="Effector final velocity",
-            #         data=effector_target_state.vel,
-            #         discount=slice(-1, None),
-            #     ),
-            #     (lambda state: state.efferent.output): TargetSpec(
-            #         label="Command",
-            #         data=jnp.array(0.0),
-            #     )
-            # }),
+            # Specify targets that vary trial-by-trial.
+            targets=WhereDict({
+                ((lambda state: state.mechanics.effector.pos), "Effector position"): (
+                    TargetSpec(effector_target_state.pos, discount=self._pos_discount)
+                ),
+                ((lambda st: st.mechanics.effector.vel), "Effector final velocity"): (
+                    # The `target_final_state` here is redundant with `xabdeef.losses`
+                    # -- but explicit.
+                    TargetSpec(effector_target_state.vel[-1]) & target_final_state
+                    # target_zero & target_final_state
+                ),
+            }),
         )
 
-    def get_validation_trials(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
+    @cached_property
+    def _pos_discount(self):
+        return power_discount(self.n_steps - 1, discount_exp=6)
+
+    def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Center-out reach sets in a grid across the rectangular workspace."""
 
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -872,15 +851,19 @@ class SimpleReaches(AbstractTask):
         #     )
         # )
 
-        return SimpleReachTrialSpec(
+        return TaskTrialSpec(
             inits=WhereDict(
                 {(lambda state: state.mechanics.effector): effector_init_states},
             ),
             inputs=SimpleReachTaskInputs(
                 effector_target=_forceless_task_inputs(effector_target_states)
             ),
-            target=effector_target_states,
-            # targets=None,
+            # target=effector_target_states,
+            targets=WhereDict({
+                ((lambda state: state.mechanics.effector.pos), "Effector position"): (
+                    TargetSpec(effector_target_states.pos, discount=self._pos_discount)
+                ),
+            }),
         )
 
     @property
@@ -889,7 +872,7 @@ class SimpleReaches(AbstractTask):
         return self.eval_grid_n**2 * self.eval_n_directions
 
     def validation_plots(
-        self, states, trial_specs: Optional[SimpleReachTrialSpec] = None
+        self, states, trial_specs: Optional[TaskTrialSpec] = None
     ) -> dict[str, go.Figure]:
         return dict(
             effector_trajectories=plot.effector_trajectories(
@@ -940,7 +923,7 @@ class DelayedReaches(AbstractTask):
     seed_validation: int = 5555
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
-    def get_train_trial(self, key: PRNGKeyArray) -> DelayedReachTrialSpec:
+    def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Random reach endpoints across the rectangular workspace.
 
         Arguments:
@@ -958,16 +941,16 @@ class DelayedReaches(AbstractTask):
             effector_init_state, effector_target_state, key2
         )
 
-        return DelayedReachTrialSpec(
+        return TaskTrialSpec(
             inits=WhereDict(
                 {(lambda state: state.mechanics.effector): effector_init_state},
             ),
             inputs=task_inputs,
             target=effector_target_states,
-            epoch_start_idxs=epoch_start_idxs,
+            extra=dict(epoch_start_idxs=epoch_start_idxs),
         )
 
-    def get_validation_trials(self, key: PRNGKeyArray) -> DelayedReachTrialSpec:
+    def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Center-out reach sets in a grid across the rectangular workspace."""
 
         effector_pos_endpoints = _centerout_endpoints_grid(
@@ -987,13 +970,13 @@ class DelayedReaches(AbstractTask):
             self._get_sequences
         )(effector_init_states, effector_target_states, epochs_keys)
 
-        return DelayedReachTrialSpec(
+        return TaskTrialSpec(
             inits=WhereDict(
                 {(lambda state: state.mechanics.effector): effector_init_states},
             ),
             inputs=task_inputs,
             target=effector_target_states,
-            epoch_start_idxs=epoch_start_idxs,
+            extra=dict(epoch_start_idxs=epoch_start_idxs),
         )
 
     def _get_sequences(
@@ -1052,7 +1035,7 @@ class Stabilization(AbstractTask):
     )
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
-    def get_train_trial(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
+    def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace."""
 
         points = uniform_tuples(key, n=1, bounds=self.workspace)
@@ -1066,18 +1049,17 @@ class Stabilization(AbstractTask):
             target_state,
         )
 
-        # TODO: don't use SimpleReachTrialSpec...
-        return SimpleReachTrialSpec(
-            inits=WhereDict(
-                {lambda state: state.mechanics.effector: init_state},
-            ),
+        return TaskTrialSpec(
+            inits=WhereDict({
+                (lambda state: state.mechanics.effector): init_state,
+            }),
             inputs=SimpleReachTaskInputs(
                 effector_target=_forceless_task_inputs(target_state)
             ),
             target=target_state,
         )
 
-    def get_validation_trials(self, key: PRNGKeyArray) -> SimpleReachTrialSpec:
+    def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Center-out reaches across a regular workspace grid."""
 
         # if self.eval_workspace is None:
@@ -1103,7 +1085,7 @@ class Stabilization(AbstractTask):
             target_states,
         )
 
-        return SimpleReachTrialSpec(
+        return TaskTrialSpec(
             inits=WhereDict(
                 {lambda state: state.mechanics.effector: init_states},
             ),

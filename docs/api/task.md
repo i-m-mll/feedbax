@@ -17,7 +17,7 @@
 
 ::: feedbax.task.SimpleReachTaskInputs
 
-::: feedbax.task.SimpleReachTrialSpec
+<!-- ::: feedbax.task.SimpleReachTrialSpec -->
 
 ::: feedbax.task.SimpleReaches
 
@@ -25,15 +25,17 @@
 
 ::: feedbax.task.DelayedReachTaskInputs
 
-::: feedbax.task.DelayedReachTrialSpec
+<!-- ::: feedbax.task.DelayedReachTrialSpec -->
 
 ::: feedbax.task.DelayedReaches
+
+## Task trial specifications
+
+::: feedbax.task.TaskTrialSpec
 
 ## Abstract base classes
 
 <!-- ::: feedbax.task.AbstractTaskInputs -->
-
-::: feedbax.task.AbstractTaskTrialSpec
 
 ::: feedbax.task.AbstractTask
 

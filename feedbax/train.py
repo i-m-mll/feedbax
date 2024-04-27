@@ -34,7 +34,7 @@ from feedbax.misc import (
 from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
 from feedbax.state import StateT
-from feedbax.task import AbstractTask, AbstractTaskTrialSpec
+from feedbax.task import AbstractTask, TaskTrialSpec
 from feedbax._tree import (
     filter_spec_leaves,
     tree_infer_batch_size,
@@ -66,7 +66,7 @@ class TaskTrainerHistory(eqx.Module):
     loss_validation: LossDict | Array
     learning_rate: Optional[Array] = None
     model_trainables: Optional[AbstractModel] = None
-    trial_specs: dict[int, AbstractTaskTrialSpec] = field(default_factory=dict)
+    trial_specs: dict[int, TaskTrialSpec] = field(default_factory=dict)
 
 
 class TaskTrainer(eqx.Module):
@@ -299,18 +299,23 @@ class TaskTrainer(eqx.Module):
 
         if ensembled:
             # We only vmap over axis 0 of the *array* components of the model.
-            flat_model_array_spec = jax.tree_map(
+            flat_model_arr_spec = jax.tree_map(
                 lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
                 flat_model,
                 is_leaf=lambda x: isinstance(x, AbstractIntervenor),
             )
 
             if ensemble_random_trials:
-                in_axes = (None, None, flat_model_array_spec, None, 0, None, None, None, 0)
-                out_axes = (0, 0, flat_model_array_spec, 0)
+                key_in_axis = 0
+                trial_specs_out_axis = 0
             else:
-                in_axes = (None, None, flat_model_array_spec, None, 0, None, None, None, None)
-                out_axes = (0, None, flat_model_array_spec, 0)
+                key_in_axis = None
+                trial_specs_out_axis = None
+
+            in_axes = (
+                None, None, flat_model_arr_spec, None, 0, None, None, None, key_in_axis
+            )
+            out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0)
 
             train_step = eqx.filter_vmap(
                 self._train_step,
@@ -318,7 +323,7 @@ class TaskTrainer(eqx.Module):
                 out_axes=out_axes,
             )
 
-            # We can't simply flatten this to get `flat_model_array_spec`,
+            # We can't simply flatten `model_array_spec` to get `flat_model_array_spec`,
             # even if we use `is_leaf=lambda x: x is None`.
             # model_array_spec = jax.tree_map(
             #     lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
@@ -336,6 +341,7 @@ class TaskTrainer(eqx.Module):
             evaluate = task.eval_with_loss
 
         # Finish the JIT compilation before the first training iteration.
+        # TODO: <https://jax.readthedocs.io/en/latest/aot.html>
         if not jax.config.jax_disable_jit:
             timer = Timer()
 
@@ -610,7 +616,7 @@ class TaskTrainer(eqx.Module):
         keys_init = jr.split(key_init, batch_size)
         keys_model = jr.split(key_model, batch_size)
 
-        trial_specs = jax.vmap(task.get_train_trial_with_intervenor_params)(keys_trials)
+        trial_specs = eqx.filter_vmap(task.get_train_trial_with_intervenor_params)(keys_trials)
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
 
@@ -867,7 +873,7 @@ def _grad_wrap_task_loss_func(loss_func: AbstractLoss):
         static_model: AbstractModel[
             StateT
         ],  #! Type is technically not identical to `diff_model`
-        trial_specs: AbstractTaskTrialSpec,
+        trial_specs: TaskTrialSpec,
         init_states: StateT,  #! has a batch dimension
         keys: PRNGKeyArray,  # per trial
     ) -> Tuple[Array, Tuple[LossDict, StateT]]:

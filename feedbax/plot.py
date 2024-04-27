@@ -39,7 +39,7 @@ from feedbax.bodies import SimpleFeedbackState
 from feedbax.loss import LossDict
 from feedbax.state import CartesianState
 from feedbax.misc import corners_2d
-from feedbax.task import AbstractReachTrialSpec
+from feedbax.task import TaskTrialSpec
 
 if TYPE_CHECKING:
     from feedbax.train import TaskTrainerHistory
@@ -294,7 +294,7 @@ def effector_trajectories(
     states: SimpleFeedbackState | PyTree[Float[Array, "trial time ..."] | Any],
     where_data: Optional[Callable] = None,
     step: int = 1,  # plot every step-th trial
-    trial_specs: Optional[AbstractReachTrialSpec] = None,
+    trial_specs: Optional[TaskTrialSpec] = None,
     endpoints: Optional[
         Tuple[Float[Array, "trial xy=2"], Float[Array, "trial xy=2"]]
     ] = None,
@@ -364,15 +364,19 @@ def effector_trajectories(
             cmap_name = "viridis"
 
     if endpoints is not None:
-        endpoints_arr = jnp.asarray(endpoints)
+        endpoints_arr = np.array(endpoints)  #type: ignore
     else:
         if trial_specs is not None:
-            endpoints_arr = jnp.asarray(
-                [
-                    trial_specs.inits["mechanics.effector"].pos,
-                    trial_specs.goal.pos,
-                ]
-            )
+            target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
+            if target_specs.target_value is not None:
+                endpoints_arr = np.array(  # type: ignore
+                    [
+                        trial_specs.inits["mechanics.effector"].pos,
+                        target_specs.target_value[:, -1],
+                    ]
+                )
+            else:
+                endpoints_arr = None
         else:
             endpoints_arr = None
 
@@ -744,7 +748,7 @@ def loss_mean_history(
 
 
 def reach_endpoint_dists(
-    trial_specs: AbstractReachTrialSpec,
+    trial_specs: TaskTrialSpec,
     s: int = 7,
     color: Optional[str] = None,
     **kwargs,
@@ -767,12 +771,17 @@ def reach_endpoint_dists(
 
     fig = plt.figure(figsize=(10, 5))
 
-    endpoints = OrderedDict(
-        {
-            "Start": trial_specs.inits["mechanics.effector"],
-            "Goal": trial_specs.goal,
-        }
-    )
+    target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
+    if target_specs.target_value is not None:
+        endpoints = OrderedDict(
+            {
+                "Start": trial_specs.inits["mechanics.effector"],
+                "Goal": target_specs.target_value[:, -1],
+            }
+        )
+    else:
+        raise ValueError("No effector position targets available in trial specs")
+
 
     endpoint_pos_dfs = jax.tree_map(
         lambda arr: pd.DataFrame(arr.pos, columns=("x", "y")),

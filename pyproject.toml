@@ -74,6 +74,7 @@ packages = ["feedbax"]
 [tool.pyright]
 include = ["feedbax"]
 exclude = ["**/__pycache__"]
+verboseOutput = true
 reportMissingImports = true
 reportMissingTypeStubs = true
 # Temporary:
