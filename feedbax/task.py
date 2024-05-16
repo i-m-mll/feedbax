@@ -74,10 +74,6 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-TaskInitStateSpec: TypeAlias = WhereDict[PyTree[Array]]
-TaskTargetStateSpecs: TypeAlias = WhereDict[TargetSpec]
-
-
 # TODO: Once `target` is specified as a `WhereDict` as well, the only thing
 # that will really change between classes of tasks is `inputs`. In that case,
 # we could just make this `TaskTrialSpec`
@@ -102,8 +98,8 @@ class TaskTrialSpec(Module):
             other fields.
     """
 
-    inits: TaskInitStateSpec
-    targets: TaskTargetStateSpecs
+    inits: WhereDict[PyTree[Array]]
+    targets: WhereDict[TargetSpec | Mapping[str, TargetSpec]]
     inputs: PyTree
     # target: AbstractVar[PyTree[Array]]
     intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(
@@ -619,53 +615,63 @@ class AbstractTask(Module):
 
         return model_
 
-    def activate_interventions(
-        self,
-        labels: NonCharSequence[IntervenorLabelStr] | Literal['all', 'none'],
-        labels_validation: Optional[
-            NonCharSequence[IntervenorLabelStr] | Literal['all', 'none']
-        ] = None,
-        validation_same_schedule=False,
-    ) -> Self:
-        """Return a task where scheduling if active only for the interventions with the
-        given labels.
-        """
-
-        if labels == 'all':
-            labels = list(self.intervention_specs.training.keys())
-        elif labels == 'none':
-            labels = []
-
-        tree_at_spec = {"": labels}
-        task = self
-
-        if validation_same_schedule:
-            labels_validation = labels
-        elif validation_same_schedule == 'all':
-            labels_validation = list(self.intervention_specs.validation.keys())
-        elif validation_same_schedule == 'none':
-            labels_validation = []
-
-        if labels_validation is not None:
-            tree_at_spec = {"_validation": labels}
-
-        for suffix, labels_ in tree_at_spec.items():
-            intervention_specs = getattr(self, f"intervention_specs{suffix}")
-
-            task = eqx.tree_at(
-                lambda task: getattr(task, f"intervention_specs{suffix}"),
-                task,
-                {k: (k in labels_, v) for k, (_, v) in intervention_specs.items()},
-            )
-
-        return task
-
     @abstractmethod
     def validation_plots(
         self, states, trial_specs: Optional[TaskTrialSpec] = None,
     ) -> Mapping[str, go.Figure]:
         """Returns a basic set of plots to visualize performance on the task."""
         ...
+        
+    # TODO: The following appears to be deprecated, though perhaps it shouldn't be.
+    # Currently we only control whether intervenors are active by changing the `active`
+    # parameter inside the model or the task's intervention spec. However, in cases where
+    # there are many intervenors with complex trial-by-trial parameters being generated,
+    # there will be wasted overhead if those parameters are generated but go unused
+    # because active=False.
+    # In that case, it would be good to deactivate parameter generation for inactive
+    # intervenors; or else define parameter generation with callbacks that only get 
+    # called when by active intervenors.
+    # def activate_interventions(
+    #     self,
+    #     labels: NonCharSequence[IntervenorLabelStr] | Literal['all', 'none'],
+    #     labels_validation: Optional[
+    #         NonCharSequence[IntervenorLabelStr] | Literal['all', 'none']
+    #     ] = None,
+    #     validation_same_schedule=False,
+    # ) -> Self:
+    #     """Return a task where scheduling is active only for the interventions with the
+    #     given labels.
+    #     """
+
+    #     if labels == 'all':
+    #         labels = list(self.intervention_specs.training.keys())
+    #     elif labels == 'none':
+    #         labels = []
+
+    #     tree_at_spec = {"": labels}
+    #     task = self
+
+    #     if validation_same_schedule:
+    #         labels_validation = labels
+    #     elif validation_same_schedule == 'all':
+    #         labels_validation = list(self.intervention_specs.validation.keys())
+    #     elif validation_same_schedule == 'none':
+    #         labels_validation = []
+
+    #     if labels_validation is not None:
+    #         tree_at_spec = {"_validation": labels}
+
+    #     for suffix, labels_ in tree_at_spec.items():
+    #         intervention_specs = getattr(self, f"intervention_specs{suffix}")
+
+    #         task = eqx.tree_at(
+    #             lambda task: getattr(task, f"intervention_specs{suffix}"),
+    #             task,
+    #             {k: (k in labels_, v) for k, (_, v) in intervention_specs.items()},
+    #         )
+
+    #     return task
+
 
 
 def _pos_only_states(positions: Float[Array, "... ndim=2"]):
@@ -807,15 +813,17 @@ class SimpleReaches(AbstractTask):
             inputs=SimpleReachTaskInputs(effector_target=effector_target),
             # Specify targets that vary trial-by-trial.
             targets=WhereDict({
-                ((lambda state: state.mechanics.effector.pos), "Effector position"): (
+                (lambda state: state.mechanics.effector.pos): (
                     TargetSpec(effector_target_state.pos, discount=self._pos_discount)
                 ),
-                ((lambda st: st.mechanics.effector.vel), "Effector final velocity"): (
-                    # The `target_final_state` here is redundant with `xabdeef.losses`
-                    # -- but explicit.
-                    TargetSpec(effector_target_state.vel[-1]) & target_final_state
-                    # target_zero & target_final_state
-                ),
+                (lambda state: state.mechanics.effector.vel): {
+                    "Effector final velocity": (
+                        # The `target_final_state` here is redundant with `xabdeef.losses`
+                        # -- but explicit.
+                        TargetSpec(effector_target_state.vel[-1]) & target_final_state
+                        # target_zero & target_final_state
+                    ),
+                },
             }),
         )
 
@@ -860,7 +868,7 @@ class SimpleReaches(AbstractTask):
             ),
             # target=effector_target_states,
             targets=WhereDict({
-                ((lambda state: state.mechanics.effector.pos), "Effector position"): (
+                (lambda state: state.mechanics.effector.pos): (
                     TargetSpec(effector_target_states.pos, discount=self._pos_discount)
                 ),
             }),
@@ -1030,9 +1038,9 @@ class Stabilization(AbstractTask):
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid
-    eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
-        converter=jnp.asarray, default=None
-    )
+    # eval_workspace: Optional[Float[Array, "bounds=2 ndim=2"]] = field(
+    #     converter=jnp.asarray, default=None
+    # )
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
     def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
@@ -1044,7 +1052,7 @@ class Stabilization(AbstractTask):
 
         init_state = target_state
 
-        target_state = jax.tree_map(
+        effector_target_state = jax.tree_map(
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             target_state,
         )
@@ -1054,10 +1062,17 @@ class Stabilization(AbstractTask):
                 (lambda state: state.mechanics.effector): init_state,
             }),
             inputs=SimpleReachTaskInputs(
-                effector_target=_forceless_task_inputs(target_state)
+                effector_target=_forceless_task_inputs(effector_target_state)
             ),
-            target=target_state,
+            targets=WhereDict({
+                (lambda state: state.mechanics.effector.pos): (
+                    TargetSpec(effector_target_state.pos)
+                ),
+            }),
         )
+    
+    def validation_plots(self, states, trial_specs = None) -> Mapping[str, go.Figure]:
+        return dict()
 
     def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Center-out reaches across a regular workspace grid."""
@@ -1078,7 +1093,7 @@ class Stabilization(AbstractTask):
 
         # Broadcast to the desired number of time steps. Awkwardly, we also
         # need to use `swapaxes` because the batch dimension is explicit, here.
-        target_states = jax.tree_map(
+        effector_target_states = jax.tree_map(
             lambda x: jnp.swapaxes(
                 jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)), 0, 1
             ),
@@ -1086,13 +1101,17 @@ class Stabilization(AbstractTask):
         )
 
         return TaskTrialSpec(
-            inits=WhereDict(
-                {lambda state: state.mechanics.effector: init_states},
-            ),
+            inits=WhereDict({
+                (lambda state: state.mechanics.effector): init_states,
+            }),
             inputs=SimpleReachTaskInputs(
-                effector_target=_forceless_task_inputs(target_states)
+                effector_target=_forceless_task_inputs(effector_target_states)
             ),
-            target=target_states,
+            targets=WhereDict({
+                (lambda state: state.mechanics.effector.pos): (
+                    TargetSpec(effector_target_states.pos)
+                ),
+            }),
         )
 
     @property

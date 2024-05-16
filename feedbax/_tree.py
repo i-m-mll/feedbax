@@ -422,6 +422,8 @@ def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:
 def tree_labels(
     tree: PyTree[Any, 'T'],
     join_with: str = '_',
+    append_leaf: bool = False,
+    path_idx: int | slice = slice(None),
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[str, 'T']:
     """Return a PyTree of labels based on each leaf's key path.
@@ -473,12 +475,20 @@ def tree_labels(
     Arguments:
         tree: The PyTree for which to generate labels.
         join_with: The string with which to join a leaf's path keys, to form its label.
+        append_leaf: Whether to append the string representation of the leaf to its label.
+        path_idx: Index applied to each leaf's path before converting to a label. Useful to 
+            omit the beginning/end of the path from the label.
         is_leaf: An optional function that returns a boolean, which determines whether each
             node in `tree` should be treated as a leaf.
     """
     leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
-    paths, _ = zip(*leaves_with_path)
-    labels = [_path_to_label(path, join_with) for path in paths]
+    paths, leaves = zip(*leaves_with_path)
+    labels = [_path_to_label(path[path_idx], join_with) for path in paths]
+    if append_leaf:
+        labels = [
+            join_with.join([label, str(leaf)]) 
+            for label, leaf in zip(labels, leaves)
+        ]
     return jtu.tree_unflatten(treedef, labels)
 
 

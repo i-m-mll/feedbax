@@ -381,7 +381,7 @@ class TargetStateLoss(AbstractLoss):
 
     @cached_property
     def key(self):
-        return WhereDict.key_transform((self.where, self.label))
+        return WhereDict.key_transform(self.where)
 
     def term(
         self,
@@ -408,14 +408,20 @@ class TargetStateLoss(AbstractLoss):
                                  "specifications")
 
             target_spec = self.spec
-        else:
+        elif isinstance(task_target_spec, TargetSpec):
             # Override default spec with trial-by-trial spec provided by the task, if any
             target_spec: TargetSpec = eqx.combine(self.spec, task_target_spec)
+        elif isinstance(task_target_spec, Mapping):
+            target_spec: TargetSpec = eqx.combine(self.spec, task_target_spec[self.label])
+        else:
+            raise ValueError("Invalid target spec encountered ")
 
         if target_spec.time_idxs is not None:
             state = state[..., target_spec.time_idxs, :]
 
         loss_over_time = self.norm(state - target_spec.target_value)
+        
+        # jax.debug.print("loss_over_time\n{a}\n\nstate\n{b}\n\n\n\n\n", a=loss_over_time, b=state)
 
         if target_spec.discount is not None:
             loss_over_time = loss_over_time * target_spec.discount
@@ -423,36 +429,30 @@ class TargetStateLoss(AbstractLoss):
         return jnp.sum(loss_over_time, axis=-1)
 
 
+"""Penalizes the effector's squared distance from the target position
+across the trial."""
+effector_pos_loss = TargetStateLoss(
+    "Effector position",
+    where=lambda state: state.mechanics.effector.pos,
+    # Euclidean distance
+    norm=lambda *args, **kwargs: (
+        jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
+    ),
+)
+
+
+effector_vel_loss = TargetStateLoss(
+    "Effector position",
+    where=lambda state: state.mechanics.effector.vel,
+    # Euclidean distance
+    norm=lambda *args, **kwargs: (
+        jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
+    ),
+    spec=target_final_state,
+)
+
+
 class EffectorPositionLoss(AbstractLoss):
-    """Penalizes the effector's squared distance from the target position
-    across the trial.
-
-    Attributes:
-        label: The label for the loss term.
-        discount_func: Returns a trajectory with which to weight (discount)
-            the loss values calculated for each time step of the trial.
-            Defaults to a power-law curve that puts most of the weight on
-            time steps near the end of the trial.
-
-    !!! Note
-        If the return value of `discount_func` is shaped such that it gives
-        non-zero weight to the position error during the fixation period of
-        (say) a delayed reach task, then typically the target will be specified
-        as the fixation point during that period, and `EffectorPositionLoss`
-        will also act as a fixation loss.
-
-        On the other hand, when using certain kinds of goal error discounting
-        (e.g. exponential, favouring errors near the end of the trial) then the
-        fixation loss may not be weighed into `EffectorPositionLoss`, and it
-        may be appropriate to add `EffectorFixationLoss` to the composite loss.
-        However, in that case the same result could still be achieved using a
-        single instance of `EffectorPositionLoss`, by passing a `discount`
-        that's the sum of the goal error discount (say, non-zero only near the
-        end of the trial) and the hold signal (non-zero only during the
-        fixation period) scaled by the relative weights of the goal and
-        fixation error losses.
-    """
-
     label: str = "Effector position"
     discount_func: Callable[[int], Float[Array, "#time"]] = (
         lambda n_steps: power_discount(n_steps, discount_exp=6)[None, :]
@@ -515,7 +515,7 @@ class EffectorStraightPathLoss(AbstractLoss):
         if self.normalize_by == "actual":
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
-            final_pos = trial_specs.target.pos
+            final_pos = trial_specs.targets["mechanics.effector"].target_value.pos
         else:
             raise ValueError("normalize_by must be 'actual' or 'goal'")
         init_final_diff = final_pos - effector_pos[:, 0]
@@ -597,7 +597,6 @@ class EffectorVelocityLoss(AbstractLoss):
         # Can't use a cache because of JIT.
         # But we only need to run this once per training iteration...
         return self.discount_func(n_steps)
-
 
 
 class EffectorFinalVelocityLoss(AbstractLoss):

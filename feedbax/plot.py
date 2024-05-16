@@ -367,7 +367,10 @@ def effector_trajectories(
         endpoints_arr = np.array(endpoints)  #type: ignore
     else:
         if trial_specs is not None:
-            target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
+            target_specs = trial_specs.targets["mechanics.effector.pos"]
+            if isinstance(target_specs, Mapping):
+                # Assumes goal position is the first target specified
+                target_specs = next(iter(target_specs.values()))
             if target_specs.target_value is not None:
                 endpoints_arr = np.array(  # type: ignore
                     [
