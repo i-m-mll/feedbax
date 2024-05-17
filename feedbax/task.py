@@ -557,6 +557,7 @@ class AbstractTask(Module):
             models_arrays, models_other, batch_size, key
         )
 
+    @eqx.filter_jit
     def add_intervenors_to_base_model(
         self,
         model: AbstractStagedModel[StateT],
@@ -584,11 +585,14 @@ class AbstractTask(Module):
         # Remove all intervenors from the model that don't have underscores
         base_model = remove_all_intervenors(model, scheduled_only=True)
 
+        # TODO: Split up the logic in `schedule_intervenor` -- maybe we can: 
+        #   1. Add to model without needing to copy task.
+        #   2. Add multiple intervenors in a single call to `schedule_intervenors`
         # Make a copy of `self`, without its spec intervenors
         base_task = eqx.tree_at(
-            lambda task: (task.intervention_specs, task.intervention_specs_validation),
+            lambda task: task.intervention_specs,
             self,
-            ({True: dict(), False: dict()}, {True: dict(), False: dict()}),
+            TaskInterventionSpecs(),
         )
 
         # Use schedule_intervenors to reproduce `self`, along with the modified model
@@ -601,12 +605,12 @@ class AbstractTask(Module):
                 )
             else:
                 intervenor_params_val = None
-
             task, model_ = schedule_intervenor(
                 task,
                 model_,
                 intervenor=spec.intervenor,
                 where=spec.where,
+                label=label,
                 default_active=spec.default_active,
                 intervenor_params_validation=intervenor_params_val,
                 # Only applies if `intervenor_params_val` is None:

@@ -41,6 +41,9 @@ dependencies = [
     "polars",
     "seaborn",
     "tqdm",
+    # Tensorboard-related:
+    'crc32c',
+    'tensorboardX',
 ]
 
 [project.urls]

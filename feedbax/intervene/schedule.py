@@ -499,7 +499,7 @@ def update_intervenor_param_schedule(
     
     params_flat = jax.tree_leaves(params, is_leaf=is_leaf_or_timeseries)
     
-    for cond, suffix in {training: "training", validation: "validation"}.items():
+    for suffix, cond in {"training": training, "validation": validation}.items():
         if cond: 
             specs = getattr(task.intervention_specs, suffix)
             
