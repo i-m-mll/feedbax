@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 pre_first_stage = StrAlwaysLT("_pre_first_stage")
+post_final_stage = StrAlwaysLT("_post_final_stage")
+_special_stage_names = [pre_first_stage, post_final_stage]
 # fixed = StrAlwaysLT("_fixed")
 
 
@@ -169,7 +171,7 @@ def add_intervenors(
         if stage_name is None:
             stage_name = pre_first_stage
             
-        intervenors = {pre_first_stage: intervenors}
+        intervenors = {stage_name: intervenors}
 
     if not isinstance(intervenors, Mapping):
         raise ValueError("intervenors not a sequence or dict of sequences")
@@ -195,7 +197,7 @@ def add_intervenors(
         # doesn't exist, or is currently deactivated.
         if (
             stage_name not in where(model).model_spec
-            and stage_name != pre_first_stage
+            and stage_name not in _special_stage_names
         ):
             raise ValueError(
                 f"{stage_name} is not a valid model stage for intervention"

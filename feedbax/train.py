@@ -9,7 +9,7 @@ from functools import wraps
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple
 
 import equinox as eqx
 from equinox import field
@@ -910,6 +910,8 @@ class HebbianGRUUpdate(eqx.Module):
     """
 
     scale: float = 0.01
+    mode: Literal["default", "differential"] = "default"
+    weight_type: Literal["candidate", "update", "reset"] = "candidate"
 
     def __call__(
         self, model: AbstractModel[StateT], states: StateT
@@ -917,20 +919,32 @@ class HebbianGRUUpdate(eqx.Module):
 
         x = states.net.hidden
 
-        # Hebbian learning rule
-        dW = self.scale * x[..., :, None] @ x[..., None, :]
+        if self.mode == "default":
+            # Hebbian learning rule
+            dW = x[..., :, None] @ x[..., None, :]
+        elif self.mode == "differential":
+            dx = jnp.diff(x, axis=-2)  # diff over time
+            dW = dx[..., :, None] @ dx[..., None, :]
+        else:
+            raise ValueError("invalid mode field value encountered for HebbianGRUUpdate")
 
+        dW = self.scale * dW
         # Updates do not apply to self weights.
         dW = mask_diagonal(dW)
 
         # Sum over all batch dimensions (e.g. trials, time)
         dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
 
-        # Build the update for the candidate activation weights of the GRU.
+        # Build the update for the appropriate weights of the GRU.
         weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
-        weight_idxs = slice(2 * weight_hh.shape[-2] // 3, None)
+        weight_idxs = {
+            "reset": slice(0, weight_hh.shape[-2] // 3),
+            "update": slice(weight_hh.shape[-2] // 3, 2 * weight_hh.shape[-2] // 3),
+            "candidate": slice(2 * weight_hh.shape[-2] // 3, None),
+        }[self.weight_type]
         weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
 
+        #! How does this tree_at even identify which leaf of a None-filled pytree is weight_hh?
         update = eqx.tree_at(
             lambda model: model.step.net.hidden.weight_hh,
             jax.tree_map(lambda x: None, model),

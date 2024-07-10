@@ -24,6 +24,7 @@ from feedbax.intervene.schedule import (
     add_intervenors,
     schedule_intervenor,
     pre_first_stage,
+    post_final_stage,
 )
 
 # # This causes a circular import due to `AbstractStagedModel` in `remove.py`

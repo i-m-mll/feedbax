@@ -76,7 +76,7 @@ class NetworkState(Module):
         output: The activity of the readout layer, if the network has one.
         encoding: The activity of the encoding layer, if the network has one.
     """
-
+    input: Float[Array, "inputs"]
     hidden: PyTree[Float[Array, "unit"]]
     output: Optional[PyTree[Array]] = None
     encoding: Optional[PyTree[Array]] = None
@@ -100,7 +100,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         encoder: The module implementing the encoder layer, if present.
         readout: The module implementing the readout layer, if present.
     """
-
+    
+    input_size: int
     hidden: Module
     hidden_size: int
     hidden_noise_std: Optional[float]
@@ -164,6 +165,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             key: Random key for initialising the network.
         """
         key1, key2, key3 = jr.split(key, 3)
+
+        self.input_size = input_size
 
         if encoding_size is not None:
             self.encoder = encoder_type(input_size, encoding_size, key=key2)
@@ -234,12 +237,21 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             # hidden_module = lambda self: tmp(self)
             hidden_module = lambda self: self.hidden
 
+        spec = OrderedDict({
+            # Store the flattened network inputs as part of `NetworkState`
+            "input": Stage(
+                callable=lambda self: lambda input, state, *, key: input,
+                where_input=lambda input, _: ravel_pytree(input)[0],
+                where_state=lambda state: state.input,
+            ),
+        })
+
         if self.encoder is None:
-            spec = OrderedDict(
+            spec |= OrderedDict(
                 {
                     "hidden": Stage(
                         callable=hidden_module,
-                        where_input=lambda input, _: ravel_pytree(input)[0],
+                        where_input=lambda input, state: state.input,
                         where_state=lambda state: state.hidden,
                     ),
                 }
@@ -251,7 +263,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                         callable=lambda self: lambda input, state, *, key: self.encoder(
                             input
                         ),
-                        where_input=lambda input, _: ravel_pytree(input)[0],
+                        where_input=lambda input, state: state.input,
                         where_state=lambda state: state.encoding,
                     ),
                     "hidden": Stage(
@@ -306,6 +318,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
     @property
     def memory_spec(self) -> PyTree[bool]:
         return NetworkState(
+            input=True,
             hidden=True,
             output=True,
             encoding=True,
@@ -324,6 +337,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         # TODO: Try eval_shape
         return NetworkState(
+            input=jnp.zeros(self.input_size),
             hidden=jnp.zeros(self.hidden_size),
             output=output,
             encoding=encoding,
@@ -372,13 +386,16 @@ class LeakyRNNCell(Module):
     ):
         ihkey, hhkey, bkey = jr.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
-
-        self.weight_ih = jr.uniform(
-            ihkey,
-            (hidden_size, input_size),
-            minval=-lim,
-            maxval=lim,
-        )
+        
+        if input_size > 0:
+            self.weight_ih = jr.uniform(
+                ihkey,
+                (hidden_size, input_size),
+                minval=-lim,
+                maxval=lim,
+            )
+        else:
+            self.weight_ih = jnp.array(0)
         self.weight_hh = jr.uniform(
             hhkey,
             (hidden_size, hidden_size),
@@ -474,3 +491,5 @@ def two_layer_linear(
         nonlinearity=nonlinearity,
         key=key,
     )
+
+

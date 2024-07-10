@@ -31,7 +31,16 @@ import numpy as np
 from feedbax._model import AbstractModel, ModelInput
 from feedbax.intervene import AbstractIntervenor
 from feedbax.intervene.intervene import AbstractIntervenorInput
-from feedbax.intervene.schedule import ArgIntervenors, Intervenor, IntervenorLabelStr, ModelIntervenors, StageIntervenors, _fixed_intervenor_label, pre_first_stage
+from feedbax.intervene.schedule import (
+    ArgIntervenors, 
+    Intervenor, 
+    IntervenorLabelStr, 
+    ModelIntervenors, 
+    StageIntervenors, 
+    _fixed_intervenor_label, 
+    pre_first_stage,
+    post_final_stage,
+)
 from feedbax.misc import indent_str, is_module
 from feedbax.state import StateT
 
@@ -202,6 +211,15 @@ class AbstractStagedModel(AbstractModel[StateT]):
                     )
 
                     logger.debug(f"\n{indent_str(log_str, indent=2)}\n")
+                    
+            # Intervenors may also be explicitly scheduled for after the final model stage.
+            if post_final_stage in self.intervenors:
+                state = self._apply_intervenors(
+                    self.intervenors[post_final_stage],
+                    input.intervene,
+                    state,
+                    key,
+                )
 
         return state
 

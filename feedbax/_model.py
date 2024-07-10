@@ -207,3 +207,4 @@ def wrap_stateless_keyless_callable(callable: Callable):
         return callable(input, *args, **kwargs)
     return wrapped
 
+

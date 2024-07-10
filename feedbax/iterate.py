@@ -237,3 +237,34 @@ class ForgetfulIterator(AbstractIterator[StateT]):
         states = eqx.combine(tree_set(states, init_state_mem, 0), init_state_nomem)
 
         return states
+
+
+def eval_state_traj(
+    #! should be any callable (input, state, *, key) -> state
+    model: AbstractModel[StateT], 
+    state0: StateT, 
+    n_steps: int, 
+    input: PyTree[Array], 
+    key: PRNGKeyArray,
+):
+    """Evaluate the state trajectory of a model with fixed inputs.
+    """
+    keys = jr.split(key, n_steps - 1)
+    # Assume constant inputs.
+    inputs = jnp.broadcast_to(input, (n_steps - 1, *input.shape))
+    
+    def step(state, args):
+        input, key = args
+        #! key=key won't work with AbstractModel in general, yet
+        state = model(input, state, key=key)  
+        return state, state 
+    
+    _, states = jax.lax.scan(
+        step, 
+        state0,
+        (inputs, keys),
+    )
+    
+    return jnp.concatenate([
+        state0[None], states
+    ])

@@ -169,6 +169,7 @@ NonCharSequence: TypeAlias = MutableSequence[T] | tuple[T, ...]
 LabeledInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, InterventionSpec]
 
 
+# TODO: Could this be generalized for *all* fields of `AbstractTask` that might change from training to validation?
 class TaskInterventionSpecs(Module):
     training: LabeledInterventionSpecs = field(default_factory=dict)
     validation: LabeledInterventionSpecs = field(default_factory=dict)
@@ -214,7 +215,7 @@ class AbstractTask(Module):
             )
 
         # TODO: check that `loss_func` doesn't contain `TargetStateLoss` terms which lack
-        # a default target spec, or have a spec with a missing `spec.target_value', and
+        # a default target spec, or have a spec with a missing `spec.value', and
         # for which the `AbstractTask` instance does not
         # provide target specs trial-by-trial
 
@@ -585,7 +586,7 @@ class AbstractTask(Module):
         # Remove all intervenors from the model that don't have underscores
         base_model = remove_all_intervenors(model, scheduled_only=True)
 
-        # TODO: Split up the logic in `schedule_intervenor` -- maybe we can: 
+        # TODO: Split up the logic in `schedule_intervenor` -- maybe we can:
         #   1. Add to model without needing to copy task.
         #   2. Add multiple intervenors in a single call to `schedule_intervenors`
         # Make a copy of `self`, without its spec intervenors
@@ -625,7 +626,7 @@ class AbstractTask(Module):
     ) -> Mapping[str, go.Figure]:
         """Returns a basic set of plots to visualize performance on the task."""
         ...
-        
+
     # TODO: The following appears to be deprecated, though perhaps it shouldn't be.
     # Currently we only control whether intervenors are active by changing the `active`
     # parameter inside the model or the task's intervention spec. However, in cases where
@@ -633,7 +634,7 @@ class AbstractTask(Module):
     # there will be wasted overhead if those parameters are generated but go unused
     # because active=False.
     # In that case, it would be good to deactivate parameter generation for inactive
-    # intervenors; or else define parameter generation with callbacks that only get 
+    # intervenors; or else define parameter generation with callbacks that only get
     # called when by active intervenors.
     # def activate_interventions(
     #     self,
@@ -1074,7 +1075,7 @@ class Stabilization(AbstractTask):
                 ),
             }),
         )
-    
+
     def validation_plots(self, states, trial_specs = None) -> Mapping[str, go.Figure]:
         return dict()
 

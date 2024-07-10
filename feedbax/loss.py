@@ -320,8 +320,8 @@ class CompositeLoss(AbstractLoss):
 # Maybe rename TargetValueSpec; I feel like a "`TargetSpec`" would include a `where` field
 class TargetSpec(Module):
     """Associate a state's target value with time indices and discounting factors."""
-    # `target_value` may be `None` when we specify default values for the other fields
-    target_value: Optional[PyTree[Array]] = None
+    # `value` may be `None` when we specify default values for the other fields
+    value: Optional[PyTree[Array]] = None
     # TODO: If `time_idxs` is `Array`, it must be 1D or we'll lose the time dimension before we sum over it!
     time_idxs: Optional[Array] = None
     discount: Optional[Array] = None # field(default_factory=lambda: jnp.array([1.0]))
@@ -343,7 +343,7 @@ class TargetSpec(Module):
         # at all, then why are time_idxs and discount not just fields of
         # `TargetStateLoss`?
         return TargetSpec(
-            target_value=0,
+            value=0,
             time_idxs=None,
             discount=None,
         )
@@ -419,8 +419,8 @@ class TargetStateLoss(AbstractLoss):
         if target_spec.time_idxs is not None:
             state = state[..., target_spec.time_idxs, :]
 
-        loss_over_time = self.norm(state - target_spec.target_value)
-        
+        loss_over_time = self.norm(state - target_spec.value)
+
         # jax.debug.print("loss_over_time\n{a}\n\nstate\n{b}\n\n\n\n\n", a=loss_over_time, b=state)
 
         if target_spec.discount is not None:
@@ -515,7 +515,7 @@ class EffectorStraightPathLoss(AbstractLoss):
         if self.normalize_by == "actual":
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
-            final_pos = trial_specs.targets["mechanics.effector"].target_value.pos
+            final_pos = trial_specs.targets["mechanics.effector"].value.pos
         else:
             raise ValueError("normalize_by must be 'actual' or 'goal'")
         init_final_diff = final_pos - effector_pos[:, 0]

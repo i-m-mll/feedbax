@@ -371,11 +371,11 @@ def effector_trajectories(
             if isinstance(target_specs, Mapping):
                 # Assumes goal position is the first target specified
                 target_specs = next(iter(target_specs.values()))
-            if target_specs.target_value is not None:
+            if target_specs.value is not None:
                 endpoints_arr = np.array(  # type: ignore
                     [
                         trial_specs.inits["mechanics.effector"].pos,
-                        target_specs.target_value[:, -1],
+                        target_specs.value[:, -1],
                     ]
                 )
             else:
@@ -775,11 +775,11 @@ def reach_endpoint_dists(
     fig = plt.figure(figsize=(10, 5))
 
     target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
-    if target_specs.target_value is not None:
+    if target_specs.value is not None:
         endpoints = OrderedDict(
             {
                 "Start": trial_specs.inits["mechanics.effector"],
-                "Goal": target_specs.target_value[:, -1],
+                "Goal": target_specs.value[:, -1],
             }
         )
     else:
@@ -1326,3 +1326,30 @@ def padded_bounds(x, p=0.2):
     bounds = jnp.array([jnp.min(x), jnp.max(x)])
     padding = (p * jnp.diff(bounds)).item()
     return bounds + jnp.array([-padding, padding])
+
+
+def evenly_spaced_points(
+    func: Callable[[Float[Array, "1"]], Float[Array, "1"]],
+    n: int,
+    xmin: float,
+    xmax: float,
+):
+    """Return `n` points evenly spaced along the arc of the curve `func` between `xmin` and `xmax`."""
+    dfunc = jax.grad(func)
+    x = jnp.linspace(xmin, xmax, 100 * n)
+    arc_length = jnp.sqrt(1 + jax.vmap(dfunc)(x) ** 2)
+    cumulative_arc_length = jnp.cumsum(
+        jnp.pad(
+            # Integrate each segment
+            jax.vmap(jnp.trapezoid)(
+                jnp.stack([arc_length[:-1], arc_length[1:]], axis=1),
+                jnp.stack([x[:-1], x[1:]], axis=1),
+            ),
+            (1, 0),
+        )
+    )
+    cumulative_arc_length /= cumulative_arc_length[-1]  # Normalize to [0, 1]
+    x_arc = jnp.linspace(0, 1, n)
+    even_x = jnp.interp(x_arc, cumulative_arc_length, x)
+    even_y = func(even_x)
+    return even_x, even_y

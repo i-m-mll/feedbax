@@ -476,7 +476,7 @@ def tree_labels(
         tree: The PyTree for which to generate labels.
         join_with: The string with which to join a leaf's path keys, to form its label.
         append_leaf: Whether to append the string representation of the leaf to its label.
-        path_idx: Index applied to each leaf's path before converting to a label. Useful to 
+        path_idx: Index applied to each leaf's path before converting to a label. Useful to
             omit the beginning/end of the path from the label.
         is_leaf: An optional function that returns a boolean, which determines whether each
             node in `tree` should be treated as a leaf.
@@ -486,7 +486,7 @@ def tree_labels(
     labels = [_path_to_label(path[path_idx], join_with) for path in paths]
     if append_leaf:
         labels = [
-            join_with.join([label, str(leaf)]) 
+            join_with.join([label, str(leaf)])
             for label, leaf in zip(labels, leaves)
         ]
     return jtu.tree_unflatten(treedef, labels)
@@ -576,6 +576,8 @@ def tree_infer_batch_size(
             subtrees of a certain type, that contain array leaves which do not
             possess the batch dimension.
     """
+    # TODO: Allow for `in_axes`-like control over which arrays will be checked
+
     arrays, treedef = jtu.tree_flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
     array_lens: list[int | None] = [
         arr.shape[0] if not exclude(arr) else None for arr in arrays

@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import equinox as eqx
+from feedbax._tree import tree_infer_batch_size
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -18,7 +19,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 # pyright: reportMissingTypeStubs=false
 from plotly.basedatatypes import BaseTraceType
-from plotly.colors import convert_colors_to_same_type
+from plotly.colors import convert_colors_to_same_type, sample_colorscale
 import plotly.express as px
 import plotly.graph_objs as go
 import plotly.io as pio
@@ -46,8 +47,6 @@ def color_add_alpha(rgb_str: str, alpha: float):
 
 
 def columns_mean_std(dfs: PyTree[pl.DataFrame], index_col: Optional[str] = None):
-
-
     if index_col is not None:
         spec = {
             index_col: pl.col(index_col),
@@ -65,6 +64,7 @@ def columns_mean_std(dfs: PyTree[pl.DataFrame], index_col: Optional[str] = None)
         dfs,
     )
 
+
 def errorbars(col_means_stds: PyTree[pl.DataFrame], n_std: int):
     return jax.tree_map(
         lambda df: df.select(
@@ -73,6 +73,7 @@ def errorbars(col_means_stds: PyTree[pl.DataFrame], n_std: int):
         ),
         col_means_stds,
     )
+
 
 def loss_history(
     train_history: "TaskTrainerHistory",
@@ -148,6 +149,7 @@ def loss_history(
             x=loss_statistics[label]["timestep"],
             y=loss_statistics[label]['mean'],
             mode=scatter_mode,
+            marker_size=3,
             line=dict(color=colors_dict[label]),
         )
         trace.update(scatter_kws)
@@ -263,8 +265,9 @@ def activity_sample_units(
     n_samples: int,
     unit_includes: Optional[Sequence[int]] = None,
     colors: Optional[list[str]] = None,
-    height: Optional[int] = None,
+    row_height: int = 150,
     layout_kws: Optional[dict] = None,
+    trial_label: str = "Trial",
     *,
     key: PRNGKeyArray,
     **kwargs,
@@ -280,16 +283,19 @@ def activity_sample_units(
     units will be sampled.
 
     Arguments:
-        activities: The array of trial-by-trial activity over time for each unit in a
+        activities: An array of trial-by-trial activity over time for each unit in a
             network layer.
         n_samples: The number of units to sample from the layer. Along with `unit_includes`,
             this determines the number of subplots in the figure.
         unit_includes: Indices of specific units to include in the plot, in addition to
             the `n_samples` randomly sampled units.
-        cols: The number of columns in which to arrange the subplots.
-        cmap_name: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
-            to use. Each trial will be plotted in a different color.
-        figsize: The size of the figure.
+        colors: A list of colors.
+        row_height: How tall (in pixels) to make the figure, as a factor of units sampled.
+        layout_kws: Additional kwargs with which to update the layout of the figure before
+            returning.
+        trial_label: The text label for the batch dimension. For example, if `activities`
+            gives evaluations across model replicates, we may wish to pass
+            `trial_label="Replicate"` to properly label the legend and tooltips.
         key: A random key used to sample the units to plot.
     """
 
@@ -318,26 +324,23 @@ def activity_sample_units(
         pl.from_numpy(x, schema=unit_idx_strs).hstack(pl.DataFrame({
             "Timestep": np.arange(x.shape[0]),
             # Note that "trial" here could be between- or within-condition.
-            "Trial": pl.repeat(i, x.shape[0], eager=True),
+            trial_label: pl.repeat(i, x.shape[0], eager=True),
         }))
         for i, x in enumerate(xs)
     ]).melt(
-        id_vars=["Timestep", "Trial"],
+        id_vars=["Timestep", trial_label],
         value_name="Activity",
         variable_name="Unit",
     )
-
-    if height is None:
-        height = 150 * len(unit_idxs)
 
     fig = px.line(
         df,
         x='Timestep',
         y='Activity',
-        color='Trial',
+        color=trial_label,
         facet_row='Unit',
         color_discrete_sequence=colors,
-        height=height,
+        height=row_height * len(unit_idxs),
         **kwargs,
     )
 
@@ -533,6 +536,10 @@ def effector_trajectories(
     # TODO: Separate control/indexing of lines vs. markers; e.g. thin line-only traces,
     # plus markers only at the end of the reach
 
+    
+    if colors is None and (n_conditions := tree_infer_batch_size(states)) > 10:
+        colors = [str(c) for c in sample_colorscale('phase', n_conditions)]
+
     fig = px.scatter(
         df,
         x='x',
@@ -554,11 +561,11 @@ def effector_trajectories(
     else:
         if trial_specs is not None:
             target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
-            if target_specs.target_value is not None:
+            if target_specs.value is not None:
                 endpoints_arr = np.array(  # type: ignore
                     [
                         trial_specs.inits["mechanics.effector"].pos,
-                        target_specs.target_value[:, -1],
+                        target_specs.value[:, -1],
                     ]
                 )
             else:
@@ -648,3 +655,122 @@ def effector_trajectories(
 
 def is_trace(element):
     return isinstance(element, BaseTraceType)
+
+
+def plot_traj_3D(
+    traj: Float[Array, "trials time 3"], 
+    endpoint_symbol: Optional[str] = 'circle-open', 
+    start_symbol: Optional[str] = None, 
+    fig: Optional[go.Figure] = None, 
+    colors: str | Sequence[str | None] | None = None, 
+    mode: str = 'lines', 
+    name: Optional[str] = "State trajectory",
+    **kwargs,
+):
+    """Plot 3D trajectories."""
+    if fig is None:
+        fig = go.Figure(layout=dict(width=1000, height=1000))
+        
+    if colors is None or isinstance(colors, str):
+        colors_func = lambda _: colors
+    else:
+        colors_func = lambda i: colors[i]
+    
+    if start_symbol is not None:
+        fig.add_traces(
+            [
+                go.Scatter3d(
+                    x=traj[:, 0, 0], 
+                    y=traj[:, 0, 1], 
+                    z=traj[:, 0, 2],
+                    mode='markers',
+                    marker_symbol=start_symbol,
+                    marker_line_width=2,
+                    marker_size=5,
+                    marker_color=colors,
+                    marker_line_color=colors,
+                    name=f'{name} start'
+                )
+            ]
+        )
+    fig.add_traces(
+        [
+            go.Scatter3d(
+                x=traj[idx, :, 0], 
+                y=traj[idx, :, 1], 
+                z=traj[idx, :, 2],
+                mode=mode,
+                line_color=colors_func(idx),
+                marker_color=colors_func(idx),
+                # name='Reach trajectories',
+                showlegend=(name is not None and idx == 0),
+                name=name,
+                **kwargs,
+            )
+            for idx in range(traj.shape[0])
+        ]
+    )
+    if endpoint_symbol is not None:
+        fig.add_traces(
+            [
+                go.Scatter3d(
+                    x=traj[:, -1, 0], 
+                    y=traj[:, -1, 1], 
+                    z=traj[:, -1, 2],
+                    mode='markers',
+                    marker_symbol=endpoint_symbol,
+                    marker_line_width=2,
+                    marker_size=5,
+                    marker_color=colors,
+                    marker_line_color=colors,
+                    name=f'{name} end'
+                )
+            ]
+        )
+    return fig
+
+
+def plot_eigvals(
+    eigvals: Float[Array, "batch eigvals"],   
+    colors: str | Sequence[str] | None = None,  
+    colorscale: str = 'phase',
+    mode: str = 'markers',
+    fig: Optional[go.Figure] = None,
+    **kwargs,
+):
+    """Plot eigenvalues inside a unit circle with dashed axes."""
+    if fig is None:
+        fig = go.Figure(layout=dict(width=1000, height=1000))
+        
+    if colors is not None:
+        if isinstance(colors, str):
+            pass
+        elif len(colors) != np.prod(eigvals.shape):
+            colors = np.repeat(np.array(colors), eigvals.shape[1])
+
+    # Add a unit circle
+    fig.add_shape(
+        type='circle',
+        xref='x', yref='y',
+        x0=-1, y0=-1, x1=1, y1=1,
+    )
+    
+    # Add dashed axes lines
+    fig.add_hline(0, line_dash='dot', line_color='grey')
+    fig.add_vline(0, line_dash='dot', line_color='grey')
+
+    # Plot eigenvalues
+    fig.add_trace(
+        go.Scatter(
+            x=jnp.real(jnp.ravel(eigvals)),
+            y=jnp.imag(jnp.ravel(eigvals)),
+            mode=mode,
+            marker_size=5,
+            marker_color=colors,
+            marker_colorscale=colorscale,
+            **kwargs,
+        )
+    )
+    
+    return fig
+
