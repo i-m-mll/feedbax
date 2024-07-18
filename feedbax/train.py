@@ -953,3 +953,35 @@ class HebbianGRUUpdate(eqx.Module):
         )
 
         return update
+
+
+# TODO: Refactor this into a single class with HebbianGRUUpdate
+# Note that this class currently just provides dW rather than a full-model update!
+class HebbianVanillaUpdate(eqx.Module):
+    """Hebbian update rule for a vanilla RNN.
+    """
+
+    scale: float = 0.01
+    mode: Literal["default", "differential"] = "default"
+
+    def __call__(
+        self, activities: Array,
+    ) -> eqx.Module:
+
+        x = activities
+        if self.mode == "default":
+            dW = x[..., :, None] @ x[..., None, :]
+        elif self.mode == "differential":
+            dx = jnp.diff(x, axis=-2)  # diff over time
+            dW = dx[..., :, None] @ dx[..., None, :]
+        else:
+            raise ValueError("invalid mode for HebbianUpdate")
+
+        dW = self.scale * dW
+        # Updates do not apply to self weights.
+        dW = mask_diagonal(dW)
+
+        #? Sum over all batch dimensions (e.g. trials, time)
+        dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
+
+        return dW_batch

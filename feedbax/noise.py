@@ -8,12 +8,14 @@ from abc import abstractmethod
 from collections.abc import Callable
 from functools import reduce
 import logging
+from typing import Any, Optional
 
 import equinox as eqx
 from equinox import AbstractVar
 from equinox._pretty_print import tree_pp, bracketed
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree as jt
 import jax._src.pretty_printer as pp
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
@@ -33,6 +35,11 @@ class AbstractNoise(eqx.Module):
 
     def __add__(self, other):
         return CompositeNoise(terms=(self, other))
+
+
+class ZeroNoise(AbstractNoise):
+    def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
+        return jnp.zeros_like(x)
 
 
 class CompositeNoise(AbstractNoise):
@@ -83,3 +90,17 @@ class Multiplicative(AbstractNoise):
         return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)
 
 
+def replace_noise(tree, replace_fn: Callable = lambda _: None):
+    """Replaces all `AbstractNoise` leaves of a PyTree, by default with `None`."""
+    # This is kind of annoying, but use `tree_map` instead of (say) a list comprehension
+    get_noise_terms = lambda tree: jt.leaves(jt.map(
+        lambda x: x if isinstance(x, AbstractNoise) else None, 
+        tree, 
+        is_leaf=lambda x: isinstance(x, AbstractNoise), 
+    ), is_leaf=lambda x: isinstance(x, AbstractNoise))
+
+    return eqx.tree_at(
+        get_noise_terms, 
+        tree, 
+        replace_fn=replace_fn,
+    )

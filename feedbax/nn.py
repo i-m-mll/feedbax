@@ -1,9 +1,5 @@
 """Neural network architectures.
 
-TODO:
-
-- Rename vague `activity` to `hidden`, `cell`, or `rnn`.
-
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
@@ -45,6 +41,26 @@ from feedbax.state import StateT
 logger = logging.getLogger(__name__)
 
 
+# class Layer(Protocol):
+#     def __init__(
+#         self, 
+#         input_size: int, 
+#         hidden_size: int, 
+#         use_bias: bool = True, 
+#         *, 
+#         key: PRNGKeyArray, 
+#         **kwargs,
+#     ): ...
+    
+#     def __call__(
+#         self, 
+#         input: Array, 
+#         state: Array, 
+#         *, 
+#         key: PRNGKeyArray,
+#     ) -> Array: ... 
+
+
 def orthogonal_gru_cell(
     input_size: int,
     hidden_size: int,
@@ -80,11 +96,6 @@ class NetworkState(Module):
     hidden: PyTree[Float[Array, "unit"]]
     output: Optional[PyTree[Array]] = None
     encoding: Optional[PyTree[Array]] = None
-
-
-@runtime_checkable
-class _HasBias(Protocol):
-    bias: Array
 
 
 class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
@@ -146,6 +157,17 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             Use `partial` to set `use_bias` for the encoder or readout types, before
             passing them to this constructor.
 
+        ??? dev-note
+            It is difficult to type check `hidden_type`, since there is no superclass 
+            for stateful network layers, and protocols do not work with `eqx.Module`.
+            Currently we do not check its signatures, or the signatures of the 
+            callable it returns. This means it is up to the user to supply the right 
+            kind of class here, which we have to document.
+            
+            Perhaps it is unwise to construct `SimpleStagedNetwork` as it is. 
+            Maybe layers should be kept separate, and individually added by the user. 
+            That would avert the relatively complicated logic in `model_spec`, here.             
+
         Arguments:
             input_size: The number of input channels in the network.
                 If `encoder_type` is not `None`, this is the number of inputs
@@ -185,11 +207,11 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
 
         if out_size is not None:
             readout = readout_type(hidden_size, out_size, key=key3)
-            if isinstance(readout, _HasBias):
+            if (bias := getattr(readout, "bias", None)) is not None:
                 readout = eqx.tree_at(
                     lambda layer: layer.bias,
                     readout,
-                    jnp.zeros_like(readout.bias),
+                    jnp.zeros_like(bias),
                 )
             self.readout = readout
             self.out_nonlinearity = out_nonlinearity
@@ -354,9 +376,6 @@ class LeakyRNNCell(Module):
             and X.-J. Wang, “Task representations in neural networks trained
             to perform many cognitive tasks,” Nat Neurosci, vol. 22, no. 2,
             pp. 297–306, Feb. 2019, doi: 10.1038/s41593-018-0310-2.
-
-    TODO:
-    - If `diffrax` varies `dt`, then `dt` could be passed to update `alpha`.
     """
 
     weight_hh: Array
@@ -369,6 +388,7 @@ class LeakyRNNCell(Module):
     noise_strength: float
     dt: float
     tau: float
+    nonlinearity: Callable
 
     @jax.named_scope("fbx.RNNCell")
     def __init__(
@@ -380,6 +400,7 @@ class LeakyRNNCell(Module):
         noise_strength: float = 0.01,
         dt: float = 1.0,
         tau: float = 1.0,
+        nonlinearity: Callable = jnp.tanh,
         *,  # this forces the user to pass the following as keyword arguments
         key: PRNGKeyArray,
         **kwargs,
@@ -396,6 +417,7 @@ class LeakyRNNCell(Module):
             )
         else:
             self.weight_ih = jnp.array(0)
+            
         self.weight_hh = jr.uniform(
             hhkey,
             (hidden_size, hidden_size),
@@ -420,6 +442,7 @@ class LeakyRNNCell(Module):
         self.noise_strength = noise_strength
         self.dt = dt
         self.tau = tau
+        self.nonlinearity = nonlinearity
 
     def __call__(self, input: Array, state: Array, key: PRNGKeyArray):
         """Vanilla RNN cell."""
@@ -433,7 +456,7 @@ class LeakyRNNCell(Module):
         else:
             noise = 0
 
-        state = (1 - self.alpha) * state + self.alpha * jnp.tanh(
+        state = (1 - self.alpha) * state + self.alpha * self.nonlinearity(
             jnp.dot(self.weight_ih, input)
             + jnp.dot(self.weight_hh, state)
             + bias

@@ -3,6 +3,7 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+import importlib.metadata
 import logging
 import logging.handlers as loghandlers
 import os
@@ -41,6 +42,10 @@ from feedbax.intervene import is_intervenor
 from feedbax.loss import is_lossdict
 from feedbax.misc import is_module
 
+
+__version__ = importlib.metadata.version("feedbax")
+
+
 # logging.config.fileConfig('../logging.conf')
 
 if os.environ.get("FEEDBAX_DEBUG", False) == "True":
@@ -67,3 +72,5 @@ logger.addHandler(file_handler)
 logging.captureWarnings(True)
 
 logger.info("Logger configured.")
+
+

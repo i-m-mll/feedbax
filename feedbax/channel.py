@@ -14,10 +14,11 @@ from equinox import Module, field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.intervene.schedule import ModelIntervenors
-from feedbax.noise import Normal
+from feedbax.noise import Normal, ZeroNoise
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import StateT
 from feedbax._tree import random_split_like_tree
@@ -37,7 +38,7 @@ class ChannelState(Module):
 
     output: PyTree[Array, "T"]
     queue: Tuple[Optional[PyTree[Array, "T"]], ...]
-    noise: PyTree[Array, "T"]
+    noise: Optional[PyTree[Array, "T"]]
 
 
 class ChannelSpec(Module, Generic[StateT]):
@@ -63,8 +64,11 @@ class Channel(AbstractStagedModel[ChannelState]):
 
     Attributes:
         delay: The number of previous inputs stored in the queue. May be zero.
-        noise_std: The standard deviation of the noise added to the output.
-            If `None`, no noise is added.
+        noise_func: Generates noise for the channel. Can be any function that
+            takes a key and an array, and returns noise samples with the same
+            shape as the array. If `None`, no noise is added. 
+        add_noise: Whether noise is turned on. This allows us to perform model
+            surgery to toggle noise without setting `noise_func` to `None`.
         input_proto: A PyTree of arrays with the same structure/shapes as the
             inputs to the channel will have.
         intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add
@@ -72,8 +76,8 @@ class Channel(AbstractStagedModel[ChannelState]):
     """
 
     delay: int
+    noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = Normal()
     add_noise: bool = True
-    noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal()
     input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
     init_value: float = 0
     intervenors: ModelIntervenors[ChannelState] = field(init=False)
@@ -104,6 +108,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         )
 
     def _add_noise(self, input, state, *, key):
+        assert self.noise_func is not None
         noise = jax.tree_map(
             self.noise_func,
             random_split_like_tree(key, input),
@@ -138,7 +143,7 @@ class Channel(AbstractStagedModel[ChannelState]):
             }
         )
 
-        if self.add_noise:
+        if self.add_noise and self.noise_func is not None:
             spec |= {
                 "add_noise": Stage(
                     callable=lambda self: self._add_noise,
@@ -162,11 +167,16 @@ class Channel(AbstractStagedModel[ChannelState]):
         input_init = jax.tree_map(
             lambda x: jnp.full_like(x, self.init_value), self.input_proto
         )
+        
+        if not self.add_noise or self.noise_func is None:
+            noise_init = None
+        else:
+            noise_init = input_init
 
         return ChannelState(
             output=input_init,
             queue=self.delay * (input_init,),
-            noise=input_init,
+            noise=noise_init,
         )
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":

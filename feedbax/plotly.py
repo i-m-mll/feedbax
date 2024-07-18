@@ -560,7 +560,7 @@ def effector_trajectories(
         endpoints_arr = np.array(endpoints)  #type: ignore
     else:
         if trial_specs is not None:
-            target_specs = trial_specs.targets["mechanics.effector.pos#Effector position"]
+            target_specs = trial_specs.targets["mechanics.effector.pos"]
             if target_specs.value is not None:
                 endpoints_arr = np.array(  # type: ignore
                     [
@@ -600,7 +600,7 @@ def effector_trajectories(
                             symbol=symbol,
                             color='rgba(255, 255, 255, 0)',
                             line=dict(
-                                color="black",#colors[i],
+                                color=colors[i],
                                 width=2,
                             ),
                         ),
@@ -686,8 +686,8 @@ def plot_traj_3D(
                     mode='markers',
                     marker_symbol=start_symbol,
                     marker_line_width=2,
-                    marker_size=5,
-                    marker_color=colors,
+                    marker_size=10,
+                    marker_color="None",
                     marker_line_color=colors,
                     name=f'{name} start'
                 )
@@ -773,4 +773,3 @@ def plot_eigvals(
     )
     
     return fig
-

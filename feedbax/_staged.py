@@ -55,7 +55,7 @@ class ModelStageCallable(Protocol):
     # This is part of the `ModelInput` hack.
     def __call__(self, input: ModelInput, state: PyTree[Array], *, key: PRNGKeyArray) -> PyTree[Array]:
         ...
-
+        
 
 class OtherStageCallable(Protocol):
     def __call__(self, input: PyTree[Array], state: PyTree[Array], *, key: PRNGKeyArray) -> PyTree[Array]:

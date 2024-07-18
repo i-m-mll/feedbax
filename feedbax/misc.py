@@ -16,6 +16,7 @@ from collections.abc import (
 import copy
 import difflib
 import dis
+from functools import wraps
 import inspect
 from itertools import zip_longest, chain
 import logging
@@ -33,7 +34,7 @@ import jax
 import jax.numpy as jnp
 import jax._src.pretty_printer as pp
 import jax.tree_util as jtu
-from jaxtyping import Float, Array, PyTree
+from jaxtyping import Float, Array, PyTree, Shaped
 
 from feedbax._progress import _tqdm_write
 
@@ -371,3 +372,32 @@ def where_func_to_labels(where: Callable) -> PyTree[str]:
         return jax.tree_map(_get_where_str_constructor_label, where(_WhereStrConstructor()))
     except TypeError:
         raise TypeError("`where` must return a PyTree of node references")
+    
+    
+def batch_reshape(
+    func: Callable[[Shaped[Array, "batch n"]], Shaped[Array, "batch m"]]
+):
+    """Decorate a function to collapse its input array to a single batch dimension, and uncollapse the result.
+    
+    For example, use this to decorate `sklearn.decomposition.PCA.transform` to 
+    get a function that works on arrays with multiple batch dimensions.
+    """
+    @wraps(func)
+    def wrapper(arr: Shaped[Array, "*batch n"]):
+        result = func(arr.reshape((-1, arr.shape[-1])))
+        return result.reshape((*arr.shape[:-1], result.shape[-1]))
+        
+    return wrapper 
+
+
+def unkwargkey(f):
+    """Converts a final `key` kwarg into an initial positional arg.
+    
+    This is useful because many Equinox modules are designed to take 
+    `key` as a kwarg, but Equinox transformations don't like kwargs, 
+    but sometimes we want to transform over `key` anyway.
+    """
+    @wraps(f)
+    def wrapper(key, *args): 
+        return f(*args, key=key) 
+    return wrapper
