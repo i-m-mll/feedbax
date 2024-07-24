@@ -10,6 +10,7 @@ from functools import cached_property
 import logging
 import math
 from typing import (
+    Literal,
     Optional,
     Protocol,
     Self,
@@ -279,22 +280,18 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
                 }
             )
         else:
-            spec = OrderedDict(
-                {
-                    "encoder": Stage(
-                        callable=lambda self: lambda input, state, *, key: self.encoder(
-                            input
-                        ),
-                        where_input=lambda input, state: state.input,
-                        where_state=lambda state: state.encoding,
-                    ),
-                    "hidden": Stage(
-                        callable=hidden_module,
-                        where_input=lambda input, state: state.encoding,
-                        where_state=lambda state: state.hidden,
-                    ),
-                }
-            )
+            spec = OrderedDict({
+                "encoder": Stage(
+                    callable=lambda self: lambda input, state, *, key: self.encoder(input),
+                    where_input=lambda input, state: state.input,
+                    where_state=lambda state: state.encoding,
+                ),
+                "hidden": Stage(
+                    callable=hidden_module,
+                    where_input=lambda input, state: state.encoding,
+                    where_state=lambda state: state.hidden,
+                ),
+            })
 
         # TODO: conditional on `self.hidden_nonlinearity is not identity_func`?
         spec |= {
@@ -366,7 +363,6 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         )
 
 
-# TODO: Convert this to AbstractStagedModule
 class LeakyRNNCell(Module):
     """Custom `RNNCell` with persistent, leaky state.
 
@@ -514,5 +510,18 @@ def two_layer_linear(
         nonlinearity=nonlinearity,
         key=key,
     )
-
-
+    
+    
+def gru_weight_idxs_func(label: Literal["candidate", "update", "reset"]) -> Callable[[Array], slice]:
+    """Returns a function that returns a slice of a subset of the GRU weights.
+    
+    TODO: Should probably just return a function that returns the subset of weights directly, rather than their indices.
+    """
+    def gru_weight_idxs(weights):
+        len_by_3 = weights.shape[-1] // 3
+        return {
+            "reset": slice(0, len_by_3),
+            "update": slice(len_by_3, 2 * len_by_3),
+            "candidate": slice(2 * len_by_3, None),
+        }[label]
+    return gru_weight_idxs

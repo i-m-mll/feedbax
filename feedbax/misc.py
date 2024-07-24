@@ -401,3 +401,8 @@ def unkwargkey(f):
     def wrapper(key, *args): 
         return f(*args, key=key) 
     return wrapper
+
+
+def batched_outer(x: Shaped[Array, "*batch n"]) -> Shaped[Array, "*batch n n"]:
+    """Returns the outer product of the final dimension of an array."""
+    return jnp.einsum('...i,...j->...ij', x, x)

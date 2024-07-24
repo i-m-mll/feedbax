@@ -13,6 +13,7 @@ from typing import Any, Literal, Optional, Tuple
 
 import equinox as eqx
 from equinox import field
+from feedbax.nn import NetworkState
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -29,6 +30,7 @@ from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
 from feedbax.misc import (
     Timer,
     TqdmLoggingHandler,
+    batched_outer,
     delete_contents,
 )
 from feedbax._model import AbstractModel, ModelInput
@@ -650,8 +652,7 @@ class TaskTrainer(eqx.Module):
 
         # For updates computed directly from the state, without loss gradient.
         for update_func in update_funcs:
-            state_dep_updates = update_func(model, states)
-            model = eqx.apply_updates(model, state_dep_updates)
+            model = update_func(model, states)
 
         flat_model = jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AbstractIntervenor))
         flat_opt_state = jtu.tree_leaves(opt_state)
@@ -899,14 +900,12 @@ def mask_diagonal(array):
 
 
 class HebbianGRUUpdate(eqx.Module):
-    """Hebbian update rule for the recurrent weights of a GRUCell.
+    """DEPRECATED. Use `HebbianUpdate`.
+    
+    Hebbian update rule for the recurrent weights of a GRUCell.
 
     This specifically applies the Hebbian update to the candidate activation
     weights of the GRU, while leaving the update and reset weights unchanged.
-
-    TODO:
-    - Generalize to other architectures. Vanilla RNN is easy.
-        - Allow the user to specify `where` in the model the weights are.
     """
 
     scale: float = 0.01
@@ -944,7 +943,6 @@ class HebbianGRUUpdate(eqx.Module):
         }[self.weight_type]
         weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
 
-        #! How does this tree_at even identify which leaf of a None-filled pytree is weight_hh?
         update = eqx.tree_at(
             lambda model: model.step.net.hidden.weight_hh,
             jax.tree_map(lambda x: None, model),
@@ -952,36 +950,44 @@ class HebbianGRUUpdate(eqx.Module):
             is_leaf=lambda x: x is None,
         )
 
-        return update
+        return update   
 
 
-# TODO: Refactor this into a single class with HebbianGRUUpdate
-# Note that this class currently just provides dW rather than a full-model update!
-class HebbianVanillaUpdate(eqx.Module):
-    """Hebbian update rule for a vanilla RNN.
+def hebb_rule(
+    activity: Float[Array, "*batch time units"]
+) -> Float[Array, "*batch time units units"]:
+    """Standard Hebbian learning rule, unscaled."""
+    return batched_outer(activity)
+
+
+def hebb_differential_rule(
+    activity: Float[Array, "*batch time units"]
+) -> Float[Array, "*batch time units units"]:
+    """Differential Hebbian learning rule, unscaled."""
+    d_activity = jnp.diff(activity, axis=-2)
+    return batched_outer(d_activity) 
+
+    
+class ActivityDependentWeightUpdate(eqx.Module):
+    """Compute an weight update according to a learning rule. 
     """
 
     scale: float = 0.01
-    mode: Literal["default", "differential"] = "default"
+    rule: Callable[
+        [Float[Array, "*batch time units"]], 
+        Float[Array, "*batch time units units"]
+    ] = hebb_rule
+    agg_func: Callable = jnp.mean
 
     def __call__(
-        self, activities: Array,
-    ) -> eqx.Module:
+        self, activity: Float[Array, "*batch time units"]
+    ) -> Float[Array, "units units"]:
 
-        x = activities
-        if self.mode == "default":
-            dW = x[..., :, None] @ x[..., None, :]
-        elif self.mode == "differential":
-            dx = jnp.diff(x, axis=-2)  # diff over time
-            dW = dx[..., :, None] @ dx[..., None, :]
-        else:
-            raise ValueError("invalid mode for HebbianUpdate")
-
-        dW = self.scale * dW
+        dW = self.rule(activity)
         # Updates do not apply to self weights.
         dW = mask_diagonal(dW)
 
-        #? Sum over all batch dimensions (e.g. trials, time)
-        dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
+        # Aggregate over any batch dimensions (e.g. trials, time)
+        dW_batch = self.agg_func(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
 
-        return dW_batch
+        return self.scale * dW_batch
