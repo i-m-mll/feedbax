@@ -6,4 +6,4 @@
 
 <!-- ::: feedbax.train.SimpleTrainer -->
 
-<!-- feedbax.train.HebbianGRUUpdate -->
+<!-- feedbax.train.ActivityDependentWeightUpdate -->

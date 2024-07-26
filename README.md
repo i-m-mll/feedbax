@@ -16,7 +16,7 @@ Feedbax makes it easy to:
 - swap out components of models, and write new components.
 <!-- - track the progress of a training run in Tensorboard. -->
 
-Feedbax is in active [development](#development). Expect some changes in the near future!
+Feedbax is in active [development](#development). Expect some changes in the near future. In particular, I intend to [replace](https://github.com/i-m-mll/feedbax/discussions/28#discussioncomment-10153895) the staged model approach with a simpler lazy-executing DAG framework.
 
 ## Feedbax is a JAX library
 
@@ -24,7 +24,10 @@ Feedbax uses JAX and [Equinox](https://docs.kidger.site/equinox/).
 
 [Never used JAX before](https://docs.lprt.ca/feedbax/examples/pytrees/)?
 
-Please also check out [MotorNet](https://github.com/OlivierCodol/MotorNet), a PyTorch library with many similarities to Feedbax.
+Please also check out:
+
+- [MotorNet](https://github.com/OlivierCodol/MotorNet), a PyTorch library with many similarities to Feedbax.
+- [Collimator](https://collimator.ai), a more mature JAX library for composing and optimizing dynamical systems.
 
 ## Installation
 
@@ -40,11 +43,11 @@ Documentation is available [here](https://docs.lprt.ca/feedbax).
 
 ## Development
 
-I've developed Feedbax over the last few months, while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
+I started to develop Feedbax while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
 
 I've added GitHub [issues](https://github.com/i-m-mll/feedbax/issues) to document some of my choices and uncertainties. For an overview of major issues in different categories, check out [this GitHub conversation](https://github.com/i-m-mll/feedbax/discussions/27). Refer also to [this page](https://docs.lprt.ca/feedbax/structure) of the docs, for an informal overview of how Feedbax objects relate to each other.
 
-There are many features, especially pre-built models and tasks, that could still be implemented. Some of the models and tasks that *are* implemented, have yet to be fully optimized. So far I've focused more on the overall structure, than on coverage of all the common use cases I can imagine. If there's a particular model, task, or feature you'd like Feedbax to support, [let us know](https://github.com/i-m-mll/feedbax/issues), or contribute some code!
+There are many features, especially pre-built models and tasks, that could still be implemented. Some of the models and tasks that are implemented have yet to be fully optimized. So far I've focused more on the overall structure, than on coverage of all the common use cases I can imagine. If there's a particular model, task, or feature you'd like Feedbax to support, [let us know](https://github.com/i-m-mll/feedbax/issues), or contribute some code!
 
 ## Acknowledgments
 

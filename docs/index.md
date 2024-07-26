@@ -18,6 +18,8 @@ Feedbax makes it easy to:
 
 !!! Warning ""
     Feedbax is in active [development](#development). Expect some changes in the near future!
+    
+    In particular, I intend to [replace](https://github.com/i-m-mll/feedbax/discussions/28#discussioncomment-10153895) the staged model approach with a simpler lazy-executing DAG framework.
 
 ??? Note "What Feedbax can (and can't) do"
     Feedbax is designed for feedback control of biomechanical models by neural networks, to perform movement tasks in continuous spaces. However, it could also be used for other optimal control problems for which a suitable set of model, cost function, and task trials can be defined.
@@ -32,7 +34,10 @@ Feedbax uses JAX and [Equinox](https://docs.kidger.site/equinox/).
 <!--
 One disadvantage of JAX is a lack of GPU support on Windows, though it is possible to use the GPU through the Windows Subsystem for Linux (WSL). -->
 
-Please also check out [MotorNet](https://github.com/OlivierCodol/MotorNet), a PyTorch library with many similarities to Feedbax.
+Please also check out:
+
+- [MotorNet](https://github.com/OlivierCodol/MotorNet), a PyTorch library with many similarities to Feedbax.
+- [Collimator](https://collimator.ai), a more mature JAX library for composing and optimizing dynamical systems.
 
 ## Installation
 
