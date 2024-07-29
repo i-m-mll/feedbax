@@ -518,7 +518,7 @@ def gru_weight_idxs_func(label: Literal["candidate", "update", "reset"]) -> Call
     TODO: Should probably just return a function that returns the subset of weights directly, rather than their indices.
     """
     def gru_weight_idxs(weights):
-        len_by_3 = weights.shape[-1] // 3
+        len_by_3 = weights.shape[-2] // 3
         return {
             "reset": slice(0, len_by_3),
             "update": slice(len_by_3, 2 * len_by_3),

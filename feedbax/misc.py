@@ -262,8 +262,8 @@ def nested_dict_update(dict_, *args, make_copy: bool = True):
         for k, v in arg.items():
             if isinstance(v, Mapping):
                 dict_[k] = nested_dict_update(
-                    dict_.get(k, type(v)()), 
-                    v, 
+                    dict_.get(k, type(v)()),
+                    v,
                     make_copy=make_copy,
                 )
             else:
@@ -284,8 +284,8 @@ def _simple_module_pprint(name, *children, **kwargs):
 def _get_where_str(where_func: Callable) -> str:
     """
     Returns a string representation of the (nested) attributes accessed by a function.
-    
-    Only works for functions that take a single argument, and return the argument 
+
+    Only works for functions that take a single argument, and return the argument
     or a single (nested) attribute accessed from the argument.
     """
     bytecode = dis.Bytecode(where_func)
@@ -340,7 +340,7 @@ def where_func_to_paths(where, tree):
 
 
 class _WhereStrConstructor:
-    
+
     def __init__(self, label: str = ""):
         self.label = label
 
@@ -350,19 +350,19 @@ class _WhereStrConstructor:
         elif isinstance(key, type):
             key = key.__name__
         return _WhereStrConstructor("".join([self.label, f"[{key}]"]))
-        
+
     def __getattr__(self, name: str):
         sep = "." if self.label else ""
         return _WhereStrConstructor(sep.join([self.label, name]))
-    
-    
+
+
 def _get_where_str_constructor_label(x: _WhereStrConstructor) -> str:
     return x.label
 
 
 def where_func_to_labels(where: Callable) -> PyTree[str]:
     """Also similar to `_get_where_str` and `where_func_to_paths`, but:
-    
+
     - Avoids complicated logic of parsing bytecode, or traversing pytrees;
     - Works for `where` functions that return arbitrary PyTrees of node references;
     - Runs significantly (10+ times) faster than the other solutions.
@@ -372,37 +372,80 @@ def where_func_to_labels(where: Callable) -> PyTree[str]:
         return jax.tree_map(_get_where_str_constructor_label, where(_WhereStrConstructor()))
     except TypeError:
         raise TypeError("`where` must return a PyTree of node references")
-    
-    
+
+
 def batch_reshape(
     func: Callable[[Shaped[Array, "batch n"]], Shaped[Array, "batch m"]]
 ):
     """Decorate a function to collapse its input array to a single batch dimension, and uncollapse the result.
-    
-    For example, use this to decorate `sklearn.decomposition.PCA.transform` to 
+
+    For example, use this to decorate `sklearn.decomposition.PCA.transform` to
     get a function that works on arrays with multiple batch dimensions.
     """
     @wraps(func)
     def wrapper(arr: Shaped[Array, "*batch n"]):
         result = func(arr.reshape((-1, arr.shape[-1])))
         return result.reshape((*arr.shape[:-1], result.shape[-1]))
-        
-    return wrapper 
+
+    return wrapper
 
 
 def unkwargkey(f):
     """Converts a final `key` kwarg into an initial positional arg.
-    
-    This is useful because many Equinox modules are designed to take 
-    `key` as a kwarg, but Equinox transformations don't like kwargs, 
-    but sometimes we want to transform over `key` anyway.
+
+    This is useful because many Equinox modules take `key` as a kwarg, and Equinox
+    transformations don't like kwargs -- but sometimes we want to transform over `key`
+    anyway.
     """
     @wraps(f)
-    def wrapper(key, *args): 
-        return f(*args, key=key) 
+    def wrapper(key, *args):
+        return f(*args, key=key)
     return wrapper
 
 
-def batched_outer(x: Shaped[Array, "*batch n"]) -> Shaped[Array, "*batch n n"]:
+def batched_outer(
+    x: Shaped[Array, "*batch n"],
+    y: Shaped[Array, "*batch n"],
+) -> Shaped[Array, "*batch n n"]:
     """Returns the outer product of the final dimension of an array."""
-    return jnp.einsum('...i,...j->...ij', x, x)
+    return jnp.einsum('...i,...j->...ij', x, y)
+
+
+def exponential_smoothing(
+    x: Float[Array, "*"],
+    alpha: float,
+    init_window_size: int = 1,
+    axis: int = -1,
+):
+    """
+    Return the exponential moving average (EMA) of an array along the specified axis.
+
+    Arguments:
+        x: Input array
+        alpha: Smoothing factor between 0 and 1.
+        init_window_size: Initialize the EMA with the average of this many values
+            from the beginning of the axis.
+        axis: Axis along which to perform the EMA.
+
+    Returns:
+        Array with the same shape as x, containing the EMA along the specified axis.
+    """
+
+    # assert init_window_size > 0, "init_window_size must be greater than 0"
+
+    alpha = jnp.clip(alpha, 0, 1)  # type: ignore
+
+    # Take the average of the first `init_window_size` values as the initial EMA
+    init_value = jnp.mean(jnp.take(x, jnp.arange(init_window_size), axis=axis), axis=axis)
+
+    # Move the axis we're operating on to be the first dimension
+    x_moved = jnp.moveaxis(x, axis, 0)
+
+    def scan_fn(carry, x_t):
+        ema = (1 - alpha) * carry + alpha * x_t
+        return ema, ema
+
+    _, ema = jax.lax.scan(scan_fn, init_value, x_moved)
+
+    # Move the axis back to its original position
+    return jnp.moveaxis(ema, 0, axis)

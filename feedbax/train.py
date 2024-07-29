@@ -32,6 +32,7 @@ from feedbax.misc import (
     TqdmLoggingHandler,
     batched_outer,
     delete_contents,
+    exponential_smoothing,
 )
 from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
@@ -901,7 +902,7 @@ def mask_diagonal(array):
 
 class HebbianGRUUpdate(eqx.Module):
     """DEPRECATED. Use `HebbianUpdate`.
-    
+
     Hebbian update rule for the recurrent weights of a GRUCell.
 
     This specifically applies the Hebbian update to the candidate activation
@@ -950,14 +951,14 @@ class HebbianGRUUpdate(eqx.Module):
             is_leaf=lambda x: x is None,
         )
 
-        return update   
+        return update
 
 
 def hebb_rule(
-    activity: Float[Array, "*batch time units"]
+    activity: Float[Array, "*batch time units"],
 ) -> Float[Array, "*batch time units units"]:
     """Standard Hebbian learning rule, unscaled."""
-    return batched_outer(activity)
+    return batched_outer(activity, activity)
 
 
 def hebb_differential_rule(
@@ -965,25 +966,60 @@ def hebb_differential_rule(
 ) -> Float[Array, "*batch time units units"]:
     """Differential Hebbian learning rule, unscaled."""
     d_activity = jnp.diff(activity, axis=-2)
-    return batched_outer(d_activity) 
+    return batched_outer(d_activity, d_activity)
 
-    
-class ActivityDependentWeightUpdate(eqx.Module):
-    """Compute an weight update according to a learning rule. 
+
+def hebb_covariance_rule(
+    activity: Float[Array, "*batch time units"],
+    alpha: float = 0.01,
+    init_window_size: int = 1,
+) -> Float[Array, "*batch time units units"]:
+    """Hebbian learning rule based on the local covariance of the activity.
+
+    Uses exponential smoothing to estimate the local mean of the activity.
     """
+    ema = exponential_smoothing(activity, alpha, init_window_size, axis=-2)
+    return hebb_rule(activity - ema)
 
+
+def oja_term(
+    activity: Float[Array, "*batch time units"],
+    weights: Float[Array, "units units"],
+) -> Float[Array, "*batch time units units"]:
+    """Regularization term from Oja's rule."""
+    return -(activity ** 2)[..., None, :] * weights
+
+
+def _null_weight_rule(
+    activity: Float[Array, "*batch time units"],
+    weights: Float[Array, "units units"],
+):
+    return 0.0
+
+
+class ActivityDependentWeightUpdate(eqx.Module):
+    """Compute a weight update according to a learning rule.
+    """
     scale: float = 0.01
     rule: Callable[
-        [Float[Array, "*batch time units"]], 
+        [Float[Array, "*batch time units"]],
         Float[Array, "*batch time units units"]
     ] = hebb_rule
+    # Keep this separate so that all the simpler rules don't need to be functions of `weights`
+    weight_dep_rule: Callable[
+        [Float[Array, "*batch time units"], Float[Array, "units units"]],
+        Float[Array, "*batch time units units"] | float,
+    ] = _null_weight_rule
+    weight_dep_scale: float = 1.0
     agg_func: Callable = jnp.mean
 
     def __call__(
-        self, activity: Float[Array, "*batch time units"]
+        self,
+        activity: Float[Array, "*batch time units"],
+        weights: Float[Array, "units units"],
     ) -> Float[Array, "units units"]:
 
-        dW = self.rule(activity)
+        dW = self.rule(activity) + self.weight_dep_scale * self.weight_dep_rule(activity, weights)
         # Updates do not apply to self weights.
         dW = mask_diagonal(dW)
 
