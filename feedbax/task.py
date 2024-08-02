@@ -1070,9 +1070,7 @@ class Stabilization(AbstractTask):
                 effector_target=_forceless_task_inputs(effector_target_state)
             ),
             targets=WhereDict({
-                (lambda state: state.mechanics.effector.pos): (
-                    TargetSpec(effector_target_state.pos)
-                ),
+                (lambda state: state.mechanics.effector.pos): TargetSpec(effector_target_state.pos),
             }),
         )
 

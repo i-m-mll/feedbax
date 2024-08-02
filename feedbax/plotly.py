@@ -536,7 +536,7 @@ def effector_trajectories(
     # TODO: Separate control/indexing of lines vs. markers; e.g. thin line-only traces,
     # plus markers only at the end of the reach
 
-    
+
     if colors is None and (n_conditions := tree_infer_batch_size(states)) > 10:
         colors = [str(c) for c in sample_colorscale('phase', n_conditions)]
 
@@ -549,10 +549,20 @@ def effector_trajectories(
         facet_col_spacing=0.05,
         color_discrete_sequence=colors,
         labels=dict(color="Condition"),
+        custom_data=['Condition', 'var', 'Timestep'],
         **kwargs,
     )
 
-    fig.for_each_trace(lambda trace: trace.update(mode=mode))
+    fig.for_each_trace(lambda trace: trace.update(
+        mode=mode,
+        hovertemplate=(
+            'Condition: %{customdata[0]}<br>'
+            'Time step: %{customdata[2]}<br>'
+            'x: %{x:.2f}<br>'
+            'y: %{y:.2f}<br>'
+            '<extra></extra>'
+        ),
+    ))
 
     fig.update_traces(marker_size=ms)
 
@@ -658,30 +668,30 @@ def is_trace(element):
 
 
 def plot_traj_3D(
-    traj: Float[Array, "trials time 3"], 
-    endpoint_symbol: Optional[str] = 'circle-open', 
-    start_symbol: Optional[str] = None, 
-    fig: Optional[go.Figure] = None, 
-    colors: str | Sequence[str | None] | None = None, 
-    mode: str = 'lines', 
+    traj: Float[Array, "trials time 3"],
+    endpoint_symbol: Optional[str] = 'circle-open',
+    start_symbol: Optional[str] = None,
+    fig: Optional[go.Figure] = None,
+    colors: str | Sequence[str | None] | None = None,
+    mode: str = 'lines',
     name: Optional[str] = "State trajectory",
     **kwargs,
 ):
     """Plot 3D trajectories."""
     if fig is None:
         fig = go.Figure(layout=dict(width=1000, height=1000))
-        
+
     if colors is None or isinstance(colors, str):
         colors_func = lambda _: colors
     else:
         colors_func = lambda i: colors[i]
-    
+
     if start_symbol is not None:
         fig.add_traces(
             [
                 go.Scatter3d(
-                    x=traj[:, 0, 0], 
-                    y=traj[:, 0, 1], 
+                    x=traj[:, 0, 0],
+                    y=traj[:, 0, 1],
                     z=traj[:, 0, 2],
                     mode='markers',
                     marker_symbol=start_symbol,
@@ -696,8 +706,8 @@ def plot_traj_3D(
     fig.add_traces(
         [
             go.Scatter3d(
-                x=traj[idx, :, 0], 
-                y=traj[idx, :, 1], 
+                x=traj[idx, :, 0],
+                y=traj[idx, :, 1],
                 z=traj[idx, :, 2],
                 mode=mode,
                 line_color=colors_func(idx),
@@ -714,8 +724,8 @@ def plot_traj_3D(
         fig.add_traces(
             [
                 go.Scatter3d(
-                    x=traj[:, -1, 0], 
-                    y=traj[:, -1, 1], 
+                    x=traj[:, -1, 0],
+                    y=traj[:, -1, 1],
                     z=traj[:, -1, 2],
                     mode='markers',
                     marker_symbol=endpoint_symbol,
@@ -731,8 +741,8 @@ def plot_traj_3D(
 
 
 def plot_eigvals(
-    eigvals: Float[Array, "batch eigvals"],   
-    colors: str | Sequence[str] | None = None,  
+    eigvals: Float[Array, "batch eigvals"],
+    colors: str | Sequence[str] | None = None,
     colorscale: str = 'phase',
     mode: str = 'markers',
     fig: Optional[go.Figure] = None,
@@ -741,7 +751,7 @@ def plot_eigvals(
     """Plot eigenvalues inside a unit circle with dashed axes."""
     if fig is None:
         fig = go.Figure(layout=dict(width=1000, height=1000))
-        
+
     if colors is not None:
         if isinstance(colors, str):
             pass
@@ -754,7 +764,7 @@ def plot_eigvals(
         xref='x', yref='y',
         x0=-1, y0=-1, x1=1, y1=1,
     )
-    
+
     # Add dashed axes lines
     fig.add_hline(0, line_dash='dot', line_color='grey')
     fig.add_vline(0, line_dash='dot', line_color='grey')
@@ -771,5 +781,5 @@ def plot_eigvals(
             **kwargs,
         )
     )
-    
+
     return fig

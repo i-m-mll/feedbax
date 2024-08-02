@@ -13,6 +13,7 @@ from typing import Any, Optional
 import equinox as eqx
 from equinox import AbstractVar
 from equinox._pretty_print import tree_pp, bracketed
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
@@ -69,22 +70,39 @@ class CompositeNoise(AbstractNoise):
 class Normal(AbstractNoise):
     std: float = 1.0
     mean: float = 0.0
-    broadcast: bool = False
 
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        shape = (1,) if self.broadcast else x.shape
-        return self.std * jr.normal(key, shape, x.dtype) + self.mean
+        return self.std * jr.normal(key, x.shape, x.dtype) + self.mean
 
+
+class HalfNormal2Vector(AbstractNoise):
+    """2-vectors with half-normally-distributed lengths, and uniform directions.
+
+    NOTE: This only makes sense when `x.shape[-1] == 2`
+    """
+    std: float = 1.0
+
+    def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
+        key_lengths, key_angles = jr.split(key)
+        lengths = self.std * jr.normal(key_lengths, x.shape[:-1], x.dtype)
+        angles = jr.uniform(key_angles, x.shape[:-1], minval=0, maxval=2*jnp.pi)
+        return lengths * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=-1)
 
 
 class Multiplicative(AbstractNoise):
-    noise_func: Callable[[PRNGKeyArray, Array], Array]
+    """Scales the output of another noise term by the magnitude of the input signal.
+
+    Arguments:
+        noise_func: The noise function to multiplicatively scale.
+        scale_func: Applied to the input signal to produce the scaling factor. For example,
+            if the input is a vector, we may want to scale the noise sample by the vector
+            length, in which case we could pass `lambda x: jnp.linalg.norm(x, axis=-1)`.
+    """
+    noise_func: AbstractNoise | Callable[[PRNGKeyArray, Array], Array]
+    scale_func: Callable[[Array], Array] = lambda x: x
 
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
-        return x * self.noise_func(key, x)
-
-    # def __getattr__(self, name):
-    #     return getattr(self.noise_func, name)
+        return self.scale_func(x) * self.noise_func(key, x)
 
     def __tree_pp__(self, **kwargs):
         return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)
@@ -94,13 +112,13 @@ def replace_noise(tree, replace_fn: Callable = lambda _: None):
     """Replaces all `AbstractNoise` leaves of a PyTree, by default with `None`."""
     # This is kind of annoying, but use `tree_map` instead of (say) a list comprehension
     get_noise_terms = lambda tree: jt.leaves(jt.map(
-        lambda x: x if isinstance(x, AbstractNoise) else None, 
-        tree, 
-        is_leaf=lambda x: isinstance(x, AbstractNoise), 
+        lambda x: x if isinstance(x, AbstractNoise) else None,
+        tree,
+        is_leaf=lambda x: isinstance(x, AbstractNoise),
     ), is_leaf=lambda x: isinstance(x, AbstractNoise))
 
     return eqx.tree_at(
-        get_noise_terms, 
-        tree, 
+        get_noise_terms,
+        tree,
         replace_fn=replace_fn,
     )

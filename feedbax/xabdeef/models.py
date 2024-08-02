@@ -11,6 +11,7 @@ from typing import Optional
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
@@ -24,7 +25,7 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.muscle import ActivationFilter
 from feedbax.nn import SimpleStagedNetwork
-from feedbax.noise import Multiplicative, Normal
+from feedbax.noise import HalfNormal2Vector, Multiplicative, Normal
 from feedbax.task import AbstractTask
 
 
@@ -102,8 +103,13 @@ def point_mass_nn(
         motor_noise_func=(
             # Combine signal-dependent noise with constant noise (e.g. Beer, Haggard, Wolpert 2004)
             # `broadcast=True` means only a single noise sample -- i.e. scale the vector, not the directions.
-            Multiplicative(Normal(std=motor_noise_std, broadcast=True)) 
-            + Normal(std=1.8 * motor_noise_std, broadcast=True)
+            Multiplicative(Normal(std=motor_noise_std))
+            + Normal(std=1.8 * motor_noise_std)
+            # Multiplicative(
+            #     HalfNormal2Vector(std=motor_noise_std),
+            #     scale_func=lambda x: jnp.linalg.norm(x, axis=-1)
+            # )
+            # + HalfNormal2Vector(std=1.8 * motor_noise_std)
         ),
         key=key2,
     )

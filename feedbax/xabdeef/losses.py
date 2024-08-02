@@ -54,10 +54,11 @@ def simple_reach_loss(
             effector_position=TargetStateLoss(
                 "Effector position",
                 where=lambda state: state.mechanics.effector.pos,
-                norm=lambda *args, **kwargs: (
-                    # Euclidean distance
-                    jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
-                ),
+                norm=lambda x: jnp.sum(x**2, axis=-1),
+                # norm=lambda *args, **kwargs: (
+                #     # Euclidean distance
+                #     jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
+                # ),
             ),
             effector_final_velocity=TargetStateLoss(
                 "Effector final velocity",
@@ -94,7 +95,7 @@ def hold_loss(
     if loss_term_weights is None:
         loss_term_weights = dict(
             effector_position=1.0,
-            effector_velocity=1.0,
+            effector_velocity=1e-5,
             nn_output=1e-5,
             nn_hidden=1e-5,
         )
@@ -104,9 +105,10 @@ def hold_loss(
                 "Effector position",
                 where=lambda state: state.mechanics.effector.pos,
                 # Euclidean distance
-                norm=lambda *args, **kwargs: (
-                    jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
-                ),
+                norm=lambda x: jnp.sum(x**2, axis=-1),
+                # norm=lambda *args, **kwargs: (
+                #     jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
+                # ),
             ),
             effector_velocity=TargetStateLoss(
                 "Effector velocity",
