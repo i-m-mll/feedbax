@@ -537,8 +537,9 @@ def effector_trajectories(
     # plus markers only at the end of the reach
 
 
-    if colors is None and (n_conditions := tree_infer_batch_size(states)) > 10:
-        colors = [str(c) for c in sample_colorscale('phase', n_conditions)]
+    if colors is None:
+        n_conditions = tree_infer_batch_size(states)
+        colors = [str(c) for c in sample_colorscale('phase', n_conditions + 1)]
 
     fig = px.scatter(
         df,

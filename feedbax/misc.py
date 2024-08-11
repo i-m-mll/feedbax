@@ -34,6 +34,7 @@ import jax
 import jax.numpy as jnp
 import jax._src.pretty_printer as pp
 import jax.tree_util as jtu
+import jax.tree as jt
 from jaxtyping import Float, Array, PyTree, Shaped
 
 from feedbax._progress import _tqdm_write
@@ -375,17 +376,83 @@ def where_func_to_labels(where: Callable) -> PyTree[str]:
 
 
 def batch_reshape(
-    func: Callable[[Shaped[Array, "batch n"]], Shaped[Array, "batch m"]]
+    func: Callable[[Shaped[Array, "batch *n"]], Shaped[Array, "batch *m"]],
+    n_nonbatch: int | Sequence[int] = 1,
 ):
     """Decorate a function to collapse its input array to a single batch dimension, and uncollapse the result.
 
-    For example, use this to decorate `sklearn.decomposition.PCA.transform` to
-    get a function that works on arrays with multiple batch dimensions.
+    !!! Example
+        Decorate `sklearn.decomposition.PCA.transform` so that it works on arrays with multiple
+        batch dimensions.
+
+        ```python
+        # Generate some 30-dimension data points with two batch dims, and do 2-dim PCA
+        n = 30
+        data = np.random.random((10, 20, n))
+        pca = PCA(n_components=2).fit(data.reshape(-1, data.shape[-1]))
+
+        # Generate some more data we want to project, with an arbitrary number of batches
+        more_data = np.random.rand((5, 10, 15, n))
+        more_data_pc = batch_reshape(pca.transform)(more_data)  # (5, 10, 15, 2)
+        ```
+
+    !!! Note
+        I originally added the `n_nonbatch` parameter in order to vmap a function over different arrays
+        with different numbers of batch dimensions. Here's a trivial example.
+
+        ```python
+        key = jr.PRNGKeyArray(0)
+        n = 5
+
+        def func(arr: Shaped[Array, 'n']):
+            # Do something; here we'll just add a trailing singleton dimensions
+            return arr[..., None]
+
+        arrays = (
+            jr.normal(key, 10, 20, n),
+            jr.normal(key, 50, 5, 16, n),
+            jr.normal(key, 2, n),
+        )
+
+        # results is the same as arrays but each array has final singleton
+        result = tree_map(batch_reshape(jax.vmap(func)), arrays)
+        ```
+
+        However, it turns out you can do this more easily with `jnp.vectorize`.
+
+    Arguments:
+        func: A function whose input and output arrays have a single batch dimension.
+        n_nonbatch: The number of final axes that should not be collapsed and reformed. May be specified
+            separately for each
     """
+    n_params = len(inspect.signature(func).parameters)
+
+    if isinstance(n_nonbatch, int):
+        n_nonbatch = (n_nonbatch,) * n_params
+    elif isinstance(n_nonbatch, Sequence):
+        assert len(n_nonbatch) == n_params, (
+            "if n_nonbatch is a sequence it must have the same length "
+            "as the number of parameters of func"
+        )
+
     @wraps(func)
-    def wrapper(arr: Shaped[Array, "*batch n"]):
-        result = func(arr.reshape((-1, arr.shape[-1])))
-        return result.reshape((*arr.shape[:-1], result.shape[-1]))
+    def wrapper(*args):
+        batch_shapes = set([arr.shape[:-n] for arr, n in zip(args, n_nonbatch)])
+        assert len(batch_shapes) == 1, (
+            "all input arrays must have the same batch shape"
+        )
+        batch_shape = batch_shapes.pop()
+
+        result = func(*tuple(
+            arr.reshape((-1, *arr.shape[-n:])) for arr, n in zip(args, n_nonbatch)
+        ))
+
+        # Assume that the return type can be any PyTree of arrays, which share the same first
+        # collapsed batch dimension
+        return jt.map(
+            lambda arr: arr.reshape((*batch_shape, *arr.shape[1:])),
+            result,
+        )
 
     return wrapper
 

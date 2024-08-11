@@ -60,7 +60,7 @@ class TaskTrainerHistory(eqx.Module):
     Attributes:
         loss: The training losses.
         learning_rate: The optimizer's learning rate.
-        model_trainables: The model's trainable parameters. Non-trainable
+        model_parameters: The model's trainable parameters. Non-trainable
             leaves appear as `None`.
         trial_specs: The training trial specifications.
     """
@@ -68,7 +68,7 @@ class TaskTrainerHistory(eqx.Module):
     loss: LossDict | Array
     loss_validation: LossDict | Array
     learning_rate: Optional[Array] = None
-    model_trainables: Optional[AbstractModel] = None
+    model_parameters: Optional[AbstractModel] = None
     trial_specs: dict[int, TaskTrialSpec] = field(default_factory=dict)
 
 
@@ -139,7 +139,7 @@ class TaskTrainer(eqx.Module):
         ensembled: bool = False,
         ensemble_random_trials: bool = True,
         log_step: int = 100,
-        save_model_trainables: bool | Int[Array, '_'] = False,
+        save_model_parameters: bool | Int[Array, '_'] = False,
         save_trial_specs: Optional[Int[Array, '_']] = None,
         toggle_model_update_funcs: bool | PyTree[Int[Array, '_']] = True,
         restore_checkpoint: bool = False,
@@ -177,7 +177,7 @@ class TaskTrainer(eqx.Module):
             log_step: Interval at which to evaluate model on the validation set,
                 print losses to the console, log to tensorboard (if enabled),
                 and save checkpoints.
-            save_model_trainables: Whether to return the entire history of the
+            save_model_parameters: Whether to return the entire history of the
                 trainable leaves of the model (e.g. network weights) across
                 training iterations, as part of the `TaskTrainerHistory` object.
                 May also pass a 1D array of batch numbers on which to keep history.
@@ -201,16 +201,16 @@ class TaskTrainer(eqx.Module):
         """
 
         where_train_spec = filter_spec_leaves(model, where_train)
-        model_trainables = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
+        model_parameters = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
 
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
             n_replicates = tree_infer_batch_size(
                 model, exclude=lambda x: isinstance(x, AbstractIntervenor)
             )
-            opt_state = jax.vmap(self.optimizer.init)(model_trainables)
+            opt_state = jax.vmap(self.optimizer.init)(model_parameters)
         else:
-            opt_state = self.optimizer.init(model_trainables)
+            opt_state = self.optimizer.init(model_parameters)
             # Unlikely to be used for anything, due to ensembled operations being in
             # conditionals. Make the type checker happy.
             n_replicates = 1
@@ -219,15 +219,23 @@ class TaskTrainer(eqx.Module):
             logger.debug("Optimizer not wrapped in `optax.inject_hyperparameters`; "
                          "learning rate history will not be returned")
 
-        # Convert batch numbers to a full-length Boolean mask over training iterations
-        if isinstance(save_model_trainables, Array):
-            save_model_trainables_batches = np.array(
-                jnp.zeros(n_batches, dtype=bool).at[save_model_trainables].set(True)
+
+        if isinstance(save_model_parameters, Array):
+            # Convert batch numbers to a full-length Boolean mask over training iterations
+            save_model_parameters_batches = np.array(
+                jnp.zeros(n_batches, dtype=bool).at[save_model_parameters].set(True)
             )
+            # Associate batch numbers with indices to preallocated history array
+            save_model_parameters_idxs = dict(zip(
+                save_model_parameters.tolist(),
+                range(len(save_model_parameters)),
+            ))
+            save_model_parameters_idx_func = lambda x: save_model_parameters_idxs[x]
         else:
-            save_model_trainables_batches = np.full(
-                n_batches, save_model_trainables, dtype=bool
+            save_model_parameters_batches = np.full(
+                n_batches, save_model_parameters, dtype=bool
             )
+            save_model_parameters_idx_func = lambda x: x
 
         if isinstance(save_trial_specs, Array):
             save_trial_specs_batches = np.array(
@@ -243,7 +251,7 @@ class TaskTrainer(eqx.Module):
             n_batches,
             n_replicates,
             ensembled,
-            save_model_trainables=save_model_trainables,
+            save_model_parameters=save_model_parameters,
             save_trial_specs=save_trial_specs,
             batch_size=batch_size,
             model=model,
@@ -425,13 +433,15 @@ class TaskTrainer(eqx.Module):
                 for func in batch_callbacks[batch]:
                     func()
 
-            if save_model_trainables_batches[batch]:
+            if save_model_parameters_batches[batch]:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
                 history = eqx.tree_at(
-                    lambda history: history.model_trainables,
+                    lambda history: history.model_parameters,
                     history,
                     tree_set(
-                        history.model_trainables, eqx.filter(model, where_train_spec), batch
+                        history.model_parameters,
+                        eqx.filter(model, where_train_spec),
+                        save_model_parameters_idx_func(batch),
                     ),
                 )
 
@@ -704,7 +714,7 @@ def init_task_trainer_history(
     n_replicates: int,
     ensembled: bool,
     ensemble_random_trials: bool = True,
-    save_model_trainables: bool | Int[Array, '_'] = False,
+    save_model_parameters: bool | Int[Array, '_'] = False,
     save_trial_specs: Optional[Int[Array, '_']] = None,
     batch_size: Optional[int] = None,
     model: Optional[AbstractModel[StateT]] = None,
@@ -761,29 +771,29 @@ def init_task_trainer_history(
     else:
         trial_spec_history = {}
 
-    if not save_model_trainables is False:
+    if not save_model_parameters is False:
         assert model is not None
         assert where_train is not None
         where_train_spec = filter_spec_leaves(model, where_train)
-        model_trainables = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
+        model_parameters = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
 
-        if isinstance(save_model_trainables, Array):
-            if len(save_model_trainables.shape) != 1:
+        if isinstance(save_model_parameters, Array):
+            if len(save_model_parameters.shape) != 1:
                 raise ValueError(
-                    "If save_model_trainables is an array, it must be 1D"
+                    "If save_model_parameters is an array, it must be 1D"
                 )
-            n_save_steps = save_model_trainables.shape[0]
+            n_save_steps = save_model_parameters.shape[0]
             model_train_history = jax.tree_map(
                 lambda x: (
                     jnp.empty((n_save_steps,) + x.shape)
                     if eqx.is_array(x) else x
                 ),
-                model_trainables,
+                model_parameters,
             )
         else:
             model_train_history = jax.tree_map(
                 lambda x: jnp.empty((n_batches,) + x.shape) if eqx.is_array(x) else x,
-                model_trainables,
+                model_parameters,
             )
     else:
         model_train_history = None
@@ -793,7 +803,7 @@ def init_task_trainer_history(
         loss=loss_history,
         loss_validation=loss_history_validation,
         learning_rate=jnp.empty(batch_dims),
-        model_trainables=model_train_history,
+        model_parameters=model_train_history,
         trial_specs=trial_spec_history,
     )
 
