@@ -30,23 +30,30 @@ class PointMass(AbstractSkeleton[CartesianState]):
     """A point with mass but no spatial extent, that obeys Newton's laws of motion.
 
     Attributes:
+        mass: The mass of the point mass.
+        damping: The factor by which to damp the motion of the point mass, relative to its velocity.
         A: The state evolution matrix according to Newton's first law of motion.
         B: The control matrix according to Newton's second law.
     """
 
     mass: float
-
-    def __init__(self, mass):
-        self.mass = mass
+    damping: float = 0
 
     @cached_property
     def A(self) -> Array:
-        return jnp.sum(jnp.stack(
+        A_undamped = jnp.sum(jnp.stack(
             [
                 jnp.diagflat(jnp.ones((ORDER - i) * N_DIM), i * N_DIM)
                 for i in range(1, ORDER)
             ]
         ), axis=0)
+
+        vel_slice = slice(N_DIM, 2 * N_DIM)
+        A_damping = jnp.zeros_like(A_undamped).at[vel_slice, vel_slice].set(
+            -(self.damping / self.mass) * jnp.eye(N_DIM)
+        )
+
+        return A_undamped + A_damping
 
     @cached_property
     def B(self) -> Array:
