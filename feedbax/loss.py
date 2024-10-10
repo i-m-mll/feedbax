@@ -376,7 +376,8 @@ class TargetStateLoss(AbstractLoss):
     """
     label: str
     where: Callable
-    norm: Callable = lambda x: jnp.linalg.norm(x, axis=-1)  # Spatial distance
+    norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
+    # norm: Callable = lambda x: jnp.linalg.norm(x, axis=-1)  # Spatial distance
     spec: Optional[TargetSpec] = None  # Default/constant values.
 
     @cached_property

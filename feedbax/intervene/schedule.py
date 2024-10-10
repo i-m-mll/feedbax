@@ -58,7 +58,7 @@ StageIntervenors: TypeAlias = Mapping[IntervenorLabelStr, Intervenor[StateT]]
 ModelIntervenors: TypeAlias = Mapping[StageNameStr, StageIntervenors[StateT]]
 # Use in constructor parameter lists.
 ArgIntervenors: TypeAlias = Union[
-    Sequence[Intervenor[StateT]], 
+    Sequence[Intervenor[StateT]],
     Mapping[StageNameStr, Sequence[Intervenor[StateT]]]
 ]
 
@@ -70,8 +70,8 @@ class InterventionSpec(eqx.Module):
     intervenor: AbstractIntervenor
     where: Callable[[AbstractModel], "AbstractStagedModel"]
     stage_name: StageNameStr
-    default_active: bool  
-    
+    default_active: bool
+
 
 def _fixed_intervenor_label(intervenor):
     return f"FIXED_{type(intervenor).__name__}"
@@ -103,18 +103,18 @@ def add_fixed_intervenor(
     """
     if stage_name is None:
         stage_name = pre_first_stage
-    
+
     if label is not None:
         if not label.startswith("FIXED"):
             label = f"FIXED_{label}"
             logger.debug("Prepending 'FIXED' to user-supplied intervenor label")
     else:
         label = _fixed_intervenor_label(intervenor)
-    
+
     return add_intervenors(
-        model, 
-        where, 
-        {stage_name: {label: intervenor}}, 
+        model,
+        where,
+        {stage_name: {label: intervenor}},
         **kwargs
     )
 
@@ -125,8 +125,8 @@ def add_intervenors(
         ["AbstractStagedModel[StateT]"], Any  # "AbstractStagedModel[StateS]"
     ],
     intervenors: Union[
-        # Couldn't bind `AbstractIntervenor[StateT, AbstractIntervenorInput]` 
-        Sequence[AbstractIntervenor], 
+        # Couldn't bind `AbstractIntervenor[StateT, AbstractIntervenorInput]`
+        Sequence[AbstractIntervenor],
         Mapping[
             StageNameStr,
             Union[
@@ -149,8 +149,8 @@ def add_intervenors(
             stage names to a) the sequence of intervenors to execute at the end of a
             respective model stage, or b) another dict/mapping from custom intervenor
             labels to intervenors to execute at the end of that state.
-        stage_name: If `intervenors` is supplied as a simple sequence of intervenors 
-            (case 1), execute them at the end of this model stage. By default, they 
+        stage_name: If `intervenors` is supplied as a simple sequence of intervenors
+            (case 1), execute them at the end of this model stage. By default, they
             will be executed prior to the first model stage.
         keep_existing: Whether to keep the existing intervenors belonging directly to
             the instance of `AbstractStagedModel` to which the new intervenors are added.
@@ -162,7 +162,7 @@ def add_intervenors(
     else:
         existing_intervenors = {stage_name: {} for stage_name in where(model).model_spec}
     intervenors_dict = copy.deepcopy(existing_intervenors)
-    
+
     if isinstance(intervenors, Sequence):
         # If a simple sequence of intervenors is passed, append them to the list of
         # fixed (unscheduled) intervenors for the specified stage -- or by default, the
@@ -170,13 +170,13 @@ def add_intervenors(
 
         if stage_name is None:
             stage_name = pre_first_stage
-            
+
         intervenors = {stage_name: intervenors}
 
     if not isinstance(intervenors, Mapping):
         raise ValueError("intervenors not a sequence or dict of sequences")
     #     stage_intervenors = existing_intervenors.get(stage_name, {})
-        
+
     #     stage_intervenors |= {
     #         type(intervenor).__name__: intervenor for intervenor in intervenors
     #     }
@@ -202,7 +202,7 @@ def add_intervenors(
             raise ValueError(
                 f"{stage_name} is not a valid model stage for intervention"
             )
-            
+
     for stage_name, stage_intervenors_new in intervenors.items():
 
         # Use `OrderedDict` to make sure intervenors are executed in the ordered provided.
@@ -211,17 +211,17 @@ def add_intervenors(
         if isinstance(stage_intervenors_new, Sequence):
             # TODO: unique names?
             stage_intervenors_new = {
-                _fixed_intervenor_label(intervenor): intervenor 
+                _fixed_intervenor_label(intervenor): intervenor
                 for intervenor in stage_intervenors_new
             }
-        
+
         if any(
             shared_keys := set(stage_intervenors) & set(stage_intervenors_new)
         ):
             logger.warning("Intervenors with the following labels were "
                             "overwritten during call to add_intervenors: "
                             ", ".join(shared_keys))
-        
+
         stage_intervenors |= stage_intervenors_new
         intervenors_dict |= {stage_name: stage_intervenors}
 
@@ -378,10 +378,10 @@ def schedule_intervenor(
         is_leaf=lambda x: isinstance(x, tuple),
     )
     invalid_labels = set(invalid_labels_models + invalid_labels_tasks)
-    
+
     if label is None:
         label = type(intervenor_).__name__
-    label = get_unique_label(label, invalid_labels)
+        label = get_unique_label(label, invalid_labels)
 
     # Construct the additions to `AbstractTask.intervenor_specs`
     intervention_specs = {label: InterventionSpec(
@@ -411,7 +411,7 @@ def schedule_intervenor(
     tasks = jax.tree_map(
         lambda task: eqx.tree_at(
             lambda task: (
-                task.intervention_specs.training, 
+                task.intervention_specs.training,
                 task.intervention_specs.validation,
             ),
             task,
@@ -475,19 +475,19 @@ def update_intervenor_param_schedule(
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> "AbstractTask":
     """Return a task with updated specifications for intervention parameters.
-    
-    This might fail if the parameter is passed, or already assigned, as an `eqx.Module` 
-    or other PyTree, since `tree_leaves` will flatten its contents. In that case you 
-    should set `is_leaf=is_module` (or similar) so that the entire object is treated 
+
+    This might fail if the parameter is passed, or already assigned, as an `eqx.Module`
+    or other PyTree, since `tree_leaves` will flatten its contents. In that case you
+    should set `is_leaf=is_module` (or similar) so that the entire object is treated
     as the parameter.
     TODO: Just... flatten the nested dict instead of using `tree_leaves`, to avoid this issue.
-    
+
     Arguments:
         task: The task to modify.
-        params: A mapping from intervenor labels (a subset of the keys from the fields 
+        params: A mapping from intervenor labels (a subset of the keys from the fields
             of `task.intervention_specs`) to mappings from parameter names to updated
-            parameter values. 
-        training: Whether to apply the update to the training trial intervention 
+            parameter values.
+        training: Whether to apply the update to the training trial intervention
             specifications.
         validation: Whether to apply the update to the validation trial intervention
             specifications.
@@ -498,41 +498,41 @@ def update_intervenor_param_schedule(
         is_leaf_or_timeseries = lambda x: is_leaf(x) or is_timeseries_param(x)
     else:
         is_leaf_or_timeseries = is_timeseries_param
-    
+
     params_flat = jax.tree_leaves(params, is_leaf=is_leaf_or_timeseries)
-    
+
     for suffix, cond in {"training": training, "validation": validation}.items():
-        if cond: 
+        if cond:
             specs = getattr(task.intervention_specs, suffix)
-            
+
             specs = eqx.tree_at(
                 lambda specs: jax.tree_leaves({
                     intervenor_label: {
                         param_name: getattr(
-                            specs[intervenor_label].intervenor.params, 
+                            specs[intervenor_label].intervenor.params,
                             param_name,
                         )
                         for param_name in ps
                     }
                     for intervenor_label, ps in params.items()
                 }, is_leaf=is_leaf_or_timeseries),
-                specs, 
+                specs,
                 params_flat,
             )
-            
+
             task = eqx.tree_at(
                 lambda task: getattr(task.intervention_specs, suffix),
-                task, 
+                task,
                 specs,
             )
-    return task 
+    return task
 
 
 # TODO: take `Sequence[IntervenorSpec]` or `dict[IntervenorLabel, IntervenorSpec]`
 # and take `replace` as constant, sequence, or dict as well
 def update_fixed_intervenor_param(
-    model: "AbstractStagedModel", 
-    specs: PyTree[InterventionSpec, 'T'], 
+    model: "AbstractStagedModel",
+    specs: PyTree[InterventionSpec, 'T'],
     param_name: str,
     replace: Any,
     labels: Optional[PyTree[str, 'T']] = None,
@@ -543,43 +543,43 @@ def update_fixed_intervenor_param(
             specs,
             is_leaf=is_module,
         )
-    
+
     get_params = lambda model: jax.tree_leaves(jax.tree_map(
         lambda spec, label: spec.where(model).intervenors[spec.stage_name][label].params,
         specs, labels,
         is_leaf=is_module,
     ), is_leaf=is_module)
-    
+
     new_params = jax.tree_map(
         lambda x: eqx.tree_at(
-            lambda params: getattr(params, param_name), 
-            x, 
+            lambda params: getattr(params, param_name),
+            x,
             replace=replace,
-        ), 
-        get_params(model), 
+        ),
+        get_params(model),
         is_leaf=is_module
     )
-    
+
     return eqx.tree_at(get_params, model, new_params)
 
 # def intervention_toggle(
-#     model: "AbstractStagedModel", 
-#     spec: InterventionSpec, 
+#     model: "AbstractStagedModel",
+#     spec: InterventionSpec,
 #     active: Optional[bool] = None,
 #     label: Optional[str] = None,
 # ):
 #     if label is None:
 #         label = type(spec.intervenor).__name__
-        
+
 #     if active is not None:
-#         active_func = lambda _: active 
+#         active_func = lambda _: active
 #     else:
-#         active_func = lambda active: not active 
-    
+#         active_func = lambda active: not active
+
 #     params = lambda model: spec.where(model).intervenors[spec.stage_name][label].params
-    
+
 #     return eqx.tree_at(
 #         lambda model: params(model).active,
-#         model, 
+#         model,
 #         active_func(params(model).active),
 #     )

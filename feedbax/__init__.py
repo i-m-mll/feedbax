@@ -36,6 +36,7 @@ from feedbax._tree import (
     tree_stack,
     tree_struct_bytes,
     tree_take,
+    tree_take_multi,
     tree_unzip,
 )
 from feedbax.intervene import is_intervenor

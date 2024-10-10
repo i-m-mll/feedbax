@@ -180,7 +180,8 @@ class TaskTrainer(eqx.Module):
             save_model_parameters: Whether to return the entire history of the
                 trainable leaves of the model (e.g. network weights) across
                 training iterations, as part of the `TaskTrainerHistory` object.
-                May also pass a 1D array of batch numbers on which to keep history.
+                May also pass a 1D array of batch numbers on which to keep history;
+                parameters are logged at the start of the indicated batches.
             save_trial_specs: A 1D array of batch numbers for which to keep
                 trial specifications, and return as part of the training history.
             toggle_model_update_funcs: Whether to enable the model update functions.
@@ -406,6 +407,19 @@ class TaskTrainer(eqx.Module):
         ):
             key_train, key_eval = jr.split(keys[batch], 2)
 
+            # Save parameters at the start of batch
+            if save_model_parameters_batches[batch]:
+                model = jtu.tree_unflatten(treedef_model, flat_model)
+                history = eqx.tree_at(
+                    lambda history: history.model_parameters,
+                    history,
+                    tree_set(
+                        history.model_parameters,
+                        eqx.filter(model, where_train_spec),
+                        save_model_parameters_idx_func(batch),
+                    ),
+                )
+
             if ensembled and ensemble_random_trials:
                 key_train = jr.split(key_train, n_replicates)
 
@@ -432,18 +446,6 @@ class TaskTrainer(eqx.Module):
             if batch_callbacks is not None and batch in batch_callbacks:
                 for func in batch_callbacks[batch]:
                     func()
-
-            if save_model_parameters_batches[batch]:
-                model = jtu.tree_unflatten(treedef_model, flat_model)
-                history = eqx.tree_at(
-                    lambda history: history.model_parameters,
-                    history,
-                    tree_set(
-                        history.model_parameters,
-                        eqx.filter(model, where_train_spec),
-                        save_model_parameters_idx_func(batch),
-                    ),
-                )
 
             if save_trial_specs_batches[batch]:
                 history = eqx.tree_at(

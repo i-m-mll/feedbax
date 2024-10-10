@@ -4,8 +4,11 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+# TODO: Separate this into its own repo, and make it a dependency
+
 from collections.abc import Callable, Sequence
 from functools import partial
+import functools
 import logging
 from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, Union, get_type_hints
 
@@ -13,12 +16,13 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree as jt
 import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 import numpy as np
 
 from feedbax._progress import _tqdm, _tqdm_write
-from feedbax.misc import unique_generator, is_module
+from feedbax.misc import unique_generator, is_module, is_none
 
 
 logger = logging.getLogger(__name__)
@@ -27,11 +31,32 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def apply_to_filtered_leaves(filter_spec, is_leaf=None):
+    """Returns a decorator that ensures a function only operates on tree leaves satisfying `filter_spec`."""
+    def decorator(func: Callable):
+        @functools.wraps(func)
+        def wrapper(tree: PyTree, *args, **kwargs):
+            filtered, other = eqx.partition(tree, filter_spec, is_leaf=is_leaf)
+            updated = func(filtered, *args, **kwargs)
+            return eqx.combine(updated, other, is_leaf=is_leaf)
+
+        return wrapper
+    return decorator
+
+
+# An alternative to partition-combine logic in `apply_to_filtered_leaves` is to define a custom `tree_map` function
+# that only applies the function to leaves that satisfy the filter spec.
+def tree_filter_map(f, tree, filter_func):
+    def map_func(x):
+        return f(x) if filter_func(x) else x
+    return jt.map(map_func, tree)
+
+
 def filter_spec_leaves(
     tree: PyTree[Any, "T"], leaf_func: Callable,
 ) -> PyTree[bool, "T"]:
     """Returns a filter specification for tree leaves matching `leaf_func`."""
-    filter_spec = jax.tree_util.tree_map(lambda _: False, tree)
+    filter_spec = jt.map(lambda _: False, tree)
     filter_spec = eqx.tree_at(
         leaf_func,
         filter_spec,
@@ -44,7 +69,7 @@ def tree_index(tree: PyTree[Any, "T"], index: int) -> PyTree[Any, "T"]:
     """Returns the same PyTree, indexing out all of its array leaves."""
     models_arrays, models_other = eqx.partition(tree, eqx.is_array)
     return eqx.combine(
-        jax.tree_map(lambda x: x[index], models_arrays),
+        jt.map(lambda x: x[index], models_arrays),
         models_other,
     )
 
@@ -73,13 +98,14 @@ def get_ensemble(
 
 
 @jax.named_scope("fbx.tree_take")
+@apply_to_filtered_leaves(eqx.is_array)
 def tree_take(
-    tree: PyTree[Any, "T"],
+    tree: PyTree[Array, "T"],
     indices: ArrayLike,
     axis: int = 0,
     **kwargs: Any,
 ) -> PyTree[Any, "T"]:
-    """Indexes elements out of each array leaf of a PyTree.
+    """Indexes elements out of one axis of each array leaf of a PyTree.
 
     Any non-array leaves are returned unchanged.
 
@@ -88,25 +114,77 @@ def tree_take(
         out-of-bounds indices are provided, no error will be raised.
 
     Arguments:
-        tree: Any PyTree whose array leaves are equivalently indexable,
-            according to the other arguments to this function. For example,
-            `axis=0` could be used when the first dimension of every array leaf
-            is a batch dimension, and `indices` specifies a subset of examples
-            from the batch.
+        tree: A PyTree whose array leaves are compatible
+              with the indexing operations specified by `indices` and `axis`.
         indices: The indices of the values to take from each array leaf.
         axis: The axis of the array leaves over which to take their values.
             Defaults to 0.
-        kwargs: Additional arguments to [`jax.numpy.take`](https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.take.html).
+        **kwargs: Additional arguments to [`jax.numpy.take`](https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.take.html).
 
     Returns:
         A PyTree with the same structure as `tree`, where array leaves from `tree` have been replaced by indexed-out elements.
     """
-    arrays, other = eqx.partition(tree, eqx.is_array)
-    values = jax.tree_map(
+    return jt.map(
         lambda xs: jnp.take(xs, indices, axis=axis, **kwargs),
-        arrays,
+        tree,
     )
-    return eqx.combine(values, other)
+
+
+# TODO: Assess performance of `tree_take_multi`, then replace `tree_take`
+# (it is probably more performant to use `jax.lax.gather` here)
+@apply_to_filtered_leaves(eqx.is_array)
+def tree_take_multi(
+    tree: PyTree[Array, "T"],
+    indices: Union[ArrayLike, Sequence[ArrayLike]],
+    axes: Union[int, Sequence[int]],
+    **kwargs: Any,
+):
+    """
+    Indexes elements out of one or more axes of each array leaf of a PyTree.
+
+    Any non-array leaves are returned unchanged.
+
+    Singleton dimensions in the input `tree` are retained, while any singleton dimensions that result from
+    indexing by a Python `int` passed in `indices` are squeezed out.
+
+    !!! Warning ""
+        This function inherits the default indexing behaviour of JAX. If
+        out-of-bounds indices are provided, no error will be raised.
+
+    Arguments:
+        tree: A PyTree whose array leaves are compatible
+              with the indexing operations specified by `indices` and `axes`.
+        indices: Either a single array-like object or a sequence of array-like objects.
+                 Each element specifies the indices to gather along the corresponding axis.
+        axes: Either a single integer or a sequence of integers specifying the axes
+              along which to gather elements. Must have the same length as `indices` if both are sequences.
+        **kwargs: Additional arguments to [`jax.numpy.take`](https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.take.html).
+
+    Returns:
+        A PyTree with the same structure as `tree`, where array leaves from `tree` have been indexed according to `indices` and `axes`.
+    """
+    if isinstance(indices, ArrayLike):
+        indices = [indices]
+    if isinstance(axes, int):
+        axes = [axes]
+
+    assert len(indices) == len(axes), "Number of indices must match number of axes"
+
+    for idxs, axis in zip(indices, axes):
+        # Use `atleast_1d` to retain singleton dimensions until all `axes` have been indexed
+        tree = jt.map(
+            lambda xs: jnp.take(xs, jnp.atleast_1d(idxs), axis=axis, **kwargs),
+            tree,
+        )
+
+    # Remove only those singleton dimensions created above by int indexing
+    singleton_axes = [axis for idxs, axis in zip(indices, axes) if isinstance(idxs, int)]
+    squeezed = jt.map(
+        lambda xs: jnp.squeeze(xs, axis=singleton_axes),
+        tree,
+    )
+
+    return squeezed
 
 
 @jax.named_scope("fbx.tree_set")
@@ -137,9 +215,9 @@ def tree_set(
     """
     arrays = eqx.filter(tree, eqx.is_array)
     vals_update, other_update = eqx.partition(
-        items, jax.tree_map(lambda x: x is not None, arrays)
+        items, jt.map(lambda x: x is not None, arrays)
     )
-    arrays_update = jax.tree_map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
+    arrays_update = jt.map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
     return eqx.combine(arrays_update, other_update)
 
 
@@ -159,7 +237,7 @@ def random_split_like_tree(
         is_leaf: An optional function that decides whether each node in `tree`
             should be treated as a leaf, or traversed as a subtree.
     """
-    treedef = jax.tree_structure(tree, is_leaf=is_leaf)
+    treedef = jt.structure(tree, is_leaf=is_leaf)
     return _random_split_like_treedef(key, treedef)
 
 
@@ -168,7 +246,7 @@ def _random_split_like_treedef(
     treedef: PyTreeDef,
 ):
     keys = jr.split(key, treedef.num_leaves)
-    return jax.tree_unflatten(treedef, keys)
+    return jt.unflatten(treedef, keys)
 
 
 def tree_stack(
@@ -194,20 +272,20 @@ def tree_stack(
             leaves have the same shape.
         axis: The axis along which to stack the array leaves.
     """
-    return jax.tree_util.tree_map(lambda *v: jnp.stack(v, axis=axis), *trees)
+    return jt.map(lambda *v: jnp.stack(v, axis=axis), *trees)
 
 
 def tree_sum_squares(tree: PyTree[Array]) -> ArrayLike:
     """Sum the sums of squares of the leaves of a PyTree."""
-    return jax.tree_util.tree_reduce(
-        lambda x, y: x + y, jax.tree_map(lambda x: jnp.sum(x**2), tree)
+    return jt.reduce(
+        lambda x, y: x + y, jt.map(lambda x: jnp.sum(x**2), tree)
     )
 
 
 def tree_sum_n_features(tree: PyTree[Array]) -> int:
     """Returns the sum the sizes of the last dimensions of all leaves."""
-    return jax.tree_util.tree_reduce(
-        lambda x, y: x + y, jax.tree_map(lambda x: x.shape[-1], tree)
+    return jt.reduce(
+        lambda x, y: x + y, jt.map(lambda x: x.shape[-1], tree)
     )
 
 
@@ -217,7 +295,7 @@ def _tree_map(
     *rest,
     is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> PyTree[Any, "T"]:
-    """Custom version of `jax.tree_util.tree_map`.
+    """Custom version of `jt.map`.
 
     The only difference is that by default, it will infer `is_leaf` from
     the annotation of the first argument to `f`. This is useful when mapping
@@ -232,7 +310,7 @@ def _tree_map(
     """
     if is_leaf is None:
         is_leaf = lambda x: isinstance(x, next(iter(f.__annotations__.values())))
-    return jax.tree_map(f, tree, *rest, is_leaf=is_leaf)
+    return jt.map(f, tree, *rest, is_leaf=is_leaf)
 
 
 S = TypeVar("S")
@@ -250,7 +328,7 @@ def tree_map_module(
     to write `is_leaf=lambda x: isinstance(x, eqx.Module)` every time.
     """
 
-    return jax.tree_map(f, tree, *rest, is_leaf=is_module)
+    return jt.map(f, tree, *rest, is_leaf=is_module)
 
 
 # Horizontal rule
@@ -278,7 +356,7 @@ def tree_map_tqdm(
             progress bar.
         is_leaf: A function that returns `True` for leaves of `tree`.
     """
-    n_leaves = len(jtu.tree_leaves(tree, is_leaf=is_leaf))
+    n_leaves = len(jt.leaves(tree, is_leaf=is_leaf))
     pbar = _tqdm(total=n_leaves)
     def _f(leaf, label, *rest):
         if label is not None:
@@ -294,8 +372,8 @@ def tree_map_tqdm(
         return result
     if labels is None:
         pbar.set_description("Processing tree leaves")
-        labels = jax.tree_map(lambda _: None, tree, is_leaf=is_leaf)
-    return jax.tree_map(_f, tree, labels, *rest, is_leaf=is_leaf)
+        labels = jt.map(lambda _: None, tree, is_leaf=is_leaf)
+    return jt.map(_f, tree, labels, *rest, is_leaf=is_leaf)
 
 
 def tree_map_unzip(
@@ -310,7 +388,7 @@ def tree_map_unzip(
     tree_map_unzip(f, xs)` where `ys`, `zs` are PyTrees, whereas with a normal
     `tree_map` we'd get a single PyTree of tuples `(y, z)`.
     """
-    results = jax.tree_util.tree_map(f, tree, *rest, is_leaf=is_leaf)
+    results = jt.map(f, tree, *rest, is_leaf=is_leaf)
     return tree_unzip(results)
 
 
@@ -327,11 +405,30 @@ def tree_unzip(
         flattenable to tuples, when tuples are treated as leaves; 2) the shortest
         of those tuples determines the length of the output.
     """
-    tree_flat, treedef = jtu.tree_flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
+    tree_flat, treedef = jt.flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
     if any(not isinstance(x, tuple) for x in tree_flat):
         raise ValueError("The input pytree is not flattenable to tuples")
     tree_flat_unzipped = zip(*tree_flat)
-    return tuple(jtu.tree_unflatten(treedef, x) for x in tree_flat_unzipped)
+    return tuple(jt.unflatten(treedef, x) for x in tree_flat_unzipped)
+
+
+def tree_zip(
+    *trees: PyTree[Any, "T"],
+) -> PyTree[Tuple[Any, ...], "T"]:
+    """Zips a sequence of PyTrees into a PyTree of tuples.
+    """
+    all_leaves, all_treedefs = zip(*[jt.flatten(tree, is_leaf=is_none) for tree in trees])
+    if not len(set(all_treedefs)) == 1:
+        raise ValueError("All trees must have the same structure, treating `None` values as leaves")
+    return jt.unflatten(all_treedefs[0], zip(*all_leaves))
+
+
+def tree_prefix_expand(prefix: PyTree, tree: PyTree, is_leaf: Optional[Callable] = None):
+    """Expands a prefix of a PyTree to have the same structure as the PyTree.
+    """
+    def expand_leaf(leaf, subtree):
+        return jt.map(lambda _: leaf, subtree)
+    return jt.map(expand_leaf, prefix, tree, is_leaf=is_leaf)
 
 
 def tree_call(
@@ -361,7 +458,7 @@ def tree_call(
         lambda x: isinstance(x, Callable) and not exclude(x),
         is_leaf=is_leaf,
     )
-    callables_values = jax.tree_map(
+    callables_values = jt.map(
         lambda x: x(*args, **kwargs),
         callables,
         is_leaf=is_leaf,
@@ -379,13 +476,13 @@ def tree_array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     """
     arrays = eqx.filter(tree, eqx.is_array)
     if not duplicates:
-        flat, treedef = jtu.tree_flatten(arrays)
-        arrays = jtu.tree_unflatten(
+        flat, treedef = jt.flatten(arrays)
+        arrays = jt.unflatten(
             treedef,
             list(unique_generator(flat, replace_duplicates=True))
         )
-    array_bytes = jax.tree_map(lambda x: x.nbytes, arrays)
-    array_bytes_int_leaves = [x for x in jtu.tree_leaves(array_bytes) if x is not None]
+    array_bytes = jt.map(lambda x: x.nbytes, arrays)
+    array_bytes_int_leaves = [x for x in jt.leaves(array_bytes) if x is not None]
     return sum(array_bytes_int_leaves)
 
 
@@ -393,8 +490,8 @@ def tree_array_bytes(tree: PyTree, duplicates: bool = False) -> int:
 def tree_struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
     """Returns the total bytes of memory implied by a PyTree of `ShapeDtypeStruct`s."""
     structs = eqx.filter(tree, lambda x: isinstance(x, jax.ShapeDtypeStruct))
-    struct_bytes = jax.tree_map(lambda x: x.size * x.dtype.itemsize, structs)
-    return jtu.tree_reduce(lambda x, y: x + y, struct_bytes)
+    struct_bytes = jt.map(lambda x: x.size * x.dtype.itemsize, structs)
+    return jt.reduce(lambda x, y: x + y, struct_bytes)
 
 
 BuiltInKeyEntry = Union[jtu.DictKey, jtu.SequenceKey, jtu.GetAttrKey, jtu.FlattenedIndexKey]
@@ -489,7 +586,7 @@ def tree_labels(
             join_with.join([label, str(leaf)])
             for label, leaf in zip(labels, leaves)
         ]
-    return jtu.tree_unflatten(treedef, labels)
+    return jt.unflatten(treedef, labels)
 
 
 def _equal_or_allclose(a, b, rtol, atol):
@@ -535,7 +632,7 @@ def tree_paths_of_equal_leaves(
         for i in range(len(leaves))
     ]
 
-    return jtu.tree_unflatten(treedef, equal_paths)
+    return jt.unflatten(treedef, equal_paths)
 
 
 def tree_labels_of_equal_leaves(
@@ -554,7 +651,7 @@ def tree_labels_of_equal_leaves(
     tree_equal_paths = tree_paths_of_equal_leaves(
         tree, is_leaf=is_leaf, rtol=rtol, atol=atol
     )
-    return jtu.tree_map(
+    return jt.map(
         lambda xs: set(_path_to_label(x, join_with) for x in xs),
         tree_equal_paths,
         is_leaf=lambda x: isinstance(x, set),
@@ -578,13 +675,13 @@ def tree_infer_batch_size(
     """
     # TODO: Allow for `in_axes`-like control over which arrays will be checked
 
-    arrays, treedef = jtu.tree_flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
+    arrays, treedef = jt.flatten(eqx.filter(tree, eqx.is_array), is_leaf=exclude)
     array_lens: list[int | None] = [
         arr.shape[0] if not exclude(arr) else None for arr in arrays
     ]
     array_lens_unique = set(x for x in array_lens if x is not None)
     if not len(array_lens_unique) == 1:
-        tree_array_lens = jtu.tree_unflatten(treedef, array_lens)
+        tree_array_lens = jt.unflatten(treedef, array_lens)
         raise ValueError(
             "Not all array leaves have the same first dimension size\n\n"
             f"First dimension sizes:\n\n{tree_array_lens}"

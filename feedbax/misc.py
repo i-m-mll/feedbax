@@ -20,6 +20,7 @@ from functools import wraps
 import inspect
 from itertools import zip_longest, chain
 import logging
+from operator import attrgetter
 import os
 from pathlib import Path, PosixPath
 from shutil import rmtree
@@ -232,6 +233,26 @@ def highlight_string_diff(obj1, obj2):
     return str2_new.replace('\\n', '\n')
 
 
+def print_trees_side_by_side(tree1, tree2, column_width=60, separator='|'):
+    """Given two PyTrees, print their pretty representations side-by-side."""
+    strs1 = eqx.tree_pformat(tree1).split('\n')
+    strs2 = eqx.tree_pformat(tree2).split('\n')
+
+    def wrap_text(text, width):
+        return textwrap.wrap(text, width) or ['']
+
+    wrapped1 = [wrap_text(s, column_width) for s in strs1]
+    wrapped2 = [wrap_text(s, column_width) for s in strs2]
+
+    for w1, w2 in zip_longest(wrapped1, wrapped2, fillvalue=['']):
+        max_lines = max(len(w1), len(w2))
+
+        for i in range(max_lines):
+            line1 = w1[i] if i < len(w1) else ''
+            line2 = w2[i] if i < len(w2) else ''
+            print(f"{line1:<{width}} {separator} {line2:<{width}}")
+
+
 def unique_generator(
     seq: Sequence[T1],
     replace_duplicates: bool = False,
@@ -253,6 +274,9 @@ def unique_generator(
 def is_module(element: Any) -> bool:
     """Return `True` if `element` is an Equinox module."""
     return isinstance(element, Module)
+
+
+is_none = lambda x: x is None
 
 
 def nested_dict_update(dict_, *args, make_copy: bool = True):
@@ -373,6 +397,20 @@ def where_func_to_labels(where: Callable) -> PyTree[str]:
         return jax.tree_map(_get_where_str_constructor_label, where(_WhereStrConstructor()))
     except TypeError:
         raise TypeError("`where` must return a PyTree of node references")
+
+
+def attr_str_tree_to_where_func(tree: PyTree[str]) -> Callable:
+    """Reverse transformation to `where_func_to_labels`.
+
+    Takes a PyTree of strings describing attribute accesses, and returns a function
+    that returns a PyTree of attributes.
+    """
+    getters = jt.map(lambda s: attrgetter(s), tree)
+
+    def where_func(obj):
+        return jt.map(lambda g: g(obj), getters)
+
+    return where_func
 
 
 def batch_reshape(
