@@ -6,11 +6,13 @@
 
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
+from itertools import zip_longest
 import logging
+from math import sqrt
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import equinox as eqx
-from feedbax._tree import apply_to_filtered_leaves, tree_infer_batch_size, tree_prefix_expand
+from feedbax._tree import apply_to_filtered_leaves, tree_infer_batch_size, tree_prefix_expand, tree_unzip
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -100,8 +102,10 @@ def profile(
 
 def profiles_mean(
     vars: PyTree[Float[Array, "*batch timestep"], "T"],
+    keep_axis: Optional[PyTree[int, "T ..."]] = None,
     timesteps: Optional[PyTree[Float[Array, "timestep"], "T"]] = None,
     varname: str = "Value",
+    legend_title: Optional[str] = None,
     labels: Optional[PyTree[str, "T"]] = None,
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.2,
@@ -109,11 +113,16 @@ def profiles_mean(
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
     fig: Optional[go.Figure] = None,
-    **kwargs,
 ) -> go.Figure:
-    """Plot 1D state profiles as lines with standard deviation bars"""
+    """Plot 1D state profiles as lines with standard deviation bars.
+
+    `keep_axis` will retain one dimension of data, and plot one mean+/-std curve for each entry in that axis
+    """
     if fig is None:
         fig = go.Figure()
+
+    if scatter_kws is None:
+        scatter_kws = dict()
 
     if timesteps is None:
         timesteps = jt.map(lambda x: jnp.arange(x.shape[-1]), vars)
@@ -121,20 +130,31 @@ def profiles_mean(
     if labels is None:
         labels = tree_labels(vars)
 
-    vars_batch_axes = jt.map(
+    batch_axes = jt.map(
         lambda x: tuple(range(x.ndim - 1)),
         vars,
     )
+    if keep_axis is None:
+        mean_axes = batch_axes
+    else:
+        mean_axes = jt.map(
+            lambda axes, axis: tuple(ax for ax in axes if ax != axis),
+            batch_axes, tree_prefix_expand(keep_axis, vars),
+            is_leaf=lambda x: isinstance(x, tuple) and eqx.is_array_like(x[0]),
+        )
 
-    stats = jt.map(
-        lambda x, ts, batch_axes, label: (
-            jnp.mean(x, axis=batch_axes),
-            jnp.std(x, axis=batch_axes),
-            ts,
-            label,
-        ),
-        vars, timesteps, vars_batch_axes, labels,
+    means = jt.map(
+        lambda x, axis: jnp.mean(x, axis=axis),
+        vars, mean_axes,
     )
+
+    stds = jt.map(
+        lambda x, axis: jnp.std(x, axis=axis),
+        vars, mean_axes,
+    )
+
+    if keep_axis is None:
+        means, stds = jt.map(lambda arr: arr[None, ...], (means, stds))
 
     if colors is None:
         colors = DEFAULT_COLORS
@@ -142,53 +162,59 @@ def profiles_mean(
     colors_rgb: list[str]
     colors_rgb, _ = convert_colors_to_same_type(colors, colortype='rgb')  # type: ignore
 
-    def add_profile(fig, label, mean, ub, lb, ts, color) -> go.Figure:
-        # Mean
-        trace = go.Scatter(
-            name=label,
-            showlegend=label is not None,
-            legendgroup=label,
-            x=ts,
-            y=mean,
-            marker_size=3,
-            line=dict(color=color),
-            **kwargs,
-        )
-        trace.update(scatter_kws)
-        fig.add_trace(trace)
+    def add_profile(fig, label, means, ubs, lbs, ts, color) -> go.Figure:
 
-        # Error bars
-        fig.add_trace(go.Scatter(
-            name="Upper bound",
-            legendgroup=label,
-            x=ts,
-            y=ub,
-            line=dict(color='rgba(255,255,255,0)'),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
+        traces = []
 
-        fig.add_trace(go.Scatter(
-            name="Lower bound",
-            legendgroup=label,
-            x=ts,
-            y=lb,
-            line=dict(color='rgba(255,255,255,0)'),
-            fill="tonexty",
-            fillcolor=color_add_alpha(color, error_bars_alpha),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
+        for i, (mean, ub, lb) in enumerate(zip(means, ubs, lbs)):
+            traces.extend([
+                # Mean
+                go.Scatter(
+                    name=label,
+                    showlegend=(i == 0 and label is not None),
+                    legendgroup=label,
+                    x=ts,
+                    y=mean,
+                    marker_size=3,
+                    line=dict(color=color),
+                    **scatter_kws,
+                ),
+                # Bounds
+                go.Scatter(
+                    name="Upper bound",
+                    legendgroup=label,
+                    x=ts,
+                    y=ub,
+                    line=dict(color='rgba(255,255,255,0)'),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ),
+                go.Scatter(
+                    name="Lower bound",
+                    legendgroup=label,
+                    x=ts,
+                    y=lb,
+                    line=dict(color='rgba(255,255,255,0)'),
+                    fill="tonexty",
+                    fillcolor=color_add_alpha(color, error_bars_alpha / sqrt(means.shape[0])),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ),
+            ])
+
+        fig.add_traces(traces)
 
         return fig
 
-    for i, (mean, std, ts, label) in enumerate(jt.leaves(stats, is_leaf=lambda x: isinstance(x, tuple))):
+    plot_data = jt.leaves(tree_zip(means, stds, timesteps, labels), is_leaf=lambda x: isinstance(x, tuple))
+
+    for i, (means, stds, ts, label) in enumerate(plot_data):
         fig = add_profile(
             fig,
             label,
-            mean,
-            mean + n_std_plot * std,
-            mean - n_std_plot * std,
+            means,
+            means + n_std_plot * stds,
+            means - n_std_plot * stds,
             ts,
             colors_rgb[i],
         )
@@ -203,6 +229,14 @@ def profiles_mean(
         margin=dict(l=80, r=10, t=30, b=60),
         legend_traceorder="reversed",
     )
+
+
+    fig.update_layout(legend_itemsizing="constant")
+
+
+    fig.update_layout(legend_title_text=(
+        "Condition" if legend_title is None else legend_title
+    ))
 
     if layout_kws is not None:
         fig.update_layout(layout_kws)
@@ -798,26 +832,33 @@ def effector_trajectories(
     return fig
 
 
+def arr_to_nested_tuples(arr):
+    """Like `ndarray.tolist()` but ensures the bottom-most level is tuples."""
+    if arr.ndim == 1:
+        return tuple(arr.tolist())
+    elif arr.ndim > 1:
+        return [arr_to_nested_tuples(sub_arr) for sub_arr in arr]
+    else:
+        return arr.item()  # For 0-dimensional arrays
+
+
 def trajectories_2D(
-    # TODO: could just use tuple but then can't type t
-    vars: PyTree[Float[Array, "*trial condition time xy=2"], "T"],
+    # TODO: could just use tuple but then can't type T
+    vars: PyTree[Float[Array, "*trial time xy=2"], "T"],
     var_labels: Optional[PyTree[str, "T"]] = None,
-    var_endpoints: Optional[
-        PyTree[tuple[
-            Optional[Float[Array, "*trial condition xy=2"]],
-            Optional[Float[Array, "*trial condition xy=2"]],
-        ], "T"]
+    ref_endpoints: Optional[
+        PyTree[tuple[Float[Array, "2 *trial xy=2"]], "T ..."]
     ] = None,
-    straight_guides: bool = False,
-    var_colors: Optional[
-        PyTree[Float[Array, "*trial condition rgb=3"], "T"]
-    ] = None,
+    var_endpoint_ms: int = 0,
+    mean_trajectory_line_width: int = 0,
+    darken_mean: float = 0.8,
+    colors: Optional[Float[Array, "*trial rgb=3"]] = None,
     colorscale: str = "phase",
-    colorscale_axis: int = 1,  # Can be any of the trial or condition axes.
+    colorscale_axis: int = 1,  # Can be any of the trial axes.
+    legend_title: Optional[str] = None,
+    legend_labels: Optional[Sequence] = None,
     mode: str = "markers+lines",
     ms: int = 5,
-    ms_init: int = 12,
-    ms_goal: int = 12,
     axes_labels: Optional[tuple[str, str] | PyTree[tuple[str, str], "T"]] = None,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
@@ -825,56 +866,90 @@ def trajectories_2D(
 ):
     """NEW: Variant of `effector_trajectories` that should be easier to use for different trial/condition settings.
 
-    Allows for multiple trial dimensions, in addition to the condition dimension. Also allows us to colour the trajectories
+    Allows for multiple trial dimensions. Also allows us to colour the trajectories
     on a given trial dimension (e.g. color by trial vs. by reach direction).
 
-    - Ultimately we could just collapse this to a single trial dimension, flatten the batch dimensions of all the
-      plot data arrays, etc.
-    - Currently, the legend won't work well if we colour by an extra trial dimension. The curves should get coloured
-      correctly, but the trial dimensions will all be collapsed together for the for-loops that generate the traces.
-      Therefore we should calculate a "legend index" (i.e. which color group does the curve belong to) and a "color index"
-      (i.e. is it the first, second, third etc. curve that has color X) and pass these to the trace generator. Then we can
-      easily determin 1) which legend group the curve belongs to, and 2) whether it is the first member of that legend group
-      (to prevent duplicate entries).
-
-    It will also be necessary to title the legend and label the legend entries appropriately, depending on the user's intention.
+    - I imagine this function could be simplified even further by separating the PyTree/subplot logic from the trace generation
+      logic. The trace generator just needs a set of array arguments, and returns a list of traces. These can then be
+      added to one subplot or other. This could also mean separating (say) the endpoint traces off into a different function.
     """
+    # Assume all trajectory arrays have the same shape; i.e. matching trials between subplots
     # Add singleton dimensions if no trial dimensions are passed.
-    # TODO: In principle we could also tolerate 2 dim (single trajectory/condition) inputs
-    vars = jt.map(
-        lambda v: v[None, ...] if len(v.shape) == 3 else v,
-        vars,
+    vars_shapes = [v.shape for v in jt.leaves(vars)]
+    assert len(set(vars_shapes)) == 1, (
+        "All trajectory arrays should have the same shape"
     )
+
+    assert not len(vars_shapes[0]) < 2, (
+        "Trajectory arrays must have at least 2 (time and space) axes!"
+    )
+    if len(vars_shapes[0]) == 2:
+        vars = jt.map(lambda v: v[None, :], vars)
+    vars_shape = jt.leaves(vars)[0].shape
+    n_trial_axes = len(vars_shape) - 2
 
     if var_labels is None:
         var_labels = tree_labels(vars)
 
     var_labels = tree_prefix_expand(var_labels, vars, is_leaf=is_none)
-    var_endpoints = tree_prefix_expand(var_endpoints, vars, is_leaf=is_none)
+    ref_endpoints = tree_prefix_expand(ref_endpoints, vars, is_leaf=is_none)
 
     if scatter_kws is None:
         scatter_kws = {}
 
-    # Determine the RGB colours of every point, before plotting.
-    def get_colors(x: Array, colorscale_axis: int):
-        if colorscale_axis < 0:
-            colorscale_axis += len(x.shape)
-        constant_color_axes = tuple(i for i in range(1, len(x.shape[:-2])) if i != colorscale_axis)
-        color_sequence = jnp.array(sample_colorscale(colorscale, x.shape[colorscale_axis] + 1, colortype='tuple')[:-1])
-        colors = jnp.broadcast_to(jnp.expand_dims(color_sequence, constant_color_axes), x.shape[:-2] + (3,))
-        return colors
+    if colorscale_axis < 0:
+        colorscale_axis += len(vars_shape)
+    constant_color_axes = tuple(i for i in range(len(vars_shape[:-2])) if i != colorscale_axis)
 
-    if var_colors is None:
-        var_colors = jt.map(lambda x: get_colors(x, colorscale_axis), vars)
+    # Determine the RGB colours of every point, before plotting.
+    if colors is None:
+        color_sequence = jnp.array(sample_colorscale(colorscale, vars_shape[colorscale_axis] + 1, colortype='tuple')[:-1])
+        colors, color_idxs = jt.map(
+            lambda x, finalshape: jnp.broadcast_to(jnp.expand_dims(x, constant_color_axes), vars_shape[:-2] + finalshape),
+            (color_sequence, jnp.arange(vars_shape[colorscale_axis])), ((3,), ()),
+        )
+        # var_colors, var_color_idxs = jt.map(
+        #     lambda x: jt.map(lambda _: x, vars),
+        #     (colors, color_idxs),
+        # )
+    else:
+        color_sequence = ()
+        color_idxs = None
+
+    # TODO: Don't plot mean trajectories if user manually specifies colors?
+    # TODO: Alternatively, get rid of manual specification of colors
+    if mean_trajectory_line_width > 0:
+        mean_vars = jt.map(
+            lambda x: jnp.mean(x, axis=constant_color_axes),
+            vars,
+        )
+    else:
+        mean_vars = {}
 
     # Collapse arrays to a single trial dimension, if necessary
-    vars, var_endpoints = jt.map(
-        lambda x: jnp.reshape(x, (-1, *x.shape[-3:])),
-        (vars, var_endpoints),
+    vars, ref_endpoints, colors, color_idxs = jt.map(
+        lambda x: jnp.reshape(x, (-1, *x.shape[n_trial_axes:])),
+        (vars, ref_endpoints, colors, color_idxs),
     )
 
+    colors_rgb_tuples = arr_to_nested_tuples(colors)
+    colors_rgb = jt.map(
+        lambda x: convert_colors_to_same_type(x)[0][0],
+        colors_rgb_tuples,
+        is_leaf=lambda x: isinstance(x, tuple),
+    )
+    color_idxs = color_idxs.tolist()
+    if legend_labels is None:
+        legend_labels = jnp.arange(vars_shape[colorscale_axis]).tolist()
+
+    assert len(legend_labels) == vars_shape[colorscale_axis], (
+        "Number of legend labels should match size of the `colorscale_axis`"
+    )
+
+    ts = jnp.arange(vars[0].shape[-2])
+
     subplots_data = jt.leaves(
-        tree_zip(vars, var_labels, var_endpoints, var_colors),
+        tree_zip(vars, var_labels, ref_endpoints),
         is_leaf=lambda x: isinstance(x, tuple) and isinstance(x[0], Array),
     )
 
@@ -887,82 +962,116 @@ def trajectories_2D(
         horizontal_spacing=0.1,
     )
 
-    def plot_var(fig, col, var, label, endpoints, colors):
-        assert len(var.shape) < 5, "The data shouldn't have this many axes -- we reshaped it!"
+    # Track whether each color has been added to the legend yet during plotting of trial trajectories;
+    # if mean trajectories are enabled then those are the ones we'll add (later).
+    color_added_to_legend = dict.fromkeys(color_idxs, mean_trajectory_line_width > 0)
 
-        def arr_to_nested_tuples(arr):
-            if arr.ndim == 1:
-                return tuple(arr.tolist())
-            elif arr.ndim > 1:
-                return [arr_to_nested_tuples(sub_arr) for sub_arr in arr]
-            else:
-                return arr.item()  # For 0-dimensional arrays
-
-        colors_rgb_tuples = arr_to_nested_tuples(colors)
-        colors_rgb = jt.map(
-            convert_colors_to_same_type,
-            colors_rgb_tuples,
-            is_leaf=lambda x: isinstance(x, tuple),
-        )
+    def plot_var(fig, col, var, label, endpoints):
+        assert len(var.shape) < 4, "The data shouldn't have this many axes; we reshaped it!"
 
         traces = []
 
-        for i, trial in enumerate(var):
-            for j, xy in enumerate(trial):
-                k = (i, j)
-                if colorscale_axis == 1:
-                    k = k[::-1]
+        for i, xy in enumerate(var):
+            # Only add each color to the legend the first time.
+            if not color_added_to_legend[color_idxs[i]]:
+                showlegend = True
+                color_added_to_legend[color_idxs[i]] = True
+            else:
+                showlegend = False
 
+            trace = go.Scatter(
+                name=legend_labels[color_idxs[i]],  # appears in legend
+                showlegend=showlegend,
+                legendgroup=color_idxs[i],  # controls show/hide with other traces
+                x=xy[..., 0],
+                y=xy[..., 1],
+                mode=mode,
+                marker_size=ms,
+                line=dict(
+                    color=colors_rgb[i]
+                ),
+                customdata=jnp.concatenate(
+                    [ts[:, None], np.broadcast_to([[i, color_idxs[i]]], (xy.shape[0], 2))], axis=-1
+                ),
+                **scatter_kws,
+            )
+            traces.append(trace)
+
+            if var_endpoint_ms > 0:
                 trace = go.Scatter(
-                    name=k[0],
-                    showlegend=((k[1] == 0) and (col == 1)),
-                    legendgroup=k[0],
-                    x=xy[..., 0],
-                    y=xy[..., 1],
-                    mode=mode,
-                    marker_size=ms,
+                    name=f"{legend_labels[color_idxs[i]]} endpoint",
+                    showlegend=False,
+                    legendgroup=color_idxs[i],  # controls show/hide with other traces
+                    x=xy[..., -1, 0][None],
+                    y=xy[..., -1, 1][None],
+                    mode="markers",
+                    marker_size=var_endpoint_ms,
                     line=dict(
-                        color=colors_rgb[i][j][0][0]
+                        color=colors_rgb[i]
                     ),
-                    customdata=[i, j],
-                    **scatter_kws,
+                    marker_symbol="circle-open",
+                    # **scatter_kws,
                 )
                 traces.append(trace)
-                fig.add_trace(trace, row=1, col=col)
 
-        if endpoints is not None:
-            # add to traces
-            pass
+            if endpoints is not None:
+                # TODO
+                pass
 
         for trace in traces:
-            # fig.add_trace(trace, row=1, col=col)
-            pass
+            fig.add_trace(trace, row=1, col=col)
 
         return fig
 
     for i, args in enumerate(subplots_data):
-        fig = plot_var(fig, i + 1, *args)
+        col = i + 1
+        fig = plot_var(fig, col, *args)
+
+    def arr_to_rgb(arr):
+        return f"rgb({', '.join(map(str, arr))})"
+
+    if mean_trajectory_line_width > 0:
+        for i, mean_var in enumerate(mean_vars):
+            for j, xy in enumerate(mean_var):
+                trace = go.Scatter(
+                    name=legend_labels[j],
+                    showlegend=(i == 0),
+                    legendgroup=j,  # controls show/hide with other traces
+                    x=xy[..., 0],
+                    y=xy[..., 1],
+                    mode="lines",
+                    line=dict(
+                        color=arr_to_rgb(darken_mean * color_sequence[j]),
+                        width=mean_trajectory_line_width,
+                    ),
+                    # customdata=jnp.concatenate(
+                    #     [ts[:, None], np.broadcast_to([[j, color_idxs[j]]], (xy.shape[0], 2))], axis=-1
+                    # ),
+                    # **scatter_kws,
+                )
+                fig.add_trace(trace, row=1, col=i + 1)
 
     fig.for_each_trace(lambda trace: trace.update(
         hovertemplate=(
-            'Condition: %{customdata[1]}<br>'
-            'Time step: %{i}<br>'
+            '%{legend_title}: %{customdata[2]}<br>'
+            'Time step: %{customdata[0]}<br>'
             'x: %{x:.2f}<br>'
             'y: %{y:.2f}<br>'
             '<extra></extra>'
         ),
     ))
 
-    # # Constrain the axes of each subplot to be scaled equally.
-    # # That is, keep square aspect ratios.
+    fig.update_layout(legend_itemsizing="constant")
+
+    # Constrain the axes of each subplot to be scaled equally.
+    # That is, keep square aspect ratios.
     fig.update_layout({
         f"yaxis{i}": dict(scaleanchor=f"x{i}")
         for i in [''] + list(range(2, n_subplots + 1))
     })
 
     fig.update_layout(legend_title_text=(
-        # TODO: This won't work if the user inputs a positive colorscale_axis
-        "Condition" if colorscale_axis == -3 else "Trial"
+        "Condition" if legend_title is None else legend_title
     ))
 
     if axes_labels is not None:

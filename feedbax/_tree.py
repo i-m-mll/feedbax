@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def eitherf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
+    """Returns a function that returns the logical union of boolean functions.
+
+    This is useful when we want to satisfy any of a number of `is_leaf`-like conditions
+    without writing another ugly lambda. For example:
+
+        `is_leaf=lambda x: is_module(x) or eqx.is_array(x)`
+
+    becomes `is_leaf=eitherf(is_module, eqx.is_array)`.
+    """
+    return lambda x: any(f(x) for f in funcs)
+
+
+def istype(*types) -> Callable[..., bool]:
+    """Returns a function that returns `True` if the input is an instance of any of the given types."""
+    return lambda x: any(isinstance(x, t) for t in types)
+
+
 def apply_to_filtered_leaves(filter_spec, is_leaf=None):
     """Returns a decorator that ensures a function only operates on tree leaves satisfying `filter_spec`."""
     def decorator(func: Callable):
@@ -404,6 +422,9 @@ def tree_unzip(
         This version has `zip`-like behaviour, in that 1) the input tree should be
         flattenable to tuples, when tuples are treated as leaves; 2) the shortest
         of those tuples determines the length of the output.
+
+    !!! Warning
+        If the PyTree itself is a tuple, this returns the tree unchanged.
     """
     tree_flat, treedef = jt.flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
     if any(not isinstance(x, tuple) for x in tree_flat):
@@ -417,10 +438,7 @@ def tree_zip(
 ) -> PyTree[Tuple[Any, ...], "T"]:
     """Zips a sequence of PyTrees into a PyTree of tuples.
     """
-    all_leaves, all_treedefs = zip(*[jt.flatten(tree, is_leaf=is_none) for tree in trees])
-    if not len(set(all_treedefs)) == 1:
-        raise ValueError("All trees must have the same structure, treating `None` values as leaves")
-    return jt.unflatten(all_treedefs[0], zip(*all_leaves))
+    return jt.map(lambda *x: x, *trees)
 
 
 def tree_prefix_expand(prefix: PyTree, tree: PyTree, is_leaf: Optional[Callable] = None):
