@@ -6,7 +6,7 @@
 
 from abc import abstractmethod
 from collections.abc import Callable
-from functools import reduce
+from functools import partial, reduce
 import logging
 from typing import Any, Optional
 
@@ -20,6 +20,7 @@ import jax.tree as jt
 import jax._src.pretty_printer as pp
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
+from feedbax._tree import leaves_of_type
 from feedbax.misc import _simple_module_pprint
 
 
@@ -110,15 +111,8 @@ class Multiplicative(AbstractNoise):
 
 def replace_noise(tree, replace_fn: Callable = lambda _: None):
     """Replaces all `AbstractNoise` leaves of a PyTree, by default with `None`."""
-    # This is kind of annoying, but use `tree_map` instead of (say) a list comprehension
-    get_noise_terms = lambda tree: jt.leaves(jt.map(
-        lambda x: x if isinstance(x, AbstractNoise) else None,
-        tree,
-        is_leaf=lambda x: isinstance(x, AbstractNoise),
-    ), is_leaf=lambda x: isinstance(x, AbstractNoise))
-
     return eqx.tree_at(
-        get_noise_terms,
+        partial(leaves_of_type, AbstractNoise),
         tree,
         replace_fn=replace_fn,
     )

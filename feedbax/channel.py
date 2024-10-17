@@ -6,6 +6,7 @@
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 import logging
 from typing import Generic, Optional, Self, Tuple, Union
 
@@ -21,7 +22,7 @@ from feedbax.intervene.schedule import ModelIntervenors
 from feedbax.noise import Normal, ZeroNoise
 from feedbax._staged import AbstractStagedModel, ModelStage
 from feedbax.state import StateT
-from feedbax._tree import random_split_like_tree
+from feedbax._tree import leaves_of_type, random_split_like_tree
 
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         delay: The number of previous inputs stored in the queue. May be zero.
         noise_func: Generates noise for the channel. Can be any function that
             takes a key and an array, and returns noise samples with the same
-            shape as the array. If `None`, no noise is added. 
+            shape as the array. If `None`, no noise is added.
         add_noise: Whether noise is turned on. This allows us to perform model
             surgery to toggle noise without setting `noise_func` to `None`.
         input_proto: A PyTree of arrays with the same structure/shapes as the
@@ -167,7 +168,7 @@ class Channel(AbstractStagedModel[ChannelState]):
         input_init = jax.tree_map(
             lambda x: jnp.full_like(x, self.init_value), self.input_proto
         )
-        
+
         if not self.add_noise or self.noise_func is None:
             noise_init = None
         else:
@@ -182,3 +183,26 @@ class Channel(AbstractStagedModel[ChannelState]):
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":
         """Returns a similar `Channel` with a changed input structure."""
         return eqx.tree_at(lambda channel: channel.input_proto, self, input_proto)
+
+
+def toggle_channel_noise(tree, enabled: Optional[bool] = None):
+    """Disable/enable noise in all `Channel` leaves of a PyTree.
+
+    The toggling works on a leaf-by-leaf basis unless `enabled` is specified.
+    Thus some noise might be enabled while other noise is disabled, through a
+    single call to this function.
+    """
+    if enabled is None:
+        replace_fn = lambda x: not x
+    else:
+        replace_fn = lambda _: enabled
+
+    return eqx.tree_at(
+        partial(leaves_of_type, Channel),
+        tree,
+        replace_fn=lambda channel: eqx.tree_at(
+            lambda channel: channel.add_noise,
+            channel,
+            replace_fn=replace_fn,
+        ),
+    )

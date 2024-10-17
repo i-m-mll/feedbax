@@ -100,9 +100,11 @@ def profile(
     return fig
 
 
-def profiles_mean(
+def profiles(
     vars: PyTree[Float[Array, "*batch timestep"], "T"],
     keep_axis: Optional[PyTree[int, "T ..."]] = None,
+    mode: Literal["std", "curves"] = "curves",
+    stride_curves: int = 1,
     timesteps: Optional[PyTree[Float[Array, "timestep"], "T"]] = None,
     varname: str = "Value",
     legend_title: Optional[str] = None,
@@ -112,6 +114,7 @@ def profiles_mean(
     n_std_plot: int = 2,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
+    curves_kws: Optional[dict] = None,
     fig: Optional[go.Figure] = None,
 ) -> go.Figure:
     """Plot 1D state profiles as lines with standard deviation bars.
@@ -126,6 +129,8 @@ def profiles_mean(
 
     if timesteps is None:
         timesteps = jt.map(lambda x: jnp.arange(x.shape[-1]), vars)
+    else:
+        timesteps = tree_prefix_expand(timesteps, vars)
 
     if labels is None:
         labels = tree_labels(vars)
@@ -155,6 +160,15 @@ def profiles_mean(
 
     if keep_axis is None:
         means, stds = jt.map(lambda arr: arr[None, ...], (means, stds))
+        vars_flat = jt.map(lambda x: jnp.reshape(x, (1, -1, x.shape[-1])), vars)
+    else:
+        vars_flat = jt.map(
+            lambda x: jnp.reshape(
+                jnp.moveaxis(x, keep_axis, 0),
+                (x.shape[keep_axis], -1, x.shape[-1]),
+            ),
+            vars
+        )
 
     if colors is None:
         colors = DEFAULT_COLORS
@@ -162,12 +176,12 @@ def profiles_mean(
     colors_rgb: list[str]
     colors_rgb, _ = convert_colors_to_same_type(colors, colortype='rgb')  # type: ignore
 
-    def add_profile(fig, label, means, ubs, lbs, ts, color) -> go.Figure:
+    def add_profile(fig, label, var_flat, means, ubs, lbs, ts, color) -> go.Figure:
 
         traces = []
 
-        for i, (mean, ub, lb) in enumerate(zip(means, ubs, lbs)):
-            traces.extend([
+        for i, (curves, mean, ub, lb) in enumerate(zip(var_flat, means, ubs, lbs)):
+            traces.append(
                 # Mean
                 go.Scatter(
                     name=label,
@@ -178,40 +192,63 @@ def profiles_mean(
                     marker_size=3,
                     line=dict(color=color),
                     **scatter_kws,
-                ),
-                # Bounds
-                go.Scatter(
-                    name="Upper bound",
-                    legendgroup=label,
-                    x=ts,
-                    y=ub,
-                    line=dict(color='rgba(255,255,255,0)'),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ),
-                go.Scatter(
-                    name="Lower bound",
-                    legendgroup=label,
-                    x=ts,
-                    y=lb,
-                    line=dict(color='rgba(255,255,255,0)'),
-                    fill="tonexty",
-                    fillcolor=color_add_alpha(color, error_bars_alpha / sqrt(means.shape[0])),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ),
-            ])
+                )
+            )
+
+            if mode == "curves":
+                # TODO: show exact trial indices in hoverinfo
+                for curve in curves[::stride_curves]:
+                    traces.append(
+                        go.Scatter(
+                            name=label,
+                            showlegend=False,
+                            legendgroup=label,
+                            x=ts,
+                            y=curve,
+                            mode="lines",
+                            line=dict(color=color, width=0.5),
+                            **curves_kws,
+                        )
+                    )
+
+            elif mode == "std":
+                traces.extend([                # Bounds
+                    go.Scatter(
+                        name="Upper bound",
+                        legendgroup=label,
+                        x=ts,
+                        y=ub,
+                        line=dict(color='rgba(255,255,255,0)'),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    ),
+                    go.Scatter(
+                        name="Lower bound",
+                        legendgroup=label,
+                        x=ts,
+                        y=lb,
+                        line=dict(color='rgba(255,255,255,0)'),
+                        fill="tonexty",
+                        fillcolor=color_add_alpha(color, error_bars_alpha / sqrt(means.shape[0])),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    ),
+                ])
+
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
 
         fig.add_traces(traces)
 
         return fig
 
-    plot_data = jt.leaves(tree_zip(means, stds, timesteps, labels), is_leaf=lambda x: isinstance(x, tuple))
+    plot_data = jt.leaves(tree_zip(vars_flat, means, stds, timesteps, labels), is_leaf=lambda x: isinstance(x, tuple))
 
-    for i, (means, stds, ts, label) in enumerate(plot_data):
+    for i, (var_flat, means, stds, ts, label) in enumerate(plot_data):
         fig = add_profile(
             fig,
             label,
+            var_flat,
             means,
             means + n_std_plot * stds,
             means - n_std_plot * stds,
@@ -245,7 +282,7 @@ def profiles_mean(
 
 
 def loss_history(
-    train_history: "TaskTrainerHistory",
+    losses: LossDict,
     loss_context: Literal["training", "validation"] = "training",
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.3,
@@ -267,10 +304,8 @@ def loss_history(
     )
 
     if loss_context == "training":
-        loss_tree = train_history.loss
         scatter_mode = "markers+lines"
     elif loss_context == "validation":
-        loss_tree = train_history.loss_validation
         # Validation losses are usually sparse in time, so don't connect with lines
         scatter_mode = "markers"
     else:
@@ -278,7 +313,7 @@ def loss_history(
 
     losses: LossDict | Array = jax.tree_map(
         lambda x: np.array(x),
-        loss_tree,
+        losses,
     )
 
     losses_total = losses if isinstance(losses, Array) else losses.total
@@ -854,7 +889,7 @@ def trajectories_2D(
     darken_mean: float = 0.8,
     colors: Optional[Float[Array, "*trial rgb=3"]] = None,
     colorscale: str = "phase",
-    colorscale_axis: int = 1,  # Can be any of the trial axes.
+    colorscale_axis: int = 0,  # Can be any of the trial axes.
     legend_title: Optional[str] = None,
     legend_labels: Optional[Sequence] = None,
     mode: str = "markers+lines",
@@ -891,6 +926,9 @@ def trajectories_2D(
     if var_labels is None:
         var_labels = tree_labels(vars)
 
+    if legend_title is None:
+        legend_title = "Condition"
+
     var_labels = tree_prefix_expand(var_labels, vars, is_leaf=is_none)
     ref_endpoints = tree_prefix_expand(ref_endpoints, vars, is_leaf=is_none)
 
@@ -899,6 +937,7 @@ def trajectories_2D(
 
     if colorscale_axis < 0:
         colorscale_axis += len(vars_shape)
+
     constant_color_axes = tuple(i for i in range(len(vars_shape[:-2])) if i != colorscale_axis)
 
     # Determine the RGB colours of every point, before plotting.
@@ -956,9 +995,11 @@ def trajectories_2D(
     # TODO: could instead tree_map over `var_labels` (as prefix) to get subtrees of data
     n_subplots = len(subplots_data)
 
+    subplot_titles = [f"<b>{label}</b>" for label in jt.leaves(var_labels)]
+
     fig = make_subplots(
         rows=1, cols=n_subplots,
-        subplot_titles=jt.leaves(var_labels),
+        subplot_titles=subplot_titles,
         horizontal_spacing=0.1,
     )
 
@@ -991,7 +1032,11 @@ def trajectories_2D(
                     color=colors_rgb[i]
                 ),
                 customdata=jnp.concatenate(
-                    [ts[:, None], np.broadcast_to([[i, color_idxs[i]]], (xy.shape[0], 2))], axis=-1
+                    [
+                        ts[:, None],
+                        np.broadcast_to([[i, legend_labels[color_idxs[i]]]], (xy.shape[0], 2))
+                    ],
+                    axis=-1,
                 ),
                 **scatter_kws,
             )
@@ -1053,7 +1098,7 @@ def trajectories_2D(
 
     fig.for_each_trace(lambda trace: trace.update(
         hovertemplate=(
-            '%{legend_title}: %{customdata[2]}<br>'
+            f'{legend_title}: %{{customdata[2]}}<br>'
             'Time step: %{customdata[0]}<br>'
             'x: %{x:.2f}<br>'
             'y: %{y:.2f}<br>'
@@ -1070,9 +1115,7 @@ def trajectories_2D(
         for i in [''] + list(range(2, n_subplots + 1))
     })
 
-    fig.update_layout(legend_title_text=(
-        "Condition" if legend_title is None else legend_title
-    ))
+    fig.update_layout(legend_title_text=legend_title)
 
     if axes_labels is not None:
         fig.update_xaxes(title_text=axes_labels[0])

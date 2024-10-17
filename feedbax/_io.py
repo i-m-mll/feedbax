@@ -12,6 +12,7 @@ from collections.abc import Callable
 from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,6 +54,10 @@ def save(
         f.write((hyperparameter_str + "\n").encode())
         eqx.tree_serialise_leaves(f, tree)
 
+    filesize = os.path.getsize(path)
+
+    print(f"Wrote PyTree to {path} ({filesize / 1024 ** 2:.1f} MiB)")
+
 
 def load(
     path: Path | str,
@@ -88,14 +93,14 @@ def load_with_hyperparameters(
             as the PyTree that was saved to `path`, and which may take as
             arguments `hyperparameters` which `save` may have saved to the same
             file. It must take a keyword argument `key`.
-        missing_hyperparameters: A dictionary of hyperparameters, whose structure must 
+        missing_hyperparameters: A dictionary of hyperparameters, whose structure must
             contain all the leaves of the loaded hyperparameter dictionary, but may
             possess additional leaves if the signature of `setup_func` has been expanded
             since save time, so that we may call it properly here. Note that these
             additional parameters should not affect the structure of the saved PyTrees,
             or deserialisation will fail.
     """
-    
+
     with open(path, "rb") as f:
         hyperparameters = json.loads(f.readline().decode())
         if hyperparameters is None:

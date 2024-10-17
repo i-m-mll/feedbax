@@ -621,7 +621,7 @@ def activity_sample_units(
 
 
 def loss_history(
-    train_history: "TaskTrainerHistory",
+    losses: LossDict,
     xscale: str = "log",
     yscale: str = "log",
     cmap_name: str = "Set1",
@@ -629,7 +629,7 @@ def loss_history(
     """Line plot of loss terms and their total over a training run.
 
     !!! Note
-        Each term in `train_history.loss` is an array where the first dimension is the
+        Each term in a `LossDict` is an array where the first dimension is the
         training iteration, with an optional second batch dimension, e.g. for model
         replicates.
 
@@ -641,8 +641,7 @@ def loss_history(
         is visible when the x-axis is log-scaled.
 
     Arguments:
-        train_history: The training history object returned by a call to a
-            `TaskTrainer`. The function will specifically access `train_history.loss`.
+        losses: Gives the values of the loss terms, and the total loss.
         xscale: The scale of the x-axis.
         yscale: The scale of the y-axis.
         cmap_name: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
@@ -651,36 +650,23 @@ def loss_history(
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.set(xscale=xscale, yscale=yscale)
 
-    losses = train_history.loss
+    cmap = get_cmap(cmap_name)
+    colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
 
-    # TODO: Remove this conditional, since `train_history` is passed
-    if isinstance(losses, Array):
-        losses_arr: Array = losses
-        xs = 1 + np.arange(losses_arr.shape[0])
-        ax.plot(xs, losses_arr, "black", lw=3)
+    xs = 1 + np.arange(len(losses.total))
 
-    elif isinstance(losses, LossDict):
-        cmap = get_cmap(cmap_name)
-        colors = [cmap(i) for i in np.linspace(0, 1, len(losses))]
+    total = ax.plot(xs, losses.total, "black", lw=3)
 
-        xs = 1 + np.arange(len(losses.total))
-
-        total = ax.plot(xs, losses.total, "black", lw=3)
-
-        all_handles = [total]
-        for i, loss_term in enumerate(losses.values()):
-            handles = ax.plot(xs, loss_term, lw=0.75, color=colors[i])
-            all_handles.append(handles)
-        ax.legend(
-            # Only include the first plot for each loss term.
-            # (Don't include duplicate legend entries across batch dim.)
-            [handles[0] for handles in all_handles],
-            ["Total", *losses.keys()],
-        )
-
-    else:
-        # Should never arrive here.
-        raise ValueError("Invalid type encountered in `train_history.loss`")
+    all_handles = [total]
+    for i, loss_term in enumerate(losses.values()):
+        handles = ax.plot(xs, loss_term, lw=0.75, color=colors[i])
+        all_handles.append(handles)
+    ax.legend(
+        # Only include the first plot for each loss term.
+        # (Don't include duplicate legend entries across batch dim.)
+        [handles[0] for handles in all_handles],
+        ["Total", *losses.keys()],
+    )
 
     ax.set(xlabel="Training iteration", ylabel="Loss")
 
@@ -708,7 +694,7 @@ def _losses_terms_dfs(losses):
 
 
 def loss_mean_history(
-    train_history: "TaskTrainerHistory",
+    losses: LossDict,
     xscale: str = "log",
     yscale: str = "log",
     cmap: str = "Set1",
@@ -721,14 +707,12 @@ def loss_mean_history(
         To plot separate curves for each member of the batch, use `loss_history`.
 
     Arguments:
-        train_history: The training history object returned by a call to a
-            `TaskTrainer`. The function will specifically access `train_history.loss`.
+        losses: Gives the values of the loss terms, and the total loss.
         xscale: The scale of the x-axis.
         yscale: The scale of the y-axis.
         cmap: The name of the Matplotlib [colormap](https://matplotlib.org/stable/gallery/color/colormap_reference.html)
             to use for line colors.
     """
-    losses = train_history.loss
 
     losses_terms_dfs = _losses_terms_dfs(losses)
 

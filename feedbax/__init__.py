@@ -25,6 +25,8 @@ from feedbax._staged import (
 from feedbax._tree import (
     get_ensemble,
     random_split_like_tree,
+    is_type,
+    leaves_of_type,
     tree_array_bytes,
     tree_call,
     tree_infer_batch_size,
@@ -32,6 +34,7 @@ from feedbax._tree import (
     tree_labels_of_equal_leaves,
     tree_map_tqdm,
     tree_map_unzip,
+    tree_prefix_expand,
     tree_set,
     tree_stack,
     tree_struct_bytes,

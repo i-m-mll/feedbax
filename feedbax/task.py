@@ -63,7 +63,7 @@ from feedbax.misc import is_module
 import feedbax.plotly as plot
 from feedbax._staged import AbstractStagedModel
 from feedbax.state import CartesianState, StateT
-from feedbax._tree import tree_call
+from feedbax._tree import is_type, tree_call
 
 if TYPE_CHECKING:
     from feedbax._model import AbstractModel
@@ -274,25 +274,20 @@ class AbstractTask(Module):
             trial_spec,
             key=key,
             # Treat `TimeSeriesParam`s as leaves, but don't call (unwrap) them yet.
-            exclude=lambda x: isinstance(x, TimeSeriesParam),
-            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+            exclude=is_type(TimeSeriesParam),
+            is_leaf=is_type(TimeSeriesParam),
         )
 
         timeseries, other = eqx.partition(
             intervenor_params,
-            lambda x: isinstance(x, TimeSeriesParam),
-            is_leaf=lambda x: isinstance(x, TimeSeriesParam),
+            is_type(TimeSeriesParam),
+            is_leaf=is_type(TimeSeriesParam),
         )
 
         # Unwrap the `TimeSeriesParam` instances.
         timeseries_arrays = tree_call(
-            timeseries, is_leaf=lambda x: isinstance(x, TimeSeriesParam)
+            timeseries, is_leaf=is_type(TimeSeriesParam)
         )
-        # timeseries_arrays = jax.tree_map(
-        #     lambda x: x(),
-        #     timeseries,
-        #     is_leaf=lambda x: isinstance(x, TimeSeriesParam),
-        # )
 
         # Broadcast the non-timeseries arrays.
         other_broadcasted = jax.tree_map(
@@ -837,7 +832,9 @@ class SimpleReaches(AbstractTask):
         return power_discount(self.n_steps - 1, discount_exp=6)
 
     def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
-        """Center-out reach sets in a grid across the rectangular workspace."""
+        """Center-out reach sets in a grid across the rectangular workspace.
+        """
+        #! This doesn't generate intervention params!
 
         effector_pos_endpoints = _centerout_endpoints_grid(
             self.workspace,

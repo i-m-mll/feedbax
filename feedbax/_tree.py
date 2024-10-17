@@ -5,6 +5,7 @@
 """
 
 # TODO: Separate this into its own repo, and make it a dependency
+# TODO: Eliminate `tree_*` prefixes
 
 from collections.abc import Callable, Sequence
 from functools import partial
@@ -44,7 +45,7 @@ def eitherf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
     return lambda x: any(f(x) for f in funcs)
 
 
-def istype(*types) -> Callable[..., bool]:
+def is_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""
     return lambda x: any(isinstance(x, t) for t in types)
 
@@ -705,3 +706,19 @@ def tree_infer_batch_size(
             f"First dimension sizes:\n\n{tree_array_lens}"
         )
     return array_lens_unique.pop()
+
+
+def leaves_of_type(leaf_type, tree):
+    """Return the elements of a PyTree with type `leaf_type`.
+
+    Note that (what would otherwise be) subtrees of tree are treated as leaves if they match
+    `leaf_type`.
+    """
+    return jt.leaves(
+        jt.map(
+            lambda x: x if isinstance(x, leaf_type) else None,
+            tree,
+            is_leaf=is_type(leaf_type),
+        ),
+        is_leaf=is_type(leaf_type),
+    )

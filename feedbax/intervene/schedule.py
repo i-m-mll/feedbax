@@ -428,7 +428,7 @@ def schedule_intervenor(
     # intervenor_relabeled = eqx.tree_at(lambda x: x.label, intervenor_, label)
 
     # Construct the intervenor with default parameters, to add to the model.
-    # TODO: Should we let the user pass a `default_intervenor_params`?
+    #? Let the user pass a `default_intervenor_params`?
     key_example = jax.random.PRNGKey(0)
     # Assume that all the tasks are compatible with the way trial specs are used
     # to generate trial-by-trial intervenor parameters.
