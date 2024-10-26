@@ -9,6 +9,7 @@ import logging.handlers as loghandlers
 import os
 import warnings
 
+
 from feedbax._io import save, load, load_with_hyperparameters
 from feedbax._model import (
     AbstractModel,
@@ -37,10 +38,12 @@ from feedbax._tree import (
     tree_prefix_expand,
     tree_set,
     tree_stack,
+    tree_unstack,
     tree_struct_bytes,
     tree_take,
     tree_take_multi,
     tree_unzip,
+    tree_zip,
 )
 from feedbax.intervene import is_intervenor
 from feedbax.loss import is_lossdict

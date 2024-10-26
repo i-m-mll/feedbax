@@ -12,7 +12,7 @@ from math import sqrt
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import equinox as eqx
-from feedbax._tree import apply_to_filtered_leaves, tree_infer_batch_size, tree_prefix_expand, tree_unzip
+from feedbax._tree import apply_to_filtered_leaves, tree_infer_batch_size, tree_prefix_expand, tree_take, tree_unzip
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -22,6 +22,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Shaped
 import numpy as np
 # pyright: reportMissingTypeStubs=false
 from plotly.basedatatypes import BaseTraceType
+import plotly.colors as plc
 from plotly.colors import convert_colors_to_same_type, sample_colorscale
 import plotly.express as px
 import plotly.graph_objs as go
@@ -103,7 +104,7 @@ def profile(
 def profiles(
     vars: PyTree[Float[Array, "*batch timestep"], "T"],
     keep_axis: Optional[PyTree[int, "T ..."]] = None,
-    mode: Literal["std", "curves"] = "curves",
+    mode: Literal["std", "curves"] = "std",
     stride_curves: int = 1,
     timesteps: Optional[PyTree[Float[Array, "timestep"], "T"]] = None,
     varname: str = "Value",
@@ -111,7 +112,7 @@ def profiles(
     labels: Optional[PyTree[str, "T"]] = None,
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.2,
-    n_std_plot: int = 2,
+    n_std_plot: int = 1,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
     curves_kws: Optional[dict] = None,
@@ -877,6 +878,37 @@ def arr_to_nested_tuples(arr):
         return arr.item()  # For 0-dimensional arrays
 
 
+def sample_colorscale_unique(colorscale, samplepoints: int, **kwargs):
+    """Helper to ensure we don't get repeat colors when using cyclical colorscales.
+
+    Also avoids the division-by-zero error that `sample_colorscale` raises when `samplepoints == 1`.
+    """
+
+    colors = plc.get_colorscale(colorscale)
+    if samplepoints == 1:
+        #! We could join this with the next condition, but I wanted to select the last rather than first
+        # color in this case, for ad hoc reasons.
+        n_sample = 2
+        idxs = slice(1, None)
+    elif colors[0][1] == colors[-1][1]:
+        n_sample = samplepoints + 1
+        idxs = slice(None, -1)
+    else:
+        n_sample = samplepoints
+        idxs = slice(None)
+
+    return sample_colorscale(colorscale, n_sample, **kwargs)[idxs]
+
+
+def arr_to_rgb(arr):
+    return f"rgb({', '.join(map(str, arr))})"
+
+
+def adjust_color_brightness(colors, factor=0.8):
+    colors_arr = jnp.array(plc.convert_colors_to_same_type(colors, colortype='tuple')[0])
+    return list(map(arr_to_rgb, factor * colors_arr))
+
+
 def trajectories_2D(
     # TODO: could just use tuple but then can't type T
     vars: PyTree[Float[Array, "*trial time xy=2"], "T"],
@@ -887,9 +919,10 @@ def trajectories_2D(
     var_endpoint_ms: int = 0,
     mean_trajectory_line_width: int = 0,
     darken_mean: float = 0.8,
-    colors: Optional[Float[Array, "*trial rgb=3"]] = None,
+    colors: Optional[Float[Array, "*trial rgb=3"] | str] = None,
     colorscale: str = "phase",
     colorscale_axis: int = 0,  # Can be any of the trial axes.
+    stride: int = 1,  # controls the stride over the `colorscale_axis` without needing to resize the input `vars` and `legend_labels` etc
     legend_title: Optional[str] = None,
     legend_labels: Optional[Sequence] = None,
     mode: str = "markers+lines",
@@ -904,9 +937,11 @@ def trajectories_2D(
     Allows for multiple trial dimensions. Also allows us to colour the trajectories
     on a given trial dimension (e.g. color by trial vs. by reach direction).
 
-    - I imagine this function could be simplified even further by separating the PyTree/subplot logic from the trace generation
-      logic. The trace generator just needs a set of array arguments, and returns a list of traces. These can then be
-      added to one subplot or other. This could also mean separating (say) the endpoint traces off into a different function.
+    I imagine this function could be simplified even further by separating the PyTree/subplot logic from the trace generation
+    logic. The trace generator just needs a set of array arguments, and returns a list of traces. These can then be
+    added to one subplot or other. This could also mean separating (say) the endpoint traces off into a different function.
+
+
     """
     # Assume all trajectory arrays have the same shape; i.e. matching trials between subplots
     # Add singleton dimensions if no trial dimensions are passed.
@@ -920,6 +955,12 @@ def trajectories_2D(
     )
     if len(vars_shapes[0]) == 2:
         vars = jt.map(lambda v: v[None, :], vars)
+
+    if stride != 1:
+        n_colors = jt.leaves(vars)[0].shape[colorscale_axis]
+        idxs = jnp.arange(n_colors)[::stride]
+        vars = tree_take(vars, idxs, colorscale_axis)
+
     vars_shape = jt.leaves(vars)[0].shape
     n_trial_axes = len(vars_shape) - 2
 
@@ -942,15 +983,23 @@ def trajectories_2D(
 
     # Determine the RGB colours of every point, before plotting.
     if colors is None:
-        color_sequence = jnp.array(sample_colorscale(colorscale, vars_shape[colorscale_axis] + 1, colortype='tuple')[:-1])
+        color_sequence = jnp.array(
+            sample_colorscale_unique(colorscale, vars_shape[colorscale_axis], colortype='tuple')
+        )
         colors, color_idxs = jt.map(
-            lambda x, finalshape: jnp.broadcast_to(jnp.expand_dims(x, constant_color_axes), vars_shape[:-2] + finalshape),
+            lambda x, finalshape: jnp.broadcast_to(
+                jnp.expand_dims(x, constant_color_axes),
+                vars_shape[:-2] + finalshape,
+            ),
             (color_sequence, jnp.arange(vars_shape[colorscale_axis])), ((3,), ()),
         )
         # var_colors, var_color_idxs = jt.map(
         #     lambda x: jt.map(lambda _: x, vars),
         #     (colors, color_idxs),
         # )
+    # elif isinstance(colors, str):
+    #     colors = np.full(vars_shape[:-2], str(colors))
+    #     color_idxs = None
     else:
         color_sequence = ()
         color_idxs = None
@@ -981,7 +1030,7 @@ def trajectories_2D(
     if legend_labels is None:
         legend_labels = jnp.arange(vars_shape[colorscale_axis]).tolist()
 
-    assert len(legend_labels) == vars_shape[colorscale_axis], (
+    assert len(legend_labels[::stride]) == vars_shape[colorscale_axis], (
         "Number of legend labels should match size of the `colorscale_axis`"
     )
 
@@ -1021,7 +1070,7 @@ def trajectories_2D(
                 showlegend = False
 
             trace = go.Scatter(
-                name=legend_labels[color_idxs[i]],  # appears in legend
+                name=legend_labels[::stride][color_idxs[i]],  # appears in legend
                 showlegend=showlegend,
                 legendgroup=color_idxs[i],  # controls show/hide with other traces
                 x=xy[..., 0],
@@ -1034,7 +1083,7 @@ def trajectories_2D(
                 customdata=jnp.concatenate(
                     [
                         ts[:, None],
-                        np.broadcast_to([[i, legend_labels[color_idxs[i]]]], (xy.shape[0], 2))
+                        np.broadcast_to([[i, legend_labels[::stride][color_idxs[i]]]], (xy.shape[0], 2))
                     ],
                     axis=-1,
                 ),
@@ -1044,7 +1093,7 @@ def trajectories_2D(
 
             if var_endpoint_ms > 0:
                 trace = go.Scatter(
-                    name=f"{legend_labels[color_idxs[i]]} endpoint",
+                    name=f"{legend_labels[::stride][color_idxs[i]]} endpoint",
                     showlegend=False,
                     legendgroup=color_idxs[i],  # controls show/hide with other traces
                     x=xy[..., -1, 0][None],
@@ -1072,14 +1121,11 @@ def trajectories_2D(
         col = i + 1
         fig = plot_var(fig, col, *args)
 
-    def arr_to_rgb(arr):
-        return f"rgb({', '.join(map(str, arr))})"
-
     if mean_trajectory_line_width > 0:
         for i, mean_var in enumerate(mean_vars):
             for j, xy in enumerate(mean_var):
                 trace = go.Scatter(
-                    name=legend_labels[j],
+                    name=legend_labels[::stride][j],
                     showlegend=(i == 0),
                     legendgroup=j,  # controls show/hide with other traces
                     x=xy[..., 0],

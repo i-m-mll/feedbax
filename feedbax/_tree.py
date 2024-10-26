@@ -7,10 +7,13 @@
 # TODO: Separate this into its own repo, and make it a dependency
 # TODO: Eliminate `tree_*` prefixes
 
-from collections.abc import Callable, Sequence
+from collections import namedtuple
+from collections.abc import Callable, Sequence, Hashable
 from functools import partial
 import functools
+import itertools
 import logging
+import string
 from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, Union, get_type_hints
 
 import equinox as eqx
@@ -23,7 +26,7 @@ from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 import numpy as np
 
 from feedbax._progress import _tqdm, _tqdm_write
-from feedbax.misc import unique_generator, is_module, is_none
+from feedbax.misc import unique_generator, is_module, is_none, unzip2
 
 
 logger = logging.getLogger(__name__)
@@ -269,7 +272,7 @@ def _random_split_like_treedef(
 
 
 def tree_stack(
-    trees: Sequence[PyTree[Any, "T"]],
+    trees: Sequence[PyTree[Array, "T"]],
     axis: int = 0,
 ) -> PyTree[Any, "T"]:
     """Returns a PyTree whose array leaves stack those of the PyTrees in `trees`.
@@ -283,15 +286,139 @@ def tree_stack(
         # [jnp.array([[1, 2], [5, 6]]), jnp.array([[3, 4], [7, 8]])]
         ```
 
-    Derived from [this](https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75?permalink_comment_id=4634557#gistcomment-4634557)
-    GitHub gist.
-
     Arguments:
         trees: A sequence of PyTrees with the same structure, and whose array
             leaves have the same shape.
         axis: The axis along which to stack the array leaves.
     """
+    # TODO: Filter and combine non-array leaves
     return jt.map(lambda *v: jnp.stack(v, axis=axis), *trees)
+
+
+def make_named_tuple_subclass(name):
+    """Returns a trivial subclass of tuple with a different name.
+
+    This is useful, for example, if we want a particular kind of tuple
+    which we can select with `is_leaf`, but we don't want to define the fields
+    of a `namedtuple`.
+    """
+    def __repr__(self):
+        return f"{name}{tuple.__repr__(self)}"
+
+    cls = type(name, (tuple,), dict(__repr__=__repr__))
+
+    def tuple_flatten(x):
+        return x, None
+
+    def tuple_unflatten(aux_data, children):
+        return cls(children)
+
+    jtu.register_pytree_node(cls, tuple_flatten, tuple_unflatten)
+
+    return cls
+
+
+_TmpTuple = make_named_tuple_subclass("_TmpTuple")
+
+
+def make_named_dict_subclass(name):
+    """Returns a trivial subclass of dict with a different name.
+
+    This is useful if we want a particular kind of dict that we can select with `is_leaf`.
+    """
+    def __repr__(self):
+        return f"{name}({dict.__repr__(self)})"
+
+    cls = type(name, (dict,), dict(__repr__=__repr__))
+
+    def dict_flatten(d):
+        return unzip2(sorted(d.items()))[::-1]
+
+    def dict_unflatten(keys, children):
+        return cls(zip(keys, children))
+
+    jtu.register_pytree_node(cls, dict_flatten, dict_unflatten)
+
+    return cls
+
+
+def move_level_to_outside(tree, level_type):
+    """Move a level with the given type to the outside of the tree.
+
+    This can be used similarly to `tree_transpose`, in some cases.
+    However it is particularly useful for trees with multiple nested
+    levels, where we only want to move one of the levels outwards,
+    similarly to how we might use `jnp.moveaxis` to move an array
+    axis to the first position.
+
+    ```
+    a = ([(1,2), (3,4)], [(5, 6), (7, 8)])
+    move_level_to_outside(a, list)
+    >>> [((1,2), (5,6)), ((3,4), (7,8))]
+    ```
+
+    Written with the help of Claude 3.5 Sonnet.
+    """
+    outer_treedef = jt.structure(
+        jt.map(lambda x: 0, tree, is_leaf=is_type(level_type))
+    )
+    leaves = jt.leaves(tree, is_leaf=is_type(level_type))
+    transposed_elements = zip(*(tuple(t) for t in leaves))
+    return level_type(
+        jt.unflatten(outer_treedef, elements)
+        for elements in transposed_elements
+    )
+
+
+def tree_unstack(
+    tree: PyTree[Any, "T"],
+    axis: int = 0,
+):
+    """Returns a tuple of PyTrees by unstacking the array leaves of the input PyTree.
+
+    Arguments:
+        tree: A PyTree whose array leaves will be unstacked.
+        axis: The axis along which to unstack the array leaves.
+
+    Returns:
+        A sequence of PyTrees, where each PyTree has the same structure as the input
+        but contains slices of the original arrays.
+    """
+    array_tree, other = eqx.partition(tree, eqx.is_array)
+
+    # Split each array into a tuple of arrays
+    array_tuples_tree = jt.map(lambda x: _TmpTuple(jnp.moveaxis(x, axis, 0)), array_tree)
+
+    # Transpose the tree to move the tuple to the outside
+    tuple_of_array_trees = jt.transpose(
+        jt.structure(array_tree, is_leaf=is_type(_TmpTuple)),
+        jt.structure(jt.leaves(array_tuples_tree, is_leaf=is_type(_TmpTuple))[0]),
+        array_tuples_tree,
+    )
+
+    # TODO: Maybe there's a way to modify `apply_to_filtered_leaves` to use `jt.map` -- then use it to wrap `tree_unstack`
+    return tuple(eqx.combine(subtree, other) for subtree in tuple_of_array_trees)
+
+
+def _tree_unstack_multi(
+    tree: PyTree[Any, "T"],
+    unstack_spec: Sequence[int] | dict[int, Sequence[Hashable]],
+):
+    # TODO: Unstack one or more array dimensions into PyTree levels; either tuples or dicts (if keys are provided)
+    # TODO: check that `Sequence[Hashable]` has the same length as the respective dimension
+    ...
+
+
+def tree_stack_inner(tree: PyTree, is_leaf: Optional[Callable] = None):
+    """Stacks all the leaves of each first-level subtrees of a PyTree.
+
+    This is particularly useful when we have a PyTree of results of an analysis (i.e. arrays),
+    and we want to aggregate the results over all conditions except the condition indexed by
+    the structure of the outermost level of the PyTree.
+    """
+    subtrees, structure = eqx.tree_flatten_one_level(tree)
+    stacked = [tree_stack(jt.leaves(subtree, is_leaf=is_leaf)) for subtree in subtrees]
+    return jt.unflatten(structure, stacked)
 
 
 def tree_sum_squares(tree: PyTree[Array]) -> ArrayLike:
@@ -436,18 +563,44 @@ def tree_unzip(
 
 def tree_zip(
     *trees: PyTree[Any, "T"],
+    is_leaf=None,
 ) -> PyTree[Tuple[Any, ...], "T"]:
     """Zips a sequence of PyTrees into a PyTree of tuples.
     """
-    return jt.map(lambda *x: x, *trees)
+    return jt.map(lambda *x: x, *trees, is_leaf=is_leaf)
+
+
+def tree_zip_named(
+    is_leaf=None,
+    **trees: PyTree[Any, "T"],
+) -> PyTree[Tuple[Any, ...], "T"]:
+    """Zips a sequence of PyTrees into a PyTree of namedtuples.
+
+    This is more convenient than `tree_zip` when we want to manipulate the zipped tuples
+    as leaves, without worrying whether tuples appear elsewhere in the PyTree structure.
+    """
+    LeafTuple = namedtuple("LeafTuple", trees.keys())
+    zipped = jt.map(lambda *x: LeafTuple(*x), *trees.values(), is_leaf=is_leaf)
+    return zipped, LeafTuple
 
 
 def tree_prefix_expand(prefix: PyTree, tree: PyTree, is_leaf: Optional[Callable] = None):
     """Expands a prefix of a PyTree to have the same structure as the PyTree.
     """
     def expand_leaf(leaf, subtree):
-        return jt.map(lambda _: leaf, subtree)
+        return jt.map(lambda _: leaf, subtree, is_leaf=is_leaf)
     return jt.map(expand_leaf, prefix, tree, is_leaf=is_leaf)
+
+
+def _character_generator():
+    # Generates the infinite sequence of strings: a, b, c, ..., z, aa, ab, ac, ..., az, ba, ...
+    for length in itertools.count(1):
+        for combo in itertools.product(string.ascii_lowercase, repeat=length):
+            yield ''.join(combo)
+
+
+def _n_unique_strs(n):
+    return itertools.islice(_character_generator(), n)
 
 
 def tree_call(
@@ -606,6 +759,20 @@ def tree_labels(
             for label, leaf in zip(labels, leaves)
         ]
     return jt.unflatten(treedef, labels)
+
+
+def tree_key_tuples(
+    tree: PyTree[Any, 'T'],
+    keys_to_strs: bool = False,
+    is_leaf: Optional[Callable[..., bool]] = None,
+) -> PyTree[str, 'T']:
+    leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
+    paths, leaves = zip(*leaves_with_path)
+    if keys_to_strs:
+        leaves = jt.map(_node_key_to_label, paths)
+    else:
+        leaves = paths
+    return jt.unflatten(treedef, leaves)
 
 
 def _equal_or_allclose(a, b, rtol, atol):
