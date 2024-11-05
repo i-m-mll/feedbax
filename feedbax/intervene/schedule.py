@@ -128,7 +128,7 @@ def add_intervenors(
         # Couldn't bind `AbstractIntervenor[StateT, AbstractIntervenorInput]`
         Sequence[AbstractIntervenor],
         Mapping[
-            StageNameStr,
+            Optional[StageNameStr],
             Union[
                 Sequence[AbstractIntervenor],
                 Mapping[IntervenorLabelStr, AbstractIntervenor],
@@ -165,26 +165,17 @@ def add_intervenors(
 
     if isinstance(intervenors, Sequence):
         # If a simple sequence of intervenors is passed, append them to the list of
-        # fixed (unscheduled) intervenors for the specified stage -- or by default, the
-        # pre-first stage.
-
-        if stage_name is None:
-            stage_name = pre_first_stage
-
+        # fixed (unscheduled) intervenors for the specified stage. This may be `None`
+        # but we will replace that with the default stage in a moment.
         intervenors = {stage_name: intervenors}
 
-    if not isinstance(intervenors, Mapping):
-        raise ValueError("intervenors not a sequence or dict of sequences")
-    #     stage_intervenors = existing_intervenors.get(stage_name, {})
+    assert isinstance(intervenors, Mapping), "intervenors not a sequence or dict of sequences"
 
-    #     stage_intervenors |= {
-    #         type(intervenor).__name__: intervenor for intervenor in intervenors
-    #     }
+    intervenors = {
+        pre_first_stage if stage_name is None else stage_name: stage_intervenors
+        for stage_name, stage_intervenors in intervenors.items()
+    }
 
-    #     intervenors_dict = (
-    #         existing_intervenors | {stage_name: stage_intervenors}
-    #     )
-    # elif isinstance(intervenors, Mapping):
     for stage_name in intervenors:
         # Note that in some cases, a stage may appear in `existing_intervenors` but
         # not in `model_spec`; e.g. if we use `eqx.tree_at` to deactivate `add_noise`

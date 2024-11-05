@@ -212,7 +212,7 @@ def tree_take_multi(
 @jax.named_scope("fbx.tree_set")
 def tree_set(
     tree: PyTree[Any | Shaped[Array, "batch *?dims"], "T"],
-    items: PyTree[Any | Shaped[Array, "*?dims"], "T"],
+    values: PyTree[Any | Shaped[Array, "*?dims"], "T"],
     idx: int,
 ) -> PyTree[Any | Shaped[Array, "batch *?dims"], "T"]:
     """Perform an out-of-place update of each array leaf of a PyTree.
@@ -237,10 +237,26 @@ def tree_set(
     """
     arrays = eqx.filter(tree, eqx.is_array)
     vals_update, other_update = eqx.partition(
-        items, jt.map(lambda x: x is not None, arrays)
+        values, jt.map(lambda x: x is not None, arrays)
     )
     arrays_update = jt.map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
     return eqx.combine(arrays_update, other_update)
+
+
+@apply_to_filtered_leaves(eqx.is_array)
+def tree_set_scalar(
+    tree: PyTree[Array, "T"],
+    value: Any,
+    idx: int,
+    axis: int = 0,
+) -> PyTree[Array, "T"]:
+    """Do an out-of-place assignment to the same indices of each array in a PyTree."""
+    def set_value(x):
+        # Create the appropriate index tuple for the given axis
+        idx_tuple = tuple(idx if i == axis else slice(None) for i in range(x.ndim))
+        return x.at[idx_tuple].set(value)
+
+    return jt.map(set_value, tree)
 
 
 def random_split_like_tree(
@@ -295,6 +311,21 @@ def tree_stack(
     return jt.map(lambda *v: jnp.stack(v, axis=axis), *trees)
 
 
+def tree_concatenate(
+    trees: Sequence[PyTree[Array, "T"]],
+    axis: int = 0,
+) -> PyTree[Any, "T"]:
+    """Returns a PyTree whose array leaves concatenate those of the PyTrees in `trees`.
+
+    Arguments:
+        trees: A sequence of PyTrees with the same structure, and whose array
+            leaves have the same shape.
+        axis: The axis along which to stack the array leaves.
+    """
+    # TODO: Filter and combine non-array leaves
+    return jt.map(lambda *v: jnp.concatenate(v, axis=axis), *trees)
+
+
 def make_named_tuple_subclass(name):
     """Returns a trivial subclass of tuple with a different name.
 
@@ -331,15 +362,28 @@ def make_named_dict_subclass(name):
 
     cls = type(name, (dict,), dict(__repr__=__repr__))
 
-    def dict_flatten(d):
-        return unzip2(sorted(d.items()))[::-1]
+    def dict_flatten_with_keys(obj):
+        children = [(jtu.DictKey(k), v) for k, v in obj.items()]
+        # return unzip2(sorted(x.items()))[::-1]
+        return (children, obj.keys())
 
     def dict_unflatten(keys, children):
         return cls(zip(keys, children))
 
-    jtu.register_pytree_node(cls, dict_flatten, dict_unflatten)
+    jtu.register_pytree_with_keys(
+        cls,
+        dict_flatten_with_keys,
+        dict_unflatten,
+    )
 
     return cls
+
+
+TSD = make_named_dict_subclass('TSD')
+
+g: dict[float, eqx.Module] = TSD(dict())
+
+h: tuple = TSD(dict())
 
 
 def move_level_to_outside(tree, level_type):

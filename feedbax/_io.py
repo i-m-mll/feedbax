@@ -56,7 +56,7 @@ def save(
 
     filesize = os.path.getsize(path)
 
-    print(f"Wrote PyTree to {path} ({filesize / 1024 ** 2:.1f} MiB)")
+    logger.info(f"Wrote PyTree to {path} ({filesize / 1024 ** 2:.1f} MiB)")
 
 
 def load(

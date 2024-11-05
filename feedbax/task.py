@@ -59,7 +59,7 @@ from feedbax.loss import (
 )
 from feedbax._mapping import WhereDict
 from feedbax._model import ModelInput
-from feedbax.misc import is_module
+from feedbax.misc import is_module, is_none
 import feedbax.plotly as plot
 from feedbax._staged import AbstractStagedModel
 from feedbax.state import CartesianState, StateT
@@ -74,9 +74,6 @@ logger = logging.getLogger(__name__)
 N_DIM = 2
 
 
-# TODO: Once `target` is specified as a `WhereDict` as well, the only thing
-# that will really change between classes of tasks is `inputs`. In that case,
-# we could just make this `TaskTrialSpec`
 class TaskTrialSpec(Module):
     """Trial specification(s) provided by a task.
 
@@ -120,12 +117,6 @@ class TaskTrialSpec(Module):
             intervene=0,
             extra=0,
         )
-
-
-def trial_end_targets(trial_spec: TaskTrialSpec):
-    # TODO: Infer from `time_idxs` & `data`, for target spec in `trial_spec.targets`
-    # return jax.tree_map(lambda x: x[:, -1], trial_spec.targets)
-    ...
 
 
 class SimpleReachTaskInputs(Module):
@@ -178,6 +169,21 @@ class TaskInterventionSpecs(Module):
     def all(self) -> LabeledInterventionSpecs:
         # Validation specs are assumed to take precedence, in case of conflicts.
         return {**self.training, **self.validation}
+
+
+class TrialSpecDependency(Module):
+    """Wraps functions that depend on a trial specification.
+
+    When defining a subclass of `AbstractTask`, the `TaskTrialSpec` return by `get_train_trial`
+    can be specified with leaves of this type, which will be evaluated before returning the
+    finalized trial specification for training or validation. For example, this allows us to
+    define that certain intervenor params should be provided as model inputs, even though those
+    intervenor params have not yet been generated and placed in the trial specification.
+    """
+    func: Callable[[TaskTrialSpec, PRNGKeyArray], PyTree[Array]]
+
+    def __call__(self, trial_spec: TaskTrialSpec, key: PRNGKeyArray):
+        return self.func(trial_spec, key)
 
 
 class AbstractTask(Module):
@@ -241,7 +247,7 @@ class AbstractTask(Module):
         Arguments:
             key: A random key for generating the trial.
         """
-        key, key_intervene = jr.split(key)
+        key, key_intervene, key_dependencies = jr.split(key, 3)
 
         with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
             trial_spec = self.get_train_trial(key)
@@ -249,31 +255,45 @@ class AbstractTask(Module):
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
             trial_spec,
-            self._intervenor_params(
+            self._get_intervenor_params(
                 self.intervention_specs.training,
                 trial_spec,
                 key_intervene,
             ),
-            is_leaf=lambda x: x is None,
+            is_leaf=is_none,
         )
+
+        trial_spec = self._evaluate_self_dependencies(trial_spec, key_dependencies)
+
         return trial_spec
 
-    def _intervenor_params(
+    def _evaluate_self_dependencies(
+        self,
+        trial_spec: TaskTrialSpec,
+        key: PRNGKeyArray,
+    ) -> TaskTrialSpec:
+        return tree_call(
+            trial_spec,
+            trial_spec,
+            key=key,
+            is_leaf=is_type(Callable),
+        )
+
+    def _get_intervenor_params(
         self,
         intervention_specs: Mapping[IntervenorLabelStr, InterventionSpec],
         trial_spec: TaskTrialSpec,
         key: PRNGKeyArray,
-    ) -> Mapping[IntervenorLabelStr, AbstractIntervenorInput]:
-        """Returns inter"""
+    ) -> TaskTrialSpec:
         spec_intervenor_params = {k: v.intervenor.params for k, v in intervention_specs.items()}
 
         # TODO: Don't repeat `intervene._eval_intervenor_param_spec`
-        # Evaluate any parameters that vary by trial.
+        # Evaluate any parameters that are defined as trial-varying functions
         intervenor_params = tree_call(
             spec_intervenor_params,
             trial_spec,
             key=key,
-            # Treat `TimeSeriesParam`s as leaves, but don't call (unwrap) them yet.
+            # Treat `TimeSeriesParam`s as leaves, and don't call (unwrap) them yet.
             exclude=is_type(TimeSeriesParam),
             is_leaf=is_type(TimeSeriesParam),
         )
@@ -319,27 +339,33 @@ class AbstractTask(Module):
     def validation_trials(self) -> TaskTrialSpec:
         """The set of validation trials associated with the task."""
         key = jr.PRNGKey(self.seed_validation)
+        key_trials, key_dependencies = jr.split(key)
         keys = jr.split(key, self.n_validation_trials)
 
         trial_specs = self.get_validation_trials(key)
+
+        callables, other = eqx.partition(trial_specs, is_type(Callable))
 
         trial_specs = eqx.tree_at(
             lambda x: x.intervene,
             trial_specs,
             eqx.filter_vmap(
-                self._intervenor_params,
+                self._get_intervenor_params,
                 in_axes=(None, trial_specs.batch_axes, 0),
             )(
                 self.intervention_specs.validation,
-                trial_specs,
+                other,
                 keys,
             ),
-            is_leaf=lambda x: x is None,
+            is_leaf=is_none,
         )
+
+        trial_specs = self._evaluate_self_dependencies(trial_specs, key_dependencies)
 
         return trial_specs
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def n_validation_trials(self) -> int:
         """Number of trials in the validation set."""
         ...
@@ -503,9 +529,9 @@ class AbstractTask(Module):
         keys_batch = jr.split(key_batch, batch_size)
         keys_eval = jr.split(key_eval, batch_size)
 
-        trials = jax.vmap(self.get_train_trial_with_intervenor_params)(keys_batch)
+        trial_specs = jax.vmap(self.get_train_trial_with_intervenor_params)(keys_batch)
 
-        states, losses = self.eval_trials(model, trials, keys_eval)
+        states, losses = self.eval_trials(model, trial_specs, keys_eval)
 
         return states, losses, trials
 
@@ -775,6 +801,7 @@ class SimpleReaches(AbstractTask):
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
+    input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
@@ -799,33 +826,8 @@ class SimpleReaches(AbstractTask):
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
             effector_target_state,
         )
-        effector_target = _forceless_task_inputs(effector_target_state)
-        # effector_target = _forceless_task_inputs(
-        #     jax.tree_map(
-        #         lambda x: x[:-1],
-        #         effector_target_state,
-        #     )
-        # )
-        return TaskTrialSpec(
-            inits=WhereDict({
-                (lambda state: state.mechanics.effector): effector_init_state
-            }),
-            inputs=SimpleReachTaskInputs(effector_target=effector_target),
-            # Specify targets that vary trial-by-trial.
-            targets=WhereDict({
-                (lambda state: state.mechanics.effector.pos): (
-                    TargetSpec(effector_target_state.pos, discount=self._pos_discount)
-                ),
-                (lambda state: state.mechanics.effector.vel): {
-                    "Effector final velocity": (
-                        # The `target_final_state` here is redundant with `xabdeef.losses`
-                        # -- but explicit.
-                        TargetSpec(effector_target_state.vel[-1]) & target_final_state
-                        # target_zero & target_final_state
-                    ),
-                },
-            }),
-        )
+
+        return self._construct_trial_spec(effector_init_state, effector_target_state)
 
     @cached_property
     def _pos_discount(self):
@@ -854,32 +856,34 @@ class SimpleReaches(AbstractTask):
             effector_target_states,
         )
 
-        # task_inputs = _forceless_task_inputs(
-        #     jax.tree_map(
-        #         lambda x: x[:, :-1],
-        #         effector_target_states,
-        #     )
-        # )
+        return self._construct_trial_spec(effector_init_states, effector_target_states)
 
+    def _construct_trial_spec(self, effector_init_state, effector_target_state):
         return TaskTrialSpec(
-            inits=WhereDict(
-                {(lambda state: state.mechanics.effector): effector_init_states},
-            ),
-            inputs=SimpleReachTaskInputs(
-                effector_target=_forceless_task_inputs(effector_target_states)
-            ),
-            # target=effector_target_states,
+            inits=WhereDict({
+                (lambda state: state.mechanics.effector): effector_init_state
+            }),
+            inputs=dict(
+                effector_target=_forceless_task_inputs(effector_target_state),
+            ) | self.input_dependencies,
             targets=WhereDict({
                 (lambda state: state.mechanics.effector.pos): (
-                    TargetSpec(effector_target_states.pos, discount=self._pos_discount)
+                    TargetSpec(effector_target_state.pos, discount=self._pos_discount)
                 ),
+                # (lambda state: state.mechanics.effector.vel): {
+                #     "Effector final velocity": (
+                #         # The `target_final_state` here is redundant with `xabdeef.losses`
+                #         # -- but explicit.
+                #         TargetSpec(effector_target_state.vel[-1]) & target_final_state
+                #     ),
+                # },
             }),
         )
 
     @property
     def n_validation_trials(self) -> int:
         """Number of trials in the validation set."""
-        return self.eval_grid_n**2 * self.eval_n_directions
+        return self.eval_n_directions * self.eval_grid_n ** 2
 
     def validation_plots(
         self, states, trial_specs: Optional[TaskTrialSpec] = None
@@ -956,7 +960,7 @@ class DelayedReaches(AbstractTask):
                 {(lambda state: state.mechanics.effector): effector_init_state},
             ),
             inputs=task_inputs,
-            target=effector_target_states,
+            targets=effector_target_states,
             extra=dict(epoch_start_idxs=epoch_start_idxs),
         )
 
@@ -985,7 +989,7 @@ class DelayedReaches(AbstractTask):
                 {(lambda state: state.mechanics.effector): effector_init_states},
             ),
             inputs=task_inputs,
-            target=effector_target_states,
+            targets=effector_target_states,
             extra=dict(epoch_start_idxs=epoch_start_idxs),
         )
 

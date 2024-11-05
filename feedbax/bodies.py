@@ -305,7 +305,7 @@ class SimpleFeedback(AbstractStagedModel[SimpleFeedbackState]):
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
         n_feedback = tree_sum_n_features(example_feedback)
-        example_trial_spec = task.get_train_trial(key=jr.PRNGKey(0))
+        example_trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
         n_task_inputs = tree_sum_n_features(example_trial_spec.inputs)
         return n_feedback + n_task_inputs
 

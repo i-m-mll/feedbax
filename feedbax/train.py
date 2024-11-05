@@ -33,6 +33,7 @@ from feedbax.misc import (
     batched_outer,
     delete_contents,
     exponential_smoothing,
+    is_none,
 )
 from feedbax._model import AbstractModel, ModelInput
 import feedbax.plot as plot
@@ -248,10 +249,12 @@ class TaskTrainer(eqx.Module):
             )
 
         history = init_task_trainer_history(
-            task,
+            task.loss_func,
             n_batches,
             n_replicates,
             ensembled,
+            ensemble_random_trials,
+            task=task,
             save_model_parameters=save_model_parameters,
             save_trial_specs=save_trial_specs,
             batch_size=batch_size,
@@ -336,7 +339,7 @@ class TaskTrainer(eqx.Module):
             )
 
             # We can't simply flatten `model_array_spec` to get `flat_model_array_spec`,
-            # even if we use `is_leaf=lambda x: x is None`.
+            # even if we use `is_leaf=is_none`.
             # model_array_spec = jax.tree_map(
             #     lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
             #     model,
@@ -711,13 +714,14 @@ class TaskTrainer(eqx.Module):
 
 
 def init_task_trainer_history(
-    task: AbstractTask,
+    loss_func: AbstractLoss,
     n_batches: int,
     n_replicates: int,
     ensembled: bool,
     ensemble_random_trials: bool = True,
     save_model_parameters: bool | Int[Array, '_'] = False,
     save_trial_specs: Optional[Int[Array, '_']] = None,
+    task: Optional[AbstractTask] = None,
     batch_size: Optional[int] = None,
     model: Optional[AbstractModel[StateT]] = None,
     where_train: Optional[Callable[[AbstractModel[StateT]], Any]] = None,
@@ -727,7 +731,6 @@ def init_task_trainer_history(
     else:
         batch_dims = (n_batches,)
 
-    loss_func = task.loss_func
     if isinstance(loss_func, CompositeLoss):
         loss_history = LossDict(
             zip(
@@ -746,6 +749,7 @@ def init_task_trainer_history(
         loss_history_validation = jnp.empty(batch_dims)
 
     if save_trial_specs is not None:
+        assert task is not None
         assert batch_size is not None
         if len(save_trial_specs.shape) != 1:
             raise ValueError(
@@ -960,7 +964,7 @@ class HebbianGRUUpdate(eqx.Module):
             lambda model: model.step.net.hidden.weight_hh,
             jax.tree_map(lambda x: None, model),
             weight_hh,
-            is_leaf=lambda x: x is None,
+            is_leaf=is_none,
         )
 
         return update

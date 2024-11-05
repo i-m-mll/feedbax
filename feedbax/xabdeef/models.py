@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 def point_mass_nn(
     task: AbstractTask,
+    n_extra_inputs: int = 0,
     n_steps: int = 100,
     dt: float = 0.05,
     mass: float = 1.0,
@@ -87,7 +88,7 @@ def point_mass_nn(
     # automatically determine network input size
     input_size = SimpleFeedback.get_nn_input_size(
         task, mechanics, feedback_spec=feedback_spec
-    )
+    ) + n_extra_inputs
 
     net = SimpleStagedNetwork(
         input_size,

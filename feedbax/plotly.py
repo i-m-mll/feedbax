@@ -102,7 +102,7 @@ def profile(
 
 
 def profiles(
-    vars: PyTree[Float[Array, "*batch timestep"], "T"],
+    vars_: PyTree[Float[Array, "*batch timestep"], "T"],
     keep_axis: Optional[PyTree[int, "T ..."]] = None,
     mode: Literal["std", "curves"] = "std",
     stride_curves: int = 1,
@@ -129,46 +129,46 @@ def profiles(
         scatter_kws = dict()
 
     if timesteps is None:
-        timesteps = jt.map(lambda x: jnp.arange(x.shape[-1]), vars)
+        timesteps = jt.map(lambda x: np.arange(x.shape[-1]), vars_)
     else:
-        timesteps = tree_prefix_expand(timesteps, vars)
+        timesteps = tree_prefix_expand(timesteps, vars_)
 
     if labels is None:
-        labels = tree_labels(vars)
+        labels = tree_labels(vars_)
 
     batch_axes = jt.map(
         lambda x: tuple(range(x.ndim - 1)),
-        vars,
+        vars_,
     )
     if keep_axis is None:
         mean_axes = batch_axes
     else:
         mean_axes = jt.map(
             lambda axes, axis: tuple(ax for ax in axes if ax != axis),
-            batch_axes, tree_prefix_expand(keep_axis, vars),
+            batch_axes, tree_prefix_expand(keep_axis, vars_),
             is_leaf=lambda x: isinstance(x, tuple) and eqx.is_array_like(x[0]),
         )
 
     means = jt.map(
-        lambda x, axis: jnp.mean(x, axis=axis),
-        vars, mean_axes,
+        lambda x, axis: np.nanmean(x, axis=axis),
+        vars_, mean_axes,
     )
 
     stds = jt.map(
-        lambda x, axis: jnp.std(x, axis=axis),
-        vars, mean_axes,
+        lambda x, axis: np.nanstd(x, axis=axis),
+        vars_, mean_axes,
     )
 
     if keep_axis is None:
         means, stds = jt.map(lambda arr: arr[None, ...], (means, stds))
-        vars_flat = jt.map(lambda x: jnp.reshape(x, (1, -1, x.shape[-1])), vars)
+        vars_flat = jt.map(lambda x: np.reshape(x, (1, -1, x.shape[-1])), vars_)
     else:
         vars_flat = jt.map(
-            lambda x: jnp.reshape(
-                jnp.moveaxis(x, keep_axis, 0),
+            lambda x: np.reshape(
+                np.moveaxis(x, keep_axis, 0),
                 (x.shape[keep_axis], -1, x.shape[-1]),
             ),
-            vars
+            vars_
         )
 
     if colors is None:
@@ -905,34 +905,34 @@ def arr_to_rgb(arr):
 
 
 def adjust_color_brightness(colors, factor=0.8):
-    colors_arr = jnp.array(plc.convert_colors_to_same_type(colors, colortype='tuple')[0])
+    colors_arr = np.array(plc.convert_colors_to_same_type(colors, colortype='tuple')[0])
     return list(map(arr_to_rgb, factor * colors_arr))
 
 
 def trajectories_2D(
     # TODO: could just use tuple but then can't type T
-    vars: PyTree[Float[Array, "*trial time xy=2"], "T"],
+    vars_: PyTree[Float[Array, "*trial time xy=2"], "T"],
     var_labels: Optional[PyTree[str, "T"]] = None,
-    ref_endpoints: Optional[
-        PyTree[tuple[Float[Array, "2 *trial xy=2"]], "T ..."]
-    ] = None,
     var_endpoint_ms: int = 0,
     mean_trajectory_line_width: int = 0,
-    darken_mean: float = 0.8,
+    lighten_mean: float = 0.8,
+    # mode: Literal['curves', 'std'] = 'curves',
+    # n_std: int = 1,
     colors: Optional[Float[Array, "*trial rgb=3"] | str] = None,
-    colorscale: str = "phase",
     colorscale_axis: int = 0,  # Can be any of the trial axes.
-    stride: int = 1,  # controls the stride over the `colorscale_axis` without needing to resize the input `vars` and `legend_labels` etc
+    colorscale: str = "phase",
+    stride: int = 1,  # controls the stride over the `colorscale_axis` without needing to resize the input `vars_` and `legend_labels` etc
+    n_curves_max: int = 50,
     legend_title: Optional[str] = None,
     legend_labels: Optional[Sequence] = None,
-    mode: str = "markers+lines",
+    curves_mode: str = "markers+lines",
     ms: int = 5,
     axes_labels: Optional[tuple[str, str] | PyTree[tuple[str, str], "T"]] = None,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
     **kwargs,
 ):
-    """NEW: Variant of `effector_trajectories` that should be easier to use for different trial/condition settings.
+    """Variant of `effector_trajectories` that should be easier to use for different trial/condition settings.
 
     Allows for multiple trial dimensions. Also allows us to colour the trajectories
     on a given trial dimension (e.g. color by trial vs. by reach direction).
@@ -941,11 +941,25 @@ def trajectories_2D(
     logic. The trace generator just needs a set of array arguments, and returns a list of traces. These can then be
     added to one subplot or other. This could also mean separating (say) the endpoint traces off into a different function.
 
-
+    Arguments:
+        vars_: A PyTree of arrays, each of which define trajectories to be plotted on a separate subplot. Each array may have
+            an arbitrary number of batch dimensions, all but one of which will be lumped together into groups of trajectories,
+            by default.
+        var_labels: The titles of the respective subplots.
+        var_endpoint_ms: If non-zero, make the individual trajectory endpoints visible as markers of this size.
+        mean_trajectory_line_width: If non-zero, show the average of the plotted trajectories for each trajectory group.
+        lighten_mean: Factor by which to lighten (>1) or darken (<1) the color of the mean trajectory line.
+        colors: Manually specify the colors. TODO.
+        colorscale_axis: The axis in the arrays of `vars_` *not* to lump together, and which to color and display as groups
+            on the legend.
+        colorscale: The string name of the Plotly colorscale to use to color the elements of `colorscale_axis`.
+        stride: The stride over the colorscale axis.
+        n_curves_max: The maximum number of curves to plot for each lumped group; if the total exceeds this number, then
+            we randomly sample this many from the group.
     """
     # Assume all trajectory arrays have the same shape; i.e. matching trials between subplots
     # Add singleton dimensions if no trial dimensions are passed.
-    vars_shapes = [v.shape for v in jt.leaves(vars)]
+    vars_shapes = [v.shape for v in jt.leaves(vars_)]
     assert len(set(vars_shapes)) == 1, (
         "All trajectory arrays should have the same shape"
     )
@@ -954,24 +968,24 @@ def trajectories_2D(
         "Trajectory arrays must have at least 2 (time and space) axes!"
     )
     if len(vars_shapes[0]) == 2:
-        vars = jt.map(lambda v: v[None, :], vars)
+        vars_ = jt.map(lambda v: v[None, :], vars_)
 
     if stride != 1:
-        n_colors = jt.leaves(vars)[0].shape[colorscale_axis]
-        idxs = jnp.arange(n_colors)[::stride]
-        vars = tree_take(vars, idxs, colorscale_axis)
+        n_colors = jt.leaves(vars_)[0].shape[colorscale_axis]
+        idxs = np.arange(n_colors)[::stride]
+        vars_ = tree_take(vars_, idxs, colorscale_axis)
 
-    vars_shape = jt.leaves(vars)[0].shape
+    vars_shape = jt.leaves(vars_)[0].shape
+    n_curves = np.prod(vars_shape[:-2]) / vars_shape[colorscale_axis]
     n_trial_axes = len(vars_shape) - 2
 
     if var_labels is None:
-        var_labels = tree_labels(vars)
+        var_labels = tree_labels(vars_)
 
     if legend_title is None:
         legend_title = "Condition"
 
-    var_labels = tree_prefix_expand(var_labels, vars, is_leaf=is_none)
-    ref_endpoints = tree_prefix_expand(ref_endpoints, vars, is_leaf=is_none)
+    var_labels = tree_prefix_expand(var_labels, vars_, is_leaf=is_none)
 
     if scatter_kws is None:
         scatter_kws = {}
@@ -979,22 +993,22 @@ def trajectories_2D(
     if colorscale_axis < 0:
         colorscale_axis += len(vars_shape)
 
-    constant_color_axes = tuple(i for i in range(len(vars_shape[:-2])) if i != colorscale_axis)
+    constant_color_batch_axes = tuple(i for i in range(len(vars_shape[:-2])) if i != colorscale_axis)
 
     # Determine the RGB colours of every point, before plotting.
     if colors is None:
-        color_sequence = jnp.array(
+        color_sequence = np.array(
             sample_colorscale_unique(colorscale, vars_shape[colorscale_axis], colortype='tuple')
         )
         colors, color_idxs = jt.map(
-            lambda x, finalshape: jnp.broadcast_to(
-                jnp.expand_dims(x, constant_color_axes),
+            lambda x, finalshape: np.broadcast_to(
+                np.expand_dims(x, constant_color_batch_axes),
                 vars_shape[:-2] + finalshape,
             ),
-            (color_sequence, jnp.arange(vars_shape[colorscale_axis])), ((3,), ()),
+            (color_sequence, np.arange(vars_shape[colorscale_axis])), ((3,), ()),
         )
         # var_colors, var_color_idxs = jt.map(
-        #     lambda x: jt.map(lambda _: x, vars),
+        #     lambda x: jt.map(lambda _: x, vars_),
         #     (colors, color_idxs),
         # )
     # elif isinstance(colors, str):
@@ -1004,21 +1018,79 @@ def trajectories_2D(
         color_sequence = ()
         color_idxs = None
 
+    # def get_confidence_bounds(x, collapse_axes, confidence=0.68):  # 68% ≈ 1 standard deviation
+    #     from scipy import stats
+
+    #     # Compute mean and standard deviations in x/y directions
+    #     means = np.nanmean(x, axis=collapse_axes)
+    #     stds = np.nanstd(x, axis=collapse_axes)
+
+    #     # Calculate tangent vectors using finite differences
+    #     tangents = np.gradient(means, axis=0)  # shape: (timesteps, 2)
+
+    #     # Normalize tangent vectors
+    #     tangent_norms = np.sqrt(np.sum(tangents**2, axis=-1, keepdims=True))
+    #     tangents = tangents / (tangent_norms + 1e-8)
+
+    #     # Get normal vectors by rotating tangents 90 degrees
+    #     normals = np.stack([-tangents[..., 1], tangents[..., 0]], axis=-1)
+
+    #     # Project x/y deviations onto normal directions
+    #     deviations = stds * normals
+
+    #     # Create bounds
+    #     bounds = np.stack([
+    #         means + deviations,
+    #         means - deviations
+    #     ], axis=-2)
+
+    #     return np.moveaxis(bounds, -2, 1)
+
     # TODO: Don't plot mean trajectories if user manually specifies colors?
     # TODO: Alternatively, get rid of manual specification of colors
-    if mean_trajectory_line_width > 0:
+    if mean_trajectory_line_width > 0: # or mode == "std":
         mean_vars = jt.map(
-            lambda x: jnp.mean(x, axis=constant_color_axes),
-            vars,
+            lambda x: np.nanmean(x, axis=constant_color_batch_axes),
+            vars_,
         )
     else:
         mean_vars = {}
 
-    # Collapse arrays to a single trial dimension, if necessary
-    vars, ref_endpoints, colors, color_idxs = jt.map(
-        lambda x: jnp.reshape(x, (-1, *x.shape[n_trial_axes:])),
-        (vars, ref_endpoints, colors, color_idxs),
+    # if mode == "std":
+    #     # std_vars = jt.map(
+    #     #     lambda x: n_std * np.nanstd(x, axis=constant_color_batch_axes),
+    #     #     vars_,
+    #     # )
+    #     # std_bounds_vars = jt.map(
+    #     #     lambda x, std: (x - std, x + std),
+    #     #     mean_vars, std_vars,
+    #     # )
+    #     all_bounds = jt.map(
+    #         lambda var: get_confidence_bounds(var, constant_color_batch_axes, confidence=0.68),
+    #         vars_,
+    #     )
+    # Collapse all trial axes but `colorscale_axis`, and subsample if necessary
+    vars_, colors, color_idxs = jt.map(
+        lambda x: np.reshape(np.moveaxis(x, colorscale_axis, 0), (vars_shape[colorscale_axis], -1, *x.shape[n_trial_axes:])),
+        (vars_, colors, color_idxs),
     )
+
+    if n_curves > n_curves_max:
+        idxs_sample = np.random.choice(np.arange(n_curves), n_curves_max, replace=False).astype(int)
+        vars_, colors, color_idxs = jt.map(
+            lambda x: x[:, idxs_sample],
+            (vars_, colors, color_idxs),
+        )
+
+    # Collapse into a single trial dimension.
+    vars_, colors, color_idxs = jt.map(
+        lambda x: np.reshape(x, (-1, *x.shape[2:])),
+        (vars_, colors, color_idxs),
+    )
+    # vars_, colors, color_idxs = jt.map(
+    #     lambda x: np.reshape(x, (-1, *x.shape[n_trial_axes:])),
+    #     (vars_, colors, color_idxs),
+    # )
 
     colors_rgb_tuples = arr_to_nested_tuples(colors)
     colors_rgb = jt.map(
@@ -1028,16 +1100,16 @@ def trajectories_2D(
     )
     color_idxs = color_idxs.tolist()
     if legend_labels is None:
-        legend_labels = jnp.arange(vars_shape[colorscale_axis]).tolist()
+        legend_labels = np.arange(vars_shape[colorscale_axis]).tolist()
 
     assert len(legend_labels[::stride]) == vars_shape[colorscale_axis], (
         "Number of legend labels should match size of the `colorscale_axis`"
     )
 
-    ts = jnp.arange(vars[0].shape[-2])
+    ts = np.arange(vars_[0].shape[-2])
 
     subplots_data = jt.leaves(
-        tree_zip(vars, var_labels, ref_endpoints),
+        tree_zip(vars_, var_labels),
         is_leaf=lambda x: isinstance(x, tuple) and isinstance(x[0], Array),
     )
 
@@ -1056,7 +1128,7 @@ def trajectories_2D(
     # if mean trajectories are enabled then those are the ones we'll add (later).
     color_added_to_legend = dict.fromkeys(color_idxs, mean_trajectory_line_width > 0)
 
-    def plot_var(fig, col, var, label, endpoints):
+    def plot_var(fig, col, var, label):
         assert len(var.shape) < 4, "The data shouldn't have this many axes; we reshaped it!"
 
         traces = []
@@ -1075,12 +1147,12 @@ def trajectories_2D(
                 legendgroup=color_idxs[i],  # controls show/hide with other traces
                 x=xy[..., 0],
                 y=xy[..., 1],
-                mode=mode,
+                mode=curves_mode,
                 marker_size=ms,
                 line=dict(
                     color=colors_rgb[i]
                 ),
-                customdata=jnp.concatenate(
+                customdata=np.concatenate(
                     [
                         ts[:, None],
                         np.broadcast_to([[i, legend_labels[::stride][color_idxs[i]]]], (xy.shape[0], 2))
@@ -1108,15 +1180,12 @@ def trajectories_2D(
                 )
                 traces.append(trace)
 
-            if endpoints is not None:
-                # TODO
-                pass
-
         for trace in traces:
             fig.add_trace(trace, row=1, col=col)
 
         return fig
 
+    # if mode == "curves":
     for i, args in enumerate(subplots_data):
         col = i + 1
         fig = plot_var(fig, col, *args)
@@ -1132,15 +1201,40 @@ def trajectories_2D(
                     y=xy[..., 1],
                     mode="lines",
                     line=dict(
-                        color=arr_to_rgb(darken_mean * color_sequence[j]),
+                        color=arr_to_rgb(lighten_mean * color_sequence[j]),
                         width=mean_trajectory_line_width,
                     ),
-                    # customdata=jnp.concatenate(
+                    # customdata=np.concatenate(
                     #     [ts[:, None], np.broadcast_to([[j, color_idxs[j]]], (xy.shape[0], 2))], axis=-1
                     # ),
                     # **scatter_kws,
                 )
                 fig.add_trace(trace, row=1, col=i + 1)
+
+    # if mode == "std":
+    #     for i, std_var in enumerate(all_bounds):
+    #         for j, bounds in enumerate(std_var):
+    #             for k, bound in enumerate(bounds[:1]):
+    #                 trace = go.Scatter(
+    #                     name=legend_labels[::stride][j],
+    #                     showlegend=(i == 0),
+    #                     legendgroup=j,  # controls show/hide with other traces
+    #                     x=bound[..., 0],
+    #                     y=bound[..., 1],
+    #                     # fill="tonexty",
+    #                     mode="lines",
+    #                     line=dict(
+    #                         color=arr_to_rgb(lighten_mean * color_sequence[j]),
+    #                         width=0.75,
+    #                         # dash='dot',
+    #                     ),
+    #                     # customdata=np.concatenate(
+    #                     #     [ts[:, None], np.broadcast_to([[j, color_idxs[j]]], (xy.shape[0], 2))], axis=-1
+    #                     # ),
+    #                     # **scatter_kws,
+    #                 )
+    #                 fig.add_trace(trace, row=1, col=i + 1)
+
 
     fig.for_each_trace(lambda trace: trace.update(
         hovertemplate=(
@@ -1282,8 +1376,8 @@ def plot_eigvals(
     # Plot eigenvalues
     fig.add_trace(
         go.Scatter(
-            x=jnp.real(jnp.ravel(eigvals)),
-            y=jnp.imag(jnp.ravel(eigvals)),
+            x=np.real(np.ravel(eigvals)),
+            y=np.imag(np.ravel(eigvals)),
             mode=mode,
             marker_size=5,
             marker_color=colors,
