@@ -1191,7 +1191,9 @@ def trajectories_2D(
         fig = plot_var(fig, col, *args)
 
     if mean_trajectory_line_width > 0:
+        # Loop over subplots/variables
         for i, mean_var in enumerate(mean_vars):
+            # Loop over train field std.
             for j, xy in enumerate(mean_var):
                 trace = go.Scatter(
                     name=legend_labels[::stride][j],
@@ -1204,9 +1206,13 @@ def trajectories_2D(
                         color=arr_to_rgb(lighten_mean * color_sequence[j]),
                         width=mean_trajectory_line_width,
                     ),
-                    # customdata=np.concatenate(
-                    #     [ts[:, None], np.broadcast_to([[j, color_idxs[j]]], (xy.shape[0], 2))], axis=-1
-                    # ),
+                    customdata=np.concatenate(
+                        [
+                            ts[:, None],
+                            np.broadcast_to([[j, legend_labels[::stride][j]]], (xy.shape[0], 2)),
+                        ],
+                        axis=-1,
+                    ),
                     # **scatter_kws,
                 )
                 fig.add_trace(trace, row=1, col=i + 1)

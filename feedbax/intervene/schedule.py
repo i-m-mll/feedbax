@@ -209,9 +209,9 @@ def add_intervenors(
         if any(
             shared_keys := set(stage_intervenors) & set(stage_intervenors_new)
         ):
-            logger.warning("Intervenors with the following labels were "
-                            "overwritten during call to add_intervenors: "
-                            ", ".join(shared_keys))
+            logger.debug("Intervenors with the following labels were "
+                         "overwritten during call to add_intervenors: "
+                         + ", ".join(shared_keys))
 
         stage_intervenors |= stage_intervenors_new
         intervenors_dict |= {stage_name: stage_intervenors}

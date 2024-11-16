@@ -44,22 +44,22 @@ logger = logging.getLogger(__name__)
 
 # class Layer(Protocol):
 #     def __init__(
-#         self, 
-#         input_size: int, 
-#         hidden_size: int, 
-#         use_bias: bool = True, 
-#         *, 
-#         key: PRNGKeyArray, 
+#         self,
+#         input_size: int,
+#         hidden_size: int,
+#         use_bias: bool = True,
+#         *,
+#         key: PRNGKeyArray,
 #         **kwargs,
 #     ): ...
-    
+
 #     def __call__(
-#         self, 
-#         input: Array, 
-#         state: Array, 
-#         *, 
+#         self,
+#         input: Array,
+#         state: Array,
+#         *,
 #         key: PRNGKeyArray,
-#     ) -> Array: ... 
+#     ) -> Array: ...
 
 
 def orthogonal_gru_cell(
@@ -112,7 +112,7 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         encoder: The module implementing the encoder layer, if present.
         readout: The module implementing the readout layer, if present.
     """
-    
+
     input_size: int
     hidden: Module
     hidden_size: int
@@ -159,15 +159,15 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             passing them to this constructor.
 
         ??? dev-note
-            It is difficult to type check `hidden_type`, since there is no superclass 
+            It is difficult to type check `hidden_type`, since there is no superclass
             for stateful network layers, and protocols do not work with `eqx.Module`.
-            Currently we do not check its signatures, or the signatures of the 
-            callable it returns. This means it is up to the user to supply the right 
+            Currently we do not check its signatures, or the signatures of the
+            callable it returns. This means it is up to the user to supply the right
             kind of class here, which we have to document.
-            
-            Perhaps it is unwise to construct `SimpleStagedNetwork` as it is. 
-            Maybe layers should be kept separate, and individually added by the user. 
-            That would avert the relatively complicated logic in `model_spec`, here.             
+
+            Perhaps it is unwise to construct `SimpleStagedNetwork` as it is.
+            Maybe layers should be kept separate, and individually added by the user.
+            That would avert the relatively complicated logic in `model_spec`, here.
 
         Arguments:
             input_size: The number of input channels in the network.
@@ -403,7 +403,7 @@ class LeakyRNNCell(Module):
     ):
         ihkey, hhkey, bkey = jr.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
-        
+
         if input_size > 0:
             self.weight_ih = jr.uniform(
                 ihkey,
@@ -413,7 +413,7 @@ class LeakyRNNCell(Module):
             )
         else:
             self.weight_ih = jnp.array(0)
-            
+
         self.weight_hh = jr.uniform(
             hhkey,
             (hidden_size, hidden_size),
@@ -510,11 +510,11 @@ def two_layer_linear(
         nonlinearity=nonlinearity,
         key=key,
     )
-    
-    
+
+
 def gru_weight_idxs_func(label: Literal["candidate", "update", "reset"]) -> Callable[[Array], slice]:
     """Returns a function that returns a slice of a subset of the GRU weights.
-    
+
     TODO: Should probably just return a function that returns the subset of weights directly, rather than their indices.
     """
     def gru_weight_idxs(weights):

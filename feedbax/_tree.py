@@ -349,9 +349,6 @@ def make_named_tuple_subclass(name):
     return cls
 
 
-_TmpTuple = make_named_tuple_subclass("_TmpTuple")
-
-
 def make_named_dict_subclass(name):
     """Returns a trivial subclass of dict with a different name.
 
@@ -377,13 +374,6 @@ def make_named_dict_subclass(name):
     )
 
     return cls
-
-
-TSD = make_named_dict_subclass('TSD')
-
-g: dict[float, eqx.Module] = TSD(dict())
-
-h: tuple = TSD(dict())
 
 
 def move_level_to_outside(tree, level_type):
@@ -412,6 +402,9 @@ def move_level_to_outside(tree, level_type):
         jt.unflatten(outer_treedef, elements)
         for elements in transposed_elements
     )
+
+
+_TmpTuple = make_named_tuple_subclass("_TmpTuple")
 
 
 def tree_unstack(
@@ -745,13 +738,13 @@ def tree_labels(
         When `tree` is a flat dict:
 
         ```python
-        tree_keys(tree) == {k: str(k) for k in tree.keys()}
+        tree_labels(tree) == {k: str(k) for k in tree.keys()}
         ```
 
         When `tree` is a flat list:
 
         ```python
-        tree_keys(tree) == [str(i) for i in range(len(tree))]
+        tree_labels(tree) == [str(i) for i in range(len(tree))]
         ```
 
     !!! Example "Verbose `tree_map`"

@@ -17,11 +17,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import jax.random as jr
-from jaxtyping import PyTree
+import jax.tree as jt
+from jaxtyping import Array, PyTree
 import equinox as eqx
-
+import numpy as np
 
 from feedbax.misc import git_commit_id, nested_dict_update
+from feedbax._tree import apply_to_filtered_leaves, is_type
 
 
 logger = logging.getLogger(__name__)
@@ -144,3 +146,9 @@ def _save_with_datetime_and_commit_id(
         hyperparameter_str = json.dumps(hyperparameters)
         f.write((hyperparameter_str + "\n").encode())
         eqx.tree_serialise_leaves(f, tree)
+
+
+@apply_to_filtered_leaves(lambda leaf: is_type(Array, np.ndarray)(leaf))
+def arrays_to_lists(tree: PyTree[Array | np.ndarray]) -> PyTree[list]:
+    """Make JSON serialisable by converting all array leaves to lists."""
+    return jt.map(lambda x: x.tolist(), tree)

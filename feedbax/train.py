@@ -663,7 +663,7 @@ class TaskTrainer(eqx.Module):
             keys_model,
         )
 
-        updates, opt_state = self.optimizer.update(grads, opt_state)
+        updates, opt_state = self.optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
 
         # For updates computed directly from the state, without loss gradient.

@@ -25,6 +25,7 @@ import os
 from pathlib import Path, PosixPath
 from shutil import rmtree
 import subprocess
+import textwrap
 from time import perf_counter
 from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
@@ -250,7 +251,7 @@ def print_trees_side_by_side(tree1, tree2, column_width=60, separator='|'):
         for i in range(max_lines):
             line1 = w1[i] if i < len(w1) else ''
             line2 = w2[i] if i < len(w2) else ''
-            print(f"{line1:<{width}} {separator} {line2:<{width}}")
+            print(f"{line1:<{column_width}} {separator} {line2:<{column_width}}")
 
 
 def unique_generator(
