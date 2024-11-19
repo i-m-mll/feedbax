@@ -402,7 +402,7 @@ class AbstractTask(Module):
             keys,
         )
 
-        losses = self.loss_func(states, trial_specs)
+        losses = self.loss_func(states, trial_specs, model)
 
         return states, losses
 

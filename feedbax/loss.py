@@ -52,6 +52,7 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, PyTree
 
+from feedbax._model import AbstractModel
 from feedbax.misc import get_unique_label, unzip2
 from feedbax._mapping import WhereDict
 from feedbax.state import State
@@ -109,14 +110,16 @@ class AbstractLoss(Module):
         self,
         states: PyTree,
         trial_specs: "TaskTrialSpec",
+        model: AbstractModel,
     ) -> LossDict:
-        return LossDict({self.label: self.term(states, trial_specs)})
+        return LossDict({self.label: self.term(states, trial_specs, model)})
 
     @abstractmethod
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
         """Implement this to calculate a loss term."""
         ...
@@ -285,6 +288,7 @@ class CompositeLoss(AbstractLoss):
         self,
         states: State,
         trial_specs: "TaskTrialSpec",
+        model: AbstractModel,
     ) -> LossDict:
         """Evaluate, weight, and return all component terms.
 
@@ -294,28 +298,34 @@ class CompositeLoss(AbstractLoss):
         """
         # Evaluate all loss terms
         losses = jax.tree_map(
-            lambda loss: loss.term(states, trial_specs),
+            lambda loss: loss.term(states, trial_specs, model),
             self.terms,
             is_leaf=lambda x: isinstance(x, AbstractLoss),
         )
 
-        # aggregate over batch
-        losses = jax.tree_map(lambda x: jnp.mean(x, axis=0), losses)
+        # aggregate over batch for state-based losses
+        losses = jax.tree_map(
+            lambda x: jnp.mean(x, axis=0) if x.ndim > 0 else x,
+            losses,
+        )
 
         if self.weights is not None:
             # term scaling
             losses = jax.tree_map(
-                lambda term, weight: term * weight, dict(losses), self.weights
+                lambda term, weight: term * weight,
+                dict(losses),
+                self.weights,
             )
 
         return LossDict(losses)
 
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
-        return self(states, trial_specs).total
+        return self(states, trial_specs, model).total
 
 # Maybe rename TargetValueSpec; I feel like a "`TargetSpec`" would include a `where` field
 class TargetSpec(Module):
@@ -386,8 +396,9 @@ class TargetStateLoss(AbstractLoss):
 
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
         """
         Arguments:
@@ -398,6 +409,8 @@ class TargetStateLoss(AbstractLoss):
                 This allows `AbstractTask` subclasses to specify trial-by-trial
                 targets, where appropriate.
         """
+        assert states is not None, "TargetStateLoss requires states, but states is None"
+        assert trial_specs is not None, "TargetStateLoss requires trial_specs, but trial_specs is None"
 
         # TODO: Support PyTrees, not just single arrays
         state = self.where(states)[:, 1:]
@@ -453,6 +466,21 @@ effector_vel_loss = TargetStateLoss(
 )
 
 
+class ModelLoss(AbstractLoss):
+    """Wrapper for functions that take a model, and return a scalar."""
+    label: str
+    loss_fn: Callable[[AbstractModel], Array]
+
+    def term(
+        self,
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
+    ) -> Array:
+        assert model is not None, "ModelLoss requires a model, but model is None"
+        return self.loss_fn(model)
+
+
 class EffectorPositionLoss(AbstractLoss):
     label: str = "Effector position"
     discount_func: Callable[[int], Float[Array, "#time"]] = (
@@ -461,9 +489,12 @@ class EffectorPositionLoss(AbstractLoss):
 
     def term(
         self,
-        states: "SimpleFeedbackState",
-        trial_specs: "TaskTrialSpec",
+        states: Optional["SimpleFeedbackState"],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "EffectorPositionLoss requires states"
+        assert trial_specs is not None, "EffectorPositionLoss requires trial_specs"
 
         # Sum over X, Y, giving the squared Euclidean distance
         loss = jnp.sum(
@@ -505,9 +536,12 @@ class EffectorStraightPathLoss(AbstractLoss):
 
     def term(
         self,
-        states: "SimpleFeedbackState",
-        trial_specs: "TaskTrialSpec",
+        states: Optional["SimpleFeedbackState"],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "EffectorStraightPathLoss requires states"
+        assert trial_specs is not None, "EffectorStraightPathLoss requires trial_specs"
 
         effector_pos = states.mechanics.effector.pos
         pos_diff = jnp.diff(effector_pos, axis=1)
@@ -543,9 +577,12 @@ class EffectorFixationLoss(AbstractLoss):
 
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",  # DelayedReachTrialSpec
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "EffectorFixationLoss requires states"
+        assert trial_specs is not None, "EffectorFixationLoss requires trial_specs"
 
         loss = jnp.sum(
             (states.mechanics.effector.pos[:, 1:] - trial_specs.target.pos) ** 2, axis=-1
@@ -576,9 +613,12 @@ class EffectorVelocityLoss(AbstractLoss):
 
     def term(
         self,
-        states: "SimpleFeedbackState",
-        trial_specs: "TaskTrialSpec",
+        states: Optional["SimpleFeedbackState"],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "EffectorVelocityLoss requires states"
+        assert trial_specs is not None, "EffectorVelocityLoss requires trial_specs"
 
         # Sum over X, Y, giving the squared Euclidean distance
         loss = jnp.sum(
@@ -612,9 +652,12 @@ class EffectorFinalVelocityLoss(AbstractLoss):
 
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",
+        states: Optional["SimpleFeedbackState"],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "EffectorFinalVelocityLoss requires states"
+        assert trial_specs is not None, "EffectorFinalVelocityLoss requires trial_specs"
 
         loss = jnp.sum(
             (states.mechanics.effector.vel[:, -1] - trial_specs.target.vel[:, -1]) ** 2,
@@ -635,9 +678,16 @@ class NetworkOutputLoss(AbstractLoss):
 
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",
+        states: Optional["SimpleFeedbackState"],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "NetworkOutputLoss requires states"
+        assert trial_specs is not None, "NetworkOutputLoss requires trial_specs"
+
+        assert states.net.output is not None, (
+            "Cannot calculate NetworkOutputLoss if network output is None"
+        )
 
         # Sum over output channels
         loss = jnp.sum(states.net.output**2, axis=-1)
@@ -659,9 +709,12 @@ class NetworkActivityLoss(AbstractLoss):
 
     def term(
         self,
-        states: PyTree,
-        trial_specs: "TaskTrialSpec",
+        states: Optional["SimpleFeedbackState"],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
     ) -> Array:
+        assert states is not None, "NetworkActivityLoss requires states"
+        assert trial_specs is not None, "NetworkActivityLoss requires trial_specs"
 
         # Sum over hidden units
         loss = jnp.sum(states.net.hidden**2, axis=-1)

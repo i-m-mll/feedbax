@@ -33,6 +33,7 @@ def save(
     path: str | Path,
     tree: PyTree[eqx.Module],
     hyperparameters: Optional[dict] = None,
+    sort_keys: bool = True,
 ) -> None:
     """Save a PyTree to disk along with hyperparameters used to generate it.
 
@@ -50,9 +51,12 @@ def save(
             `setup_func` that were used to generate the PyTree, and upon
             loading, will be used to regenerate an appropriate skeleton to
             populate with the saved values from `tree`.
+        sort_keys: Whether to sort the hyperparameters by key before serialising.
+            This ensures that if we load and reserialise the file, it won't hash
+            differently due to key order changes.
     """
     with open(path, "wb") as f:
-        hyperparameter_str = json.dumps(hyperparameters)
+        hyperparameter_str = json.dumps(hyperparameters, sort_keys=sort_keys)
         f.write((hyperparameter_str + "\n").encode())
         eqx.tree_serialise_leaves(f, tree)
 
@@ -148,6 +152,7 @@ def _save_with_datetime_and_commit_id(
         eqx.tree_serialise_leaves(f, tree)
 
 
+# TODO: Could also process non-array non-builtin datatypes, like `np.int64`
 @apply_to_filtered_leaves(lambda leaf: is_type(Array, np.ndarray)(leaf))
 def arrays_to_lists(tree: PyTree[Array | np.ndarray]) -> PyTree[list]:
     """Make JSON serialisable by converting all array leaves to lists."""

@@ -48,9 +48,19 @@ def eitherf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
     return lambda x: any(f(x) for f in funcs)
 
 
+def everyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
+    """Returns a function that returns the logical intersection of boolean functions."""
+    return lambda x: all(f(x) for f in funcs)
+
+
 def is_type(*types) -> Callable[..., bool]:
     """Returns a function that returns `True` if the input is an instance of any of the given types."""
     return lambda x: any(isinstance(x, t) for t in types)
+
+
+def is_not_type(*types) -> Callable[..., bool]:
+    """Returns a function that returns `True` if the input is not an instance of any of the given types."""
+    return lambda x: not is_type(*types)(x)
 
 
 def apply_to_filtered_leaves(filter_spec, is_leaf=None):
@@ -601,10 +611,11 @@ def tree_unzip(
 def tree_zip(
     *trees: PyTree[Any, "T"],
     is_leaf=None,
+    zip_cls=tuple,
 ) -> PyTree[Tuple[Any, ...], "T"]:
     """Zips a sequence of PyTrees into a PyTree of tuples.
     """
-    return jt.map(lambda *x: x, *trees, is_leaf=is_leaf)
+    return jt.map(lambda *x: zip_cls(x), *trees, is_leaf=is_leaf)
 
 
 def tree_zip_named(

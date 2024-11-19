@@ -137,6 +137,7 @@ class TaskTrainer(eqx.Module):
         n_batches: int,
         batch_size: int,
         where_train: Callable[[AbstractModel[StateT]], Any],
+        # loss_func: Optional[AbstractLoss] = None,
         ensembled: bool = False,
         ensemble_random_trials: bool = True,
         log_step: int = 100,
@@ -220,7 +221,6 @@ class TaskTrainer(eqx.Module):
         if getattr(opt_state, "hyperparams", None) is None:
             logger.debug("Optimizer not wrapped in `optax.inject_hyperparameters`; "
                          "learning rate history will not be returned")
-
 
         if isinstance(save_model_parameters, Array):
             # Convert batch numbers to a full-length Boolean mask over training iterations
@@ -328,7 +328,7 @@ class TaskTrainer(eqx.Module):
                 trial_specs_out_axis = None
 
             in_axes = (
-                None, None, flat_model_arr_spec, None, 0, None, None, None, key_in_axis
+                None, None, None, flat_model_arr_spec, None, 0, None, None, None, key_in_axis
             )
             out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0)
 
@@ -357,7 +357,7 @@ class TaskTrainer(eqx.Module):
 
         # Finish the JIT compilation before the first training iteration.
         # TODO: <https://jax.readthedocs.io/en/latest/aot.html>
-        if not jax.config.jax_disable_jit:
+        if not jax.config.jax_disable_jit:  # type: ignore
             timer = Timer()
 
             with timer:
@@ -368,6 +368,7 @@ class TaskTrainer(eqx.Module):
 
                 train_step(  # doesn't alter model or opt_state
                     task,
+                    task.loss_func,
                     batch_size,
                     flat_model,
                     treedef_model,
@@ -435,6 +436,7 @@ class TaskTrainer(eqx.Module):
             (losses, trial_specs, flat_model, flat_opt_state) = (
                 train_step(
                     task,
+                    task.loss_func,
                     batch_size,
                     flat_model,
                     treedef_model,
@@ -598,6 +600,7 @@ class TaskTrainer(eqx.Module):
     def _train_step(
         self,
         task: AbstractTask,
+        loss_func: AbstractLoss,
         batch_size: int,
         flat_model,
         treedef_model,
@@ -609,7 +612,7 @@ class TaskTrainer(eqx.Module):
     ):
         """Executes a single training step of the model.
 
-        Note that the primary output of `loss_func_wrapped` is tht scalar
+        Note that the primary output of `loss_func_wrapped` is the scalar
         `losses.total`, which is discarded because `losses` is itself returned
         as the auxiliary of `loss_func_wrapped`. This is necessary because
         the gradient is computed with respect to the primary output, but we
@@ -624,8 +627,6 @@ class TaskTrainer(eqx.Module):
 
         TODO:
         - Use a wrapper to make the flatten/unflatten stuff less ugly.
-        - The shape of `opt_state` changes due to `optimizer.update` on the
-          first step only. Why?
         - Typing of arguments. Not sure it's possible to type flattened PyTrees
           appropriately...
         """
@@ -654,7 +655,7 @@ class TaskTrainer(eqx.Module):
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
-            _grad_wrap_task_loss_func(task.loss_func), has_aux=True
+            _grad_wrap_abstract_loss(loss_func), has_aux=True
         )(
             diff_model,
             static_model,
@@ -732,18 +733,13 @@ def init_task_trainer_history(
         batch_dims = (n_batches,)
 
     if isinstance(loss_func, CompositeLoss):
-        loss_history = LossDict(
-            zip(
-                loss_func.weights.keys(),
-                [jnp.empty(batch_dims) for _ in loss_func.weights],
-            )
-        )
-        loss_history_validation = LossDict(
-            zip(
-                loss_func.weights.keys(),
-                [jnp.empty(batch_dims) for _ in loss_func.weights],
-            )
-        )
+        loss_keys = loss_func.weights.keys()
+        n_terms = len(loss_keys)
+        loss_arrays = [
+            jnp.empty(batch_dims) for _ in range(n_terms)
+        ]
+        loss_history = LossDict(zip(loss_keys, loss_arrays))
+        loss_history_validation = LossDict(zip(loss_keys, loss_arrays))
     else:
         loss_history = jnp.empty(batch_dims)
         loss_history_validation = jnp.empty(batch_dims)
@@ -861,7 +857,7 @@ class SimpleTrainer(eqx.Module):
         return model
 
 
-def _grad_wrap_task_loss_func(loss_func: AbstractLoss):
+def _grad_wrap_abstract_loss(loss_func: AbstractLoss):
     """Wraps a task loss function taking state to a `grad`-able one taking a model.
 
     It is convenient to first define the loss function in terms of a
@@ -888,9 +884,7 @@ def _grad_wrap_task_loss_func(loss_func: AbstractLoss):
     @wraps(loss_func)
     def wrapper(
         diff_model: AbstractModel[StateT],
-        static_model: AbstractModel[
-            StateT
-        ],  #! Type is technically not identical to `diff_model`
+        static_model: AbstractModel[StateT],  #! Type is technically not identical to `diff_model`
         trial_specs: TaskTrialSpec,
         init_states: StateT,  #! has a batch dimension
         keys: PRNGKeyArray,  # per trial
@@ -903,7 +897,7 @@ def _grad_wrap_task_loss_func(loss_func: AbstractLoss):
             ModelInput(trial_specs.inputs, trial_specs.intervene), init_states, keys
         )
 
-        losses = loss_func(states, trial_specs)
+        losses = loss_func(states, trial_specs, model)
 
         return losses.total, (losses, states)
 
