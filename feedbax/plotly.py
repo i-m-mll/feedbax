@@ -113,6 +113,7 @@ def profiles(
     colors: Optional[list[str]] = None,
     error_bars_alpha: float = 0.2,
     n_std_plot: int = 1,
+    hline: Optional[dict] = None,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
     curves_kws: Optional[dict] = None,
@@ -176,6 +177,9 @@ def profiles(
 
     colors_rgb: list[str]
     colors_rgb, _ = convert_colors_to_same_type(colors, colortype='rgb')  # type: ignore
+
+    if hline is not None:
+        fig.add_hline(**hline)
 
     def add_profile(fig, label, var_flat, means, ubs, lbs, ts, color) -> go.Figure:
 
@@ -243,7 +247,10 @@ def profiles(
 
         return fig
 
-    plot_data = jt.leaves(tree_zip(vars_flat, means, stds, timesteps, labels), is_leaf=lambda x: isinstance(x, tuple))
+    plot_data = jt.leaves(
+        tree_zip(vars_flat, means, stds, timesteps, labels),
+        is_leaf=lambda x: isinstance(x, tuple),
+    )
 
     for i, (var_flat, means, stds, ts, label) in enumerate(plot_data):
         fig = add_profile(

@@ -535,6 +535,7 @@ def tree_map_tqdm(
     f: Callable[..., S],
     tree: PyTree[Any, "T"],
     *rest: PyTree[Any, "T"],
+    label: Optional[str] = None,
     labels: Optional[PyTree[str, "T"]] = None,
     verbose: bool = False,
     is_leaf: Optional[Callable[..., bool]] = None,
@@ -545,12 +546,14 @@ def tree_map_tqdm(
         f: The function to map over the tree.
         tree: The PyTree to map over.
         *rest: Additional arguments to `f`, as PyTrees with the same structure as `tree`.
+        label: A single label to be displayed irrespective of the leaf being processed.
+            Overridden by `labels`.
         labels: A PyTree of labels for the leaves of `tree`, to be displayed on the
             progress bar.
         is_leaf: A function that returns `True` for leaves of `tree`.
     """
     n_leaves = len(jt.leaves(tree, is_leaf=is_leaf))
-    pbar = _tqdm(total=n_leaves)
+    pbar = _tqdm(total=n_leaves, desc=label)
     def _f(leaf, label, *rest):
         if label is not None:
             pbar.set_description(f"Processing leaf: {label}")

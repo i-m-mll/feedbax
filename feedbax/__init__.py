@@ -33,6 +33,7 @@ from feedbax._tree import (
     move_level_to_outside,
     tree_array_bytes,
     tree_call,
+    tree_concatenate,
     tree_infer_batch_size,
     tree_key_tuples,
     tree_labels,
