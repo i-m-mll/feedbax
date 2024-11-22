@@ -26,7 +26,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.intervene import AbstractIntervenor, AbstractIntervenorInput, is_intervenor
-from feedbax.misc import StrAlwaysLT, get_unique_label, is_module
+from feedbax.misc import BatchInfo, StrAlwaysLT, get_unique_label, is_module
 from feedbax._model import AbstractModel
 from feedbax.state import StateT
 from feedbax._tree import tree_call
@@ -244,6 +244,7 @@ def is_timeseries_param(x):
 def _eval_intervenor_param_spec(
     intervention_spec: InterventionSpec,
     trial_spec, #: TaskTrialSpec,
+    batch_info: BatchInfo,
     key: PRNGKeyArray,
 ):
     # Unwrap any `TimeSeriesParam` instances:
@@ -252,6 +253,7 @@ def _eval_intervenor_param_spec(
         tree_call(
             intervention_spec.intervenor.params,
             trial_spec,
+            batch_info,
             key=key,
             # Don't unwrap `TimeSeriesParam`s yet:
             exclude=is_timeseries_param,
@@ -290,7 +292,7 @@ def schedule_intervenor(
             models,
             lambda model: model.step.mechanics,
             CurlField.with_params(
-                amplitude=lambda trial_spec, *, key: jr.normal(key, (1,)),
+                amplitude=lambda trial_spec, batch_info, *, key: jr.normal(key, (1,)),
                 active=True,
             ),
             ...
@@ -426,7 +428,8 @@ def schedule_intervenor(
     task_example = jax.tree_leaves(
         tasks, is_leaf=is_module  # AbstractTask
     )[0]
-    trial_spec_example = task_example.get_train_trial(key_example)
+    batch_info_example = BatchInfo(size=0, current=0, total=0)
+    trial_spec_example = task_example.get_train_trial(key_example, batch_info_example)
     intervenor_defaults = eqx.tree_at(
         lambda intervenor: intervenor.params,
         intervenor,
@@ -434,6 +437,7 @@ def schedule_intervenor(
             # Prefer the validation parameters, if they exist.
             (intervention_specs | intervention_specs_validation)[label],
             trial_spec_example,
+            batch_info_example,
             key_example,
         )
     )

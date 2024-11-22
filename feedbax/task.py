@@ -59,7 +59,7 @@ from feedbax.loss import (
 )
 from feedbax._mapping import WhereDict
 from feedbax._model import ModelInput
-from feedbax.misc import is_module, is_none
+from feedbax.misc import BatchInfo, is_module, is_none
 import feedbax.plotly as plot
 from feedbax._staged import AbstractStagedModel
 from feedbax.state import CartesianState, StateT
@@ -229,6 +229,7 @@ class AbstractTask(Module):
     def get_train_trial(
         self,
         key: PRNGKeyArray,
+        batch_info: Optional[BatchInfo] = None,
     ) -> TaskTrialSpec:
         """Return a single training trial specification.
 
@@ -241,6 +242,7 @@ class AbstractTask(Module):
     def get_train_trial_with_intervenor_params(
         self,
         key: PRNGKeyArray,
+        batch_info: Optional[BatchInfo] = None,
     ) -> TaskTrialSpec:
         """Return a single training trial specification, including intervention parameters.
 
@@ -250,7 +252,7 @@ class AbstractTask(Module):
         key, key_intervene, key_dependencies = jr.split(key, 3)
 
         with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
-            trial_spec = self.get_train_trial(key)
+            trial_spec = self.get_train_trial(key, batch_info)
 
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
@@ -259,6 +261,7 @@ class AbstractTask(Module):
                 self.intervention_specs.training,
                 trial_spec,
                 key_intervene,
+                batch_info,
             ),
             is_leaf=is_none,
         )
@@ -284,6 +287,7 @@ class AbstractTask(Module):
         intervention_specs: Mapping[IntervenorLabelStr, InterventionSpec],
         trial_spec: TaskTrialSpec,
         key: PRNGKeyArray,
+        batch_info: Optional[BatchInfo] = None,
     ) -> TaskTrialSpec:
         spec_intervenor_params = {k: v.intervenor.params for k, v in intervention_specs.items()}
 
@@ -292,6 +296,7 @@ class AbstractTask(Module):
         intervenor_params = tree_call(
             spec_intervenor_params,
             trial_spec,
+            batch_info,
             key=key,
             # Treat `TimeSeriesParam`s as leaves, and don't call (unwrap) them yet.
             exclude=is_type(TimeSeriesParam),
@@ -351,11 +356,12 @@ class AbstractTask(Module):
             trial_specs,
             eqx.filter_vmap(
                 self._get_intervenor_params,
-                in_axes=(None, trial_specs.batch_axes, 0),
+                in_axes=(None, trial_specs.batch_axes, 0, None),
             )(
                 self.intervention_specs.validation,
                 other,
                 keys,
+                BatchInfo(size=self.n_validation_trials, current=0, total=0),
             ),
             is_leaf=is_none,
         )
@@ -510,14 +516,14 @@ class AbstractTask(Module):
     def eval_train_batch(
         self,
         model: "AbstractModel[StateT]",
-        batch_size: int,
+        batch_info: BatchInfo,
         key: PRNGKeyArray,
     ) -> Tuple[StateT, LossDict, TaskTrialSpec]:
         """Evaluate a model on a single batch of training trials.
 
         Arguments:
             model: The model to evaluate.
-            batch_size: The number of trials in the batch.
+            batch_info: Information about the training batch.
             key: For providing randomness during model evaluation.
 
         Returns:
@@ -526,10 +532,15 @@ class AbstractTask(Module):
             The trial specifications for the batch.
         """
         key_batch, key_eval = jr.split(key)
-        keys_batch = jr.split(key_batch, batch_size)
-        keys_eval = jr.split(key_eval, batch_size)
+        keys_batch = jr.split(key_batch, batch_info.size)
+        keys_eval = jr.split(key_eval, batch_info.size)
 
-        trial_specs = jax.vmap(self.get_train_trial_with_intervenor_params)(keys_batch)
+        trial_specs = jax.vmap(
+            partial(
+                self.get_train_trial_with_intervenor_params,
+                batch_info=batch_info,
+            )
+        )(keys_batch)
 
         states, losses = self.eval_trials(model, trial_specs, keys_eval)
 
@@ -540,7 +551,7 @@ class AbstractTask(Module):
         self,
         models: "AbstractModel[StateT]",
         n_replicates: int,
-        batch_size: int,
+        batch_info: BatchInfo,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
     ) -> Tuple[StateT, LossDict, TaskTrialSpec]:
@@ -549,7 +560,7 @@ class AbstractTask(Module):
         Arguments:
             models: The ensemble of models to evaluate.
             n_replicates: The number of models in the ensemble.
-            batch_size: The number of trials in the batch to evaluate.
+            batch_info: Information about the training batch.
             key: For providing randomness during model evaluation.
             ensemble_random_trials: If `False`, each model in the ensemble will be
                 evaluated on the same set of trials.
@@ -565,9 +576,9 @@ class AbstractTask(Module):
             is_leaf=lambda x: isinstance(x, AbstractIntervenor),
         )
 
-        def evaluate_single(model_arrays, model_other, batch_size, key):
+        def evaluate_single(model_arrays, model_other, batch_info, key):
             model = eqx.combine(model_arrays, model_other)
-            return self.eval_train_batch(model, batch_size, key)
+            return self.eval_train_batch(model, batch_info, key)
 
         if ensemble_random_trials:
             key = jr.split(key, n_replicates)
@@ -576,7 +587,7 @@ class AbstractTask(Module):
             key_in_axis = None
 
         return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, key_in_axis))(
-            models_arrays, models_other, batch_size, key
+            models_arrays, models_other, batch_info, key
         )
 
     @eqx.filter_jit
@@ -806,7 +817,7 @@ class SimpleReaches(AbstractTask):
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
 
-    def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
+    def get_train_trial(self, key: PRNGKeyArray, batch_info: Optional[BatchInfo] = None) -> TaskTrialSpec:
         """Random reach endpoints across the rectangular workspace.
 
         Arguments:
@@ -937,7 +948,7 @@ class DelayedReaches(AbstractTask):
     seed_validation: int = 5555
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
-    def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
+    def get_train_trial(self, key: PRNGKeyArray, batch_info: Optional[BatchInfo] = None) -> TaskTrialSpec:
         """Random reach endpoints across the rectangular workspace.
 
         Arguments:
@@ -1049,7 +1060,7 @@ class Stabilization(AbstractTask):
     # )
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
 
-    def get_train_trial(self, key: PRNGKeyArray) -> TaskTrialSpec:
+    def get_train_trial(self, key: PRNGKeyArray, batch_info: Optional[BatchInfo] = None) -> TaskTrialSpec:
         """Random reach endpoints in a 2D rectangular workspace."""
 
         points = uniform_tuples(key, n=1, bounds=self.workspace)

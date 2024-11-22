@@ -5,15 +5,14 @@
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from functools import wraps
+from functools import partial, wraps
 import logging
 from pathlib import Path
 import sys
-from typing import Any, Literal, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple, TypeAlias
 
 import equinox as eqx
 from equinox import field
-from feedbax.nn import NetworkState
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -24,10 +23,10 @@ import optax  # type: ignore
 from tensorboardX import SummaryWriter  # type: ignore
 
 from feedbax import loss
-from feedbax._progress import _tqdm, _tqdm_write
 from feedbax.intervene import AbstractIntervenor
 from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
 from feedbax.misc import (
+    BatchInfo,
     Timer,
     TqdmLoggingHandler,
     batched_outer,
@@ -36,7 +35,9 @@ from feedbax.misc import (
     is_none,
 )
 from feedbax._model import AbstractModel, ModelInput
+from feedbax.nn import NetworkState
 import feedbax.plot as plot
+from feedbax._progress import _tqdm, _tqdm_write
 from feedbax.state import StateT
 from feedbax.task import AbstractTask, TaskTrialSpec
 from feedbax._tree import (
@@ -52,6 +53,9 @@ LOSS_FMT = ".2e"
 
 logger = logging.getLogger(__name__)
 logger.addHandler(TqdmLoggingHandler())
+
+
+WhereFunc: TypeAlias = Callable[[AbstractModel[StateT]], Any]
 
 
 class TaskTrainerHistory(eqx.Module):
@@ -136,8 +140,9 @@ class TaskTrainer(eqx.Module):
         model: AbstractModel[StateT],
         n_batches: int,
         batch_size: int,
-        where_train: Callable[[AbstractModel[StateT]], Any],
-        idx_init: int = 0,
+        where_train: WhereFunc,
+        where_train_updates: Optional[dict[int, WhereFunc]] = None,
+        idx_start: int = 0,
         opt_state: Optional[optax.OptState] = None,
         loss_func: Optional[AbstractLoss] = None,
         ensembled: bool = False,
@@ -174,7 +179,9 @@ class TaskTrainer(eqx.Module):
             n_batches: The number of batches of trials to train on.
             batch_size: The number of trials in each batch.
             where_train: Selects the arrays from the model PyTree to be trained.
-            idx_init: Starting index for training iterations. Useful when we are
+            where_train_updates: Updated specification(s) of `where_train` to be
+                used starting at the iterations indicated by their integer keys.
+            idx_start: Starting index for training iterations. Useful when we are
                 restarting from a previous run and want to specify certain other
                 arguments (e.g. `save_model_parameters`) in terms of the overall
                 training iteration, rather than the iteration within the sub-run.
@@ -218,7 +225,20 @@ class TaskTrainer(eqx.Module):
             run_label: For labeling the progress bar, if it is enabled.
             key: The random key.
         """
-        idx_end = idx_init + n_batches
+        idx_end = idx_start + n_batches
+
+        if where_train_updates is not None:
+            # Convert global iterations to local iterations for this training run
+            where_train_updates_local = {
+                k - idx_start: v
+                for k, v in where_train_updates.items()
+                if idx_start <= k < idx_end
+            }
+            # If there's an update at the start of this run, use it instead of where_train
+            if 0 in where_train_local:
+                where_train = where_train_updates_local[0]
+        else:
+            where_train_updates_local = {}
 
         where_train_spec = filter_spec_leaves(model, where_train)
 
@@ -260,7 +280,7 @@ class TaskTrainer(eqx.Module):
                 jnp.zeros(idx_end, dtype=bool).at[save_model_parameters].set(True)
             )
             save_steps = save_model_parameters[
-                (save_model_parameters >= idx_init) & (save_model_parameters < idx_end)
+                (save_model_parameters >= idx_start) & (save_model_parameters < idx_end)
             ]
             # Associate batch numbers with indices to preallocated history array
             save_model_parameters_idxs = dict(zip(
@@ -283,14 +303,13 @@ class TaskTrainer(eqx.Module):
                 idx_end, save_trial_specs, dtype=bool
             )
 
-
         history = init_task_trainer_history(
             loss_func,
             idx_end,
             n_replicates,
             ensembled,
             ensemble_random_trials=ensemble_random_trials,
-            start_batch=idx_init,
+            start_batch=idx_start,
             task=task,
             save_model_parameters=save_model_parameters,
             save_trial_specs=save_trial_specs,
@@ -299,7 +318,7 @@ class TaskTrainer(eqx.Module):
             where_train=where_train,
         )
 
-        start_batch = idx_init  # except when we load a checkpoint
+        start_batch = idx_start  # except when we load a checkpoint
 
         if restore_checkpoint:
             # TODO: should also restore opt_state, learning_rates...
@@ -365,7 +384,7 @@ class TaskTrainer(eqx.Module):
                 trial_specs_out_axis = None
 
             in_axes = (
-                None, None, None, None, flat_model_arr_spec, None, 0, None, None, None, key_in_axis
+                None, None, None, flat_model_arr_spec, None, 0, None, None, None, key_in_axis
             )
             out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0)
 
@@ -406,8 +425,7 @@ class TaskTrainer(eqx.Module):
                 train_step(  # doesn't alter model or opt_state
                     task,
                     loss_func,
-                    jnp.array(0),
-                    batch_size,
+                    BatchInfo(size=batch_size, start=jnp.array(0), current=jnp.array(0), total=jnp.array(1)),
                     flat_model,
                     treedef_model,
                     flat_opt_state,
@@ -429,7 +447,7 @@ class TaskTrainer(eqx.Module):
 
         log_batches_mask = np.zeros(idx_end, dtype=bool)
         log_batches = np.linspace(
-            idx_init, idx_end, n_batches // log_step, endpoint=False, dtype=int
+            idx_start, idx_end, n_batches // log_step, endpoint=False, dtype=int
         )
         # Could also use `np.in1d` to do this out-of-place, but it's slightly slower
         log_batches_mask[log_batches] = True
@@ -448,6 +466,14 @@ class TaskTrainer(eqx.Module):
             disable=disable_tqdm,
         ):
             key_train, key_eval = jr.split(keys[batch], 2)
+
+            if batch - idx_start in where_train_updates_local:
+                where_train_func = where_train_updates_local[batch - idx_start]
+                where_train_spec = filter_spec_leaves(model, where_train_func)
+                model = jt.unflatten(treedef_model, flat_model)
+                opt_state = self.optimizer.init(get_model_parameters(model))
+                flat_opt_state, treedef_opt_state = jt.tree_flatten(opt_state)
+
 
             if batch in state_reset_iterations:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
@@ -476,12 +502,17 @@ class TaskTrainer(eqx.Module):
                 if b
             ]
 
+            batch_info = BatchInfo(
+                size=batch_size,
+                start=idx_start,
+                current=batch,
+                total=idx_end,
+            )
             (losses, trial_specs, flat_model, flat_opt_state) = (
                 train_step(
                     task,
                     loss_func,
-                    batch,
-                    batch_size,
+                    batch_info,
                     flat_model,
                     treedef_model,
                     flat_opt_state,
@@ -506,7 +537,7 @@ class TaskTrainer(eqx.Module):
             history = eqx.tree_at(
                 lambda history: history.loss,
                 history,
-                tree_set(history.loss, losses, batch - idx_init),
+                tree_set(history.loss, losses, batch - idx_start),
             )
 
             if (hyperparams := getattr(opt_state, "hyperparams", None)) is not None:
@@ -514,7 +545,7 @@ class TaskTrainer(eqx.Module):
                 history = eqx.tree_at(
                     lambda history: history.learning_rate,
                     history,
-                    history.learning_rate.at[batch - idx_init].set(hyperparams["learning_rate"]),
+                    history.learning_rate.at[batch - idx_start].set(hyperparams["learning_rate"]),
                 )
 
 
@@ -645,8 +676,7 @@ class TaskTrainer(eqx.Module):
         self,
         task: AbstractTask,
         loss_func: AbstractLoss,
-        batch: Array,
-        batch_size: int,  # TODO: should be array
+        batch_info: BatchInfo,
         flat_model,
         treedef_model,
         flat_opt_state,
@@ -676,11 +706,16 @@ class TaskTrainer(eqx.Module):
           appropriately...
         """
         key_trials, key_init, key_model = jr.split(key, 3)
-        keys_trials = jr.split(key_trials, batch_size)
-        keys_init = jr.split(key_init, batch_size)
-        keys_model = jr.split(key_model, batch_size)
+        keys_trials = jr.split(key_trials, batch_info.size)
+        keys_init = jr.split(key_init, batch_info.size)
+        keys_model = jr.split(key_model, batch_info.size)
 
-        trial_specs = eqx.filter_vmap(task.get_train_trial_with_intervenor_params)(keys_trials)
+        trial_specs = eqx.filter_vmap(
+            partial(
+                task.get_train_trial_with_intervenor_params,
+                batch_info=batch_info,
+            )
+        )(keys_trials)
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
 

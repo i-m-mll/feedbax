@@ -114,6 +114,20 @@ class StrAlwaysLT(str):
     #     return self.replace("'", "")
 
 
+class BatchInfo(eqx.Module):
+    size: int
+    current: int
+    total: int
+    start: int = 0
+
+    @property
+    def progress(self) -> float:
+        return self.current / self.total
+
+    @property
+    def run_progress(self) -> float:
+        return (self.current - self.start) / (self.total - self.start)
+
 
 def delete_contents(path: Union[str, Path]):
     """Delete all subdirectories and files of `path`."""

@@ -114,7 +114,6 @@ def load_with_hyperparameters(
         elif missing_hyperparameters is not None:
             hyperparameters = nested_dict_update(missing_hyperparameters, hyperparameters)
         tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
-        eqx.tree_pprint(tree)
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
     return tree, hyperparameters
