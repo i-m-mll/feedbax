@@ -16,13 +16,14 @@ from equinox import field
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree as jt
 import jax.tree_util as jtu
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 import numpy as np
 import optax  # type: ignore
 from tensorboardX import SummaryWriter  # type: ignore
 
-from feedbax import loss
+from feedbax import is_module, is_type, loss
 from feedbax.intervene import AbstractIntervenor
 from feedbax.loss import AbstractLoss, CompositeLoss, LossDict
 from feedbax.misc import (
@@ -75,6 +76,25 @@ class TaskTrainerHistory(eqx.Module):
     learning_rate: Optional[Array] = None
     model_parameters: Optional[AbstractModel] = None
     trial_specs: dict[int, TaskTrialSpec] = field(default_factory=dict)
+
+
+def get_model_parameters(model, where_train_spec):
+    return eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
+
+
+def update_opt_state(new, old, where_train_spec):
+    """After re-initializing the `opt_state`, keep the optimizer state for parameters still being trained."""
+    opt_state_flat, treedef = jt.flatten(new, is_leaf=is_type(AbstractModel))
+    opt_state_flat_old = jt.leaves(old, is_leaf=is_type(AbstractModel))
+    opt_state_flat_new = [
+        eqx.combine(
+            # Replace the new, empty opt state with the old one, where relevant
+            eqx.filter(old, where_train_spec),
+            new,
+        ) if isinstance(new, AbstractModel) else new
+        for new, old in zip(opt_state_flat, opt_state_flat_old)
+    ]
+    return jt.unflatten(treedef, opt_state_flat_new)
 
 
 class TaskTrainer(eqx.Module):
@@ -140,8 +160,7 @@ class TaskTrainer(eqx.Module):
         model: AbstractModel[StateT],
         n_batches: int,
         batch_size: int,
-        where_train: WhereFunc,
-        where_train_updates: Optional[dict[int, WhereFunc]] = None,
+        where_train: WhereFunc | dict[int, WhereFunc],
         idx_start: int = 0,
         opt_state: Optional[optax.OptState] = None,
         loss_func: Optional[AbstractLoss] = None,
@@ -178,9 +197,9 @@ class TaskTrainer(eqx.Module):
             model: The model—or, vmapped batch/ensemble of models—to train.
             n_batches: The number of batches of trials to train on.
             batch_size: The number of trials in each batch.
-            where_train: Selects the arrays from the model PyTree to be trained.
-            where_train_updates: Updated specification(s) of `where_train` to be
-                used starting at the iterations indicated by their integer keys.
+            where_train: Selects the parameter arrays from the model PyTree to be
+                trained. May be a dict whose integer keys indicate which (global)
+                iteration to start training that subset of model parameters.
             idx_start: Starting index for training iterations. Useful when we are
                 restarting from a previous run and want to specify certain other
                 arguments (e.g. `save_model_parameters`) in terms of the overall
@@ -227,25 +246,27 @@ class TaskTrainer(eqx.Module):
         """
         idx_end = idx_start + n_batches
 
-        if where_train_updates is not None:
+        if isinstance(where_train, dict):
+            if 0 not in where_train:
+                raise ValueError(
+                    "If where_train is a dict, it must contain an entry for iteration 0"
+                )
             # Convert global iterations to local iterations for this training run
-            where_train_updates_local = {
+            where_train_local = {
                 k - idx_start: v
-                for k, v in where_train_updates.items()
+                for k, v in where_train.items()
                 if idx_start <= k < idx_end
             }
-            # If there's an update at the start of this run, use it instead of where_train
-            if 0 in where_train_local:
-                where_train = where_train_updates_local[0]
+            # Find the most recent update before or at the start of this run
+            most_recent_update = max(k for k in where_train.keys() if k <= idx_start)
+            where_train_func = where_train[most_recent_update]
         else:
-            where_train_updates_local = {}
+            where_train_local = {}
+            where_train_func = where_train
 
-        where_train_spec = filter_spec_leaves(model, where_train)
+        where_train_spec = filter_spec_leaves(model, where_train_func)
 
-        def get_model_parameters(model):
-            return eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
-
-        model_parameters = get_model_parameters(model)
+        model_parameters = get_model_parameters(model, where_train_spec)
 
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
@@ -467,17 +488,22 @@ class TaskTrainer(eqx.Module):
         ):
             key_train, key_eval = jr.split(keys[batch], 2)
 
-            if batch - idx_start in where_train_updates_local:
-                where_train_func = where_train_updates_local[batch - idx_start]
+            batch_local = int(batch - idx_start)
+
+            if batch_local in where_train_local:
+                where_train_func = where_train_local[batch_local]
                 where_train_spec = filter_spec_leaves(model, where_train_func)
                 model = jt.unflatten(treedef_model, flat_model)
-                opt_state = self.optimizer.init(get_model_parameters(model))
-                flat_opt_state, treedef_opt_state = jt.tree_flatten(opt_state)
+                opt_state_old = opt_state
+                opt_state_init = init_opt_state(get_model_parameters(model, where_train_spec))
+                # Keep the `opt_state` for any parameters that remain trained
+                opt_state = update_opt_state(opt_state_init, opt_state_old, where_train_spec)
 
+                flat_opt_state, treedef_opt_state = jt.flatten(opt_state)
 
             if batch in state_reset_iterations:
                 model = jtu.tree_unflatten(treedef_model, flat_model)
-                opt_state = init_opt_state(get_model_parameters(model))
+                opt_state = init_opt_state(get_model_parameters(model, where_train_spec))
                 flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
 
             # Save parameters at the start of batch
@@ -794,6 +820,26 @@ class TaskTrainer(eqx.Module):
         return chkpt_path, last_batch, model, opt_state, history
 
 
+def _get_trainable_params_superset(
+    model: AbstractModel[StateT],
+    where_train: WhereFunc | dict[int, WhereFunc],
+) -> PyTree[bool]:
+    """Get a boolean mask for all parameters that are trainable at any point."""
+    if isinstance(where_train, dict):
+        # Combine all where_train specs with logical OR
+        specs = [
+            filter_spec_leaves(model, where_func)
+            for where_func in where_train.values()
+        ]
+        return jax.tree_map(
+            lambda *xs: any(x for x in xs if x is not None),
+            *specs,
+            is_leaf=lambda x: x is None,
+        )
+    else:
+        return filter_spec_leaves(model, where_train)
+
+
 def init_task_trainer_history(
     loss_func: AbstractLoss,
     n_batches: int,
@@ -807,7 +853,7 @@ def init_task_trainer_history(
     loss_func_validation: Optional[AbstractLoss] = None,
     batch_size: Optional[int] = None,
     model: Optional[AbstractModel[StateT]] = None,
-    where_train: Optional[Callable[[AbstractModel[StateT]], Any]] = None,
+    where_train: Optional[WhereFunc | dict[int, WhereFunc]] = None,
 ):
     if ensembled:
         batch_dims = (n_batches - start_batch, n_replicates)
@@ -869,7 +915,7 @@ def init_task_trainer_history(
     if not save_model_parameters is False:
         assert model is not None
         assert where_train is not None
-        where_train_spec = filter_spec_leaves(model, where_train)
+        where_train_spec = _get_trainable_params_superset(model, where_train)
         model_parameters = eqx.filter(eqx.filter(model, where_train_spec), eqx.is_array)
 
         if isinstance(save_model_parameters, Array):
@@ -885,14 +931,14 @@ def init_task_trainer_history(
             n_save_steps = save_steps.shape[0]
             model_train_history = jax.tree_map(
                 lambda x: (
-                    jnp.empty((n_save_steps,) + x.shape)
+                    jnp.full((n_save_steps,) + x.shape, jnp.nan)
                     if eqx.is_array(x) else x
                 ),
                 model_parameters,
             )
         else:
             model_train_history = jax.tree_map(
-                lambda x: jnp.empty((n_batches - start_batch,) + x.shape) if eqx.is_array(x) else x,
+                lambda x: jnp.full((n_batches - start_batch,) + x.shape, jnp.nan) if eqx.is_array(x) else x,
                 model_parameters,
             )
     else:
