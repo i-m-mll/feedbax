@@ -27,6 +27,7 @@ from shutil import rmtree
 import subprocess
 import textwrap
 from time import perf_counter
+from types import ModuleType
 from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
 
 import equinox as eqx
@@ -143,16 +144,22 @@ def _dirname_of_this_module():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def git_commit_id(path: Optional[str | PosixPath] = None) -> str:
+def git_commit_id(
+    path: Optional[str | PosixPath] = None,
+    module: Optional[ModuleType] = None,
+) -> str:
     """Get the ID of the currently checked-out commit in the repo at `path`.
 
-    If no `path` is given, returns the commit ID for the repo containing this
-    module.
+    If no `path` or `module` is given, returns the commit ID for the repo
+    containing this function definition.
 
     Derived from <https://stackoverflow.com/a/57683700>
     """
     if path is None:
-        path = _dirname_of_this_module()
+        if module is None:
+            path = _dirname_of_this_module()
+        else:
+            path = Path(module.__file__).absolute().parent
 
     commit_id = (
         subprocess.check_output(["git", "describe", "--always"], cwd=path)

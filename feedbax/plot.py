@@ -1325,7 +1325,7 @@ def evenly_spaced_points(
     cumulative_arc_length = jnp.cumsum(
         jnp.pad(
             # Integrate each segment
-            jax.vmap(jnp.trapezoid)(
+            eqx.filter_vmap(jnp.trapezoid)(
                 jnp.stack([arc_length[:-1], arc_length[1:]], axis=1),
                 jnp.stack([x[:-1], x[1:]], axis=1),
             ),

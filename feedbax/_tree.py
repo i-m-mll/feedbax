@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-def eitherf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
+def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
     """Returns a function that returns the logical union of boolean functions.
 
     This is useful when we want to satisfy any of a number of `is_leaf`-like conditions
@@ -43,14 +43,19 @@ def eitherf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
 
         `is_leaf=lambda x: is_module(x) or eqx.is_array(x)`
 
-    becomes `is_leaf=eitherf(is_module, eqx.is_array)`.
+    becomes `is_leaf=anyf(is_module, eqx.is_array)`.
     """
-    return lambda x: any(f(x) for f in funcs)
+    return lambda *args, **kwargs: any(f(*args, **kwargs) for f in funcs)
 
 
-def everyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
+def allf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
     """Returns a function that returns the logical intersection of boolean functions."""
-    return lambda x: all(f(x) for f in funcs)
+    return lambda *args, **kwargs: all(f(*args, **kwargs) for f in funcs)
+
+
+def notf(func: Callable[..., bool]) -> Callable[..., bool]:
+    """Returns a function that returns the negation of the input function."""
+    return lambda *args, **kwargs: not func(*args, **kwargs)
 
 
 def is_type(*types) -> Callable[..., bool]:
@@ -63,8 +68,11 @@ def is_not_type(*types) -> Callable[..., bool]:
     return lambda x: not is_type(*types)(x)
 
 
-def apply_to_filtered_leaves(filter_spec, is_leaf=None):
+def apply_to_filtered_leaves(filter_spec=None, is_leaf=None):
     """Returns a decorator that ensures a function only operates on tree leaves satisfying `filter_spec`."""
+    if filter_spec is None:
+        filter_spec = lambda x: True
+
     def decorator(func: Callable):
         @functools.wraps(func)
         def wrapper(tree: PyTree, *args, **kwargs):
@@ -590,6 +598,7 @@ def tree_map_unzip(
 
 def tree_unzip(
     tree: PyTree[Tuple[Any, ...], "T"],
+    tuple_cls: type = tuple,
 ) -> Tuple[PyTree[Any, "T"], ...]:
     """Unzips a PyTree of tuples into a tuple of PyTrees.
 
@@ -603,12 +612,16 @@ def tree_unzip(
 
     !!! Warning
         If the PyTree itself is a tuple, this returns the tree unchanged.
+
+    !!! Dev
+        We could partition into tuple and non-tuple elements, and only unzip the
+        tuple elements.
     """
-    tree_flat, treedef = jt.flatten(tree, is_leaf=lambda x: isinstance(x, tuple))
-    if any(not isinstance(x, tuple) for x in tree_flat):
+    tree_flat, treedef = jt.flatten(tree, is_leaf=lambda x: isinstance(x, tuple_cls))
+    if any(not isinstance(x, tuple_cls) for x in tree_flat):
         raise ValueError("The input pytree is not flattenable to tuples")
     tree_flat_unzipped = zip(*tree_flat)
-    return tuple(jt.unflatten(treedef, x) for x in tree_flat_unzipped)
+    return tuple_cls(jt.unflatten(treedef, x) for x in tree_flat_unzipped)
 
 
 def tree_zip(

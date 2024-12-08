@@ -70,7 +70,6 @@ class PointMass(AbstractSkeleton[CartesianState]):
     def _lti_system(self) -> LTISystem:
         return LTISystem(self.A, self.B, self.C)
 
-
     def vector_field(
         self, t: Scalar, state: CartesianState, input: Float[Array, "input"]
     ) -> CartesianState:

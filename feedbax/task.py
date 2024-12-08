@@ -466,7 +466,6 @@ class AbstractTask(Module):
             ensemble_random_trials: If `False`, each model in the ensemble will be
                 evaluated on the same set of trials.
         """
-        # TODO: Why not just use `eqx.filter_vmap`? It should handle the array partitioning.
         models_arrays, models_other = eqx.partition(
             models,
             eqx.is_array,
@@ -1169,7 +1168,7 @@ def centreout_endpoints(
     angle_offset: float = 0,
 ) -> Float[Array, "2 n_directions 2"]:
     """Segment endpoints starting in the centre and ending equally spaced on a circle."""
-    angles = jnp.linspace(0, 2 * np.pi, n_directions + 1)[:-1]
+    angles = jnp.linspace(0, 2 * jnp.pi, n_directions + 1)[:-1]
     angles = angles + angle_offset
 
     starts = jnp.tile(center, (n_directions, 1))

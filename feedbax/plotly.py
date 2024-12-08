@@ -1361,30 +1361,46 @@ def plot_eigvals(
     eigvals: Float[Array, "batch eigvals"],
     colors: str | Sequence[str] | None = None,
     colorscale: str = 'phase',
+    labels: Optional[Sequence[Optional[str]]] = None,
     mode: str = 'markers',
+    marker_size: int = 5,
     fig: Optional[go.Figure] = None,
+    layout_kws: Optional[dict] = None,
     **kwargs,
 ):
     """Plot eigenvalues inside a unit circle with dashed axes."""
     if fig is None:
-        fig = go.Figure(layout=dict(width=1000, height=1000))
+        fig = go.Figure(
+            layout=dict(
+                yaxis=dict(scaleanchor="x", scaleratio=1),
+            )
+        )
 
     if colors is not None:
         if isinstance(colors, str):
             pass
-        elif len(colors) != np.prod(eigvals.shape):
-            colors = np.repeat(np.array(colors), eigvals.shape[1])
+        elif len(colors) == np.prod(eigvals.shape):
+            pass
+        elif len(colors) == eigvals.shape[0]:
+            colors = np.repeat(
+                np.array(colors),
+                np.prod(eigvals.shape[1:]),
+            )
 
     # Add a unit circle
     fig.add_shape(
         type='circle',
         xref='x', yref='y',
         x0=-1, y0=-1, x1=1, y1=1,
+        line_color='black',
     )
 
     # Add dashed axes lines
     fig.add_hline(0, line_dash='dot', line_color='grey')
     fig.add_vline(0, line_dash='dot', line_color='grey')
+
+    if labels is None:
+        labels = [None] * len(eigvals)
 
     # Plot eigenvalues
     fig.add_trace(
@@ -1392,11 +1408,16 @@ def plot_eigvals(
             x=np.real(np.ravel(eigvals)),
             y=np.imag(np.ravel(eigvals)),
             mode=mode,
-            marker_size=5,
+            marker_size=marker_size,
             marker_color=colors,
             marker_colorscale=colorscale,
             **kwargs,
         )
     )
 
+    if layout_kws is not None:
+        fig.update_layout(layout_kws)
+
     return fig
+
+
