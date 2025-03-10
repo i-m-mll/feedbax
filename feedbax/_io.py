@@ -34,6 +34,7 @@ def save(
     tree: PyTree[eqx.Module],
     hyperparameters: Optional[dict] = None,
     sort_keys: bool = True,
+    dump_func: Callable = lambda hps: json.dumps(hps, sort_keys=sort_keys),
 ) -> None:
     """Save a PyTree to disk along with hyperparameters used to generate it.
 
@@ -56,7 +57,12 @@ def save(
             differently due to key order changes.
     """
     with open(path, "wb") as f:
-        hyperparameter_str = json.dumps(hyperparameters, sort_keys=sort_keys)
+        try:
+            hyperparameter_str = dump_func(hyperparameters)
+        except TypeError as e:
+            from rnns_learn_robust_motor_policies.tree_utils import pp
+            pp(hyperparameters)
+            raise(e)
         f.write((hyperparameter_str + "\n").encode())
         eqx.tree_serialise_leaves(f, tree)
 
@@ -113,7 +119,12 @@ def load_with_hyperparameters(
             hyperparameters = dict()
         elif missing_hyperparameters is not None:
             hyperparameters = nested_dict_update(missing_hyperparameters, hyperparameters)
-        tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
+        try:
+            tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
+        except TypeError as e:
+            from rnns_learn_robust_motor_policies.tree_utils import pp
+            pp(hyperparameters)
+            raise e
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
     return tree, hyperparameters

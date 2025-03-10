@@ -60,8 +60,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-
 class AbstractIntervenorInput(Module):
     """Base class for PyTrees of intervention parameters.
 
@@ -93,7 +91,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
             to replace the original with the altered state. On the other hand, an
             additive intervenor would use the equivalent of `lambda x, y: x + y`.
     """
-    
+
     params: AbstractVar[InputT]
     in_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "T"]]]
     out_where: AbstractVar[Callable[[StateT], PyTree[ArrayLike, "S"]]]
@@ -115,7 +113,7 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
         param_fields = [f.name for f in fields(param_cls)]
 
         return cls(
-            param_cls(**{k: v for k, v in kwargs.items() if k in param_fields}),
+            param_cls(**{k: v for k, v in kwargs.items() if k in param_fields}),  # type: ignore
             **{k: v for k, v in kwargs.items() if k not in param_fields},
         )
 
@@ -173,20 +171,20 @@ class AbstractIntervenor(Module, Generic[StateT, InputT]):
         key: PRNGKeyArray,
     ) -> PyTree[ArrayLike, "S"]:
         """Transforms the input substate to produce an altered output substate."""
-        ... 
+        ...
 
 
 class CurlFieldParams(AbstractIntervenorInput):
     """Parameters for a curl force field.
 
     Attributes:
-        scale: Scaling factor on the intervenor output.  
+        scale: Scaling factor on the intervenor output.
         active: Whether the force field is active.
         amplitude: The amplitude of the force field. Negative is clockwise, positive
             is counterclockwise.
     """
     scale: float = 1.0
-    amplitude: float = 0.0
+    amplitude: float = 1.0
     active: bool = True
 
 
@@ -228,8 +226,9 @@ class FixedFieldParams(AbstractIntervenorInput):
         amplitude: The scale of the force field.
         active: Whether the force field is active.
     """
-    
+
     scale: float = 1.0
+    amplitude: float = 1.0
     field: Float[Array, "ndim=2"] = field(default_factory=lambda: jnp.array([0.0, 0.0]))
     active: bool = True
 
@@ -262,7 +261,7 @@ class FixedField(AbstractIntervenor["MechanicsState", FixedFieldParams]):
         key: PRNGKeyArray,
     ) -> Float[Array, "ndim=2"]:
         """Return the scaled force."""
-        return params.field
+        return params.amplitude * params.field
 
 
 class AddNoiseParams(AbstractIntervenorInput):

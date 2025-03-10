@@ -78,7 +78,9 @@ def apply_to_filtered_leaves(filter_spec=None, is_leaf=None):
         def wrapper(tree: PyTree, *args, **kwargs):
             filtered, other = eqx.partition(tree, filter_spec, is_leaf=is_leaf)
             updated = func(filtered, *args, **kwargs)
-            return eqx.combine(updated, other, is_leaf=is_leaf)
+
+            #? `other` comes first because leaves may have become subtrees in `updated`
+            return eqx.combine(other, updated, is_leaf=is_leaf)
 
         return wrapper
     return decorator
@@ -117,22 +119,22 @@ def tree_index(tree: PyTree[Any, "T"], index: int) -> PyTree[Any, "T"]:
 def get_ensemble(
     func: Callable[..., PyTree[Any, "S"]],
     *args: Any,
-    n_ensemble: int,
+    n: int,
     key: PRNGKeyArray,
     **kwargs: Any,
 ) -> PyTree[Any, "S"]:
-    """Vmap a function over a set of random keys.
+    """Vmap a function over `n` random keys.
 
     Arguments:
         func: A function that returns a PyTree, and whose final keyword argument
             is `key: PRNGKeyArray`.
-        n_ensemble: The number of keys to split; i.e. the size of the batch
+        n: The number of keys to split; i.e. the size of the batch
             dimensions in the array leaves of the returned PyTree.
         *args: The positional arguments to `func`.
         key: The key to split to perform the vmap.
         **kwargs: The keyword arguments to `func`.
     """
-    keys = jr.split(key, n_ensemble)
+    keys = jr.split(key, n)
     func_ = lambda key: func(*args, **kwargs, key=key)
     return eqx.filter_vmap(func_)(keys)
 
@@ -325,7 +327,6 @@ def tree_stack(
             leaves have the same shape.
         axis: The axis along which to stack the array leaves.
     """
-    # TODO: Filter and combine non-array leaves
     return jt.map(lambda *v: jnp.stack(v, axis=axis), *trees)
 
 
@@ -367,6 +368,7 @@ def make_named_tuple_subclass(name):
     return cls
 
 
+# TODO: Also `make_named_ns_subclass` for `TreeNamespace`?
 def make_named_dict_subclass(name):
     """Returns a trivial subclass of dict with a different name.
 
@@ -397,6 +399,9 @@ def make_named_dict_subclass(name):
 def move_level_to_outside(tree, level_type):
     """Move a level with the given type to the outside of the tree.
 
+    Assumes that all nodes at each level of the tree, up to the level
+    moved outwards, have the same structure as their siblings.
+
     This can be used similarly to `tree_transpose`, in some cases.
     However it is particularly useful for trees with multiple nested
     levels, where we only want to move one of the levels outwards,
@@ -408,18 +413,36 @@ def move_level_to_outside(tree, level_type):
     move_level_to_outside(a, list)
     >>> [((1,2), (5,6)), ((3,4), (7,8))]
     ```
-
-    Written with the help of Claude 3.5 Sonnet.
     """
-    outer_treedef = jt.structure(
-        jt.map(lambda x: 0, tree, is_leaf=is_type(level_type))
-    )
-    leaves = jt.leaves(tree, is_leaf=is_type(level_type))
-    transposed_elements = zip(*(tuple(t) for t in leaves))
-    return level_type(
-        jt.unflatten(outer_treedef, elements)
-        for elements in transposed_elements
-    )
+    leveldefs = ()
+    subtree = tree
+    children = [True]  # TODO
+    leaf_type = None
+
+    while any(children):
+        children, sublevel_def = eqx.tree_flatten_one_level(subtree)
+        parent_type = sublevel_def.node_data()[0]
+        if level_type is parent_type:
+            leveldefs = (sublevel_def,) + leveldefs
+            leaf_type = type(children[0])
+            arity = sublevel_def.num_leaves
+            break
+        leveldefs = leveldefs + (sublevel_def,)
+        subtree = children[0]
+
+    if leaf_type is None:
+        return tree
+
+    new_treedef = functools.reduce(lambda def1, def2: def1.compose(def2), leveldefs)
+
+    leaves = jt.leaves(tree, is_leaf=is_type(leaf_type))
+    new_leaves = [
+        x for xs in
+        [leaves[i::arity] for i in range(arity)]
+        for x in xs
+    ]
+
+    return jt.unflatten(new_treedef, new_leaves)
 
 
 _TmpTuple = make_named_tuple_subclass("_TmpTuple")
@@ -648,6 +671,16 @@ def tree_zip_named(
     return zipped, LeafTuple
 
 
+def tree_zip_flat(
+    *trees: PyTree[Any, "T"],
+    is_leaf=None,
+) -> PyTree[Tuple[Any, ...], "T"]:
+    """Returns an iterator over the `n`-tuples of matching leaves from `n` PyTrees.
+    """
+    trees_flat = [jt.flatten(tree, is_leaf=is_leaf) for tree in trees]
+    return zip(*trees_flat)
+
+
 def tree_prefix_expand(prefix: PyTree, tree: PyTree, is_leaf: Optional[Callable] = None):
     """Expands a prefix of a PyTree to have the same structure as the PyTree.
     """
@@ -702,6 +735,42 @@ def tree_call(
     return eqx.combine(callables_values, other_values, is_leaf=is_leaf)
 
 
+def tree_call_with_keys(
+    tree: PyTree[Any, "T"],
+    *args: Any,
+    key: PRNGKeyArray,
+    exclude: Callable = lambda _: False,
+    is_leaf: Optional[Callable] = None,
+    **kwargs: Any,
+) -> PyTree[Any, "T"]:
+    """Returns a tree of the return values of a PyTree's callable leaves.
+
+    !!! Note ""
+        Every callable leaf is passed the same `*args, **kwargs`.
+
+        Non-callable leaves, callable leaves that satisfy `exclude`, are passed through
+        as-is.
+
+    Arguments:
+        tree: Any PyTree.
+        *args: Positional arguments to pass to each callable leaf.
+        exclude: A function that returns `True` for any callable leaf that
+            should not be called.
+        **kwargs: Keyword arguments to pass to each callable leaf.
+    """
+    callables, other_values = eqx.partition(
+        tree,
+        lambda x: isinstance(x, Callable) and not exclude(x),
+        is_leaf=is_leaf,
+    )
+    callables_values = jt.map(
+        lambda x, key: x(*args, **kwargs, key=key),
+        callables, random_split_like_tree(key, callables, is_leaf=is_leaf),
+        is_leaf=is_leaf,
+    )
+    return eqx.combine(callables_values, other_values, is_leaf=is_leaf)
+
+
 def tree_array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     """Returns the total bytes of memory over all array leaves of a PyTree.
 
@@ -721,8 +790,6 @@ def tree_array_bytes(tree: PyTree, duplicates: bool = False) -> int:
     array_bytes_int_leaves = [x for x in jt.leaves(array_bytes) if x is not None]
     return sum(array_bytes_int_leaves)
 
-
-
 def tree_struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
     """Returns the total bytes of memory implied by a PyTree of `ShapeDtypeStruct`s."""
     structs = eqx.filter(tree, lambda x: isinstance(x, jax.ShapeDtypeStruct))
@@ -733,23 +800,23 @@ def tree_struct_bytes(tree: PyTree[jax.ShapeDtypeStruct]) -> int:
 BuiltInKeyEntry = Union[jtu.DictKey, jtu.SequenceKey, jtu.GetAttrKey, jtu.FlattenedIndexKey]
 
 
-def _node_key_to_label(node_key: BuiltInKeyEntry) -> str:
+def _node_key_to_value(node_key: BuiltInKeyEntry) -> Any:
     if isinstance(node_key, jtu.DictKey):
-        label = str(node_key.key)
+        value = node_key.key
     elif isinstance(node_key, jtu.SequenceKey):
-        label = str(node_key.idx)
+        value = node_key.idx
     elif isinstance(node_key, jtu.GetAttrKey):
-        label = str(node_key.name)
+        value = node_key.name
     elif isinstance(node_key, jtu.FlattenedIndexKey):
-        label = str(node_key.key)
+        value = node_key.key
     else:
         raise ValueError(f"Unknown PyTree node key type: {type(node_key)}")
-    return label
+    return value
 
 
 def _path_to_label(path: Sequence[BuiltInKeyEntry], join_with: str) -> str:
     # TODO: format based on key type; e.g. f"[{idx}]" for SequenceKey
-    return join_with.join(map(_node_key_to_label, path))
+    return join_with.join(map(lambda k: str(_node_key_to_value(k)), path))
 
 
 def tree_labels(
@@ -833,7 +900,7 @@ def tree_key_tuples(
     leaves_with_path, treedef = jtu.tree_flatten_with_path(tree, is_leaf=is_leaf)
     paths, leaves = zip(*leaves_with_path)
     if keys_to_strs:
-        leaves = jt.map(_node_key_to_label, paths)
+        leaves = jt.map(lambda k: str(_node_key_to_value(k)), paths)
     else:
         leaves = paths
     return jt.unflatten(treedef, leaves)

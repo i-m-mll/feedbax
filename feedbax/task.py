@@ -63,7 +63,7 @@ from feedbax.misc import BatchInfo, is_module, is_none
 import feedbax.plotly as plot
 from feedbax._staged import AbstractStagedModel
 from feedbax.state import CartesianState, StateT
-from feedbax._tree import is_type, tree_call
+from feedbax._tree import is_type, tree_call, tree_call_with_keys
 
 if TYPE_CHECKING:
     from feedbax._model import AbstractModel
@@ -293,7 +293,7 @@ class AbstractTask(Module):
 
         # TODO: Don't repeat `intervene._eval_intervenor_param_spec`
         # Evaluate any parameters that are defined as trial-varying functions
-        intervenor_params = tree_call(
+        intervenor_params = tree_call_with_keys(
             spec_intervenor_params,
             trial_spec,
             batch_info,
@@ -708,8 +708,6 @@ class AbstractTask(Module):
 
     #     return task
 
-
-
 def _pos_only_states(positions: Float[Array, "... ndim=2"]):
     """Construct Cartesian init and target states with zero force and velocity."""
     velocities = jnp.zeros_like(positions)
@@ -845,8 +843,9 @@ class SimpleReaches(AbstractTask):
 
     def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
         """Center-out reach sets in a grid across the rectangular workspace.
+
+        This doesn't generate intervention params, and they are empty in the returned spec.
         """
-        #! This doesn't generate intervention params!
 
         effector_pos_endpoints = _centerout_endpoints_grid(
             self.workspace,

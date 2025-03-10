@@ -165,7 +165,7 @@ def point_mass_nn_simple_reaches(
             hidden_size=hidden_size,
             hidden_type=hidden_type,
             feedback_delay_steps=feedback_delay_steps,
-            n_ensemble=n_replicates,
+            n=n_replicates,
             key=key,
         )
         ensembled = True

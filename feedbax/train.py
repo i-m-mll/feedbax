@@ -34,6 +34,7 @@ from feedbax.misc import (
     delete_contents,
     exponential_smoothing,
     is_none,
+    unkwargkey,
 )
 from feedbax._model import AbstractModel, ModelInput
 from feedbax.nn import NetworkState
@@ -53,7 +54,9 @@ LOSS_FMT = ".2e"
 
 
 logger = logging.getLogger(__name__)
-logger.addHandler(TqdmLoggingHandler())
+
+# logger_tqdm = logging.getLogger(__name__)
+# logger_tqdm.addHandler(TqdmLoggingHandler())
 
 
 WhereFunc: TypeAlias = Callable[[AbstractModel[StateT]], Any]
@@ -273,7 +276,7 @@ class TaskTrainer(eqx.Module):
             n_replicates = tree_infer_batch_size(
                 model, exclude=lambda x: isinstance(x, AbstractIntervenor)
             )
-            init_opt_state = jax.vmap(self.optimizer.init)
+            init_opt_state = eqx.filter_vmap(self.optimizer.init)
         else:
             # Unlikely to be used for anything, due to ensembled operations being in
             # conditionals. Make the type checker happy.
@@ -745,7 +748,7 @@ class TaskTrainer(eqx.Module):
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
 
-        init_states = jax.vmap(model.init)(key=keys_init)
+        init_states = eqx.filter_vmap(unkwargkey(model.init))(keys_init)
 
         for where_substate, init_substates in trial_specs.inits.items():
             init_states = eqx.tree_at(
@@ -754,7 +757,7 @@ class TaskTrainer(eqx.Module):
                 init_substates,
             )
 
-        init_states = jax.vmap(model.step.state_consistency_update)(init_states)
+        init_states = eqx.filter_vmap(model.step.state_consistency_update)(init_states)
 
         diff_model, static_model = eqx.partition(model, where_train_spec)
 
@@ -1036,7 +1039,7 @@ def _grad_wrap_abstract_loss(loss_func: AbstractLoss):
         model = eqx.combine(diff_model, static_model)
 
         # ? will `in_axes` ever change?
-        states: StateT = jax.vmap(model)(
+        states: StateT = eqx.filter_vmap(model)(
             ModelInput(trial_specs.inputs, trial_specs.intervene), init_states, keys
         )
 

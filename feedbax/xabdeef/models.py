@@ -38,6 +38,7 @@ def point_mass_nn(
     n_steps: int = 100,
     dt: float = 0.05,
     mass: float = 1.0,
+    damping: float = 0.0,
     encoding_size: Optional[int] = None,
     hidden_size: int = 50,
     hidden_type: type[eqx.Module] = eqx.nn.GRUCell,
@@ -45,7 +46,6 @@ def point_mass_nn(
     feedback_delay_steps: int = 0,
     feedback_noise_std: float = 0.025,
     motor_noise_std: float = 0.025,  # TODO
-    velocity_damping: float = 0,
     *,
     key: PRNGKeyArray,
 ):
@@ -57,6 +57,7 @@ def point_mass_nn(
         n_steps: The number of time steps in each trial.
         dt: The duration of each time step.
         mass: The mass of the point mass.
+        damping: The drag coefficient for the point mass.
         encoding_size: The size of the neural network's encoding layer.
             If `None`, no encoding layer is used.
         hidden_size: The number of units in the network's hidden layer.
@@ -73,7 +74,7 @@ def point_mass_nn(
     """
     key1, key2 = jr.split(key)
 
-    system = PointMass(mass=mass, damping=velocity_damping)
+    system = PointMass(mass=mass, damping=damping)
     mechanics = Mechanics(DirectForceInput(system), dt)
 
     feedback_spec = dict(

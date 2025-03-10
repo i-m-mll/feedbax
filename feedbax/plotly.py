@@ -469,12 +469,12 @@ def activity_heatmap(
 
 def activity_sample_units(
     activities: Float[Array, "*trial time unit"],
-    n_samples: int,
+    n_samples: int = 4,
     unit_includes: Optional[Sequence[int]] = None,
     colors: Optional[list[str]] = None,
     row_height: int = 150,
     layout_kws: Optional[dict] = None,
-    trial_label: str = "Trial",
+    trial_label: str = "Trial",  # TODO: Rename
     *,
     key: PRNGKeyArray,
     **kwargs,
@@ -929,7 +929,7 @@ def trajectories_2D(
     colorscale_axis: int = 0,  # Can be any of the trial axes.
     colorscale: str = "phase",
     stride: int = 1,  # controls the stride over the `colorscale_axis` without needing to resize the input `vars_` and `legend_labels` etc
-    n_curves_max: int = 50,
+    n_curves_max: Optional[int] = None,
     legend_title: Optional[str] = None,
     legend_labels: Optional[Sequence] = None,
     curves_mode: str = "markers+lines",
@@ -937,6 +937,7 @@ def trajectories_2D(
     axes_labels: Optional[tuple[str, str] | PyTree[tuple[str, str], "T"]] = None,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
+    mean_exclude_axes: Sequence[int] = (),
     **kwargs,
 ):
     """Variant of `effector_trajectories` that should be easier to use for different trial/condition settings.
@@ -963,6 +964,9 @@ def trajectories_2D(
         stride: The stride over the colorscale axis.
         n_curves_max: The maximum number of curves to plot for each lumped group; if the total exceeds this number, then
             we randomly sample this many from the group.
+        mean_exclude_axes: Sequence of axes to exclude from the mean calculation when calculating mean trajectories.
+            This allows you to preserve certain batch dimensions in the mean trajectories, which can be useful
+            for showing multiple mean trajectories per color group.
     """
     # Assume all trajectory arrays have the same shape; i.e. matching trials between subplots
     # Add singleton dimensions if no trial dimensions are passed.
@@ -983,7 +987,7 @@ def trajectories_2D(
         vars_ = tree_take(vars_, idxs, colorscale_axis)
 
     vars_shape = jt.leaves(vars_)[0].shape
-    n_curves = np.prod(vars_shape[:-2]) / vars_shape[colorscale_axis]
+    n_curves = np.prod(vars_shape[:-2]) // vars_shape[colorscale_axis]
     n_trial_axes = len(vars_shape) - 2
 
     if var_labels is None:
@@ -1000,7 +1004,15 @@ def trajectories_2D(
     if colorscale_axis < 0:
         colorscale_axis += len(vars_shape)
 
-    constant_color_batch_axes = tuple(i for i in range(len(vars_shape[:-2])) if i != colorscale_axis)
+    # Convert colorscale_axis to positive index if negative
+    full_ndim = len(vars_shape)
+    colorscale_axis_pos = colorscale_axis if colorscale_axis >= 0 else full_ndim + colorscale_axis
+
+    # Ensure colorscale_axis is within batch dimensions (not time or xy)
+    if colorscale_axis_pos >= full_ndim - 2:
+        raise ValueError(f"colorscale_axis {colorscale_axis} points to a non-batch dimension")
+
+    constant_color_batch_axes = tuple(i for i in range(len(vars_shape[:-2])) if i != colorscale_axis_pos)
 
     # Determine the RGB colours of every point, before plotting.
     if colors is None:
@@ -1025,64 +1037,70 @@ def trajectories_2D(
         color_sequence = ()
         color_idxs = None
 
-    # def get_confidence_bounds(x, collapse_axes, confidence=0.68):  # 68% ≈ 1 standard deviation
-    #     from scipy import stats
-
-    #     # Compute mean and standard deviations in x/y directions
-    #     means = np.nanmean(x, axis=collapse_axes)
-    #     stds = np.nanstd(x, axis=collapse_axes)
-
-    #     # Calculate tangent vectors using finite differences
-    #     tangents = np.gradient(means, axis=0)  # shape: (timesteps, 2)
-
-    #     # Normalize tangent vectors
-    #     tangent_norms = np.sqrt(np.sum(tangents**2, axis=-1, keepdims=True))
-    #     tangents = tangents / (tangent_norms + 1e-8)
-
-    #     # Get normal vectors by rotating tangents 90 degrees
-    #     normals = np.stack([-tangents[..., 1], tangents[..., 0]], axis=-1)
-
-    #     # Project x/y deviations onto normal directions
-    #     deviations = stds * normals
-
-    #     # Create bounds
-    #     bounds = np.stack([
-    #         means + deviations,
-    #         means - deviations
-    #     ], axis=-2)
-
-    #     return np.moveaxis(bounds, -2, 1)
-
     # TODO: Don't plot mean trajectories if user manually specifies colors?
     # TODO: Alternatively, get rid of manual specification of colors
     if mean_trajectory_line_width > 0: # or mode == "std":
+        # Convert negative indices in mean_exclude_axes to positive
+        full_ndim = len(vars_shape)
+        mean_exclude_axes_pos = tuple(ax if ax >= 0 else full_ndim + ax for ax in mean_exclude_axes)
+
+        # Calculate axes to use for the mean calculation
+        mean_axes = tuple(ax for ax in constant_color_batch_axes if ax not in mean_exclude_axes_pos)
         mean_vars = jt.map(
-            lambda x: np.nanmean(x, axis=constant_color_batch_axes),
+            lambda x: np.nanmean(x, axis=mean_axes),
             vars_,
         )
+
+        # Calculate color indices for mean vars - will do this after we have constructed color_idxs
+        # We'll save this here for now
+        mean_color_idxs = None
+
+        # If mean_exclude_axes is provided, we need to reshape mean_vars
+        if mean_exclude_axes_pos:
+            # Adjust colorscale_axis position after excluding axes
+            adjusted_colorscale_axis = colorscale_axis
+            for ax in sorted(mean_exclude_axes_pos):
+                if ax < colorscale_axis:
+                    adjusted_colorscale_axis -= 1
+
+            # Now reshape mean_vars similar to vars_, keeping colorscale axis as is
+            mean_vars = jt.map(
+                lambda x: np.reshape(
+                    np.moveaxis(x, adjusted_colorscale_axis, 0),
+                    (x.shape[adjusted_colorscale_axis], -1, *x.shape[-2:])
+                ),
+                mean_vars,
+            )
     else:
         mean_vars = {}
 
-    # if mode == "std":
-    #     # std_vars = jt.map(
-    #     #     lambda x: n_std * np.nanstd(x, axis=constant_color_batch_axes),
-    #     #     vars_,
-    #     # )
-    #     # std_bounds_vars = jt.map(
-    #     #     lambda x, std: (x - std, x + std),
-    #     #     mean_vars, std_vars,
-    #     # )
-    #     all_bounds = jt.map(
-    #         lambda var: get_confidence_bounds(var, constant_color_batch_axes, confidence=0.68),
-    #         vars_,
-    #     )
+    # Now that we have color_idxs, compute mean_color_idxs
+    if mean_trajectory_line_width > 0 and mean_exclude_axes_pos and color_idxs is not None:
+        # Take one value from each of the mean axes
+        # (They all have same color index by construction)
+        slices = [slice(None)] * len(vars_shape[:-2])
+        for ax in mean_axes:
+            slices[ax] = 0
+
+        # Get pre-flattened color indices with mean axes removed
+        mean_color_indices_pre = color_idxs[tuple(slices)]
+
+        # Now reshape mean_color_indices_pre in the same way as mean_vars
+        mean_color_idxs = np.reshape(
+            np.moveaxis(mean_color_indices_pre, adjusted_colorscale_axis, 0),
+            (mean_color_indices_pre.shape[adjusted_colorscale_axis], -1)
+        )
+
     # Collapse all trial axes but `colorscale_axis`, and subsample if necessary
     vars_, colors, color_idxs = jt.map(
-        lambda x: np.reshape(np.moveaxis(x, colorscale_axis, 0), (vars_shape[colorscale_axis], -1, *x.shape[n_trial_axes:])),
+        lambda x: np.reshape(
+            np.moveaxis(x, colorscale_axis, 0),
+            (vars_shape[colorscale_axis], -1, *x.shape[n_trial_axes:])
+        ),
         (vars_, colors, color_idxs),
     )
 
-    if n_curves > n_curves_max:
+    if n_curves_max is not None and n_curves > n_curves_max:
         idxs_sample = np.random.choice(np.arange(n_curves), n_curves_max, replace=False).astype(int)
         vars_, colors, color_idxs = jt.map(
             lambda x: x[:, idxs_sample],
@@ -1094,10 +1112,6 @@ def trajectories_2D(
         lambda x: np.reshape(x, (-1, *x.shape[2:])),
         (vars_, colors, color_idxs),
     )
-    # vars_, colors, color_idxs = jt.map(
-    #     lambda x: np.reshape(x, (-1, *x.shape[n_trial_axes:])),
-    #     (vars_, colors, color_idxs),
-    # )
 
     colors_rgb_tuples = arr_to_nested_tuples(colors)
     colors_rgb = jt.map(
@@ -1133,7 +1147,7 @@ def trajectories_2D(
 
     # Track whether each color has been added to the legend yet during plotting of trial trajectories;
     # if mean trajectories are enabled then those are the ones we'll add (later).
-    color_added_to_legend = dict.fromkeys(color_idxs, mean_trajectory_line_width > 0)
+    color_added_to_legend = dict.fromkeys(color_idxs, False)
 
     def plot_var(fig, col, var, label):
         assert len(var.shape) < 4, "The data shouldn't have this many axes; we reshaped it!"
@@ -1200,29 +1214,38 @@ def trajectories_2D(
     if mean_trajectory_line_width > 0:
         # Loop over subplots/variables
         for i, mean_var in enumerate(mean_vars):
-            # Loop over train field std.
-            for j, xy in enumerate(mean_var):
-                trace = go.Scatter(
-                    name=legend_labels[::stride][j],
-                    showlegend=(i == 0),
-                    legendgroup=j,  # controls show/hide with other traces
-                    x=xy[..., 0],
-                    y=xy[..., 1],
-                    mode="lines",
-                    line=dict(
-                        color=arr_to_rgb(lighten_mean * color_sequence[j]),
-                        width=mean_trajectory_line_width,
-                    ),
-                    customdata=np.concatenate(
-                        [
-                            ts[:, None],
-                            np.broadcast_to([[j, legend_labels[::stride][j]]], (xy.shape[0], 2)),
-                        ],
-                        axis=-1,
-                    ),
-                    # **scatter_kws,
-                )
-                fig.add_trace(trace, row=1, col=i + 1)
+            # Loop over the color groups (LDict values, e.g. train pert std)
+            for j, curves in enumerate(mean_var):
+                # Loop over any curves within this color group (due to mean_exclude_axes)
+                for k, xy in enumerate(curves):
+                    # Get the true color index for this curve
+                    if mean_color_idxs is not None:
+                        color_idx = int(mean_color_idxs[j][k])
+                    else:
+                        color_idx = j
+
+                    trace = go.Scatter(
+                        name=legend_labels[::stride][color_idx],
+                        # Only show in legend once per group
+                        showlegend=False,
+                        legendgroup=color_idx,  # controls show/hide with other traces
+                        x=xy[..., 0],
+                        y=xy[..., 1],
+                        mode="lines",
+                        line=dict(
+                            color=arr_to_rgb(lighten_mean * color_sequence[color_idx]),
+                            width=mean_trajectory_line_width,
+                        ),
+                        customdata=np.concatenate(
+                            [
+                                ts[:, None],
+                                np.broadcast_to([[color_idx, legend_labels[::stride][color_idx]]], (xy.shape[0], 2)),
+                            ],
+                            axis=-1,
+                        ),
+                        # **scatter_kws,
+                    )
+                    fig.add_trace(trace, row=1, col=i + 1)
 
     # if mode == "std":
     #     for i, std_var in enumerate(all_bounds):
@@ -1284,12 +1307,13 @@ def is_trace(element):
     return isinstance(element, BaseTraceType)
 
 
-def plot_traj_3D(
+def trajectories_3D(
     traj: Float[Array, "trials time 3"],
     endpoint_symbol: Optional[str] = 'circle-open',
     start_symbol: Optional[str] = None,
     fig: Optional[go.Figure] = None,
     colors: str | Sequence[str | None] | None = None,
+    axis_labels: Optional[tuple[str, str, str]] = None,
     mode: str = 'lines',
     name: Optional[str] = "State trajectory",
     **kwargs,
@@ -1303,22 +1327,33 @@ def plot_traj_3D(
     else:
         colors_func = lambda i: colors[i]
 
+    idxs = np.arange(traj.shape[1])
+
+    if axis_labels is None:
+        axis_labels = ('x', 'y', 'z')
+    else:
+        fig.update_layout(
+            scene=dict(
+                xaxis_title=axis_labels[0],
+                yaxis_title=axis_labels[1],
+                zaxis_title=axis_labels[2],
+            )
+        )
+
     if start_symbol is not None:
-        fig.add_traces(
-            [
-                go.Scatter3d(
-                    x=traj[:, 0, 0],
-                    y=traj[:, 0, 1],
-                    z=traj[:, 0, 2],
-                    mode='markers',
-                    marker_symbol=start_symbol,
-                    marker_line_width=2,
-                    marker_size=10,
-                    marker_color="None",
-                    marker_line_color=colors,
-                    name=f'{name} start'
-                )
-            ]
+        fig.add_trace(
+            go.Scatter3d(
+                x=traj[:, 0, 0],
+                y=traj[:, 0, 1],
+                z=traj[:, 0, 2],
+                mode='markers',
+                marker_symbol=start_symbol,
+                marker_line_width=2,
+                marker_size=10,
+                marker_color="None",
+                marker_line_color=colors,
+                name=f'{name} start'
+            )
         )
     fig.add_traces(
         [
@@ -1332,28 +1367,39 @@ def plot_traj_3D(
                 # name='Reach trajectories',
                 showlegend=(name is not None and idx == 0),
                 name=name,
+                customdata=idxs[:, None],
+                hovertemplate=(
+                    'index: %{customdata[0]}<br>'
+                    f'{axis_labels[0]}: %{{x:.2f}}<br>'
+                    f'{axis_labels[1]}: %{{y:.2f}}<br>'
+                    f'{axis_labels[2]}: %{{z:.2f}}<br>'
+                    '<extra></extra>'
+                ),
+                legendgroup=name,
                 **kwargs,
             )
             for idx in range(traj.shape[0])
         ]
     )
     if endpoint_symbol is not None:
-        fig.add_traces(
-            [
-                go.Scatter3d(
-                    x=traj[:, -1, 0],
-                    y=traj[:, -1, 1],
-                    z=traj[:, -1, 2],
-                    mode='markers',
-                    marker_symbol=endpoint_symbol,
-                    marker_line_width=2,
-                    marker_size=5,
-                    marker_color=colors,
-                    marker_line_color=colors,
-                    name=f'{name} end'
-                )
-            ]
+        fig.add_trace(
+            go.Scatter3d(
+                x=traj[:, -1, 0],
+                y=traj[:, -1, 1],
+                z=traj[:, -1, 2],
+                mode='markers',
+                marker_symbol=endpoint_symbol,
+                marker_line_width=2,
+                marker_size=5,
+                marker_color=colors,
+                marker_line_color=colors,
+                name=f'{name} end'
+            )
         )
+    fig.update_layout(
+        legend_tracegroupgap=1,
+    )
+
     return fig
 
 
