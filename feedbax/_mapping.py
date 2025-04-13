@@ -6,19 +6,19 @@
 
 from abc import abstractmethod
 from collections import OrderedDict
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, MutableMapping, Hashable
 
 import dis
 import logging
-from typing import Generic, TypeVar, overload
+from typing import Any, Generic, TypeVar, overload
 
 import equinox as eqx
-from equinox._pretty_print import tree_pp, bracketed
+# from equinox._pretty_print import tree_pp, bracketed
 import jax
 import jax.tree_util as jtu
 from jaxtyping import Array, PyTree
 
-from feedbax.misc import unzip2, where_func_to_labels
+from feedbax.misc import unzip2, where_func_to_attr_str_tree
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,13 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
         k = self._key_transform(key)
         return self.store[k][1]
 
-    def get(self, key: KT1 | KT2, /, default: VT | T | None = None) -> VT | T | None:
+    @overload
+    def get(self, key: KT1 | KT2) -> VT | None: ...
+
+    @overload
+    def get(self, key: KT1 | KT2, default: T) -> VT | T: ...
+
+    def get(self, key, default=None):
         k = self._key_transform(key)
         if k in self.store:
             return self.store[k][1]
@@ -68,7 +74,6 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
         del self.store[self._key_transform(key)]
 
     def __iter__(self):
-        # Apparently you're supposed to only yield the key
         for key in self.store:
             yield self.store[key][0]
 
@@ -102,7 +107,7 @@ class _WhereRepr:
             raise ValueError("`WhereDict` keys must be functions of a single argument")
 
         self.bound_var = bound_vars[0]
-        self.term_strs = where_func_to_labels(where)
+        self.term_strs = where_func_to_attr_str_tree(where)
 
     def __repr__(self):
         terms = jax.tree_map(
@@ -119,7 +124,7 @@ T = TypeVar('T')
 
 def _where_to_str(where: Callable) -> str:
     """Return a single string representing a `where` function."""
-    terms = where_func_to_labels(where)
+    terms = where_func_to_attr_str_tree(where)
     if isinstance(terms, str):
         where_str = terms
     else:
@@ -137,19 +142,13 @@ def _wheredict_key_repr(where_key: Callable | tuple[Callable, str]):
 
 
 @jtu.register_pytree_node_class
-class WhereDict(
-    AbstractTransformedOrderedDict[
-        str,
-        Callable[[PyTree[Array]], PyTree[Array, "T"]],
-        T,
-    ]
-):
-    """An `OrderedDict` that allows limited use of `where` lambdas as keys.
+class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T]):
+    """An `OrderedDict` that allows use of where-functions as keys.
 
-    In particular, keys can be lambdas that take a single argument,
+    In particular, keys can be functions/lambdas that take a single argument,
     and return a single (nested) attribute accessed from that argument.
 
-    Lambdas are parsed to equivalent strings, which can be used
+    Functions are parsed to equivalent strings, which can be used
     interchangeably as keys. For example, the following are equivalent when
     `init_spec` is a `WhereDict`:
 
@@ -207,14 +206,14 @@ class WhereDict(
                              "a callable, or a tuple of a callable and a string")
         return key
 
-    def __tree_pp__(self, **kwargs):
-        return tree_pp(
-            {
-                _wheredict_key_repr(where_key): v
-                for _, (where_key, v) in self.store.items()
-            },
-            **kwargs,
-        )
+    # def __tree_pp__(self, **kwargs):
+    #     return tree_pp(
+    #         {
+    #             _wheredict_key_repr(where_key): v
+    #             for _, (where_key, v) in self.store.items()
+    #         },
+    #         **kwargs,
+    #     )
 
     def __repr__(self):
         return eqx.tree_pformat(self)

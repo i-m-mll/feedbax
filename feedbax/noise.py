@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import equinox as eqx
 from equinox import AbstractVar
-from equinox._pretty_print import tree_pp, bracketed
+# from equinox._pretty_print import tree_pp, bracketed
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -21,7 +21,7 @@ import jax._src.pretty_printer as pp
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
 from feedbax._tree import leaves_of_type
-from feedbax.misc import _simple_module_pprint
+# from feedbax.misc import _simple_module_pprint
 
 
 logger = logging.getLogger(__name__)
@@ -105,8 +105,8 @@ class Multiplicative(AbstractNoise):
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
         return self.scale_func(x) * self.noise_func(key, x)
 
-    def __tree_pp__(self, **kwargs):
-        return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)
+    # def __tree_pp__(self, **kwargs):
+    #     return _simple_module_pprint("Multiplicative", self.noise_func, **kwargs)
 
 
 def replace_noise(tree, replace_fn: Callable = lambda _: None):

@@ -34,7 +34,7 @@ from feedbax import tree_labels
 from feedbax._tree import tree_zip
 from feedbax.bodies import SimpleFeedbackState
 from feedbax.loss import LossDict
-from feedbax.misc import where_func_to_labels, is_none
+from feedbax.misc import where_func_to_attr_str_tree, is_none
 
 if TYPE_CHECKING:
     from feedbax.task import TaskTrialSpec
@@ -191,7 +191,7 @@ def profiles(
                 go.Scatter(
                     name=label,
                     showlegend=(i == 0 and label is not None),
-                    legendgroup=label,
+                    # legendgroup=label,
                     x=ts,
                     y=mean,
                     marker_size=3,
@@ -207,7 +207,7 @@ def profiles(
                         go.Scatter(
                             name=label,
                             showlegend=False,
-                            legendgroup=label,
+                            # legendgroup=label,
                             x=ts,
                             y=curve,
                             mode="lines",
@@ -220,7 +220,7 @@ def profiles(
                 traces.extend([                # Bounds
                     go.Scatter(
                         name="Upper bound",
-                        legendgroup=label,
+                        # legendgroup=label,
                         x=ts,
                         y=ub,
                         line=dict(color='rgba(255,255,255,0)'),
@@ -229,7 +229,7 @@ def profiles(
                     ),
                     go.Scatter(
                         name="Lower bound",
-                        legendgroup=label,
+                        # legendgroup=label,
                         x=ts,
                         y=lb,
                         line=dict(color='rgba(255,255,255,0)'),
@@ -688,7 +688,7 @@ def effector_trajectories(
     if where_data is not None:
         vars_tuple = where_data(states)
         if var_labels is None:
-            var_labels = where_func_to_labels(where_data)
+            var_labels = where_func_to_attr_str_tree(where_data)
 
         if isinstance(vars_tuple, (Array, np.ndarray)):
             vars_tuple = (vars_tuple,)
@@ -921,7 +921,7 @@ def trajectories_2D(
     vars_: PyTree[Float[Array, "*trial time xy=2"], "T"],
     var_labels: Optional[PyTree[str, "T"]] = None,
     var_endpoint_ms: int = 0,
-    mean_trajectory_line_width: int = 0,
+    show_mean: bool = True,
     lighten_mean: float = 0.8,
     # mode: Literal['curves', 'std'] = 'curves',
     # n_std: int = 1,
@@ -935,12 +935,17 @@ def trajectories_2D(
     curves_mode: str = "markers+lines",
     ms: int = 5,
     axes_labels: Optional[tuple[str, str] | PyTree[tuple[str, str], "T"]] = None,
+    shared_yaxes_label: bool = True,
     layout_kws: Optional[dict] = None,
     scatter_kws: Optional[dict] = None,
+    mean_scatter_kws: Optional[dict] = None,
     mean_exclude_axes: Sequence[int] = (),
+    padding_factor: float = 0.1,
     **kwargs,
 ):
-    """Variant of `effector_trajectories` that should be easier to use for different trial/condition settings.
+    """Plot 2D trajectories, with a subplot for each variable.
+
+    This is a variant of `effector_trajectories` that should be easier to use for different trial/condition settings.
 
     Allows for multiple trial dimensions. Also allows us to colour the trajectories
     on a given trial dimension (e.g. color by trial vs. by reach direction).
@@ -955,7 +960,7 @@ def trajectories_2D(
             by default.
         var_labels: The titles of the respective subplots.
         var_endpoint_ms: If non-zero, make the individual trajectory endpoints visible as markers of this size.
-        mean_trajectory_line_width: If non-zero, show the average of the plotted trajectories for each trajectory group.
+        show_mean: Show the average of the plotted trajectories for each trajectory group.
         lighten_mean: Factor by which to lighten (>1) or darken (<1) the color of the mean trajectory line.
         colors: Manually specify the colors. TODO.
         colorscale_axis: The axis in the arrays of `vars_` *not* to lump together, and which to color and display as groups
@@ -971,13 +976,12 @@ def trajectories_2D(
     # Assume all trajectory arrays have the same shape; i.e. matching trials between subplots
     # Add singleton dimensions if no trial dimensions are passed.
     vars_shapes = [v.shape for v in jt.leaves(vars_)]
-    assert len(set(vars_shapes)) == 1, (
-        "All trajectory arrays should have the same shape"
-    )
+    if not len(set(vars_shapes)) == 1:
+        raise ValueError("All trajectory arrays should have the same shape")
 
-    assert not len(vars_shapes[0]) < 2, (
-        "Trajectory arrays must have at least 2 (time and space) axes!"
-    )
+    if len(vars_shapes[0]) < 2:
+        raise ValueError("Trajectory arrays must have at least 2 axes (time and space)!")
+
     if len(vars_shapes[0]) == 2:
         vars_ = jt.map(lambda v: v[None, :], vars_)
 
@@ -1039,7 +1043,7 @@ def trajectories_2D(
 
     # TODO: Don't plot mean trajectories if user manually specifies colors?
     # TODO: Alternatively, get rid of manual specification of colors
-    if mean_trajectory_line_width > 0: # or mode == "std":
+    if show_mean: # or mode == "std":
         # Convert negative indices in mean_exclude_axes to positive
         full_ndim = len(vars_shape)
         mean_exclude_axes_pos = tuple(ax if ax >= 0 else full_ndim + ax for ax in mean_exclude_axes)
@@ -1071,11 +1075,16 @@ def trajectories_2D(
                 ),
                 mean_vars,
             )
+        else:
+            mean_vars = jt.map(
+                lambda x: np.reshape(x, (x.shape[0], 1, *x.shape[1:])),
+                mean_vars,
+            )
     else:
         mean_vars = {}
 
     # Now that we have color_idxs, compute mean_color_idxs
-    if mean_trajectory_line_width > 0 and mean_exclude_axes_pos and color_idxs is not None:
+    if show_mean and mean_exclude_axes_pos and color_idxs is not None:
         # Take one value from each of the mean axes
         # (They all have same color index by construction)
         slices = [slice(None)] * len(vars_shape[:-2])
@@ -1145,6 +1154,17 @@ def trajectories_2D(
         horizontal_spacing=0.1,
     )
 
+    if shared_yaxes_label:
+        for col in range(1, n_subplots + 1):
+            fig.update_yaxes(title_text="", row=1, col=col)
+
+    # Constrain the axes of each subplot to be scaled equally.
+    # (i.e. square aspect ratio)
+    fig.update_layout({
+        f"yaxis{i}": dict(scaleanchor=f"x{i}")
+        for i in [''] + list(range(2, n_subplots + 1))
+    })
+
     # Track whether each color has been added to the legend yet during plotting of trial trajectories;
     # if mean trajectories are enabled then those are the ones we'll add (later).
     color_added_to_legend = dict.fromkeys(color_idxs, False)
@@ -1155,17 +1175,17 @@ def trajectories_2D(
         traces = []
 
         for i, xy in enumerate(var):
-            # Only add each color to the legend the first time.
-            if not color_added_to_legend[color_idxs[i]]:
+            # Only add each color to the legend the first time,
+            # and only if we're not plotting mean trajectories.
+            showlegend = False
+            if not show_mean and not color_added_to_legend[color_idxs[i]]:
                 showlegend = True
                 color_added_to_legend[color_idxs[i]] = True
-            else:
-                showlegend = False
 
             trace = go.Scatter(
-                name=legend_labels[::stride][color_idxs[i]],  # appears in legend
+                name=legend_labels[::stride][color_idxs[i]],
                 showlegend=showlegend,
-                legendgroup=color_idxs[i],  # controls show/hide with other traces
+                # legendgroup=color_idxs[i],  # controls show/hide with other traces
                 x=xy[..., 0],
                 y=xy[..., 1],
                 mode=curves_mode,
@@ -1176,7 +1196,7 @@ def trajectories_2D(
                 customdata=np.concatenate(
                     [
                         ts[:, None],
-                        np.broadcast_to([[i, legend_labels[::stride][color_idxs[i]]]], (xy.shape[0], 2))
+                        np.broadcast_to([[i, legend_labels[::stride][color_idxs[i]]]], (ts.shape[0], 2))
                     ],
                     axis=-1,
                 ),
@@ -1188,7 +1208,7 @@ def trajectories_2D(
                 trace = go.Scatter(
                     name=f"{legend_labels[::stride][color_idxs[i]]} endpoint",
                     showlegend=False,
-                    legendgroup=color_idxs[i],  # controls show/hide with other traces
+                    # legendgroup=color_idxs[i],  # controls show/hide with other traces
                     x=xy[..., -1, 0][None],
                     y=xy[..., -1, 1][None],
                     mode="markers",
@@ -1206,12 +1226,37 @@ def trajectories_2D(
 
         return fig
 
-    # if mode == "curves":
-    for i, args in enumerate(subplots_data):
-        col = i + 1
-        fig = plot_var(fig, col, *args)
+    all_vars_flat = jt.leaves(vars_, is_leaf=eqx.is_array)
 
-    if mean_trajectory_line_width > 0:
+    # if mode == "curves":
+    for i, (var_data, subplot_label) in enumerate(zip(all_vars_flat, subplot_titles)):
+        col = i + 1
+        fig = plot_var(fig, col, var_data, subplot_label)
+
+        all_y_data = var_data[..., 1].flatten()
+
+        # Check if there are any valid y-data points before calculating range
+        if not np.all(np.isnan(all_y_data)):
+            y_min = np.nanmin(all_y_data)
+            y_max = np.nanmax(all_y_data)
+            y_range = y_max - y_min
+            # Handle case where range is zero (e.g., constant y)
+            padding = y_range * padding_factor if y_range > 0 else 0.1 # Add small absolute padding if range is 0
+
+            # --- Update Y-axis range ---
+            fig.update_yaxes(range=[y_min - padding, y_max + padding], row=1, col=col)
+
+            fig.update_xaxes(autorange=True, row=1, col=col)
+
+    if show_mean:
+        mean_kwargs = dict(
+            line_width=2,
+            opacity=1,
+        )
+
+        if mean_scatter_kws is not None:
+            mean_kwargs |= mean_scatter_kws
+
         # Loop over subplots/variables
         for i, mean_var in enumerate(mean_vars):
             # Loop over the color groups (LDict values, e.g. train pert std)
@@ -1227,50 +1272,22 @@ def trajectories_2D(
                     trace = go.Scatter(
                         name=legend_labels[::stride][color_idx],
                         # Only show in legend once per group
-                        showlegend=False,
-                        legendgroup=color_idx,  # controls show/hide with other traces
+                        showlegend=(i==0),
+                        # legendgroup=color_idx,  # controls show/hide with other traces
                         x=xy[..., 0],
                         y=xy[..., 1],
                         mode="lines",
-                        line=dict(
-                            color=arr_to_rgb(lighten_mean * color_sequence[color_idx]),
-                            width=mean_trajectory_line_width,
-                        ),
+                        line_color=arr_to_rgb(lighten_mean * color_sequence[color_idx]),
                         customdata=np.concatenate(
                             [
                                 ts[:, None],
-                                np.broadcast_to([[color_idx, legend_labels[::stride][color_idx]]], (xy.shape[0], 2)),
+                                np.broadcast_to([[color_idx, legend_labels[::stride][color_idx]]], (ts.shape[0], 2)),
                             ],
                             axis=-1,
                         ),
-                        # **scatter_kws,
+                        **mean_kwargs,
                     )
                     fig.add_trace(trace, row=1, col=i + 1)
-
-    # if mode == "std":
-    #     for i, std_var in enumerate(all_bounds):
-    #         for j, bounds in enumerate(std_var):
-    #             for k, bound in enumerate(bounds[:1]):
-    #                 trace = go.Scatter(
-    #                     name=legend_labels[::stride][j],
-    #                     showlegend=(i == 0),
-    #                     legendgroup=j,  # controls show/hide with other traces
-    #                     x=bound[..., 0],
-    #                     y=bound[..., 1],
-    #                     # fill="tonexty",
-    #                     mode="lines",
-    #                     line=dict(
-    #                         color=arr_to_rgb(lighten_mean * color_sequence[j]),
-    #                         width=0.75,
-    #                         # dash='dot',
-    #                     ),
-    #                     # customdata=np.concatenate(
-    #                     #     [ts[:, None], np.broadcast_to([[j, color_idxs[j]]], (xy.shape[0], 2))], axis=-1
-    #                     # ),
-    #                     # **scatter_kws,
-    #                 )
-    #                 fig.add_trace(trace, row=1, col=i + 1)
-
 
     fig.for_each_trace(lambda trace: trace.update(
         hovertemplate=(
@@ -1283,14 +1300,6 @@ def trajectories_2D(
     ))
 
     fig.update_layout(legend_itemsizing="constant")
-
-    # Constrain the axes of each subplot to be scaled equally.
-    # That is, keep square aspect ratios.
-    fig.update_layout({
-        f"yaxis{i}": dict(scaleanchor=f"x{i}")
-        for i in [''] + list(range(2, n_subplots + 1))
-    })
-
     fig.update_layout(legend_title_text=legend_title)
 
     if axes_labels is not None:

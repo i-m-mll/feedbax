@@ -28,11 +28,11 @@ import subprocess
 import textwrap
 from time import perf_counter
 from types import ModuleType
-from typing import Any, Optional, Tuple, TypeAlias, TypeVar, Union
+from typing import Any, Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
 from equinox import Module
-from equinox._pretty_print import tree_pp, bracketed
+# from equinox._pretty_print import tree_pp, bracketed
 import jax
 import jax.numpy as jnp
 import jax._src.pretty_printer as pp
@@ -318,14 +318,14 @@ def nested_dict_update(dict_, *args, make_copy: bool = True):
     return dict_
 
 
-def _simple_module_pprint(name, *children, **kwargs):
-    return bracketed(
-        pp.text(name),
-        kwargs['indent'],
-        [tree_pp(child, **kwargs) for child in children],
-        '(',
-        ')'
-    )
+# def _simple_module_pprint(name, *children, **kwargs):
+#     return bracketed(
+#         pp.text(name),
+#         kwargs['indent'],
+#         [tree_pp(child, **kwargs) for child in children],
+#         '(',
+#         ')'
+#     )
 
 
 def _get_where_str(where_func: Callable) -> str:
@@ -352,7 +352,7 @@ class NodePath:
         return iter(self.path)
 
 
-def where_func_to_paths(where, tree):
+def where_func_to_paths(where: Callable, tree: PyTree):
     """
     Similar to `_get_where_str`, but:
 
@@ -374,7 +374,7 @@ def where_func_to_paths(where, tree):
     id_tree = jtu.tree_map(id, tree, is_leaf=lambda x: isinstance(x, _NodeWrapper))
     node_ids = where(id_tree)
 
-    paths_by_id = {leaf_id: path for path, leaf_id in jtu.tree_leaves_with_path(
+    paths_by_id = {node_id: path for path, node_id in jtu.tree_leaves_with_path(
         jtu.tree_map(
             lambda x: x if x in jax.tree_leaves(node_ids) else None,
             id_tree,
@@ -407,7 +407,7 @@ def _get_where_str_constructor_label(x: _WhereStrConstructor) -> str:
     return x.label
 
 
-def where_func_to_labels(where: Callable) -> PyTree[str]:
+def where_func_to_attr_str_tree(where: Callable) -> PyTree[str]:
     """Also similar to `_get_where_str` and `where_func_to_paths`, but:
 
     - Avoids complicated logic of parsing bytecode, or traversing pytrees;

@@ -35,6 +35,15 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+# TODO: Move to jax_cookbook
+def first_non_none(*args):
+    """Returns the first non-None argument."""
+    for arg in args:
+        if arg is not None:
+            return arg
+    return None
+
+
 def anyf(*funcs: Callable[..., bool]) -> Callable[..., bool]:
     """Returns a function that returns the logical union of boolean functions.
 
@@ -567,7 +576,7 @@ def tree_map_tqdm(
     tree: PyTree[Any, "T"],
     *rest: PyTree[Any, "T"],
     label: Optional[str] = None,
-    labels: Optional[PyTree[str, "T"]] = None,
+    labels: PyTree[str, "T"] = None,
     verbose: bool = False,
     is_leaf: Optional[Callable[..., bool]] = None,
 ) -> PyTree[S, "T"]:
