@@ -22,6 +22,8 @@ from jaxtyping import PyTree
 from sqlalchemy.orm import Session
 
 import feedbax_experiments
+import feedbax_experiments.training.modules as training_modules_pkg
+from feedbax_experiments.analysis import modules as analysis_modules_pkg
 from feedbax_experiments.analysis._dependencies import compute_dependency_results
 from feedbax_experiments.analysis.analysis import (
     AbstractAnalysis,
@@ -51,8 +53,11 @@ from feedbax_experiments.hyperparams import (
     flatten_hps,
     use_train_hps_when_none,
 )
-from feedbax_experiments.misc import delete_all_files_in_dir, log_version_info
-from feedbax_experiments.plugins import discover_experiment_packages, get_default_registry
+from feedbax_experiments.misc import (
+    delete_all_files_in_dir,
+    load_module_from_package,
+    log_version_info,
+)
 from feedbax_experiments.setup_utils import query_and_load_model
 from feedbax_experiments.tree_utils import tree_level_labels
 from feedbax_experiments.types import (
@@ -63,9 +68,6 @@ from feedbax_experiments.types import (
 )
 
 STATES_CACHE_SUBDIR = "states"
-
-
-_registry = discover_experiment_packages()
 
 
 @dataclass
@@ -213,12 +215,11 @@ def validate_and_convert_transforms(
 
 
 def load_trained_models_and_aux_objects(
-    training_module_name: str, hps: TreeNamespace, db_session: Session, registry
+    training_module_name: str, hps: TreeNamespace, db_session: Session
 ):
     """Given the analysis config, load the trained models and related objects (e.g. train tasks)."""
 
-    # Load training module from registered packages
-    training_module = registry.get_training_module(training_module_name)
+    training_module = load_module_from_package(training_module_name, training_modules_pkg)
 
     pairs, model_info, replicate_info, n_replicates_included, hps_train_dict = jtree.unzip(
         #! Should this structure be hardcoded here?
@@ -264,8 +265,7 @@ def setup_eval_for_module(
     2. Add an evaluation record to the database.
     """
 
-    # Load analysis module from registered packages
-    analysis_module: ModuleType = _registry.get_analysis_module(module_key)
+    analysis_module: ModuleType = load_module_from_package(module_key, analysis_modules_pkg)
 
     #! For this project, assume only a single-level mapping between training experiments and analysis subpackages;
     #! thus `analysis.modules.part1` corresponds to `training.modules.part1`.
@@ -274,7 +274,7 @@ def setup_eval_for_module(
     training_module_name = module_key.split(".")[0]
 
     models_base, model_info, replicate_info, tasks_train, n_replicates_included, hps_train_dict = (
-        load_trained_models_and_aux_objects(training_module_name, hps, db_session, _registry)
+        load_trained_models_and_aux_objects(training_module_name, hps, db_session)
     )
 
     # Fill-in any missing training hyper-parameters **out-of-place** and switch to

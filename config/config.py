@@ -15,8 +15,8 @@ import jax.tree as jt
 import yaml
 from pytest import File
 
-from rlrmp.misc import deep_merge
-from rlrmp.types import TreeNamespace, dict_to_namespace
+from feedbax_experiments.misc import deep_merge
+from feedbax_experiments.types import TreeNamespace, dict_to_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +44,12 @@ def _load_defaults_hierarchy(
     """Load hierarchical default configs from root to parent directory.
 
     For name_parts=['part1', 'plant_perts'] and config_type='analysis':
-    - Try to load rlrmp.config.modules.analysis/default.yml
-    - Try to load rlrmp.config.modules.analysis.part1/default.yml
+    - Try to load feedbax_experiments.config.modules.analysis/default.yml
+    - Try to load feedbax_experiments.config.modules.analysis.part1/default.yml
     - Return merged result
     """
     merged_config = {}
-    base_subpackage = f"rlrmp.config.modules.{config_type}"
+    base_subpackage = f"feedbax_experiments.config.modules.{config_type}"
 
     # Generate all subpackage paths from root to parent directory
     subpackage_paths: list[str | None] = [base_subpackage]
@@ -73,7 +73,9 @@ def _load_defaults_hierarchy(
     return merged_config, subpackage_paths
 
 
-def load_config(name: str, config_type: Optional[Literal["training", "analysis"]] = None):
+def load_config(
+    name: str, config_type: Optional[Literal["training", "analysis"]] = None, *, registry=None
+):
     """Load the contents of a project YAML config file resource as a nested dict."""
     name_parts = name.split(".")
     config_name = name_parts[-1]
@@ -119,12 +121,26 @@ def load_config(name: str, config_type: Optional[Literal["training", "analysis"]
         merged_config = {}
 
     # Load the final config and merge with defaults
-    if config_type is None:
-        subpackage_name = "rlrmp.config"
+    if registry is not None and config_type is not None:
+        # Use registry to find the appropriate package
+        try:
+            package_name, resource_root = registry.get_config_resource_root(name)
+            subpackage_name = f"{resource_root}.modules.{config_type}"
+            subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
+        except ValueError:
+            # Fall back to default package if not found in registry
+            if config_type is None:
+                subpackage_name = "feedbax_experiments.config"
+            else:
+                subpackage_name = f"feedbax_experiments.config.modules.{config_type}"
+            subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
     else:
-        subpackage_name = f"rlrmp.config.modules.{config_type}"
-
-    subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
+        # Legacy behavior - load from feedbax_experiments
+        if config_type is None:
+            subpackage_name = "feedbax_experiments.config"
+        else:
+            subpackage_name = f"feedbax_experiments.config.modules.{config_type}"
+        subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
 
     # Load the specific config file
     with resources.open_text(subpackage_name, f"{config_name}.yml") as f:

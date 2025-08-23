@@ -1,27 +1,25 @@
 """
-Compute derivatives of functions. 
+Compute derivatives of functions.
 """
 
-from collections.abc import Callable, Mapping, Sequence
 import re
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Optional, Self, TypeAlias, TypeVar
 
 import equinox as eqx
 import jax
-from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.tree as jt
-
+import jax_cookbook.tree as jtree
+from jax.flatten_util import ravel_pytree
 from jax_cookbook import is_module, is_none
 from jax_cookbook.misc import construct_tuple_like
-import jax_cookbook.tree as jtree
 from jaxtyping import Array, PyTree
 
-from rlrmp.analysis.analysis import AbstractAnalysis, InputOf
-from rlrmp.analysis.func import CallerPorts, make_argwise_functional
-from rlrmp.types import AnalysisInputData
-
+from feedbax_experiments.analysis.analysis import AbstractAnalysis, InputOf
+from feedbax_experiments.analysis.func import CallerPorts, make_argwise_functional
+from feedbax_experiments.types import AnalysisInputData
 
 _Tuple = jtree.make_named_tuple_subclass("Tuple")
 
@@ -30,7 +28,7 @@ T = TypeVar("T")
 
 
 def _compute_grads(
-    grad_func: Callable, 
+    grad_func: Callable,
     funcs: PyTree[Callable, "T"],  # type: ignore
     func_args: tuple[PyTree[Any, "T ..."], ...],  # type: ignore
     argnums: Optional[int | Sequence[int]],
@@ -50,19 +48,18 @@ def _compute_grads(
     grads_by_argnum = jtree.unzip(grads_raw, tuple_cls=_Tuple)
 
     grads_expanded: list = [
-        grads_by_argnum[argnums.index(i)] if i in argnums else None
-        for i in range(len(func_args))
+        grads_by_argnum[argnums.index(i)] if i in argnums else None for i in range(len(func_args))
     ]
 
     return construct_tuple_like(type(func_args), grads_expanded)
 
 
-#! TODO: `Jacobians` and `Hessians` seem like good candidates for 
+#! TODO: `Jacobians` and `Hessians` seem like good candidates for
 #! refactoring by a simpler `AbstractAnalysis` functional constructor
 class Jacobians(AbstractAnalysis[CallerPorts]):
     Ports = CallerPorts
-    inputs: CallerPorts = eqx.field(default_factory=CallerPorts, converter=CallerPorts.converter) 
-    
+    inputs: CallerPorts = eqx.field(default_factory=CallerPorts, converter=CallerPorts.converter)
+
     variant: Optional[str] = "full"
 
     argnums: Optional[int | Sequence[int]] = None
@@ -77,7 +74,7 @@ class Jacobians(AbstractAnalysis[CallerPorts]):
     ) -> tuple:
         return _compute_grads(
             lambda func, *args, argnums: jax.jacobian(func, argnums=argnums)(*args),
-            funcs, 
+            funcs,
             func_args,
             self.argnums,
         )
@@ -90,7 +87,9 @@ class Hessians(AbstractAnalysis[CallerPorts]):
     variant: Optional[str] = "full"
 
     argnums: Optional[Sequence[int]] = None
-    diag_only: bool = True  # Whether to compute only the diagonal Hessians (i.e. no cross-input terms)
+    diag_only: bool = (
+        True  # Whether to compute only the diagonal Hessians (i.e. no cross-input terms)
+    )
 
     def compute(
         self,
@@ -103,15 +102,16 @@ class Hessians(AbstractAnalysis[CallerPorts]):
         def get_hessians(func, *args, argnums):
             if self.diag_only:
                 return [jax.hessian(func, argnums=i)(*args) for i in argnums]
-            else: 
+            else:
                 return jax.hessian(func, argnums=argnums)(*args)
 
         return _compute_grads(get_hessians, funcs, func_args, self.argnums)
-    
+
 
 # =============================================================================
 # New API, for use with `make_argwise_functional` and `ApplyFunctional`.
 # =============================================================================
+
 
 def matricize_block_in(block: Any, in_like: Any):
     """Reshape a dense J/H block with trailing input axes into 2D (out, in).
@@ -124,21 +124,26 @@ def matricize_block_in(block: Any, in_like: Any):
 
 # Scalarizers (compose at input side)
 
+
 class IdentityScalarizer(eqx.Module):
     """No-op: assumes func is already scalar if a scalar Hessian is desired."""
+
     def __call__(self, f: Callable[..., Any]) -> Callable[..., Any]:
         return f
 
 
 class DotUScalarizer(eqx.Module):
     """phi_u(x) = <u, f(x)> where shapes of u and f(x) match (vdot)."""
+
     u: Any = eqx.field(kw_only=True)
 
     def __call__(self, f: Callable[..., Any]) -> Callable[..., Any]:
         u = self.u
+
         def phi(*a):
             y = f(*a)
             return jnp.vdot(u, y)
+
         return phi
 
 
@@ -146,17 +151,23 @@ class BatchDotUScalarizer(eqx.Module):
     """Batch of cotangents U with leading batch axis: (B, *y_shape).
     Produces phi_U(x) in R^B; `jax.hessian(phi_U, ...)` then stacks B Hessians.
     """
+
     U: Any = eqx.field(kw_only=True)
 
     def __call__(self, f: Callable[..., Any]) -> Callable[..., Any]:
         U = self.U
+
         def one(u, *a):
             return jnp.vdot(u, f(*a))
+
         def phi(*a):
             return jax.vmap(lambda u: one(u, *a))(U)
+
         return phi
-    
-# ABC for per-funcs    
+
+
+# ABC for per-funcs
+
 
 class ArgwisePer(eqx.Module):
     """Abstract per-arg computation with optional scalarization, flattening, reducer.
@@ -164,11 +175,12 @@ class ArgwisePer(eqx.Module):
     Subclasses must implement:
       - per_fn(self, func, args, i) -> block or tuple of blocks
       - flatten(self, value, args, i) -> 2D block(s) (only used if reducers present)
-      
+
     Fields:
       - scalarizer: Optional callable that takes func and returns a scalarized func.
-      - reducer: 
+      - reducer:
     """
+
     scalarizer: Optional[Callable[[Callable[..., Any]], Callable[..., Any]]] = None
     reducer: Optional[Callable[[Array], Any] | tuple[Callable[[Array], Any], ...]] = None
 
@@ -209,7 +221,7 @@ class ArgwisePer(eqx.Module):
         reducer_fn = self._reducer_for(args, i)
         if reducer_fn is not None:
             value = self.flatten(value, args, i)  # flatten once
-            value = self._apply_reducer(value, reducer_fn)    # map recursively over tuples
+            value = self._apply_reducer(value, reducer_fn)  # map recursively over tuples
         return value
 
     # immutable mutators
@@ -222,8 +234,10 @@ class ArgwisePer(eqx.Module):
 
 # Per-arg producers (subclasses)
 
+
 class PerJacobianBlock(ArgwisePer):
     """J_i per arg. Raw: y ⊗ x_i; Flattened: (out × in_i)."""
+
     def per_fn(self, func, args: tuple, i: int):
         return jax.jacobian(func, argnums=i)(*args)
 
@@ -239,6 +253,7 @@ class PerHessianDiag(ArgwisePer):
       * vector-output without scalarization: y ⊗ x_i ⊗ x_i
     Flattened: (out × in_i), where `out` collapses leading non-input axes.
     """
+
     def per_fn(self, func, args: tuple, i: int):
         return jax.hessian(func, argnums=i)(*args)
 
@@ -254,6 +269,7 @@ class PerHessianRow(ArgwisePer):
       * vector-output without scalarization: y ⊗ x_i ⊗ x_j
     Flattened: tuple of 2D blocks with shape (out × in_j), collapsing non-input axes.
     """
+
     idxs: tuple[int, ...] = eqx.field(kw_only=True)
 
     def per_fn(self, func, args: tuple, i: int):
@@ -263,10 +279,11 @@ class PerHessianRow(ArgwisePer):
     def flatten(self, value, args: tuple, i: int):
         # value is a tuple aligned with self.idxs
         return tuple(matricize_block_in(value[k], args[j]) for k, j in enumerate(self.idxs))
-    
-    
+
+
 #! TODO: Move to `misc` or something
 # Reducers (operate on 2D or batched …×2D matrices)
+
 
 def spectral_norm(A):
     s = jnp.linalg.svd(A, compute_uv=False)
@@ -279,6 +296,7 @@ def frobenius_norm(A):
 
 def trace_square(A):
     return jnp.trace(A, axis1=-2, axis2=-1)
+
 
 # =============================================================================
 # Usage Examples
@@ -326,7 +344,7 @@ def trace_square(A):
 
 # =============================================================================
 # Sketch of linear operator based computation of operator norms, traces, etc.
-# Will revisit if there are performance issues with storing full Jacobians/Hessians for a 
+# Will revisit if there are performance issues with storing full Jacobians/Hessians for a
 # single leaf (e.g. for larger neural networks).
 # =============================================================================
 
@@ -357,6 +375,7 @@ def _tree_normalize(x):
 
 # Linear operators
 
+
 def jacobian_linop_per_arg(
     func: Callable[..., Any],
     args: tuple,
@@ -369,7 +388,7 @@ def jacobian_linop_per_arg(
         y_like = jt.map(jnp.zeros_like, func(*args))
 
     def mv(v_i):
-        tangents = [ _zeros_like_tree(a) for a in args ]
+        tangents = [_zeros_like_tree(a) for a in args]
         tangents[i] = v_i
         return jax.jvp(lambda *a: func(*a), tuple(args), tuple(tangents))[1]
 
@@ -392,7 +411,7 @@ def jacobian_linop_selected(
         y_like = jt.map(jnp.zeros_like, func(*args))
 
     def mv(v_sel):  # v_sel is a tuple aligned with idxs
-        tangents = [ _zeros_like_tree(a) for a in args ]
+        tangents = [_zeros_like_tree(a) for a in args]
         for k, i in enumerate(idxs):
             tangents[i] = v_sel[k]
         return jax.jvp(lambda *a: func(*a), tuple(args), tuple(tangents))[1]
@@ -426,8 +445,9 @@ def hessian_linop_per_arg(
     if u is None:
         # scalar-output path
         g_i = jax.grad(lambda *a: func(*a), argnums=i)
+
         def mv(v_i):
-            tangents = [ _zeros_like_tree(a) for a in args ]
+            tangents = [_zeros_like_tree(a) for a in args]
             tangents[i] = v_i
             return jax.jvp(lambda *a: g_i(*a), tuple(args), tuple(tangents))[1]
     else:
@@ -436,9 +456,11 @@ def hessian_linop_per_arg(
             y = func(*a)
             # vdot keeps complex-safe behavior; take real part in reducers
             return jnp.vdot(u, y)
+
         g_i = jax.grad(phi, argnums=i)
+
         def mv(v_i):
-            tangents = [ _zeros_like_tree(a) for a in args ]
+            tangents = [_zeros_like_tree(a) for a in args]
             tangents[i] = v_i
             return jax.jvp(lambda *a: g_i(*a), tuple(args), tuple(tangents))[1]
 
@@ -466,18 +488,22 @@ def hessian_linop_selected(
     """
     if u is None:
         g_sel = jax.grad(lambda *a: func(*a), argnums=idxs)
+
         def mv(v_sel):
-            tangents = [ _zeros_like_tree(a) for a in args ]
+            tangents = [_zeros_like_tree(a) for a in args]
             for k, i in enumerate(idxs):
                 tangents[i] = v_sel[k]
             return jax.jvp(lambda *a: g_sel(*a), tuple(args), tuple(tangents))[1]
     else:
+
         def phi(*a):
             y = func(*a)
             return jnp.vdot(u, y)
+
         g_sel = jax.grad(phi, argnums=idxs)
+
         def mv(v_sel):
-            tangents = [ _zeros_like_tree(a) for a in args ]
+            tangents = [_zeros_like_tree(a) for a in args]
             for k, i in enumerate(idxs):
                 tangents[i] = v_sel[k]
             return jax.jvp(lambda *a: g_sel(*a), tuple(args), tuple(tangents))[1]
@@ -499,19 +525,21 @@ def hessian_block_linop_ij(
     Uses symmetry: mtv(u_i) = H_{j,i} u_i.
     """
     pos = {idx: k for k, idx in enumerate(idxs)}
+
     def phi(*a):
         y = func(*a)
         return jnp.vdot(u, y)
+
     g_sel = jax.grad(phi, argnums=idxs)
 
     def mv(vj):
-        tangents = [ _zeros_like_tree(a) for a in args ]
+        tangents = [_zeros_like_tree(a) for a in args]
         tangents[j] = vj
         res = jax.jvp(lambda *a: g_sel(*a), tuple(args), tuple(tangents))[1]
         return res[pos[i]]
 
     def mtv(ui):
-        tangents = [ _zeros_like_tree(a) for a in args ]
+        tangents = [_zeros_like_tree(a) for a in args]
         tangents[i] = ui
         res = jax.jvp(lambda *a: g_sel(*a), tuple(args), tuple(tangents))[1]
         return res[pos[j]]
@@ -523,10 +551,12 @@ def hessian_block_linop_ij(
 
 # Reducers for operator norms, traces, etc.
 
+
 def reducer_opnorm_power_bidiag(*, iters: int = 40, tol: float = 1e-6):
     """Return a reducer (mv, mtv, like_v, like_u) -> scalar ≈ ||A||_2.
     Works for J (rectangular) and also for symmetric H by passing mtv==mv and like_u==like_v.
     """
+
     def reduce(mv, mtv, like_v, like_u):
         v = _tree_normalize(_ones_like_tree(like_v))
 
@@ -561,37 +591,46 @@ def _rademacher_like(like, key):
     return unravel(r)
 
 
-def reducer_frobenius_hutchinson(*, samples: int = 32, key = jax.random.PRNGKey(0)):
+def reducer_frobenius_hutchinson(*, samples: int = 32, key=jax.random.PRNGKey(0)):
     """Reducer (mv, like_v) -> scalar ≈ ||A||_F.
     For Jacobian A=J this uses only mv; for symmetric H it also works.
     """
+
     def reduce(mv, like_v):
         keys = jax.random.split(key, samples)
+
         def one(k):
             r = _rademacher_like(like_v, k)
             Ar = mv(r)
             return _tree_dot(Ar, Ar)
+
         vals = jax.vmap(one)(keys)
         return jnp.sqrt(vals.mean())
+
     return reduce
 
 
-def reducer_trace_hutchinson(*, samples: int = 32, key = jax.random.PRNGKey(0)):
+def reducer_trace_hutchinson(*, samples: int = 32, key=jax.random.PRNGKey(0)):
     """Reducer (mv, like) -> scalar ≈ tr(H). Assumes symmetry."""
+
     def reduce(mv, like):
         keys = jax.random.split(key, samples)
+
         def one(k):
             r = _rademacher_like(like, k)
             Hr = mv(r)
             return _tree_dot(r, Hr)
+
         vals = jax.vmap(one)(keys)
         return vals.mean()
+
     return reduce
 
 
 # =============================================================================
-# Example compositions 
+# Example compositions
 # =============================================================================
+
 
 # -- Argwise operator norms, per-arg, ready to be passed as `per_fn` to `make_argwise_functional`
 def jacobian_opnorm_per_fn(func: Callable[..., Any], args: tuple, i: int, *, iters: int = 40):
@@ -609,20 +648,24 @@ def hessian_opnorm_per_fn(func: Callable[..., Any], args: tuple, i: int, *, iter
 
 
 # -- Joint block operator norms; return a single scalar aggregating over selected indices
-def jacobian_opnorm_all_fn(func: Callable[..., Any], args: tuple, idxs: tuple[int, ...], *, iters: int = 40):
+def jacobian_opnorm_all_fn(
+    func: Callable[..., Any], args: tuple, idxs: tuple[int, ...], *, iters: int = 40
+):
     y_like = jt.map(jnp.zeros_like, func(*args))
     mv, mtv, like_v, like_u = jacobian_linop_selected(func, args, idxs, y_like=y_like)
     reducer = reducer_opnorm_power_bidiag(iters=iters)
     return reducer(mv, mtv, like_v, like_u)
 
 
-def hessian_opnorm_all_fn(func: Callable[..., Any], args: tuple, idxs: tuple[int, ...], *, iters: int = 40):
+def hessian_opnorm_all_fn(
+    func: Callable[..., Any], args: tuple, idxs: tuple[int, ...], *, iters: int = 40
+):
     mv, mtv, like = hessian_linop_selected(func, args, idxs)
     reducer = reducer_opnorm_power_bidiag(iters=iters)
     return reducer(mv, mtv, like, like)
 
 
-# -- Block operator norms for a given u; returns a k×k tuple-of-tuples of norms for 
+# -- Block operator norms for a given u; returns a k×k tuple-of-tuples of norms for
 def hessian_block_opnorm_matrix_u(
     func: Callable[..., Any],
     args: tuple,
@@ -631,8 +674,7 @@ def hessian_block_opnorm_matrix_u(
     *,
     iters: int = 40,
 ):
-    """Return a k×k tuple-of-tuples of block operator norms ||H_{i,j}^{(u)}||_2 for i,j in idxs.
-    """
+    """Return a k×k tuple-of-tuples of block operator norms ||H_{i,j}^{(u)}||_2 for i,j in idxs."""
     reducer = reducer_opnorm_power_bidiag(iters=iters)
     rows = []
     for i in idxs:
@@ -643,13 +685,14 @@ def hessian_block_opnorm_matrix_u(
         rows.append(tuple(row))
     return tuple(rows)
 
+
 # # Can use the last in a couple of ways (I think):
 # # Given: idxs = (0, 1) for (input, hidden)
 # u = None  # some hidden direction to probe the curvature
 # functional = lambda f, args: hessian_block_opnorm_matrix_u(f, args, idxs=(0, 1), u=u, iters=40)
 
 # # Each selected slot i gets row i of the block op-norm matrix; others are None.
-# # The only difference here is that the outer level of the result will have the same type as the 
+# # The only difference here is that the outer level of the result will have the same type as the
 # # `args` passed to `functional`.
 # functional = make_argwise_functional(
 #     argnums=(0, 1),  # e.g., (input, hidden)

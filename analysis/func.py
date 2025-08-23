@@ -2,16 +2,19 @@ from ast import TypeVar
 from collections.abc import Callable, Sequence
 from typing import Any, Concatenate, Optional, ParamSpec, TypeAlias
 
-
 import equinox as eqx
 import jax.tree as jt
-from jaxtyping import PyTree
-
 import jax_cookbook.tree as jtree
 from jax_cookbook.misc import construct_tuple_like
+from jaxtyping import PyTree
 
-from rlrmp.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf, SinglePort
-from rlrmp.types import AnalysisInputData
+from feedbax_experiments.analysis.analysis import (
+    AbstractAnalysis,
+    AbstractAnalysisPorts,
+    InputOf,
+    SinglePort,
+)
+from feedbax_experiments.types import AnalysisInputData
 
 
 class ApplyFuncs(AbstractAnalysis[SinglePort[PyTree[Any]]]):
@@ -50,24 +53,26 @@ class ApplyFuncs(AbstractAnalysis[SinglePort[PyTree[Any]]]):
             is_leaf=callable,
         )
         return result
-    
-    
+
+
 class CallerPorts(AbstractAnalysisPorts):
     """Input ports for analyses which call other functions with positional arguments."""
+
     funcs: InputOf[Callable]
     func_args: tuple[InputOf[Any], ...]
-    
-    
+
+
 P = ParamSpec("P")
 R = TypeVar("R")
 T = TypeVar("T")
 
 # A functional takes (func, *args) and returns T.
 Functional = Callable[Concatenate[Callable[P, R], P], T]
-    
+
 
 class ApplyFunctional(AbstractAnalysis[CallerPorts]):
     """Apply a user-supplied functional(func, *args) per (func, *args) leaf."""
+
     Ports = CallerPorts
     inputs: CallerPorts = eqx.field(default_factory=CallerPorts, converter=CallerPorts.converter)
     # Keep the callable static so we don't try to treat it as an array.
@@ -78,19 +83,17 @@ class ApplyFunctional(AbstractAnalysis[CallerPorts]):
 
     def compute(self, data, *, funcs, func_args, **kwargs):
         tuple_type = type(func_args)
-        
+
         def per_leaf(func, *args):
             # The functional itself should only use JAX ops; then this whole thing is JIT-able.
             args_tuple = construct_tuple_like(tuple_type, args)
             return self.functional(func, args_tuple)
 
         if self.jit_per_leaf:
-            per_leaf = eqx.filter_jit(per_leaf)  
+            per_leaf = eqx.filter_jit(per_leaf)
 
         # Apply per leaf: funcs and each item of func_args must be matching PyTrees
-        return jtree.map_rich(
-            per_leaf, funcs, *func_args, is_leaf=self.is_leaf, description=""
-        )
+        return jtree.map_rich(per_leaf, funcs, *func_args, is_leaf=self.is_leaf, description="")
 
 
 def _canon_argnums(argnums: Optional[int | Sequence[int]], nargs: int) -> tuple[int, ...]:
@@ -117,6 +120,7 @@ def make_argwise_functional(
     """Return functional(func, args) -> container like args with per-arg results.
     The per-object may include scalarization and reducers; non-selected slots are None.
     """
+
     def functional(func, args):
         nargs = len(args)
         sel = _canon_argnums(argnums, nargs)

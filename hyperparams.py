@@ -12,13 +12,13 @@ import yaml
 from jax_cookbook import anyf, is_type, where_attr_strs_to_func
 from jaxtyping import ArrayLike, PyTree
 
-from rlrmp.config import STRINGS, load_config
-from rlrmp.constants import get_iterations_to_save_model_parameters
-from rlrmp.misc import copy_delattr
-from rlrmp.tree_utils import (
+from feedbax_experiments.config import STRINGS, load_config
+from feedbax_experiments.constants import get_iterations_to_save_model_parameters
+from feedbax_experiments.misc import copy_delattr
+from feedbax_experiments.tree_utils import (
     tree_level_labels,
 )
-from rlrmp.types import (
+from feedbax_experiments.types import (
     LDict,
     TaskModelPair,
     TreeNamespace,

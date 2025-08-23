@@ -1,26 +1,23 @@
 from collections import namedtuple
 from functools import partial
 
-from equinox import field
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-import plotly.graph_objects as go
-from jax_cookbook import is_type
-from jaxtyping import PyTree, Float, Array
-
 import jax_cookbook.tree as jtree
+import plotly.graph_objects as go
+from equinox import field
+from jax_cookbook import is_type
+from jaxtyping import Array, Float, PyTree
 
-from rlrmp.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
-from rlrmp.types import AnalysisInputData, LDict, TreeNamespace
-from rlrmp.types import Polar
-
+from feedbax_experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
+from feedbax_experiments.types import AnalysisInputData, LDict, Polar, TreeNamespace
 
 DecompResults = namedtuple("DecompResults", ["vals", "vecs_l", "vecs_r"])
 
 
 # @partial(jax.jit, device=jax.devices('cpu')[0])
-def eig(    
+def eig(
     arr: Float[Array, "... m n"],
     **kwargs,
 ) -> DecompResults:
@@ -37,10 +34,11 @@ def svd(arr: Float[Array, "... m n"], **kwargs) -> DecompResults:
 
 class DecompPorts(AbstractAnalysisPorts):
     matrices: InputOf[Float[Array, "... m n"]]
-    
+
 
 class SquareDecompPorts(AbstractAnalysisPorts):
     """Input ports for Eigendecomposition analysis."""
+
     matrices: InputOf[Float[Array, "... m m"]]
 
 
@@ -60,11 +58,10 @@ class Eig(AbstractAnalysis[SquareDecompPorts]):
         return jtree.unzip(jt.map(eig, matrices), tuple_cls=DecompResults)
 
 
-
 class SVD(AbstractAnalysis[DecompPorts]):
-    Ports = DecompPorts 
+    Ports = DecompPorts
     inputs: DecompPorts = field(default_factory=DecompPorts, converter=DecompPorts.converter)
-    
+
     def compute(
         self,
         data: AnalysisInputData,
@@ -76,26 +73,26 @@ class SVD(AbstractAnalysis[DecompPorts]):
 
 
 def complex_to_polar_abs_angle(arr: Array) -> LDict[str, Array]:
-  """
-  Converts complex numbers to polar coordinates with symmetric angles.
-  
-  This is useful when working with the distribution of eigenvalues of discrete 
-  systems, where the absolute angle describes frequency and the magnitude describes 
-  stability. 
+    """
+    Converts complex numbers to polar coordinates with symmetric angles.
 
-  Args:
-    arr: A JAX array of complex numbers with shape (..., n).
+    This is useful when working with the distribution of eigenvalues of discrete
+    systems, where the absolute angle describes frequency and the magnitude describes
+    stability.
 
-  Returns:
-    A tuple containing two JAX arrays:
-    - angles: The angles in radians, mapped to the interval [0, pi],
-              symmetric about the real axis. Shape (..., n).
-    - magnitudes: The magnitudes (radii) of the complex numbers.
-                  Shape (..., n).
-  """
-  # Calculate magnitudes (absolute values)
-  magnitude = jnp.abs(arr)
-  # Calculate standard angles in (-pi, pi] and take absolute value for [0, pi]
-  angle = jnp.abs(jnp.angle(arr))
-  return LDict.of("component")(dict(angle=angle, magnitude=magnitude))
-  # return jnp.stack([angles, magnitudes], axis=0)
+    Args:
+      arr: A JAX array of complex numbers with shape (..., n).
+
+    Returns:
+      A tuple containing two JAX arrays:
+      - angles: The angles in radians, mapped to the interval [0, pi],
+                symmetric about the real axis. Shape (..., n).
+      - magnitudes: The magnitudes (radii) of the complex numbers.
+                    Shape (..., n).
+    """
+    # Calculate magnitudes (absolute values)
+    magnitude = jnp.abs(arr)
+    # Calculate standard angles in (-pi, pi] and take absolute value for [0, pi]
+    angle = jnp.abs(jnp.angle(arr))
+    return LDict.of("component")(dict(angle=angle, magnitude=magnitude))
+    # return jnp.stack([angles, magnitudes], axis=0)

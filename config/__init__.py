@@ -1,4 +1,4 @@
-from rlrmp.types import TreeNamespace
+from feedbax_experiments.types import TreeNamespace
 
 from .batch import load_batch_config
 from .config import (

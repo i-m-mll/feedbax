@@ -8,7 +8,7 @@ import yaml
 from jax_cookbook import is_type
 from jaxtyping import PyTree
 
-from rlrmp.misc import deep_merge
+from feedbax_experiments.misc import deep_merge
 
 # from rlrmp.tree_utils import expand_split_keys
 

@@ -1,38 +1,37 @@
 from collections.abc import Callable, Sequence
+
 import equinox as eqx
-from feedbax.intervene import CurlField, FixedField
 import jax.numpy as jnp
-
-from rlrmp.analysis.state_utils import vmap_eval_ensemble
-from rlrmp.types import TreeNamespace
 import jax.tree as jt
+from feedbax.intervene import CurlField, FixedField
 
-
+from feedbax_experiments.analysis.state_utils import vmap_eval_ensemble
+from feedbax_experiments.types import TreeNamespace
 
 FB_INTERVENOR_LABEL = "FeedbackPert"
 PLANT_INTERVENOR_LABEL = "DisturbanceField"
 
 
 PLANT_DISTURBANCE_CLASSES = {
-    'curl': CurlField,
-    'constant': FixedField,
+    "curl": CurlField,
+    "constant": FixedField,
 }
 
 
 def orthogonal_field(trial_spec, _, key):
-    init_pos = trial_spec.inits['mechanics.effector'].pos
-    goal_pos = jnp.take(trial_spec.targets['mechanics.effector.pos'].value, -1, axis=-2)
+    init_pos = trial_spec.inits["mechanics.effector"].pos
+    goal_pos = jnp.take(trial_spec.targets["mechanics.effector.pos"].value, -1, axis=-2)
     direction_vec = goal_pos - init_pos
     direction_vec = direction_vec / jnp.linalg.norm(direction_vec)
     return jnp.array([-direction_vec[1], direction_vec[0]])
 
 
 PLANT_PERT_FUNCS = {
-    'curl': lambda scale: CurlField.with_params(
+    "curl": lambda scale: CurlField.with_params(
         #! amplitude=amplitude,
         scale=scale,
     ),
-    'constant': lambda scale: FixedField.with_params(
+    "constant": lambda scale: FixedField.with_params(
         scale=scale,
         field=orthogonal_field,
     ),
@@ -53,13 +52,13 @@ def get_pert_amp_vmap_eval_func(
     intervenor_label: str,
 ):
     """Returns a function for evaluating models across a range of perturbation amplitudes.
-    
+
     Args:
         where_pert_amps_in_hps: Callable that selects the sequence of amplitudes from the tree of hyperparameters.
-        intervenor_label: The same argument passed to `schedule_intervenor` when setting up the task+models, which 
+        intervenor_label: The same argument passed to `schedule_intervenor` when setting up the task+models, which
             identifies which intervention to scale by the vmap argument.
     """
-    
+
     def eval_func(key_eval, hps, models, task):
         """Vmap over impulse amplitude."""
 
@@ -72,8 +71,8 @@ def get_pert_amp_vmap_eval_func(
             ),
         )(jnp.array(where_pert_amps_in_hps(hps)))
 
-        # I am not sure why this moveaxis is necessary. 
-        # I tried using `out_axes=2` (with or without `in_axes=0`) and 
+        # I am not sure why this moveaxis is necessary.
+        # I tried using `out_axes=2` (with or without `in_axes=0`) and
         # the result has the trial (axis 0) and replicate (axis 1) swapped.
         # (I had expected vmap to simply insert the new axis in the indicated position.)
         return jt.map(

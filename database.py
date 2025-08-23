@@ -62,15 +62,20 @@ from sqlalchemy.orm import (
 from sqlalchemy.sql import func
 from sqlalchemy.sql.type_api import TypeEngine
 
-from rlrmp.config import PATHS, STRINGS
-from rlrmp.hyperparams import cast_hps, flatten_hps, load_hps, take_train_histories_hps
-from rlrmp.misc import (
+from feedbax_experiments.config import PATHS, STRINGS
+from feedbax_experiments.hyperparams import (
+    cast_hps,
+    flatten_hps,
+    load_hps,
+    take_train_histories_hps,
+)
+from feedbax_experiments.misc import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
     with_caller_logger,
 )
-from rlrmp.tree_utils import pp
-from rlrmp.types import (
+from feedbax_experiments.tree_utils import pp
+from feedbax_experiments.types import (
     LDict,
     TreeNamespace,
     dict_to_namespace,

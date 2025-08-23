@@ -15,18 +15,18 @@ import jax.tree as jt
 import plotly.graph_objects as go
 from jaxtyping import Array, PyTree
 
-from rlrmp.analysis.analysis import (
+from feedbax_experiments.analysis.analysis import (
     AbstractAnalysis,
     PortsType,
     SinglePort,
 )
-from rlrmp.config import PLOTLY_CONFIG
-from rlrmp.hyperparams import flat_key_to_where_func
-from rlrmp.misc import deep_merge
-from rlrmp.plot import set_axes_bounds_equal
-from rlrmp.plot_utils import get_label_str
-from rlrmp.tree_utils import ldict_level_to_bottom
-from rlrmp.types import AnalysisInputData, LDict
+from feedbax_experiments.config import PLOTLY_CONFIG
+from feedbax_experiments.hyperparams import flat_key_to_where_func
+from feedbax_experiments.misc import deep_merge
+from feedbax_experiments.plot import set_axes_bounds_equal
+from feedbax_experiments.plot_utils import get_label_str
+from feedbax_experiments.tree_utils import ldict_level_to_bottom
+from feedbax_experiments.types import AnalysisInputData, LDict
 
 logger = logging.getLogger(__name__)
 

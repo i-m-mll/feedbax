@@ -25,13 +25,13 @@ from feedbax.task import AbstractTask
 from jax_cookbook import MultiVmapAxes, is_module, is_none, is_type
 from jaxtyping import ArrayLike, PRNGKeyArray, PyTree
 
-from rlrmp.analysis.aligned import (
+from feedbax_experiments.analysis.aligned import (
     DEFAULT_VARSET,
     VAR_LEVEL_LABEL,
     AlignedVars,
     get_trivial_reach_directions,
 )
-from rlrmp.analysis.analysis import (
+from feedbax_experiments.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     Data,
@@ -40,35 +40,35 @@ from rlrmp.analysis.analysis import (
     NoPorts,
     SinglePort,
 )
-from rlrmp.analysis.disturbance import (
+from feedbax_experiments.analysis.disturbance import (
     PLANT_INTERVENOR_LABEL,
     PLANT_PERT_FUNCS,
     get_pert_amp_vmap_eval_func,
 )
-from rlrmp.analysis.effector import EffectorTrajectories
-from rlrmp.analysis.network import UnitPreferences
-from rlrmp.analysis.profiles import Profiles
-from rlrmp.analysis.regression import Regression
-from rlrmp.analysis.state_utils import (
+from feedbax_experiments.analysis.effector import EffectorTrajectories
+from feedbax_experiments.analysis.network import UnitPreferences
+from feedbax_experiments.analysis.profiles import Profiles
+from feedbax_experiments.analysis.regression import Regression
+from feedbax_experiments.analysis.state_utils import (
     get_best_replicate,
     get_constant_task_input_fn,
     get_segment_trials_func,
     get_symmetric_accel_decel_epochs,
     vmap_eval_ensemble,
 )
-from rlrmp.colors import ColorscaleSpec
-from rlrmp.config import PLOTLY_CONFIG
-from rlrmp.constants import POS_ENDPOINTS_ALIGNED
-from rlrmp.misc import unit_circle_points
-from rlrmp.plot import add_endpoint_traces, get_violins, set_axes_bounds_equal
-from rlrmp.tree_utils import (
+from feedbax_experiments.colors import ColorscaleSpec
+from feedbax_experiments.config import PLOTLY_CONFIG
+from feedbax_experiments.constants import POS_ENDPOINTS_ALIGNED
+from feedbax_experiments.misc import unit_circle_points
+from feedbax_experiments.plot import add_endpoint_traces, get_violins, set_axes_bounds_equal
+from feedbax_experiments.tree_utils import (
     first,
     ldict_level_keys,
     move_ldict_level_above,
     subdict,
     tree_level_labels,
 )
-from rlrmp.types import (
+from feedbax_experiments.types import (
     AnalysisInputData,
     LDict,
     TreeNamespace,

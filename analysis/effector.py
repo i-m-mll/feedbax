@@ -12,16 +12,16 @@ from feedbax.task import AbstractTask
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 
-from rlrmp.analysis.aligned import DEFAULT_VARSET, get_varset_labels
-from rlrmp.analysis.analysis import AbstractAnalysis, NoPorts
-from rlrmp.analysis.state_utils import get_pos_endpoints
-from rlrmp.colors import COLORSCALES
-from rlrmp.config import PLOTLY_CONFIG
-from rlrmp.constants import REPLICATE_CRITERION
-from rlrmp.misc import deep_merge
-from rlrmp.plot import add_endpoint_traces
-from rlrmp.plot_utils import get_label_str
-from rlrmp.types import AnalysisInputData, TreeNamespace, VarSpec
+from feedbax_experiments.analysis.aligned import DEFAULT_VARSET, get_varset_labels
+from feedbax_experiments.analysis.analysis import AbstractAnalysis, NoPorts
+from feedbax_experiments.analysis.state_utils import get_pos_endpoints
+from feedbax_experiments.colors import COLORSCALES
+from feedbax_experiments.config import PLOTLY_CONFIG
+from feedbax_experiments.constants import REPLICATE_CRITERION
+from feedbax_experiments.misc import deep_merge
+from feedbax_experiments.plot import add_endpoint_traces
+from feedbax_experiments.plot_utils import get_label_str
+from feedbax_experiments.types import AnalysisInputData, TreeNamespace, VarSpec
 
 MEAN_LIGHTEN_FACTOR = PLOTLY_CONFIG.mean_lighten_factor
 

@@ -1,38 +1,40 @@
 from collections.abc import Mapping
 from functools import wraps
 from types import MappingProxyType
-from typing import Optional, Literal as L
+from typing import Literal as L
+from typing import Optional
 
 import equinox as eqx
-
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jaxtyping import Array
 import numpy as np
-from sklearn.neighbors import KDTree
-
 from feedbax.misc import batch_reshape  # for flattening/unflattening
 from jax_cookbook.misc import crop_to_shortest
+from jaxtyping import Array
+from sklearn.neighbors import KDTree
 
-from rlrmp.analysis.analysis import (
-    AbstractAnalysis, 
+from feedbax_experiments.analysis.analysis import (
+    AbstractAnalysis,
     AbstractAnalysisPorts,
-    Data, 
+    Data,
     InputOf,
 )
-from rlrmp.tree_utils import getitem_at_level
-from rlrmp.types import AnalysisInputData
+from feedbax_experiments.tree_utils import getitem_at_level
+from feedbax_experiments.types import AnalysisInputData
 
 
 class TanglingPorts(AbstractAnalysisPorts):
     """Input ports for Tangling analysis."""
+
     state: InputOf[Array]
 
 
 class Tangling(AbstractAnalysis[TanglingPorts]):
     Ports = TanglingPorts
-    inputs: TanglingPorts = eqx.field(default_factory=TanglingPorts, converter=TanglingPorts.converter)
+    inputs: TanglingPorts = eqx.field(
+        default_factory=TanglingPorts, converter=TanglingPorts.converter
+    )
     fig_params: Mapping = MappingProxyType(dict())
     variant: Optional[str] = None
     eps: float = 1e-6  # TODO: Allow for `lambda states: ...`
@@ -46,16 +48,16 @@ class Tangling(AbstractAnalysis[TanglingPorts]):
     # Leaf size forwarded to ``sklearn.neighbors.KDTree``. Kept here so that it
     # can be tuned from configs if desired.
     leaf_size: int = 40
-    
+
     def compute(self, data: AnalysisInputData, *, state, hps_common, **kwargs) -> dict:
         #! Should probably be hps_common.dt, top-level
-        dt = hps_common.train.model.dt  
+        dt = hps_common.train.model.dt
         if self.variant is not None:
             state = getitem_at_level("task_variant", self.variant, state)
         flow = jt.map(lambda x: self._flow_field(x, dt), state)
         tangling = jt.map(lambda x, dxdt: self._tangling(x, dxdt), state, flow)
         return tangling
-    
+
     def _tangling(self, x: Array, dxdt: Array) -> Array:
         # Delegate to the decorated core function which handles
         # timestep-cropping and batch flattening automatically.
@@ -66,7 +68,7 @@ class Tangling(AbstractAnalysis[TanglingPorts]):
             self.leaf_size,
             t_axis=self.t_axis,
         )(x, dxdt)
-    
+
     def _flow_field(self, arr: Array, dt: float) -> Array:
         # Simple finite difference approximation of the flow field.
         # Assume `arr` has shape (..., timestep, dim)
@@ -84,10 +86,10 @@ def _tangling_direct(x_flat: jnp.ndarray, v_flat: jnp.ndarray, eps: float) -> jn
     dx = x_flat[:, None, :] - x_flat[None, :, :]  # (N, N, dim)
     dv = v_flat[:, None, :] - v_flat[None, :, :]
 
-    dist2 = jnp.sum(dx ** 2, axis=-1) + eps  # (N, N)
-    vel2 = jnp.sum(dv ** 2, axis=-1)         # (N, N)
+    dist2 = jnp.sum(dx**2, axis=-1) + eps  # (N, N)
+    vel2 = jnp.sum(dv**2, axis=-1)  # (N, N)
 
-    ratio = vel2 / dist2                     # (N, N)
+    ratio = vel2 / dist2  # (N, N)
 
     # Maximum over the *second* axis gives the tangling for every i.
     return jnp.max(ratio, axis=1)
@@ -146,9 +148,9 @@ def _tangling_from_neighbors(
     v_owner = v[:, None, :]
 
     dv = v_owner - v_neigh
-    vel2 = jnp.sum(dv ** 2, axis=-1)
+    vel2 = jnp.sum(dv**2, axis=-1)
 
-    dist2 = dists ** 2 + eps
+    dist2 = dists**2 + eps
 
     ratios = vel2 / dist2
 
@@ -163,7 +165,7 @@ def _get_tangling_core(
     t_axis: int,
 ):
     @crop_to_shortest(axis=t_axis)
-    @batch_reshape  
+    @batch_reshape
     def _tangling_core(
         x: jnp.ndarray,
         dxdt: jnp.ndarray,
@@ -186,4 +188,5 @@ def _get_tangling_core(
             )
         else:
             raise ValueError(f"Unknown tangling method '{method}'.")
+
     return _tangling_core

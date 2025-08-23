@@ -8,8 +8,8 @@ from rich.highlighter import ReprHighlighter
 from rich.logging import RichHandler
 from rich.text import Text
 
-from rlrmp.config import LOGGING, PATHS
-from rlrmp.types import TreeNamespace
+from feedbax_experiments.config import LOGGING, PATHS
+from feedbax_experiments.types import TreeNamespace
 
 SESSION_START_BANNER = "―" * 20 + " NEW SESSION STARTED " + "―" * 20
 
