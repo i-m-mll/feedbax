@@ -31,7 +31,7 @@ from feedbax_experiments.analysis.analysis import (
 from feedbax_experiments.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
-from feedbax_experiments.config import PATHS
+from feedbax_experiments.config import PATHS, EXPERIMENT_REGISTRY
 from feedbax_experiments.constants import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
@@ -52,7 +52,7 @@ from feedbax_experiments.hyperparams import (
     use_train_hps_when_none,
 )
 from feedbax_experiments.misc import delete_all_files_in_dir, log_version_info
-from feedbax_experiments.plugins import discover_experiment_packages, get_default_registry
+from feedbax_experiments.plugins import get_default_registry
 from feedbax_experiments.setup_utils import query_and_load_model
 from feedbax_experiments.tree_utils import tree_level_labels
 from feedbax_experiments.types import (
@@ -63,9 +63,6 @@ from feedbax_experiments.types import (
 )
 
 STATES_CACHE_SUBDIR = "states"
-
-
-_registry = discover_experiment_packages()
 
 
 @dataclass
@@ -265,7 +262,7 @@ def setup_eval_for_module(
     """
 
     # Load analysis module from registered packages
-    analysis_module: ModuleType = _registry.get_analysis_module(module_key)
+    analysis_module: ModuleType = EXPERIMENT_REGISTRY.get_analysis_module(module_key)
 
     #! For this project, assume only a single-level mapping between training experiments and analysis subpackages;
     #! thus `analysis.modules.part1` corresponds to `training.modules.part1`.

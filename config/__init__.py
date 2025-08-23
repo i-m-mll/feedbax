@@ -9,6 +9,10 @@ from .config import (
     load_config_as_ns,
 )
 
+# Initialize experiment registry once at package import
+from feedbax_experiments.plugins import discover_experiment_packages
+EXPERIMENT_REGISTRY = discover_experiment_packages()
+
 # Load project-wide configuration from YAML resources in the `config` subpackage
 CONSTANTS: TreeNamespace = load_config_as_ns("constants")
 LOGGING: TreeNamespace = _setup_logging(load_config_as_ns("logging"))
