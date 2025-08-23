@@ -10,7 +10,7 @@ from jaxtyping import PyTree
 
 from feedbax_experiments.misc import deep_merge
 
-# from rlrmp.tree_utils import expand_split_keys
+# from feedbax_.tree_utils import expand_split_keys
 
 
 def expand_split_keys(tree: PyTree, key_sep: str = ".") -> PyTree:
@@ -198,6 +198,7 @@ def _eval_node(node: Dict[str, Any], parent_ctx: Optional[str]) -> List[Dict[str
         assert False
 
 
+#! TODO: Use experiment registry!
 def load_batch_config(
     domain: Literal["analysis", "training"],
     config_key: str,
