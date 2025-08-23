@@ -1,0 +1,38 @@
+#  Hyperparameters that uniquely identify the model(s)/training run(s) to analyze
+train:
+  pert:  
+    type: curl
+    # list -> load multiple models
+    std: [0.0, 0.5, 1.0, 1.5]  # curl
+    # std: [0.0, 0.01, 0.1, 1.0]  # constant
+  
+eval_n: 10
+  
+task:  # Passed to the base task constructor
+  full:
+    eval_grid_n: 2
+    eval_n_directions: 24
+    eval_reach_length: 0.5
+  small:
+    eval_grid_n: 1
+    eval_n_directions: 7
+    eval_reach_length: 0.5
+
+pert:
+  #! Can't use null here, since pert.type doesn't match with train.pert.type, under `load`.
+  #! Could replace `load` key with `train` key, to start fixing this.
+  type: curl
+  amp: [0.0, 0.5, 1.0, 2.0, 4.0]  # curl
+  # amp: [0.0, 0.05, 0.1, 0.2, 0.4]  # constant
+
+model:
+  n_steps: null
+  feedback_noise_std: null
+  motor_noise_std: null
+
+analyses:
+  center_out_sets: 
+    i_replicate: null  # null -> best replicate
+    
+  
+  

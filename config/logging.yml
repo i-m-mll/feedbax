@@ -1,0 +1,15 @@
+# format_str: "%(asctime)s [%(levelname)s] %(name)s,%(lineno)d: %(message)s"
+console_format_str: '(%(name)-30s) %(message)s'
+file_format_str: '%(asctime)s [%(levelname)s] %(name)s,%(lineno)d: %(message)s'
+console_level: INFO
+file_level: DEBUG
+pkg_console_levels: 
+  jax: WARNING
+  matplotlib: WARNING
+  kaleido: ERROR
+pkgs_own_files: 
+  jax: DEBUG
+  matplotlib: DEBUG
+  kaleido: DEBUG
+max_bytes: 1000000
+backup_count: 1

@@ -1,0 +1,41 @@
+#  Hyperparameters that uniquely identify the model(s)/training run(s) to analyze
+train:
+  pert:  
+    type: curl
+    # list -> load multiple models
+    std: [0, 0.5, 1.0, 1.5]  
+
+eval_n: 10
+
+task:  # Passed to the base task constructor
+  steady:
+    eval_grid_n: 1
+    eval_n_directions: 1
+    eval_reach_length: 0
+  reach:
+    eval_grid_n: 1
+    eval_n_directions: 3
+  # reach_pca:
+  #   eval_grid_n: 2
+  #   eval_n_directions: 7
+
+pert:
+  sisu:
+    # Timestep of SISU step 
+    step: 10
+    # Values pre and post step
+    init: 0  
+    final: [0, 2]
+  plant:
+    type: curl
+    amp: [0.0, 2.0] 
+    # constant -> [0.0, 0.1, 0.4],
+
+model:
+  n_steps: null
+  feedback_noise_std: null
+  motor_noise_std: null
+
+  
+  
+  

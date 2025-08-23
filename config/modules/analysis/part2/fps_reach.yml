@@ -1,0 +1,29 @@
+#  Hyperparameters that uniquely identify the model(s)/training run(s) to analyze
+train:
+  pert:  
+    type: curl
+    std: [0.0, 1.5]
+    # std: [0.0, 0.04]
+
+sisu: [-3., -2., -1., 0., 1., 2., 3.]
+
+eval_n: 5
+
+pert:
+  type: curl
+  amp: [0.0, 2.0]
+
+task:  # Passed to the base task constructor
+  full:
+    eval_grid_n: 1
+    eval_n_directions: 24
+    eval_reach_length: 0.5
+
+model:
+  n_steps: null
+  feedback_noise_std: null
+  motor_noise_std: null
+  # damping: 0.0
+  
+  
+  

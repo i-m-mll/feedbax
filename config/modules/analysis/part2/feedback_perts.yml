@@ -1,0 +1,37 @@
+#  Hyperparameters that uniquely identify the model(s)/training run(s) to analyze
+train:
+  pert:  
+    type: curl
+    std: [0.0, 1.0]
+    # std: [0.0, 0.04]
+
+sisu: [-3., -2., -1., 0., 1., 2., 3.]
+
+eval_n: 25
+
+task:  # Passed to the base task constructor
+  full:
+    eval_grid_n: 5
+    eval_n_directions: 1
+    eval_reach_length: 0
+
+pert:
+  # null -> same as during training, e.g. load.train.pert.type in this case
+  type: impulse  # not used for anything but reference
+  # TODO: Add the calculation of `amplitude` when loading hyperparams
+  amp_max: 
+    fb_pos: 1.8
+    fb_vel: 1.2
+  n_amps: 3
+  start_step: 20
+  duration: 5
+  # direction: rand  # 'rand' or 'xy'
+
+model:
+  n_steps: null
+  feedback_noise_std: null
+  motor_noise_std: null
+  # damping: 0.0
+  
+  
+  
