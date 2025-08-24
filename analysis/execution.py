@@ -31,7 +31,7 @@ from feedbax_experiments.analysis.analysis import (
 from feedbax_experiments.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
-from feedbax_experiments.config import PATHS, EXPERIMENT_REGISTRY
+from feedbax_experiments.config import PATHS
 from feedbax_experiments.constants import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
@@ -52,7 +52,7 @@ from feedbax_experiments.hyperparams import (
     use_train_hps_when_none,
 )
 from feedbax_experiments.misc import delete_all_files_in_dir, log_version_info
-from feedbax_experiments.plugins import get_default_registry
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.setup_utils import query_and_load_model
 from feedbax_experiments.tree_utils import tree_level_labels
 from feedbax_experiments.types import (
@@ -271,7 +271,9 @@ def setup_eval_for_module(
     training_module_name = module_key.split(".")[0]
 
     models_base, model_info, replicate_info, tasks_train, n_replicates_included, hps_train_dict = (
-        load_trained_models_and_aux_objects(training_module_name, hps, db_session, _registry)
+        load_trained_models_and_aux_objects(
+            training_module_name, hps, db_session, EXPERIMENT_REGISTRY
+        )
     )
 
     # Fill-in any missing training hyper-parameters **out-of-place** and switch to

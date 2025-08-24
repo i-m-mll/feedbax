@@ -6,43 +6,11 @@ import jax.tree as jt
 import jax.tree_util as jtu
 import yaml
 from jax_cookbook import is_type
+from jax_cookbook.tree import expand_split_keys
 from jaxtyping import PyTree
 
 from feedbax_experiments.misc import deep_merge
-
-# from feedbax_.tree_utils import expand_split_keys
-
-
-def expand_split_keys(tree: PyTree, key_sep: str = ".") -> PyTree:
-    """Expand dotted keys inside mappings into nested dicts, recursively."""
-    if isinstance(tree, dict):
-        out = {}
-        for key, val in tree.items():
-            val = expand_split_keys(val, key_sep=key_sep)
-            if isinstance(key, str) and key_sep in key:
-                print(key)
-                parts = key.split(key_sep)
-                cur = out
-                for p in parts[:-1]:
-                    if p not in cur or not isinstance(cur[p], dict):
-                        cur[p] = {}
-                    cur = cur[p]
-                last = parts[-1]
-                if isinstance(val, dict) and isinstance(cur.get(last), dict):
-                    cur[last] = deep_merge(cur[last], val)
-                else:
-                    cur[last] = val
-            else:
-                if isinstance(val, dict) and isinstance(out.get(key), dict):
-                    out[key] = deep_merge(out[key], val)
-                else:
-                    out[key] = val
-        return type(tree)(**out)
-    else:
-        leaves, treedef = jt.flatten(tree, is_leaf=is_type(dict))
-        if jtu.treedef_is_leaf(treedef) and not isinstance(leaves, dict):
-            return tree
-        return jt.unflatten(treedef, [expand_split_keys(leaf, key_sep=key_sep) for leaf in leaves])
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 
 
 class _YamlLiteral(list): ...
@@ -198,26 +166,47 @@ def _eval_node(node: Dict[str, Any], parent_ctx: Optional[str]) -> List[Dict[str
         assert False
 
 
-#! TODO: Use experiment registry!
 def load_batch_config(
     domain: Literal["analysis", "training"],
     config_key: str,
+    registry=None,
 ) -> dict[str, list[dict]]:
     """
-    Load src/rlrmp/config/batched/{domain}/{config_key}.yml and return:
+    Load config/batched/{domain}/{config_key}.yml from registered packages and return:
         { module_key: [run_params, ...] }
 
     Node semantics:
       - type=config: zipped/broadcast sweeps inside 'of' (no dotted keys in output)
       - type=product: cartesian product over children (deep-merge)
       - type=cases:   union of children
+
+    Args:
+        domain: Either "analysis" or "training"
+        config_key: Name of the batch config file (without .yml extension)
+        registry: Optional experiment registry (uses centralized one if None)
     """
-    try:
-        with resources.open_text(f"rlrmp.config.batched.{domain}", f"{config_key}.yml") as f:
-            batch = yaml.safe_load(f)
-    except (FileNotFoundError, ModuleNotFoundError):
+    if registry is None:
+        registry = EXPERIMENT_REGISTRY
+
+    batch = {}
+
+    # Try to load batch config from each registered package
+    for package_name, metadata in registry._packages.items():
+        resource_root = f"{metadata.package_module.__name__}.{metadata.config_resource_root}"
+        batch_resource_path = f"{resource_root}.batched.{domain}"
+
+        try:
+            with resources.open_text(batch_resource_path, f"{config_key}.yml") as f:
+                package_batch = yaml.safe_load(f)
+                if package_batch:
+                    batch.update(package_batch)
+        except (FileNotFoundError, ModuleNotFoundError):
+            # This package doesn't have this batch config file, continue to next
+            continue
+
+    if not batch:
         raise FileNotFoundError(
-            f"Batch config file {config_key}.yml not found in rlrmp.config.batched.{domain}"
+            f"Batch config file {config_key}.yml not found in any registered package's config.batched.{domain}"
         )
 
     if not isinstance(batch, dict):

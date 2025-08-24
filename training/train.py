@@ -25,7 +25,6 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from sqlalchemy.orm import Session
 
 import feedbax_experiments
-import feedbax_experiments.training.modules as training_modules_pkg
 from feedbax_experiments.database import (
     ModelRecord,
     get_db_session,
@@ -39,6 +38,7 @@ from feedbax_experiments.misc import (
     load_module_from_package,
     log_version_info,
 )
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.tree_utils import pp
 from feedbax_experiments.types import TaskModelPair, TreeNamespace, namespace_to_dict
 
@@ -177,7 +177,7 @@ def train_and_save_models(
     key_init, key_train, key_eval = jr.split(key, 3)
 
     # User specifies which variant to run using the `id` key
-    training_module = load_module_from_package(expt_name, training_modules_pkg)
+    training_module = load_module_from_package(expt_name, registry=EXPERIMENT_REGISTRY)
 
     # `all_hps` is a tree of pair-specific hps
     task_model_pairs, all_hps_train = jtree.unzip(

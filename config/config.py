@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypeVar
 
 import jax.tree as jt
 import yaml
-from pytest import File
 
 from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.types import TreeNamespace, dict_to_namespace
@@ -21,7 +20,7 @@ from feedbax_experiments.types import TreeNamespace, dict_to_namespace
 logger = logging.getLogger(__name__)
 
 
-CONFIG_DIR_ENV_VAR_NAME = "RLRMP_CONFIG_DIR"
+CONFIG_DIR_ENV_VAR_NAME = "FEEDBAX_EXPERIMENTS_CONFIG_DIR"
 DEFAULT_CONFIG_FILENAME = "default.yml"
 
 

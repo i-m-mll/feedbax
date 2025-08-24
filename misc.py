@@ -10,13 +10,13 @@ import re
 import signal
 import subprocess
 import types
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
 from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 from types import GeneratorType, ModuleType
-from typing import Any, Optional, get_origin
+from typing import Any, Optional, TypeVar, get_origin
 
 import equinox as eqx
 import jax
@@ -456,22 +456,24 @@ def get_all_module_names(package_obj, exclude_private: bool = True):
     return tuple(names)
 
 
-def load_module_from_package(name: str, package: Optional[ModuleType] = None, *, registry=None) -> ModuleType:
+def load_module_from_package(
+    name: str, package: Optional[ModuleType] = None, *, registry=None
+) -> ModuleType:
     """Load a module either from a package or via registry.
-    
+
     Args:
         name: Module name to load
         package: Package to load from (legacy mode)
         registry: ExperimentRegistry to use for loading (new mode)
-    
+
     Returns:
         The loaded module
-    
+
     Note: Either package or registry must be provided, but not both.
     """
     if registry is not None and package is not None:
         raise ValueError("Cannot specify both package and registry")
-    
+
     if registry is not None:
         # New registry-based loading
         if "." in name:
@@ -480,7 +482,7 @@ def load_module_from_package(name: str, package: Optional[ModuleType] = None, *,
         else:
             # Training module format like "part1"
             return registry.get_training_module(name)
-    
+
     if package is not None:
         # Legacy package-based loading
         module_name = f"{package.__name__}.{name}"
@@ -490,7 +492,7 @@ def load_module_from_package(name: str, package: Optional[ModuleType] = None, *,
             logger.error(f"Module '{name}' not found.")
             raise ValueError(f"Module '{name}' not found.")
         return module
-    
+
     raise ValueError("Either package or registry must be provided")
 
 
@@ -701,7 +703,7 @@ def deep_merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, An
     out: dict[str, Any] = dict(base)
     for k, v in over.items():
         bv = out.get(k)
-        if isinstance(v, Mapping) and isinstance(bv, Mapping):
+        if isinstance(v, dict) and isinstance(bv, dict):
             out[k] = deep_merge(bv, v)
         else:
             out[k] = v
