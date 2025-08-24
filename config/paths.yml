@@ -1,7 +1,7 @@
 
 # If `base == ""`, then the remaining keys are interpreted as absolute paths,
 # or as relative to this YAML file
-base: /tmp/rlrmp
+base: /tmp/feedbax_experiments
 
 db: db
 models: models

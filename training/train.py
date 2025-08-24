@@ -176,8 +176,7 @@ def train_and_save_models(
 
     key_init, key_train, key_eval = jr.split(key, 3)
 
-    # User specifies which variant to run using the `id` key
-    training_module = load_module_from_package(expt_name, registry=EXPERIMENT_REGISTRY)
+    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
 
     # `all_hps` is a tree of pair-specific hps
     task_model_pairs, all_hps_train = jtree.unzip(

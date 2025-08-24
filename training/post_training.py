@@ -23,7 +23,6 @@ from rich.logging import RichHandler
 from rich.progress import Progress
 from sqlalchemy.orm import Session
 
-import feedbax_experiments.training.modules as training_modules_pkg
 from feedbax_experiments.analysis.aligned import (
     get_aligned_vars,
     get_reach_origins_directions,
@@ -45,6 +44,7 @@ from feedbax_experiments.database import (
     save_model_and_add_record,
 )
 from feedbax_experiments.misc import load_module_from_package, log_version_info
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.setup_utils import (
     setup_models_only,
     setup_tasks_only,
@@ -52,11 +52,6 @@ from feedbax_experiments.setup_utils import (
 from feedbax_experiments.training.loss import get_readout_norm_loss
 from feedbax_experiments.types import LDict, TreeNamespace
 
-# logging.basicConfig(
-#     format='(%(name)-20s) %(message)s',
-#     level=logging.INFO,
-#     handlers=[RichHandler(level="NOTSET")],
-# )
 logger = logging.getLogger(__name__)
 
 
@@ -129,7 +124,7 @@ def load_data(model_record: ModelRecord):
         logger.error(f"Model or training history file not found for {model_record.hash}")
         return
 
-    training_module = load_module_from_package(expt_name, training_modules_pkg)
+    training_module = load_module_from_package(expt_name, registry=EXPERIMENT_REGISTRY)
 
     models, hps = load_tree_with_hps(
         model_record.path,
@@ -595,7 +590,7 @@ def process_model_post_training(
     # part of the model hyperparameters
     hps.eval_n = N_TRIALS_VAL
 
-    training_module = load_module_from_package(expt_name, training_modules_pkg)
+    training_module = load_module_from_package(expt_name, registry=EXPERIMENT_REGISTRY)
 
     # Get respective validation tasks for each model
     tasks = setup_tasks_only(

@@ -10,11 +10,13 @@ from pathlib import Path
 from re import sub
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypeVar
+from unittest.mock import DEFAULT
 
 import jax.tree as jt
 import yaml
 
 from feedbax_experiments.misc import deep_merge
+from feedbax_experiments.plugins.registry import ExperimentRegistry
 from feedbax_experiments.types import TreeNamespace, dict_to_namespace
 
 logger = logging.getLogger(__name__)
@@ -36,9 +38,24 @@ def get_user_config_dir():
         return Path(env_config_dir).expanduser()
 
 
+def _open_yaml_from_package(resource_root: str, fname_no_ext: str) -> dict:
+    with resources.open_text(resource_root, f"{fname_no_ext}.yml", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _maybe_open_yaml(resource_root: str, stem: str) -> Optional[dict]:
+    """Return parsed YAML from package resources, or None if missing."""
+    try:
+        with resources.open_text(resource_root, f"{stem}.yml", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except (FileNotFoundError, ModuleNotFoundError):
+        return None
+
+
 def _load_defaults_hierarchy(
     name_parts: list[str],
     config_type: str,
+    resource_root: str,
 ) -> tuple[dict, list[str | None]]:
     """Load hierarchical default configs from root to parent directory.
 
@@ -47,8 +64,7 @@ def _load_defaults_hierarchy(
     - Try to load feedbax_experiments.config.modules.analysis.part1/default.yml
     - Return merged result
     """
-    merged_config = {}
-    base_subpackage = f"feedbax_experiments.config.modules.{config_type}"
+    base_subpackage = f"{resource_root}.modules.{config_type}"
 
     # Generate all subpackage paths from root to parent directory
     subpackage_paths: list[str | None] = [base_subpackage]
@@ -57,15 +73,15 @@ def _load_defaults_hierarchy(
         subpackage_paths.append(".".join([base_subpackage, *subpath_parts]))
 
     # Load and merge each default.yml that exists
+    merged_config = {}
     for i, subpackage_name in enumerate(subpackage_paths):
         try:
             assert subpackage_name is not None
-            with resources.open_text(subpackage_name, DEFAULT_CONFIG_FILENAME) as f:
-                default_config = yaml.safe_load(f)
-                if default_config is None:
-                    subpackage_paths[i] = None  # Mark as not found
-                    pass
-                merged_config = deep_merge(merged_config, default_config)
+            default_config = _open_yaml_from_package(subpackage_name, DEFAULT_CONFIG_FILENAME)
+            if default_config is None:
+                subpackage_paths[i] = None  # Mark as not found
+                pass
+            merged_config = deep_merge(merged_config, default_config)
         except (FileNotFoundError, ModuleNotFoundError):
             pass
 
@@ -73,91 +89,148 @@ def _load_defaults_hierarchy(
 
 
 def load_config(
-    name: str, config_type: Optional[Literal["training", "analysis"]] = None, *, registry=None
-):
-    """Load the contents of a project YAML config file resource as a nested dict."""
-    name_parts = name.split(".")
-    config_name = name_parts[-1]
+    name: str,
+    config_type: Optional[Literal["training", "analysis"]] = None,
+    *,
+    registry: Optional[ExperimentRegistry] = None,
+) -> dict[str, Any]:
+    """
+    Load a YAML config as a dict.
 
-    # If the user has specified a config directory, try to load the config from it
-    user_config_dir = get_user_config_dir()
-    if user_config_dir is not None:
-        subpath = "/".join(name_parts[:-1])
-        if config_type is not None:
-            try:
-                with open(
-                    user_config_dir / "modules" / config_type / subpath / f"{config_name}.yml"
-                ) as f:
-                    return yaml.safe_load(f)
-            except FileNotFoundError:
-                logger.info(
-                    f"Config file modules/{config_type}/{subpath}/{config_name}.yml not found in user config directory "
-                    f"`{user_config_dir}`. Falling back to package resources."
+    Addressing:
+      - Global configs (config_type is None):   name = "pkg/resource" or "resource"
+      - Module configs (training/analysis):     name = "pkg/part1.some_module" or "part1.some_module"
+
+    Precedence (globals):
+      1) package override:   {pkg}.config/{resource}.yml  (if registry provided / determined)
+      2) user config dir:    {user_config_dir}/{resource}.yml
+      3) base fallback:      feedbax_experiments.config/{resource}.yml
+
+    Module configs (training/analysis):
+      - No user-dir lookup.
+      - Defaults hierarchy is rooted at the owning package’s resource root.
+    """
+
+    if config_type is None:
+        # -------- GLOBAL CONFIGS --------
+        # name is "pkg/resource" or just "resource"
+        resource_name = name.split("/")[-1]  # trailing token is always the filename stem
+
+        if registry is None:
+            # No registry: user config dir -> base fallback
+            user_config_dir = get_user_config_dir()
+            if user_config_dir is not None:
+                upath = user_config_dir / f"{resource_name}.yml"
+                if upath.exists():
+                    with open(upath, "r", encoding="utf-8") as f:
+                        return yaml.safe_load(f) or {}
+                else:
+                    logger.info(
+                        f"Config file {resource_name}.yml not found in user config directory "
+                        f"`{user_config_dir}`. Falling back to base resources."
+                    )
+
+            data = _maybe_open_yaml("feedbax_experiments.config", resource_name)
+            if data is None:
+                raise ValueError(
+                    f"Global config '{resource_name}.yml' not found in base package resources."
                 )
+            return data
+
+        # Registry provided: determine package for globals.
+        # Accept "pkg/resource", or (if only one package is registered) "resource".
+        if "/" in name:
+            pkg = name.split("/", 1)[0]
+            # Validate + compute resource root via registry
+            _pkg_name, resource_root = registry.get_config_resource_root(name)
         else:
-            try:
-                with open(user_config_dir / subpath / f"{name}.yml") as f:
-                    return yaml.safe_load(f)
-            except FileNotFoundError:
-                logger.info(
-                    f"Config file {subpath}/{config_name}.yml not found in user config directory "
-                    f"`{user_config_dir}`. Falling back to package resources."
+            single = registry.single_package_name()
+            if not single:
+                pkgs = "', '".join(sorted(registry._packages.keys()))
+                raise ValueError(
+                    f"Global config '{name}' is ambiguous with multiple packages registered. "
+                    f"Use '<package>/{name}'. Installed packages: '{pkgs}'."
                 )
+            pkg = single
+            _pkg_name, resource_root = registry.get_config_resource_root(f"{pkg}/{resource_name}")
 
-    # Load hierarchical defaults if config_type is specified
-    if config_type is not None:
-        merged_config, paths = _load_defaults_hierarchy(name_parts, config_type)
-        if paths:
-            # `None` corresponds to an empty defaults.yml
-            paths_used = [p for p in paths if p is not None]
-            if len(paths_used) == 1:
-                logger.info(f"Loaded default.yml config from: {paths_used[0]}")
-            else:
-                logger.info(
-                    f"Loaded default.yml configs hierarchically from: {', '.join(paths_used)}"
-                )
+        # Precedence: package override -> user config dir -> base
+        data = _maybe_open_yaml(resource_root, resource_name)
+        if data is not None:
+            return data
+
+        user_config_dir = get_user_config_dir()
+        if user_config_dir is not None:
+            upath = user_config_dir / f"{resource_name}.yml"
+            if upath.exists():
+                with open(upath, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+
+        data = _maybe_open_yaml("feedbax_experiments.config", resource_name)
+        if data is not None:
+            return data
+
+        raise ValueError(
+            f"Global config '{resource_name}.yml' not found in {resource_root}, "
+            f"user config dir, or feedbax_experiments.config."
+        )
+
+    # -------- MODULE CONFIGS (training/analysis) --------
+    # We prefer to have a registry to resolve the owning package.
+    if registry is not None:
+        package_name, resource_root = registry.get_config_resource_root(name, domain=config_type)
     else:
-        merged_config = {}
+        # Fallback: base package only (not recommended; you generally want a registry here)
+        package_name = "feedbax_experiments"
+        resource_root = "feedbax_experiments.config"
 
-    # Load the final config and merge with defaults
-    if registry is not None and config_type is not None:
-        # Use registry to find the appropriate package
-        try:
-            package_name, resource_root = registry.get_config_resource_root(name)
-            subpackage_name = f"{resource_root}.modules.{config_type}"
-            subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
-        except ValueError:
-            # Fall back to default package if not found in registry
-            if config_type is None:
-                subpackage_name = "feedbax_experiments.config"
-            else:
-                subpackage_name = f"feedbax_experiments.config.modules.{config_type}"
-            subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
+    # Derive the relative (dotted) module path (parents + leaf) from `name`
+    if "/" in name:
+        relative_key = name.split("/", 1)[1]  # dotted module path after '<pkg>/'
+    elif name.startswith(f"{package_name}."):
+        # Back-compat if someone passed dotted "<pkg>.<...>"
+        relative_key = name[len(package_name) + 1 :]
     else:
-        # Legacy behavior - load from feedbax_experiments
-        if config_type is None:
-            subpackage_name = "feedbax_experiments.config"
-        else:
-            subpackage_name = f"feedbax_experiments.config.modules.{config_type}"
-        subpackage_name = ".".join([subpackage_name, *name_parts[:-1]])
+        relative_key = name
 
-    # Load the specific config file
-    with resources.open_text(subpackage_name, f"{config_name}.yml") as f:
-        final_config = yaml.safe_load(f) or {}
+    rel_parts = relative_key.split(".")
+    leaf = rel_parts[-1]
+    parents = rel_parts[:-1]
 
-    logger.info(f"Loaded run config from resource {subpackage_name}/{config_name}.yml")
+    # Defaults hierarchy rooted at the owning package
+    merged_defaults, paths = _load_defaults_hierarchy(
+        rel_parts,  # IMPORTANT: use relative (package-stripped) parts
+        config_type,  # "training" | "analysis"
+        resource_root,  # e.g., "rlrmp.config"
+    )
 
-    # Merge defaults with final config (final config takes precedence)
-    return deep_merge(merged_config, final_config)
+    if paths:
+        used = [p for p in paths if p is not None]
+        if len(used) == 1:
+            logger.info(f"Loaded defaults.yml from: {used[0]}")
+        elif used:
+            logger.info(f"Loaded defaults.yml hierarchically from: {', '.join(used)}")
+
+    # Final config file under {pkg}.config.modules.{domain}.<parents>/<leaf>.yml
+    base = f"{resource_root}.modules.{config_type}"
+    subpackage = ".".join([base, *parents]) if parents else base
+
+    final_config = _maybe_open_yaml(subpackage, leaf)
+    if final_config is None:
+        raise ValueError(f"Run config '{leaf}.yml' not found under {subpackage}")
+
+    logger.info(f"Loaded run config from resource {subpackage}/{leaf}.yml")
+    return deep_merge(merged_defaults, final_config)
 
 
 def load_config_as_ns(
     name: str,
     config_type: Optional[Literal["training", "analysis"]] = None,
     to_type: type[T] = TreeNamespace,
+    registry: Optional[ExperimentRegistry] = None,
 ) -> T:
     """Load the contents of a project YAML config file resource as a namespace."""
-    return dict_to_namespace(load_config(name, config_type), to_type=to_type)
+    return dict_to_namespace(load_config(name, config_type, registry=registry), to_type=to_type)
 
 
 def _setup_paths(paths_ns: TreeNamespace):

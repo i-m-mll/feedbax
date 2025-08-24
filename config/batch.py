@@ -11,6 +11,7 @@ from jaxtyping import PyTree
 
 from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax_experiments.plugins.registry import ExperimentRegistry
 
 
 class _YamlLiteral(list): ...
@@ -169,51 +170,82 @@ def _eval_node(node: Dict[str, Any], parent_ctx: Optional[str]) -> List[Dict[str
 def load_batch_config(
     domain: Literal["analysis", "training"],
     config_key: str,
-    registry=None,
+    registry: Optional[ExperimentRegistry] = None,
 ) -> dict[str, list[dict]]:
     """
-    Load config/batched/{domain}/{config_key}.yml from registered packages and return:
-        { module_key: [run_params, ...] }
+    Load a batched config file and return { module_key: [run_params, ...] }.
 
-    Node semantics:
+    Addressing (config_key):
+      - "pkg/name" or "name"
+        * If unqualified and multiple packages are registered, resolution is ambiguous.
+        * If unqualified and exactly one package registered, use it.
+        * Else probe packages for a unique match of '{pkg}.config.batched.{domain}/{name}.yml'.
+
+    Node semantics (unchanged):
       - type=config: zipped/broadcast sweeps inside 'of' (no dotted keys in output)
       - type=product: cartesian product over children (deep-merge)
       - type=cases:   union of children
-
-    Args:
-        domain: Either "analysis" or "training"
-        config_key: Name of the batch config file (without .yml extension)
-        registry: Optional experiment registry (uses centralized one if None)
     """
     if registry is None:
         registry = EXPERIMENT_REGISTRY
 
-    batch = {}
+    # Resolve owning package for this batch key (supports "pkg/name" or "name")
+    if hasattr(registry, "resolve_package_for_batch_key"):
+        pkg = registry.resolve_package_for_batch_key(config_key, domain=domain)
+        name = config_key.split("/", 1)[1] if "/" in config_key else config_key
+    else:
+        # Fallback resolution (in case helper isn't implemented yet)
+        if "/" in config_key:
+            pkg, name = config_key.split("/", 1)
+            if pkg not in registry._packages:
+                raise ValueError(f"Package '{pkg}' not found in registry")
+        else:
+            single = registry.single_package_name()
+            if single:
+                pkg, name = single, config_key
+            else:
+                # Probe for unique match
+                matches: list[str] = []
+                for pkg_name, md in registry._packages.items():
+                    root = (
+                        f"{md.package_module.__name__}.{md.config_resource_root}.batched.{domain}"
+                    )
+                    try:
+                        if resources.files(root).joinpath(f"{config_key}.yml").is_file():
+                            matches.append(pkg_name)
+                    except Exception:
+                        pass
+                if not matches:
+                    raise FileNotFoundError(
+                        f"Batch config '{config_key}.yml' not found under any package's config.batched.{domain}"
+                    )
+                if len(matches) > 1:
+                    opts = "', '".join(matches)
+                    raise ValueError(
+                        f"Batch key '{config_key}' is ambiguous across packages ({opts}). "
+                        f"Use '<package>/{config_key}'."
+                    )
+                pkg, name = matches[0], config_key
 
-    # Try to load batch config from each registered package
-    for package_name, metadata in registry._packages.items():
-        resource_root = f"{metadata.package_module.__name__}.{metadata.config_resource_root}"
-        batch_resource_path = f"{resource_root}.batched.{domain}"
+    # Open exactly one batch file under that package
+    md = registry._packages[pkg]
+    resource_root = f"{md.package_module.__name__}.{md.config_resource_root}.batched.{domain}"
 
-        try:
-            with resources.open_text(batch_resource_path, f"{config_key}.yml") as f:
-                package_batch = yaml.safe_load(f)
-                if package_batch:
-                    batch.update(package_batch)
-        except (FileNotFoundError, ModuleNotFoundError):
-            # This package doesn't have this batch config file, continue to next
-            continue
-
-    if not batch:
-        raise FileNotFoundError(
-            f"Batch config file {config_key}.yml not found in any registered package's config.batched.{domain}"
-        )
+    try:
+        with resources.open_text(resource_root, f"{name}.yml", encoding="utf-8") as f:
+            batch = yaml.safe_load(f) or {}
+    except (FileNotFoundError, ModuleNotFoundError) as e:
+        raise FileNotFoundError(f"Batch config '{name}.yml' not found under {resource_root}") from e
 
     if not isinstance(batch, dict):
         raise ValueError("Top-level batch config must be a mapping of module_key -> typed node")
 
     out: Dict[str, List[Dict[str, Any]]] = {}
     for module_key, module_node in batch.items():
-        parent_ctx = f"module '{module_key}'"
-        out[module_key] = _eval_node(module_node, parent_ctx=parent_ctx)
+        # Qualify module keys with the owning package if not already slash-qualified,
+        # so downstream code has an unambiguous address.
+        qualified_key = module_key if "/" in module_key else f"{pkg}/{module_key}"
+        parent_ctx = f"module '{qualified_key}'"
+        out[qualified_key] = _eval_node(module_node, parent_ctx=parent_ctx)
+
     return out

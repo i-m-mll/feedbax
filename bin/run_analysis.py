@@ -4,21 +4,56 @@
 Takes a single positional argument: the path to the YAML config.
 """
 
-from functools import partial
-
-from feedbax_experiments import enable_logging_handlers
-from feedbax_experiments.config import PATHS
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-
-enable_logging_handlers()
-
+import argparse
+import logging
+import logging.handlers
 import os
+import queue
+import sys
+from functools import partial
+from pathlib import Path
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
-import argparse
-import logging
-from pathlib import Path
+# Set up a QueueHandler so we capture all logs past this point and can wire them into the handlers
+# we set up later.
+early_q = queue.Queue(-1)
+early_h = logging.handlers.QueueHandler(early_q)
+root = logging.getLogger()
+root.setLevel(logging.DEBUG)  # capture everything; final levels come from config
+root.addHandler(early_h)
+
+
+from feedbax_experiments.config import (
+    PATHS,
+    PLOTLY_CONFIG,
+    PRNG_CONFIG,
+    configure_globals_for_package,
+    load_batch_config,
+    load_config,
+)
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+
+
+def _infer_package(args) -> str | None:
+    if args.single:
+        return EXPERIMENT_REGISTRY.resolve_package_for_module_key(args.single, domain="analysis")
+    if args.batch:
+        return EXPERIMENT_REGISTRY.resolve_package_for_batch_key(args.batch, domain="analysis")
+    return EXPERIMENT_REGISTRY.single_package_name()
+
+
+def _early_parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--single")  # e.g. rlrmp.part1.some_analysis or part1.some_analysis
+    p.add_argument("--batch")  # e.g. rlrmp.analysis_batch_x or similar
+    return p.parse_known_args(argv)
+
+
+pkg = _infer_package(_early_parse(sys.argv[1:])[0])
+if pkg:
+    configure_globals_for_package(pkg, EXPERIMENT_REGISTRY)
+
 
 # NOTE: JAX arrays are not directly picklable if they contain device memory references.
 # Since we're using pickle to cache states which may contain JAX arrays, we rely on JAX's
@@ -27,12 +62,10 @@ from pathlib import Path
 import jax.random as jr
 import plotly.io as pio
 
+from feedbax_experiments._logging import enable_logging_handlers, wire_queue
 from feedbax_experiments._warnings import enable_warning_dedup
 from feedbax_experiments.analysis.execution import FigDumpManager, run_analysis_module
-from feedbax_experiments.config import PRNG_CONFIG, load_batch_config, load_config
 from feedbax_experiments.misc import deep_merge
-
-logger = logging.getLogger(os.path.basename(__file__))
 
 
 def build_arg_parser():
@@ -78,7 +111,7 @@ def build_arg_parser():
     parser.add_argument(
         "--plotly-template",
         type=str,
-        default="simple_white",
+        default=None,
         help="Plotly template to use for figures (default: 'simple_white').",
     )
     parser.add_argument(
@@ -89,10 +122,15 @@ def build_arg_parser():
     return parser
 
 
-def main():
-    args = build_arg_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_arg_parser().parse_args(argv or sys.argv[1:])
 
-    pio.templates.default = args.plotly_template
+    # Configure logging and flush the early queue into the new handlers
+    enable_logging_handlers()
+    wire_queue(queue=early_q, bootstrap_handler=early_h, mode="flush")
+    logger = logging.getLogger(os.path.basename(__file__))
+
+    pio.templates.default = args.plotly_template or PLOTLY_CONFIG.templates.default
 
     # Optionally install warning de-duplication.
     if not args.show_duplicate_warnings:
