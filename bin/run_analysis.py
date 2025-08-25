@@ -126,8 +126,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv or sys.argv[1:])
 
     # Configure logging and flush the early queue into the new handlers
-    enable_logging_handlers()
-    wire_queue(queue=early_q, bootstrap_handler=early_h, mode="flush")
+    enable_logging_handlers(early_queue=early_q, early_handler=early_h, queue_mode="flush")
     logger = logging.getLogger(os.path.basename(__file__))
 
     pio.templates.default = args.plotly_template or PLOTLY_CONFIG.templates.default

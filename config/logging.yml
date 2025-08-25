@@ -8,10 +8,14 @@ pkg_console_levels:
   matplotlib: WARNING
   kaleido: ERROR
   sqlalchemy: WARNING
+  alembic: WARNING
+  dill: WARNING
 pkgs_own_files: 
   jax: DEBUG
   matplotlib: DEBUG
   kaleido: DEBUG
   sqlalchemy: DEBUG
+  alembic: DEBUG
+  dill: DEBUG
 max_bytes: 1000000
 backup_count: 1

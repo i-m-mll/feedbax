@@ -26,11 +26,11 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 import numpy as np
 import pandas as pd
-import yaml
 from feedbax.intervene import AbstractIntervenor, CurlFieldParams, FixedFieldParams
 from feedbax.misc import git_commit_id
 from jax_cookbook import is_type
 from jaxtyping import Array, ArrayLike, Float, Int
+from ruamel.yaml import YAML
 
 # logging.basicConfig(
 #     format='(%(name)-20s) %(message)s',
@@ -38,6 +38,9 @@ from jaxtyping import Array, ArrayLike, Float, Int
 #     handlers=[RichHandler(level="NOTSET")],
 # )
 logger = logging.getLogger(__name__)
+
+
+yaml = YAML(typ="safe")
 
 
 def delete_all_files_in_dir(dir_path: Path):
@@ -163,7 +166,7 @@ def snake_to_camel(s: str):
 def load_yaml(path: Path) -> dict:
     """Load a YAML file."""
     with open(path, "r") as f:
-        return yaml.safe_load(f)
+        return yaml.load(f)
 
 
 def load_from_json(path):

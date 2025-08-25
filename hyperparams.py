@@ -8,9 +8,9 @@ from typing import Literal, Optional, TypeVar
 import equinox as eqx
 import jax.tree as jt
 import jax_cookbook.tree as jtree
-import yaml
 from jax_cookbook import anyf, is_type, where_attr_strs_to_func
 from jaxtyping import ArrayLike, PyTree
+from ruamel.yaml import YAML
 
 from feedbax_experiments.config import STRINGS, load_config
 from feedbax_experiments.constants import get_iterations_to_save_model_parameters
@@ -26,15 +26,15 @@ from feedbax_experiments.types import (
     is_dict_with_int_keys,
 )
 
-# We use LDict labels to identify levels in task-model pair trees
-# The label format is expected to be double-underscore separated parts that map to hyperparameter paths
-# For example, "train__method" maps to hps.train.method and "train__pert__std" maps to hps.train.pert.std
 T = TypeVar("T")
 NT = TypeVar("NT", bound=SimpleNamespace)
 DT = TypeVar("DT", bound=dict)
 
 
 logger = logging.getLogger(__name__)
+
+
+yaml = YAML(typ="safe")
 
 
 class _Placeholder: ...
@@ -135,6 +135,9 @@ def promote_hps(hps: TreeNamespace, *keys: str) -> TreeNamespace:
     return hps
 
 
+# We use LDict labels to identify levels in task-model pair trees
+# The label format is expected to be double-underscore separated parts that map to hyperparameter paths
+# For example, "train__method" maps to hps.train.method and "train__pert__std" maps to hps.train.pert.std
 def flatten_hps(
     hps: TreeNamespace,
     prefix: Optional[str] = None,

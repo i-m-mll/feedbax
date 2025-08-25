@@ -15,10 +15,10 @@ import jax_cookbook.tree as jtree
 import optax
 import plotly
 import plotly.graph_objects as go
-import yaml
 from equinox import Module
 from jax_cookbook import is_module, is_none, is_type
 from jaxtyping import PyTree
+from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
 import feedbax_experiments
@@ -65,6 +65,10 @@ from feedbax_experiments.types import (
 STATES_CACHE_SUBDIR = "states"
 
 
+yaml = YAML(typ="safe")
+yaml.default_flow_style = None
+
+
 @dataclass
 class FigDumpManager:
     """Helper for batch-aware figure organization."""
@@ -79,7 +83,7 @@ class FigDumpManager:
         d = self.module_dir(module_key)
         d.mkdir(parents=True, exist_ok=True)
         with open(d / "module.yml", "w") as f:
-            yaml.dump(module_config, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(module_config, f)
         return d
 
     def prepare_run_dir(self, module_key: str, run_params: dict) -> Path:
@@ -90,7 +94,7 @@ class FigDumpManager:
         dump_dir = module_dir / i_str
         dump_dir.mkdir(parents=True, exist_ok=True)
         with open(module_dir / f"{i_str}.yml", "w") as f:
-            yaml.dump(run_params, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(run_params, f)
         return dump_dir
 
     def clear_all_figures(self) -> None:
@@ -628,7 +632,8 @@ def run_analysis_module(
             with open(states_pickle_path, "rb") as f:
                 states = pickle.load(f)
             logger.info(
-                f"Loaded pickled states with PyTree structure: {tree_level_labels(states, is_leaf=is_module)}"
+                "Loaded pickled states with PyTree structure: "
+                f"{tree_level_labels(states, is_leaf=is_module)}"
             )
             loaded_from_pickle = True
         except Exception as e:

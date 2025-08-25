@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-import yaml
 from PyQt5.QtCore import QSize, Qt, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWidgets import (
@@ -21,6 +20,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ruamel.yaml import YAML
 
 from feedbax_experiments.misc import get_md5_hexdigest
 
@@ -43,6 +43,10 @@ TEMPLATE = """
 </body>
 </html>
 """
+
+
+yaml = YAML(typ="safe")
+yaml.default_flow_style = None
 
 
 class PlotlyViewer(QMainWindow):
@@ -190,10 +194,10 @@ class PlotlyViewer(QMainWindow):
         try:
             if yaml_path.exists():
                 with open(yaml_path, "r") as f:
-                    yaml_content = yaml.safe_load(f)
+                    yaml_content = yaml.load(f)
 
                 # Format YAML content nicely
-                formatted_yaml = yaml.dump(yaml_content, default_flow_style=False, sort_keys=False)
+                formatted_yaml = yaml.dump(yaml_content)
                 self.yaml_text.setText(formatted_yaml)
 
                 # Content loaded but don't show yet (will be shown by toggle_metadata_panel)

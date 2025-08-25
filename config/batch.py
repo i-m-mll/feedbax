@@ -4,10 +4,10 @@ from typing import Any, Dict, List, Literal, Optional, cast
 
 import jax.tree as jt
 import jax.tree_util as jtu
-import yaml
 from jax_cookbook import is_type
 from jax_cookbook.tree import expand_split_keys
 from jaxtyping import PyTree
+from ruamel.yaml import YAML
 
 from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
@@ -17,11 +17,12 @@ from feedbax_experiments.plugins.registry import ExperimentRegistry
 class _YamlLiteral(list): ...
 
 
-def _construct_literal(loader: yaml.SafeLoader, node: yaml.nodes.SequenceNode):
+def _construct_literal(loader, node):
     return _YamlLiteral(loader.construct_sequence(node))
 
 
-yaml.SafeLoader.add_constructor("!Literal", _construct_literal)
+yaml = YAML(typ="safe")
+yaml.constructor.add_constructor("!Literal", _construct_literal)
 
 
 def _node_desc(node: Dict[str, Any]) -> str:
@@ -233,7 +234,7 @@ def load_batch_config(
 
     try:
         with resources.open_text(resource_root, f"{name}.yml", encoding="utf-8") as f:
-            batch = yaml.safe_load(f) or {}
+            batch = yaml.load(f) or {}
     except (FileNotFoundError, ModuleNotFoundError) as e:
         raise FileNotFoundError(f"Batch config '{name}.yml' not found under {resource_root}") from e
 

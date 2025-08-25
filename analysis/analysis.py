@@ -31,12 +31,12 @@ import jax.tree as jt
 import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
-import yaml
 from equinox import Module, field
 from feedbax.task import AbstractTask
 from jax_cookbook import is_module, is_none, is_type, vmap_multi
 from jax_cookbook._vmap import AxisSpec, expand_axes_spec
 from jaxtyping import Array, ArrayLike, PyTree
+from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
 from feedbax_experiments.config import PATHS, STRINGS
@@ -74,6 +74,10 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+
+yaml = YAML(typ="safe")
+yaml.default_flow_style = None
 
 
 PARAM_SEQ_LEN_TRUNCATE = 9
@@ -147,7 +151,7 @@ def represent_undefined(dumper, data):
     return dumper.represent_scalar("tag:yaml.org,2002:str", str(data))
 
 
-yaml.add_representer(object, represent_undefined)
+yaml.representer.add_representer(object, represent_undefined)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1194,7 +1198,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 params_path = dump_path / f"{filename}.yaml"
                 try:
                     with open(params_path, "w") as f:
-                        yaml.dump(params, f, default_flow_style=False, sort_keys=False)
+                        yaml.dump(params, f)
                 except Exception as e:
                     logger.error(
                         f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True

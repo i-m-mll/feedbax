@@ -3,17 +3,17 @@ import os
 import shlex
 from copy import deepcopy
 from cProfile import label
+from dataclasses import dataclass
 from functools import reduce
 from importlib import resources
 from itertools import product
 from pathlib import Path
-from re import sub
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TextIO, TypeVar
 from unittest.mock import DEFAULT
 
 import jax.tree as jt
-import yaml
+from ruamel.yaml import YAML
 
 from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plugins.registry import ExperimentRegistry
@@ -23,10 +23,78 @@ logger = logging.getLogger(__name__)
 
 
 CONFIG_DIR_ENV_VAR_NAME = "FEEDBAX_EXPERIMENTS_CONFIG_DIR"
-DEFAULT_CONFIG_FILENAME = "default.yml"
+DEFAULT_CONFIG_FILENAME = "default"
 
 
 T = TypeVar("T", bound=SimpleNamespace)
+
+
+yaml = YAML(typ="safe")
+
+
+def _fresh_yaml(base_yaml: YAML):
+    """Load `path` using a fresh YAML() that inherits constructors/resolvers."""
+    sub = YAML(typ=base_yaml.typ)
+    # copy custom constructors so !include etc. still work
+    sub.constructor.yaml_constructors.update(base_yaml.constructor.yaml_constructors)
+    return sub
+
+
+def _yaml_include_constructor(loader, node):
+    """YAML constructor to include contents of other YAML files.
+
+    When calling `yaml.load(...)` with this constructor registered,
+    wrap the file object in a FileStreamWrapper so that we have access
+    to the path of the including file via `loader.stream.path`. This allows
+    include paths to be specific relative to the including file.
+    """
+    include_path = Path(loader.construct_scalar(node))
+
+    if not include_path.is_absolute():
+        try:
+            base = Path(node.start_mark.name)
+            include_dir = Path(base).resolve().parent
+        except AttributeError:
+            include_dir = Path(".").resolve()
+
+        include_path = (include_dir / include_path).resolve()
+
+    try:
+        global yaml
+        yaml = _fresh_yaml(yaml)
+        with include_path.open("r", encoding="utf-8") as f:
+            return yaml.load(f) or {}
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"Included file '{include_path}' not found (from {getattr(loader.stream, 'path', '<unknown>')})."
+        ) from e
+
+
+yaml.constructor.add_constructor("!include", _yaml_include_constructor)
+
+
+def _maybe_open_yaml(resource_root: str, stem: str) -> Optional[dict]:
+    """
+    Return parsed YAML from package resources, or None if missing.
+    - Uses importlib.resources.files (open_text is deprecated).
+    - Wraps the stream so constructors can use loader.stream.name.
+    """
+    try:
+        path = resources.files(resource_root) / f"{stem}.yml"
+    except ModuleNotFoundError:
+        return None
+
+    if not path.is_file():
+        return None
+
+    try:
+        # If you want a *real* filesystem path for .name (even from a zip),
+        # materialize it with as_file; otherwise you can skip as_file and use str(res).
+        with resources.as_file(path) as real_path:
+            with open(real_path, "r", encoding="utf-8") as f:
+                return yaml.load(f) or {}
+    except (FileNotFoundError, ModuleNotFoundError):
+        return None
 
 
 def get_user_config_dir():
@@ -36,20 +104,6 @@ def get_user_config_dir():
         return
     else:
         return Path(env_config_dir).expanduser()
-
-
-def _open_yaml_from_package(resource_root: str, fname_no_ext: str) -> dict:
-    with resources.open_text(resource_root, f"{fname_no_ext}.yml", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-def _maybe_open_yaml(resource_root: str, stem: str) -> Optional[dict]:
-    """Return parsed YAML from package resources, or None if missing."""
-    try:
-        with resources.open_text(resource_root, f"{stem}.yml", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except (FileNotFoundError, ModuleNotFoundError):
-        return None
 
 
 def _load_defaults_hierarchy(
@@ -75,15 +129,12 @@ def _load_defaults_hierarchy(
     # Load and merge each default.yml that exists
     merged_config = {}
     for i, subpackage_name in enumerate(subpackage_paths):
-        try:
-            assert subpackage_name is not None
-            default_config = _open_yaml_from_package(subpackage_name, DEFAULT_CONFIG_FILENAME)
-            if default_config is None:
-                subpackage_paths[i] = None  # Mark as not found
-                pass
-            merged_config = deep_merge(merged_config, default_config)
-        except (FileNotFoundError, ModuleNotFoundError):
-            pass
+        assert subpackage_name is not None
+        default_config = _maybe_open_yaml(subpackage_name, DEFAULT_CONFIG_FILENAME)
+        if default_config is None:
+            subpackage_paths[i] = None
+            continue
+        merged_config = deep_merge(merged_config, default_config or {})
 
     return merged_config, subpackage_paths
 
@@ -123,7 +174,7 @@ def load_config(
                 upath = user_config_dir / f"{resource_name}.yml"
                 if upath.exists():
                     with open(upath, "r", encoding="utf-8") as f:
-                        return yaml.safe_load(f) or {}
+                        return yaml.load(f) or {}
                 else:
                     logger.info(
                         f"Config file {resource_name}.yml not found in user config directory "
@@ -164,7 +215,7 @@ def load_config(
             upath = user_config_dir / f"{resource_name}.yml"
             if upath.exists():
                 with open(upath, "r", encoding="utf-8") as f:
-                    return yaml.safe_load(f) or {}
+                    return yaml.load(f) or {}
 
         data = _maybe_open_yaml("feedbax_experiments.config", resource_name)
         if data is not None:

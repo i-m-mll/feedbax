@@ -21,7 +21,6 @@ import jax_cookbook.tree as jtree
 import matplotlib.figure as mplf
 import plotly
 import plotly.graph_objects as go
-import yaml
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from feedbax.misc import attr_str_tree_to_where_func
@@ -33,6 +32,7 @@ from jax_cookbook import (
     save,
 )
 from jaxtyping import PyTree
+from ruamel.yaml import YAML
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -88,6 +88,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 # Prevent alembic from polluting the console with routine migration logs
 logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
+
+
+yaml = YAML(typ="safe")
 
 
 class RecordBase(DeclarativeBase):
@@ -643,7 +646,7 @@ def load_tree_with_hps(
 ) -> tuple[PyTree, TreeNamespace]:
     """Similar to `feedbax.load_with_hyperparameters, but for namespace-based hyperparameters"""
     with open(path, "rb") as f:
-        hps_dict = yaml.safe_load(_read_until_special(f, chr(STRINGS.serialisation.sep_chr)))
+        hps_dict = yaml.load(_read_until_special(f, chr(STRINGS.serialisation.sep_chr)))
 
         hps = dict_to_namespace(hps_dict, to_type=TreeNamespace, exclude=is_dict_with_int_keys)
 
