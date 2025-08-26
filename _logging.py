@@ -23,12 +23,12 @@ def wire_queue(
     *,
     queue: Queue,
     bootstrap_handler: logging.Handler,
-    mode: Literal["keep", "flush"] = "flush",
+    mode: Literal["wire", "flush"] = "flush",
     respect_handler_level: bool = True,
 ) -> logging.handlers.QueueListener | None:
     """Connect a QueueHandler's queue to the current root handlers.
     - mode='flush': drain once and detach the bootstrap handler.
-    - mode='keep' : start a QueueListener (steady-state) and keep queue-based logging.
+    - mode='wire' : start a QueueListener (steady-state) and keep queue-based logging.
     """
     root = logging.getLogger()
     # Final handlers are whatever enable_logging_handlers attached:
@@ -43,7 +43,7 @@ def wire_queue(
         root.removeHandler(bootstrap_handler)
         return None
 
-    # keep
+    # "wire"
     listener = logging.handlers.QueueListener(
         queue, *final_handlers, respect_handler_level=respect_handler_level
     )
@@ -132,7 +132,7 @@ def enable_logging_handlers(
     # NEW: wire the bootstrap queue inside this function
     early_queue: Optional[Queue] = None,
     early_handler: Optional[logging.Handler] = None,
-    queue_mode: Literal["flush", "keep"] = "flush",
+    queue_mode: Literal["flush", "wire"] = "flush",
     announce: bool = True,
 ) -> Optional[logging.handlers.QueueListener]:
     """
@@ -140,10 +140,10 @@ def enable_logging_handlers(
     handle the bootstrap QueueHandler here:
 
       queue_mode="flush": drain queued records into final handlers once, then detach early_handler.
-      queue_mode="keep" : keep early_handler on root and drive final handlers via a QueueListener.
+      queue_mode="wire" : keep early_handler on root and drive final handlers via a QueueListener.
 
     We intentionally avoid logging until the queue is handled to prevent duplicates.
-    Returns a live QueueListener in 'keep' mode, else None.
+    Returns a live QueueListener in 'wire' mode, else None.
     """
     # ── 0) resolve config/defaults
     file_lvl: int = file_level or LOGGING.file_level
@@ -234,7 +234,7 @@ def enable_logging_handlers(
             listener.start()
             listener.stop()
             # bootstrap handler was already removed above
-        else:  # "keep"
+        else:  # "wire"
             # Steady-state queuing:
             # - leave early_handler as the ONLY root handler
             # - drive final_targets via a QueueListener

@@ -6,20 +6,10 @@ Load the config and pass it to `train_and_save_models`.
 Takes a single positional argument: the path to the YAML config.
 """
 
-import logging
-from functools import partial
-
-from feedbax_experiments import enable_logging_handlers
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-
-enable_logging_handlers()
-
-import os
-
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-
 import argparse
+import logging
+import os
+from functools import partial
 
 import equinox as eqx
 import feedbax
@@ -28,13 +18,13 @@ import jax.random as jr
 import optax
 
 import feedbax_experiments
-from feedbax_experiments._warnings import enable_warning_dedup
 from feedbax_experiments.config import (
     PRNG_CONFIG,
     load_batch_config,
     load_config,
 )
-from feedbax_experiments.misc import log_version_info
+from feedbax_experiments.misc import deep_merge, log_version_info
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.training.train import train_and_save_models
 
 logger = logging.getLogger(os.path.basename(__file__))
@@ -74,10 +64,6 @@ def build_arg_parser():
 
 def main():
     args = build_arg_parser().parse_args()
-
-    # Optionally install warning de-duplication.
-    if not args.show_duplicate_warnings:
-        enable_warning_dedup()
 
     if args.seed is None:
         key = jr.PRNGKey(PRNG_CONFIG.seed)

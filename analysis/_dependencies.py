@@ -81,13 +81,6 @@ def param_hash(params: Dict[str, Any]) -> str:
     return get_md5_hexdigest(param_str)
 
 
-# def get_params_for_dep_class(analysis, dep_class):
-#     """Get parameters for a dependency based on its class."""
-#     # Check if the class exists in dep_params
-#     dep_params = getattr(analysis, 'dependency_params', {})
-#     return dep_params.get(dep_class, {})
-
-
 def resolve_dependency_node(analysis, dep_name, dep_source, dependency_lookup=None):
     """Resolve a dependency source to an analysis instance and create a graph node ID.
 

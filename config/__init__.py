@@ -43,3 +43,17 @@ def configure_globals_for_package(package_name: str, registry: ExperimentRegistr
     _overwrite_namespace(PLOTLY_CONFIG, plotly_cfg)
     _overwrite_namespace(PRNG_CONFIG, prng_cfg)
     _overwrite_namespace(STRINGS, strings)
+
+
+__all__ = [
+    "CONFIG_DIR_ENV_VAR_NAME",
+    "CONSTANTS",
+    "LOGGING",
+    "PATHS",
+    "PLOTLY_CONFIG",
+    "PRNG_CONFIG",
+    "STRINGS",
+    "load_config",
+    "load_config_as_ns",
+    "load_batch_config",
+]
