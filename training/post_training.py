@@ -43,7 +43,7 @@ from feedbax_experiments.database import (
     query_model_records,
     save_model_and_add_record,
 )
-from feedbax_experiments.misc import load_module_from_package, log_version_info
+from feedbax_experiments.misc import log_version_info
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.setup_utils import (
     setup_models_only,
@@ -124,7 +124,7 @@ def load_data(model_record: ModelRecord):
         logger.error(f"Model or training history file not found for {model_record.hash}")
         return
 
-    training_module = load_module_from_package(expt_name, registry=EXPERIMENT_REGISTRY)
+    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
 
     models, hps = load_tree_with_hps(
         model_record.path,
@@ -551,7 +551,7 @@ def process_model_post_training(
     n_std_exclude: float,
     process_all: bool = True,
     save_figures: bool = True,
-) -> None:
+) -> ModelRecord | None:
     """Process a single model record, adding a new record with best parameters and replicate info."""
 
     if model_record.has_replicate_info or (model_record.postprocessed and not process_all):
@@ -590,7 +590,7 @@ def process_model_post_training(
     # part of the model hyperparameters
     hps.eval_n = N_TRIALS_VAL
 
-    training_module = load_module_from_package(expt_name, registry=EXPERIMENT_REGISTRY)
+    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
 
     # Get respective validation tasks for each model
     tasks = setup_tasks_only(
@@ -659,6 +659,7 @@ def process_model_post_training(
 
     session.commit()
     logger.info(f"Post-training processing finished for model {model_record.hash}")
+    return new_record
 
 
 def main(

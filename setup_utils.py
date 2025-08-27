@@ -60,30 +60,6 @@ def get_base_reaching_task(
     )
 
 
-def get_train_pairs_by_pert_std(
-    setup_task_model_pair: Callable,
-    hps_train: TreeNamespace,
-    *,
-    key: PRNGKeyArray,
-) -> tuple[LDict[float, TaskModelPair], LDict[float, TreeNamespace]]:
-    def get_pair(pert_std):
-        hps_train_i = deepcopy(hps_train)
-        hps_train_i.pert.std = pert_std
-        return setup_task_model_pair(hps_train_i, key=key), hps_train_i
-
-    task_model_pairs, all_hps_train = jtree.unzip(
-        LDict.of("train__pert__std")(
-            {
-                std: get_pair(std)
-                #! Assume that `hps.train.pert.std` is a sequence
-                for std in hps_train.pert.std
-            }
-        )
-    )
-
-    return task_model_pairs, all_hps_train
-
-
 def get_latest_matching_file(directory: str, pattern: str) -> Optional[str]:
     """
     Returns the filename of the latest file in the given directory that matches the given pattern.

@@ -8,7 +8,8 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -24,13 +25,7 @@ import plotly.graph_objects as go
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from feedbax.misc import attr_str_tree_to_where_func
-from jax_cookbook import (
-    allf,
-    arrays_to_lists,
-    is_not_type,
-    is_type,
-    save,
-)
+from jax_cookbook import allf, arrays_to_lists, is_not_type, is_type, save
 from jaxtyping import PyTree
 from ruamel.yaml import YAML
 from sqlalchemy import (
@@ -309,6 +304,35 @@ def get_db_session(name: str = "main"):
     return init_db_session(f"sqlite:///{PATHS.db}/{name}.db")
 
 
+@contextmanager
+def db_session(name: str = "main", autocommit: bool = True) -> Iterator[Session]:
+    """
+    Usage:
+        with db_session("main") as db:
+            db.add(obj)
+            # no commit needed if autocommit=True
+
+        with db_session("main", autocommit=False) as db:
+            db.add(obj)
+            db.commit()  # you control commits
+    """
+    db = get_db_session(name)  # your existing factory
+    try:
+        if autocommit:
+            # opens a transaction; commits on success, rolls back on error
+            with db.begin():
+                yield db
+        else:
+            # manual control: you call db.commit() / db.rollback()
+            yield db
+    except Exception:
+        if not autocommit:
+            db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def hash_file(path: Path) -> str:
     """Generate MD5 hash of file."""
     md5 = hashlib.md5()
@@ -577,7 +601,7 @@ def replace_in_column(
     session.execute(stmt)
 
 
-def yaml_dump(data: Any) -> str:
+def yaml_dump(f, data: Any):
     """Custom YAML dump that ends in a group separator character.
 
     The group separator indicates where we should stop reading YAML from the
@@ -586,7 +610,8 @@ def yaml_dump(data: Any) -> str:
     Importantly, the string output of `yaml.dump` does not need to be on a single line,
     for this to work.
     """
-    return yaml.dump(data) + f"\n{chr(STRINGS.serialisation.sep_chr)}"
+    yaml.dump(data, f)
+    f.write(f"\n{chr(STRINGS.serialisation.sep_chr)}\n".encode())
 
 
 def save_tree(
@@ -614,7 +639,7 @@ def save_tree(
         path,
         tree,
         hyperparameters=namespace_to_dict(hps),
-        dump_func=yaml_dump,
+        dump_fn=yaml_dump,
     )
 
     if hash_ is not None:

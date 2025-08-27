@@ -100,6 +100,14 @@ def with_caller_logger(func):
     return wrapper
 
 
+def discard(*args, **kwargs) -> None:
+    """A no-op function that accepts any arguments and does nothing.
+
+    This is useful when we're doing a tree map with side effects, and don't need the results to take up memory.
+    """
+    return None
+
+
 @with_caller_logger
 def get_name_of_callable(
     func: Callable,

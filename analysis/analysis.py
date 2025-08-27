@@ -1203,6 +1203,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     logger.error(
                         f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True
                     )
+                    raise e
 
     @property
     def _all_ops(self) -> tuple:

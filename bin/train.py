@@ -15,7 +15,10 @@ import equinox as eqx
 import feedbax
 import jax
 import jax.random as jr
+import jax.tree as jt
+import jax_cookbook.tree as jtree
 import optax
+from jax_cookbook import is_type
 
 import feedbax_experiments
 from feedbax_experiments.config import (
@@ -23,9 +26,16 @@ from feedbax_experiments.config import (
     load_batch_config,
     load_config,
 )
-from feedbax_experiments.misc import deep_merge, log_version_info
+from feedbax_experiments.database import ModelRecord, db_session
+from feedbax_experiments.misc import deep_merge, discard, log_version_info
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.training.train import train_and_save_models
+from feedbax_experiments.training.post_training import process_model_post_training
+from feedbax_experiments.training.train import (
+    prepare_to_train,
+    train_and_save,
+    train_and_save_from_config,
+)
+from feedbax_experiments.types import TreeNamespace
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -77,46 +87,123 @@ def main():
         git_modules=(feedbax, feedbax_experiments),
     )
 
-    train_func = partial(
-        train_and_save_models,
-        untrained_only=args.untrained_only,
-        postprocess=args.postprocess,
-        n_std_exclude=args.n_std_exclude,
-        save_figures=args.save_figures,
-        version_info=version_info,
-        key=key,
-    )
-
     if args.single:
         module_key = args.single
         module_config = load_config(
             module_key, config_type="training", registry=EXPERIMENT_REGISTRY
         )
 
-        trained_models, train_histories, model_records = train_func(
+        trained_models, train_histories, model_records = train_and_save_from_config(
+            expt_key=module_key,
             config=module_config,
-            expt_name=module_key,
+            untrained_only=args.untrained_only,
+            postprocess=args.postprocess,
+            n_std_exclude=args.n_std_exclude,
+            save_figures=args.save_figures,
+            version_info=version_info,
+            key=key,
         )
+
     else:
         batched_spec = load_batch_config(domain="training", config_key=args.batched)
 
-        for module_key, run_params_list in batched_spec.items():
-            module_config_base = load_config(
+        module_configs_base = {
+            module_key: load_config(
                 module_key, config_type="training", registry=EXPERIMENT_REGISTRY
             )
-            for i, run_params in enumerate(run_params_list):
+            for module_key in batched_spec.keys()
+        }
+
+        module_configs = {
+            module_key: [
+                deep_merge(module_configs_base[module_key], run_params)
+                for run_params in run_params_list
+            ]
+            for module_key, run_params_list in batched_spec.items()
+        }
+
+        # First: Check which of the requested models actually need to be trained or post-processed
+        training_status, all_hps, model_records = jtree.unzip(
+            {
+                module_key: [
+                    prepare_to_train(module_key, module_config)
+                    for module_config in module_configs[module_key]
+                ]
+                for module_key in batched_spec
+            }
+        )
+
+        # Do this here rather than using `train_and_save_from_config`, so logs are summary
+        # rather than repetitive
+        if args.untrained_only:
+            n_total = len(jt.leaves(all_hps, is_leaf=is_type(TreeNamespace)))
+            all_hps_to_train, all_hps_already_trained = eqx.partition(
+                all_hps,
+                jt.map(lambda status: status == "untrained", training_status),
+                is_leaf=is_type(TreeNamespace),
+            )
+
+            n_already_trained = len(
+                jt.leaves(all_hps_already_trained, is_leaf=is_type(TreeNamespace))
+            )
+
+            if n_already_trained > 0:
                 logger.info(
-                    f"Training models for experiment {module_key}, "
-                    f"run {i + 1} of {len(run_params_list)}"
+                    f"Skipping training of {n_already_trained} (of {n_total}) already-trained "
+                    "models."
                 )
 
-                module_config = deep_merge(module_config_base, run_params)
-
-                #! TODO: Keep these in memory for all runs?
-                trained_models, train_histories, model_records = train_func(
-                    config=module_config,
-                    expt_name=module_key,
+            if args.postprocess:
+                not_postprocessed = eqx.filter(
+                    model_records,
+                    jt.map(lambda status: status == "not_postprocessed", training_status),
+                    is_leaf=is_type(ModelRecord),
                 )
+                to_postprocess = jt.leaves(not_postprocessed, is_leaf=is_type(ModelRecord))
+                logger.info(
+                    f"Postprocessing {len(to_postprocess)} models which were previously trained "
+                    "but not postprocessed."
+                )
+                with db_session(autocommit=False) as db:
+                    jtree.map_rich(
+                        lambda record: process_model_post_training(
+                            db,
+                            record,
+                            n_std_exclude=args.n_std_exclude,
+                            process_all=True,
+                            save_figures=args.save_figures,
+                        ),
+                        to_postprocess,
+                        is_leaf=is_type(ModelRecord),
+                        description="Postprocessing",
+                    )
+        else:
+            all_hps_to_train = all_hps
+
+        all_hps_to_train_flat = jt.leaves(all_hps_to_train, is_leaf=is_type(TreeNamespace))
+
+        if len(all_hps_to_train_flat) == 0:
+            logger.info("No models to train. Exiting.")
+            return
+
+        logger.info(f"Training {len(all_hps_to_train_flat)} models.")
+
+        jtree.map_rich(
+            # Don't save results in memory
+            lambda hps: discard(
+                train_and_save(
+                    hps,
+                    postprocess=args.postprocess,
+                    n_std_exclude=args.n_std_exclude,
+                    save_figures=args.save_figures,
+                    version_info=version_info,
+                    key=key,
+                )
+            ),
+            all_hps_to_train_flat,
+            is_leaf=is_type(TreeNamespace),
+            description="Training models",
+        )
 
         logger.info("All training runs complete. Exiting.")
 

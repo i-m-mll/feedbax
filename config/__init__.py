@@ -1,3 +1,4 @@
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.plugins.registry import ExperimentRegistry
 from feedbax_experiments.types import TreeNamespace
 
@@ -43,6 +44,12 @@ def configure_globals_for_package(package_name: str, registry: ExperimentRegistr
     _overwrite_namespace(PLOTLY_CONFIG, plotly_cfg)
     _overwrite_namespace(PRNG_CONFIG, prng_cfg)
     _overwrite_namespace(STRINGS, strings)
+
+
+configure_globals_for_package(
+    EXPERIMENT_REGISTRY.single_package_name() or "feedbax_experiments",
+    EXPERIMENT_REGISTRY,
+)
 
 
 __all__ = [

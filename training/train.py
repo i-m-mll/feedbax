@@ -2,8 +2,9 @@ import logging
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from functools import partial
+from operator import not_
 from types import NoneType
-from typing import Optional, TypeVar
+from typing import Literal, Optional, TypeVar
 
 import equinox as eqx
 import feedbax
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 import feedbax_experiments
 from feedbax_experiments.database import (
     ModelRecord,
+    db_session,
     get_db_session,
     get_record,
     save_model_and_add_record,
@@ -35,7 +37,6 @@ from feedbax_experiments.hyperparams import config_to_hps, flatten_hps
 from feedbax_experiments.misc import (
     GracefulInterruptHandler,
     GracefulStopRequested,
-    load_module_from_package,
     log_version_info,
 )
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
@@ -152,10 +153,23 @@ def where_strs_to_funcs(where_strs: Sequence[str] | dict[int, Sequence[str]]):
         raise ValueError("`where_strs` must be a sequence or dict of sequences")
 
 
-def train_and_save_models(
+def prepare_to_train(
+    expt_key: str,
     config: dict,
-    expt_name: str,
+):
+    hps = config_to_hps(config, config_type="training") | dict(expt_name=expt_key)
+
+    with db_session(autocommit=False) as db:
+        training_status, model_record = check_model_training_status(db, hps)
+
+    return training_status, hps, model_record
+
+
+def train_and_save_from_config(
+    expt_key: str,
+    config: dict,
     untrained_only: bool = True,
+    finish_incomplete_postprocessing: bool = True,
     postprocess: bool = True,
     n_std_exclude: int = 2,  # re: postprocessing
     save_figures: bool = True,  # re: postprocessing
@@ -170,44 +184,55 @@ def train_and_save_models(
         expt_name: Name of the training experiment
     """
     # Convert config dict to hyperparameters namespace
-    hps = config_to_hps(config, config_type="training")
-
-    db_session = get_db_session()
-
-    key_init, key_train, key_eval = jr.split(key, 3)
-
-    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
-
-    # `all_hps` is a tree of pair-specific hps
-    task_model_pairs, all_hps_train = jtree.unzip(
-        training_module.get_train_pairs(hps | dict(expt_name=expt_name), key_init)
-    )
+    training_status, hps, model_record = prepare_to_train(expt_key, config)
 
     if untrained_only:
-        task_model_pairs = skip_already_trained(
-            db_session,
-            task_model_pairs,
-            all_hps_train,
-            n_std_exclude,
-            save_figures,
-        )
+        if training_status == "postprocessed":
+            logger.info(f"Skipping training of already-trained model for experiment {expt_key}")
+            #! TODO: Load already-trained model?
+            return None, None, model_record
 
-    if not any(jt.leaves(task_model_pairs, is_leaf=is_type(TaskModelPair))):
-        logger.info("No models to train. Exiting.")
-        # return jt.map(lambda _: None, task_model_pairs, is_leaf=is_type(TaskModelPair))
-        return None, None, None
+        if finish_incomplete_postprocessing and training_status == "not_postprocessed":
+            assert model_record is not None, (
+                "`prepare_to_train` should have returned a model record given training status is "
+                "'not_postprocessed'"
+            )
+            with db_session(autocommit=False) as db:
+                logger.info("Post-processing model that was trained but not yet post-processed")
+                # Post-process any models for which there is only a non-post-processed record
+                process_model_post_training(
+                    db,
+                    model_record,
+                    n_std_exclude,
+                    process_all=True,
+                    save_figures=save_figures,
+                )
 
-    # TODO: Also get `trainer`, `loss_func`, ... as trees like `task_model_pairs`
-    # Otherwise certain hyperparameters (e.g. learning rate) will be constant
-    # when the user might expect them to vary due to their config file.
+    return train_and_save(
+        hps,
+        postprocess=postprocess,
+        n_std_exclude=n_std_exclude,
+        save_figures=save_figures,
+        version_info=version_info,
+        key=key,
+    )
+
+
+def train_and_save(
+    hps: TreeNamespace,
+    postprocess: bool = True,
+    n_std_exclude: int = 2,  # re: postprocessing
+    save_figures: bool = True,  # re: postprocessing
+    version_info: Optional[dict] = None,
+    *,
+    key: PRNGKeyArray,
+):
+    training_module = EXPERIMENT_REGISTRY.get_training_module(hps.expt_name)
+    key_init, key_train, key_eval = jr.split(key, 3)
+    task_model_pair = training_module.setup_task_model_pair(hps, key=key_init)
     trainer, loss_func = train_setup(hps)
 
     ## Train and save all the models.
-    # TODO: Is this correct? Or should we pass the task for the respective training method?
-    task_baseline: AbstractTask = jt.leaves(task_model_pairs, is_leaf=is_type(TaskModelPair))[
-        0
-    ].task
-
     with GracefulInterruptHandler(
         sensitive_msg="Keyboard interrupt caught: will exit cleanly after current model is trained...",
         stop_msg="Finished training and processing model, stopping as requested.",
@@ -220,10 +245,10 @@ def train_and_save_models(
                 trainer,
                 pair,
                 hps.n_batches,
-                key=key_train,  #! Use the same PRNG key for all training runs
+                key=key_train,
                 ensembled=True,
                 loss_func=loss_func,
-                task_baseline=task_baseline,
+                # task_baseline=task_baseline,  #! TODO: Specify param(s) in config
                 where_train=where_strs_to_funcs(dict(hps.where)),
                 batch_size=hps.batch_size,
                 log_step=LOG_STEP,
@@ -231,39 +256,30 @@ def train_and_save_models(
                 state_reset_iterations=hps.state_reset_iterations,
                 # disable_tqdm=True,
             )
-            model_record = save_model_and_add_record(
-                db_session,
-                trained_model,
-                hps,
-                train_history=train_history,
-                version_info=version_info,
-            )
-            if postprocess:
-                process_model_post_training(
-                    db_session,
-                    model_record,
-                    n_std_exclude,
-                    process_all=True,
-                    save_figures=save_figures,
+            with db_session(autocommit=False) as db:
+                model_record = save_model_and_add_record(
+                    db,
+                    trained_model,
+                    hps,
+                    train_history=train_history,
+                    version_info=version_info,
                 )
+                if postprocess:
+                    process_model_post_training(
+                        db,
+                        model_record,
+                        n_std_exclude,
+                        process_all=True,
+                        save_figures=save_figures,
+                    )
             return trained_model, train_history, model_record
 
         try:
-            trained_models, train_histories, model_records = jtree.unzip(
-                jtree.map_tqdm(
-                    # TODO: Could return already-trained models instead of None; would need to return
-                    # `already_trained` bool from `skip_already_trained`
-                    lambda pair, hps: train_and_save_pair(pair, hps) if pair is not None else None,
-                    task_model_pairs,
-                    all_hps_train,
-                    label="Training all pairs",
-                    is_leaf=is_type(TaskModelPair, NoneType),
-                )
-            )
+            trained_model, train_history, model_record = train_and_save_pair(task_model_pair, hps)
         except GracefulStopRequested:
             raise KeyboardInterrupt
 
-    return trained_models, train_histories, model_records
+    return trained_model, train_history, model_record
 
 
 def concat_save_iterations(iterations: Array, n_batches_seq: Sequence[int]):
@@ -273,15 +289,15 @@ def concat_save_iterations(iterations: Array, n_batches_seq: Sequence[int]):
     )
 
 
-def skip_already_trained(
+def partition_by_training_status(
     db_session: Session,
-    task_model_pairs: PyTree[TaskModelPair, "T"],
-    all_hps_train: PyTree[dict, "T"],
-    n_std_exclude: int,
-    save_figures: bool,
-    post_process: bool = True,
-):
-    """Replace leaves in the tree of training pairs with None, where those models were already trained."""
+    all_hps_train: PyTree[TreeNamespace, "T"],
+) -> tuple[
+    PyTree[Optional[ModelRecord], "T"], PyTree[Optional[ModelRecord], "T"], PyTree[bool, "T"]
+]:
+    """Partition a set of hyperparameters into those that correspond to models that have already
+    been trained and post-processed, those that have been trained but not post-processed, and those
+    that have not been trained."""
     all_hps_train = arrays_to_lists(all_hps_train)
 
     def get_query_hps(hps: TreeNamespace, **kwargs) -> TreeNamespace:
@@ -292,7 +308,7 @@ def skip_already_trained(
         return hps
 
     # Get records for models that have already been trained and post-processed
-    records = jt.map(
+    postprocessed = jt.map(
         lambda hps: get_record(
             db_session,
             ModelRecord,
@@ -303,56 +319,59 @@ def skip_already_trained(
         is_leaf=is_type(TreeNamespace),
     )
 
-    record_exists = jt.map(
-        lambda x: x is not None,
-        records,
-        is_leaf=lambda x: x is None or isinstance(x, ModelRecord),
-    )
-
-    if post_process:
-        # Get models that have not been post-processed
-        records_not_pp = jt.map(
-            lambda hps: get_record(
+    # Get models that have not been postprocessed
+    not_postprocessed = jt.map(
+        lambda hps, is_pp: (
+            get_record(
                 db_session,
                 ModelRecord,
                 **namespace_to_dict(flatten_hps(get_query_hps(hps, postprocessed=False))),
-            ),
-            all_hps_train,
-            is_leaf=is_type(TreeNamespace),
-        )
-
-        # Post-process any models for which there is only a non-post-processed record
-        jt.map(
-            lambda record_not_pp, record: (
-                process_model_post_training(
-                    db_session,
-                    record_not_pp,
-                    n_std_exclude,
-                    process_all=True,
-                    save_figures=save_figures,
-                )
-                if record_not_pp is not None and record is None
-                else None
-            ),
-            records_not_pp,
-            records,
-            is_leaf=is_type(ModelRecord),
-        )
-
-    pairs_to_skip, task_model_pairs = eqx.partition(
-        task_model_pairs,
-        record_exists,
-        is_leaf=is_type(TaskModelPair),
+            )
+            if not is_pp
+            else None
+        ),
+        all_hps_train,
+        postprocessed,
+        is_leaf=is_type(TreeNamespace),
     )
 
-    pairs_to_skip_flat = jt.leaves(pairs_to_skip, is_leaf=is_type(TaskModelPair))
-    if len(pairs_to_skip_flat) > 0:
-        logger.info(
-            f"Skipping training of {len(pairs_to_skip_flat)} models whose hyperparameters "
-            "match models already in the database"
-        )
+    untrained = jt.map(
+        lambda x, y: x is None and y is None,
+        postprocessed,
+        not_postprocessed,
+        is_leaf=is_type(ModelRecord, NoneType),
+    )
 
-    return task_model_pairs
+    return postprocessed, not_postprocessed, untrained
+
+
+def check_model_training_status(
+    db_session: Session,
+    hps: TreeNamespace,
+) -> tuple[str, Optional[ModelRecord]]:
+    """Check whether a model with the given hyperparameters has been trained and/or
+    post-processed.
+
+    Returns one of "untrained", "not_postprocessed", or "postprocessed".
+    """
+    postprocessed, not_postprocessed, is_untrained = partition_by_training_status(db_session, hps)
+
+    results = dict(
+        untrained=is_untrained,
+        not_postprocessed=not_postprocessed is not None,
+        postprocessed=postprocessed is not None,
+    )
+
+    assert sum(results.values()) == 1, (
+        "Inconsistency in `partition_by_training_status` result: model cannot be more than one of: "
+        "untrained, not_postprocessed, postprocessed"
+    )
+
+    status = next(k for k, v in results.items() if v)
+
+    model_record = postprocessed or not_postprocessed or None
+
+    return status, model_record
 
 
 def make_delayed_cosine_schedule(init_lr, constant_steps, total_steps, alpha=0.001):
