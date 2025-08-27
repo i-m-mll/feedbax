@@ -1,10 +1,11 @@
 import inspect
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 import dill as pickle
 import equinox as eqx
@@ -43,6 +44,7 @@ from feedbax_experiments.database import (
     check_model_files,
     fill_hps_with_train_params,
     get_db_session,
+    get_model_record,
 )
 
 # `cast_hps` is needed to convert dictionaries (e.g. `where`) back into the expected objects
@@ -53,6 +55,7 @@ from feedbax_experiments.hyperparams import (
 )
 from feedbax_experiments.misc import delete_all_files_in_dir, log_version_info
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax_experiments.plugins.registry import ExperimentRegistry
 from feedbax_experiments.setup_utils import query_and_load_model
 from feedbax_experiments.tree_utils import tree_level_labels
 from feedbax_experiments.types import (
@@ -74,6 +77,7 @@ class FigDumpManager:
     """Helper for batch-aware figure organization."""
 
     root: Path = PATHS.figures_dump
+    clear_existing: Literal["none", "module"] = "module"
     _counters: dict[str, int] = field(default_factory=dict)
 
     def module_dir(self, module_key: str) -> Path:
@@ -81,6 +85,8 @@ class FigDumpManager:
 
     def prepare_module_dir(self, module_key: str, module_config: dict) -> Path:
         d = self.module_dir(module_key)
+        if self.clear_existing in ("module", "all") and d.exists():
+            shutil.rmtree(d)
         d.mkdir(parents=True, exist_ok=True)
         with open(d / "module.yml", "w") as f:
             yaml.dump(module_config, f)
@@ -100,7 +106,9 @@ class FigDumpManager:
     def clear_all_figures(self) -> None:
         """Clear all figures in the root dump directory."""
         if self.root.exists():
-            delete_all_files_in_dir(self.root)
+            shutil.rmtree(self.root)
+            self.root.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Deleted all existing dump figures in {self.root}")
 
 
 # Pre-setup can be either granular dict or combined function
@@ -505,6 +513,33 @@ def perform_all_analyses(
     return all_analyses, all_results, all_figs
 
 
+def check_records_for_analysis(
+    module_key: str,
+    module_config: dict,
+):
+    db_session = get_db_session()
+    check_model_files(db_session)
+    hps = config_to_hps(module_config, config_type="analysis")
+
+    #! TODO: Along with `setup_eval_for_module`: reconcile this with `ExperimentRegistry` logic
+    training_module_name = module_key.split(".")[0]
+
+    for train_pert_std in hps.train.pert.std:
+        params_query = namespace_to_dict(flatten_hps(hps.train)) | dict(
+            expt_name=training_module_name, pert__std=train_pert_std
+        )
+        model_info = get_model_record(
+            db_session,
+            has_replicate_info=True,
+            **params_query,
+        )
+        if model_info is None:
+            raise ValueError(
+                f"No trained model found for {module_key} with parameters {params_query}"
+            )
+    return True
+
+
 def run_analysis_module(
     module_key: str,
     module_config: dict,
@@ -542,6 +577,7 @@ def run_analysis_module(
     states_pkl_dir.mkdir(parents=True, exist_ok=True)
 
     # Start a database session for loading trained models, and saving evaluation/figure records
+    #! TODO: Switch to context manager
     db_session = get_db_session()
     check_model_files(db_session)  # Ensure we don't try to load any models whose files don't exist
 
@@ -705,5 +741,7 @@ def run_analysis_module(
         custom_dependencies=getattr(analysis_module, "DEPENDENCIES", {}),
         **common_inputs,
     )
+
+    db_session.close()
 
     return data, common_inputs, all_analyses, all_results, all_figs

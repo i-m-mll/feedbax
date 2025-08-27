@@ -2079,7 +2079,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             # will be applied to 2-tuples of figures; following the transformation, reconsistute
             # the `level` LDict with the transformed figures.
             @wraps(func)
-            def _transform_func(tree):
+            def _transform_func(tree, **kwargs):
                 _Tuple = jtree.make_named_tuple_subclass("ColumnTuple")
 
                 def _transform_level(ldict_node):
@@ -2091,7 +2091,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                         is_leaf=is_leaf,
                         zip_cls=_Tuple,
                     )
-                    transformed = jt.map(func, zipped, is_leaf=is_type(_Tuple))
+                    transformed = jt.map(
+                        #! TODO: Avoid re-computing the signature every time.
+                        lambda x: _call_user_func(func, x, **kwargs),
+                        zipped,
+                        is_leaf=is_type(_Tuple),
+                    )
                     unzipped = jtree.unzip(transformed, tuple_cls=_Tuple)
                     return LDict.of(level)(dict(zip(ldict_node.keys(), unzipped)))
 

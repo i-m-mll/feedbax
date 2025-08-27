@@ -18,7 +18,11 @@ from pathlib import Path
 import jax.random as jr
 import plotly.io as pio
 
-from feedbax_experiments.analysis.execution import FigDumpManager, run_analysis_module
+from feedbax_experiments.analysis.execution import (
+    FigDumpManager,
+    check_records_for_analysis,
+    run_analysis_module,
+)
 from feedbax_experiments.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -63,13 +67,17 @@ def build_arg_parser():
         help="Do not use pickle for states (don't load existing or save new).",
     )
     parser.add_argument(
-        "--retain-past-fig-dumps", action="store_true", help="Do not save states to pickle."
-    )
-    parser.add_argument(
         "--states-pkl-dir",
         type=str,
         default=None,
         help="Alternative directory for state pickle files (default: PATHS.cache/'states')",
+    )
+    parser.add_argument(
+        "--clear-fig-dumps",
+        type=str,
+        choices=("none", "module", "all"),
+        default="module",
+        help="Clear existing figure dumps: 'none', 'module' (default), or 'all'.",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for the analysis.")
     parser.add_argument(
@@ -102,12 +110,14 @@ def main(argv: list[str] | None = None) -> None:
     # Set states pickle directory
     states_pkl_dir = Path(args.states_pkl_dir) if args.states_pkl_dir else PATHS.cache / "states"
 
-    fig_dump_manager = FigDumpManager(root=Path(args.fig_dump_dir))
+    fig_dump_manager = FigDumpManager(
+        root=Path(args.fig_dump_dir),
+        clear_existing=args.clear_fig_dumps if args.clear_fig_dumps != "all" else "module",
+    )
 
     # Clear existing figures if not retaining past dumps
-    if not args.retain_past_fig_dumps:
+    if args.clear_fig_dumps == "all":
         fig_dump_manager.clear_all_figures()
-        logger.info(f"Deleted existing dump figures in {args.fig_dump_dir}")
 
     run_analysis_func = partial(
         run_analysis_module,
@@ -132,18 +142,37 @@ def main(argv: list[str] | None = None) -> None:
     else:
         batched_spec = load_batch_config(domain="analysis", config_key=args.batched)
 
-        for module_key, run_params_list in batched_spec.items():
-            module_config_base = load_config(
+        module_configs_base = {
+            module_key: load_config(
                 module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY
             )
-            fig_dump_manager.prepare_module_dir(module_key, module_config_base)
-            for i, run_params in enumerate(run_params_list):
+            for module_key in batched_spec.keys()
+        }
+
+        module_configs = {
+            module_key: [
+                deep_merge(module_configs_base[module_key], run_params)
+                for run_params in run_params_list
+            ]
+            for module_key, run_params_list in batched_spec.items()
+        }
+
+        # First: Make sure all the required models are actually in the db, so we don't
+        # raise an exception later
+        for module_key in batched_spec:
+            for module_config in module_configs[module_key]:
+                check_records_for_analysis(module_key, module_config)
+
+        for module_key in batched_spec:
+            fig_dump_manager.prepare_module_dir(module_key, module_configs_base[module_key])
+            for i, module_config in enumerate(module_configs[module_key]):
+                run_params_list = batched_spec[module_key]
+
                 logger.info(
                     f"Running analysis module {module_key}, run {i + 1} of {len(run_params_list)}"
                 )
 
-                module_config = deep_merge(module_config_base, run_params)
-                fig_dump_dir = fig_dump_manager.prepare_run_dir(module_key, run_params)
+                fig_dump_dir = fig_dump_manager.prepare_run_dir(module_key, run_params_list[i])
 
                 # Do not keep results in memory across runs
                 run_analysis_func(

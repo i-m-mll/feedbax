@@ -8,6 +8,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
+from feedbax.plotly import AxesLabels, SeqOfT
 from feedbax.task import AbstractTask
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
@@ -26,9 +27,9 @@ from feedbax_experiments.types import AnalysisInputData, TreeNamespace, VarSpec
 MEAN_LIGHTEN_FACTOR = PLOTLY_CONFIG.mean_lighten_factor
 
 
-def plot_2d_effector_trajectories(
-    plot_data: PyTree[Array],
-    var_labels: Sequence[str],
+def plot_2d_effector_trajectories[T](
+    plot_data: SeqOfT[Array, T],
+    var_labels: SeqOfT[str, T],
     colorscale,
     # Corresponding to axis 0 of `states`:
     legend_title="Reach direction",
@@ -38,7 +39,7 @@ def plot_2d_effector_trajectories(
     return fbp.trajectories_2D(
         plot_data,
         var_labels=var_labels,
-        axes_labels=("x", "y"),
+        axes_labels=AxesLabels("x", "y"),
         #! TODO: Replace with `colorscales` (common analysis dependency)
         colorscale=colorscale,
         legend_title=legend_title,
@@ -95,8 +96,8 @@ class EffectorTrajectories(AbstractAnalysis[NoPorts]):
                 lambda spec: spec.where(states), self.varset, is_leaf=is_type(VarSpec)
             )
             return plot_2d_effector_trajectories(
-                plot_data,
-                var_labels=var_labels,
+                plot_data.values(),
+                var_labels=var_labels.values(),
                 colorscale=colorscales[self.colorscale_key],
                 colorscale_axis=self.colorscale_axis,
                 **fig_params,

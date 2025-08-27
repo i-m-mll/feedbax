@@ -1,6 +1,6 @@
 import inspect
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from copy import deepcopy
 from functools import partial
 from inspect import Parameter
@@ -13,6 +13,8 @@ import equinox as eqx
 import feedbax.plotly as fbp
 import jax.tree as jt
 import plotly.graph_objects as go
+from jax_cookbook import is_type
+from jax_cookbook.misc import deep_merge
 from jaxtyping import Array, PyTree
 
 from feedbax_experiments.analysis.analysis import (
@@ -22,7 +24,6 @@ from feedbax_experiments.analysis.analysis import (
 )
 from feedbax_experiments.config import PLOTLY_CONFIG
 from feedbax_experiments.hyperparams import flat_key_to_where_func
-from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plot import set_axes_bounds_equal
 from feedbax_experiments.plot_utils import get_label_str
 from feedbax_experiments.tree_utils import ldict_level_to_bottom
@@ -146,11 +147,12 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
             lighten_mean=PLOTLY_CONFIG.mean_lighten_factor,
             n_curves_max=20,
             layout_kws=dict(
-                width=900,
+                width=1200,
                 height=300,
-                legend_tracegroupgap=1,
                 margin_t=50,
                 margin_b=20,
+                legend_tracegroupgap=1,
+                legend_itemsizing="constant",
             ),
             scatter_kws=dict(
                 line_width=0.5,
@@ -187,10 +189,18 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
             if updates:
                 fig_params = deep_merge(fig_params, updates)
 
+        #! This is because `fig_fn = fbp.trajectories` which does not like mappings...
+        #! However, we should not hardcode this here! Either update `fbp.trajectories` to
+        #! handle mappings, or fix `fig_fn` to `fbp.trajectories` / functions with a particular
+        #! signature
+        fig_params: Mapping[str, Any] = {
+            k: v.values() if isinstance(v, LDict) else v for k, v in fig_params.items()
+        }
+
         # Use dummy *args to convince the static checker that `FigFnParams` is satisfied
         # (the ParamSpec could specify more args, but we only use it for kwargs).
         def _make_fig(node_data: PyTree[Array], *_) -> go.Figure:
-            return self.fig_fn(node_data, *_, **fig_params)
+            return self.fig_fn(jt.leaves(node_data), *_, **fig_params)
 
         # one_series can be a single array OR an LDict of leaves (arrays -> subplots)
         if self.subplot_level is not None:

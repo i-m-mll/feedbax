@@ -881,7 +881,9 @@ def savefig(
             elif ext == "json":
                 fig.write_json(path_i, engine="auto", **kwargs)
             else:
-                fig.write_image(path_i, scale=2, **kwargs)
+                width = getattr(fig.layout, "width", None)
+                height = getattr(fig.layout, "height", None)
+                fig.write_image(path_i, scale=2, width=width, height=height, **kwargs)
 
                 if metadata is not None and ext in EXTS_WITH_EXIF:
                     try:

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
 from functools import cached_property, partial
 from typing import Optional, TypeVar
@@ -54,6 +54,12 @@ class ResponseVar(str, Enum):
     VELOCITY = "vel"
     COMMAND = "command"
     FORCE = "force"
+
+    @classmethod
+    def to_yaml(cls, representer, node):
+        return representer.represent_scalar(
+            "!ResponseVar", "{}-{}".format(node._name_, node._value_)
+        )
 
 
 def get_reach_directions(task: AbstractTask, *args) -> Array:
@@ -112,6 +118,10 @@ class Direction(str, Enum):
 
     PARALLEL = "parallel"
     LATERAL = "lateral"
+
+    @classmethod
+    def to_yaml(cls, representer, node):
+        return representer.represent_scalar("!Direction", "{}-{}".format(node._name_, node._value_))
 
 
 DIRECTION_IDXS = LDict.of(DIRECTION_LEVEL_LABEL)(
@@ -253,6 +263,7 @@ def get_aligned_trajectories_node(
     pos_endpoints: bool = True,
     varset: PyTree[VarSpec] = DEFAULT_VARSET,
     subplot_level: str = VAR_LEVEL_LABEL,
+    pre_transform_fns: Sequence[Callable] = (),
 ) -> ScatterPlots:
     aligned_var_subplot_titles = get_varset_labels(varset).medium
     aligned_var_axes_labels = jt.map(
@@ -269,6 +280,8 @@ def get_aligned_trajectories_node(
         axes_labels=aligned_var_axes_labels,
         # master_axes_labels=AxesLabels2D("Parallel", "Lateral"),
     )
+    for transform_fn in pre_transform_fns:
+        node = node.after_transform(transform_fn)
     if colorscale_key is not None:
         node = node.after_stacking(colorscale_key)
     if pos_endpoints:

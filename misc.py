@@ -120,7 +120,7 @@ def get_name_of_callable(
     # Handle lambdas
     if func_name == "<lambda>":
         lambda_loc_str = location_for_log(func)
-        logger.warning(f"Assigned name 'lambda' to lambda function at {lambda_loc_str}")
+        logger.debug(f"Assigned name 'lambda' to lambda function at {lambda_loc_str}")
         return "lambda"
 
     # Handle partial functions

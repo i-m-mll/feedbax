@@ -739,7 +739,6 @@ def _calculate_axis_bounds(
     return subplot_indices, final_ranges
 
 
-# --- Standalone function to set single axis ---
 def set_axis_bounds_equal(
     axis: Literal["x", "y"],
     figs: PyTree,

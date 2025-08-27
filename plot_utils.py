@@ -61,8 +61,10 @@ def get_savefig_func(fig_dir: Path, suffix=""):
             # fig.write_html(save_dir / f'{label}.html')
             fig.write_json(save_dir / f"{label}.json")
 
+            width = getattr(fig.layout, "width", None)
+            height = getattr(fig.layout, "height", None)
             # Also save PNG for easy browsing and sharing
-            fig.write_image(save_dir / f"{label}.png", scale=2)
+            fig.write_image(save_dir / f"{label}.png", scale=2, width=width, height=height)
             # fig.write_image(save_dir / f'{label}.webp', scale=2)
 
     return savefig

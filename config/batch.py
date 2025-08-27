@@ -25,6 +25,10 @@ yaml = YAML(typ="safe")
 yaml.constructor.add_constructor("!Literal", _construct_literal)
 
 
+def _split_modules(selector: str) -> list[str]:
+    return [s.strip() for s in selector.split(",") if s.strip()]
+
+
 def _node_desc(node: Dict[str, Any]) -> str:
     t = node.get("type", "?")
     name = node.get("name")
@@ -234,19 +238,38 @@ def load_batch_config(
 
     try:
         with resources.open_text(resource_root, f"{name}.yml", encoding="utf-8") as f:
-            batch = yaml.load(f) or {}
+            doc = yaml.load(f) or {}
     except (FileNotFoundError, ModuleNotFoundError) as e:
         raise FileNotFoundError(f"Batch config '{name}.yml' not found under {resource_root}") from e
 
-    if not isinstance(batch, dict):
-        raise ValueError("Top-level batch config must be a mapping of module_key -> typed node")
+    spec = doc.get("SPEC")
+    if spec is None:
+        raise ValueError("Batch config file must contain a top-level 'SPEC' key.")
+    if not isinstance(spec, list):
+        raise ValueError("Top-level 'SPEC' must be a list of module-spec entries.")
 
     out: Dict[str, List[Dict[str, Any]]] = {}
-    for module_key, module_node in batch.items():
-        # Qualify module keys with the owning package if not already slash-qualified,
-        # so downstream code has an unambiguous address.
-        qualified_key = module_key if "/" in module_key else f"{pkg}/{module_key}"
-        parent_ctx = f"module '{qualified_key}'"
-        out[qualified_key] = _eval_node(module_node, parent_ctx=parent_ctx)
+
+    for idx, entry in enumerate(spec, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"SPEC item #{idx} must be a mapping of 'modules: node'.")
+        if len(entry) == 0:
+            continue  # allow empty entries
+        # Support multiple keys in a single mapping item if you like
+        for selector, node in entry.items():
+            if not isinstance(selector, str):
+                raise ValueError(
+                    f"SPEC item #{idx} key must be a string of one or more comma-separated "
+                    "module names."
+                )
+            modules = _split_modules(selector)
+            if not modules:
+                raise ValueError(f"SPEC item #{idx} has empty module selector.")
+            if not isinstance(node, dict):
+                raise ValueError(f"SPEC item #{idx} value must be a typed node mapping.")
+
+            for modkey in modules:
+                runs = _eval_node(node, parent_ctx=f"module '{modkey}' via SPEC item #{idx}")
+                out.setdefault(modkey, []).extend(runs)
 
     return out
