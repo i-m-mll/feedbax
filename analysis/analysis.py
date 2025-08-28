@@ -40,6 +40,7 @@ from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
 from feedbax_experiments.config import PATHS, STRINGS
+from feedbax_experiments.config.yaml import get_yaml_loader
 from feedbax_experiments.database import EvaluationRecord, add_evaluation_figure, savefig
 from feedbax_experiments.misc import (
     camel_to_snake,
@@ -65,7 +66,11 @@ from feedbax_experiments.tree_utils import (
     subdict,
     tree_level_labels,
 )
-from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
+from feedbax_experiments.types import (
+    AnalysisInputData,
+    LDict,
+    TreeNamespace,
+)
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -74,10 +79,6 @@ else:
 
 
 logger = logging.getLogger(__name__)
-
-
-yaml = YAML(typ="safe")
-yaml.default_flow_style = None
 
 
 PARAM_SEQ_LEN_TRUNCATE = 9
@@ -147,11 +148,6 @@ PortsType = TypeVar("PortsType", bound=AbstractAnalysisPorts)
 
 
 # Define a string representer for objects PyYAML doesn't know how to handle
-def represent_undefined(dumper, data):
-    return dumper.represent_scalar("tag:yaml.org,2002:str", str(data))
-
-
-yaml.representer.add_representer(object, represent_undefined)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1195,6 +1191,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 savefig(fig, filename, dump_path, dump_formats, metadata=params)
 
                 # Save parameters as YAML
+                yaml = get_yaml_loader(typ="safe")
                 params_path = dump_path / f"{filename}.yaml"
                 try:
                     with open(params_path, "w") as f:

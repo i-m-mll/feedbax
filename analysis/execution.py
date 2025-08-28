@@ -33,6 +33,7 @@ from feedbax_experiments.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
 from feedbax_experiments.config import PATHS
+from feedbax_experiments.config.yaml import get_yaml_loader
 from feedbax_experiments.constants import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
@@ -42,6 +43,7 @@ from feedbax_experiments.database import (
     ModelRecord,
     add_evaluation,
     check_model_files,
+    db_session,
     fill_hps_with_train_params,
     get_db_session,
     get_model_record,
@@ -68,10 +70,6 @@ from feedbax_experiments.types import (
 STATES_CACHE_SUBDIR = "states"
 
 
-yaml = YAML(typ="safe")
-yaml.default_flow_style = None
-
-
 @dataclass
 class FigDumpManager:
     """Helper for batch-aware figure organization."""
@@ -88,6 +86,7 @@ class FigDumpManager:
         if self.clear_existing in ("module", "all") and d.exists():
             shutil.rmtree(d)
         d.mkdir(parents=True, exist_ok=True)
+        yaml = get_yaml_loader(typ="safe")
         with open(d / "module.yml", "w") as f:
             yaml.dump(module_config, f)
         return d
@@ -99,6 +98,7 @@ class FigDumpManager:
         i_str = f"{i:03d}"
         dump_dir = module_dir / i_str
         dump_dir.mkdir(parents=True, exist_ok=True)
+        yaml = get_yaml_loader(typ="safe")
         with open(module_dir / f"{i_str}.yml", "w") as f:
             yaml.dump(run_params, f)
         return dump_dir
@@ -517,26 +517,25 @@ def check_records_for_analysis(
     module_key: str,
     module_config: dict,
 ):
-    db_session = get_db_session()
-    check_model_files(db_session)
     hps = config_to_hps(module_config, config_type="analysis")
 
     #! TODO: Along with `setup_eval_for_module`: reconcile this with `ExperimentRegistry` logic
     training_module_name = module_key.split(".")[0]
 
-    for train_pert_std in hps.train.pert.std:
-        params_query = namespace_to_dict(flatten_hps(hps.train)) | dict(
-            expt_name=training_module_name, pert__std=train_pert_std
-        )
-        model_info = get_model_record(
-            db_session,
-            has_replicate_info=True,
-            **params_query,
-        )
-        if model_info is None:
-            raise ValueError(
-                f"No trained model found for {module_key} with parameters {params_query}"
+    with db_session(autocommit=False) as db:
+        for train_pert_std in hps.train.pert.std:
+            params_query = namespace_to_dict(flatten_hps(hps.train)) | dict(
+                expt_name=training_module_name, pert__std=train_pert_std
             )
+            model_info = get_model_record(
+                db,
+                has_replicate_info=True,
+                **params_query,
+            )
+            if model_info is None:
+                raise ValueError(
+                    f"No trained model found for {module_key} with parameters {params_query}"
+                )
     return True
 
 

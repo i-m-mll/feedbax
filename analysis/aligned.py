@@ -1,5 +1,4 @@
 from collections.abc import Callable, Sequence
-from enum import Enum
 from functools import cached_property, partial
 from typing import Optional, TypeVar
 
@@ -33,8 +32,10 @@ from feedbax_experiments.constants import EVAL_REACH_LENGTH
 from feedbax_experiments.plot import add_endpoint_traces
 from feedbax_experiments.types import (
     AnalysisInputData,
+    Direction,
     Labels,
     LDict,
+    ResponseVar,
     TreeNamespace,
     VarSpec,
 )
@@ -45,21 +46,6 @@ T = TypeVar("T")
 VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
 ENDPOINT_ERROR_STEPS = 10
-
-
-class ResponseVar(str, Enum):
-    """Variables available in response state."""
-
-    POSITION = "pos"
-    VELOCITY = "vel"
-    COMMAND = "command"
-    FORCE = "force"
-
-    @classmethod
-    def to_yaml(cls, representer, node):
-        return representer.represent_scalar(
-            "!ResponseVar", "{}-{}".format(node._name_, node._value_)
-        )
 
 
 def get_reach_directions(task: AbstractTask, *args) -> Array:
@@ -111,17 +97,6 @@ def get_varset_labels(varset: PyTree[VarSpec]) -> Labels:
         ),
         tuple_cls=Labels,
     )
-
-
-class Direction(str, Enum):
-    """Available directions for vector components."""
-
-    PARALLEL = "parallel"
-    LATERAL = "lateral"
-
-    @classmethod
-    def to_yaml(cls, representer, node):
-        return representer.represent_scalar("!Direction", "{}-{}".format(node._name_, node._value_))
 
 
 DIRECTION_IDXS = LDict.of(DIRECTION_LEVEL_LABEL)(

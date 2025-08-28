@@ -58,6 +58,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.type_api import TypeEngine
 
 from feedbax_experiments.config import PATHS, STRINGS
+from feedbax_experiments.config.yaml import get_yaml_loader
 from feedbax_experiments.hyperparams import (
     cast_hps,
     flatten_hps,
@@ -83,9 +84,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 # Prevent alembic from polluting the console with routine migration logs
 logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
-
-
-yaml = YAML(typ="safe")
 
 
 class RecordBase(DeclarativeBase):
@@ -317,6 +315,7 @@ def db_session(name: str = "main", autocommit: bool = True) -> Iterator[Session]
             db.commit()  # you control commits
     """
     db = get_db_session(name)  # your existing factory
+    check_model_files(db)
     try:
         if autocommit:
             # opens a transaction; commits on success, rolls back on error
@@ -516,7 +515,7 @@ def check_model_files(
     clean_orphaned_files: Literal["no", "delete", "archive"] = "no",
 ) -> None:
     """Check model files and update availability status."""
-    logger.info("Checking availability of model files...")
+    logger.debug("Checking availability of model files...")
 
     try:
         records = session.query(ModelRecord).all()
@@ -553,7 +552,7 @@ def check_model_files(
                         file_path.rename(archive_dir / file_path.name)
 
         session.commit()
-        logger.info("Finished checking model files")
+        logger.debug("Finished checking model files")
 
     except Exception as e:
         session.rollback()
@@ -610,6 +609,7 @@ def yaml_dump(f, data: Any):
     Importantly, the string output of `yaml.dump` does not need to be on a single line,
     for this to work.
     """
+    yaml = get_yaml_loader(typ="safe")
     yaml.dump(data, f)
     f.write(f"\n{chr(STRINGS.serialisation.sep_chr)}\n".encode())
 
@@ -670,6 +670,7 @@ def load_tree_with_hps(
     **kwargs,
 ) -> tuple[PyTree, TreeNamespace]:
     """Similar to `feedbax.load_with_hyperparameters, but for namespace-based hyperparameters"""
+    yaml = get_yaml_loader(typ="safe")
     with open(path, "rb") as f:
         hps_dict = yaml.load(_read_until_special(f, chr(STRINGS.serialisation.sep_chr)))
 

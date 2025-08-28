@@ -10,7 +10,6 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 from jax_cookbook import anyf, is_type, where_attr_strs_to_func
 from jaxtyping import ArrayLike, PyTree
-from ruamel.yaml import YAML
 
 from feedbax_experiments.config import STRINGS, load_config
 from feedbax_experiments.constants import get_iterations_to_save_model_parameters
@@ -32,9 +31,6 @@ DT = TypeVar("DT", bound=dict)
 
 
 logger = logging.getLogger(__name__)
-
-
-yaml = YAML(typ="safe")
 
 
 class _Placeholder: ...

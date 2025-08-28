@@ -15,6 +15,7 @@ from unittest.mock import DEFAULT
 import jax.tree as jt
 from ruamel.yaml import YAML
 
+from feedbax_experiments.config.yaml import get_yaml_loader
 from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plugins.registry import ExperimentRegistry
 from feedbax_experiments.types import TreeNamespace, dict_to_namespace
@@ -27,50 +28,6 @@ DEFAULT_CONFIG_FILENAME = "default"
 
 
 T = TypeVar("T", bound=SimpleNamespace)
-
-
-yaml = YAML(typ="safe")
-
-
-def _fresh_yaml(base_yaml: YAML):
-    """Load `path` using a fresh YAML() that inherits constructors/resolvers."""
-    sub = YAML(typ=base_yaml.typ)
-    # copy custom constructors so !include etc. still work
-    sub.constructor.yaml_constructors.update(base_yaml.constructor.yaml_constructors)
-    return sub
-
-
-def _yaml_include_constructor(loader, node):
-    """YAML constructor to include contents of other YAML files.
-
-    When calling `yaml.load(...)` with this constructor registered,
-    wrap the file object in a FileStreamWrapper so that we have access
-    to the path of the including file via `loader.stream.path`. This allows
-    include paths to be specific relative to the including file.
-    """
-    include_path = Path(loader.construct_scalar(node))
-
-    if not include_path.is_absolute():
-        try:
-            base = Path(node.start_mark.name)
-            include_dir = Path(base).resolve().parent
-        except AttributeError:
-            include_dir = Path(".").resolve()
-
-        include_path = (include_dir / include_path).resolve()
-
-    try:
-        global yaml
-        yaml = _fresh_yaml(yaml)
-        with include_path.open("r", encoding="utf-8") as f:
-            return yaml.load(f) or {}
-    except FileNotFoundError as e:
-        raise FileNotFoundError(
-            f"Included file '{include_path}' not found (from {getattr(loader.stream, 'path', '<unknown>')})."
-        ) from e
-
-
-yaml.constructor.add_constructor("!include", _yaml_include_constructor)
 
 
 def _maybe_open_yaml(resource_root: str, stem: str) -> Optional[dict]:
@@ -86,6 +43,8 @@ def _maybe_open_yaml(resource_root: str, stem: str) -> Optional[dict]:
 
     if not path.is_file():
         return None
+
+    yaml = get_yaml_loader(typ="safe")
 
     try:
         # If you want a *real* filesystem path for .name (even from a zip),
@@ -161,6 +120,7 @@ def load_config(
       - No user-dir lookup.
       - Defaults hierarchy is rooted at the owning package’s resource root.
     """
+    yaml = get_yaml_loader(typ="safe")
 
     if config_type is None:
         # -------- GLOBAL CONFIGS --------

@@ -30,7 +30,8 @@ from feedbax.intervene import AbstractIntervenor, CurlFieldParams, FixedFieldPar
 from feedbax.misc import git_commit_id
 from jax_cookbook import is_type
 from jaxtyping import Array, ArrayLike, Float, Int
-from ruamel.yaml import YAML
+
+from feedbax_experiments.config.yaml import get_yaml_loader
 
 # logging.basicConfig(
 #     format='(%(name)-20s) %(message)s',
@@ -38,9 +39,6 @@ from ruamel.yaml import YAML
 #     handlers=[RichHandler(level="NOTSET")],
 # )
 logger = logging.getLogger(__name__)
-
-
-yaml = YAML(typ="safe")
 
 
 def delete_all_files_in_dir(dir_path: Path):
@@ -173,6 +171,7 @@ def snake_to_camel(s: str):
 
 def load_yaml(path: Path) -> dict:
     """Load a YAML file."""
+    yaml = get_yaml_loader(typ="safe")
     with open(path, "r") as f:
         return yaml.load(f)
 

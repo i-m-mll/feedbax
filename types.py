@@ -1,6 +1,7 @@
 from collections import namedtuple
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
+from enum import Enum
 from token import COMMA
 from types import SimpleNamespace
 from typing import (
@@ -25,11 +26,7 @@ from equinox import Module, field
 from feedbax.task import AbstractTask
 from jax_cookbook import anyf, is_type
 from jaxtyping import Array, ArrayLike, PyTree
-from ruamel.yaml import YAML, nodes
 from sklearn import tree
-
-yaml = YAML(typ="safe")
-
 
 TaskModelPair = namedtuple("TaskModelPair", ["task", "model"])
 
@@ -470,25 +467,6 @@ class LDictConstructor(Generic[K, V]):
         return is_ldict_of
 
 
-# YAML serialisation/deserialisation for LDict objects
-def _ldict_representer(representer, data: LDict):
-    return representer.represent_mapping(f"!LDict:{data.label}", data._data)
-
-
-yaml.representer.add_representer(LDict, _ldict_representer)
-
-
-def _ldict_multi_constructor(constructor, tag_suffix, node):
-    # e.g. !LDict:mylabel {k: v}
-    if not isinstance(node, nodes.MappingNode):
-        raise TypeError("!LDict:* must tag a mapping")
-    mapping = constructor.construct_mapping(node, deep=True)
-    return LDict(tag_suffix, mapping)
-
-
-yaml.constructor.add_multi_constructor("!LDict:", _ldict_multi_constructor)
-
-
 def pprint_ldict_structure(
     tree: LDict,
     indent: int = 0,
@@ -582,4 +560,19 @@ class VarSpec(eqx.Module):
 class Polar(NamedTuple):
     angle: Array
     radius: Array
-    # is_spatial: bool = True
+
+
+class Direction(str, Enum):
+    """Available directions for vector components."""
+
+    PARALLEL = "parallel"
+    LATERAL = "lateral"
+
+
+class ResponseVar(str, Enum):
+    """Variables available in response state."""
+
+    POSITION = "pos"
+    VELOCITY = "vel"
+    COMMAND = "command"
+    FORCE = "force"

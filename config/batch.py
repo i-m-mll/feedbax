@@ -9,20 +9,10 @@ from jax_cookbook.tree import expand_split_keys
 from jaxtyping import PyTree
 from ruamel.yaml import YAML
 
+from feedbax_experiments.config.yaml import _YamlLiteral, get_yaml_loader
 from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.plugins.registry import ExperimentRegistry
-
-
-class _YamlLiteral(list): ...
-
-
-def _construct_literal(loader, node):
-    return _YamlLiteral(loader.construct_sequence(node))
-
-
-yaml = YAML(typ="safe")
-yaml.constructor.add_constructor("!Literal", _construct_literal)
 
 
 def _split_modules(selector: str) -> list[str]:
@@ -44,17 +34,9 @@ def _bad(msg: str, node: Dict[str, Any], parent_ctx: Optional[str]) -> ValueErro
     return ValueError(f"{msg} [at {_here(node, parent_ctx)}]")
 
 
-def _is_literal_list(x: Any) -> bool:
-    return isinstance(x, _YamlLiteral)
-
-
-def _unwrap_literal(x: Any) -> Any:
-    return list(x) if isinstance(x, _YamlLiteral) else x
-
-
 def _collect_nonliteral_lengths(m: Dict[str, Any], lengths: set[int]) -> None:
     for v in m.values():
-        if _is_literal_list(v):
+        if isinstance(v, _YamlLiteral):
             continue
         if isinstance(v, list):
             lengths.add(len(v))
@@ -63,8 +45,8 @@ def _collect_nonliteral_lengths(m: Dict[str, Any], lengths: set[int]) -> None:
 
 
 def _materialize_index(x: Any, i: int) -> Any:
-    if _is_literal_list(x):
-        return _unwrap_literal(x)
+    if isinstance(x, _YamlLiteral):
+        return x.value
     if isinstance(x, list):
         idx = 0 if len(x) == 1 else i
         return _materialize_index(x[idx], i)
@@ -79,8 +61,8 @@ def _unwrap_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     def _uw(x: Any) -> Any:
         if isinstance(x, dict):
             return {k: _uw(v) for k, v in x.items()}
-        if _is_literal_list(x):
-            return _unwrap_literal(x)
+        if isinstance(x, _YamlLiteral):
+            return x.value
         if isinstance(x, list):
             return x
         return x
@@ -193,6 +175,8 @@ def load_batch_config(
     """
     if registry is None:
         registry = EXPERIMENT_REGISTRY
+
+    yaml = get_yaml_loader(typ="safe")
 
     # Resolve owning package for this batch key (supports "pkg/name" or "name")
     if hasattr(registry, "resolve_package_for_batch_key"):
