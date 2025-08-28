@@ -129,7 +129,7 @@ def train_pair(
         idx_start=n_batches_baseline,
         run_label="Condition training",
         key=key1,
-        disable_tqdm=True,  #! TODO: Switch with rich in feedbax, and re-enable
+        # disable_progress=False,
         **kwargs,
     )
 

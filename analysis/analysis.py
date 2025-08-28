@@ -35,6 +35,7 @@ from equinox import Module, field
 from feedbax.task import AbstractTask
 from jax_cookbook import is_module, is_none, is_type, vmap_multi
 from jax_cookbook._vmap import AxisSpec, expand_axes_spec
+from jax_cookbook.progress import piter
 from jaxtyping import Array, ArrayLike, PyTree
 from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
@@ -375,6 +376,16 @@ class FigIterCtx:
     idx: int  # 0-based index of `key` within items at this level
     depth: int  # 0 = outermost mapped level
     path: tuple[tuple[Optional[str], Any, int], ...]  # cumulative selections from outermost→current
+
+
+class FigureSaveTask(NamedTuple):
+    """Container for figure save operation parameters."""
+
+    fig: go.Figure
+    figure_hash: str
+    eval_dir: Path
+    save_formats: list[str]
+    params: dict[str, Any]
 
 
 class _PrepOp(NamedTuple):
@@ -1150,7 +1161,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         ops_params_dict = self._extract_ops_info()
 
-        for i, (path, fig) in enumerate(figs_with_paths_flat):
+        for i, (path, fig) in piter(
+            enumerate(figs_with_paths_flat),
+            description="Saving figures",
+            total=len(figs_with_paths_flat),
+            eta_halflife=1.0,
+        ):
             path_params = dict(zip(param_keys, tuple(jtree.node_key_to_value(p) for p in path)))
 
             # Include fields from this instance, but only if they are JSON serializable

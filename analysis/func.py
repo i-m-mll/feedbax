@@ -5,6 +5,7 @@ from typing import Any, Concatenate, Optional, ParamSpec, TypeAlias
 import equinox as eqx
 import jax.tree as jt
 import jax_cookbook.tree as jtree
+from jax_cookbook import map_rich
 from jax_cookbook.misc import construct_tuple_like
 from jaxtyping import PyTree
 
@@ -93,7 +94,7 @@ class ApplyFunctional(AbstractAnalysis[CallerPorts]):
             per_leaf = eqx.filter_jit(per_leaf)
 
         # Apply per leaf: funcs and each item of func_args must be matching PyTrees
-        return jtree.map_rich(per_leaf, funcs, *func_args, is_leaf=self.is_leaf, description="")
+        return map_rich(per_leaf, funcs, *func_args, is_leaf=self.is_leaf, description="")
 
 
 def _canon_argnums(argnums: Optional[int | Sequence[int]], nargs: int) -> tuple[int, ...]:

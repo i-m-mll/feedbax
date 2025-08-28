@@ -18,6 +18,7 @@ import plotly
 import plotly.graph_objects as go
 from equinox import Module
 from jax_cookbook import is_module, is_none, is_type
+from jax_cookbook.progress import piter
 from jaxtyping import PyTree
 from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
@@ -462,13 +463,14 @@ def perform_all_analyses(
             "All analyses defined in given analysis module must be instances of `AbstractAnalysis`"
         )
 
+    if not any(analyses):
+        raise ValueError("No analyses given to perform")
+
     # Phase 1: Compute all analysis nodes (dependencies + leaves)
+    logger.info("Computing results for analyses and their dependencies")
     all_dependency_results = compute_dependency_results(
         analyses, data, custom_dependencies, **kwargs
     )
-
-    if not any(analyses):
-        raise ValueError("No analyses given to perform")
 
     # Phase 2: Keep results & generate figures for leaf analyses only
     def finish_analysis(analysis_key: str, analysis: AbstractAnalysis, inputs: dict):
@@ -482,7 +484,7 @@ def perform_all_analyses(
             )
             figs = None
         else:
-            logger.info(f"Making figures: {analysis_key}")
+            logger.debug(f"Making figures: {analysis_key}")
             figs = analysis._make_figs_with_ops(data, result, **inputs)
 
             analysis.save_figs(
@@ -497,15 +499,19 @@ def perform_all_analyses(
                 label=analysis_key,
                 **inputs,
             )
-            logger.info(f"Figures saved: {analysis_key}")
 
         return analysis, result, figs
 
+    logger.info("Making and saving figures for analyses")
     all_analyses, all_results, all_figs = jtree.unzip(
         {
             analysis_key: finish_analysis(analysis_key, analysis, dependencies)
-            for (analysis_key, analysis), dependencies in zip(
-                analyses.items(), all_dependency_results
+            for (analysis_key, analysis), dependencies in piter(
+                zip(analyses.items(), all_dependency_results),
+                total=len(analyses),
+                description="Making and saving figures",
+                right=lambda p, i: p[0][0],  # analysis key on rhs of progress bar
+                eta_halflife=10.0,
             )
         }
     )
@@ -666,7 +672,7 @@ def run_analysis_module(
         try:
             with open(states_pickle_path, "rb") as f:
                 states = pickle.load(f)
-            logger.info(
+            logger.debug(
                 "Loaded pickled states with PyTree structure: "
                 f"{tree_level_labels(states, is_leaf=is_module)}"
             )

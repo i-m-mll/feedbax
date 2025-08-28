@@ -15,6 +15,7 @@ import jax.tree as jt
 import plotly.graph_objects as go
 from jax_cookbook import is_type
 from jax_cookbook.misc import deep_merge
+from jax_cookbook.progress import map_rich
 from jaxtyping import Array, PyTree
 
 from feedbax_experiments.analysis.analysis import (
@@ -209,4 +210,6 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
         else:
             is_leaf = None
 
-        return jt.map(_make_fig, input, is_leaf=is_leaf)
+        return map_rich(
+            _make_fig, input, is_leaf=is_leaf, description="Making figures (ScatterPlots)"
+        )

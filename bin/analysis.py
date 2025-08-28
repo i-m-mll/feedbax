@@ -17,6 +17,7 @@ from pathlib import Path
 # host-accessible device arrays).
 import jax.random as jr
 import plotly.io as pio
+from jax_cookbook.progress import progress_session
 
 from feedbax_experiments.analysis.execution import (
     FigDumpManager,
@@ -127,59 +128,60 @@ def main(argv: list[str] | None = None) -> None:
         key=key,
     )
 
-    if args.single:
-        module_key = args.single
-        module_config = load_config(
-            module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY
-        )
-        fig_dump_dir = fig_dump_manager.prepare_module_dir(module_key, module_config)
-
-        data, common_inputs, all_analyses, all_results, all_figs = run_analysis_func(
-            module_key=module_key,
-            module_config=module_config,
-            fig_dump_dir=fig_dump_dir,
-        )
-    else:
-        batched_spec = load_batch_config(domain="analysis", config_key=args.batched)
-
-        module_configs_base = {
-            module_key: load_config(
+    with progress_session():  # Keep the global `rich` progress region alive
+        if args.single:
+            module_key = args.single
+            module_config = load_config(
                 module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY
             )
-            for module_key in batched_spec.keys()
-        }
+            fig_dump_dir = fig_dump_manager.prepare_module_dir(module_key, module_config)
 
-        module_configs = {
-            module_key: [
-                deep_merge(module_configs_base[module_key], run_params)
-                for run_params in run_params_list
-            ]
-            for module_key, run_params_list in batched_spec.items()
-        }
+            data, common_inputs, all_analyses, all_results, all_figs = run_analysis_func(
+                module_key=module_key,
+                module_config=module_config,
+                fig_dump_dir=fig_dump_dir,
+            )
+        else:
+            batched_spec = load_batch_config(domain="analysis", config_key=args.batched)
 
-        # First: Make sure all the required models are actually in the db, so we don't
-        # raise an exception later
-        for module_key in batched_spec:
-            for module_config in module_configs[module_key]:
-                check_records_for_analysis(module_key, module_config)
-
-        for module_key in batched_spec:
-            fig_dump_manager.prepare_module_dir(module_key, module_configs_base[module_key])
-            for i, module_config in enumerate(module_configs[module_key]):
-                run_params_list = batched_spec[module_key]
-
-                logger.info(
-                    f"Running analysis module {module_key}, run {i + 1} of {len(run_params_list)}"
+            module_configs_base = {
+                module_key: load_config(
+                    module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY
                 )
+                for module_key in batched_spec.keys()
+            }
 
-                fig_dump_dir = fig_dump_manager.prepare_run_dir(module_key, run_params_list[i])
+            module_configs = {
+                module_key: [
+                    deep_merge(module_configs_base[module_key], run_params)
+                    for run_params in run_params_list
+                ]
+                for module_key, run_params_list in batched_spec.items()
+            }
 
-                # Do not keep results in memory across runs
-                run_analysis_func(
-                    module_key=module_key,
-                    module_config=module_config,
-                    fig_dump_dir=fig_dump_dir,
-                )
+            # First: Make sure all the required models are actually in the db, so we don't
+            # raise an exception later
+            for module_key in batched_spec:
+                for module_config in module_configs[module_key]:
+                    check_records_for_analysis(module_key, module_config)
+
+            for module_key in batched_spec:
+                fig_dump_manager.prepare_module_dir(module_key, module_configs_base[module_key])
+                for i, module_config in enumerate(module_configs[module_key]):
+                    run_params_list = batched_spec[module_key]
+
+                    logger.info(
+                        f"Running analysis module {module_key}, run {i + 1} of {len(run_params_list)}"
+                    )
+
+                    fig_dump_dir = fig_dump_manager.prepare_run_dir(module_key, run_params_list[i])
+
+                    # Do not keep results in memory across runs
+                    run_analysis_func(
+                        module_key=module_key,
+                        module_config=module_config,
+                        fig_dump_dir=fig_dump_dir,
+                    )
 
     logger.info("All analyses complete. Exiting.")
 

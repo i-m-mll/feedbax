@@ -26,6 +26,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 from jax.tree_util import treedef_is_leaf
 from jax_cookbook import is_type
+from jax_cookbook.progress import piter, progress_piter
 from jax_cookbook.tree import collect_aux_data
 from jaxtyping import PyTree
 
@@ -143,7 +144,8 @@ def _process_dependency_sources(analysis, dep_name, dep_sources, dependency_look
 
 
 def build_dependency_graph(
-    analyses: Sequence[AbstractAnalysis], dependency_lookup=None
+    analyses: Sequence[AbstractAnalysis],
+    dependency_lookup=None,
 ) -> tuple[dict[str, set], dict]:
     """Build a directed acyclic graph of analysis dependencies."""
     graph = defaultdict(set)  # Maps node_id -> set of dependency node_ids
@@ -497,9 +499,13 @@ def compute_dependency_results(
     comp_order = topological_sort(graph)
 
     # Create reverse lookup for better logging
-    hash_to_key = {}
+    node_labels = {}
     for key, instance in dependency_lookup.items():
-        hash_to_key[instance.md5_str] = key
+        node_labels[instance.md5_str] = key
+
+    for node_id, (instance, _) in dep_instances.items():
+        if node_id not in node_labels:
+            node_labels[node_id] = f"{instance.__class__.__name__} ({node_id[:7]})"
 
     # Track which nodes are leaf analyses to avoid redundant dependency reconstruction
     leaf_node_ids = {analysis.md5_str for analysis in analyses_list}
@@ -509,42 +515,42 @@ def compute_dependency_results(
     computed_results = {}
 
     # Execute all dependencies in topological order
-    for node_id in comp_order:
-        dep_instance, params = dep_instances[node_id]
+    with progress_piter(comp_order, description="Computing analysis nodes", eta_halflife=10) as (
+        nodes,
+        update_piter,
+    ):
+        for node_id in nodes:
+            node_label = node_labels.get(node_id, "[Unknown]")
+            update_piter.subdescription(node_label)
+            dep_instance, params = dep_instances[node_id]
 
-        # Reconstruct dependencies and add instance parameters
-        dep_kwargs = baseline_kwargs.copy()
-        dep_kwargs.update(params)
+            # Reconstruct dependencies and add instance parameters
+            dep_kwargs = baseline_kwargs.copy()
+            dep_kwargs.update(params)
 
-        reconstructed_deps = _reconstruct_dependencies(
-            dep_instance, computed_results, dependency_lookup
-        )
-        dep_kwargs.update(reconstructed_deps)
+            reconstructed_deps = _reconstruct_dependencies(
+                dep_instance, computed_results, dependency_lookup
+            )
+            dep_kwargs.update(reconstructed_deps)
 
-        if node_id in leaf_node_ids:
-            # Cache dependency reconstruction for leaf analyses to avoid redundant work
-            leaf_dependencies[node_id] = reconstructed_deps
+            if node_id in leaf_node_ids:
+                # Cache dependency reconstruction for leaf analyses to avoid redundant work
+                leaf_dependencies[node_id] = reconstructed_deps
 
-        # Log computation for non-trivial analyses
-        if node_id in hash_to_key:
-            log_name = hash_to_key[node_id]
-        else:
-            log_name = f"{dep_instance.__class__.__name__} ({dep_instance.md5_str})"
+            if dep_instance.__class__.compute is AbstractAnalysis.compute:
+                # Skip this node -- no implementation of compute()
+                logger.debug(f"Skipping analysis node: {node_label} (no compute implementation)")
+                result = None
+            else:
+                if not node_label.startswith("_DataForwarder"):
+                    logger.debug(f"Computing analysis node: {node_label}")
 
-        if dep_instance.__class__.compute is AbstractAnalysis.compute:
-            # Skip this node -- no implementation of compute()
-            logger.debug(f"Skipping analysis node: {log_name} (no compute implementation)")
-            result = None
-        else:
-            if not log_name.startswith("_DataForwarder"):
-                logger.info(f"Computing analysis node: {log_name}")
+                # Run preflight memory estimation
+                _run_preflight_memory_estimation(dep_instance, data, dep_kwargs, node_label)
 
-            # Run preflight memory estimation
-            _run_preflight_memory_estimation(dep_instance, data, dep_kwargs, log_name)
-
-            # Execute analysis and store result
-            result = dep_instance._compute_with_ops(data, **dep_kwargs)
-        computed_results[node_id] = result
+                # Execute analysis and store result
+                result = dep_instance._compute_with_ops(data, **dep_kwargs)
+            computed_results[node_id] = result
 
     # Assemble final results for each requested analysis
     all_dependency_results = []

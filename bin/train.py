@@ -18,7 +18,8 @@ import jax.random as jr
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import optax
-from jax_cookbook import is_type
+from jax_cookbook import is_type, map_rich
+from jax_cookbook.progress import piter
 
 import feedbax_experiments
 from feedbax_experiments.config import (
@@ -114,23 +115,21 @@ def main():
             for module_key in batched_spec.keys()
         }
 
-        module_configs = {
-            module_key: [
-                deep_merge(module_configs_base[module_key], run_params)
-                for run_params in run_params_list
-            ]
+        module_configs_list = [
+            (module_key, deep_merge(module_configs_base[module_key], run_params))
             for module_key, run_params_list in batched_spec.items()
-        }
+            for run_params in run_params_list
+        ]
 
         # First: Check which of the requested models actually need to be trained or post-processed
         training_status, all_hps, model_records = jtree.unzip(
-            {
-                module_key: [
-                    prepare_to_train(module_key, module_config)
-                    for module_config in module_configs[module_key]
-                ]
-                for module_key in batched_spec
-            }
+            [
+                prepare_to_train(*pair)
+                for pair in piter(
+                    module_configs_list,
+                    description="Preparing to train",
+                )
+            ]
         )
 
         # Do this here rather than using `train_and_save_from_config`, so logs are summary
@@ -165,7 +164,7 @@ def main():
                     "but not postprocessed."
                 )
                 with db_session(autocommit=False) as db:
-                    jtree.map_rich(
+                    map_rich(
                         lambda record: process_model_post_training(
                             db,
                             record,
@@ -188,7 +187,7 @@ def main():
 
         logger.info(f"Training {len(all_hps_to_train_flat)} models.")
 
-        jtree.map_rich(
+        map_rich(
             # Don't save results in memory
             lambda hps: discard(
                 train_and_save(

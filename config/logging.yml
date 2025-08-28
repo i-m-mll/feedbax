@@ -1,5 +1,5 @@
 # format_str: "%(asctime)s [%(levelname)s] %(name)s,%(lineno)d: %(message)s"
-console_format_str: '(%(name)-30s) %(message)s'
+console_format_str: '(%(name)s) %(message)s'
 file_format_str: '%(asctime)s [%(levelname)s] %(name)s,%(lineno)d: %(message)s'
 console_level: INFO
 file_level: DEBUG

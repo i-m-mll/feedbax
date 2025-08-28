@@ -218,9 +218,9 @@ def load_config(
     if paths:
         used = [p for p in paths if p is not None]
         if len(used) == 1:
-            logger.info(f"Loaded defaults.yml from: {used[0]}")
+            logger.info(f"Loaded default {config_type} config from: {used[0]}")
         elif used:
-            logger.info(f"Loaded defaults.yml hierarchically from: {', '.join(used)}")
+            logger.info(f"Loaded {config_type} defaults hierarchically from: {', '.join(used)}")
 
     # Final config file under {pkg}.config.modules.{domain}.<parents>/<leaf>.yml
     base = f"{resource_root}.modules.{config_type}"
@@ -228,9 +228,11 @@ def load_config(
 
     final_config = _maybe_open_yaml(subpackage, leaf)
     if final_config is None:
-        raise ValueError(f"Run config '{leaf}.yml' not found under {subpackage}")
+        raise ValueError(
+            f"{config_type.capitalize()} module config '{leaf}.yml' not found under {subpackage}"
+        )
 
-    logger.info(f"Loaded run config from resource {subpackage}/{leaf}.yml")
+    logger.info(f"Loaded {config_type} module config from resource {subpackage}/{leaf}.yml")
     return deep_merge(merged_defaults, final_config)
 
 

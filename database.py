@@ -22,12 +22,12 @@ import jax_cookbook.tree as jtree
 import matplotlib.figure as mplf
 import plotly
 import plotly.graph_objects as go
+import pyexiv2
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from feedbax.misc import attr_str_tree_to_where_func
 from jax_cookbook import allf, arrays_to_lists, is_not_type, is_type, save
 from jaxtyping import PyTree
-from ruamel.yaml import YAML
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -870,9 +870,6 @@ def generate_figure_hash(eval_hash: str, identifier: str, parameters: Dict[str, 
 EXTS_WITH_EXIF = ["jpg", "jpeg", "tif", "tiff", "webp"]
 
 
-import pyexiv2
-from PIL import Image as PILImage
-
 pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
 
 
@@ -930,6 +927,7 @@ def add_evaluation_figure(
     identifier: str,
     model_records: PyTree[ModelRecord] = None,
     save_formats: Optional[str | Sequence[str]] = "png",
+    skip_schema_update: bool = False,
     **parameters: Any,
 ) -> FigureRecord:
     """Save figure and create database record with dynamic parameters.
@@ -948,18 +946,17 @@ def add_evaluation_figure(
     figure_hash = generate_figure_hash(eval_record.hash, identifier, parameters)
 
     if isinstance(save_formats, str):
-        save_formats = [save_formats]
+        save_formats_set = {save_formats}
     elif isinstance(save_formats, Sequence):
-        save_formats = list(save_formats)
+        save_formats_set = set(save_formats)
     elif save_formats is None:
-        save_formats = []
+        save_formats_set: set[str] = set()
 
-    # We automatically assume JSON is saved iff it's a plotly figure
-    if "json" in save_formats:
-        save_formats.remove("json")
+    # Always save JSON for database recorded figures
+    save_formats_set.add("json")
 
     # Maybe the user passed an extension with a leading dot
-    save_formats = [format.strip(".") for format in save_formats]
+    save_formats_set = {format.strip(".") for format in save_formats_set}
 
     if isinstance(figure, mplf.Figure):
         figure_type = "matplotlib"
@@ -969,15 +966,16 @@ def add_evaluation_figure(
     # Save figure in subdirectory with same hash as evaluation
     eval_record.figure_dir.mkdir(exist_ok=True)
 
-    savefig(figure, figure_hash, eval_record.figure_dir, save_formats)
+    savefig(figure, figure_hash, eval_record.figure_dir, list(save_formats_set))
 
     # Update schema with new parameters
-    update_table_schema(
-        session.bind,
-        STRINGS.db_table_names.figures,
-        parameters,
-        all_json=True,
-    )
+    if not skip_schema_update:
+        update_table_schema(
+            session.bind,
+            STRINGS.db_table_names.figures,
+            parameters,
+            all_json=True,
+        )
 
     if model_records is None:
         model_hashes = None
@@ -1065,7 +1063,7 @@ def archive_orphaned_records(session: Session) -> None:
             session.query(FigureRecord)
             .filter(
                 FigureRecord.model_hashes.isnot(None),
-                FigureRecord.archived == False,
+                FigureRecord.archived == False,  # noqa: E712
                 ~FigureRecord.model_hashes.op("<@")(
                     dbarray(model_hashes)
                 ),  # Similar check for figures
@@ -1167,7 +1165,7 @@ def retrieve_figures(
     )
 
     if exclude_archived:
-        query = query.filter(FigureRecord.archived == False)
+        query = query.filter(FigureRecord.archived == False)  # noqa: E712
 
     def add_filters(query, model, parameters):
         for param, value in parameters.items():
