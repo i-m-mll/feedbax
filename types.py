@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from enum import Enum
 from token import COMMA
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import (
     Any,
     Dict,
@@ -35,8 +35,6 @@ TNS_REPR_INDENT_STR = "  "
 LDICT_REPR_INDENT_STR = "    "
 
 
-K = TypeVar("K")
-V = TypeVar("V")
 NT = TypeVar("NT", bound=SimpleNamespace)
 DT = TypeVar("DT", bound=dict)
 
@@ -253,11 +251,16 @@ class _ReprIndentable(Protocol):
     def _repr_with_indent(self, level: int) -> str: ...
 
 
-U = TypeVar("U")
+K = TypeVar("K")
+V_co = TypeVar("V_co", covariant=True)
+
+# Invariant typevars for methods
+_K = TypeVar("_K")
+_V = TypeVar("_V")
 
 
 @jax.tree_util.register_pytree_with_keys_class
-class LDict(Mapping[K, V], Generic[K, V]):
+class LDict(Mapping[K, V_co], Generic[K, V_co]):
     """Immutable dictionary with a distinguishingstring label.
 
     Our PyTrees will contain levels corresponding to training conditions (standard deviation
@@ -268,15 +271,15 @@ class LDict(Mapping[K, V], Generic[K, V]):
     which columns to store those hyperparameters in, in the DB.
     """
 
-    def __init__(self, label: str, data: Mapping[K, V]):
+    def __init__(self, label: str, data: Mapping[K, V_co]):
         self._label = label
-        self._data = dict(data)
+        self._data = MappingProxyType(dict(data))
 
     @property
     def label(self) -> str:
         return self._label
 
-    def __getitem__(self, key: K) -> V:
+    def __getitem__(self, key: K) -> V_co:
         return self._data[key]
 
     def __iter__(self):
@@ -385,29 +388,27 @@ class LDict(Mapping[K, V], Generic[K, V]):
 
     @staticmethod
     @overload
-    def fromkeys(label: str, keys: Iterable[K]) -> "LDict[K, None]": ...
+    def fromkeys(label: str, keys: Iterable[_K]) -> "LDict[_K, None]": ...
 
     @staticmethod
     @overload
-    def fromkeys(label: str, keys: Iterable[K], value: V) -> "LDict[K, V]": ...
+    def fromkeys(label: str, keys: Iterable[_K], value: _V) -> "LDict[_K, _V]": ...
 
     @staticmethod
-    def fromkeys(label: str, keys: Iterable[Any], value: Any = None) -> "LDict[Any, Any]":
+    def fromkeys(label: str, keys: Iterable[_K], value: Any = None) -> "LDict[_K, Any]":
         """Create a new LDict with the given label and keys, each with value set to value."""
         return LDict(label, dict.fromkeys(keys, value))
 
-    def __or__(self, other: "LDict | Mapping[K, V]") -> "LDict[K, V]":
+    def __or__(self, other: "LDict | Mapping[K, V_co]") -> "LDict[K, V_co]":
         """Merge with another LDict or Mapping, keeping self's label. Values from `other` take precedence."""
-        new_data = self._data.copy()
-        # if isinstance(other, LDict):
-        #     new_data.update(other._data)
+        new_data = dict(self._data)
         if isinstance(other, Mapping):
             new_data.update(other)
         else:
             return NotImplemented  # Indicate that the operation is not supported for this type
         return LDict(self._label, new_data)
 
-    def __ror__(self, other: Mapping[K, V]) -> "LDict[K, V] | Mapping[K, V]":
+    def __ror__(self, other: Mapping[K, V_co]) -> "LDict[K, V_co] | Mapping[K, V_co]":
         """Merge with a Mapping from the left. The result type depends on `other`."""
         if isinstance(other, Mapping):
             new_data = dict(other)  # Start with a copy of the left operand
@@ -422,22 +423,22 @@ class LDict(Mapping[K, V], Generic[K, V]):
             return NotImplemented
 
 
-class LDictConstructor(Generic[K, V]):
+class LDictConstructor:
     """Constructor for an `LDict` with a particular label."""
 
     def __init__(self, label: str):
         self.label = label
 
     @overload
-    def __call__(self, __mapping: Mapping[K, V], /) -> LDict[K, V]: ...
+    def __call__(self, __mapping: Mapping[_K, _V], /) -> LDict[_K, _V]: ...
     @overload
-    def __call__(self, /, **kwargs: V) -> LDict[str, V]: ...
+    def __call__(self, /, **kwargs: _V) -> LDict[str, _V]: ...
 
-    def __call__(self, __mapping: Optional[Mapping[Any, V]] = None, /, **kwargs: V):
+    def __call__(self, __mapping: Optional[Mapping[Any, Any]] = None, /, **kwargs: Any):
         """Call with either a single mapping positional arg or keyword args (not both)."""
         if __mapping is not None and kwargs:
             raise TypeError("Pass either a mapping positional argument or keyword args, not both.")
-        data: Mapping[Any, V]
+        data: Mapping[Any, Any]
         if __mapping is not None:
             data = __mapping
         else:
@@ -447,7 +448,11 @@ class LDictConstructor(Generic[K, V]):
     def __repr__(self) -> str:
         return f"LDict.of({self.label})"
 
-    def fromkeys(self, keys: Iterable[K], value: Optional[V] = None):
+    @overload
+    def fromkeys(self, keys: Iterable[_K]) -> LDict[_K, None]: ...
+    @overload
+    def fromkeys(self, keys: Iterable[_K], value: _V) -> LDict[_K, _V]: ...
+    def fromkeys(self, keys: Iterable[Any], value: Any = None):
         return LDict.fromkeys(self.label, keys, value)
 
     def from_ns(self, namespace: SimpleNamespace):
@@ -465,6 +470,11 @@ class LDictConstructor(Generic[K, V]):
             return False
 
         return is_ldict_of
+
+
+# Use to statically type trees whose non-leaf nodes are LDicts only.
+# If `T` is parameterized, leaves must be of type `T`.
+type LDictTree[T] = T | LDict[Any, LDictTree[T]]
 
 
 def pprint_ldict_structure(

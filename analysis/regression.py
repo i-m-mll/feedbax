@@ -4,7 +4,7 @@ import itertools
 from collections.abc import Mapping
 from functools import partial
 from types import MappingProxyType
-from typing import Optional, Sequence, Tuple
+from typing import NamedTuple, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -13,15 +13,17 @@ import jax.random as jr
 import jax.tree as jt
 from feedbax.loss import nan_safe_mse
 from feedbax.train import SimpleTrainer, grad_wrap_simple_loss_func
-from jaxtyping import PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax_experiments.analysis.aligned import AlignedVars
 from feedbax_experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
 from feedbax_experiments.tree_utils import ldict_level_keys, tree_level_labels
-from feedbax_experiments.types import AnalysisInputData
+from feedbax_experiments.types import AnalysisInputData, LDictTree
 
 
-def prepare_interaction_indices(regressor_labels, interactions):
+def prepare_interaction_indices(
+    regressor_labels: Sequence[str], interactions: Sequence[Tuple[str, str]]
+):
     """Convert interaction label pairs to index pairs."""
     interaction_indices = []
     for label1, label2 in interactions:
@@ -31,16 +33,35 @@ def prepare_interaction_indices(regressor_labels, interactions):
     return interaction_indices
 
 
-def build_feature_names(regressor_labels, interactions):
+def build_feature_names(regressor_labels: Sequence[str], interactions: Sequence[Tuple[str, str]]):
     """Build feature names for the design matrix."""
-    feature_names = ["intercept"] + regressor_labels[:]
+    feature_names = ["intercept"] + list(regressor_labels)
     for label1, label2 in interactions:
         feature_names.append(f"{label1}*{label2}")
     return feature_names
 
 
-def prepare_regression_data(tree, interaction_indices, n_features):
-    """Build design matrix with pre-computed interaction indices."""
+def prepare_regression_data(
+    tree: LDictTree[Array], interaction_indices: Sequence[tuple[int, int]], n_features: int
+):
+    """Build design matrix from a PyTree where tree structure defines regressors.
+
+    Converts a nested LDict tree into a regression design matrix where each level
+    of the tree hierarchy becomes a regressor variable. The keys at each level
+    are used directly as regressor values (can be numeric or categorical).
+
+    Args:
+        tree: Nested LDict structure where paths encode regressor values
+            and leaves contain observation data arrays
+        interaction_indices: List of (idx1, idx2) tuples specifying which pairs
+            of tree levels should have interaction terms
+        n_features: Total number of features (1 + n_levels + n_interactions)
+
+    Returns:
+        X: Design matrix of shape (n_total_obs, n_features) with intercept,
+            main effects, and interaction terms
+        y_data: Flattened response vector of shape (n_total_obs,)
+    """
     # Extract paths and leaves
     leaves_with_paths = jax.tree.leaves_with_path(tree)
     paths_and_leaves = [
@@ -81,12 +102,18 @@ def prepare_regression_data(tree, interaction_indices, n_features):
     return X, y_data
 
 
-def fit_single_regression(tree, interaction_indices, n_features, key, n_iter=50):
+def fit_single_regression(
+    tree: LDictTree[Array],
+    interaction_indices: Sequence[tuple[int, int]],
+    n_features: int,
+    key: PRNGKeyArray,
+    n_iter: int = 50,
+) -> eqx.nn.Linear:
     """Fit a single regression on completely flattened data."""
     X, y_data = prepare_regression_data(tree, interaction_indices, n_features)
 
     # Create and fit model
-    lin_model = jt.map(
+    lin_model: eqx.nn.Linear = jt.map(
         jnp.zeros_like,
         eqx.nn.Linear(X.shape[-1], 1, use_bias=False, key=key),
     )
@@ -99,16 +126,50 @@ def fit_single_regression(tree, interaction_indices, n_features, key, n_iter=50)
     return model
 
 
+class RegressionResults(NamedTuple):
+    model: eqx.nn.Linear
+    feature_names: Sequence[str]
+
+
 def fit_regression_from_pytree_vmap(
-    tree,
+    tree: LDictTree[Array],
     interactions: Sequence[Tuple[str, str]] = (),
     parallel_axis: Optional[int] = None,
     n_iter: int = 50,
     *,
-    key,
+    key: PRNGKeyArray,
 ):
-    """
-    Fit regressions using vmap for clean separation of concerns.
+    """Fit linear regression(s) using tree structure to define regressors.
+
+    Performs regression where regressors are derived from the hierarchical structure
+    of a PyTree of nested LDicts. Each tree level (identified by its LDict label)
+    becomes a regressor, with its keys used directly as regressor values. Keys can
+    be numeric (e.g., amplitudes, parameters) or categorical. Optionally includes
+    interaction terms between specified pairs of tree levels.
+
+    Args:
+        tree: Nested LDict structure where each level represents a regressor
+            variable and leaves contain data arrays. Keys at each level become
+            the regressor values for that variable.
+        interactions: Pairs of tree level labels (e.g., [("amplitude", "frequency")])
+            for which to include interaction terms (product of main effects)
+        parallel_axis: If None, performs single regression on all data. If specified,
+            vmaps over this axis of leaf arrays to run multiple independent regressions
+        n_iter: Number of training iterations for each regression
+        key: PRNG key for model initialization
+
+    Returns:
+        model: Fitted linear model(s). Single model if parallel_axis=None,
+            otherwise vmapped models with one per slice along parallel_axis
+        feature_names: List of feature names ["intercept", <main_effects>, <interactions>]
+
+    Example:
+        tree = LDict("amplitude", {
+            0.5: LDict("frequency", {1.0: data1, 2.0: data2}),
+            1.0: LDict("frequency", {1.0: data3, 2.0: data4})
+        })
+        # Creates regressors for amplitude (0.5 or 1.0), frequency (1.0 or 2.0),
+        # and optionally their interaction (amplitude * frequency)
     """
     # Pre-compute regressor structure (independent of vmapping)
     regressor_vals = {label: ldict_level_keys(tree, label) for label in tree_level_labels(tree)}
@@ -124,7 +185,7 @@ def fit_regression_from_pytree_vmap(
     if parallel_axis is None:
         # Single regression case
         model = fit_single_regression(tree, interaction_indices, n_features, key, n_iter=n_iter)
-        return model, feature_names
+        return RegressionResults(model, feature_names)
     else:
         # Parallel case - vmap over the specified axis
 
@@ -146,13 +207,13 @@ def fit_regression_from_pytree_vmap(
 
         models = vmapped_fit(tree, interaction_indices, n_features, n_iter, keys)
 
-        return models, feature_names
+        return RegressionResults(models, feature_names)
 
 
 class RegressionPorts(AbstractAnalysisPorts):
     """Input ports for Regression analysis."""
 
-    regressor_tree: InputOf[AlignedVars]
+    regressor_tree: InputOf[LDictTree[Array]]
 
 
 class Regression(AbstractAnalysis[RegressionPorts]):
@@ -173,6 +234,8 @@ class Regression(AbstractAnalysis[RegressionPorts]):
             ),
         )
     )
+
+    interactions: Sequence[Tuple[str, str]] = ()
     key: PRNGKeyArray = eqx.field(default_factory=lambda: jr.PRNGKey(0))
 
     def compute(self, data: AnalysisInputData, *, regressor_tree, **kwargs):
@@ -181,6 +244,8 @@ class Regression(AbstractAnalysis[RegressionPorts]):
         # dependents: computed from `aligned_vars` as in `transform_profile_vars`
 
         models, feature_names = fit_regression_from_pytree_vmap(
-            regressor_tree[self.variant], key=self.key
+            regressor_tree,
+            key=self.key,
+            interactions=self.interactions,
         )
         return models, feature_names

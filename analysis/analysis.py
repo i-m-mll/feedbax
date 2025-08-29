@@ -397,6 +397,27 @@ class _PrepOp(NamedTuple):
 
 
 class _FigOp(NamedTuple):
+    """Figure operation that iteratively generates and aggregates figures.
+
+    Fig ops enable recursive iteration over dependency structures (LDict levels or array axes)
+    to generate figures for each item, then aggregate them according to a specified strategy.
+    They are applied during figure generation, allowing context-aware updates to figure
+    parameters and custom aggregation logic.
+
+    Attributes:
+        name: Operation identifier for logging and debugging
+        dep_name: Name(s) of dependencies to iterate over. If None, uses all available.
+        is_leaf: Predicate to identify nodes to iterate over (e.g., LDict.is_of(level))
+        slice_fn: Function to extract a single item from a node (leaf, item) -> sliced_leaf
+        items_fn: Function to get all items to iterate over from a node (leaf) -> list
+        agg_fn: Function to aggregate child figures (list[figs], items) -> aggregated_tree
+        fig_params_fn: Optional function to update figure parameters per iteration
+        params: Operation parameters for serialization and debugging
+        metadata: Additional metadata (descriptions, labels)
+        pre_slice_hook: Optional hook called before recursion with (data, kwargs, ctx)
+        post_agg_hook: Optional hook called after aggregation with (figs, items, path)
+    """
+
     name: str
     dep_name: Optional[Union[str, Sequence[str]]]
     is_leaf: Callable[[Any], bool]
@@ -832,6 +853,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     )
     _extra_inputs: dict[str, Any] = field(default_factory=dict)
     _estimate_mem_preflight: Literal["off", "stages", "final"] = field(default="off")
+    # Fields for controlling execution granularity via tree mapping
+    _map_compute_spec: Optional[tuple[Callable[[Any], bool], Optional[str | Sequence[str]]]] = (
+        field(default=None)
+    )
+    _map_make_figs_spec: Optional[tuple[Callable[[Any], bool], Optional[str | Sequence[str]]]] = (
+        field(default=None)
+    )
 
     def __post_init__(self):
         """Validate inputs instance and check for unresolved required inputs."""
@@ -839,6 +867,42 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         ports_origin_type = get_origin_type(self.Ports)
         if not isinstance(self.inputs, ports_origin_type):
             raise TypeError(f"Expected inputs of type {self.Ports}, got {type(self.inputs)}")
+
+    def compute(
+        self,
+        data: AnalysisInputData,
+        **kwargs,
+    ) -> PyTree:
+        """Perform computations for the analysis.
+
+        The return value is passed as `result` to `make_figs`, and is also made available to other
+        subclasses of `AbstractAnalysis` as defined in their respective`dependencies` attribute.
+
+        Note that the outer (task variant) `dict` level should be retained in the returned PyTree, since generally
+        a subclass that implements `compute` is implicitly available as a dependency for other subclasses
+        which may depend on data for any variant.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement compute(). "
+            "Either implement this method or the analysis will be skipped during computation."
+        )
+
+    def make_figs(
+        self,
+        data: AnalysisInputData,
+        *,
+        result: Optional[Any],
+        **kwargs,
+    ) -> PyTree[go.Figure]:
+        """Generate figures for this analysis.
+
+        Figures are returned, but are not made available to other subclasses of `AbstractAnalysis`
+        which depend on the subclass implementing this method.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement make_figs(). "
+            "Either implement this method or the analysis will be skipped during figure generation."
+        )
 
     def _compute_with_ops(
         self,
@@ -849,29 +913,84 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # Transform inputs prior to performing the analysis
         # e.g. see `after_stacking` for an example of defining a pre-op
         prepped_kwargs = self._run_prep_ops(data, kwargs)
-        # Transformed `data.states` end up in own temporary key, so move back into `data`
         prepped_data = eqx.tree_at(lambda d: d.states, data, prepped_kwargs["data.states"])
         del prepped_kwargs["data.states"]
 
         def _run_compute():
-            if self._vmap_spec is not None:
-                compute_func = _extract_vmapped_kwargs_to_args(
-                    self.compute, self._vmap_spec.vmapped_dep_names
+            # Define the core compute function that may or may not be vmapped
+            def _compute_core(data_for_compute, kwargs_for_compute):
+                if self._vmap_spec is not None:
+                    # Extract vmapped dependencies
+                    compute_func = _extract_vmapped_kwargs_to_args(
+                        self.compute, self._vmap_spec.vmapped_dep_names
+                    )
+                    vmapped_deps = [
+                        kwargs_for_compute.pop(name) for name in self._vmap_spec.vmapped_dep_names
+                    ]
+                    logger.debug(
+                        _get_vmap_spec_debug_str(
+                            self, self._vmap_spec, data_for_compute, vmapped_deps
+                        )
+                    )
+                    compute_func = partial(compute_func, **kwargs_for_compute)
+                    return vmap_multi(
+                        compute_func, in_axes_sequence=self._vmap_spec.in_axes_sequence
+                    )(
+                        data_for_compute,
+                        *vmapped_deps,
+                    )
+                else:
+                    compute_fn = partial(self.compute, **kwargs_for_compute)
+                    return compute_fn(data_for_compute)
+
+            # Check if we should map compute execution
+            if self._map_compute_spec is not None:
+                is_leaf, dep_names = self._map_compute_spec
+
+                # Determine which dependencies to map over
+                target_dep_names = self._get_target_dependency_names(
+                    dep_names, prepped_kwargs, "Compute mapping"
                 )
-                vmapped_deps = [
-                    prepped_kwargs.pop(name) for name in self._vmap_spec.vmapped_dep_names
-                ]
-                logger.debug(
-                    _get_vmap_spec_debug_str(self, self._vmap_spec, prepped_data, vmapped_deps)
-                )
-                compute_func = partial(compute_func, **prepped_kwargs)
-                return vmap_multi(compute_func, in_axes_sequence=self._vmap_spec.in_axes_sequence)(
-                    prepped_data,
-                    *vmapped_deps,
-                )
+
+                # Separate mapped and unmapped kwargs
+                mapped_kwargs = {
+                    k: prepped_kwargs[k] for k in target_dep_names if k in prepped_kwargs
+                }
+                unmapped_kwargs = {
+                    k: v for k, v in prepped_kwargs.items() if k not in target_dep_names
+                }
+
+                # Map compute over the specified tree nodes
+                def compute_at_leaf(*mapped_deps):
+                    # Reconstruct kwargs for this leaf
+                    leaf_kwargs = unmapped_kwargs.copy()
+                    leaf_kwargs.update(dict(zip(target_dep_names, mapped_deps)))
+
+                    # Handle data.states if it was mapped
+                    if "data.states" in target_dep_names and target_dep_names.index(
+                        "data.states"
+                    ) < len(mapped_deps):
+                        states_idx = target_dep_names.index("data.states")
+                        leaf_data = eqx.tree_at(
+                            lambda d: d.states, prepped_data, mapped_deps[states_idx]
+                        )
+                        # Remove data.states from leaf_kwargs since it's in the data object
+                        remaining_deps = list(mapped_deps)
+                        remaining_names = list(target_dep_names)
+                        remaining_deps.pop(states_idx)
+                        remaining_names.pop(states_idx)
+                        leaf_kwargs.update(dict(zip(remaining_names, remaining_deps)))
+                    else:
+                        leaf_data = prepped_data
+
+                    # Apply compute (with potential vmap inside)
+                    return _compute_core(leaf_data, leaf_kwargs)
+
+                # Map over the tree structure
+                return jt.map(compute_at_leaf, *mapped_kwargs.values(), is_leaf=is_leaf)
             else:
-                compute_fn = partial(self.compute, **prepped_kwargs)
-                return compute_fn(prepped_data)
+                # No tree mapping, just apply compute (with potential vmap)
+                return _compute_core(prepped_data, prepped_kwargs)
 
         def _try_load_result_from_cache() -> tuple[Optional[Path], Optional[Any]]:
             """Attempt to load the result from cache."""
@@ -942,23 +1061,74 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """Generate figures with fig-ops and figure final-ops applied."""
 
         # Transform dependencies prior to making figures
-
         prepped_kwargs = self._run_prep_ops(data, kwargs)
-
         prepped_data = eqx.tree_at(lambda d: d.states, data, prepped_kwargs["data.states"])
         del prepped_kwargs["data.states"]
 
         figs: PyTree[go.Figure] = None
-        if self._fig_ops:
-            # Prepare by amalgamating all kwargs including results
-            prepped_kwargs_with_results = prepped_kwargs.copy()
-            prepped_kwargs_with_results["data.states"] = prepped_data.states
-            prepped_kwargs_with_results["result"] = result
 
-            figs = _apply_fig_ops(self, prepped_data, prepped_kwargs_with_results, 0, ())
+        # Define the core make_figs function that can use fig ops or direct call
+        def _make_figs_core(data_for_figs, result_for_figs, kwargs_for_figs):
+            if self._fig_ops:
+                # Use fig ops (complex behavior with context tracking)
+                kwargs_with_results = kwargs_for_figs.copy()
+                kwargs_with_results["data.states"] = data_for_figs.states
+                kwargs_with_results["result"] = result_for_figs
+                return _apply_fig_ops(self, data_for_figs, kwargs_with_results, 0, ())
+            else:
+                # Direct call to make_figs
+                return self.make_figs(data_for_figs, result=result_for_figs, **kwargs_for_figs)
+
+        # Check if we should use simple tree mapping
+        if self._map_make_figs_spec is not None:
+            is_leaf, dep_names = self._map_make_figs_spec
+
+            # Determine which dependencies to map over
+            target_dep_names = self._get_target_dependency_names(
+                dep_names, prepped_kwargs, "Make-figs mapping"
+            )
+
+            # Include result in potential mapping targets
+            all_kwargs = prepped_kwargs.copy()
+            all_kwargs["result"] = result
+
+            # Separate mapped and unmapped kwargs
+            mapped_kwargs = {k: all_kwargs[k] for k in target_dep_names if k in all_kwargs}
+            unmapped_kwargs = {k: v for k, v in all_kwargs.items() if k not in target_dep_names}
+
+            # Map make_figs over the specified tree nodes
+            def make_figs_at_leaf(*mapped_deps):
+                # Reconstruct kwargs for this leaf
+                leaf_kwargs = {k: v for k, v in unmapped_kwargs.items() if k != "result"}
+                mapped_dict = dict(zip(target_dep_names, mapped_deps))
+
+                # Handle result specially
+                if "result" in mapped_dict:
+                    leaf_result = mapped_dict.pop("result")
+                else:
+                    leaf_result = unmapped_kwargs.get("result", result)
+
+                # Handle data.states specially
+                if "data.states" in mapped_dict:
+                    leaf_data = eqx.tree_at(
+                        lambda d: d.states, prepped_data, mapped_dict.pop("data.states")
+                    )
+                else:
+                    leaf_data = prepped_data
+
+                # Add remaining mapped deps to kwargs
+                leaf_kwargs.update(mapped_dict)
+
+                # Apply make_figs (with potential fig ops inside)
+                return _make_figs_core(leaf_data, leaf_result, leaf_kwargs)
+
+            # Map over the tree structure
+            figs = jt.map(make_figs_at_leaf, *mapped_kwargs.values(), is_leaf=is_leaf)
         else:
-            figs = self.make_figs(prepped_data, result=result, **prepped_kwargs)
+            # No tree mapping, just apply make_figs (with potential fig ops)
+            figs = _make_figs_core(prepped_data, result, prepped_kwargs)
 
+        # Apply final ops
         for final_fig_op in self._final_ops_by_type.get("figs", ()):
             try:
                 figs = _call_user_func(
@@ -1092,42 +1262,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """
         return {}
 
-    def compute(
-        self,
-        data: AnalysisInputData,
-        **kwargs,
-    ) -> PyTree:
-        """Perform computations for the analysis.
-
-        The return value is passed as `result` to `make_figs`, and is also made available to other
-        subclasses of `AbstractAnalysis` as defined in their respective`dependencies` attribute.
-
-        Note that the outer (task variant) `dict` level should be retained in the returned PyTree, since generally
-        a subclass that implements `compute` is implicitly available as a dependency for other subclasses
-        which may depend on data for any variant.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not implement compute(). "
-            "Either implement this method or the analysis will be skipped during computation."
-        )
-
-    def make_figs(
-        self,
-        data: AnalysisInputData,
-        *,
-        result: Optional[Any],
-        **kwargs,
-    ) -> PyTree[go.Figure]:
-        """Generate figures for this analysis.
-
-        Figures are returned, but are not made available to other subclasses of `AbstractAnalysis`
-        which depend on the subclass implementing this method.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not implement make_figs(). "
-            "Either implement this method or the analysis will be skipped during figure generation."
-        )
-
     def save_figs(
         self,
         db_session: Session,
@@ -1252,6 +1386,74 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             )
 
         return eqx.tree_at(lambda x: x._estimate_mem_preflight, self, mode)
+
+    def map_compute(
+        self,
+        is_leaf: Callable[[Any], bool],
+        dependency_names: Optional[str | Sequence[str]] = None,
+    ) -> Self:
+        """
+        Returns a copy of this analysis where `compute` is mapped over tree nodes.
+
+        Instead of calling `compute` once with the entire input tree, it will be
+        called multiple times - once for each node identified by `is_leaf`.
+        The results are reassembled into a tree with the same structure.
+
+        Args:
+            is_leaf: Predicate identifying nodes to map over. For example,
+                    `LDict.is_of("condition")` would run compute separately
+                    for each condition.
+            dependency_names: Optional dependencies to map over. If None, maps
+                            over all dependencies.
+
+        Returns:
+            A copy of this analysis with mapped compute execution.
+
+        Example:
+            >>> # Run compute separately for each experimental condition
+            >>> analysis.map_compute(LDict.is_of("condition"))
+        """
+        if self._map_compute_spec is not None:
+            logger.warning(
+                f"Overwriting existing map_compute spec on {self.name}. "
+                f"Previous spec: {self._map_compute_spec}"
+            )
+        return eqx.tree_at(
+            lambda a: a._map_compute_spec,
+            self,
+            (is_leaf, dependency_names),
+            is_leaf=is_none,
+        )
+
+    def map_make_figs(
+        self,
+        is_leaf: Callable[[Any], bool],
+        dependency_names: Optional[str | Sequence[str]] = None,
+    ) -> Self:
+        """
+        Returns a copy of this analysis where `make_figs` is mapped over tree nodes.
+
+        This is a simpler alternative to `map_figs_at_level` that doesn't support
+        context tracking or aggregation - it just maps `make_figs` execution.
+
+        Args:
+            is_leaf: Predicate identifying nodes to map over.
+            dependency_names: Optional dependencies to map over.
+
+        Returns:
+            A copy of this analysis with mapped make_figs execution.
+        """
+        if self._map_make_figs_spec is not None:
+            logger.warning(
+                f"Overwriting existing map_make_figs spec on {self.name}. "
+                f"Previous spec: {self._map_make_figs_spec}"
+            )
+        return eqx.tree_at(
+            lambda a: a._map_make_figs_spec,
+            self,
+            (is_leaf, dependency_names),
+            is_leaf=is_none,
+        )
 
     def with_fig_params(self, **kwargs) -> Self:
         """Returns a copy of this analysis with updated figure parameters."""
@@ -1590,48 +1792,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata=final_metadata,
         )
 
-    def after_level_to_top(
-        self,
-        label: str,
-        is_leaf: Callable[[Any], bool] | None = None,  # LDict.is_of('var'),
-        dependency_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """
-        Returns a copy of this analysis that will transpose `LDict` levels of its inputs.
-
-        This is useful when our analysis uses a plotting function that compares across
-        the outer PyTree level, but for whatever reason this level is not already
-        the outer level of our results PyTree.
-        """
-
-        def transpose_dependency(dep_data, **kwargs):
-            return LDict.of("task_variant")(
-                {
-                    variant_label: ldict_level_to_top(
-                        label, dep_data[variant_label], is_leaf=is_leaf
-                    )
-                    for variant_label in dep_data
-                }
-            )
-
-        description = (
-            f"Move LDict level '{label}' to the top of the PyTree structure of "
-            f"dependency {dependency_name}"
-        )
-        label_str = f"{_format_level_str(label)}_to-top"
-        final_metadata = _merge_metadata(
-            metadata, dict(descriptions=[description], labels=[label_str])
-        )
-
-        return self._add_prep_op(
-            name="after_level_to_top",
-            dep_name=dependency_name,
-            transform_func=transpose_dependency,
-            params=dict(label=label),
-            metadata=final_metadata,
-        )
-
     def after_rearrange_levels(
         self,
         spec: Sequence[str | EllipsisType],
@@ -1670,6 +1830,24 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata=final_metadata,
         )
 
+    def after_level_to_top(
+        self,
+        label: str,
+        is_leaf: Callable[[Any], bool] | None = None,  # LDict.is_of('var'),
+        dependency_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Self:
+        """
+        Returns a copy of this analysis that transposes an `LDict` level to the top of its inputs.
+        """
+
+        return self.after_rearrange_levels(
+            spec=[label, ...],
+            is_leaf=is_leaf,
+            dependency_name=dependency_name,
+            metadata=metadata,
+        )
+
     def after_level_to_bottom(
         self,
         label: str,
@@ -1678,38 +1856,14 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
         """
-        Returns a copy of this analysis that will transpose `LDict` levels of its inputs.
-
-        This is useful when our analysis uses a plotting function that compares across
-        the outer PyTree level, but for whatever reason this level is not already
-        the outer level of our results PyTree.
+        Returns a copy of this analysis that transposes an `LDict` level to the bottom of its inputs.
         """
 
-        def transpose_dependency(dep_data, **kwargs):
-            return LDict.of("task_variant")(
-                {
-                    variant_label: ldict_level_to_bottom(
-                        label, dep_data[variant_label], is_leaf=is_leaf
-                    )
-                    for variant_label in dep_data
-                }
-            )
-
-        description = (
-            f"Move LDict level '{label}' to the bottom of the PyTree structure "
-            f"of dependency {dependency_name}"
-        )
-        label_str = f"{_format_level_str(label)}_to-bottom"
-        final_metadata = _merge_metadata(
-            metadata, dict(descriptions=[description], labels=[label_str])
-        )
-
-        return self._add_prep_op(
-            name="after_level_to_bottom",
-            dep_name=dependency_name,
-            transform_func=transpose_dependency,
-            params=dict(label=label),
-            metadata=final_metadata,
+        return self.after_rearrange_levels(
+            spec=[..., label],
+            is_leaf=is_leaf,
+            dependency_name=dependency_name,
+            metadata=metadata,
         )
 
     def after_subdict_at_level(
