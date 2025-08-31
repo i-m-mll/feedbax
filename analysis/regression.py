@@ -222,7 +222,6 @@ class Regression(AbstractAnalysis[RegressionPorts]):
         default_factory=RegressionPorts, converter=RegressionPorts.converter
     )
 
-    variant: Optional[str] = "full"
     fig_params: Mapping = MappingProxyType(
         dict(
             mode="std",  # or 'curves'
@@ -238,14 +237,13 @@ class Regression(AbstractAnalysis[RegressionPorts]):
     interactions: Sequence[Tuple[str, str]] = ()
     key: PRNGKeyArray = eqx.field(default_factory=lambda: jr.PRNGKey(0))
 
-    def compute(self, data: AnalysisInputData, *, regressor_tree, **kwargs):
+    def compute(self, data: AnalysisInputData, *, regressor_tree, **kwargs) -> RegressionResults:
         # Regression
         # independents: SISU and curl field amplitude are in PyTree structure
         # dependents: computed from `aligned_vars` as in `transform_profile_vars`
 
-        models, feature_names = fit_regression_from_pytree_vmap(
+        return fit_regression_from_pytree_vmap(
             regressor_tree,
             key=self.key,
             interactions=self.interactions,
         )
-        return models, feature_names

@@ -271,9 +271,12 @@ class LDict(Mapping[K, V_co], Generic[K, V_co]):
     which columns to store those hyperparameters in, in the DB.
     """
 
-    def __init__(self, label: str, data: Mapping[K, V_co]):
+    def __init__(
+        self, label: str, data: Mapping[K, V_co], *, metadata: Optional[Mapping[str, Any]] = None
+    ):
         self._label = label
         self._data = MappingProxyType(dict(data))
+        self.metadata = MappingProxyType(dict(metadata)) if metadata is not None else None
 
     @property
     def label(self) -> str:
@@ -422,6 +425,15 @@ class LDict(Mapping[K, V_co], Generic[K, V_co]):
         else:
             return NotImplemented
 
+    # For pickling/deepcopying: bypass the MappingProxyType
+    def __deepcopy__(self, memo):
+        base = dict(self._data)
+        base_dc = deepcopy(base, memo)
+        return LDict(self._label, base_dc)
+
+    def __reduce_ex__(self, protocol):
+        return (LDict, (self._label, dict(self._data)))
+
 
 class LDictConstructor:
     """Constructor for an `LDict` with a particular label."""
@@ -458,6 +470,11 @@ class LDictConstructor:
     def from_ns(self, namespace: SimpleNamespace):
         """Convert the top level of `namespace` to an `LDict`."""
         return LDict(self.label, namespace.__dict__)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, LDictConstructor):
+            return False
+        return self.label == other.label
 
     @property
     def predicate(self) -> Callable[[Any], bool]:

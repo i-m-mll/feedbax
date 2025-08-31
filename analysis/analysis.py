@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property, partial, wraps
 from itertools import chain
 from pathlib import Path
+from textwrap import wrap
 from types import EllipsisType, MappingProxyType, SimpleNamespace
 from typing import (
     TYPE_CHECKING,
@@ -34,10 +35,10 @@ import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.task import AbstractTask
 from jax_cookbook import is_module, is_none, is_type, vmap_multi
+from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook._vmap import AxisSpec, expand_axes_spec
 from jax_cookbook.progress import piter
 from jaxtyping import Array, ArrayLike, PyTree
-from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
 from feedbax_experiments.config import PATHS, STRINGS
@@ -56,6 +57,7 @@ from feedbax_experiments.misc import (
 from feedbax_experiments.plot_utils import figs_flatten_with_paths
 from feedbax_experiments.tree_utils import (
     DoNotHashTree,
+    _align_trees_to_structure,
     _hash_pytree,
     first_shape,
     hash_callable_leaves,
@@ -643,110 +645,6 @@ class _AnalysisVmapSpec(eqx.Module):
 _FinalOpKeyType = Literal["results", "figs"]
 
 
-# By using `strict=False`, we can define non-abstract fields, i.e. without needing to
-# implement them trivially in subclasses. This violates the abstract-final design
-# pattern. This is intentional. If it leads to problems, I will learn from that.
-def _apply_fig_ops(analysis, data, kwargs, depth: int, path: tuple):
-    """Recursively apply figure operations outer→inner.
-
-    Args:
-        analysis: The AbstractAnalysis instance
-        data: AnalysisInputData
-        kwargs: Dependency kwargs
-        depth: Current recursion depth (0 = outermost)
-        path: Cumulative path selections from outermost→current
-
-    Returns:
-        PyTree of figures
-    """
-    if depth >= len(analysis._fig_ops):
-        # Base case: no more fig-ops
-        return analysis.make_figs(data, **kwargs)
-
-    op = analysis._fig_ops[depth]
-
-    # Choose dependencies that will vary at this level
-    target_dep_names = analysis._get_target_dependency_names(op.dep_name, kwargs, "Fig op")
-    deps = {k: kwargs[k] for k in target_dep_names if k in kwargs}
-    if not deps:
-        logger.warning("No varying dependencies for fig-op %s; falling back to make_figs.", op.name)
-        return analysis.make_figs(data, **kwargs)
-
-    # Find a representative leaf for items
-    first_dep = next(iter(deps.values()))
-    leaves = jt.leaves(first_dep, is_leaf=op.is_leaf)
-    if not leaves:
-        logger.error("Fig-op %s found no matching leaves; falling back.", op.name)
-        return analysis.make_figs(data, **kwargs)
-    sample_leaf = leaves[0]
-
-    ref_keys = list(op.items_fn(sample_leaf))
-    for name, dep in deps.items():
-        keys = list(op.items_fn(jt.leaves(dep, is_leaf=op.is_leaf)[0]))
-        if keys != ref_keys:
-            logger.warning(
-                "Fig-op %s: keys for %r differ from reference; proceeding with reference ordering.",
-                op.name,
-                name,
-            )
-
-    children = []
-
-    for i, key in enumerate(ref_keys):
-        # Slice kwargs for this item
-        sliced_kwargs = dict(kwargs)
-        for k, v in deps.items():
-            sliced_kwargs[k] = jt.map(
-                lambda x: op.slice_fn(x, key) if op.is_leaf(x) else x,
-                v,
-                is_leaf=op.is_leaf,
-            )
-
-        # (Optional) move states in/out as in current pipeline
-        data_i = data
-        if "data.states" in sliced_kwargs:
-            data_i = eqx.tree_at(lambda d: d.states, data, sliced_kwargs["data.states"])
-            del sliced_kwargs["data.states"]
-
-        # Context
-        ctx = FigIterCtx(
-            level=op.params.get("level"),
-            key=key,
-            idx=i,
-            depth=depth,
-            path=path,
-        )
-
-        # Optional hook before recursion
-        if op.pre_slice_hook is not None:
-            data_i, sliced_kwargs = op.pre_slice_hook(data_i, sliced_kwargs, ctx)
-
-        # Per-level fig params (ctx-aware)
-        analysis_i = analysis
-        if op.fig_params_fn is not None:
-            new_fp = _call_fig_params_fn(op.fig_params_fn, analysis.fig_params, ctx)
-            analysis_i = eqx.tree_at(
-                lambda a: a.fig_params,
-                analysis,
-                MappingProxyType(deep_merge(analysis.fig_params, new_fp)),
-            )
-
-        # Recurse
-        child = _apply_fig_ops(
-            analysis_i, data_i, sliced_kwargs, depth + 1, path + ((ctx.level, key, i),)
-        )
-        children.append(child)
-
-    # Aggregate children at this depth
-    figs = op.agg_fn(children, ref_keys)
-
-    # Optional post-aggregation hook
-    if op.post_agg_hook is not None:
-        figs = op.post_agg_hook(figs, ref_keys, path)
-
-    return figs
-
-
 def _call_fig_params_fn(fn, fp, ctx):
     """Call fig_params_fn with ctx-style signature.
 
@@ -984,13 +882,15 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                         leaf_data = prepped_data
 
                     # Apply compute (with potential vmap inside)
-                    return _compute_core(leaf_data, leaf_kwargs)
+                    result = _compute_core(leaf_data, leaf_kwargs)
+                    return result
 
                 # Map over the tree structure
                 return jt.map(compute_at_leaf, *mapped_kwargs.values(), is_leaf=is_leaf)
             else:
                 # No tree mapping, just apply compute (with potential vmap)
-                return _compute_core(prepped_data, prepped_kwargs)
+                result = _compute_core(prepped_data, prepped_kwargs)
+                return result
 
         def _try_load_result_from_cache() -> tuple[Optional[Path], Optional[Any]]:
             """Attempt to load the result from cache."""
@@ -1038,17 +938,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             except Exception as e:
                 logger.warning(f"Could not save cache for {self.name}: {e}")
 
-        for final_op in self._final_ops_by_type.get("results", ()):
-            try:
-                result = _call_user_func(
-                    final_op.transform_func,
-                    result,
-                    data=data,
-                    **prepped_kwargs,
-                )
-            except Exception as e:
-                logger.error(f"Error during execution of final op '{final_op.name}'", exc_info=True)
-                raise e
+        result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
 
         return result
 
@@ -1074,7 +964,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 kwargs_with_results = kwargs_for_figs.copy()
                 kwargs_with_results["data.states"] = data_for_figs.states
                 kwargs_with_results["result"] = result_for_figs
-                return _apply_fig_ops(self, data_for_figs, kwargs_with_results, 0, ())
+                return _apply_fig_ops(self, data_for_figs, 0, (), **kwargs_with_results)
             else:
                 # Direct call to make_figs
                 return self.make_figs(data_for_figs, result=result_for_figs, **kwargs_for_figs)
@@ -1129,20 +1019,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             figs = _make_figs_core(prepped_data, result, prepped_kwargs)
 
         # Apply final ops
-        for final_fig_op in self._final_ops_by_type.get("figs", ()):
-            try:
-                figs = _call_user_func(
-                    final_fig_op.transform_func,
-                    figs,
-                    data=prepped_data,
-                    result=result,
-                    **prepped_kwargs,
-                )
-            except Exception as e:
-                logger.error(
-                    f"Error during execution of final op '{final_fig_op.name}'", exc_info=True
-                )
-                raise e
+        result = _apply_final_ops(
+            self, "figs", figs, data=prepped_data, result=result, **prepped_kwargs
+        )
 
         return figs
 
@@ -1595,6 +1474,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata=final_metadata,
         )
 
+    #! TODO:
     def after_transform(
         self,
         func: Callable[..., Any],
@@ -1633,11 +1513,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             )
             label = f"pre-transform-{', '.join(levels)}_{get_name_of_callable(func)}"
 
+            func_wrapped = wrap_to_accept_var_kwargs(func)
+
             def _transform_levels(dep_data, levels=levels, **kwargs):
                 tree = dep_data
                 for level in levels:
                     tree = jt.map(
-                        lambda node: _call_user_func(func, node, **kwargs),
+                        lambda node: func_wrapped(node, **kwargs),
                         tree,
                         is_leaf=LDict.is_of(level),
                     )
@@ -2024,35 +1906,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             is_leaf=is_none,
         )
 
-    def then_transform_result(
-        self,
-        func: Callable[..., Any],
-        level: Optional[str] = None,
-        is_leaf: Optional[Callable[[Any], bool]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """Returns a copy of this analysis that transforms its PyTree of results.
-
-        The transformation occurs prior to the generation of figures, thus affects them.
-        """
-
-        return self._then_transform(
-            op_type="results",
-            func=func,
-            level=level,
-            is_leaf=is_leaf,
-            metadata=metadata,
-        )
-
-    #! TODO: Generalize `map_figs_at_level` to map at any PyTree node
-    #! For example, maybe our input is a tuple of LDict and we want to map `make_figs`
-    #! separately, for each element of the tuple.
-    # def map_figs(
-    #     self,
-    #     dependency_name: Optional[str] = None,
-    # ):
-    #     ...
-
     def map_figs_at_level(
         self,
         level,
@@ -2205,20 +2058,56 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata=final_metadata,
         )
 
+    def then_transform_result(
+        self,
+        func: Callable[..., Any],
+        is_leaf: Optional[Callable[[Any], bool]] = lambda _: True,
+        level_to_tuple_arg: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Self:
+        """Returns a copy of this analysis that transforms its PyTree of results.
+
+        The transformation occurs prior to the generation of figures, thus affects them.
+
+        By default, the transformation is applied to the entire results PyTree. To apply the
+        transformation to standard leaves (arraylikes etc.) pass `is_leaf=None`.
+        """
+
+        return self._then_transform(
+            op_type="results",
+            func=func,
+            is_leaf=is_leaf,
+            level_to_tuple_arg=level_to_tuple_arg,
+            metadata=metadata,
+        )
+
     def then_transform_figs(
         self,
         func: Callable[..., Any],
-        level: Optional[str] = None,
+        is_leaf: Optional[Callable[[Any], bool]] = is_type(go.Figure),
+        level_to_tuple_arg: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
+        """Returns a copy of this analysis that transforms its output PyTree of figures
+
+        Args:
+            func: The function to transform the tree with.
+            is_leaf: Predicate identifying leaves to apply the transformation to. Defaults to
+                apply the transformation separately to each `go.Figure` leaf.
+            level_to_tuple_arg: If given, the effective leaves on which the transformation is
+                applied will be tuples of `is_leaf` leaves, where the tuple structure corresponds
+                to zipping at the `level_to_tuple_arg` LDict level.
+            metadata: Optional metadata.
         """
-        Returns a copy of this analysis that transforms its output PyTree of figures
-        """
+        if is_leaf is None:
+            logger.warning(
+                "is_leaf=None in then_transform_figs may descend inside `go.Figure` nodes"
+            )
         return self._then_transform(
             op_type="figs",
             func=func,
-            level=level,
-            is_leaf=is_type(go.Figure),
+            is_leaf=is_leaf,
+            level_to_tuple_arg=level_to_tuple_arg,
             metadata=metadata,
         )
 
@@ -2226,7 +2115,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         self,
         op_type: _FinalOpKeyType,
         func: Callable[..., Any],
-        level: Optional[str] = None,
+        level_to_tuple_arg: Optional[str] = None,
         is_leaf: Optional[Callable[[Any], bool]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
@@ -2239,19 +2128,21 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], label=label))
 
-        if level is not None:
-            description += f" at LDict level '{level}'"
+        func_with_var_kwargs = wrap_to_accept_var_kwargs(func)
+
+        if level_to_tuple_arg is not None:
+            description += f" at LDict level '{level_to_tuple_arg}'"
 
             # Apply the transformation leafwise across the `level` LDict level;
             # e.g. suppose there are two keys in the `level` LDict, then the transformation
-            # will be applied to 2-tuples of figures; following the transformation, reconsistute
-            # the `level` LDict with the transformed figures.
+            # will be applied to 2-tuples of leaves; following the transformation, reconsistute
+            # the `level` LDict with the transformed leaves.
             @wraps(func)
             def _transform_func(tree, **kwargs):
                 _Tuple = jtree.make_named_tuple_subclass("ColumnTuple")
 
                 def _transform_level(ldict_node):
-                    if not LDict.is_of(level)(ldict_node):
+                    if not LDict.is_of(level_to_tuple_arg)(ldict_node):
                         return ldict_node
 
                     zipped = jtree.zip_(
@@ -2260,21 +2151,20 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                         zip_cls=_Tuple,
                     )
                     transformed = jt.map(
-                        #! TODO: Avoid re-computing the signature every time.
-                        lambda x: _call_user_func(func, x, **kwargs),
+                        lambda x: func_with_var_kwargs(x, **kwargs),
                         zipped,
                         is_leaf=is_type(_Tuple),
                     )
                     unzipped = jtree.unzip(transformed, tuple_cls=_Tuple)
-                    return LDict.of(level)(dict(zip(ldict_node.keys(), unzipped)))
+                    return LDict.of(level_to_tuple_arg)(dict(zip(ldict_node.keys(), unzipped)))
 
-                return jt.map(_transform_level, tree, is_leaf=LDict.is_of(level))
+                return jt.map(_transform_level, tree, is_leaf=LDict.is_of(level_to_tuple_arg))
 
             return self._add_final_op(
                 op_type=op_type,
                 name=f"then_transform_{op_type}",
                 transform_func=_transform_func,
-                params=dict(level=level, transform_func=func),
+                params=dict(level=level_to_tuple_arg, transform_func=func),
                 is_leaf=is_leaf,
                 metadata=final_metadata,
             )
@@ -2466,11 +2356,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             dep_names_to_process = self._get_target_dependency_names(
                 prep_op.dep_name, prepped_kwargs, "Prep-op"
             )
+            op_func = wrap_to_accept_var_kwargs(prep_op.transform_func)
 
             for name in dep_names_to_process:
                 try:
-                    prepped_kwargs[name] = _call_user_func(
-                        prep_op.transform_func,
+                    prepped_kwargs[name] = op_func(
                         prepped_kwargs[name],
                         data=data,
                         **kwargs,
@@ -2486,6 +2376,439 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     prepped_kwargs.pop(port, None)
 
         return prepped_kwargs
+
+    #! TEMPORARY
+    def map_compute_to_output(
+        self,
+        output_spec: Optional[Sequence[str | EllipsisType]] = None,
+        *,
+        is_leaf: Optional[Callable[[Any], bool]] = None,
+        dependency_names: Optional[str | Sequence[str]] = None,
+    ) -> Self:
+        """
+        Returns a copy of this analysis where `compute` is mapped over aligned tree nodes.
+
+        Automatically aligns input PyTrees to have matching outer structure before mapping.
+        This is useful when dependencies have different LDict structures that need to be
+        reconciled before joint processing.
+
+        Args:
+            output_spec: Optional specification of the desired output LDict structure.
+                - If provided as a sequence of strings, specifies the exact outer levels
+                - Can contain one Ellipsis (...) meaning "other levels here"
+                - If None, structure is inferred from the dependencies
+            is_leaf: Predicate identifying nodes to map over. If not provided and
+                    output_spec is complete, defaults to nodes below the specified levels.
+            dependency_names: Dependencies to align and map over. If None, uses all.
+
+        Returns:
+            A copy with prep ops to align structures and mapping configured.
+
+        Examples:
+            >>> # Explicit output structure
+            >>> analysis.map_compute_to_output(
+            ...     ["response_var", "condition", "trial"],
+            ...     dependency_names=["results", "gains"]
+            ... )
+
+            >>> # Partial structure with ellipsis
+            >>> analysis.map_compute_to_output(
+            ...     ["condition", ..., "trial"],
+            ...     is_leaf=is_type(MyResult),
+            ...     dependency_names=["results", "gains"]
+            ... )
+
+            >>> # Fully inferred structure
+            >>> analysis.map_compute_to_output(
+            ...     is_leaf=is_type(MyResult),
+            ...     dependency_names=["results", "gains"]
+            ... )
+        """
+        return self._map_to_output(
+            "compute",
+            output_spec=output_spec,
+            is_leaf=is_leaf,
+            dependency_names=dependency_names,
+        )
+
+    def map_make_figs_to_output(
+        self,
+        output_spec: Optional[Sequence[str | EllipsisType]] = None,
+        *,
+        is_leaf: Optional[Callable[[Any], bool]] = None,
+        dependency_names: Optional[str | Sequence[str]] = None,
+    ) -> Self:
+        """
+        Returns a copy of this analysis where `make_figs` is mapped over aligned tree nodes.
+
+        See `map_compute_to_output` for detailed documentation.
+        """
+        return self._map_to_output(
+            "make_figs",
+            output_spec=output_spec,
+            is_leaf=is_leaf,
+            dependency_names=dependency_names,
+        )
+
+    def _map_to_output(
+        self,
+        map_type: Literal["compute", "make_figs"],
+        output_spec: Optional[Sequence[str | EllipsisType]] = None,
+        is_leaf: Optional[Callable[[Any], bool]] = None,
+        dependency_names: Optional[str | Sequence[str]] = None,
+    ) -> Self:
+        """Common implementation for map_*_to_output methods."""
+
+        # Normalize dependency_names
+        if dependency_names is None:
+            dep_names = list(self.inputs.keys())
+            if not dep_names:
+                raise ValueError(f"No dependencies to map for {self.name}")
+        elif isinstance(dependency_names, str):
+            dep_names = [dependency_names]
+        else:
+            dep_names = list(dependency_names)
+
+        # Include data.states if needed
+        if "data.states" not in dep_names:
+            dep_names.append("data.states")
+
+        # Add alignment prep op based on strategy
+        if output_spec is None:
+            # Fully inferred structure
+            if is_leaf is None:
+                raise ValueError(
+                    "Either output_spec or is_leaf must be provided to determine mapping structure"
+                )
+            modified = self._add_inferred_alignment_prep_op(dep_names, is_leaf, map_type)
+
+        elif Ellipsis in output_spec:
+            # Partial spec with ellipsis
+            if is_leaf is None:
+                raise ValueError("is_leaf required when output_spec contains Ellipsis")
+            modified = self._add_ellipsis_alignment_prep_op(
+                dep_names, list(output_spec), is_leaf, map_type
+            )
+
+        else:
+            # Complete explicit spec
+            output_spec = list(output_spec)
+            if is_leaf is None:
+                # Default: map at nodes not in output_spec
+                def default_is_leaf(x):
+                    if isinstance(x, LDict):
+                        return x.label not in output_spec
+                    return True
+
+                is_leaf = default_is_leaf
+
+            modified = self._add_explicit_alignment_prep_op(dep_names, output_spec, map_type)
+
+        # Configure the mapping
+        if map_type == "compute":
+            modified = modified.map_compute(is_leaf, dependency_names=dep_names)
+        else:
+            modified = modified.map_make_figs(is_leaf, dependency_names=dep_names)
+
+        return modified
+
+    def _add_explicit_alignment_prep_op(
+        self,
+        dep_names: list[str],
+        output_spec: list[str],
+        map_type: str,
+    ) -> Self:
+        """Add prep op to align dependencies to explicit output structure."""
+
+        def make_align_func(this_dep_name, all_dep_names):
+            """Create alignment function for a specific dependency."""
+
+            def align_to_spec(dep_tree, output_spec=output_spec, **kwargs):
+                """Align this dependency to the explicit output structure."""
+                # Collect all dependencies for reference
+                all_deps = {}
+                for name in all_dep_names:
+                    if name == this_dep_name:
+                        all_deps[name] = dep_tree
+                    elif name in kwargs:
+                        all_deps[name] = kwargs[name]
+
+                # Align just this dependency using others as reference
+                aligned = _align_trees_to_structure(
+                    {this_dep_name: dep_tree},
+                    output_spec,
+                    reference_trees={k: v for k, v in all_deps.items() if k != this_dep_name},
+                )
+                return aligned[this_dep_name]
+
+            return align_to_spec
+
+        modified = self
+        for dep_name in dep_names:
+            align_func = make_align_func(dep_name, dep_names)
+            description = f"Align {dep_name} to structure {output_spec} for {map_type} mapping"
+            modified = modified._add_prep_op(
+                name="align_to_explicit_spec",
+                dep_name=dep_name,
+                transform_func=align_func,
+                params=dict(output_spec=output_spec, map_type=map_type),
+                metadata=dict(descriptions=[description]),
+            )
+
+        return modified
+
+    def _add_ellipsis_alignment_prep_op(
+        self,
+        dep_names: list[str],
+        output_spec: list[str | EllipsisType],
+        is_leaf: Callable,
+        map_type: str,
+    ) -> Self:
+        """Add prep op for alignment with ellipsis in spec."""
+
+        # Find ellipsis position
+        ellipsis_idx = output_spec.index(Ellipsis)
+        before_ellipsis = output_spec[:ellipsis_idx]
+        after_ellipsis = output_spec[ellipsis_idx + 1 :]
+
+        def make_align_func(this_dep_name, all_dep_names):
+            """Create alignment function for a specific dependency."""
+
+            def align_with_ellipsis(
+                dep_tree, before=before_ellipsis, after=after_ellipsis, is_leaf=is_leaf, **kwargs
+            ):
+                """Expand ellipsis based on tree structure and align."""
+                # Get current levels up to is_leaf
+                current_levels = tree_level_labels(dep_tree, is_leaf=is_leaf)
+
+                # Determine what goes in the ellipsis position
+                middle_levels = [
+                    level for level in current_levels if level not in before and level not in after
+                ]
+
+                # Construct full target structure
+                target_structure = list(before) + middle_levels + list(after)
+
+                # Collect all dependencies for reference
+                all_deps = {}
+                for name in all_dep_names:
+                    if name == this_dep_name:
+                        all_deps[name] = dep_tree
+                    elif name in kwargs:
+                        all_deps[name] = kwargs[name]
+
+                # Align using helper
+                aligned = _align_trees_to_structure(
+                    {this_dep_name: dep_tree},
+                    target_structure,
+                    is_leaf=is_leaf,
+                    reference_trees={k: v for k, v in all_deps.items() if k != this_dep_name},
+                )
+                return aligned[this_dep_name]
+
+            return align_with_ellipsis
+
+        modified = self
+        for dep_name in dep_names:
+            align_func = make_align_func(dep_name, dep_names)
+            spec_str = f"{list(before_ellipsis)}...{list(after_ellipsis)}"
+            description = f"Align {dep_name} to structure {spec_str} for {map_type} mapping"
+            modified = modified._add_prep_op(
+                name="align_with_ellipsis",
+                dep_name=dep_name,
+                transform_func=align_func,
+                params=dict(output_spec=output_spec, is_leaf=is_leaf, map_type=map_type),
+                metadata=dict(descriptions=[description]),
+            )
+
+        return modified
+
+    def _add_inferred_alignment_prep_op(
+        self,
+        dep_names: list[str],
+        is_leaf: Callable,
+        map_type: str,
+    ) -> Self:
+        """Add prep op that infers structure from all dependencies."""
+
+        def make_align_func(this_dep_name, all_dep_names):
+            """Create alignment function for a specific dependency."""
+
+            def infer_and_align(dep_tree, is_leaf=is_leaf, **kwargs):
+                """Infer structure from all dependencies and align."""
+                # Collect all dependencies
+                all_deps = {}
+                for name in all_dep_names:
+                    if name == this_dep_name:
+                        all_deps[name] = dep_tree
+                    elif name in kwargs:
+                        all_deps[name] = kwargs[name]
+
+                # Infer target structure by taking union of all levels
+                all_levels = []
+                level_order = {}  # Track first occurrence position
+
+                for dep in all_deps.values():
+                    dep_levels = tree_level_labels(dep, is_leaf=is_leaf)
+                    for i, level in enumerate(dep_levels):
+                        if level not in level_order:
+                            level_order[level] = len(all_levels)
+                            all_levels.append(level)
+
+                # Sort by first occurrence to maintain reasonable order
+                target_structure = sorted(level_order.keys(), key=lambda x: level_order[x])
+
+                # Align this tree to the inferred structure
+                aligned = _align_trees_to_structure(
+                    {this_dep_name: dep_tree},
+                    target_structure,
+                    is_leaf=is_leaf,
+                    reference_trees={k: v for k, v in all_deps.items() if k != this_dep_name},
+                )
+                return aligned[this_dep_name]
+
+            return infer_and_align
+
+        modified = self
+        for dep_name in dep_names:
+            align_func = make_align_func(dep_name, dep_names)
+            description = f"Infer structure and align {dep_name} for {map_type} mapping"
+            modified = modified._add_prep_op(
+                name="infer_and_align",
+                dep_name=dep_name,
+                transform_func=align_func,
+                params=dict(is_leaf=is_leaf, map_type=map_type),
+                metadata=dict(descriptions=[description]),
+            )
+
+        return modified
+
+
+# By using `strict=False`, we can define non-abstract fields, i.e. without needing to
+# implement them trivially in subclasses. This violates the abstract-final design
+# pattern. This is intentional. If it leads to problems, I will learn from that.
+def _apply_fig_ops(
+    analysis: AbstractAnalysis, data: AnalysisInputData, depth: int, path: tuple, **kwargs
+):
+    """Recursively apply figure operations outer→inner.
+
+    Args:
+        analysis: The AbstractAnalysis instance
+        data: AnalysisInputData
+        kwargs: Dependency kwargs
+        depth: Current recursion depth (0 = outermost)
+        path: Cumulative path selections from outermost→current
+
+    Returns:
+        PyTree of figures
+    """
+    if depth >= len(analysis._fig_ops):
+        # Base case: no more fig-ops
+        return analysis.make_figs(data, **kwargs)
+
+    op = analysis._fig_ops[depth]
+
+    # Choose dependencies that will vary at this level
+    target_dep_names = analysis._get_target_dependency_names(op.dep_name, kwargs, "Fig op")
+    deps = {k: kwargs[k] for k in target_dep_names if k in kwargs}
+    if not deps:
+        logger.warning("No varying dependencies for fig-op %s; falling back to make_figs.", op.name)
+        return analysis.make_figs(data, **kwargs)
+
+    # Find a representative leaf for items
+    first_dep = next(iter(deps.values()))
+    leaves = jt.leaves(first_dep, is_leaf=op.is_leaf)
+    if not leaves:
+        logger.error("Fig-op %s found no matching leaves; falling back.", op.name)
+        return analysis.make_figs(data, **kwargs)
+    sample_leaf = leaves[0]
+
+    ref_keys = list(op.items_fn(sample_leaf))
+    for name, dep in deps.items():
+        keys = list(op.items_fn(jt.leaves(dep, is_leaf=op.is_leaf)[0]))
+        if keys != ref_keys:
+            logger.warning(
+                "Fig-op %s: keys for %r differ from reference; proceeding with reference ordering.",
+                op.name,
+                name,
+            )
+
+    children = []
+
+    for i, key in enumerate(ref_keys):
+        # Slice kwargs for this item
+        sliced_kwargs = dict(kwargs)
+        for k, v in deps.items():
+            sliced_kwargs[k] = jt.map(
+                lambda x: op.slice_fn(x, key) if op.is_leaf(x) else x,
+                v,
+                is_leaf=op.is_leaf,
+            )
+
+        # (Optional) move states in/out as in current pipeline
+        data_i = data
+        if "data.states" in sliced_kwargs:
+            data_i = eqx.tree_at(lambda d: d.states, data, sliced_kwargs["data.states"])
+            del sliced_kwargs["data.states"]
+
+        # Context
+        ctx = FigIterCtx(
+            level=op.params.get("level"),
+            key=key,
+            idx=i,
+            depth=depth,
+            path=path,
+        )
+
+        # Optional hook before recursion
+        if op.pre_slice_hook is not None:
+            data_i, sliced_kwargs = op.pre_slice_hook(data_i, sliced_kwargs, ctx)
+
+        # Per-level fig params (ctx-aware)
+        analysis_i = analysis
+        if op.fig_params_fn is not None:
+            new_fp = _call_fig_params_fn(op.fig_params_fn, analysis.fig_params, ctx)
+            analysis_i = eqx.tree_at(
+                lambda a: a.fig_params,
+                analysis,
+                MappingProxyType(deep_merge(analysis.fig_params, new_fp)),
+            )
+
+        # Recurse
+        child = _apply_fig_ops(
+            analysis_i, data_i, depth + 1, path + ((ctx.level, key, i),), **sliced_kwargs
+        )
+        children.append(child)
+
+    # Aggregate children at this depth
+    figs = op.agg_fn(children, ref_keys)
+
+    # Optional post-aggregation hook
+    if op.post_agg_hook is not None:
+        figs = op.post_agg_hook(figs, ref_keys, path)
+
+    return figs
+
+
+def _apply_final_ops(
+    analysis: AbstractAnalysis, kind: Literal["figs", "results"], tree: PyTree, **kwargs
+):
+    for final_op in analysis._final_ops_by_type.get(kind, ()):
+        try:
+            func = wrap_to_accept_var_kwargs(final_op.transform_func)
+            tree = jt.map(
+                lambda leaf: func(leaf, **kwargs),
+                tree,
+                is_leaf=final_op.is_leaf,
+            )
+        except Exception as e:
+            logger.error(
+                f"Error during execution of final {kind} op '{final_op.name}'",
+                exc_info=True,
+            )
+            raise e
+
+    return tree
 
 
 # Keep InputType for validation purposes
@@ -2508,34 +2831,6 @@ class _DummyAnalysis(AbstractAnalysis[NoPorts]):
 
     def make_figs(self, data: AnalysisInputData, **kwargs) -> PyTree[go.Figure]:
         return None
-
-
-def _call_user_func(func, *args, **kwargs):
-    """Invoke *func* with *dep_data* and the subset of *extra_kwargs* it accepts.
-
-    - If `func` exposes `_ports`, it's a wrapper:
-        * Verify all required port kwargs exist, then pass through *args/**kwargs.
-        * The wrapper handles placement/filtering.
-    - Otherwise (plain callable):
-        * Drop unknown kwargs if the function doesn't accept **kwargs.
-    """
-    ports = getattr(func, "_ports", None)
-
-    if ports:
-        missing = [p for p in ports if p not in kwargs]
-        if missing:
-            raise KeyError(
-                f"Missing dependency ports {missing}; available keys: {sorted(kwargs.keys())}"
-            )
-        return func(*args, **kwargs)
-
-    sig = inspect.signature(func)
-    has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-    if not has_varkw:
-        allowed = set(sig.parameters.keys())
-        kwargs = {k: v for k, v in kwargs.items() if k in allowed}
-
-    return func(*args, **kwargs)
 
 
 class CallWithDeps:
@@ -2638,5 +2933,5 @@ class CallWithDeps:
 
         # Expose to the engine:
         wrapper._extra_inputs = spec_map  # {port -> spec}  # type: ignore[attr-defined]
-        wrapper._ports = tuple(spec_map.keys())  # type: ignore[attr-defined]
+        # wrapper._ports = tuple(spec_map.keys())  # type: ignore[attr-defined]
         return wrapper

@@ -15,6 +15,7 @@ from jax_cookbook import (
     is_module,
     is_type,
 )
+from jax_cookbook._func import compose_
 from jaxtyping import Array, Float, PyTree
 
 from feedbax_experiments.analysis.analysis import (
@@ -69,7 +70,7 @@ DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
         ResponseVar.POSITION: VarSpec(
             where=lambda states, *_: states.mechanics.effector.pos,
             labels=Labels("Position", "Pos.", "p"),
-            origin=compose(get_trial_start_positions, unsqueezer(-2)),
+            origin=compose(get_trial_start_positions).then(unsqueezer(-2)),
         ),
         ResponseVar.VELOCITY: VarSpec(
             where=lambda states, *_: states.mechanics.effector.vel,
@@ -336,7 +337,7 @@ class Measure(Module):
         Returns:
             Computed measure values
         """
-        return compose(*self._call_methods)(input)
+        return compose_(*self._call_methods)(input)
 
 
 vector_magnitude = partial(jnp.linalg.norm, axis=-1)
@@ -472,7 +473,7 @@ def reverse_measure(measure: Measure) -> Measure:
     measure of the maximum reverse velocity.
     """
     if measure.transform_func is not None:
-        transform_func = compose(measure.transform_func, jnp.negative)
+        transform_func = compose(measure.transform_func).then(jnp.negative)
     else:
         transform_func = jnp.negative
 

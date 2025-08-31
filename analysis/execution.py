@@ -18,6 +18,7 @@ import plotly
 import plotly.graph_objects as go
 from equinox import Module
 from jax_cookbook import is_module, is_none, is_type
+from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook.progress import piter
 from jaxtyping import PyTree
 from ruamel.yaml import YAML
@@ -154,22 +155,6 @@ TransformsSpec = Union[
     AnalysisModuleTransformSpec,  # Structured (better static typing)
     dict[str, Any],  # Dict (convenience) - runtime validation will check keys
 ]
-
-
-def _call_user_func(func, data, extra_kwargs):
-    """Invoke func with data and the subset of extra_kwargs it accepts.
-
-    This allows transform functions to optionally accept common inputs like replicate_info.
-    """
-    sig = inspect.signature(func)
-
-    # Fast path: the function accepts **kwargs; forward everything.
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-        return func(data, **extra_kwargs)
-
-    # Otherwise filter down to only the kwargs explicitly listed.
-    filtered = {k: v for k, v in extra_kwargs.items() if k in sig.parameters}
-    return func(data, **filtered)
 
 
 def validate_and_convert_transforms(
@@ -379,16 +364,15 @@ def setup_eval_for_module(
             if isinstance(transforms.pre_setup, dict):
                 # Granular transforms - apply to task and/or models separately
                 if "task" in transforms.pre_setup and transforms.pre_setup["task"] is not None:
-                    task = _call_user_func(transforms.pre_setup["task"], task, common_inputs)
+                    func = wrap_to_accept_var_kwargs(transforms.pre_setup["task"])
+                    task = func(task, common_inputs)
                 if "models" in transforms.pre_setup and transforms.pre_setup["models"] is not None:
-                    models_base = _call_user_func(
-                        transforms.pre_setup["models"], models_base, common_inputs
-                    )
+                    func = wrap_to_accept_var_kwargs(transforms.pre_setup["models"])
+                    models_base = func(models_base, common_inputs)
             else:
                 # Combined function - pass task and models as tuple
-                task, models_base = _call_user_func(
-                    transforms.pre_setup, (task, models_base), common_inputs
-                )
+                func = wrap_to_accept_var_kwargs(transforms.pre_setup)
+                task, models_base = func((task, models_base), common_inputs)
 
         tasks, models, hps, extras = analysis_module.setup_eval_tasks_and_models(
             task, models_base, hps
@@ -703,25 +687,29 @@ def run_analysis_module(
         if isinstance(transforms.post_eval, dict):
             # Granular transforms - apply to models, tasks, and/or states separately
             if "models" in transforms.post_eval and transforms.post_eval["models"] is not None:
+                func = wrap_to_accept_var_kwargs(transforms.post_eval["models"])
                 data = eqx.tree_at(
                     lambda data: data.models,
                     data,
-                    _call_user_func(transforms.post_eval["models"], data.models, common_inputs),
+                    func(data.models, common_inputs),
                     is_leaf=is_none,
                 )
             if "tasks" in transforms.post_eval and transforms.post_eval["tasks"] is not None:
+                func = wrap_to_accept_var_kwargs(transforms.post_eval["tasks"])
                 data = eqx.tree_at(
                     lambda data: data.tasks,
                     data,
-                    _call_user_func(transforms.post_eval["tasks"], data.tasks, common_inputs),
+                    func(data.tasks, common_inputs),
                     is_leaf=is_none,
                 )
             if "states" in transforms.post_eval and transforms.post_eval["states"] is not None:
-                states = _call_user_func(transforms.post_eval["states"], states, common_inputs)
+                func = wrap_to_accept_var_kwargs(transforms.post_eval["states"])
+                states = func(states, common_inputs)
         else:
+            func = wrap_to_accept_var_kwargs(transforms.post_eval)
             # Combined function - pass models, tasks, states as tuple
-            transformed_models, transformed_tasks, transformed_states = _call_user_func(
-                transforms.post_eval, (data.models, data.tasks, states), common_inputs
+            transformed_models, transformed_tasks, transformed_states = func(
+                (data.models, data.tasks, states), common_inputs
             )
             data = eqx.tree_at(lambda data: data.models, data, transformed_models, is_leaf=is_none)
             data = eqx.tree_at(lambda data: data.tasks, data, transformed_tasks, is_leaf=is_none)

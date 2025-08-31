@@ -2,6 +2,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import re
 import types
 from collections import defaultdict
@@ -15,10 +16,12 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
+import numpy as np
 import plotly.graph_objects as go
 from feedbax.intervene import AbstractIntervenor
 from jax_cookbook import anyf, hash_callable, is_module, is_none, is_type
-from jaxtyping import Array, ArrayLike, PyTree
+from jax_cookbook._func import falsef
+from jaxtyping import Array, ArrayLike, PyTree, PyTreeDef
 
 from feedbax_experiments.config import STRINGS
 from feedbax_experiments.misc import deep_merge
@@ -88,10 +91,6 @@ def map_kwargs_to_dict(
             ),
         )
     )
-
-
-def falsef(x):
-    return False
 
 
 def ldict_verbose_label_func(x: Any) -> str:
@@ -806,3 +805,341 @@ def lomidhi(x: Iterable):
 
 
 class DoNotHashTree: ...
+
+
+def _expand_missing_levels(
+    tree: PyTree,
+    target_levels: list[str],
+    current_levels: list[str],
+    reference_trees: Optional[dict[str, PyTree]] = None,
+) -> PyTree:
+    """
+    Expand missing LDict levels in tree to match target structure.
+
+    Args:
+        tree: The tree to expand
+        target_levels: The desired level structure
+        current_levels: The current levels in tree
+        reference_trees: Other trees to use as reference for expansion keys
+
+    Returns:
+        Tree with missing levels expanded
+    """
+    missing_levels = [level for level in target_levels if level not in current_levels]
+
+    for level in missing_levels:
+        # Find a reference tree that has this level to get the keys
+        keys_to_use = None
+        if reference_trees:
+            for ref_name, ref_tree in reference_trees.items():
+                if ref_tree is None:
+                    continue
+                # Check if this reference has the level we need
+                try:
+                    # Navigate to find an LDict with this label
+                    sample = jt.leaves(ref_tree, is_leaf=LDict.is_of(level))
+                    if sample:
+                        keys_to_use = list(sample[0].keys())
+                        logger.debug(
+                            f"Using keys {keys_to_use} from {ref_name} "
+                            f"for expanding level '{level}'"
+                        )
+                        break
+                except:
+                    continue
+
+        # If no reference found, use a default single key
+        if keys_to_use is None:
+            logger.warning(
+                f"No reference found for LDict level '{level}', "
+                f"expanding with single default key '_'"
+            )
+            keys_to_use = ["_"]
+
+        # Expand tree by wrapping in LDict with discovered keys
+        if len(keys_to_use) == 1:
+            # Single key - simple case
+            tree = LDict.of(level)({keys_to_use[0]: tree})
+        else:
+            # Multiple keys - replicate tree for each key
+            # Note: This creates separate references to the same tree,
+            # which is fine for immutable structures
+            logger.debug(f"Replicating tree for {len(keys_to_use)} keys at level '{level}'")
+            tree = LDict.of(level)({key: tree for key in keys_to_use})
+
+    return tree
+
+
+def _align_trees_to_structure(
+    trees: dict[str, PyTree],
+    target_structure: list[str],
+    is_leaf: Optional[Callable] = None,
+    reference_trees: Optional[dict[str, PyTree]] = None,
+) -> dict[str, PyTree]:
+    """
+    Align multiple trees to have the same LDict structure.
+
+    Args:
+        trees: Dictionary of trees to align
+        target_structure: The target level structure
+        is_leaf: Optional leaf predicate for tree_level_labels
+        reference_trees: Additional reference trees for key expansion
+
+    Returns:
+        Dictionary of aligned trees
+    """
+    # Combine trees and reference_trees for expansion references
+    all_trees = {}
+    all_trees.update(trees)
+    if reference_trees:
+        all_trees.update(reference_trees)
+
+    aligned = {}
+
+    for name, tree in trees.items():
+        # Get current structure
+        current_levels = tree_level_labels(tree, is_leaf=is_leaf)
+
+        # Expand missing levels using all available trees as reference
+        other_trees = {k: v for k, v in all_trees.items() if k != name}
+        tree = _expand_missing_levels(tree, target_structure, current_levels, other_trees)
+
+        # Rearrange to match target structure
+        if target_structure:
+            tree = rearrange_ldict_levels(tree, target_structure)
+
+        aligned[name] = tree
+
+    return aligned
+
+
+LevelSpec = str | type | LDictConstructor | EllipsisType
+
+
+def _as_descriptor(x: LevelSpec) -> Any:
+    """Normalize a user spec token to the descriptor objects we operate on:
+    - str -> LDict.of(label)
+    - type -> type object itself
+    - LDictConstructor -> as-is
+    - Ellipsis -> Ellipsis
+    """
+    if x is Ellipsis:
+        return Ellipsis
+    if isinstance(x, str):
+        if LDict is None:
+            raise TypeError("String level specs require LDict.of(...), but LDict is unavailable.")
+        return LDict.of(x)
+    if isinstance(x, (LDictConstructor, type)):  # type: ignore[arg-type]
+        return x
+    raise TypeError(f"Unsupported level specifier: {x!r}")
+
+
+def _level_descriptor_key(x: Any) -> tuple[str, Any]:
+    """Stable comparable key for a level descriptor."""
+    if LDictConstructor is not None and isinstance(x, LDictConstructor):  # type: ignore[arg-type]
+        return ("ldict", x.label)
+    if isinstance(x, type):
+        return ("type", x)
+    raise TypeError(f"Unsupported level descriptor: {x!r}")
+
+
+def _expand_spec_to_target(spec: Sequence[LevelSpec], current: list[Any]) -> list[Any]:
+    """Expand the possibly-ellipsized `spec` into a full target descriptor list.
+
+    Rules:
+      - At most one Ellipsis.
+      - Items before Ellipsis become the outermost levels (in given order).
+      - Items after Ellipsis become the innermost levels (in given order).
+      - Unspecified current levels keep their original *relative* order in the middle.
+      - If there is no Ellipsis, we prepend the specified ones and append the rest
+        (keeping original relative order).
+    """
+    if not current:
+        return []
+
+    spec_norm = [_as_descriptor(x) for x in spec]
+    if sum(1 for x in spec_norm if x is Ellipsis) > 1:
+        raise ValueError("`spec` may contain at most one Ellipsis (`...`).")
+
+    current_keys = [_level_descriptor_key(x) for x in current]
+    specified = [x for x in spec_norm if x is not Ellipsis]
+
+    # check duplicates in spec
+    seen, dups = set(), []
+    for x in specified:
+        k = _level_descriptor_key(x)
+        if k in seen:
+            dups.append(x)
+        else:
+            seen.add(k)
+    if dups:
+        raise ValueError(f"Duplicate level(s) in spec: {', '.join(map(repr, dups))}")
+
+    # check unknown levels
+    unknown = [x for x in specified if _level_descriptor_key(x) not in current_keys]
+    if unknown:
+        raise ValueError(
+            "Unknown level(s) in spec (not present in tree): " + ", ".join(map(repr, unknown))
+        )
+
+    if Ellipsis in spec_norm:
+        # split into before ... after
+        before, after = [], []
+        placed_keys = set()
+        side = "before"
+        for x in spec_norm:
+            if x is Ellipsis:
+                side = "after"
+                continue
+            (before if side == "before" else after).append(x)
+            placed_keys.add(_level_descriptor_key(x))
+        middle = [x for x in current if _level_descriptor_key(x) not in placed_keys]
+        return before + middle + after
+    else:
+        placed_keys = {_level_descriptor_key(x) for x in spec_norm}
+        rest = [x for x in current if _level_descriptor_key(x) not in placed_keys]
+        return list(spec_norm) + rest
+
+
+def _gather_level_treedefs_and_sizes(
+    tree: Any, *, depth: int, is_leaf: Optional[Callable]
+) -> tuple[list[PyTreeDef], list[int]]:
+    """Walk a single representative path (always the first child) and
+    collect the one-level treedef at each depth and its arity (num children).
+
+    Assumes *uniformity*: every node at a given level has the same container
+    structure and number/order of children.
+    """
+    node = tree
+    treedefs: list[PyTreeDef] = []
+    sizes: list[int] = []
+
+    for _ in range(depth):
+        children, td = eqx.tree_flatten_one_level(node)
+        treedefs.append(td)
+        sizes.append(len(children))
+        # stop early if this level has no children (e.g., empty container)
+        if not children:
+            break
+        # descend to first child; if user-supplied is_leaf would stop earlier,
+        # we rely on 'depth' to bound the loop exactly to the number of levels.
+        node = children[0]
+
+    # If we stopped early, trim to equal length
+    L = min(len(treedefs), depth)
+    return treedefs[:L], sizes[:L]
+
+
+def _compose_treedefs_in_order(treedefs: list[PyTreeDef], order: list[int]) -> PyTreeDef:
+    """Compose a sequence of one-level treedefs into a multi-level treedef
+    with outermost -> innermost order given by `order` (indices into treedefs)."""
+    if not order:
+        raise ValueError("Empty order for treedef composition.")
+    td = treedefs[order[0]]
+    for idx in order[1:]:
+        td = td.compose(treedefs[idx])
+    return td
+
+
+def _compute_transpose_permutation_indices(sizes: list[int], perm_axes: list[int]) -> np.ndarray:
+    """Return an array `idx_map` of length N=prod(sizes) such that:
+
+        new_leaves = [old_leaves[i] for i in idx_map]
+
+    yields the leaf order corresponding to transposing a conceptual array of shape
+    `sizes` by `perm_axes` (new_axis_k = old_axis_{perm_axes[k]}).
+    """
+    if not sizes:
+        return np.array([], dtype=int)
+    N = math.prod(sizes)
+    if N == 0:
+        return np.array([], dtype=int)
+
+    idx_map = np.arange(N, dtype=int).reshape(sizes).transpose(perm_axes).ravel()
+    return idx_map
+
+
+def rearrange_levels(
+    tree: Any,
+    spec: Sequence[LevelSpec],
+    *,
+    is_leaf: Optional[Callable] = None,
+) -> Any:
+    """Generalised (fast) level rearrangement for uniform pytrees.
+
+    Parameters
+    ----------
+    tree
+        A *uniform* multi-level pytree: at each depth all nodes share the same
+        container type *and* the same child structure/order (e.g. same LDict keys).
+    spec
+        Desired outer-to-inner level order. Each item can be:
+          - `str` → treated as `LDict.of(label)` (name an LDict level)
+          - `type` (e.g. `tuple`, `list`, custom class) → match by `isinstance`
+          - `LDictConstructor` → match by label
+          - `...` (at most once) to keep unspecified levels in their original
+            relative order in the middle.
+        Any levels not mentioned (and not captured by `...`) are appended after
+        the specified ones preserving their original relative order.
+    is_leaf
+        An optional boundary predicate (same semantics as JAX/Eqx). Everything at
+        or below this boundary is treated as a *leaf value* (opaque) during the
+        rearrangement.
+
+    Returns
+    -------
+    A new tree with the same leaves as `tree` but with levels reordered.
+    """
+
+    # 1) Detect current level descriptors (outer -> inner) w.r.t is_leaf.
+    current_levels: list[Any] = tree_level_types(tree, is_leaf=is_leaf)  # user-provided helper
+    if not current_levels:
+        return tree
+
+    # 2) Expand spec into a full target list of descriptors (outer -> inner).
+    target = _expand_spec_to_target(spec, current_levels)
+
+    # If already in desired order, short-circuit.
+    if [_level_descriptor_key(x) for x in current_levels] == [
+        _level_descriptor_key(x) for x in target
+    ]:
+        return tree
+
+    depth = len(current_levels)
+
+    # 3) Gather one-level treedefs and per-level arities along a single representative path.
+    level_treedefs, sizes = _gather_level_treedefs_and_sizes(tree, depth=depth, is_leaf=is_leaf)
+
+    # Handle degenerate cases (no leaves or mismatch).
+    if not level_treedefs or not sizes or math.prod(sizes) == 0:
+        # Either structure is empty or there are no leaves; nothing to rearrange.
+        return tree
+
+    # 4) Compute axis permutation from `current_levels` to `target`.
+    key_to_idx = {_level_descriptor_key(d): i for i, d in enumerate(current_levels)}
+    perm_axes = [
+        key_to_idx[_level_descriptor_key(d)] for d in target
+    ]  # new_axis_k = old_axis_{perm_axes[k]}
+
+    # 5) Compose the target treedef in the desired order (outer -> inner).
+    td_target = _compose_treedefs_in_order(level_treedefs, perm_axes)
+
+    # 6) Flatten the original leaves with the given is_leaf boundary.
+    leaves, _ = jt.flatten(tree, is_leaf=is_leaf)
+    N = len(leaves)
+    assert N == math.prod(sizes), (
+        f"Uniformity/size mismatch: flattened leaf count {N} != product(sizes) {math.prod(sizes)}. "
+        "Ensure the tree is uniform and `is_leaf` matches the intended boundary."
+    )
+
+    # 7) Compute the global permutation to match the new treedef’s flattening order.
+    idx_map = _compute_transpose_permutation_indices(sizes, perm_axes)
+    if len(idx_map) != N:
+        # Defensive guard; should not happen if uniformity holds.
+        raise RuntimeError("Permutation/leaf count mismatch.")
+
+    new_leaves = [leaves[i] for i in idx_map.tolist()]
+
+    # 8) Rebuild the tree directly with the composed treedef.
+    out = jtu.tree_unflatten(td_target, new_leaves)
+    return out
