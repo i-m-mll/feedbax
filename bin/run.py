@@ -24,13 +24,6 @@ from ._setup import setup
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 
-def _import_main(module_name: str) -> ModuleType | None:
-    try:
-        return importlib.import_module("." + module_name, package="feedbax_experiments.bin")
-    except Exception:
-        return None
-
-
 def _call_module_main(mod: ModuleType, argv: Sequence[str]) -> int:
     """
     Try to call mod.main() if present; otherwise run it as __main__
@@ -61,7 +54,7 @@ def _call_module_main(mod: ModuleType, argv: Sequence[str]) -> int:
 
 def _dispatch(cmd: str, sub_argv: Sequence[str]) -> int:
     # Try candidates in order until one imports successfully.
-    mod = _import_main(cmd)
+    mod = importlib.import_module("." + cmd, package="feedbax_experiments.bin")
     if mod is not None:
         return _call_module_main(mod, sub_argv)
     raise SystemExit(f"Could not locate a module for subcommand '{cmd}'. ")

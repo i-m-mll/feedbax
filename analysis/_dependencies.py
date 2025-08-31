@@ -41,7 +41,6 @@ from feedbax_experiments.analysis.analysis import (
     _format_dict_of_params,
 )
 from feedbax_experiments.misc import get_md5_hexdigest
-from feedbax_experiments.tree_utils import prefix_expand
 from feedbax_experiments.types import AnalysisInputData
 
 logger = logging.getLogger(__name__)
@@ -297,7 +296,7 @@ def _apply_transformations(
         if tree.where is not None:
             target_structure = tree.where(target_structure)
 
-        return prefix_expand(
+        return jtree.prefix_expand(
             transformed_source,
             target_structure,
             is_leaf=tree.is_leaf,

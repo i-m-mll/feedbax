@@ -1,14 +1,14 @@
 import jax.tree as jt
 import plotly.graph_objects as go
 from jax_cookbook import is_module, is_none, is_type
-
-from feedbax_experiments.misc import location_inspect as loc
-from feedbax_experiments.tree_utils import (
+from jax_cookbook.tree import (
     first as fs,
 )
-from feedbax_experiments.tree_utils import (
+from jax_cookbook.tree import (
     first_shape as fsh,
 )
+
+from feedbax_experiments.misc import location_inspect as loc
 from feedbax_experiments.tree_utils import (
     ldict_verbose_label_func,
     tree_level_labels,

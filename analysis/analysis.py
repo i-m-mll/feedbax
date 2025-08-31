@@ -59,13 +59,9 @@ from feedbax_experiments.tree_utils import (
     DoNotHashTree,
     _align_trees_to_structure,
     _hash_pytree,
-    first_shape,
     hash_callable_leaves,
     ldict_label_only_func,
-    ldict_level_to_bottom,
-    ldict_level_to_top,
     move_ldict_level_above,
-    rearrange_ldict_levels,
     subdict,
     tree_level_labels,
 )
@@ -672,9 +668,9 @@ def _get_vmap_spec_debug_str(
     example_leaf_shapes_str = "\n\t\t".join(
         [
             "example leaf shapes:",
-            f"data.states: {first_shape(prepped_data.states)}",
+            f"data.states: {jtree.first_shape(prepped_data.states)}",
             *[
-                f"{k}: {first_shape(dep)}"
+                f"{k}: {jtree.first_shape(dep)}"
                 for k, dep in zip(vmap_spec.vmapped_dep_names, vmapped_deps)
             ],
         ]
@@ -1402,10 +1398,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # Build metadata with description and label
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
+        def map_func(dep_data, **kwargs):
+            return jt.map(func, dep_data, is_leaf=is_leaf)
+
         return self._add_prep_op(
             name="map",
             dep_name=dependency_name,
-            transform_func=lambda dep_data, **kwargs: jt.map(func, dep_data, is_leaf=is_leaf),
+            transform_func=map_func,
             params=dict(func=func),
             metadata=final_metadata,
         )
@@ -1676,7 +1675,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     def after_rearrange_levels(
         self,
-        spec: Sequence[str | EllipsisType],
+        spec: Sequence[jtree.LevelSpec],
         is_leaf: Callable[[Any], bool] | None = None,  # LDict.is_of('var'),
         dependency_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -1690,7 +1689,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """
 
         def transpose_dependency(dep_data, **kwargs):
-            return rearrange_ldict_levels(dep_data, spec, is_leaf=is_leaf)
+            return jtree.rearrange_uniform_tree(dep_data, spec, is_leaf=is_leaf)
 
         spec_str = "-".join(
             str(...) if s is Ellipsis else _format_level_str(s)
@@ -1698,7 +1697,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         )
 
         description = (
-            f"Rearrange LDict levels of dependency {dependency_name} "
+            f"Rearrange PyTree levels of dependency {dependency_name} "
             f"according to specification: {spec_str}"
         )
         label = f"levels-to-{spec_str}"
@@ -2363,7 +2362,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     prepped_kwargs[name] = op_func(
                         prepped_kwargs[name],
                         data=data,
-                        **kwargs,
+                        **prepped_kwargs,
                     )
                 except Exception as e:
                     logger.error(f"Error applying prep_op transform to '{name}'", exc_info=True)
@@ -2450,6 +2449,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             dependency_names=dependency_names,
         )
 
+    #! TODO: Simplify this. It is overcomplicated and performs needlessly redundant work.
+    #! We should only need a single prep-op to align dependencies -- as long as we modify
+    #! `_run_prep_ops` so that *all* `dependency_names` dependencies get passed and modified
+    #! by each prep op.
+    #! Likewise, the spec alignment might be refactorable with the logic of
+    #! `jtree.rearrange_uniform_tree`, especially re: specifying specs that can include non-LDict
+    #! level types.
     def _map_to_output(
         self,
         map_type: Literal["compute", "make_figs"],

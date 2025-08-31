@@ -30,7 +30,7 @@ from feedbax_experiments.analysis.fp_finder import (
 )
 from feedbax_experiments.analysis.pca import PCAResults, StatesPCA
 from feedbax_experiments.plot import plot_fp_pcs
-from feedbax_experiments.tree_utils import first, ldict_level_to_bottom
+from feedbax_experiments.tree_utils import ldict_level_to_bottom
 from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
 
 T = TypeVar("T")

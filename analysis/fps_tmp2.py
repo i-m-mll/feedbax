@@ -16,6 +16,7 @@ import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objects as go
 from jax_cookbook import is_module
+from jax_cookbook.tree import first
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax_experiments.analysis.analysis import (
