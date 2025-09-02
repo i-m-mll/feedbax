@@ -393,11 +393,15 @@ def _reconstruct_dependencies(
     return dep_kwargs
 
 
-def _stage_collector(ops, x):
-    outs = [x]
+def _stage_collector(ops, tree, **kwargs):
+    outs = [tree]
     for op in ops:
-        x = op.transform_func(x)
-        outs.append(x)
+        tree = jt.map(
+            lambda leaf: op.wrapped_fn(leaf, **kwargs),
+            tree,
+            is_leaf=op.is_leaf,
+        )
+        outs.append(tree)
     return tuple(outs)
 
 
@@ -442,12 +446,14 @@ def _run_preflight_memory_estimation(
             elif preflight_mode == "stages":
                 ops = preflight_inst._final_ops_by_type.get("results", ())
 
+                collected_fn = partial(_stage_collector, ops)
                 tap = _FinalOp(
                     name="__shape_mem_tap__",
-                    label="shape-mem-tap",
-                    transform_func=partial(_stage_collector, ops),
+                    fn=lambda *args, **kwargs: None,
+                    wrapped_fn=collected_fn,
                     params={},
                     is_leaf=None,
+                    metadata=dict(label="shape-mem-tap"),
                 )
                 tapped = _replace_results_final_ops(preflight_inst, (tap,))
 

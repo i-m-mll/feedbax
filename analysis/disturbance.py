@@ -26,7 +26,7 @@ def orthogonal_field(trial_spec, _, key):
     return jnp.array([-direction_vec[1], direction_vec[0]])
 
 
-PLANT_PERT_FUNCS = {
+PLANT_PERT_FNS = {
     "curl": lambda scale: CurlField.with_params(
         #! amplitude=amplitude,
         scale=scale,
@@ -47,7 +47,7 @@ def task_with_pert_amp(task, pert_amp, intervenor_label):
     )
 
 
-def get_pert_amp_vmap_eval_func(
+def get_pert_amp_vmap_eval_fn(
     where_pert_amps_in_hps: Callable[[TreeNamespace], Sequence[float]],
     intervenor_label: str,
 ):
@@ -59,7 +59,7 @@ def get_pert_amp_vmap_eval_func(
             identifies which intervention to scale by the vmap argument.
     """
 
-    def eval_func(key_eval, hps, models, task):
+    def eval_fn(key_eval, hps, models, task):
         """Vmap over impulse amplitude."""
 
         states = eqx.filter_vmap(
@@ -80,4 +80,4 @@ def get_pert_amp_vmap_eval_func(
             states,
         )
 
-    return eval_func
+    return eval_fn

@@ -15,6 +15,7 @@ from pathlib import Path
 # Since we're using pickle to cache states which may contain JAX arrays, we rely on JAX's
 # implicit handling of arrays during pickling (it should work for CPU arrays and most
 # host-accessible device arrays).
+import jax
 import jax.random as jr
 import plotly.io as pio
 from jax_cookbook.progress import progress_session
@@ -92,6 +93,12 @@ def build_arg_parser():
         action="store_true",
         help="If set, all occurrences of each distinct warning message are shown.",
     )
+    parser.add_argument(
+        "--memory-warn-gb",
+        type=float,
+        default=25.0,
+        help="Warn if estimated memory usage exceeds this value (in GB).",
+    )
     return parser
 
 
@@ -120,11 +127,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.clear_fig_dumps == "all":
         fig_dump_manager.clear_all_figures()
 
-    run_analysis_func = partial(
+    run_analysis_fn = partial(
         run_analysis_module,
         fig_dump_formats=fig_dump_formats,
         no_pickle=args.no_pickle if args.single else True,  #! For now, don't pickle in batched mode
         states_pkl_dir=states_pkl_dir,
+        memory_warn_gb=args.memory_warn_gb,
         key=key,
     )
 
@@ -136,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             fig_dump_dir = fig_dump_manager.prepare_module_dir(module_key, module_config)
 
-            data, common_inputs, all_analyses, all_results, all_figs = run_analysis_func(
+            data, common_inputs, all_analyses, all_results, all_figs = run_analysis_fn(
                 module_key=module_key,
                 module_config=module_config,
                 fig_dump_dir=fig_dump_dir,
@@ -177,11 +185,13 @@ def main(argv: list[str] | None = None) -> None:
                     fig_dump_dir = fig_dump_manager.prepare_run_dir(module_key, run_params_list[i])
 
                     # Do not keep results in memory across runs
-                    run_analysis_func(
+                    run_analysis_fn(
                         module_key=module_key,
                         module_config=module_config,
                         fig_dump_dir=fig_dump_dir,
                     )
+
+                    jax.clear_caches()
 
     logger.info("All analyses complete. Exiting.")
 

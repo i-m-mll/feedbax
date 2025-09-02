@@ -10,16 +10,14 @@ from jax_cookbook.tree import (
 
 from feedbax_experiments.misc import location_inspect as loc
 from feedbax_experiments.tree_utils import (
-    ldict_verbose_label_func,
+    ldict_verbose_label_fn,
     tree_level_labels,
 )
 from feedbax_experiments.tree_utils import (
     pp2 as pp,
 )
 
-tll = lambda *args, **kwargs: tree_level_labels(
-    *args, label_func=ldict_verbose_label_func, **kwargs
-)
+tll = lambda *args, **kwargs: tree_level_labels(*args, label_fn=ldict_verbose_label_fn, **kwargs)
 
 
 def lf(tree, type_=None):

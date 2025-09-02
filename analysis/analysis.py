@@ -34,7 +34,7 @@ import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.task import AbstractTask
-from jax_cookbook import is_module, is_none, is_type, vmap_multi
+from jax_cookbook import LDictConstructor, is_module, is_none, is_type, vmap_multi
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook._vmap import AxisSpec, expand_axes_spec
 from jax_cookbook.progress import piter
@@ -59,8 +59,9 @@ from feedbax_experiments.tree_utils import (
     DoNotHashTree,
     _align_trees_to_structure,
     _hash_pytree,
+    _levels_raw,
     hash_callable_leaves,
-    ldict_label_only_func,
+    ldict_label_only_fn,
     move_ldict_level_above,
     subdict,
     tree_level_labels,
@@ -201,9 +202,9 @@ class ExpandTo:
 
     This is useful when one input lacks the inner structure necessary for tree operations
     with another input. For example, if `funcs` has structure ['sisu', 'train__pert__std']
-    but `func_args` is a tuple lacking the 'train__pert__std' level, you can use:
+    but `fn_args` is a tuple lacking the 'train__pert__std' level, you can use:
 
-        func_args=ExpandTo("funcs", tuple((Data.hps(...), Data.tasks(...))))
+        fn_args=ExpandTo("funcs", tuple((Data.hps(...), Data.tasks(...))))
 
     The `source` will be prefix-expanded to match the structure of `target`.
 
@@ -217,7 +218,7 @@ class ExpandTo:
         The PyTree to be prefix-expanded
     where
         Optional function to select a subtree of the target for expansion.
-        For example: where=lambda func_args: func_args[0] to expand to just the
+        For example: where=lambda fn_args fn_args[0] to expand to just the
         first element of a tuple target instead of the entire tuple structure.
     is_leaf, is_leaf_prefix
         Optional leaf predicates passed to the prefix expansion operation
@@ -389,7 +390,8 @@ class FigureSaveTask(NamedTuple):
 class _PrepOp(NamedTuple):
     name: str
     dep_name: Optional[Union[str, Sequence[str]]]  # Dependencies to transform
-    transform_func: Callable[..., Any]
+    fn: Callable[..., Any]  # Original function
+    wrapped_fn: Callable[..., Any]  # Wrapped to accept var kwargs
     params: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
 
@@ -433,7 +435,8 @@ class _FigOp(NamedTuple):
 
 class _FinalOp(NamedTuple):
     name: str
-    transform_func: Callable[[PyTree[go.Figure]], PyTree[go.Figure]]
+    fn: Callable[[PyTree[go.Figure]], PyTree[go.Figure]]  # Original function
+    wrapped_fn: Callable[[PyTree[go.Figure]], PyTree[go.Figure]]  # Wrapped to accept var kwargs
     params: Optional[dict[str, Any]] = None
     is_leaf: Optional[Callable[[Any], bool]] = None
     metadata: Optional[dict[str, Any]] = None
@@ -575,15 +578,15 @@ def get_validation_trial_specs(task: AbstractTask):
     return task.validation_trials
 
 
-def _extract_vmapped_kwargs_to_args(func, vmapped_dep_names: Sequence[str]):
+def _extract_vmapped_kwargs_to_args(fn, vmapped_dep_names: Sequence[str]):
     """Convert specified kwargs to positional args for vmapping."""
 
-    def modified_func(data, *vmapped_deps, **remaining_kwargs):
+    def modified_fn(data, *vmapped_deps, **remaining_kwargs):
         # Reconstruct the full kwargs dict
         full_kwargs = remaining_kwargs | dict(zip(vmapped_dep_names, vmapped_deps))
-        return func(data, **full_kwargs)
+        return fn(data, **full_kwargs)
 
-    return modified_func
+    return modified_fn
 
 
 def _build_in_axes_sequence(
@@ -641,7 +644,7 @@ class _AnalysisVmapSpec(eqx.Module):
 _FinalOpKeyType = Literal["results", "figs"]
 
 
-def _call_fig_params_fn(fn, fp, ctx):
+def _call_fig_params_fn(fn, fp, ctx, **kwargs):
     """Call fig_params_fn with ctx-style signature.
 
     Args:
@@ -652,7 +655,7 @@ def _call_fig_params_fn(fn, fp, ctx):
     Returns:
         Updated figure parameters
     """
-    return fn(fp, ctx)
+    return fn(fp, ctx, **kwargs)
 
 
 def _get_vmap_spec_debug_str(
@@ -685,6 +688,9 @@ def _get_vmap_spec_debug_str(
             example_leaf_shapes_str,
         ]
     )
+
+
+_ThenTransformTuple = jtree.make_named_tuple_subclass("_ThenTransformTuple")
 
 
 class AbstractAnalysis(Module, Generic[PortsType], strict=False):
@@ -815,7 +821,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             def _compute_core(data_for_compute, kwargs_for_compute):
                 if self._vmap_spec is not None:
                     # Extract vmapped dependencies
-                    compute_func = _extract_vmapped_kwargs_to_args(
+                    compute_fn = _extract_vmapped_kwargs_to_args(
                         self.compute, self._vmap_spec.vmapped_dep_names
                     )
                     vmapped_deps = [
@@ -826,9 +832,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                             self, self._vmap_spec, data_for_compute, vmapped_deps
                         )
                     )
-                    compute_func = partial(compute_func, **kwargs_for_compute)
+                    compute_fn = partial(compute_fn, **kwargs_for_compute)
                     return vmap_multi(
-                        compute_func, in_axes_sequence=self._vmap_spec.in_axes_sequence
+                        compute_fn, in_axes_sequence=self._vmap_spec.in_axes_sequence
                     )(
                         data_for_compute,
                         *vmapped_deps,
@@ -1015,7 +1021,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             figs = _make_figs_core(prepped_data, result, prepped_kwargs)
 
         # Apply final ops
-        result = _apply_final_ops(
+        figs = _apply_final_ops(
             self, "figs", figs, data=prepped_data, result=result, **prepped_kwargs
         )
 
@@ -1156,7 +1162,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # `sep="_"`` switches the label dunders for single underscores, so
         # in `_params_to_save` we can use an argument e.g. `train_pert_std` rather than `train__pert__std`
         param_keys = tree_level_labels(
-            figs, label_func=ldict_label_only_func, is_leaf=is_type(go.Figure), sep="_"
+            figs, label_fn=ldict_label_only_fn, is_leaf=is_type(go.Figure), sep="_"
         )
 
         if dump_path is not None:
@@ -1367,7 +1373,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         dep_str = dependency_name or "dependencies"
         description = f"Index {dep_str} along axis {axis} with indices {idxs}"
 
-        def index_func(dep_data, **kwargs):
+        def index_fn(dep_data, **kwargs):
             return jtree.take(dep_data, idxs, axis)
 
         # Build metadata with description and label
@@ -1376,14 +1382,14 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return self._add_prep_op(
             name="after_indexing",
             dep_name=dependency_name,
-            transform_func=index_func,
+            fn=index_fn,
             params=dict(axis=axis, idxs=idxs),
             metadata=final_metadata,
         )
 
     def after_map(
         self,
-        func: Callable[[Any], Any],
+        fn: Callable[[Any], Any],
         is_leaf: Optional[Callable[[Any], bool]] = None,
         dependency_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -1392,37 +1398,36 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         Returns a copy of this analysis that maps a function over the input PyTrees.
         """
         dep_str = dependency_name or "dependencies"
-        description = f"Map function {get_name_of_callable(func)} over {dep_str}"
-        label = f"map-{get_name_of_callable(func)}"
+        description = f"Map function {get_name_of_callable(fn)} over {dep_str}"
+        label = f"map-{get_name_of_callable(fn)}"
 
         # Build metadata with description and label
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
-        def map_func(dep_data, **kwargs):
-            return jt.map(func, dep_data, is_leaf=is_leaf)
+        def map_fn(dep_data, **kwargs):
+            return jt.map(fn, dep_data, is_leaf=is_leaf)
 
         return self._add_prep_op(
             name="map",
             dep_name=dependency_name,
-            transform_func=map_func,
-            params=dict(func=func),
+            fn=map_fn,
             metadata=final_metadata,
         )
 
     def after_transform_states(
         self,
-        func: Callable[..., Any],
+        fn: Callable[..., Any],
         level: Optional[str | Sequence[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
         """Returns a copy of this analysis that transforms the evaluated states before proceeding."""
         # Generate description for this specific method
         if level is None:
-            description = f"Transform states with {get_name_of_callable(func)}"
+            description = f"Transform states with {get_name_of_callable(fn)}"
         else:
             level_str = level if isinstance(level, str) else ",".join(level)
             description = (
-                f"Transform states at LDict level '{level_str}' with {get_name_of_callable(func)}"
+                f"Transform states at LDict level '{level_str}' with {get_name_of_callable(fn)}"
             )
 
         # Build metadata with our description
@@ -1430,12 +1435,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata,
             dict(
                 descriptions=[description],
-                labels=[f"transform-states_{get_name_of_callable(func)}"],
+                labels=[f"transform-states_{get_name_of_callable(fn)}"],
             ),
         )
 
         return self.after_transform(
-            func=func,
+            fn=fn,
             level=level,
             dependency_names="data.states",
             metadata=final_metadata,
@@ -1443,18 +1448,18 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     def after_transform_inputs(
         self,
-        func: Callable[..., Any],
+        fn: Callable[..., Any],
         level: Optional[str | Sequence[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
         """Returns a copy of this analysis that transforms the instance's port inputs before proceeding."""
         # Generate description for this specific method
         if level is None:
-            description = f"Transform inputs with {get_name_of_callable(func)}"
+            description = f"Transform inputs with {get_name_of_callable(fn)}"
         else:
             level_str = level if isinstance(level, str) else ",".join(level)
             description = (
-                f"Transform inputs at LDict level '{level_str}' with {get_name_of_callable(func)}"
+                f"Transform inputs at LDict level '{level_str}' with {get_name_of_callable(fn)}"
             )
 
         # Build metadata with our description
@@ -1462,21 +1467,20 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata,
             dict(
                 descriptions=[description],
-                labels=[f"transform-inputs_{get_name_of_callable(func)}"],
+                labels=[f"transform-inputs_{get_name_of_callable(fn)}"],
             ),
         )
 
         return self.after_transform(
-            func=func,
+            fn=fn,
             level=level,
             dependency_names=field_names(self.Ports),
             metadata=final_metadata,
         )
 
-    #! TODO:
     def after_transform(
         self,
-        func: Callable[..., Any],
+        fn: Callable[..., Any],
         level: Optional[str | Sequence[str]] = None,
         dependency_names: Optional[str | Sequence[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -1488,7 +1492,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         This is less general than `after_map`.
 
         Args:
-            func: The function to transform the inputs with.
+            fn: The function to transform the inputs with.
             level: The `LDict` level to apply the transformation to. If None, the transformation is applied to the entire input PyTree.
             dependency_names: The name(s) of the dependencies to transform.
             metadata: Optional metadata containing descriptions and labels.
@@ -1497,9 +1501,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         dep_str = f"{dependency_names}" if dependency_names else "dependencies"
 
         if level is None:
-            description = f"Transform {dep_str} with {get_name_of_callable(func)}"
-            label = f"pre-transform_{get_name_of_callable(func)}"
-            transform_func = func
+            description = f"Transform {dep_str} with {get_name_of_callable(fn)}"
+            label = f"pre-transform_{get_name_of_callable(fn)}"
+            transform_fn = fn
 
         else:
             if isinstance(level, str):
@@ -1508,11 +1512,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 levels = level
 
             description = (
-                f"Transform {dep_str} at LDict levels {levels} with {get_name_of_callable(func)}"
+                f"Transform {dep_str} at LDict levels {levels} with {get_name_of_callable(fn)}"
             )
-            label = f"pre-transform-{', '.join(levels)}_{get_name_of_callable(func)}"
+            label = f"pre-transform-{', '.join(levels)}_{get_name_of_callable(fn)}"
 
-            func_wrapped = wrap_to_accept_var_kwargs(func)
+            func_wrapped = wrap_to_accept_var_kwargs(fn)
 
             def _transform_levels(dep_data, levels=levels, **kwargs):
                 tree = dep_data
@@ -1524,15 +1528,15 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     )
                 return tree
 
-            transform_func = _transform_levels
+            transform_fn = _transform_levels
 
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
         return self._add_prep_op(
             name="after_transform",
             dep_name=dependency_names,
-            transform_func=transform_func,
-            params=dict(level=level, transform_func=transform_func),
+            fn=transform_fn,
+            params=dict(level=level),
             metadata=final_metadata,
         )
 
@@ -1607,8 +1611,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return self._add_prep_op(
             name="after_unstacking",
             dep_name=dependency_name,
-            transform_func=unpack_axis,
-            params=dict(axis=axis, level_label=level_label, above_level=above_level),
+            fn=unpack_axis,
+            params=dict(axis=axis, level_label=level_label, above_level=above_level, keys=keys),
             metadata=final_metadata,
         )
 
@@ -1668,7 +1672,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return self._add_prep_op(
             name="after_stacking",
             dep_name=dependency_name,
-            transform_func=stack_dependency,
+            fn=stack_dependency,
             params=dict(level=level),
             metadata=final_metadata,
         )
@@ -1706,8 +1710,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return self._add_prep_op(
             name="after_rearrange_levels",
             dep_name=dependency_name,
-            transform_func=transpose_dependency,
-            params=dict(spec=spec),
+            fn=transpose_dependency,
+            params=dict(spec=spec, is_leaf=is_leaf),
             metadata=final_metadata,
         )
 
@@ -1771,10 +1775,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         label = f"subdict-at-{_format_level_str(level)}_"
         if keys is not None:
 
-            def _select_func_keys(d: dict, keys=keys) -> dict:
+            def _select_fn_keys(d: dict, keys=keys) -> dict:
                 return subdict(d, keys)
 
-            select_func = _select_func_keys
+            select_fn = _select_fn_keys
             selection_str = f"keys {','.join(str(k) for k in keys)}"
             label += ",".join(str(k) for k in keys)
 
@@ -1782,10 +1786,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             if not isinstance(idxs, Sequence) or not all(isinstance(i, int) for i in idxs):
                 raise ValueError("`idxs` must be a sequence of integers.")
 
-            def _select_func_idxs(d: dict, idxs=idxs) -> dict:
+            def _select_fn_idxs(d: dict, idxs=idxs) -> dict:
                 return subdict(d, [list(d.keys())[i] for i in idxs])
 
-            select_func = _select_func_idxs
+            select_fn = _select_fn_idxs
             selection_str = f"items with indices {','.join(str(i) for i in idxs)}"
             label += f"idxs-{','.join(str(i) for i in idxs)}"
 
@@ -1800,7 +1804,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
         return self.after_transform(
-            func=select_func,
+            fn=select_fn,
             level=level,
             dependency_names=dependency_name,
             metadata=final_metadata,
@@ -1835,7 +1839,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
         return self.after_transform(
-            func=getitem,
+            fn=getitem,
             level=level,
             dependency_names=dependency_name,
             metadata=final_metadata,
@@ -1962,17 +1966,17 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         self,
         level: str,
         *,
-        axis_func: Callable[[Any], str],
+        axis_fn: Callable[[Any], str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
-        """Map figures by creating new axis labels using axis_func."""
+        """Map figures by creating new axis labels using axis_fn."""
         description = "DEBUG THIS"
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description]))
 
         return self._append_fig_op(
             name="map_figs_by_axis",
             dep_name=None,
-            axis_func=axis_func,
+            axis_fn=axis_fn,
             level=level,
             metadata=final_metadata,
         )
@@ -2059,9 +2063,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     def then_transform_result(
         self,
-        func: Callable[..., Any],
+        fn: Callable[..., Any],
         is_leaf: Optional[Callable[[Any], bool]] = lambda _: True,
-        level_to_tuple_arg: Optional[str] = None,
+        # level_to_tuple_arg: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
         """Returns a copy of this analysis that transforms its PyTree of results.
@@ -2071,41 +2075,58 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         By default, the transformation is applied to the entire results PyTree. To apply the
         transformation to standard leaves (arraylikes etc.) pass `is_leaf=None`.
         """
-
         return self._then_transform(
             op_type="results",
-            func=func,
+            fn=fn,
             is_leaf=is_leaf,
-            level_to_tuple_arg=level_to_tuple_arg,
             metadata=metadata,
         )
 
     def then_transform_figs(
         self,
-        func: Callable[..., Any],
+        fn: Callable[..., Any],
         is_leaf: Optional[Callable[[Any], bool]] = is_type(go.Figure),
+        levels: Optional[Sequence[str | LDictConstructor | type]] = None,
+        invert_levels: bool = False,
         level_to_tuple_arg: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
         """Returns a copy of this analysis that transforms its output PyTree of figures
 
         Args:
-            func: The function to transform the tree with.
+            fn: The function to transform the tree with.
             is_leaf: Predicate identifying leaves to apply the transformation to. Defaults to
                 apply the transformation separately to each `go.Figure` leaf.
-            level_to_tuple_arg: If given, the effective leaves on which the transformation is
-                applied will be tuples of `is_leaf` leaves, where the tuple structure corresponds
-                to zipping at the `level_to_tuple_arg` LDict level.
+            levels: Levels to pass as part of the subtree argument to `fn`. For example,
+                if `fn` is `partial(set_axis_bounds_equal, 'y')` and `levels=['pert__amp',
+                'train__pert__std']` then all figures that vary in those two variables will
+                have their y-axes set to the same bounds.
+            invert_levels: If `levels` is given, whether to invert the selection of levels.
+            level_to_tuple_arg: (To be deprecated) If given, the effective leaves on which the
+                transformation is applied will be tuples of `is_leaf` leaves, where the tuple
+                structure corresponds to zipping at the `level_to_tuple_arg` LDict level.
             metadata: Optional metadata.
         """
         if is_leaf is None:
             logger.warning(
                 "is_leaf=None in then_transform_figs may descend inside `go.Figure` nodes"
             )
+        elif levels is not None:
+            logger.warning("is_leaf is ignored when levels is given in then_transform_figs")
+
+        if invert_levels and levels is None:
+            raise ValueError("invert_levels=True requires levels to be given")
+
+        #! TODO: Remove level_to_tuple_arg
+        if level_to_tuple_arg is not None:
+            logger.warning("level_to_tuple_arg will be deprecated soon; please use levels instead")
+
         return self._then_transform(
             op_type="figs",
-            func=func,
+            fn=fn,
             is_leaf=is_leaf,
+            levels=levels,
+            invert_levels=invert_levels,
             level_to_tuple_arg=level_to_tuple_arg,
             metadata=metadata,
         )
@@ -2113,21 +2134,68 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     def _then_transform(
         self,
         op_type: _FinalOpKeyType,
-        func: Callable[..., Any],
+        fn: Callable[..., Any],
         level_to_tuple_arg: Optional[str] = None,
+        levels: Optional[Sequence[str | LDictConstructor | type]] = None,
+        invert_levels: bool = False,
         is_leaf: Optional[Callable[[Any], bool]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
-        label = f"post-transform-{op_type}_{get_name_of_callable(func)}"
-        func_name = get_name_of_callable(func)
+        label = f"post-transform-{op_type}_{get_name_of_callable(fn)}"
+        func_name = get_name_of_callable(fn)
         if op_type == "results":
             description = f"Transform analysis results using {func_name}"
         else:  # op_type == "figs"
             description = f"Transform output figures using {func_name}"
 
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description], label=label))
+        func_with_var_kwargs = wrap_to_accept_var_kwargs(fn)
 
-        func_with_var_kwargs = wrap_to_accept_var_kwargs(func)
+        # Only enter here if `op_type == "figs"``
+        if levels is not None:
+            description += f" over LDict levels {levels}"
+
+            # Normalize to the same form as returned by `jtree.tree_level_types`
+            levels = [LDict.of(lvl) if isinstance(lvl, str) else lvl for lvl in levels]
+
+            def _transform_levels(figs, **kwargs):
+                # Move levels to map over to the bottom and map over them
+                level_types = jtree.tree_level_types(figs, is_leaf=is_type(go.Figure))
+                if invert_levels:
+                    levels_ = [lvl for lvl in level_types if lvl not in levels]
+                else:
+                    levels_ = levels
+                figs = jtree.rearrange_uniform_tree(
+                    figs, spec=[Ellipsis] + list(levels_), is_leaf=is_type(go.Figure)
+                )
+
+                #! TODO: Refactor? I think this is redundant with something in `jtree`
+                leaf_level = levels_[0]
+                if isinstance(leaf_level, LDictConstructor):
+                    is_leaf_ = leaf_level.predicate
+                else:
+                    is_leaf_ = is_type(leaf_level)
+
+                figs = jt.map(
+                    lambda x: func_with_var_kwargs(x, **kwargs),
+                    figs,
+                    is_leaf=is_leaf_,
+                )
+                # ? figs = jtree.rearrange_uniform_tree(
+                # ?     figs, spec=level_types, is_leaf=is_type(go.Figure)
+                # ? )
+                return figs
+
+            final_metadata = _merge_metadata(
+                metadata, dict(descriptions=[description], label=label)
+            )
+            return self._add_final_op(
+                op_type=op_type,
+                name=f"then_transform_{op_type}",
+                fn=_transform_levels,
+                params=dict(level=level_to_tuple_arg),
+                is_leaf=lambda _: True,
+                metadata=final_metadata,
+            )
 
         if level_to_tuple_arg is not None:
             description += f" at LDict level '{level_to_tuple_arg}'"
@@ -2136,43 +2204,44 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             # e.g. suppose there are two keys in the `level` LDict, then the transformation
             # will be applied to 2-tuples of leaves; following the transformation, reconsistute
             # the `level` LDict with the transformed leaves.
-            @wraps(func)
-            def _transform_func(tree, **kwargs):
-                _Tuple = jtree.make_named_tuple_subclass("ColumnTuple")
+            @wraps(fn)
+            def _transform_level(ldict_node, **kwargs):
+                if not LDict.is_of(level_to_tuple_arg)(ldict_node):
+                    return ldict_node
 
-                def _transform_level(ldict_node):
-                    if not LDict.is_of(level_to_tuple_arg)(ldict_node):
-                        return ldict_node
+                zipped = jtree.zip_(
+                    *ldict_node.values(),
+                    is_leaf=is_leaf,
+                    zip_cls=_ThenTransformTuple,
+                )
+                transformed = jt.map(
+                    lambda x: func_with_var_kwargs(x, **kwargs),
+                    zipped,
+                    is_leaf=is_type(_ThenTransformTuple),
+                )
+                unzipped = jtree.unzip(transformed, tuple_cls=_ThenTransformTuple)
+                return LDict.of(level_to_tuple_arg)(dict(zip(ldict_node.keys(), unzipped)))
 
-                    zipped = jtree.zip_(
-                        *ldict_node.values(),
-                        is_leaf=is_leaf,
-                        zip_cls=_Tuple,
-                    )
-                    transformed = jt.map(
-                        lambda x: func_with_var_kwargs(x, **kwargs),
-                        zipped,
-                        is_leaf=is_type(_Tuple),
-                    )
-                    unzipped = jtree.unzip(transformed, tuple_cls=_Tuple)
-                    return LDict.of(level_to_tuple_arg)(dict(zip(ldict_node.keys(), unzipped)))
-
-                return jt.map(_transform_level, tree, is_leaf=LDict.is_of(level_to_tuple_arg))
+            final_metadata = _merge_metadata(
+                metadata, dict(descriptions=[description], label=label)
+            )
 
             return self._add_final_op(
                 op_type=op_type,
                 name=f"then_transform_{op_type}",
-                transform_func=_transform_func,
-                params=dict(level=level_to_tuple_arg, transform_func=func),
-                is_leaf=is_leaf,
+                fn=_transform_level,
+                params=dict(level=level_to_tuple_arg),
+                is_leaf=LDict.is_of(level_to_tuple_arg),
                 metadata=final_metadata,
             )
         else:
+            final_metadata = _merge_metadata(
+                metadata, dict(descriptions=[description], label=label)
+            )
             return self._add_final_op(
                 op_type=op_type,
                 name=f"then_transform_{op_type}",
-                transform_func=func,
-                params=dict(transform_func=func),
+                fn=fn,
                 is_leaf=is_leaf,
                 metadata=final_metadata,
             )
@@ -2181,14 +2250,14 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         self,
         name: str,
         dep_name: Optional[str | Sequence[str]],
-        transform_func: Callable,
+        fn: Callable,
         params: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Self:
         # If the transform consumes extra dependencies, ensure the analysis
         # instance knows about them so the graph builder evaluates them.
         analysis_with_deps = self
-        spec_map = getattr(transform_func, "_extra_inputs", None)  # {port -> dep_spec}
+        spec_map = getattr(fn, "_extra_inputs", None)  # {port -> dep_spec}
         if spec_map:
             # Each dep_spec can be a PyTree; store it verbatim under the port.
             analysis_with_deps = eqx.tree_at(
@@ -2201,6 +2270,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         if metadata and "descriptions" in metadata and metadata["descriptions"]:
             logger.debug(f"Add prep-op to {self.__class__.__name__}: {metadata['descriptions'][0]}")
 
+        # Ensure `CallWithDeps` extra deps are not excluded by the wrapper (allowed_extra)
+        wrapped_fn = wrap_to_accept_var_kwargs(fn, allowed_extra=getattr(fn, "_ports", ()))
+
         return eqx.tree_at(
             lambda a: a._prep_ops,
             analysis_with_deps,
@@ -2209,27 +2281,36 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 _PrepOp(
                     name=name,
                     dep_name=dep_name,
-                    transform_func=transform_func,
+                    wrapped_fn=wrapped_fn,
+                    fn=fn,
                     params=params or {},
                     metadata=metadata or {},
                 ),
             ),
         )
 
-    def _append_fig_op(self, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> Self:
+    def _append_fig_op(
+        self,
+        fig_params_fn: Optional[Callable] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> Self:
         """Append a new figure operation to the chain."""
         # Log the most specific description if available
         if metadata and "descriptions" in metadata and metadata["descriptions"]:
             logger.debug(f"Add fig-op to {self.__class__.__name__}: {metadata['descriptions'][0]}")
-
-        new_op = _FigOp(metadata=metadata or {}, **kwargs)
+        if fig_params_fn is not None:
+            wrapped_fig_params_fn = wrap_to_accept_var_kwargs(fig_params_fn)
+        else:
+            wrapped_fig_params_fn = None
+        new_op = _FigOp(metadata=metadata or {}, fig_params_fn=wrapped_fig_params_fn, **kwargs)
         return eqx.tree_at(lambda a: a._fig_ops, self, self._fig_ops + (new_op,))
 
     def _add_final_op(
         self,
         op_type: _FinalOpKeyType,
         name: str,
-        transform_func: Callable,
+        fn: Callable,
         params: Optional[Dict[str, Any]] = None,
         is_leaf: Optional[Callable[[Any], bool]] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -2243,7 +2324,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         current_ops = self._final_ops_by_type.get(op_type, ())
         new_op = _FinalOp(
             name=name,
-            transform_func=transform_func,
+            wrapped_fn=wrap_to_accept_var_kwargs(fn),
+            fn=fn,
             params=params or {},
             is_leaf=is_leaf,
             metadata=metadata or {},
@@ -2355,11 +2437,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             dep_names_to_process = self._get_target_dependency_names(
                 prep_op.dep_name, prepped_kwargs, "Prep-op"
             )
-            op_func = wrap_to_accept_var_kwargs(prep_op.transform_func)
 
             for name in dep_names_to_process:
                 try:
-                    prepped_kwargs[name] = op_func(
+                    prepped_kwargs[name] = prep_op.wrapped_fn(
                         prepped_kwargs[name],
                         data=data,
                         **prepped_kwargs,
@@ -2369,7 +2450,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     raise e
 
             # Pop any extra dependencies that are not part of the analysis interface
-            extra_ports = getattr(prep_op.transform_func, "_ports", ())
+            extra_ports = getattr(prep_op.wrapped_fn, "_ports", ())
             for port in extra_ports:
                 if port not in self.inputs:
                     prepped_kwargs.pop(port, None)
@@ -2526,7 +2607,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     ) -> Self:
         """Add prep op to align dependencies to explicit output structure."""
 
-        def make_align_func(this_dep_name, all_dep_names):
+        def make_align_fn(this_dep_name, all_dep_names):
             """Create alignment function for a specific dependency."""
 
             def align_to_spec(dep_tree, output_spec=output_spec, **kwargs):
@@ -2551,12 +2632,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         modified = self
         for dep_name in dep_names:
-            align_func = make_align_func(dep_name, dep_names)
+            align_fn = make_align_fn(dep_name, dep_names)
             description = f"Align {dep_name} to structure {output_spec} for {map_type} mapping"
             modified = modified._add_prep_op(
                 name="align_to_explicit_spec",
                 dep_name=dep_name,
-                transform_func=align_func,
+                fn=align_fn,
                 params=dict(output_spec=output_spec, map_type=map_type),
                 metadata=dict(descriptions=[description]),
             )
@@ -2577,7 +2658,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         before_ellipsis = output_spec[:ellipsis_idx]
         after_ellipsis = output_spec[ellipsis_idx + 1 :]
 
-        def make_align_func(this_dep_name, all_dep_names):
+        def make_align_fn(this_dep_name, all_dep_names):
             """Create alignment function for a specific dependency."""
 
             def align_with_ellipsis(
@@ -2616,13 +2697,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         modified = self
         for dep_name in dep_names:
-            align_func = make_align_func(dep_name, dep_names)
+            align_fn = make_align_fn(dep_name, dep_names)
             spec_str = f"{list(before_ellipsis)}...{list(after_ellipsis)}"
             description = f"Align {dep_name} to structure {spec_str} for {map_type} mapping"
             modified = modified._add_prep_op(
                 name="align_with_ellipsis",
                 dep_name=dep_name,
-                transform_func=align_func,
+                fn=align_fn,
                 params=dict(output_spec=output_spec, is_leaf=is_leaf, map_type=map_type),
                 metadata=dict(descriptions=[description]),
             )
@@ -2637,7 +2718,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     ) -> Self:
         """Add prep op that infers structure from all dependencies."""
 
-        def make_align_func(this_dep_name, all_dep_names):
+        def make_align_fn(this_dep_name, all_dep_names):
             """Create alignment function for a specific dependency."""
 
             def infer_and_align(dep_tree, is_leaf=is_leaf, **kwargs):
@@ -2677,12 +2758,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         modified = self
         for dep_name in dep_names:
-            align_func = make_align_func(dep_name, dep_names)
+            align_fn = make_align_fn(dep_name, dep_names)
             description = f"Infer structure and align {dep_name} for {map_type} mapping"
             modified = modified._add_prep_op(
                 name="infer_and_align",
                 dep_name=dep_name,
-                transform_func=align_func,
+                fn=align_fn,
                 params=dict(is_leaf=is_leaf, map_type=map_type),
                 metadata=dict(descriptions=[description]),
             )
@@ -2773,7 +2854,7 @@ def _apply_fig_ops(
         # Per-level fig params (ctx-aware)
         analysis_i = analysis
         if op.fig_params_fn is not None:
-            new_fp = _call_fig_params_fn(op.fig_params_fn, analysis.fig_params, ctx)
+            new_fp = op.fig_params_fn(analysis.fig_params, ctx, **sliced_kwargs)
             analysis_i = eqx.tree_at(
                 lambda a: a.fig_params,
                 analysis,
@@ -2801,9 +2882,8 @@ def _apply_final_ops(
 ):
     for final_op in analysis._final_ops_by_type.get(kind, ()):
         try:
-            func = wrap_to_accept_var_kwargs(final_op.transform_func)
             tree = jt.map(
-                lambda leaf: func(leaf, **kwargs),
+                lambda leaf: final_op.wrapped_fn(leaf, **kwargs),
                 tree,
                 is_leaf=final_op.is_leaf,
             )
@@ -2864,7 +2944,7 @@ class CallWithDeps:
         CallWithDeps._counter += 1
         return f"__cwd_{CallWithDeps._counter:x}"
 
-    def __call__(self, func: Callable):
+    def __call__(self, fn: Callable):
         # Plan structures
         spec_map: Dict[str, Any] = {}  # {private_port -> spec (leaf or PyTree)}
         pos_tokens: list[Optional[str]] = []  # [None | private_port]
@@ -2881,11 +2961,17 @@ class CallWithDeps:
             kw_ports[name] = port_for(item)
 
         # Introspect the *wrapped* function once, outside the wrapper body
-        sig = inspect.signature(func)
+        sig = inspect.signature(fn)
         param_names = set(sig.parameters.keys())
         has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
-        @functools.wraps(func)
+        #! Does it make sense to wrap like this?
+        #! The resulting function does *not* have the same signature since we're supplying
+        #! one or more of its args.
+        #! Also, if we end up calling the wrapped function many times in the same context
+        #! (e.g. mapping over leaves) then there will be a lot of redundancy here. Maybe we can
+        #! resolve the function and then pass it in?
+        @functools.wraps(fn)
         def wrapper(
             *caller_args: Any,
             _spec_map=spec_map,  # capture to avoid late binding
@@ -2935,9 +3021,9 @@ class CallWithDeps:
             if not _has_varkw:
                 mapped_kwargs = {k: v for k, v in mapped_kwargs.items() if k in _param_names}
 
-            return func(*args, **mapped_kwargs)
+            return fn(*args, **mapped_kwargs)
 
         # Expose to the engine:
         wrapper._extra_inputs = spec_map  # {port -> spec}  # type: ignore[attr-defined]
-        # wrapper._ports = tuple(spec_map.keys())  # type: ignore[attr-defined]
+        wrapper._ports = tuple(spec_map.keys())  # type: ignore[attr-defined]
         return wrapper

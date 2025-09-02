@@ -100,34 +100,34 @@ def get_constant_task_input_fn(x, n_steps, n_trials):
 
 
 def get_step_task_input_fn(x1, x2, step_step, n_steps, n_trials):
-    def input_func(trial_spec, key):
+    def input_fn(trial_spec, key):
         # Create array of x1 values
         inputs = jnp.full((n_trials, n_steps), x1, dtype=float)
         inputs = inputs.at[:, step_step:].set(x2)
 
         return inputs
 
-    return input_func
+    return input_fn
 
 
-def _get_replicate_idxs_func(replicate_info, key):
-    def _replicate_idxs_func(std):
+def _get_replicate_idxs_fn(replicate_info, key):
+    def _replicate_idxs_fn(std):
         return replicate_info[std][key][REPLICATE_CRITERION]
 
-    return _replicate_idxs_func
+    return _replicate_idxs_fn
 
 
 def get_best_replicate(tree, *, replicate_info, axis: int = 1, keep_axis: bool = False, **kwargs):
-    _original_replicate_idxs_func = _get_replicate_idxs_func(replicate_info, "best_replicates")
+    _original_replicate_idxs_fn = _get_replicate_idxs_fn(replicate_info, "best_replicates")
 
     if keep_axis:
-        _replicate_idxs_func = lambda std: jnp.array([_original_replicate_idxs_func(std)])
+        _replicate_idxs_fn = lambda std: jnp.array([_original_replicate_idxs_fn(std)])
     else:
-        _replicate_idxs_func = _original_replicate_idxs_func
+        _replicate_idxs_fn = _original_replicate_idxs_fn
 
     def _take_best_replicate(x):
         if eqx.is_array(x):
-            return jnp.take(x, _replicate_idxs_func(0), axis=axis)
+            return jnp.take(x, _replicate_idxs_fn(0), axis=axis)
         else:
             return x
 
@@ -161,14 +161,14 @@ get_best_model_replicate.__doc__ = """Variant of `get_best_replicate` that filte
 
 
 def exclude_bad_replicates(tree, *, replicate_info, axis=0):
-    _replicate_idxs_func = _get_replicate_idxs_func(replicate_info, "included_replicates")
+    _replicate_idxs_fn = _get_replicate_idxs_fn(replicate_info, "included_replicates")
 
     def _process_std_subtree(tree_by_std):
         return LDict.of("train__pert__std")(
             {
                 std: jt.map(
                     #! TODO: Store included replicates as ints (not bools) in the first place!
-                    lambda arr: jnp.take(arr, _replicate_idxs_func(std).nonzero()[0], axis=axis),
+                    lambda arr: jnp.take(arr, _replicate_idxs_fn(std).nonzero()[0], axis=axis),
                     subtree,
                 )
                 for std, subtree in tree_by_std.items()
@@ -195,7 +195,7 @@ def get_symmetric_accel_decel_epochs(states):
     )
 
 
-def get_segment_trials_func(slice_bounds_func, axis=-2):
+def get_segment_trials_fn(slice_bounds_fn, axis=-2):
     def segment_trials(all_states, **kwargs):
         def _segment_states(states):
             return jt.map(
@@ -208,7 +208,7 @@ def get_segment_trials_func(slice_bounds_func, axis=-2):
                     ),
                     states,
                 ),
-                slice_bounds_func(states),
+                slice_bounds_fn(states),
                 is_leaf=is_type(tuple),
             )
 

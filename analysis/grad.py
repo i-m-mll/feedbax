@@ -28,20 +28,20 @@ T = TypeVar("T")
 
 
 def _compute_grads(
-    grad_func: Callable,
-    funcs: PyTree[Callable, "T"],  # type: ignore
-    func_args: tuple[PyTree[Any, "T ..."], ...],  # type: ignore
+    grad_fn: Callable,
+    fns: PyTree[Callable, "T"],  # type: ignore
+    fn_args: tuple[PyTree[Any, "T ..."], ...],  # type: ignore
     argnums: Optional[int | Sequence[int]],
 ) -> tuple:
     if argnums is None:
-        argnums = tuple(range(len(func_args)))
+        argnums = tuple(range(len(fn_args)))
     elif isinstance(argnums, int):
         argnums = (argnums,)
 
     grads_raw = jt.map(
-        lambda func, *args: _Tuple(grad_func(func, *args, argnums=argnums)),
-        funcs,
-        *func_args,
+        lambda func, *args: _Tuple(grad_fn(func, *args, argnums=argnums)),
+        fns,
+        *fn_args,
         is_leaf=callable,
     )
 
@@ -49,10 +49,10 @@ def _compute_grads(
     grads_by_argnum = jtree.unzip(grads_raw, tuple_cls=_Tuple)
 
     grads_expanded: list = [
-        grads_by_argnum[argnums.index(i)] if i in argnums else None for i in range(len(func_args))
+        grads_by_argnum[argnums.index(i)] if i in argnums else None for i in range(len(fn_args))
     ]
 
-    return construct_tuple_like(type(func_args), grads_expanded)
+    return construct_tuple_like(type(fn_args), grads_expanded)
 
 
 #! TODO: `Jacobians` and `Hessians` seem like good candidates for
@@ -69,14 +69,14 @@ class Jacobians(AbstractAnalysis[CallerPorts]):
         self,
         data: AnalysisInputData,
         *,
-        funcs,
-        func_args: tuple,
+        fns,
+        fn_args: tuple,
         **kwargs,
     ) -> tuple:
         return _compute_grads(
             lambda func, *args, argnums: jax.jacobian(func, argnums=argnums)(*args),
-            funcs,
-            func_args,
+            fns,
+            fn_args,
             self.argnums,
         )
 
@@ -96,8 +96,8 @@ class Hessians(AbstractAnalysis[CallerPorts]):
         self,
         data: AnalysisInputData,
         *,
-        funcs,
-        func_args,
+        fns,
+        fn_args,
         **kwargs,
     ):
         def get_hessians(func, *args, argnums):
@@ -106,7 +106,7 @@ class Hessians(AbstractAnalysis[CallerPorts]):
             else:
                 return jax.hessian(func, argnums=argnums)(*args)
 
-        return _compute_grads(get_hessians, funcs, func_args, self.argnums)
+        return _compute_grads(get_hessians, fns, fn_args, self.argnums)
 
 
 # =============================================================================

@@ -48,12 +48,12 @@ from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace
 
 def get_base_reaching_task(
     n_steps: int = N_STEPS,
-    loss_func: AbstractLoss = simple_reach_loss(),
+    loss_fn: AbstractLoss = simple_reach_loss(),
     validation_params: dict[str, Any] = TASK_EVAL_PARAMS["full"],
     **kwargs,
 ) -> SimpleReaches:
     return SimpleReaches(
-        loss_func=loss_func,
+        loss_func=loss_fn,
         workspace=WORKSPACE,
         n_steps=n_steps,
         **validation_params | kwargs,
@@ -192,15 +192,15 @@ def set_model_noise(
     enable_noise: bool = True,
 ):
     """Change the system noise strength of a model."""
-    get_noise_funcs = dict(
+    get_noise_fns = dict(
         feedback=lambda std: Normal(std=std),
         motor=lambda std: Multiplicative(Normal(std=std)) + Normal(std=1.8 * std),
     )
 
-    noise_funcs = jt.map(
-        lambda std, get_noise_func: get_noise_func(std),
+    noise_fns = jt.map(
+        lambda std, get_noise_fn: get_noise_fn(std),
         noise_stds,
-        get_noise_funcs,
+        get_noise_fns,
     )
 
     wheres = dict(
@@ -209,13 +209,13 @@ def set_model_noise(
     )
 
     pairs, LeafTuple = jtree.zip_named(
-        noise_func=noise_funcs,
+        noise_func=noise_fns,
         where=wheres,
         is_leaf=is_module,
     )
 
-    for noise_func, where in jt.leaves(pairs, is_leaf=is_type(LeafTuple)):
-        model = eqx.tree_at(where, model, noise_func)
+    for noise_fn, where in jt.leaves(pairs, is_leaf=is_type(LeafTuple)):
+        model = eqx.tree_at(where, model, noise_fn)
 
     if enable_noise:
         model = eqx.tree_at(
@@ -230,16 +230,16 @@ def set_model_noise(
     return model
 
 
-def setup_models_only(task_model_pair_setup_func, *args, **kwargs):
+def setup_models_only(task_model_pair_setup_fn, *args, **kwargs):
     """Given a function that returns task-model pairs, just get the models."""
-    task_model_pairs = task_model_pair_setup_func(*args, **kwargs)
+    task_model_pairs = task_model_pair_setup_fn(*args, **kwargs)
     _, models = jtree.unzip(task_model_pairs)
     return models
 
 
-def setup_tasks_only(task_model_pair_setup_func, *args, **kwargs):
+def setup_tasks_only(task_model_pair_setup_fn, *args, **kwargs):
     """Given a function that returns task-model pairs, just get the tasks."""
-    task_model_pairs = task_model_pair_setup_func(*args, **kwargs)
+    task_model_pairs = task_model_pair_setup_fn(*args, **kwargs)
     tasks, _ = jtree.unzip(task_model_pairs)
     return tasks
 
@@ -400,7 +400,7 @@ def query_and_load_model(
     if tree_inclusions is not None:
         for dict_type, inclusion in tree_inclusions.items():
             if inclusion is not None:
-                replace_func = lambda d, inclusion: subdict(d, inclusion)
+                replace_fn = lambda d, inclusion: subdict(d, inclusion)
 
                 if isinstance(inclusion, Callable):
                     # Callables always result in sequence-like inclusions
@@ -410,10 +410,10 @@ def query_and_load_model(
                 elif isinstance(inclusion, str) or not isinstance(inclusion, Sequence):
                     # If not a Callable and not a Sequence, then assume we've
                     # been given a single key to include
-                    replace_func = lambda d, inclusion: d[inclusion]
+                    replace_fn = lambda d, inclusion: d[inclusion]
 
                 model, replicate_info = jt.map(
-                    lambda d: replace_func(d, inclusion),
+                    lambda d: replace_fn(d, inclusion),
                     (model, replicate_info),
                     is_leaf=is_type(dict_type),
                 )
@@ -424,27 +424,27 @@ def query_and_load_model(
 
         if exclude_method_ == "nan":
 
-            def include_func_nan(model, included, best):
+            def include_fn_nan(model, included, best):
                 return jtree.array_set_scalar(model, jnp.nan, jnp.where(~included)[0])
 
-            include_func = include_func_nan
+            include_fn = include_fn_nan
         elif exclude_method_ == "remove":
 
-            def include_func_remove(model, included, best):
+            def include_fn_remove(model, included, best):
                 return take_model(model, jnp.where(included)[0])
 
-            include_func = include_func_remove
+            include_fn = include_fn_remove
         elif exclude_method_ == "best-only":
 
-            def include_func_best(model, included, best):
+            def include_fn_best(model, included, best):
                 return take_model(model, best)
 
-            include_func = include_func_best
+            include_fn = include_fn_best
         else:
             raise ValueError(f"Invalid exclude_method '{exclude_method_}'")
 
         model = jt.map(
-            include_func,
+            include_fn,
             model,
             included_replicates,
             best_replicate,

@@ -42,7 +42,10 @@ def build_feature_names(regressor_labels: Sequence[str], interactions: Sequence[
 
 
 def prepare_regression_data(
-    tree: LDictTree[Array], interaction_indices: Sequence[tuple[int, int]], n_features: int
+    tree: LDictTree[Array],
+    interaction_indices: Sequence[tuple[int, int]],
+    n_features: int,
+    center_and_scale: bool = True,
 ):
     """Build design matrix from a PyTree where tree structure defines regressors.
 
@@ -52,7 +55,7 @@ def prepare_regression_data(
 
     Args:
         tree: Nested LDict structure where paths encode regressor values
-            and leaves contain observation data arrays
+            and leaves contain response variable arrays
         interaction_indices: List of (idx1, idx2) tuples specifying which pairs
             of tree levels should have interaction terms
         n_features: Total number of features (1 + n_levels + n_interactions)
@@ -98,6 +101,15 @@ def prepare_regression_data(
     # Build y_data
     y_parts = [leaf.flatten() for path, leaf in paths_and_leaves]
     y_data = jnp.concatenate(y_parts)
+
+    if center_and_scale:
+        # Do not scale intercept
+        for j in range(1, X.shape[1]):
+            col = X[:, j]
+            X = X.at[:, j].set((col - jnp.mean(col)) / (jnp.std(col) + 1e-8))
+
+        # Scale response
+        y_data = (y_data - jnp.mean(y_data)) / (jnp.std(y_data) + 1e-8)
 
     return X, y_data
 

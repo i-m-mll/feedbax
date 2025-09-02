@@ -11,6 +11,7 @@ import jax.tree as jt
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from jax_cookbook import is_type
 from jaxtyping import Array, Bool, Float, PyTree
 from sklearn.decomposition import PCA
 
@@ -489,7 +490,7 @@ def plot_eigvals_df(
     return fig
 
 
-# def plot_fp_loss(all_fps, fp_loss_func, n_bins=50):
+# def plot_fp_loss(all_fps, fp_loss_fn, n_bins=50):
 #     fp_tols = list(all_fps.keys())
 
 #     f1, ax = plt.subplots(figsize=(12, 6))
@@ -503,7 +504,7 @@ def plot_eigvals_df(
 #     f2, axs = plt.subplots(1, len(fp_tols), figsize=(12,4))
 
 #     for i, tol in enumerate(fp_tols):
-#         axs[i].hist(np.log10(fp_loss_func(all_fps[tol]['fps'])), n_bins)
+#         axs[i].hist(np.log10(fp_loss_fn(all_fps[tol]['fps'])), n_bins)
 #         axs[i].set_xlabel('log10(FP loss)')
 #         axs[i].set_title('Tolerance: ' + str(tol))
 
@@ -763,9 +764,7 @@ def set_axis_bounds_equal(
         PyTree with the specified axis updated subplot-wise.
     """
     # Corrected: Use jt.leaves and jt.map
-    leaves = jt.leaves(figs)
-    if not leaves:
-        return figs
+    leaves = jt.leaves(figs, is_leaf=is_type(go.Figure))
     fig_leaves = [leaf for leaf in leaves if isinstance(leaf, go.Figure)]
     if not fig_leaves:
         return figs

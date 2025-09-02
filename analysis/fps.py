@@ -39,9 +39,9 @@ T = TypeVar("T")
 class FixedPointsPorts(AbstractAnalysisPorts):
     """Input ports for FixedPoints analysis."""
 
-    funcs: InputOf[Callable]  # Functions to find fixed points for, e.g. RNN cells
+    fns: InputOf[Callable]  # Functions to find fixed points for, e.g. RNN cells
     candidates: InputOf[Array]  # Candidate states to initialize the fixed point search
-    func_args: Optional[tuple[InputOf[Any], ...]] = (
+    fn_args Optional[tuple[InputOf[Any], ...]] = (
         None  # Optional positional arguments to pass to functions
     )
 
@@ -50,11 +50,11 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
     """Find steady-state fixed points of a function.
 
     Inputs:
-        funcs: Functions to find fixed points for, e.g. RNN cells.
+        fns: Functions to find fixed points for, e.g. RNN cells.
             The functions should have signature (`func(*args, state)`) where `state` is the
             optimized tensor that is initialized with `candidates`.
         candidates: Candidate states to initialize the fixed point search.
-        func_args: Optional positional arguments to pass to the functions as `*args`.
+        fn_args Optional positional arguments to pass to the functions as `*args`.
     """
 
     Ports = FixedPointsPorts
@@ -65,7 +65,7 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
     variant: Optional[str] = "full"
     cache_result: bool = True
 
-    # ss_func: Callable = get_ss_rnn_func
+    # ss_fn: Callable = get_ss_rnn_fn
     fp_tol: Scalar = eqx.field(default=1e-7, converter=jnp.array)
     unique_tol: float = 0.025
     outlier_tol: float = 1.0
@@ -79,7 +79,7 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
         return FixedPointFinder(self.fp_optimizer())
 
     @property
-    def fpf_func(self):
+    def fpf_fn(self):
         """Partial function for finding and filtering fixed points."""
         return partial(
             self.fpfinder.find_and_filter,
@@ -93,25 +93,25 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
         self,
         data: AnalysisInputData,
         *,
-        funcs: PyTree[Callable, "T"],
+        fns: PyTree[Callable, "T"],
         candidates: PyTree[Array, "T"],
-        func_args: Optional[tuple[PyTree[Any, "T"], ...]] = None,
+        fn_args Optional[tuple[PyTree[Any, "T"], ...]] = None,
         **kwargs,
     ):
-        if func_args is None:
-            func_args = tuple()
+        if fn_args is None:
+            fn_args = tuple()
 
         def get_fps(func, cands, *args):
-            return self.fpf_func(
+            return self.fpf_fn(
                 lambda h: func(*args, h),
                 cands[:: self.stride_candidates],
             )
 
         return jt.map(
             get_fps,
-            funcs,
+            fns,
             candidates,
-            *func_args,
+            *fn_args,
             is_leaf=callable,
         )
 
@@ -243,7 +243,7 @@ def get_simple_reach_endpoint_fps(
 
     # Construct (constant) network inputs for all trials for which we'll find FPs
     n_task_inputs = inputs.shape[-1]
-    inputs_star_func = (
+    inputs_star_fn = (
         lambda fb_pos: (
             (jnp.zeros((task.n_validation_trials, model.step.net.input_size)))
             .at[:, :n_task_inputs]
@@ -289,8 +289,8 @@ def get_simple_reach_endpoint_fps(
             stride_trials,
         ),
         {
-            "goals-goals": inputs_star_func(goals_pos),
-            "inits-goals": inputs_star_func(inits_pos),
+            "goals-goals": inputs_star_fn(goals_pos),
+            "inits-goals": inputs_star_fn(inits_pos),
         },
         is_leaf=lambda x: isinstance(x, tuple),
     )

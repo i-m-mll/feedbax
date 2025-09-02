@@ -94,14 +94,14 @@ def map_kwargs_to_dict(
     )
 
 
-def ldict_verbose_label_func(x: Any) -> str:
+def ldict_verbose_label_fn(x: Any) -> str:
     if isinstance(x, (LDict, LDictConstructor)):
         return f"LDict.of({x.label})"
     else:
         return x.__name__
 
 
-def ldict_label_only_func(x: Any) -> str:
+def ldict_label_only_fn(x: Any) -> str:
     if isinstance(x, (LDict, LDictConstructor)):
         return x.label
     else:
@@ -114,7 +114,7 @@ def tree_level_types(tree: PyTree, is_leaf=falsef) -> list[Callable]:
     leaves_with_typed_paths = jtree.leaves_with_annotated_path(
         tree,
         is_leaf=is_leaf,
-        annotation_func=_annotation_func,
+        annotation_func=_annotation_fn,
     )
     if not leaves_with_typed_paths:
         return []
@@ -126,9 +126,9 @@ def tree_level_types(tree: PyTree, is_leaf=falsef) -> list[Callable]:
 
 
 def tree_level_labels(
-    tree: LDict,
+    tree: PyTree,
     sep: Optional[str] = None,
-    label_func: Callable[..., str] = ldict_label_only_func,
+    label_fn: Callable[..., str] = ldict_label_only_fn,
     is_leaf: Optional[Callable[[Any], bool]] = None,
 ) -> list[str]:
     """
@@ -141,7 +141,7 @@ def tree_level_labels(
     node_types = tree_level_types(tree, is_leaf=is_leaf)
 
     # Collect the labels from all LDict nodes in the path
-    labels = [label_func(node_type) for node_type in node_types]
+    labels = [label_fn(node_type) for node_type in node_types]
 
     if sep is not None:
         labels = [label.replace(STRINGS.hps_level_label_sep, sep) for label in labels]
@@ -149,7 +149,7 @@ def tree_level_labels(
     return labels
 
 
-def _annotation_func(node):
+def _annotation_fn(node):
     #! For use with `jtree.leaves_with_annotated_path`
     if is_type(LDict)(node):
         return LDict.of(node.label)
@@ -167,8 +167,6 @@ def print_ldict_tree_summary(tree):
             break
 
 
-#! TODO: Generalize this. It should work with any PyTree nodes, as long as they are
-#! uniform at each level -- not just LDicts.
 def swap_adjacent_ldict_levels(
     outer_label: str,
     inner_label: str,
@@ -621,23 +619,60 @@ def deep_update(d1, d2):
 
 
 def at_path(path):
-    def at_func(obj):
-        """Navigate to `path` in `obj` and return the value there."""
-        # TODO: Generalize this to use the usual key types from `jax.tree_utils`
-        # We can then create a separate function to translate "simple" representations
-        # like `('step', 'feedback_channels', 0, 'noise_func', 'std')` into paths that use
-        # e.g. `DictKey`
+    def at_fn(obj):
+        """Navigate to `path` in `obj` and return the value there.
+
+        Supports JAX key-path entries (`jax.tree_util.GetAttrKey`, `DictKey`, `SequenceKey`)
+        as well as simple keys (e.g., `"name"`, `0`).
+        """
         for key in path:
+            # jax.tree_util.GetAttrKey
+            if isinstance(key, getattr(jtu, "GetAttrKey", ())):
+                name = getattr(key, "name", None)
+                if name is None:
+                    name = getattr(key, "attr", None)
+                if name is None:
+                    name = getattr(key, "key", None)
+                obj = getattr(obj, str(name))
+                continue
+
+            # jax.tree_util.DictKey
+            if isinstance(key, getattr(jtu, "DictKey", ())):
+                k = getattr(key, "key", key)
+                obj = obj[k]
+                continue
+
+            # jax.tree_util.SequenceKey
+            if isinstance(key, getattr(jtu, "SequenceKey", ())):
+                idx = getattr(key, "idx", None)
+                if idx is None:
+                    idx = getattr(key, "index", None)
+                if idx is None:
+                    idx = getattr(key, "key", None)
+                obj = obj[idx]
+                continue
+
+            # jax.tree_util.FlattenedIndexKey is not navigable on the structured object
+            if isinstance(key, getattr(jtu, "FlattenedIndexKey", ())):
+                raise TypeError(
+                    "FlattenedIndexKey cannot be used to index into a structured object"
+                )
+
+            # Fallback: simple keys based on container type
             if isinstance(obj, (eqx.Module, TreeNamespace)):
-                # Assume the key can be cast to the attribute name (string)
                 obj = getattr(obj, str(key))
             elif isinstance(obj, (dict, list, tuple)):
-                # Assume the key types match with the tree level types so this doesn't err
                 obj = obj[key]
+            else:
+                # Try mapping-like indexing, then attribute access
+                try:
+                    obj = obj[key]  # type: ignore[index]
+                except Exception:
+                    obj = getattr(obj, str(key))
 
         return obj
 
-    return at_func
+    return at_fn
 
 
 def _hash_pytree(tree) -> str:

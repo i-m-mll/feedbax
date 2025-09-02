@@ -80,7 +80,7 @@ def train_setup(
         checkpointing=True,
     )
 
-    loss_func = simple_reach_loss()
+    loss_fn = simple_reach_loss()
 
     if all(
         getattr(train_hps, k, None) is not None
@@ -89,9 +89,9 @@ def train_setup(
         readout_norm_loss = train_hps.readout_norm_loss_weight * get_readout_norm_loss(
             train_hps.readout_norm_value
         )
-        loss_func = loss_func + readout_norm_loss
+        loss_fn = loss_fn + readout_norm_loss
 
-    return trainer, loss_func
+    return trainer, loss_fn
 
 
 def train_pair(
@@ -141,7 +141,7 @@ def train_pair(
     return trained, train_history_all
 
 
-def where_strs_to_funcs(where_strs: Sequence[str] | dict[int, Sequence[str]]):
+def where_strs_to_fns(where_strs: Sequence[str] | dict[int, Sequence[str]]):
     if isinstance(where_strs, Mapping):
         return {
             i: attr_str_tree_to_where_func(strs)
@@ -231,7 +231,7 @@ def train_and_save(
     training_module = EXPERIMENT_REGISTRY.get_training_module(hps.expt_name)
     key_init, key_train, key_eval = jr.split(key, 3)
     task_model_pair = training_module.setup_task_model_pair(hps, key=key_init)
-    trainer, loss_func = train_setup(hps)
+    trainer, loss_fn = train_setup(hps)
 
     ## Train and save all the models.
     with GracefulInterruptHandler(
@@ -248,9 +248,9 @@ def train_and_save(
                 hps.n_batches,
                 key=key_train,
                 ensembled=True,
-                loss_func=loss_func,
+                loss_func=loss_fn,
                 # task_baseline=task_baseline,  #! TODO: Specify param(s) in config
-                where_train=where_strs_to_funcs(dict(hps.where)),
+                where_train=where_strs_to_fns(dict(hps.where)),
                 batch_size=hps.batch_size,
                 log_step=LOG_STEP,
                 save_model_parameters=hps.save_model_parameters,

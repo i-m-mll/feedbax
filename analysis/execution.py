@@ -283,7 +283,7 @@ def setup_eval_for_module(
 
     # For this project, the training task should not vary with the train field std
     # so we just keep a single one of them.
-    # TODO: In the future, could keep the full `tasks_base`, and update `get_task_variant`/`setup_func`
+    # TODO: In future, could keep the full `tasks_base`, and update `get_task_variant`/`setup_fn`
     task_base = jt.leaves(tasks_train, is_leaf=is_module)[0]
 
     #! TODO: This should be generalized once we move `n_steps` to `task` (in YAML config)
@@ -348,7 +348,7 @@ def setup_eval_for_module(
 
     trial_specs = jt.map(get_validation_trial_specs, task_variants, is_leaf=is_module)
 
-    colors, colorscales = setup_colors(hps, COMMON_COLOR_SPECS | analysis_module.COLOR_FUNCS)
+    colors, colorscales = setup_colors(hps, COMMON_COLOR_SPECS | analysis_module.COLOR_FNS)
 
     common_inputs = dict(
         hps_common=hps,
@@ -390,7 +390,7 @@ def setup_eval_for_module(
 
         return tasks, models, hps, extras
 
-    # Outer level is task variants, inner is the structure returned by `setup_func`
+    # Outer level is task variants, inner is the structure returned by `setup_fn`
     # i.e. "task variants" are a way to evaluate different sets of conditions
     all_tasks, all_models, all_hps, all_extras = jtree.unzip(
         LDict.of("task_variant")(
@@ -596,7 +596,7 @@ def run_analysis_module(
             lambda task,
             models,
             hps: jt.map(  # Map over the base model subtree, for the given base task
-                lambda model: analysis_module.eval_func(key, hps, model, task),
+                lambda model: analysis_module.eval_fn(key, hps, model, task),
                 models,
                 is_leaf=is_module,
             ),

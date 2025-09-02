@@ -298,17 +298,17 @@ def pprint_ldict_structure(
 
 
 def _convert_value(value: Any, to_type: type, from_type: type, exclude: Callable) -> Any:
-    def _recurse_func(value: Any) -> Any:
+    def _recurse_fn(value: Any) -> Any:
         return _convert_value(value, to_type, from_type, exclude)
 
-    def _map_recurse_func(tree: Any) -> Any:
-        return jt.map(_recurse_func, tree, is_leaf=is_type(from_type))
+    def _map_recurse_fn(tree: Any) -> Any:
+        return jt.map(_recurse_fn, tree, is_leaf=is_type(from_type))
 
     if exclude(value):
         subtrees, treedef = eqx.tree_flatten_one_level(value)
         if jtu.treedef_is_leaf(treedef):
             return value
-        subtrees = [_map_recurse_func(subtree) for subtree in subtrees]
+        subtrees = [_map_recurse_fn(subtree) for subtree in subtrees]
         return jt.unflatten(treedef, subtrees)
 
     elif isinstance(value, from_type):
@@ -317,7 +317,7 @@ def _convert_value(value: Any, to_type: type, from_type: type, exclude: Callable
         if not isinstance(value, dict):
             raise ValueError(f"Expected a dict or namespace, got {type(value)}")
 
-        return to_type(**{str(k): _recurse_func(v) for k, v in value.items()})
+        return to_type(**{str(k): _recurse_fn(v) for k, v in value.items()})
 
     elif isinstance(value, (str, type(None))) or isinstance(value, ArrayLike):
         return value
@@ -329,7 +329,7 @@ def _convert_value(value: Any, to_type: type, from_type: type, exclude: Callable
         leaves, treedef = jt.flatten(value, is_leaf=is_leaf)
         if not any(is_leaf(leaf) for leaf in leaves):
             return value
-        leaves = [_map_recurse_func(leaf) for leaf in leaves]
+        leaves = [_map_recurse_fn(leaf) for leaf in leaves]
         return jt.unflatten(treedef, leaves)
 
     return value

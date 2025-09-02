@@ -1,5 +1,6 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property, partial
+from types import MappingProxyType
 from typing import Optional, TypeVar
 
 import equinox as eqx
@@ -8,7 +9,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
-from equinox import Module
+from equinox import Module, field
 from feedbax.task import AbstractTask
 from jax_cookbook import (
     compose,
@@ -30,6 +31,7 @@ from feedbax_experiments.analysis.state_utils import (
     unsqueezer,
 )
 from feedbax_experiments.constants import EVAL_REACH_LENGTH
+from feedbax_experiments.misc import _OptionalCallableFieldConverter
 from feedbax_experiments.plot import add_endpoint_traces
 from feedbax_experiments.types import (
     AnalysisInputData,
@@ -175,7 +177,7 @@ class AlignedVars(AbstractAnalysis[NoPorts]):
     """Align spatial variable (e.g. position and velocity) coordinates with the reach direction."""
 
     varset: PyTree[VarSpec] = eqx.field(default_factory=lambda: DEFAULT_VARSET)
-    directions_func: Callable = get_reach_directions
+    directions_fn: Callable = get_reach_directions
 
     def compute(
         self,
@@ -183,7 +185,7 @@ class AlignedVars(AbstractAnalysis[NoPorts]):
         **kwargs,
     ) -> PyTree[Array]:
         def _get_aligned_vars_by_task(task, states_by_task, hps_by_task):
-            directions = self.directions_func(task, hps_by_task)
+            directions = self.directions_fn(task, hps_by_task)
 
             def _get_aligned_vars(states):
                 def _align_var(spec: VarSpec):
@@ -271,64 +273,75 @@ class Measure(Module):
 
     Attributes:
         response_var: Which response variable to measure (pos, vel, force)
-        agg_func: Function to aggregate over time axis (e.g. jnp.max, jnp.mean)
+        agg_fn: Function to aggregate over time axis (e.g. jnp.max, jnp.mean)
         direction: Optional direction to extract vector component
         timesteps: Optional slice to select specific timesteps
-        transform_func: Optional function to transform values (e.g. jnp.linalg.norm)
+        transform_fn: Optional function to transform values (e.g. jnp.linalg.norm)
         normalizer: Optional value to divide result by
     """
 
-    response_var: ResponseVar
-    agg_func: Optional[Callable] = None
-    direction: Optional[Direction] = None
-    timesteps: Optional[slice] = None
-    transform_func: Optional[Callable] = None
-    normalizer: Optional[float] = None
+    response_var: ResponseVar = field(converter=ResponseVar)
+    timesteps: Optional[Callable[..., slice]] = field(
+        default=None, converter=_OptionalCallableFieldConverter[slice]("Measure.timesteps")
+    )
+    direction: Optional[Callable[..., Direction]] = field(
+        default=None, converter=_OptionalCallableFieldConverter[Direction]("Measure.direction")
+    )
+    transform_fn: Optional[Callable] = None
+    agg_fn: Optional[Callable] = None
+    normalizer: Optional[Callable[..., float]] = field(
+        default=None, converter=_OptionalCallableFieldConverter[float]("Measure.normalizer")
+    )
 
     @cached_property
-    def _methods(self) -> dict[str, Callable]:
-        return {
-            "timesteps": self._select_timesteps,
-            "direction": self._select_direction,
-            "transform_func": self._apply_transform,
-            "agg_func": self._aggregate,
-            "normalizer": self._normalize,
-        }
+    def _methods(self) -> Mapping[str, Callable]:
+        return MappingProxyType(
+            dict(
+                timesteps=self._select_timesteps,
+                direction=self._select_direction,
+                transform_fn=self._apply_transform,
+                agg_fn=self._aggregate,
+                normalizer=self._normalize,
+            )
+        )
 
-    @cached_property
-    def _call_methods(self) -> list[Callable]:
+    def _call_methods(self, **kwargs) -> list[Callable]:
         return [self._get_response_var] + [
-            value for key, value in self._methods.items() if getattr(self, key) is not None
+            partial(method, **kwargs)
+            for key, method in self._methods.items()
+            if getattr(self, key) is not None
         ]
 
     def _get_response_var(self, input: LDict) -> Float[Array, "..."]:
         """Extract the specified response variable."""
         return input[self.response_var.value]
 
-    def _select_timesteps(self, values: Float[Array, "..."]) -> Float[Array, "..."]:
+    def _select_timesteps(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
         """Select specified timesteps."""
-        return values[..., self.timesteps, :]
+        assert self.timesteps is not None
+        return values[..., self.timesteps(**kwargs), :]
 
-    def _select_direction(self, values: Float[Array, "..."]) -> Float[Array, "..."]:
+    def _select_direction(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
         """Select specified direction component."""
         assert self.direction is not None
-        return values[..., DIRECTION_IDXS[self.direction]]
+        return values[..., DIRECTION_IDXS[self.direction(**kwargs)]]
 
-    def _aggregate(self, values: Float[Array, "..."]) -> Float[Array, "..."]:
+    def _aggregate(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
         """Apply aggregation function over time axis."""
-        assert self.agg_func is not None
-        return self.agg_func(values, axis=-1)
+        assert self.agg_fn is not None
+        return self.agg_fn(values, axis=-1)
 
-    def _normalize(self, values: Float[Array, "..."]) -> Float[Array, "..."]:
+    def _normalize(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
         """Apply normalization."""
-        return values / self.normalizer
+        assert self.normalizer is not None
+        return values / self.normalizer(**kwargs)
 
-    def _apply_transform(self, values: Float[Array, "..."]) -> Float[Array, "..."]:
+    def _apply_transform(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
         """Apply custom transformation function."""
-        assert self.transform_func is not None
-        return self.transform_func(values)
+        assert self.transform_fn is not None
+        return self.transform_fn(values)
 
-    def __call__(self, input: LDict) -> Float[Array, "..."]:
+    def __call__(self, input: LDict, **kwargs) -> Float[Array, "..."]:
         """Calculate measure for response state.
 
         Args:
@@ -337,7 +350,7 @@ class Measure(Module):
         Returns:
             Computed measure values
         """
-        return compose_(*self._call_methods)(input)
+        return compose_(*self._call_methods(**kwargs))(input)
 
 
 vector_magnitude = partial(jnp.linalg.norm, axis=-1)
@@ -353,38 +366,63 @@ def signed_max(x, axis=None, keepdims=False):
         return jnp.take_along_axis(x, jnp.expand_dims(max_idx, axis=axis), axis=axis)
 
 
+# Command measures
+initial_command = Measure(
+    response_var=ResponseVar.COMMAND,
+    transform_fn=vector_magnitude,
+    # (there is no command on time step 0)
+    timesteps=slice(1, 2),
+)
+max_net_command = Measure(
+    response_var=ResponseVar.COMMAND,
+    transform_fn=vector_magnitude,
+    agg_fn=jnp.max,
+)
+sum_net_command = Measure(
+    response_var=ResponseVar.COMMAND,
+    transform_fn=vector_magnitude,
+    agg_fn=jnp.sum,
+)
+
+
 # Force measures
+initial_force = Measure(
+    response_var=ResponseVar.FORCE,
+    transform_fn=vector_magnitude,
+    # agg_fn=jnp.mean,
+    timesteps=slice(1, 2),
+)
 max_net_force = Measure(
     response_var=ResponseVar.FORCE,
-    transform_func=vector_magnitude,
-    agg_func=jnp.max,
+    transform_fn=vector_magnitude,
+    agg_fn=jnp.max,
 )
 sum_net_force = Measure(
     response_var=ResponseVar.FORCE,
-    transform_func=vector_magnitude,
-    agg_func=jnp.sum,
+    transform_fn=vector_magnitude,
+    agg_fn=jnp.sum,
 )
 max_parallel_force = Measure(
     response_var=ResponseVar.FORCE,
     direction=Direction.PARALLEL,
-    agg_func=jnp.max,
+    agg_fn=jnp.max,
 )
 sum_parallel_force = Measure(
     response_var=ResponseVar.FORCE,
     direction=Direction.PARALLEL,
-    transform_func=jnp.abs,
-    agg_func=jnp.sum,
+    transform_fn=jnp.abs,
+    agg_fn=jnp.sum,
 )
 max_lateral_force = Measure(
     response_var=ResponseVar.FORCE,
     direction=Direction.LATERAL,
-    agg_func=jnp.max,
+    agg_fn=jnp.max,
 )
 sum_lateral_force_abs = Measure(
     response_var=ResponseVar.FORCE,
     direction=Direction.LATERAL,
-    transform_func=jnp.abs,
-    agg_func=jnp.sum,
+    transform_fn=jnp.abs,
+    agg_fn=jnp.sum,
 )
 
 
@@ -392,17 +430,17 @@ sum_lateral_force_abs = Measure(
 max_parallel_vel = Measure(
     response_var=ResponseVar.VELOCITY,
     direction=Direction.PARALLEL,
-    agg_func=jnp.max,
+    agg_fn=jnp.max,
 )
 max_lateral_vel = Measure(
     response_var=ResponseVar.VELOCITY,
     direction=Direction.LATERAL,
-    agg_func=jnp.max,
+    agg_fn=jnp.max,
 )
 max_lateral_vel_signed = Measure(
     response_var=ResponseVar.VELOCITY,
     direction=Direction.LATERAL,
-    agg_func=signed_max,
+    agg_fn=signed_max,
 )
 
 
@@ -410,43 +448,43 @@ max_lateral_vel_signed = Measure(
 max_lateral_distance = Measure(
     response_var=ResponseVar.POSITION,
     direction=Direction.LATERAL,
-    agg_func=jnp.max,
+    agg_fn=jnp.max,
     normalizer=EVAL_REACH_LENGTH / 100,
 )
 largest_lateral_distance = Measure(
     response_var=ResponseVar.POSITION,
     direction=Direction.LATERAL,
-    agg_func=signed_max,
+    agg_fn=signed_max,
     normalizer=EVAL_REACH_LENGTH / 100,
 )
 sum_lateral_distance = Measure(
     response_var=ResponseVar.POSITION,
     direction=Direction.LATERAL,
-    agg_func=jnp.sum,
+    agg_fn=jnp.sum,
 )
 sum_lateral_distance_abs = Measure(
     response_var=ResponseVar.POSITION,
     direction=Direction.LATERAL,
-    transform_func=jnp.abs,
-    agg_func=jnp.sum,
+    transform_fn=jnp.abs,
+    agg_fn=jnp.sum,
 )
 max_deviation = Measure(
     response_var=ResponseVar.POSITION,
-    transform_func=vector_magnitude,
-    agg_func=jnp.max,
+    transform_fn=vector_magnitude,
+    agg_fn=jnp.max,
 )
 sum_deviation = Measure(
     response_var=ResponseVar.POSITION,
-    transform_func=vector_magnitude,
-    agg_func=jnp.sum,
+    transform_fn=vector_magnitude,
+    agg_fn=jnp.sum,
 )
 
 
 def make_end_velocity_error(last_n_steps: int = ENDPOINT_ERROR_STEPS) -> Measure:
     return Measure(
         response_var=ResponseVar.VELOCITY,
-        transform_func=vector_magnitude,
-        agg_func=jnp.mean,
+        transform_fn=vector_magnitude,
+        agg_fn=jnp.mean,
         timesteps=slice(-last_n_steps, None),
     )
 
@@ -459,8 +497,8 @@ def make_end_position_error(
     goal_pos = jnp.array([reach_length, 0.0])
     return Measure(
         response_var=ResponseVar.POSITION,
-        transform_func=lambda x: jnp.linalg.norm(x - goal_pos, axis=-1),
-        agg_func=jnp.mean,
+        transform_fn=lambda x: jnp.linalg.norm(x - goal_pos, axis=-1),
+        agg_fn=jnp.mean,
         timesteps=slice(-last_n_steps, None),
         normalizer=reach_length / 100,
     )
@@ -472,15 +510,15 @@ def reverse_measure(measure: Measure) -> Measure:
     For example, use this to turn a measure of the maximum forward velocity into a
     measure of the maximum reverse velocity.
     """
-    if measure.transform_func is not None:
-        transform_func = compose(measure.transform_func).then(jnp.negative)
+    if measure.transform_fn is not None:
+        transform_fn = compose(measure.transform_fn).then(jnp.negative)
     else:
-        transform_func = jnp.negative
+        transform_fn = jnp.negative
 
     return eqx.tree_at(
-        lambda measure: measure.transform_func,
+        lambda measure: measure.transform_fn,
         measure,
-        transform_func,
+        transform_fn,
         is_leaf=lambda x: x is None,
     )
 
@@ -496,6 +534,10 @@ def set_timesteps(measure: Measure, timesteps) -> Measure:
 
 ALL_MEASURES = LDict.of("measure")(
     dict(
+        initial_command=initial_command,
+        max_net_command=max_net_command,
+        sum_net_command=sum_net_command,
+        initial_force=initial_force,
         max_net_force=max_net_force,
         sum_net_force=sum_net_force,
         max_parallel_force_forward=max_parallel_force,
@@ -524,8 +566,12 @@ ALL_MEASURES = LDict.of("measure")(
 
 MEASURE_LABELS = LDict.of("measure")(
     dict(
+        initial_force="Initial control force",
         max_net_force="Max net control force",
         sum_net_force="Sum net control force",
+        initial_command="Initial control command",
+        max_net_command="Max net control command",
+        sum_net_command="Sum net control command",
         max_parallel_force_forward="Max forward force",
         max_parallel_force_reverse="Max reverse force",
         sum_parallel_force="Sum of absolute parallel forces",

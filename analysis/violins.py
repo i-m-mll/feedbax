@@ -15,7 +15,7 @@ from feedbax_experiments.misc import deep_merge
 from feedbax_experiments.plot import get_violins
 from feedbax_experiments.plot_utils import get_label_str
 from feedbax_experiments.tree_utils import (
-    ldict_label_only_func,
+    ldict_label_only_fn,
     tree_level_types,
 )
 from feedbax_experiments.types import AnalysisInputData, LDict, LDictConstructor, TreeNamespace
@@ -64,7 +64,7 @@ class Violins(AbstractAnalysis[ViolinsPorts]):
     ):
         # Determine the two innermost LDict levels for grouping and x-axis
         level_types = tree_level_types(input)
-        level_labels = [ldict_label_only_func(node_type) for node_type in level_types]
+        level_labels = [ldict_label_only_fn(node_type) for node_type in level_types]
 
         if len(level_labels) < 2 or any(
             not isinstance(t, LDictConstructor) for t in level_types[-2:]

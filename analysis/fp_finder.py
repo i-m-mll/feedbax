@@ -78,7 +78,7 @@ class FixedPointFinder(Module):
         #      results are consistent with the original implementation.
 
         # This loss takes the mean over all the candidates.
-        loss_func = get_total_fp_loss_func(func)
+        loss_fn = get_total_fp_loss_fn(func)
         opt_state = self.optimizer.init(candidates)
         # The candidate points themselves are the parameters to be optimized;
         # over the optimization they should converge on fixed points.
@@ -90,7 +90,7 @@ class FixedPointFinder(Module):
             def update(batch_idx, result):
                 params, opt_state, loss = result
 
-                loss, grads = jax.value_and_grad(loss_func)(params)
+                loss, grads = jax.value_and_grad(loss_fn)(params)
                 updates, opt_state = self.optimizer.update(grads, opt_state, params)
                 params = optax.apply_updates(params, updates)
 
@@ -100,20 +100,20 @@ class FixedPointFinder(Module):
             result = params, opt_state, jnp.inf
             return jax.lax.fori_loop(0, n_batches_per_iter, update, result)
 
-        def cond_func(val):
+        def cond_fn(val):
             i_batch, _, loss, _ = val
             return (i_batch < n_batches) & (loss > loss_tol)
 
-        def body_func(val):
+        def body_fn(val):
             i_batch, params, _, opt_state = val
             params, opt_state, loss = updates(params, opt_state)
             i_batch += n_batches_per_iter
             val = i_batch, params, loss, opt_state
             return val
 
-        i_batch, fps, _, opt_state = jax.lax.while_loop(cond_func, body_func, val)
+        i_batch, fps, _, opt_state = jax.lax.while_loop(cond_fn, body_fn, val)
 
-        losses = get_fp_loss_func(func)(fps)
+        losses = get_fp_loss_fn(func)(fps)
 
         loss_sort_idxs = jnp.argsort(losses)
 
@@ -320,23 +320,23 @@ def fp_adam_optimizer(
     return optimizer
 
 
-def get_fp_loss_func(func):
+def get_fp_loss_fn(func):
     """Returns the batched fixed point MSE loss for a given function."""
-    batch_func = jax.vmap(func, in_axes=(0,))
+    batch_fn = jax.vmap(func, in_axes=(0,))
 
-    def loss_func(x):
-        return jnp.mean((x - batch_func(x)) ** 2, axis=1)
+    def loss_fn(x):
+        return jnp.mean((x - batch_fn(x)) ** 2, axis=1)
 
-    return loss_func
+    return loss_fn
 
 
-def get_total_fp_loss_func(func):
-    loss_func = get_fp_loss_func(func)
+def get_total_fp_loss_fn(func):
+    loss_fn = get_fp_loss_fn(func)
 
-    def total_loss_func(x):
-        return jnp.mean(loss_func(x))
+    def total_loss_fn(x):
+        return jnp.mean(loss_fn(x))
 
-    return total_loss_func
+    return total_loss_fn
 
 
 N_KEEP_MAX = 10

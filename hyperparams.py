@@ -233,7 +233,7 @@ def take_train_histories_hps(hps: TreeNamespace) -> TreeNamespace:
     )
 
 
-def flat_key_to_where_func(key: str, sep: str = STRINGS.hps_level_label_sep) -> Callable:
+def flat_key_to_where_fn(key: str, sep: str = STRINGS.hps_level_label_sep) -> Callable:
     """Convert a flattened hyperparameter key to a where-function."""
     where_str = key.replace(sep, ".")
     return where_attr_strs_to_func(where_str)

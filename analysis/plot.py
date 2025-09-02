@@ -24,7 +24,7 @@ from feedbax_experiments.analysis.analysis import (
     SinglePort,
 )
 from feedbax_experiments.config import PLOTLY_CONFIG
-from feedbax_experiments.hyperparams import flat_key_to_where_func
+from feedbax_experiments.hyperparams import flat_key_to_where_fn
 from feedbax_experiments.plot import set_axes_bounds_equal
 from feedbax_experiments.plot_utils import get_label_str
 from feedbax_experiments.tree_utils import ldict_level_to_bottom
@@ -185,7 +185,7 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
             if fig_params.get("legend_title") is None:
                 updates["legend_title"] = get_label_str(self.colorscale_key)
             if fig_params.get("legend_labels") is None:
-                updates["legend_labels"] = flat_key_to_where_func(self.colorscale_key)(hps_common)
+                updates["legend_labels"] = flat_key_to_where_fn(self.colorscale_key)(hps_common)
 
             if updates:
                 fig_params = deep_merge(fig_params, updates)

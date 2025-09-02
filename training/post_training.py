@@ -85,20 +85,20 @@ def setup_train_histories(
         is_leaf=is_type(list),
     )
 
-    loss_func = simple_reach_loss()
+    loss_fn = simple_reach_loss()
     if getattr(hps_train, "readout_norm_loss_weight", None) is not None:
         assert getattr(hps_train, "readout_norm_value", None) is not None, (
             "readout_norm_value must be provided if readout_norm_loss_weight is not None"
         )
-        loss_func_validation = loss_func + (
+        loss_fn_validation = loss_fn + (
             hps_train.readout_norm_loss_weight * get_readout_norm_loss(hps_train.readout_norm_value)
         )
     else:
-        loss_func_validation = loss_func
+        loss_fn_validation = loss_fn
 
     return jt.map(
         lambda models: init_task_trainer_history(
-            loss_func,
+            loss_fn,
             hps_train.n_batches,
             hps_train.model.n_replicates,
             ensembled=True,
@@ -106,7 +106,7 @@ def setup_train_histories(
             save_model_parameters=jnp.array(hps_train.save_model_parameters),
             save_trial_specs=None,
             batch_size=hps_train.batch_size,
-            loss_func_validation=loss_func_validation,
+            loss_func_validation=loss_fn_validation,
             model=models,
             where_train=dict(where_train),
         ),
@@ -234,7 +234,7 @@ def get_best_models(
     where_train: WhereFunc | dict[str, WhereFunc],
 ) -> PyTree[eqx.Module, "T"]:
     """Serializes models with the best parameters for each replicate and training condition."""
-    # Get a function that returns the `where_func` used on a given iteration
+    # Get a function that returns the `where_fn` used on a given iteration
     if isinstance(where_train, dict):
         where_train_idxs = _get_most_recent_idxs(
             [int(k) for k in where_train.keys()],

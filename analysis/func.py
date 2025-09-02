@@ -18,16 +18,12 @@ from feedbax_experiments.analysis.analysis import (
 from feedbax_experiments.types import AnalysisInputData
 
 
-class ApplyFuncs(AbstractAnalysis[SinglePort[PyTree[Any]]]):
+class ApplyFns(AbstractAnalysis[SinglePort[PyTree[Any]]]):
     """Apply a PyTree of callables to a PyTree of data.
 
     The functions are stored in the instance field `funcs` and are applied to
     the leaves of the `data` PyTree (customizable via `is_data_leaf`).
 
-    - If `funcs` is not structurally aligned with `data`, set
-      `expand_funcs_to_data=True` to prefix-expand functions across the
-      structure of `data` (useful when one set of functions is broadcast over
-      many conditions).
     - By default, callable/equinox-`Measure` leaves are treated as function
       leaves; `Responses` or arrays are treated as data leaves.
     """
@@ -37,10 +33,10 @@ class ApplyFuncs(AbstractAnalysis[SinglePort[PyTree[Any]]]):
         default_factory=SinglePort[PyTree], converter=SinglePort[PyTree].converter
     )
 
-    funcs: PyTree[Callable] = eqx.field(kw_only=True)  # required at runtime
+    fns: PyTree[Callable] = eqx.field(kw_only=True)  # required at runtime
     is_leaf: Optional[Callable[[Any], bool]] = None
 
-    def _apply_func(self, func, subdata):
+    def _apply_fn(self, func, subdata):
         return jt.map(lambda leaf: func(leaf), subdata, is_leaf=self.is_leaf)
 
     def compute(self, data: AnalysisInputData, *, input: PyTree, **kwargs):
@@ -50,7 +46,7 @@ class ApplyFuncs(AbstractAnalysis[SinglePort[PyTree[Any]]]):
                 input,
                 is_leaf=self.is_leaf,
             ),
-            self.funcs,
+            self.fns,
             is_leaf=callable,
         )
         return result
@@ -59,8 +55,8 @@ class ApplyFuncs(AbstractAnalysis[SinglePort[PyTree[Any]]]):
 class CallerPorts(AbstractAnalysisPorts):
     """Input ports for analyses which call other functions with positional arguments."""
 
-    funcs: InputOf[Callable]
-    func_args: tuple[InputOf[Any], ...]
+    fns: InputOf[Callable]
+    fn_args: tuple[InputOf[Any], ...]
 
 
 P = ParamSpec("P")
@@ -82,8 +78,8 @@ class ApplyFunctional(AbstractAnalysis[CallerPorts]):
     jit_per_leaf: bool = True
     is_leaf: Optional[Callable[[Any], bool]] = callable
 
-    def compute(self, data, *, funcs, func_args, **kwargs):
-        tuple_type = type(func_args)
+    def compute(self, data, *, fns, fn_args, **kwargs):
+        tuple_type = type(fn_args)
 
         def per_leaf(func, *args):
             # The functional itself should only use JAX ops; then this whole thing is JIT-able.
@@ -93,8 +89,8 @@ class ApplyFunctional(AbstractAnalysis[CallerPorts]):
         if self.jit_per_leaf:
             per_leaf = eqx.filter_jit(per_leaf)
 
-        # Apply per leaf: funcs and each item of func_args must be matching PyTrees
-        return map_rich(per_leaf, funcs, *func_args, is_leaf=self.is_leaf, description="")
+        # Apply per leaf: funcs and each item of fn_args must be matching PyTrees
+        return map_rich(per_leaf, fns, *fn_args, is_leaf=self.is_leaf, description="")
 
 
 def _canon_argnums(argnums: Optional[int | Sequence[int]], nargs: int) -> tuple[int, ...]:

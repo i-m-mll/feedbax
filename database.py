@@ -666,7 +666,7 @@ def _read_until_special(file, special_char):
 
 def load_tree_with_hps(
     path: Path,
-    setup_tree_func: Callable,
+    setup_tree_fn: Callable,
     **kwargs,
 ) -> tuple[PyTree, TreeNamespace]:
     """Similar to `feedbax.load_with_hyperparameters, but for namespace-based hyperparameters"""
@@ -677,7 +677,7 @@ def load_tree_with_hps(
         hps = dict_to_namespace(hps_dict, to_type=TreeNamespace, exclude=is_dict_with_int_keys)
 
         # Initialization key isn't important
-        tree = setup_tree_func(hps, key=jr.PRNGKey(0))
+        tree = setup_tree_fn(hps, key=jr.PRNGKey(0))
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
     return tree, hps
@@ -686,7 +686,7 @@ def load_tree_with_hps(
 def load_tree_without_hps(
     path: Path,
     hps: TreeNamespace,
-    setup_tree_func: Callable,
+    setup_tree_fn: Callable,
     **kwargs,
 ) -> PyTree:
     """Load tree using provided hyperparameters, skipping file's hyperparameter section.
@@ -698,7 +698,7 @@ def load_tree_without_hps(
     Args:
         path: Path to the serialized model file
         hps: Hyperparameters to use for tree construction
-        setup_tree_func: Function to create the tree structure
+        setup_tree_fn: Function to create the tree structure
         **kwargs: Additional arguments for eqx.tree_deserialise_leaves
 
     Returns:
@@ -709,7 +709,7 @@ def load_tree_without_hps(
         _read_until_special(f, chr(STRINGS.serialisation.sep_chr))
 
         # Setup tree using provided hps
-        tree = setup_tree_func(hps, key=jr.PRNGKey(0))
+        tree = setup_tree_fn(hps, key=jr.PRNGKey(0))
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
 
     return tree

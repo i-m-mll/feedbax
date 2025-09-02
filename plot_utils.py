@@ -33,7 +33,7 @@ def get_label_str(s: str):
     return " ".join(subs).capitalize()
 
 
-def get_savefig_func(fig_dir: Path, suffix=""):
+def get_savefig_fn(fig_dir: Path, suffix=""):
     """Returns a function that saves Matplotlib and Plotly figures to file in a given directory.
 
     This is convenient in notebooks, where all figures made within a single notebook are generally

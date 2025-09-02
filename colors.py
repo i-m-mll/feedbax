@@ -25,7 +25,7 @@ T = TypeVar("T")
 
 
 class ColorscaleSpec(NamedTuple):
-    sequence_func: Callable[[TreeNamespace], Sequence]
+    sequence_fn: Callable[[TreeNamespace], Sequence]
     colorscale: Optional[Union[str, Sequence[str], Sequence[tuple]]] = None
 
 
@@ -69,19 +69,19 @@ def is_discrete_colorscale(colorscale):
 
 
 def get_variable_values(
-    sequence_func: Callable[[TreeNamespace], Sequence], hps: TreeNamespace
+    sequence_fn: Callable[[TreeNamespace], Sequence], hps: TreeNamespace
 ) -> Optional[Sequence]:
     """Safely get variable values from hyperparameters using the provided function.
 
     Args:
-        sequence_func: Function that extracts a sequence of values from hyperparameters
+        sequence_fn: Function that extracts a sequence of values from hyperparameters
         hps: Hyperparameters to extract values from
 
     Returns:
         Sequence of values or None if extraction failed or returned empty values
     """
     try:
-        values = sequence_func(hps)
+        values = sequence_fn(hps)
         if values is None or len(values) == 0:
             return None
         return values
@@ -137,26 +137,26 @@ def get_colors_dicts_from_discrete(
 
 
 def setup_colors(
-    hps: PyTree[TreeNamespace], var_funcs: dict[str, ColorscaleSpec]
+    hps: PyTree[TreeNamespace], var_fns: dict[str, ColorscaleSpec]
 ) -> tuple[PyTree[dict], dict]:
     """Get all the colorscales we might want for our analyses, given the experiment hyperparameters.
 
     Args:
         hps: Hyperparameters tree
-        var_funcs: Dictionary mapping variable names to `ColorscaleSpecs`
+        var_fns: Dictionary mapping variable names to `ColorscaleSpecs`
 
     Returns:
         Tuple of (PyTree of color mappings, updated colorscales dictionary)
     """
     # Create updated colorscales dictionary
     colorscales = COLORSCALES.copy()
-    for k, spec in var_funcs.items():
+    for k, spec in var_fns.items():
         if spec.colorscale is not None:
             colorscales[k] = spec.colorscale
 
     def process_variable(hps, var_name, spec):
         # Get variable values
-        values = get_variable_values(spec.sequence_func, hps)
+        values = get_variable_values(spec.sequence_fn, hps)
         if values is None:
             logger.info(f"'{var_name}' values unspecified in hyperparams; no colorscale set")
             return None
@@ -180,7 +180,7 @@ def setup_colors(
     colors = jt.map(
         lambda hps: {
             k: result
-            for k, v in var_funcs.items()
+            for k, v in var_fns.items()
             if (result := process_variable(hps, k, v)) is not None
         },
         hps,

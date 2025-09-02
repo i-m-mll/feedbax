@@ -12,7 +12,7 @@ import subprocess
 import types
 from collections.abc import Callable, Hashable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
 from types import GeneratorType, ModuleType
@@ -29,6 +29,7 @@ import pandas as pd
 from feedbax.intervene import AbstractIntervenor, CurlFieldParams, FixedFieldParams
 from feedbax.misc import git_commit_id
 from jax_cookbook import is_type
+from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jaxtyping import Array, ArrayLike, Float, Int
 
 from feedbax_experiments.config.yaml import get_yaml_loader
@@ -678,3 +679,35 @@ def deep_merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, An
         else:
             out[k] = v
     return out
+
+
+@dataclass
+class _OptionalCallableFieldConverter[T]:
+    """Converter for dataclass fields that may be callables, constant values, or `None`.
+
+    By default, insists that callables are keyword-only, and wraps them to accept `**kwargs`
+    if they do not already.
+    """
+
+    name: str
+    kw_only: bool = True
+    wrap_for_var_kwargs: bool = True
+
+    def __call__(self, x: T | Callable[..., T] | None) -> Optional[Callable[..., T]]:
+        if x is None:
+            return None
+        if isinstance(x, Callable):
+            if self.kw_only:
+                sig = inspect.signature(x)
+                if any(
+                    p.kind is not inspect.Parameter.KEYWORD_ONLY for p in sig.parameters.values()
+                ):
+                    raise ValueError(
+                        f"Callables assigned to {self.name} cannot have positional parameters."
+                    )
+            if self.wrap_for_var_kwargs:
+                return wrap_to_accept_var_kwargs(x)
+            else:
+                return x
+        else:
+            return lambda **kwargs: x
