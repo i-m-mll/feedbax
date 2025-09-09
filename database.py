@@ -68,8 +68,8 @@ from feedbax_experiments.hyperparams import (
 from feedbax_experiments.misc import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
-    with_caller_logger,
 )
+from feedbax_experiments.plot_utils import savefig
 from feedbax_experiments.tree_utils import pp
 from feedbax_experiments.types import (
     LDict,
@@ -865,59 +865,6 @@ def generate_figure_hash(eval_hash: str, identifier: str, parameters: Dict[str, 
     """Generate hash for a figure based on evaluation, identifier, and parameters."""
     figure_str = f"{eval_hash}_{identifier}_{json.dumps(parameters, sort_keys=True)}"
     return get_md5_hexdigest(figure_str)
-
-
-EXTS_WITH_EXIF = ["jpg", "jpeg", "tif", "tiff", "webp"]
-
-
-pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
-
-
-@with_caller_logger
-def savefig(
-    fig,
-    label,
-    fig_dir: Path,
-    image_formats: Sequence[str],
-    transparent=True,
-    metadata: Optional[dict[str, Any]] = None,
-    logger: Optional[logging.Logger] = None,
-    **kwargs,
-):
-    path = str(fig_dir / f"{label}") + ".{ext}"
-
-    if isinstance(fig, mplf.Figure):
-        for ext in image_formats:
-            fig.savefig(
-                path.format(ext=ext),
-                transparent=transparent,
-                **kwargs,
-            )
-
-    elif isinstance(fig, go.Figure):
-        fig.update_layout(meta=metadata)
-
-        for ext in image_formats:
-            path_i = path.format(ext=ext)
-            if ext == "html":
-                fig.write_html(path_i, **kwargs)
-            elif ext == "json":
-                fig.write_json(path_i, engine="auto", **kwargs)
-            else:
-                width = getattr(fig.layout, "width", None)
-                height = getattr(fig.layout, "height", None)
-                fig.write_image(path_i, scale=2, width=width, height=height, **kwargs)
-
-                if metadata is not None and ext in EXTS_WITH_EXIF:
-                    try:
-                        img = pyexiv2.Image(path_i)
-                        metadata_xmp = {f"Xmp.custom.{k}": v for k, v in metadata.items()}
-                        metadata_xmp["Xmp.dc.description"] = json.dumps(metadata, indent=2)
-                        img.modify_xmp(metadata_xmp)
-                        img.close()
-                    except Exception as e:
-                        raise (e)
-                        logger.error(f"Failed to save metadata for image at {path_i}: {e}")
 
 
 def add_evaluation_figure(

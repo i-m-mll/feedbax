@@ -67,6 +67,13 @@ def get_trivial_reach_directions(task: AbstractTask, *args) -> Array:
     return jnp.broadcast_to(jnp.array([1.0, 0.0]), origins.shape)
 
 
+def _where_force(states, *_):
+    filtered = getattr(states.force_filter, "output", None)
+    if filtered is not None:
+        return filtered
+    return states.efferent.output
+
+
 DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
     {
         ResponseVar.POSITION: VarSpec(
@@ -83,7 +90,7 @@ DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
             labels=Labels("Control command", "Command", "u"),
         ),
         ResponseVar.FORCE: VarSpec(
-            where=lambda states, *_: getattr(states.force_filter, "output", states.efferent.output),
+            where=_where_force,
             labels=Labels("Control force", "Force", "F"),
         ),
     }

@@ -387,3 +387,19 @@ def make_delayed_cosine_schedule(init_lr, constant_steps, total_steps, alpha=0.0
     return optax.join_schedules(
         schedules=[constant_schedule, cosine_schedule], boundaries=[constant_steps]
     )
+
+
+def bernoulli_active(p: float):
+    def active_fn(trial_spec, batch_info, key):
+        return jr.bernoulli(key, p=p)
+
+    return active_fn
+
+
+def always_active(_: float):
+    _one = jnp.array(1.0)
+
+    def active_fn(trial_spec, batch_info, key):
+        return _one
+
+    return active_fn

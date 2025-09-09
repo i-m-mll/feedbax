@@ -21,6 +21,7 @@ from jax_cookbook import is_module, is_none, is_type
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook.progress import piter
 from jaxtyping import PyTree
+from rich.prompt import Prompt
 from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
@@ -630,7 +631,9 @@ def run_analysis_module(
 
             print("\n")
             while True:
-                proceed = input("Proceed with the evaluation and analysis? (y/n): ").strip().lower()
+                proceed = (
+                    Prompt.ask("Proceed with the evaluation and analysis? (y/n): ").strip().lower()
+                )
 
                 if proceed == "y":
                     print("\n")
@@ -674,12 +677,11 @@ def run_analysis_module(
 
     # Save states if we didn't use --no-pickle and we didn't successfully load from pickle
     if not no_pickle and not loaded_from_pickle:
-
-        def _test(tree):
-            return jt.map(lambda x: x, tree)
+        # def _test(tree):
+        #     return jt.map(lambda x: x, tree)
 
         with open(states_pickle_path, "wb") as f:
-            pickle.dump(_test(states), f)
+            pickle.dump(states, f)
         logger.info(f"Saved evaluated states to {states_pickle_path}")
 
     # Apply post-eval transformations if present

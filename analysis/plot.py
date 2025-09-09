@@ -12,6 +12,7 @@ from typing import Any, Concatenate, Generic, Optional, ParamSpec, Self, TypeVar
 import equinox as eqx
 import feedbax.plotly as fbp
 import jax.tree as jt
+import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from jax_cookbook import is_type
 from jax_cookbook.misc import deep_merge
@@ -147,6 +148,7 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
             # colorscale=PLOTLY_CONFIG.default_colorscale,
             lighten_mean=PLOTLY_CONFIG.mean_lighten_factor,
             n_curves_max=20,
+            #! TODO: Rename to just `layout`
             layout_kws=dict(
                 width=1200,
                 height=300,
@@ -193,7 +195,8 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
         #! This is because `fig_fn = fbp.trajectories` which does not like mappings...
         #! However, we should not hardcode this here! Either update `fbp.trajectories` to
         #! handle mappings, or fix `fig_fn` to `fbp.trajectories` / functions with a particular
-        #! signature
+        #! signature.
+        # ? Or, maybe `trajectories` ought to be associated with this class...
         fig_params: Mapping[str, Any] = {
             k: v.values() if isinstance(v, LDict) else v for k, v in fig_params.items()
         }
@@ -201,7 +204,14 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
         # Use dummy *args to convince the static checker that `FigFnParams` is satisfied
         # (the ParamSpec could specify more args, but we only use it for kwargs).
         def _make_fig(node_data: PyTree[Array], *_) -> go.Figure:
-            return self.fig_fn(jt.leaves(node_data), *_, **fig_params)
+            subplot_titles: list[str] = jt.leaves(jtree.labels(node_data))
+            fig_params_ = fig_params | dict(subplot_titles=subplot_titles)
+
+            return self.fig_fn(
+                jt.leaves(node_data),
+                *_,
+                **fig_params_,
+            )
 
         # one_series can be a single array OR an LDict of leaves (arrays -> subplots)
         if self.subplot_level is not None:

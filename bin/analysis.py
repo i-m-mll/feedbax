@@ -96,7 +96,7 @@ def build_arg_parser():
     parser.add_argument(
         "--memory-warn-gb",
         type=float,
-        default=25.0,
+        default=30.0,
         help="Warn if estimated memory usage exceeds this value (in GB).",
     )
     return parser

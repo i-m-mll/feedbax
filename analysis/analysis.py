@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from feedbax_experiments.config import PATHS, STRINGS
 from feedbax_experiments.config.yaml import get_yaml_loader
-from feedbax_experiments.database import EvaluationRecord, add_evaluation_figure, savefig
+from feedbax_experiments.database import EvaluationRecord, add_evaluation_figure
 from feedbax_experiments.misc import (
     camel_to_snake,
     deep_merge,
@@ -54,7 +54,7 @@ from feedbax_experiments.misc import (
     get_origin_type,
     is_json_serializable,
 )
-from feedbax_experiments.plot_utils import figs_flatten_with_paths
+from feedbax_experiments.plot_utils import figs_flatten_with_paths, savefig
 from feedbax_experiments.tree_utils import (
     DoNotHashTree,
     _align_trees_to_structure,
@@ -204,7 +204,7 @@ class ExpandTo:
     with another input. For example, if `funcs` has structure ['sisu', 'train__pert__std']
     but `fn_args` is a tuple lacking the 'train__pert__std' level, you can use:
 
-        fn_args=ExpandTo("funcs", tuple((Data.hps(...), Data.tasks(...))))
+        fn_args=ExpandTo("fns", tuple((Data.hps(...), Data.tasks(...))))
 
     The `source` will be prefix-expanded to match the structure of `target`.
 
@@ -739,6 +739,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     variant: Optional[str] = (
         None  #! TODO: Eliminate this. Should be in `tasks` PyTree, and dealt with explicitly with ops
     )
+    #! TODO: Rename to `default_fig_params`
     fig_params: Mapping[str, Any] = MappingProxyType(dict())
     cache_result: bool = False
 
@@ -824,9 +825,16 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     compute_fn = _extract_vmapped_kwargs_to_args(
                         self.compute, self._vmap_spec.vmapped_dep_names
                     )
-                    vmapped_deps = [
-                        kwargs_for_compute.pop(name) for name in self._vmap_spec.vmapped_dep_names
-                    ]
+                    try:
+                        vmapped_deps = [
+                            kwargs_for_compute.pop(name)
+                            for name in self._vmap_spec.vmapped_dep_names
+                        ]
+                    except KeyError as e:
+                        raise KeyError(
+                            f"Unknown dependency '{e.args[0]}' for analysis {self.name} "
+                            "supplied in `in_axes` to `vmap`."
+                        ) from e
                     logger.debug(
                         _get_vmap_spec_debug_str(
                             self, self._vmap_spec, data_for_compute, vmapped_deps
@@ -1337,7 +1345,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         )
 
     def with_fig_params(self, **kwargs) -> Self:
-        """Returns a copy of this analysis with updated figure parameters."""
+        """Returns a copy of this analysis with updated figure parameters.
+
+        Deep-merges with existing parameters.
+        """
+        #! TODO:
         return eqx.tree_at(
             lambda x: x.fig_params,
             self,
@@ -1962,24 +1974,27 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata=final_metadata,
         )
 
-    def map_figs_by_axis(
-        self,
-        level: str,
-        *,
-        axis_fn: Callable[[Any], str],
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Self:
-        """Map figures by creating new axis labels using axis_fn."""
-        description = "DEBUG THIS"
-        final_metadata = _merge_metadata(metadata, dict(descriptions=[description]))
+    #! TODO: Implement this. Note that `axis_fn` isn't implemented at this point.
+    #! Also there is no notion of a vectorized *figure*, so this might as well just
+    #! be a convenience for unstacking the axis and then tree mapping.
+    # def map_figs_by_axis(
+    #     self,
+    #     level: str,
+    #     *,
+    #     axis_fn: Callable[[Any], str],
+    #     metadata: Optional[Dict[str, Any]] = None,
+    # ) -> Self:
+    #     """Map figures by creating new axis labels using axis_fn."""
+    #     description = "DEBUG THIS"
+    #     final_metadata = _merge_metadata(metadata, dict(descriptions=[description]))
 
-        return self._append_fig_op(
-            name="map_figs_by_axis",
-            dep_name=None,
-            axis_fn=axis_fn,
-            level=level,
-            metadata=final_metadata,
-        )
+    #     return self._append_fig_op(
+    #         name="map_figs_by_axis",
+    #         dep_name=None,
+    #         axis_fn=axis_fn,
+    #         level=level,
+    #         metadata=final_metadata,
+    #     )
 
     def combine_figs_by_axis(
         self,
@@ -2112,7 +2127,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 "is_leaf=None in then_transform_figs may descend inside `go.Figure` nodes"
             )
         elif levels is not None:
-            logger.warning("is_leaf is ignored when levels is given in then_transform_figs")
+            logger.debug("is_leaf is ignored when levels is given in then_transform_figs")
 
         if invert_levels and levels is None:
             raise ValueError("invert_levels=True requires levels to be given")
@@ -2152,7 +2167,14 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         # Only enter here if `op_type == "figs"``
         if levels is not None:
-            description += f" over LDict levels {levels}"
+            if levels:
+                description += f" over LDict levels {levels}"
+
+                if invert_levels:
+                    description += " (inverted selection)"
+            elif invert_levels:
+                # If levels=() and invert_levels=True, that means all levels
+                description += " over all LDict levels"
 
             # Normalize to the same form as returned by `jtree.tree_level_types`
             levels = [LDict.of(lvl) if isinstance(lvl, str) else lvl for lvl in levels]
@@ -2909,7 +2931,24 @@ InputType: TypeAlias = PyTree[
 ]
 
 
-class _DummyAnalysis(AbstractAnalysis[NoPorts]):
+class IdentityNode(AbstractAnalysis[SinglePort[Any]]):
+    """An analysis that simply returns its input as output.
+
+    Useful for debugging or as a placeholder.
+    """
+
+    Ports = SinglePort[Any]
+    inputs: SinglePort[Any] = eqx.field(
+        default_factory=SinglePort[Any], converter=SinglePort[Any].converter
+    )
+    #! Remove after we hash `inputs`
+    tmp_label: str = "foo"
+
+    def compute(self, data: AnalysisInputData, *, input, **kwargs) -> Any:
+        return input
+
+
+class DummyNode(AbstractAnalysis[NoPorts]):
     """An empty analysis, for debugging."""
 
     def compute(self, data: AnalysisInputData, **kwargs) -> PyTree[Any]:

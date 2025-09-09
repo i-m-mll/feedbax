@@ -200,13 +200,14 @@ def get_field_amplitude(intervenor_params):
         raise ValueError(f"Unknown intervenor parameters type: {type(intervenor_params)}")
 
 
-def vector_with_gaussian_length(key):
+def vector_with_gaussian_length(key, shape=()):
     key1, key2 = jr.split(key)
 
-    angle = jr.uniform(key1, (), minval=-jnp.pi, maxval=jnp.pi)
-    length = jr.normal(key2, ())
+    angle = jr.uniform(key1, shape, minval=-jnp.pi, maxval=jnp.pi)
+    length = jr.normal(key2, shape)
 
-    return length * jnp.array([jnp.cos(angle), jnp.sin(angle)])
+    vector = length * jnp.array([jnp.cos(angle), jnp.sin(angle)])
+    return vector.T
 
 
 #! TODO Separate version-getting logic from conditional logging logic

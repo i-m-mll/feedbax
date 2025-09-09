@@ -870,35 +870,33 @@ def set_axes_bounds_equal(
         current_y_final = y_range  # Default: set independently
 
         # If scaling constraint exists and both ranges were calculated
-        if scaling and x_range and y_range:
-            s = scaling["ratio"]
-            if s is None:
-                s = 1.0
-            # Calculate required spans (ensure non-negative)
-            Sx = max(0.0, x_range[1] - x_range[0])
-            Sy = max(0.0, y_range[1] - y_range[0])
+        if scaling:
+            s = scaling["ratio"] or 1.0
 
-            # Check for valid scaleratio before proceeding
-            if s > 1e-9:  # Avoid division by zero or near-zero ratio issues
-                if scaling["axis"] == "y":  # yaxis anchors to xaxis (y = s*x)
-                    # Calculate the span the x-axis MUST have to accommodate the y-span via scaling
-                    required_Sx_for_y = Sy / s
-                    # The final x-span is the max needed for its own data or for y's data via scaling
+            # Safe spans (0 if missing)
+            Sx = max(0.0, (x_range[1] - x_range[0])) if x_range else 0.0
+            Sy = max(0.0, (y_range[1] - y_range[0])) if y_range else 0.0
+
+            if s > 1e-9:
+                if scaling["axis"] == "y":  # y anchors to x (y-axis depends on x)
+                    # To cover Sy in y, x must span at least s * Sy
+                    required_Sx_for_y = s * Sy
                     final_Sx = max(Sx, required_Sx_for_y)
-                    # Center the final x-range around the original x-data midpoint
-                    x_center = (x_range[0] + x_range[1]) / 2
-                    current_x_final = (x_center - final_Sx / 2, x_center + final_Sx / 2)
-                    current_y_final = None  # Let Plotly determine y-range based on x and ratio
+                    if x_range:
+                        x_center = 0.5 * (x_range[0] + x_range[1])
+                        current_x_final = (x_center - 0.5 * final_Sx, x_center + 0.5 * final_Sx)
+                    # Always let Plotly derive y from x via anchor
+                    current_y_final = None
 
-                elif scaling["axis"] == "x":  # xaxis anchors to yaxis (x = s*y)
-                    # Calculate the span the y-axis MUST have to accommodate the x-span via scaling
-                    required_Sy_for_x = Sx / s
-                    # The final y-span is the max needed for its own data or for x's data via scaling
+                elif scaling["axis"] == "x":  # x anchors to y (x-axis depends on y)
+                    # To cover Sx in x, y must span at least s * Sx
+                    required_Sy_for_x = s * Sx
                     final_Sy = max(Sy, required_Sy_for_x)
-                    # Center the final y-range around the original y-data midpoint
-                    y_center = (y_range[0] + y_range[1]) / 2
-                    current_y_final = (y_center - final_Sy / 2, y_center + final_Sy / 2)
-                    current_x_final = None  # Let Plotly determine x-range based on y and ratio
+                    if y_range:
+                        y_center = 0.5 * (y_range[0] + y_range[1])
+                        current_y_final = (y_center - 0.5 * final_Sy, y_center + 0.5 * final_Sy)
+                    # Always let Plotly derive x from y via anchor
+                    current_x_final = None
 
             # else: If scaleratio is invalid (<=0), keep default independent ranges
 
@@ -926,7 +924,8 @@ def set_axes_bounds_equal(
         return leaf
 
     # Corrected: Use jt.map
-    return jt.map(_update_leaf_final_axes, figs)
+    result = jt.map(_update_leaf_final_axes, figs)
+    return result
 
 
 # Case: for aligned effector trajectories

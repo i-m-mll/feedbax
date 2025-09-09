@@ -41,7 +41,7 @@ class FixedPointsPorts(AbstractAnalysisPorts):
 
     fns: InputOf[Callable]  # Functions to find fixed points for, e.g. RNN cells
     candidates: InputOf[Array]  # Candidate states to initialize the fixed point search
-    fn_args Optional[tuple[InputOf[Any], ...]] = (
+    fn_args: Optional[tuple[InputOf[Any], ...]] = (
         None  # Optional positional arguments to pass to functions
     )
 
@@ -95,7 +95,7 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
         *,
         fns: PyTree[Callable, "T"],
         candidates: PyTree[Array, "T"],
-        fn_args Optional[tuple[PyTree[Any, "T"], ...]] = None,
+        fn_args: Optional[tuple[PyTree[Any, "T"], ...]] = None,
         **kwargs,
     ):
         if fn_args is None:
