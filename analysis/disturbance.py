@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 import equinox as eqx
 import jax.numpy as jnp
 import jax.tree as jt
-from feedbax.intervene import CurlField, FixedField
+from feedbax.intervene import AddNoise, CurlField, FixedField, TimeSeriesParam
 
 from feedbax_experiments.analysis.state_utils import vmap_eval_ensemble
 from feedbax_experiments.types import TreeNamespace
@@ -15,6 +15,8 @@ PLANT_INTERVENOR_LABEL = "DisturbanceField"
 PLANT_DISTURBANCE_CLASSES = {
     "curl": CurlField,
     "constant": FixedField,
+    "gusts": FixedField,
+    "noise": AddNoise,
 }
 
 
@@ -26,15 +28,36 @@ def orthogonal_field(trial_spec, _, key):
     return jnp.array([-direction_vec[1], direction_vec[0]])
 
 
+def get_fixed_gust_fn(hps: TreeNamespace, start_prop: float = 0.2, end_prop: float = 0.25):
+    """Returns a fixed orthogonal field that is active during a fixed portion of the trial."""
+    n_steps = hps.model.n_steps - 1
+    active_idxs = jnp.arange(int(n_steps * start_prop), int(n_steps * end_prop))
+    active_ts = jnp.zeros((n_steps,), dtype=bool).at[active_idxs].set(True)
+
+    def fixed_gust_fn(scale: float):
+        return FixedField.with_params(
+            scale=scale,
+            field=orthogonal_field,
+            active=TimeSeriesParam(active_ts),
+        )
+
+    return fixed_gust_fn
+
+
 PLANT_PERT_FNS = {
-    "curl": lambda scale: CurlField.with_params(
+    "curl": lambda hps: lambda scale: CurlField.with_params(
         #! amplitude=amplitude,
         scale=scale,
     ),
-    "constant": lambda scale: FixedField.with_params(
+    "constant": lambda hps: lambda scale: FixedField.with_params(
         scale=scale,
         field=orthogonal_field,
     ),
+    #! TODO: Maybe eval on a single large gust.
+    "gusts": get_fixed_gust_fn,
+    # "noise": lambda scale: AddNoise.with_params(
+    #     scale=scale,
+    # ),
 }
 
 

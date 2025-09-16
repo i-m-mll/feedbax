@@ -49,7 +49,7 @@ from feedbax_experiments.setup_utils import (
     setup_models_only,
     setup_tasks_only,
 )
-from feedbax_experiments.training.loss import get_readout_norm_loss
+from feedbax_experiments.training.loss import get_reach_loss, get_readout_norm_loss
 from feedbax_experiments.types import LDict, TreeNamespace
 
 logger = logging.getLogger(__name__)
@@ -85,16 +85,7 @@ def setup_train_histories(
         is_leaf=is_type(list),
     )
 
-    loss_fn = simple_reach_loss()
-    if getattr(hps_train, "readout_norm_loss_weight", None) is not None:
-        assert getattr(hps_train, "readout_norm_value", None) is not None, (
-            "readout_norm_value must be provided if readout_norm_loss_weight is not None"
-        )
-        loss_fn_validation = loss_fn + (
-            hps_train.readout_norm_loss_weight * get_readout_norm_loss(hps_train.readout_norm_value)
-        )
-    else:
-        loss_fn_validation = loss_fn
+    loss_fn = get_reach_loss(hps_train)
 
     return jt.map(
         lambda models: init_task_trainer_history(
@@ -106,7 +97,7 @@ def setup_train_histories(
             save_model_parameters=jnp.array(hps_train.save_model_parameters),
             save_trial_specs=None,
             batch_size=hps_train.batch_size,
-            loss_func_validation=loss_fn_validation,
+            loss_func_validation=loss_fn,
             model=models,
             where_train=dict(where_train),
         ),
@@ -126,6 +117,8 @@ def load_data(model_record: ModelRecord):
 
     training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
 
+    #! TODO: Setup `tasks` as well and use these to infer the loss function for the train
+    #! history structure, to make this project-independent.
     models, hps = load_tree_with_hps(
         model_record.path,
         partial(
@@ -229,7 +222,7 @@ def get_best_models(
     models: PyTree[eqx.Module, "T"],
     train_histories: PyTree[TaskTrainerHistory],
     save_model_parameters: Array,
-    best_save_idx: PyTree[Int[Array, "replicate"]],
+    best_save_idx: PyTree[Int[Array, " replicate"]],
     n_replicates: int,
     where_train: WhereFunc | dict[str, WhereFunc],
 ) -> PyTree[eqx.Module, "T"]:
@@ -240,9 +233,17 @@ def get_best_models(
             [int(k) for k in where_train.keys()],
             model_record.n_batches,
         )
-        get_where_train = lambda idx: where_train[str(where_train_idxs[idx])]
+
+        def get_where_train_for_idx(idx):
+            return where_train[str(where_train_idxs[idx])]
+
+        get_where_train = get_where_train_for_idx
     else:
-        get_where_train = lambda idx: where_train
+
+        def get_where_train_fixed(idx):
+            return where_train
+
+        get_where_train = get_where_train_fixed
 
     # TODO: If any model parameters were trainable at the end of the training run,
     # but were not trainable at the time of the best iteration, then this will keep

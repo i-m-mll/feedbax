@@ -57,20 +57,20 @@ logger.setLevel(logging.DEBUG)
 T = TypeVar("T")
 
 
-def train_setup(
-    train_hps: TreeNamespace,
-) -> tuple[TaskTrainer, AbstractLoss]:
+def setup_trainer(
+    hps: TreeNamespace,
+) -> TaskTrainer:
     """Given the training hyperparameters, return a trainer object and loss function."""
     optimizer_class = partial(
         optax.adamw,
-        weight_decay=train_hps.weight_decay,
+        weight_decay=hps.weight_decay,
     )
 
     schedule = make_delayed_cosine_schedule(
-        train_hps.learning_rate_0,
-        train_hps.constant_lr_iterations,
-        train_hps.n_batches_baseline + train_hps.n_batches_condition,
-        train_hps.cosine_annealing_alpha,
+        hps.learning_rate_0,
+        hps.constant_lr_iterations,
+        hps.n_batches_baseline + hps.n_batches_condition,
+        hps.cosine_annealing_alpha,
     )
 
     trainer = TaskTrainer(
@@ -80,18 +80,7 @@ def train_setup(
         checkpointing=True,
     )
 
-    loss_fn = simple_reach_loss()
-
-    if all(
-        getattr(train_hps, k, None) is not None
-        for k in ("readout_norm_loss_weight", "readout_norm_value")
-    ):
-        readout_norm_loss = train_hps.readout_norm_loss_weight * get_readout_norm_loss(
-            train_hps.readout_norm_value
-        )
-        loss_fn = loss_fn + readout_norm_loss
-
-    return trainer, loss_fn
+    return trainer
 
 
 def train_pair(
@@ -231,7 +220,7 @@ def train_and_save(
     training_module = EXPERIMENT_REGISTRY.get_training_module(hps.expt_name)
     key_init, key_train, key_eval = jr.split(key, 3)
     task_model_pair = training_module.setup_task_model_pair(hps, key=key_init)
-    trainer, loss_fn = train_setup(hps)
+    trainer = setup_trainer(hps)
 
     ## Train and save all the models.
     with GracefulInterruptHandler(
@@ -248,7 +237,7 @@ def train_and_save(
                 hps.n_batches,
                 key=key_train,
                 ensembled=True,
-                loss_func=loss_fn,
+                # loss_func=loss_fn,
                 # task_baseline=task_baseline,  #! TODO: Specify param(s) in config
                 where_train=where_strs_to_fns(dict(hps.where)),
                 batch_size=hps.batch_size,

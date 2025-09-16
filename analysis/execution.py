@@ -622,7 +622,7 @@ def run_analysis_module(
         if memory_estimate_gb > memory_warn_gb:
             logger.warning(
                 f"Estimated memory usage ({memory_estimate_gb:.2f} GB) exceeds the warning threshold "
-                f"({memory_warn_gb:.2f} GB). Consider reducing the number of evaluations or model sizes."
+                f"({memory_warn_gb:.2f} GB). Consider reducing the number of evaluations or model sizes. "
                 f"State shapes PyTree written to {PATHS.logs / 'states_shapes.txt'}."
             )
 
