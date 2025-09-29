@@ -589,7 +589,7 @@ def process_model_post_training(
 
     # `vmap_eval_ensemble` will look for this when we try to evaluate the states, however it is not
     # part of the model hyperparameters
-    hps.eval_n = N_TRIALS_VAL
+    hps.task.eval_n = N_TRIALS_VAL
 
     training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
 
@@ -613,6 +613,10 @@ def process_model_post_training(
         where_train,
         hps,
     )
+
+    # ? Don't include this in the saved hyperparameters; though, could rename to something more
+    # ? descriptive of it being specific to post-training eval
+    del hps.task.eval_n
 
     try:
         # Save new model file with best parameters and get new record

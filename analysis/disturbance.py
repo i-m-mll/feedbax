@@ -28,9 +28,10 @@ def orthogonal_field(trial_spec, _, key):
     return jnp.array([-direction_vec[1], direction_vec[0]])
 
 
-def get_fixed_gust_fn(hps: TreeNamespace, start_prop: float = 0.2, end_prop: float = 0.25):
+#! TODO: Control start and end time via hps
+def get_fixed_gust_fn(hps: TreeNamespace, start_prop: float = 0.1, end_prop: float = 0.15):
     """Returns a fixed orthogonal field that is active during a fixed portion of the trial."""
-    n_steps = hps.model.n_steps - 1
+    n_steps = hps.task.n_steps - 1
     active_idxs = jnp.arange(int(n_steps * start_prop), int(n_steps * end_prop))
     active_ts = jnp.zeros((n_steps,), dtype=bool).at[active_idxs].set(True)
 

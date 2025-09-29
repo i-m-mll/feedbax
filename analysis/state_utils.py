@@ -125,16 +125,19 @@ def get_best_replicate(tree, *, replicate_info, axis: int = 1, keep_axis: bool =
     else:
         _replicate_idxs_fn = _original_replicate_idxs_fn
 
-    def _take_best_replicate(x):
+    def _take_best_replicate(x, std):
         if eqx.is_array(x):
-            return jnp.take(x, _replicate_idxs_fn(0), axis=axis)
+            return jnp.take(x, _replicate_idxs_fn(std), axis=axis)
         else:
             return x
 
     def _process_node(node):
         if LDict.is_of("train__pert__std")(node):
             return LDict.of("train__pert__std")(
-                {std: jt.map(_take_best_replicate, subtree) for std, subtree in node.items()}
+                {
+                    std: jt.map(lambda x: _take_best_replicate(x, std), subtree)
+                    for std, subtree in node.items()
+                }
             )
         elif eqx.is_array(node):
             #! This is for the case where the user passes a single

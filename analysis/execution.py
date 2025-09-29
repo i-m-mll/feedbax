@@ -3,6 +3,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from math import e
 from pathlib import Path
 from types import ModuleType
 from typing import Any, List, Literal, Optional, Union
@@ -62,6 +63,7 @@ from feedbax_experiments.misc import delete_all_files_in_dir, log_version_info
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.plugins.registry import ExperimentRegistry
 from feedbax_experiments.setup_utils import query_and_load_model
+from feedbax_experiments.training.post_training import process_model_post_training
 from feedbax_experiments.tree_utils import tree_level_labels
 from feedbax_experiments.types import (
     AnalysisInputData,
@@ -233,7 +235,7 @@ def load_trained_models_and_aux_objects(
                     ),
                     surgeries={
                         # Change
-                        ("n_steps",): hps.model.n_steps,
+                        ("n_steps",): hps.task.n_steps,
                     },
                     exclude_underperformers_by=REPLICATE_CRITERION,
                     return_task=True,
@@ -291,7 +293,7 @@ def setup_eval_for_module(
     task_base = eqx.tree_at(
         lambda task: task.n_steps,
         task_base,
-        hps.model.n_steps,
+        hps.task.n_steps,
     )
 
     # Load and validate transforms once
@@ -311,7 +313,7 @@ def setup_eval_for_module(
         )
     )
     if not any_system_noise:
-        hps.eval_n = 1
+        hps.task.eval_n = 1
 
     # Get indices for taking important subsets of replicates
     # best_replicate, included_replicates = jtree.unzip(LDict.of("train__pert__std")({
@@ -336,6 +338,8 @@ def setup_eval_for_module(
 
     # Construct common inputs needed by transforms and analyses
     # Note: We construct trial_specs for all task variants here
+    #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
+    #! baked into the model's `Iterator`. Here, only the task will be modified.
     task_variants = LDict.of("task_variant")(
         {
             variant_key: eqx.tree_at(
@@ -343,7 +347,7 @@ def setup_eval_for_module(
                 task_base,
                 [value for value in variant_params.values()],
             )
-            for variant_key, variant_params in namespace_to_dict(hps.task).items()
+            for variant_key, variant_params in namespace_to_dict(hps.task.variants).items()
         }
     )
 
@@ -520,9 +524,28 @@ def check_records_for_analysis(
             )
             model_info = get_model_record(
                 db,
-                has_replicate_info=True,
+                postprocessed=True,
+                exclude_defunct=False,
                 **params_query,
             )
+            # if model_info.is_path_defunct:
+            #     try:
+            #         raw_model_info = get_model_record(
+            #             db,
+            #             postprocessed=False,
+            #             exclude_defunct=True,
+            #             **params_query,
+            #         )
+            #         if raw_model_info is not None:
+            #             model_info = process_model_post_training(
+            #                 db,
+            #                 raw_model_info,
+            #                 2,
+            #                 process_all=True,
+            #                 save_figures=False,
+            #             )
+            #     except Exception as e:
+            #         raise e
             if model_info is None:
                 raise ValueError(
                     f"No trained model found for {module_key} with parameters {params_query}"

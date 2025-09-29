@@ -26,9 +26,7 @@ from sqlalchemy.orm import Session
 
 from feedbax_experiments.config import PATHS
 from feedbax_experiments.constants import (
-    N_STEPS,
     TASK_EVAL_PARAMS,
-    WORKSPACE,
 )
 from feedbax_experiments.database import (
     get_model_record,
@@ -44,20 +42,6 @@ from feedbax_experiments.tree_utils import (
     subdict,
 )
 from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace
-
-
-def get_base_reaching_task(
-    n_steps: int = N_STEPS,
-    loss_fn: AbstractLoss = simple_reach_loss(),
-    validation_params: dict[str, Any] = TASK_EVAL_PARAMS["full"],
-    **kwargs,
-) -> SimpleReaches:
-    return SimpleReaches(
-        loss_func=loss_fn,
-        workspace=WORKSPACE,
-        n_steps=n_steps,
-        **validation_params | kwargs,
-    )
 
 
 def get_latest_matching_file(directory: str, pattern: str) -> Optional[str]:
