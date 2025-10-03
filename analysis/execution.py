@@ -1,3 +1,4 @@
+import copy
 import inspect
 import shutil
 import sys
@@ -383,11 +384,16 @@ def setup_eval_for_module(
             task, models_base, hps
         )
 
+        def _promote_variant_params(hps_task, variant_key):
+            hps_variant = hps_task | getattr(hps_task.variants, variant_key)
+            del hps_variant.variants
+            return hps_variant
+
         hps = jt.map(
             lambda hps: eqx.tree_at(
                 lambda hps: hps.task,
                 hps,
-                getattr(hps.task, variant_key),
+                _promote_variant_params(hps.task, variant_key),
             ),
             hps,
             is_leaf=is_type(TreeNamespace),

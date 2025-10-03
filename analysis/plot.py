@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any, Concatenate, Generic, Optional, ParamSpec, Self, TypeVar
 
 import equinox as eqx
-import feedbax.plotly as fbp
+import feedbax.plot as fbp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go

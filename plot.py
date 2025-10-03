@@ -5,7 +5,7 @@ from functools import partial
 from typing import Callable, Literal, Optional
 
 import equinox as eqx
-import feedbax.plotly as fbp
+import feedbax.plot as fbp
 import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
@@ -345,7 +345,7 @@ def get_measure_replicate_comparisons(
     data,
     measure_name: str,
     colors: dict[float, str],
-    included_replicates: Optional[Bool[Array, "replicates"]] = None,
+    included_replicates: Optional[Bool[Array, " replicates"]] = None,
 ):
     labels = data.keys()
     data = jnp.stack(list(data.values()))

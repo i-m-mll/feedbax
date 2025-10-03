@@ -4,7 +4,7 @@ from types import MappingProxyType
 from typing import Optional, TypeVar
 
 import equinox as eqx
-import feedbax.plotly as fbp
+import feedbax.plot as fbp
 import jax.numpy as jnp
 import jax.tree as jt
 import jax_cookbook.tree as jtree

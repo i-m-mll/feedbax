@@ -92,7 +92,7 @@ def vmap_eval_ensemble(
     task: AbstractTask,
 ):
     """Evaluate an ensemble of models on `n` random repeats of a task's validation set."""
-    return eqx.filter_vmap(_get_eval_ensemble(models, task))(jr.split(key, hps.eval_n))
+    return eqx.filter_vmap(_get_eval_ensemble(models, task))(jr.split(key, hps.task.eval_n))
 
 
 def get_constant_task_input_fn(x, n_steps, n_trials):

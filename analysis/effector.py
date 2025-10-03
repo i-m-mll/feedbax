@@ -3,13 +3,14 @@ from functools import partial
 from types import MappingProxyType
 from typing import Literal, Optional
 
-import feedbax.plotly as fbp
+import feedbax.plot as fbp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
-from feedbax.plotly import AxesLabels, SeqOfT
+from feedbax.plot import AxesLabels
 from feedbax.task import AbstractTask
+from feedbax.types import SeqOfT
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 

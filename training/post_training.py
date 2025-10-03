@@ -6,7 +6,7 @@ from typing import Any, Sequence, TypeVar
 from typing import Literal as L
 
 import equinox as eqx
-import feedbax.plotly as fbp
+import feedbax.plot as fbp
 import jax
 import jax.numpy as jnp
 import jax.random as jr

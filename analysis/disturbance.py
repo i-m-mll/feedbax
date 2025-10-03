@@ -24,7 +24,7 @@ def orthogonal_field(trial_spec, _, key):
     init_pos = trial_spec.inits["mechanics.effector"].pos
     goal_pos = jnp.take(trial_spec.targets["mechanics.effector.pos"].value, -1, axis=-2)
     direction_vec = goal_pos - init_pos
-    direction_vec = direction_vec / jnp.linalg.norm(direction_vec)
+    direction_vec = direction_vec / (jnp.linalg.norm(direction_vec) + 1e-9)
     return jnp.array([-direction_vec[1], direction_vec[0]])
 
 
@@ -32,14 +32,29 @@ def orthogonal_field(trial_spec, _, key):
 def get_fixed_gust_fn(hps: TreeNamespace, start_prop: float = 0.1, end_prop: float = 0.15):
     """Returns a fixed orthogonal field that is active during a fixed portion of the trial."""
     n_steps = hps.task.n_steps - 1
-    active_idxs = jnp.arange(int(n_steps * start_prop), int(n_steps * end_prop))
-    active_ts = jnp.zeros((n_steps,), dtype=bool).at[active_idxs].set(True)
+    idxs = jnp.arange(n_steps)
+
+    def _get_active_ts(trial_spec, _, key):
+        if trial_spec.timelines.has_epochs:
+            move_start, move_end = trial_spec.timeline.window_for_epoch("movement")
+            move_len = move_end - move_start
+
+            gust_start = move_start + jnp.floor(move_len * start_prop).astype(jnp.int32)
+            gust_end = move_start + jnp.floor(move_len * end_prop).astype(jnp.int32)
+            gust_end = jnp.minimum(gust_end, move_end)  # clamp to epoch end
+        else:
+            gust_start = jnp.floor(n_steps * start_prop).astype(jnp.int32)
+            gust_end = jnp.floor(n_steps * end_prop).astype(jnp.int32)
+
+        gust_end = jnp.maximum(gust_end, gust_start)
+        active_ts = (idxs >= gust_start) & (idxs < gust_end)
+        return TimeSeriesParam(active_ts)
 
     def fixed_gust_fn(scale: float):
         return FixedField.with_params(
             scale=scale,
             field=orthogonal_field,
-            active=TimeSeriesParam(active_ts),
+            active=_get_active_ts,
         )
 
     return fixed_gust_fn

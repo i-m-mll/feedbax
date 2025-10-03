@@ -223,6 +223,10 @@ class TreeNamespace(SimpleNamespace):
         """Return the values of the namespace."""
         return self.__dict__.values()
 
+    def omitting_attrs(self, *keys: str) -> "TreeNamespace":
+        """Return a new TreeNamespace omitting the specified keys."""
+        return TreeNamespace(**{k: v for k, v in self.__dict__.items() if k not in keys})
+
 
 def unflatten_dict_keys(flat_dict: dict, sep: str = "__") -> dict:
     """Unflatten a dictionary by splitting keys on the separator.

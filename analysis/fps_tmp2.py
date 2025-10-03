@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import Any, Optional
 
 import equinox as eqx
-import feedbax.plotly as fbp
+import feedbax.plot as fbp
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt

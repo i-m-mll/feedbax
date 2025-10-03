@@ -1204,7 +1204,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     **path_params,
                     **dependencies,  # Specified by the subclass `dependency_kwargs`, via `run_analysis`
                 ),
-                eval_n=hps_0.eval_n,  # ? Some things should always be included
+                eval_n=hps_0.task.eval_n,  # ? Some things should always be included
             )
 
             if ops_params_dict:
