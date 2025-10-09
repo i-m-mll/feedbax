@@ -934,3 +934,25 @@ set_axes_bounds_equal_traj2D = partial(
     padding_factor=0.1,
     trace_selector=lambda trace: trace.showlegend is True,
 )
+
+
+def get_add_epoch_bounds_vlines(idxs: Sequence[int]):
+    """Returns a function that adds vertical lines at given epoch boundaries, for all trials."""
+
+    def add_epoch_bounds_vlines(figs, *, data):
+        def _add_vline(fig, task):
+            trial_specs = task.validation_trials
+            for bounds in trial_specs.timeline.epoch_bounds:  # for each trial
+                for idx in idxs:  # for each requested epoch boundary
+                    fig.add_vline(
+                        x=bounds[idx],
+                        line_width=1,
+                        line_dash="dash",
+                        line_color="black",
+                        opacity=0.2,
+                    )
+            return fig
+
+        return jt.map(_add_vline, figs, data.tasks["full"], is_leaf=is_type(go.Figure))
+
+    return add_epoch_bounds_vlines

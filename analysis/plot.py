@@ -1,6 +1,6 @@
 import inspect
 import logging
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
 from functools import partial
 from inspect import Parameter
