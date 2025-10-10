@@ -328,7 +328,7 @@ def query_and_load_model(
     )
 
     if model_info is None:
-        raise ValueError("No model with given parameters found in database!")
+        raise ValueError(f"No model found in database given parameters: {params_query}")
 
     assert model_info.replicate_info_path is not None, (
         "Model record's replicate_info_path is None, but has_replicate_info==True"

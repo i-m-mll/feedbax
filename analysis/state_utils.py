@@ -186,6 +186,22 @@ def exclude_bad_replicates(tree, *, replicate_info, axis=0):
     )
 
 
+def get_align_epoch_start(epoch_idx: int):
+    def align_epochs(states, *, data):
+        def _align(task, states):
+            trial_specs = task.validation_trials
+            if trial_specs.timeline.epoch_bounds is None:
+                raise ValueError("No epoch bounds defined in the task timeline.")
+            start_idxs = trial_specs.timeline.epoch_bounds[:, epoch_idx]
+            # TODO: Simple case: pad trials to same length such that the epoch start idxs are all
+            # TODO: at the same index in the resulting array.
+            # ? dynamic_slice_with_padding?
+
+        return jt.map(_align, data.tasks, states, is_leaf=is_module)
+
+    return align_epochs
+
+
 def get_symmetric_accel_decel_epochs(states):
     speed = jnp.linalg.norm(states.mechanics.effector.vel, axis=-1)
     idxs_max_speed = jnp.argmax(speed, axis=-1)

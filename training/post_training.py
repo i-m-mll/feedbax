@@ -49,8 +49,7 @@ from feedbax_experiments.setup_utils import (
     setup_models_only,
     setup_tasks_only,
 )
-from feedbax_experiments.training.loss import get_reach_loss, get_readout_norm_loss
-from feedbax_experiments.types import LDict, TreeNamespace
+from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace
 
 logger = logging.getLogger(__name__)
 
@@ -63,21 +62,12 @@ T = TypeVar("T")
 
 
 def setup_train_histories(
-    models_tree,
+    task_model_pairs: PyTree[TaskModelPair],
     hps_train: TreeNamespace,
     *,
     key,
 ) -> dict[float, TaskTrainerHistory]:
-    """Returns a skeleton PyTree for the training histories (losses, parameter history, etc.)
-
-    Note that `init_task_trainer_history` depends on `task` to infer:
-
-    1) The number and name of loss function terms;
-    2) The structure of trial specs, in case `save_trial_specs is not None`.
-
-    Here, neither of these are a concern since 1) we are always using the same
-    loss function for each set of saved/loaded models in this project, 2) `save_trial_specs is None`.
-    """
+    """Returns a skeleton PyTree for the training histories (losses, parameter history, etc.)"""
     # Assume that where funcs may be lists (normally defined as tuples, but retrieved through sqlite JSON)
     where_train = jt.map(
         attr_str_tree_to_where_func,
@@ -85,11 +75,9 @@ def setup_train_histories(
         is_leaf=is_type(list),
     )
 
-    loss_fn = get_reach_loss(hps_train)
-
     return jt.map(
-        lambda models: init_task_trainer_history(
-            loss_fn,
+        lambda pair: init_task_trainer_history(
+            pair.task.loss_func,
             hps_train.n_batches,
             hps_train.model.n_replicates,
             ensembled=True,
@@ -97,45 +85,48 @@ def setup_train_histories(
             save_model_parameters=jnp.array(hps_train.save_model_parameters),
             save_trial_specs=None,
             batch_size=hps_train.batch_size,
-            loss_func_validation=loss_fn,
-            model=models,
+            loss_func_validation=pair.task.loss_func,
+            model=pair.model,
             where_train=dict(where_train),
         ),
-        models_tree,
-        is_leaf=is_module,
+        task_model_pairs,
+        is_leaf=is_type(TaskModelPair),
     )
 
 
-def load_data(model_record: ModelRecord):
-    """Loads models, hyperparameters and training histories from files."""
+def load_data(training_module, model_record: ModelRecord):
+    """Loads model, hyperparameters and training histories from files."""
     # Load model and associated data
-    expt_name = str(model_record.expt_name)
-
     if not model_record.path.exists() or not model_record.train_history_path.exists():
         logger.error(f"Model or training history file not found for {model_record.hash}")
         return
 
-    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
-
-    #! TODO: Setup `tasks` as well and use these to infer the loss function for the train
-    #! history structure, to make this project-independent.
-    models, hps = load_tree_with_hps(
+    # NOTE: `model` typically contains multiple model replicates.
+    model, hps = load_tree_with_hps(
         model_record.path,
         partial(
             setup_models_only,
             training_module.setup_task_model_pair,
         ),
     )
-    logger.debug("Loaded models")
+    logger.debug("Loaded training models")
+
+    # Get respective validation tasks for each model
+    task = setup_tasks_only(
+        training_module.setup_task_model_pair,
+        hps,
+        key=jr.PRNGKey(0),
+    )
 
     train_histories, train_history_hps = load_tree_with_hps(
         model_record.train_history_path,
-        partial(setup_train_histories, models),
+        partial(setup_train_histories, TaskModelPair(task, model)),
     )
     logger.debug("Loaded train histories")
 
     return (
-        models,
+        model,
+        task,
         hps,
         train_histories,
         train_history_hps,
@@ -562,6 +553,7 @@ def process_model_post_training(
         return
 
     expt_name = str(model_record.expt_name)
+    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
 
     where_train = jt.map(
         attr_str_tree_to_where_func,
@@ -572,16 +564,17 @@ def process_model_post_training(
     n_replicates = int(model_record.model__n_replicates)
     save_model_parameters = jnp.array(model_record.save_model_parameters)
 
-    all_data = load_data(model_record)
+    all_data = load_data(training_module, model_record)
 
     #! `tasks` is just a single task, and `models` just a single model;
     #! since each `model_record` is now associated with a single model-task pair
-    #! TODO: Simply what follows, including the functions called.
+    #! TODO: Simply what follows, if possible
     if all_data is None:
         return
     else:
         (
-            models,
+            model,
+            task,
             hps,
             train_histories,
             train_history_hyperparams,
@@ -591,21 +584,12 @@ def process_model_post_training(
     # part of the model hyperparameters
     hps.task.eval_n = N_TRIALS_VAL
 
-    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
-
-    # Get respective validation tasks for each model
-    tasks = setup_tasks_only(
-        training_module.setup_task_model_pair,
-        hps,
-        key=jr.PRNGKey(0),
-    )
-
     # Compute replicate info
     #! TODO: Don't pass things that can be obtained from `hps`: `where_train`, `n_replicates`, `save_model_parameters`
     replicate_info, best_models = compute_replicate_info(
         model_record,
-        models,
-        tasks,
+        model,
+        task,
         train_histories,
         save_model_parameters,
         n_replicates,

@@ -1,6 +1,6 @@
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 from typing import Callable, Literal, Optional
 
@@ -936,21 +936,34 @@ set_axes_bounds_equal_traj2D = partial(
 )
 
 
-def get_add_epoch_bounds_vlines(idxs: Sequence[int]):
-    """Returns a function that adds vertical lines at given epoch boundaries, for all trials."""
+def get_add_epoch_bounds_vlines(idxs: Sequence[int] | Mapping[int, dict], optional: bool = True):
+    """Returns a function that adds vertical lines at given epoch boundaries, for all trials.
+
+    By default (`optional=True`), if no epoch boundaries are defined in the task timeline,
+    no lines will be added. If `optional=False`, an error will be raised in that
+    """
+
+    default_params = dict(
+        line_width=1,
+        line_dash="dash",
+        line_color="black",
+        opacity=0.2,
+    )
+
+    if isinstance(idxs, Sequence):
+        idxs = dict(zip(idxs, [default_params] * len(idxs)))
 
     def add_epoch_bounds_vlines(figs, *, data):
         def _add_vline(fig, task):
             trial_specs = task.validation_trials
+            if optional:
+                if trial_specs.timeline.epoch_bounds is None:
+                    return fig
+                else:
+                    raise ValueError("Task has no defined epoch boundaries for plotting")
             for bounds in trial_specs.timeline.epoch_bounds:  # for each trial
-                for idx in idxs:  # for each requested epoch boundary
-                    fig.add_vline(
-                        x=bounds[idx],
-                        line_width=1,
-                        line_dash="dash",
-                        line_color="black",
-                        opacity=0.2,
-                    )
+                for idx, params in idxs.items():  # for each requested epoch boundary
+                    fig.add_vline(x=bounds[idx], **{**default_params, **params})
             return fig
 
         return jt.map(_add_vline, figs, data.tasks["full"], is_leaf=is_type(go.Figure))
