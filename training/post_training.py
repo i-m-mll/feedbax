@@ -2,7 +2,8 @@ import argparse
 import logging
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Sequence, TypeVar
+from pathlib import Path
+from typing import Any, Optional, Sequence, TypeVar
 from typing import Literal as L
 
 import equinox as eqx
@@ -17,7 +18,7 @@ import plotly.graph_objects as go
 from feedbax.misc import attr_str_tree_to_where_func
 from feedbax.train import TaskTrainerHistory, WhereFunc, init_task_trainer_history
 from feedbax.xabdeef.losses import simple_reach_loss
-from jax_cookbook import anyf, is_module, is_type
+from jax_cookbook import anyf, identity, is_module, is_type
 from jaxtyping import Array, Int, PyTree
 from rich.logging import RichHandler
 from rich.progress import Progress
@@ -31,6 +32,7 @@ from feedbax_experiments.analysis.state_utils import (
     get_pos_endpoints,
     vmap_eval_ensemble,
 )
+from feedbax_experiments.config.yaml import get_yaml_loader
 from feedbax_experiments.database import (
     MODEL_RECORD_BASE_ATTRS,
     EvaluationRecord,
@@ -44,6 +46,7 @@ from feedbax_experiments.database import (
     save_model_and_add_record,
 )
 from feedbax_experiments.misc import log_version_info
+from feedbax_experiments.plot_utils import savefig
 from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
 from feedbax_experiments.setup_utils import (
     setup_models_only,
@@ -139,13 +142,17 @@ def get_best_iterations_and_losses(
     train_histories: PyTree[TaskTrainerHistory], save_model_parameters: Array, n_replicates: int
 ):
     """Computes best iterations and corresponding losses for each replicate."""
-    best_save_idx = jt.map(
-        lambda history: jnp.argmin(
-            history.loss.total[save_model_parameters],
-            axis=0,
-        ),
+    # Get a single array (n_train_iter, n_replicates)
+    loss_history = jt.map(
+        # Use `identity` to avoid taking mean over iterations or replicates
+        lambda history: history.loss.aggregate(leaf_fn=identity),
         train_histories,
         is_leaf=is_module,
+    )
+
+    best_save_idx = jt.map(
+        lambda losses: jnp.argmin(losses[save_model_parameters], axis=0),
+        loss_history,
     )
 
     best_saved_iterations = jt.map(
@@ -154,12 +161,11 @@ def get_best_iterations_and_losses(
     )
 
     losses_at_best_saved_iteration = jt.map(
-        lambda history, saved_iterations: (
-            history.loss.total[jnp.array(saved_iterations), jnp.arange(n_replicates)]
+        lambda losses, saved_iterations: (
+            losses[jnp.array(saved_iterations), jnp.arange(n_replicates)]
         ),
-        train_histories,
+        loss_history,
         best_saved_iterations,
-        is_leaf=is_module,
     )
 
     return best_save_idx, best_saved_iterations, losses_at_best_saved_iteration
@@ -385,6 +391,9 @@ def save_training_figures(
     eval_info: EvaluationRecord,
     train_histories,
     replicate_info,
+    hps: PyTree,
+    dump_path: Optional[Path] = None,
+    dump_formats: Sequence[str] = ("html",),
 ):
     # Specify the figure-generating functions and their arguments
     fig_specs: dict[str, FigFuncSpec] = dict(
@@ -415,15 +424,8 @@ def save_training_figures(
         # ),
     )
 
-    # TODO
-    # DON'T Evaluate all of them at the "train__pert__std" level
     all_figs = {
-        fig_label: jt.map(
-            fig_spec.func,
-            *fig_spec.args,
-            is_leaf=LDict.is_of("train__pert__std"),
-        )
-        for fig_label, fig_spec in fig_specs.items()
+        fig_label: fig_spec.func(*fig_spec.args) for fig_label, fig_spec in fig_specs.items()
     }
 
     def save_and_add_figure(fig, plot_id, variant_label, train_std):
@@ -444,6 +446,27 @@ def save_training_figures(
             save_formats=["png"],
             **fig_parameters,
         )
+
+        # Additionally dump to specified path if provided
+        if dump_path is not None:
+            dump_path.mkdir(exist_ok=True, parents=True)
+
+            # Create filename: {plot_id}_{eval_hash}
+            filename = f"{plot_id}_{eval_info.hash}"
+
+            savefig(fig, filename, dump_path, dump_formats)
+
+            # Save hyperparameters as YAML
+            yaml = get_yaml_loader(typ="safe")
+            params_path = dump_path / f"{filename}.yaml"
+            try:
+                with open(params_path, "w") as f:
+                    yaml.dump(dict(hps), f)
+            except Exception as e:
+                logger.error(
+                    f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True
+                )
+                raise e
 
     is_leaf = anyf(LDict.is_of("train__pert__std"), is_type(go.Figure))
 
@@ -502,7 +525,7 @@ def compute_replicate_info(
     )
 
     losses_at_final_saved_iteration = jt.map(
-        lambda history: history.loss.total[-1],
+        lambda history: history.loss.aggregate(leaf_fn=identity)[-1],
         train_histories,
         is_leaf=is_module,
     )
@@ -543,10 +566,12 @@ def process_model_post_training(
     n_std_exclude: float,
     process_all: bool = True,
     save_figures: bool = True,
+    dump_path: Optional[Path] = None,
+    dump_formats: Sequence[str] = ("html",),
 ) -> ModelRecord | None:
     """Process a single model record, adding a new record with best parameters and replicate info."""
 
-    if model_record.has_replicate_info or (model_record.postprocessed and not process_all):
+    if not process_all and (model_record.has_replicate_info or model_record.postprocessed):
         logger.info(
             f"Model {model_record.hash[:7]} has been processed previously and process_all is false; skipping"
         )
@@ -644,6 +669,9 @@ def process_model_post_training(
             eval_info,
             train_histories,
             replicate_info,
+            hps,
+            dump_path=dump_path,
+            dump_formats=dump_formats,
         )
 
     session.commit()

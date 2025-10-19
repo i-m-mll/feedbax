@@ -54,7 +54,7 @@ def build_arg_parser():
     parser.add_argument(
         "--fig-dump-dir",
         type=str,
-        default=PATHS.figures_dump,
+        default=Path(PATHS.figures_dump) / "analysis",
         help="Directory to dump figures.",
     )
     parser.add_argument(

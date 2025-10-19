@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, TypeVar
+from typing import Any, Dict, Iterable, Literal, Optional, TypeVar
 
 import equinox as eqx
 import jax.random as jr
@@ -31,6 +31,7 @@ from jaxtyping import PyTree
 from sqlalchemy import (
     JSON,
     Boolean,
+    Case,
     Column,
     ColumnElement,
     DateTime,
@@ -41,6 +42,7 @@ from sqlalchemy import (
     Table,
     create_engine,
     inspect,
+    literal,
     or_,
     update,
 )
@@ -432,10 +434,176 @@ def _valid_filter_key(k: str) -> bool:
     return not k.startswith("_") and k not in ["id", "hash", "created_at"]
 
 
+def _column_for(model_class, key: str):
+    col = getattr(model_class, key, None)
+    return col
+
+
+def _prepared_value(column, value):
+    # mirror your _make_filter_condition JSON behavior
+    from sqlalchemy import JSON
+
+    if isinstance(column.type, JSON):
+        import json as _json
+
+        return _json.dumps(value)
+    return value
+
+
+def _count_matches(session: Session, model_class, filters: Dict[str, Any]) -> int:
+    q = session.query(model_class)
+    for k, v in filters.items():
+        col = _column_for(model_class, k)
+        if col is None:
+            # Treat as always-false to match your current behavior
+            return 0
+        q = q.filter(col == _prepared_value(col, v))
+    # SQLAlchemy 2.x .count() is fine on a Query
+    return q.count()
+
+
+def ddmin(failing_keys: list[str], test_fail: Callable[[Iterable[str]], bool]) -> list[str]:
+    """
+    Delta debugging: find a 1-minimal subset S of failing_keys such that
+    test_fail(S) == True and for all proper subsets S' of S, test_fail(S') == False.
+    Based on Zeller (2002).
+    """
+    n = 2
+    S = failing_keys[:]
+    while len(S) >= 2:
+        chunk_size = int((len(S) + n - 1) / n)
+        some_reduction = False
+        for i in range(0, len(S), chunk_size):
+            subset = S[i : i + chunk_size]
+            complement = S[:i] + S[i + chunk_size :]
+            # Try removing subset: if complement still fails, we can drop subset
+            if test_fail(complement):
+                S = complement
+                n = max(n - 1, 2)
+                some_reduction = True
+                break
+        if not some_reduction:
+            if n >= len(S):
+                break
+            n = min(len(S), 2 * n)
+    return S
+
+
+def explain_query_miss(
+    session: Session,
+    record_type: str | type[BaseT],
+    filters: Dict[str, Any],
+    *,
+    topk_nearest: int = 5,
+) -> Dict[str, Any]:
+    """
+    Return a structured explanation for why an AND-conjunction of `filters` yields no rows.
+    - per_key_support: matches when each key is used alone
+    - unknown_keys: keys that don’t correspond to any column
+    - minimal_conflict_keys: 1-minimal subset of keys whose conjunction yields zero matches
+    - nearest: top-k rows with the most satisfied predicates + which fields mismatch
+    """
+    model_class: type[BaseT] = get_model_class(record_type)
+
+    # 0) Unknown columns
+    unknown_keys = [k for k in filters if _column_for(model_class, k) is None]
+
+    # 1) Per-key support
+    per_key_support: Dict[str, int] = {}
+    for k, v in filters.items():
+        col = _column_for(model_class, k)
+        if col is None:
+            per_key_support[k] = 0
+            continue
+        cnt = _count_matches(session, model_class, {k: v})
+        per_key_support[k] = cnt
+
+    # 2) Minimal conflicting subset (if overall conjunction fails)
+    keys = list(filters.keys())
+
+    def _fails(subset_keys: Iterable[str]) -> bool:
+        subset = {k: filters[k] for k in subset_keys}
+        return _count_matches(session, model_class, subset) == 0
+
+    minimal_conflict_keys: list[str] | None = None
+    if _fails(keys):
+        minimal_conflict_keys = ddmin(keys, _fails)
+    else:
+        minimal_conflict_keys = []
+
+    # 3) Nearest matches (rank by number of satisfied predicates)
+    # Build a CASE sum score
+    score_terms: list[ColumnElement] = []
+    equals_exprs: Dict[str, ColumnElement] = {}
+    for k, v in filters.items():
+        col = _column_for(model_class, k)
+        if col is None:
+            continue
+        pv = _prepared_value(col, v)
+        eq_expr = col == pv
+        equals_exprs[k] = eq_expr
+        score_terms.append(Case((eq_expr, 1), else_=0))
+
+    nearest = []
+    if score_terms:
+        score = sum(score_terms, literal(0)).label("match_score")
+        q = (
+            session.query(model_class, score)
+            .order_by(score.desc(), model_class.id.desc())
+            .limit(topk_nearest)
+        )
+        rows = q.all()
+        for row in rows:
+            rec, sc = row[0], row[1]
+            # compute mismatches for presentation (Python-side)
+            mismatches = []
+            matches = []
+            for k, v in filters.items():
+                col = _column_for(model_class, k)
+                if col is None:
+                    mismatches.append((k, v, "<unknown column>"))
+                else:
+                    actual = getattr(rec, k, None)
+                    # For JSON, your ORM likely returns Python types; compare to the original
+                    ok = actual == v
+                    (matches if ok else mismatches).append((k, v, actual))
+            nearest.append(
+                {
+                    "id": getattr(rec, "id", None),
+                    "match_score": int(sc or 0),
+                    "matches": matches,
+                    "mismatches": mismatches,
+                }
+            )
+
+    # Build a short textual report, handy for logs
+    zero_support = [k for k, c in per_key_support.items() if c == 0]
+    report_lines = []
+    if unknown_keys:
+        report_lines.append(f"Unknown columns: {unknown_keys}")
+    if zero_support:
+        report_lines.append(f"Zero-support predicates (alone they match 0 rows): {zero_support}")
+    if minimal_conflict_keys:
+        report_lines.append(f"Minimal conflicting subset: {minimal_conflict_keys}")
+    elif minimal_conflict_keys == []:
+        report_lines.append("All predicates together are satisfiable (this path shouldn’t run).")
+    if not report_lines:
+        report_lines.append("No obvious culprit found; see nearest candidates below.")
+
+    return {
+        "unknown_keys": unknown_keys,
+        "per_key_support": per_key_support,
+        "minimal_conflict_keys": minimal_conflict_keys,
+        "nearest": nearest,
+        "report": " | ".join(report_lines),
+    }
+
+
 def get_record(
     session: Session,
     record_type: str | type[BaseT],
     enforce_unique: bool = True,
+    explain_on_miss: bool = False,
     **filters: Any,
 ) -> Optional[BaseT]:
     """Get single record matching all filters exactly.
@@ -450,8 +618,13 @@ def get_record(
     """
     model_class: type[BaseT] = get_model_class(record_type)
     matches = query_records(session, model_class, filters)
+
     if not matches:
+        if explain_on_miss:
+            analysis = explain_query_miss(session, model_class, filters)
+            logger.info(f"No exact match.\n{analysis['report']}")
         return None
+
     if enforce_unique and len(matches) > 1:
         ids_str = ", ".join(str(match.id) for match in matches)  # type: ignore
         all_unfiltered_params = [

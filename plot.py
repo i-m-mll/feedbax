@@ -956,8 +956,8 @@ def get_add_epoch_bounds_vlines(idxs: Sequence[int] | Mapping[int, dict], option
     def add_epoch_bounds_vlines(figs, *, data):
         def _add_vline(fig, task):
             trial_specs = task.validation_trials
-            if optional:
-                if trial_specs.timeline.epoch_bounds is None:
+            if trial_specs.timeline.epoch_bounds is None:
+                if optional:
                     return fig
                 else:
                     raise ValueError("Task has no defined epoch boundaries for plotting")

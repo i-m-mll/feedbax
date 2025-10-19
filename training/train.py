@@ -3,6 +3,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from functools import partial
 from operator import not_
+from pathlib import Path
 from types import NoneType
 from typing import Literal, Optional, TypeVar
 
@@ -161,8 +162,11 @@ def train_and_save_from_config(
     untrained_only: bool = True,
     finish_incomplete_postprocessing: bool = True,
     postprocess: bool = True,
+    force_postprocess: bool = False,
     n_std_exclude: int = 2,  # re: postprocessing
     save_figures: bool = True,  # re: postprocessing
+    fig_dump_path: Optional[Path] = None,
+    fig_dump_formats: Sequence[str] = ("html",),
     version_info: Optional[dict] = None,
     *,
     key: PRNGKeyArray,
@@ -176,6 +180,28 @@ def train_and_save_from_config(
     # Convert config dict to hyperparameters namespace
     training_status, hps, model_record = prepare_to_train(expt_key, config)
 
+    # Handle forced re-postprocessing of already-postprocessed models
+    if force_postprocess and training_status == "postprocessed":
+        assert model_record is not None, (
+            "`prepare_to_train` should have returned a model record given training status is "
+            "'postprocessed'"
+        )
+        with db_session(autocommit=False) as db:
+            logger.info(
+                f"Force re-postprocessing already-postprocessed model for experiment {expt_key}"
+            )
+            process_model_post_training(
+                db,
+                model_record,
+                n_std_exclude,
+                process_all=True,
+                save_figures=save_figures,
+                dump_path=fig_dump_path,
+                dump_formats=fig_dump_formats,
+            )
+        return None, None, model_record
+
+    #! Why is this in here, and not in the more general `train_and_save`
     if untrained_only:
         if training_status == "postprocessed":
             logger.info(f"Skipping training of already-trained model for experiment {expt_key}")
@@ -196,6 +222,8 @@ def train_and_save_from_config(
                     n_std_exclude,
                     process_all=True,
                     save_figures=save_figures,
+                    dump_path=fig_dump_path,
+                    dump_formats=fig_dump_formats,
                 )
 
     return train_and_save(
@@ -203,6 +231,8 @@ def train_and_save_from_config(
         postprocess=postprocess,
         n_std_exclude=n_std_exclude,
         save_figures=save_figures,
+        fig_dump_path=fig_dump_path,
+        fig_dump_formats=fig_dump_formats,
         version_info=version_info,
         key=key,
     )
@@ -213,6 +243,8 @@ def train_and_save(
     postprocess: bool = True,
     n_std_exclude: int = 2,  # re: postprocessing
     save_figures: bool = True,  # re: postprocessing
+    fig_dump_path: Optional[Path] = None,
+    fig_dump_formats: Sequence[str] = ("html",),
     version_info: Optional[dict] = None,
     *,
     key: PRNGKeyArray,
@@ -261,6 +293,8 @@ def train_and_save(
                         n_std_exclude,
                         process_all=True,
                         save_figures=save_figures,
+                        dump_path=fig_dump_path,
+                        dump_formats=fig_dump_formats,
                     )
             return trained_model, train_history, model_record
 

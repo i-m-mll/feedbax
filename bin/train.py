@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 from functools import partial
+from pathlib import Path
 
 import equinox as eqx
 import feedbax
@@ -23,6 +24,7 @@ from jax_cookbook.progress import piter
 
 import feedbax_experiments
 from feedbax_experiments.config import (
+    PATHS,
     PRNG_CONFIG,
     load_batch_config,
     load_config,
@@ -55,13 +57,28 @@ def build_arg_parser():
         "--postprocess", action="store_false", help="Postprocess each model after training."
     )
     parser.add_argument(
+        "--force-postprocess",
+        action="store_true",
+        help="Force re-postprocessing of models even if already postprocessed.",
+    )
+    parser.add_argument(
         "--n-std-exclude",
         type=int,
         default=2,
         help="In postprocessing, exclude model replicates with n_std greater than this value.",
     )
+    parser.add_argument("--no-figures", action="store_true", help="Save figures in postprocessing.")
     parser.add_argument(
-        "--save-figures", action="store_true", help="Save figures in postprocessing."
+        "--fig-dump-dir",
+        type=str,
+        default=Path(PATHS.figures_dump) / "train",
+        help="Directory to dump post-training figures (default: none).",
+    )
+    parser.add_argument(
+        "--fig-dump-formats",
+        type=str,
+        default="html",
+        help="Format(s) to dump figures in, comma-separated (e.g., 'html,png,pdf')",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for the training.")
     parser.add_argument(
@@ -81,6 +98,10 @@ def main():
     else:
         key = jr.PRNGKey(args.seed)
 
+    # Parse figure dump formats and path
+    fig_dump_formats = args.fig_dump_formats.split(",")
+    fig_dump_path = Path(args.fig_dump_dir) if args.fig_dump_dir else None
+
     version_info = log_version_info(
         jax,
         eqx,
@@ -99,8 +120,11 @@ def main():
             config=module_config,
             untrained_only=args.untrained_only,
             postprocess=args.postprocess,
+            force_postprocess=args.force_postprocess,
             n_std_exclude=args.n_std_exclude,
-            save_figures=args.save_figures,
+            save_figures=not args.no_figures,
+            fig_dump_path=fig_dump_path,
+            fig_dump_formats=fig_dump_formats,
             version_info=version_info,
             key=key,
         )
@@ -152,30 +176,47 @@ def main():
                     "models."
                 )
 
-            if args.postprocess:
-                not_postprocessed = eqx.filter(
-                    model_records,
-                    jt.map(lambda status: status == "not_postprocessed", training_status),
-                    is_leaf=is_type(ModelRecord),
-                )
-                to_postprocess = jt.leaves(not_postprocessed, is_leaf=is_type(ModelRecord))
-                logger.info(
-                    f"Postprocessing {len(to_postprocess)} models which were previously trained "
-                    "but not postprocessed."
-                )
-                with db_session(autocommit=False) as db:
-                    map_rich(
-                        lambda record: process_model_post_training(
-                            db,
-                            record,
-                            n_std_exclude=args.n_std_exclude,
-                            process_all=True,
-                            save_figures=args.save_figures,
-                        ),
-                        to_postprocess,
+            if args.postprocess or args.force_postprocess:
+                # Determine which models need postprocessing
+                if args.force_postprocess:
+                    # Force re-postprocessing of all models (both already postprocessed and not)
+                    records_for_postprocessing = model_records
+                else:
+                    # Only postprocess models that weren't postprocessed yet
+                    records_for_postprocessing = eqx.filter(
+                        model_records,
+                        jt.map(lambda status: status == "not_postprocessed", training_status),
                         is_leaf=is_type(ModelRecord),
-                        description="Postprocessing",
                     )
+
+                to_postprocess = jt.leaves(records_for_postprocessing, is_leaf=is_type(ModelRecord))
+
+                if len(to_postprocess) > 0:
+                    if args.force_postprocess:
+                        logger.info(
+                            f"Force re-postprocessing {len(to_postprocess)} models "
+                            "(including already postprocessed ones)."
+                        )
+                    else:
+                        logger.info(
+                            f"Postprocessing {len(to_postprocess)} models which were previously "
+                            "trained but not postprocessed."
+                        )
+                    with db_session(autocommit=False) as db:
+                        map_rich(
+                            lambda record: process_model_post_training(
+                                db,
+                                record,
+                                n_std_exclude=args.n_std_exclude,
+                                process_all=True,
+                                save_figures=not args.no_figures,
+                                dump_path=fig_dump_path,
+                                dump_formats=fig_dump_formats,
+                            ),
+                            to_postprocess,
+                            is_leaf=is_type(ModelRecord),
+                            description="Postprocessing",
+                        )
         else:
             all_hps_to_train = all_hps
 
@@ -194,7 +235,9 @@ def main():
                     hps,
                     postprocess=args.postprocess,
                     n_std_exclude=args.n_std_exclude,
-                    save_figures=args.save_figures,
+                    save_figures=not args.no_figures,
+                    fig_dump_path=fig_dump_path,
+                    fig_dump_formats=fig_dump_formats,
                     version_info=version_info,
                     key=key,
                 )
