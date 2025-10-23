@@ -670,12 +670,15 @@ def unit_circle_points(n):
     return jnp.column_stack([z.real, z.imag])
 
 
-def deep_merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
-    """Pure 'overlay' that copies only touched branches."""
+def deep_merge(
+    base: Mapping[str, Any], over: Mapping[str, Any], ignore_none: bool = True
+) -> dict[str, Any]:
     out: dict[str, Any] = dict(base)
     for k, v in over.items():
+        if v is None and ignore_none:
+            continue
         bv = out.get(k)
-        if isinstance(v, dict) and isinstance(bv, dict):
+        if isinstance(v, Mapping) and isinstance(bv, Mapping):
             out[k] = deep_merge(bv, v)
         else:
             out[k] = v

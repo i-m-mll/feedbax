@@ -19,7 +19,7 @@ import jax.random as jr
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import optax
-from jax_cookbook import is_type, map_rich
+from jax_cookbook import is_type
 from jax_cookbook.progress import piter
 
 import feedbax_experiments
@@ -38,6 +38,7 @@ from feedbax_experiments.training.train import (
     train_and_save,
     train_and_save_from_config,
 )
+from feedbax_experiments.tree_utils import filter_varying_leaves
 from feedbax_experiments.types import TreeNamespace
 
 logger = logging.getLogger(os.path.basename(__file__))
@@ -77,8 +78,13 @@ def build_arg_parser():
     parser.add_argument(
         "--fig-dump-formats",
         type=str,
-        default="html",
+        default="html,png,svg",
         help="Format(s) to dump figures in, comma-separated (e.g., 'html,png,pdf')",
+    )
+    parser.add_argument(
+        "--clear-fig-dumps",
+        action="store_true",
+        help="Clear figure dump directory before training",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for the training.")
     parser.add_argument(
@@ -101,6 +107,18 @@ def main():
     # Parse figure dump formats and path
     fig_dump_formats = args.fig_dump_formats.split(",")
     fig_dump_path = Path(args.fig_dump_dir) if args.fig_dump_dir else None
+
+    # Clear figure dump directory if requested
+    if fig_dump_path and args.clear_fig_dumps:
+        if fig_dump_path.exists():
+            import shutil
+
+            # Count files before clearing for logging
+            n_files = sum(1 for _ in fig_dump_path.rglob("*") if _.is_file())
+            shutil.rmtree(fig_dump_path)
+            logger.info(f"Cleared figure dump directory: {fig_dump_path} ({n_files} files removed)")
+        else:
+            logger.info(f"Figure dump directory does not exist, nothing to clear: {fig_dump_path}")
 
     version_info = log_version_info(
         jax,
@@ -125,6 +143,7 @@ def main():
             save_figures=not args.no_figures,
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
+            fig_dump_params=None,  # Single mode: no varying params to extract
             version_info=version_info,
             key=key,
         )
@@ -156,6 +175,14 @@ def main():
             ]
         )
 
+        # Flatten everything to lists for easier manipulation
+        all_hps_flat = jt.leaves(all_hps, is_leaf=is_type(TreeNamespace))
+        training_status_flat = jt.leaves(training_status)
+        model_records_flat = jt.leaves(model_records, is_leaf=is_type(ModelRecord))
+
+        # Compute varying params from ALL hps (before any filtering)
+        all_hps_flat_diff = filter_varying_leaves(all_hps_flat)
+
         # Do this here rather than using `train_and_save_from_config`, so logs are summary
         # rather than repetitive
         if args.untrained_only:
@@ -180,16 +207,22 @@ def main():
                 # Determine which models need postprocessing
                 if args.force_postprocess:
                     # Force re-postprocessing of all models (both already postprocessed and not)
-                    records_for_postprocessing = model_records
+                    to_postprocess = list(enumerate(model_records_flat))
+                    to_postprocess_diff = all_hps_flat_diff
                 else:
                     # Only postprocess models that weren't postprocessed yet
-                    records_for_postprocessing = eqx.filter(
-                        model_records,
-                        jt.map(lambda status: status == "not_postprocessed", training_status),
-                        is_leaf=is_type(ModelRecord),
-                    )
-
-                to_postprocess = jt.leaves(records_for_postprocessing, is_leaf=is_type(ModelRecord))
+                    to_postprocess = [
+                        (i, record)
+                        for i, (record, status) in enumerate(
+                            zip(model_records_flat, training_status_flat)
+                        )
+                        if status == "not_postprocessed"
+                    ]
+                    to_postprocess_diff = [
+                        diff
+                        for diff, status in zip(all_hps_flat_diff, training_status_flat)
+                        if status == "not_postprocessed"
+                    ]
 
                 if len(to_postprocess) > 0:
                     if args.force_postprocess:
@@ -203,8 +236,12 @@ def main():
                             "trained but not postprocessed."
                         )
                     with db_session(autocommit=False) as db:
-                        map_rich(
-                            lambda record: process_model_post_training(
+                        for (run_number, record), varying_params in piter(
+                            zip(to_postprocess, to_postprocess_diff),
+                            total=len(to_postprocess),
+                            description="Postprocessing",
+                        ):
+                            process_model_post_training(
                                 db,
                                 record,
                                 n_std_exclude=args.n_std_exclude,
@@ -212,25 +249,40 @@ def main():
                                 save_figures=not args.no_figures,
                                 dump_path=fig_dump_path,
                                 dump_formats=fig_dump_formats,
-                            ),
-                            to_postprocess,
-                            is_leaf=is_type(ModelRecord),
-                            description="Postprocessing",
-                        )
+                                dump_params=varying_params,
+                                run_number=run_number,
+                            )
         else:
+            # Not filtering - train everything
             all_hps_to_train = all_hps
 
+        # Filter to models that need training
         all_hps_to_train_flat = jt.leaves(all_hps_to_train, is_leaf=is_type(TreeNamespace))
 
         if len(all_hps_to_train_flat) == 0:
             logger.info("No models to train. Exiting.")
             return
 
+        # Get corresponding varying params for models to train
+        if args.untrained_only:
+            # Filter varying params to match untrained models
+            all_hps_to_train_flat_diff = [
+                diff
+                for diff, status in zip(all_hps_flat_diff, training_status_flat)
+                if status == "untrained"
+            ]
+        else:
+            # Training all - use all varying params
+            all_hps_to_train_flat_diff = all_hps_flat_diff
+
         logger.info(f"Training {len(all_hps_to_train_flat)} models.")
 
-        map_rich(
-            # Don't save results in memory
-            lambda hps: discard(
+        for run_number, (hps, hps_diff) in piter(
+            enumerate(zip(all_hps_to_train_flat, all_hps_to_train_flat_diff)),
+            total=len(all_hps_to_train_flat),
+            description="Training models",
+        ):
+            discard(
                 train_and_save(
                     hps,
                     postprocess=args.postprocess,
@@ -238,14 +290,12 @@ def main():
                     save_figures=not args.no_figures,
                     fig_dump_path=fig_dump_path,
                     fig_dump_formats=fig_dump_formats,
+                    fig_dump_params=hps_diff,
+                    run_number=run_number,
                     version_info=version_info,
                     key=key,
                 )
-            ),
-            all_hps_to_train_flat,
-            is_leaf=is_type(TreeNamespace),
-            description="Training models",
-        )
+            )
 
         logger.info("All training runs complete. Exiting.")
 

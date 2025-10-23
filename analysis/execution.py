@@ -532,6 +532,7 @@ def check_records_for_analysis(
                 db,
                 postprocessed=True,
                 exclude_defunct=False,
+                explain_on_miss=True,
                 **params_query,
             )
             # if model_info.is_path_defunct:

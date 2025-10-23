@@ -167,6 +167,7 @@ def train_and_save_from_config(
     save_figures: bool = True,  # re: postprocessing
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: Sequence[str] = ("html",),
+    fig_dump_params: Optional[dict | PyTree] = None,
     version_info: Optional[dict] = None,
     *,
     key: PRNGKeyArray,
@@ -198,6 +199,7 @@ def train_and_save_from_config(
                 save_figures=save_figures,
                 dump_path=fig_dump_path,
                 dump_formats=fig_dump_formats,
+                dump_params=fig_dump_params,
             )
         return None, None, model_record
 
@@ -224,6 +226,7 @@ def train_and_save_from_config(
                     save_figures=save_figures,
                     dump_path=fig_dump_path,
                     dump_formats=fig_dump_formats,
+                    dump_params=fig_dump_params,
                 )
 
     return train_and_save(
@@ -233,6 +236,7 @@ def train_and_save_from_config(
         save_figures=save_figures,
         fig_dump_path=fig_dump_path,
         fig_dump_formats=fig_dump_formats,
+        fig_dump_params=fig_dump_params,
         version_info=version_info,
         key=key,
     )
@@ -245,6 +249,8 @@ def train_and_save(
     save_figures: bool = True,  # re: postprocessing
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: Sequence[str] = ("html",),
+    fig_dump_params: Optional[dict | PyTree] = None,
+    run_number: Optional[int] = None,
     version_info: Optional[dict] = None,
     *,
     key: PRNGKeyArray,
@@ -295,6 +301,8 @@ def train_and_save(
                         save_figures=save_figures,
                         dump_path=fig_dump_path,
                         dump_formats=fig_dump_formats,
+                        dump_params=fig_dump_params,
+                        run_number=run_number,
                     )
             return trained_model, train_history, model_record
 

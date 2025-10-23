@@ -1,11 +1,13 @@
+"""Conveniences for debugging; use `from _debug import *`."""
+
 import jax.tree as jt
 import plotly.graph_objects as go
 from jax_cookbook import is_module, is_none, is_type
 from jax_cookbook.tree import (
-    first as fs,
+    first_leaf as fs,
 )
 from jax_cookbook.tree import (
-    first_shape as fsh,
+    first_leaf_shape as fsh,
 )
 
 from feedbax_experiments.misc import location_inspect as loc
@@ -17,7 +19,13 @@ from feedbax_experiments.tree_utils import (
     pp2 as pp,
 )
 
-tll = lambda *args, **kwargs: tree_level_labels(*args, label_fn=ldict_verbose_label_fn, **kwargs)
+
+def tll(*args, **kwargs):
+    return tree_level_labels(
+        *args,
+        label_fn=ldict_verbose_label_fn,
+        **kwargs,
+    )
 
 
 def lf(tree, type_=None):

@@ -445,7 +445,7 @@ def rearrange_ldict_levels(
 
 def ldict_level_keys(tree: PyTree, label: str) -> KeysView:
     """Returns the keys of the first `LDict` node with the given label."""
-    return jtree.first(tree, is_leaf=LDict.is_of(label)).keys()
+    return jtree.first_leaf(tree, is_leaf=LDict.is_of(label)).keys()
 
 
 # def align_levels_and_map(
@@ -553,7 +553,7 @@ def index_multi(obj, *idxs):
 
 
 _is_leaf = anyf(is_type(go.Figure, TreeNamespace))
-first = partial(jtree.first, is_leaf=_is_leaf)
+first_leaf = partial(jtree.first_leaf, is_leaf=_is_leaf)
 
 
 def pp(tree, truncate_leaf=_is_leaf):
@@ -771,6 +771,120 @@ def lomidhi(x: Iterable):
 
 
 class DoNotHashTree: ...
+
+
+def filter_varying_leaves(
+    pytrees: Sequence[PyTree],
+) -> Sequence[dict[str, Any]]:
+    """
+    Extract only the varying leaves from a sequence of PyTrees with the same structure.
+
+    Args:
+        pytrees: Sequence of PyTrees with identical structure
+
+    Returns:
+        List of flat dicts (one per input tree) with keys as "path.to.leaf" strings
+        and values as the leaf values. Only leaves that vary across the input trees
+        are included.
+
+    Notes:
+        - Returns flat dicts rather than nested structures, since removing leaves
+          would break the original tree structure anyway
+        - For YAML dumping, flat keys like "model.network.n_hidden" are more readable
+        - All trees must have the same structure (will raise if they don't)
+
+    Example:
+        >>> tree1 = {"a": 1, "b": 2, "c": 3}
+        >>> tree2 = {"a": 1, "b": 5, "c": 3}
+        >>> tree3 = {"a": 1, "b": 7, "c": 3}
+        >>> filter_varying_leaves([tree1, tree2, tree3])
+        [{"b": 2}, {"b": 5}, {"b": 7}]  # Only "b" varies
+    """
+    if not pytrees:
+        return []
+
+    if len(pytrees) == 1:
+        # Single tree: all leaves are "varying" (nothing to compare against)
+        paths_and_leaves, _ = jt.flatten_with_path(pytrees[0])
+        return [dict((_path_to_str(path), leaf) for path, leaf in paths_and_leaves)]
+
+    # Flatten all trees with paths
+    all_paths_and_leaves = [jt.flatten_with_path(tree)[0] for tree in pytrees]
+
+    # Build dicts mapping path strings to values for each tree
+    all_flat_dicts = [
+        {_path_to_str(path): leaf for path, leaf in paths_and_leaves}
+        for paths_and_leaves in all_paths_and_leaves
+    ]
+
+    # Get all unique paths (should be same across all trees)
+    all_paths = set()
+    for flat_dict in all_flat_dicts:
+        all_paths.update(flat_dict.keys())
+
+    # For each path, check if values vary across trees
+    varying_dicts = []
+    for flat_dict in all_flat_dicts:
+        varying_dict = {}
+        for path in sorted(all_paths):  # Sort for deterministic order
+            # Get values at this path across all trees
+            path_values = [d.get(path) for d in all_flat_dicts]
+
+            # Check if values vary
+            if not _all_equal(path_values):
+                varying_dict[path] = flat_dict.get(path)
+
+        varying_dicts.append(varying_dict)
+
+    return varying_dicts
+
+
+def _path_to_str(path: tuple) -> str:
+    """Convert a JAX tree path to a dot-separated string."""
+    parts = []
+    for key in path:
+        # Handle different JAX key types
+        if isinstance(key, getattr(jtu, "GetAttrKey", ())):
+            name = getattr(key, "name", None)
+            if name is None:
+                name = getattr(key, "attr", None)
+            parts.append(str(name))
+        elif isinstance(key, getattr(jtu, "DictKey", ())):
+            k = getattr(key, "key", key)
+            parts.append(str(k))
+        elif isinstance(key, getattr(jtu, "SequenceKey", ())):
+            idx = getattr(key, "idx", None)
+            if idx is None:
+                idx = getattr(key, "index", None)
+            parts.append(str(idx))
+        else:
+            # Fallback for simple keys
+            parts.append(str(key))
+
+    return ".".join(parts)
+
+
+def _all_equal(values: list[Any]) -> bool:
+    """Check if all values in a list are equal, handling arrays properly."""
+    if not values:
+        return True
+
+    first = values[0]
+
+    for val in values[1:]:
+        try:
+            # For arrays, use array_equal
+            if eqx.is_array(first) and eqx.is_array(val):
+                if not jnp.array_equal(first, val):
+                    return False
+            # For other types, use regular equality
+            elif first != val:
+                return False
+        except Exception:
+            # If comparison fails, assume they're different
+            return False
+
+    return True
 
 
 def _expand_missing_levels(

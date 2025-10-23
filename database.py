@@ -644,6 +644,7 @@ def get_record(
 def get_model_record(
     session: Session,
     exclude_defunct: bool = True,
+    explain_on_miss: bool = False,
     **filters: Any,
 ) -> Optional[ModelRecord]:
     """Get single model record matching all filters exactly.
@@ -662,7 +663,7 @@ def get_model_record(
     if exclude_defunct:
         filters["is_path_defunct"] = False
 
-    return get_record(session, ModelRecord, **filters)
+    return get_record(session, ModelRecord, explain_on_miss=explain_on_miss, **filters)
 
 
 def get_model_class(record_type: str | type[BaseT]) -> type[BaseT]:

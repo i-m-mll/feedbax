@@ -52,7 +52,7 @@ from feedbax_experiments.setup_utils import (
     setup_models_only,
     setup_tasks_only,
 )
-from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace
+from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace, namespace_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -357,10 +357,35 @@ def get_best_models(
 def get_train_history_figures(
     histories: PyTree[TaskTrainerHistory, "T"],
     best_saved_iteration_by_replicate,
+    included_replicates: Optional[PyTree[dict[str, Array]]] = None,
 ) -> PyTree[go.Figure, "T"]:
-    def get_figure(history, best_save_iterations):
-        fig = fbp.loss_history(history.loss)
-        text = "Best iter. by replicate: " + ", ".join(str(idx) for idx in best_save_iterations)
+    def get_figure(history, best_save_iterations, included_dict):
+        # Filter the loss history to include only the desired replicates
+        # Use the 'best_total_loss' mask since that's what we care about for loss history
+        if included_dict is not None:
+            included_mask = included_dict.get("best_total_loss", None)
+            if included_mask is not None:
+                # Apply mask to each loss term's replicate dimension
+                filtered_loss = jt.map(
+                    lambda loss_array: loss_array[:, included_mask]
+                    if loss_array.ndim > 1
+                    else loss_array,
+                    history.loss,
+                    is_leaf=lambda x: isinstance(x, (jnp.ndarray, np.ndarray)),
+                )
+                # Filter best_save_iterations to match
+                filtered_best_iters = [
+                    iter for iter, include in zip(best_save_iterations, included_mask) if include
+                ]
+            else:
+                filtered_loss = history.loss
+                filtered_best_iters = best_save_iterations
+        else:
+            filtered_loss = history.loss
+            filtered_best_iters = best_save_iterations
+
+        fig = fbp.loss_history(filtered_loss)
+        text = "Best iter. by replicate: " + ", ".join(str(idx) for idx in filtered_best_iters)
         fig.add_annotation(
             dict(
                 text=text,
@@ -373,10 +398,16 @@ def get_train_history_figures(
         )
         return fig
 
+    #! TODO: I don't think the map is needed here, anymore
     return jt.map(
-        lambda history, best_save_iterations: get_figure(history, best_save_iterations),
+        lambda history, best_save_iterations, included: get_figure(
+            history, best_save_iterations, included
+        ),
         histories,
         best_saved_iteration_by_replicate,
+        included_replicates
+        if included_replicates is not None
+        else jt.map(lambda _: None, histories, is_leaf=is_type(TaskTrainerHistory)),
         is_leaf=is_type(TaskTrainerHistory),
     )
 
@@ -389,17 +420,61 @@ class FigFuncSpec(eqx.Module):
 def save_training_figures(
     db_session: Session,
     eval_info: EvaluationRecord,
-    train_histories,
+    train_history,
     replicate_info,
     hps: PyTree,
     dump_path: Optional[Path] = None,
     dump_formats: Sequence[str] = ("html",),
+    dump_params: Optional[dict | PyTree] = None,
+    run_number: Optional[int] = None,
 ):
+    # Save YAML once for this evaluation (if dumping)
+    if dump_path is not None:
+        dump_path.mkdir(exist_ok=True, parents=True)
+
+        # Use dump_params if provided, otherwise full hps
+        params_to_dump = dump_params if dump_params is not None else hps
+
+        # Convert to dict if it's a TreeNamespace
+        if isinstance(params_to_dump, TreeNamespace):
+            params_dict = namespace_to_dict(params_to_dump)
+        elif isinstance(params_to_dump, dict):
+            params_dict = params_to_dump
+        else:
+            # Fallback for other PyTree types
+            params_dict = dict(params_to_dump)
+
+        # Save once with just the hash, not per-figure
+        yaml = get_yaml_loader(typ="safe")
+        if run_number is not None:
+            params_path = dump_path / f"{run_number:03d}_{eval_info.hash}.yaml"
+        else:
+            params_path = dump_path / f"{eval_info.hash}.yaml"
+        try:
+            with open(params_path, "w") as f:
+                yaml.dump(params_dict, f)
+        except Exception as e:
+            logger.error(f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True)
+            raise e
+
+    train_history = eqx.tree_at(
+        lambda th: th.loss["goal_hit_in_window"]["pos"].value,
+        train_history,
+        (
+            train_history.loss["goal_hit_in_window"]["pos"].value
+            + hps.loss.goal_hit_in_window.softmin_tau * jnp.log(20)
+        ),
+    )
+
     # Specify the figure-generating functions and their arguments
     fig_specs: dict[str, FigFuncSpec] = dict(
         loss_history=FigFuncSpec(
             func=get_train_history_figures,
-            args=(train_histories, replicate_info["best_saved_iteration_by_replicate"]),
+            args=(
+                train_history,
+                replicate_info["best_saved_iteration_by_replicate"],
+                replicate_info["included_replicates"],
+            ),
         ),
         # loss_dist_over_replicates_best=FigFuncSpec(
         #     func=partial(
@@ -447,26 +522,13 @@ def save_training_figures(
             **fig_parameters,
         )
 
-        # Additionally dump to specified path if provided
+        # Additionally dump figure to specified path if provided
         if dump_path is not None:
-            dump_path.mkdir(exist_ok=True, parents=True)
-
-            # Create filename: {plot_id}_{eval_hash}
-            filename = f"{plot_id}_{eval_info.hash}"
-
+            if run_number is not None:
+                filename = f"{run_number:03d}_{eval_info.hash}_{plot_id}"
+            else:
+                filename = f"{eval_info.hash}_{plot_id}"
             savefig(fig, filename, dump_path, dump_formats)
-
-            # Save hyperparameters as YAML
-            yaml = get_yaml_loader(typ="safe")
-            params_path = dump_path / f"{filename}.yaml"
-            try:
-                with open(params_path, "w") as f:
-                    yaml.dump(dict(hps), f)
-            except Exception as e:
-                logger.error(
-                    f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True
-                )
-                raise e
 
     is_leaf = anyf(LDict.is_of("train__pert__std"), is_type(go.Figure))
 
@@ -568,6 +630,8 @@ def process_model_post_training(
     save_figures: bool = True,
     dump_path: Optional[Path] = None,
     dump_formats: Sequence[str] = ("html",),
+    dump_params: Optional[dict | PyTree] = None,
+    run_number: Optional[int] = None,
 ) -> ModelRecord | None:
     """Process a single model record, adding a new record with best parameters and replicate info."""
 
@@ -672,6 +736,8 @@ def process_model_post_training(
             hps,
             dump_path=dump_path,
             dump_formats=dump_formats,
+            dump_params=dump_params,
+            run_number=run_number,
         )
 
     session.commit()

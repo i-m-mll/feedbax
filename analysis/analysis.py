@@ -671,9 +671,9 @@ def _get_vmap_spec_debug_str(
     example_leaf_shapes_str = "\n\t\t".join(
         [
             "example leaf shapes:",
-            f"data.states: {jtree.first_shape(prepped_data.states)}",
+            f"data.states: {jtree.first_leaf_shape(prepped_data.states)}",
             *[
-                f"{k}: {jtree.first_shape(dep)}"
+                f"{k}: {jtree.first_leaf_shape(dep)}"
                 for k, dep in zip(vmap_spec.vmapped_dep_names, vmapped_deps)
             ],
         ]

@@ -26,6 +26,7 @@ from feedbax_experiments.analysis.analysis import (
 )
 from feedbax_experiments.analysis.plot import ScatterPlots
 from feedbax_experiments.analysis.state_utils import (
+    get_align_epoch_start,
     get_pos_endpoints,
     get_trial_start_positions,
     unsqueezer,
@@ -248,6 +249,7 @@ def get_aligned_trajectories_node(
     pos_endpoints: bool = True,
     varset: PyTree[VarSpec] = DEFAULT_VARSET,
     subplot_level: str = VAR_LEVEL_LABEL,
+    align_epoch: Optional[int] = None,
     pre_transform_fns: Sequence[Callable] = (),
 ) -> ScatterPlots:
     aligned_var_subplot_titles = get_varset_labels(varset).medium
@@ -267,6 +269,10 @@ def get_aligned_trajectories_node(
     )
     for transform_fn in pre_transform_fns:
         node = node.after_transform(transform_fn)
+    if align_epoch is not None:
+        node = node.after_transform(
+            lambda vars, *, data: get_align_epoch_start(align_epoch)(vars, data=data)
+        )
     if colorscale_key is not None:
         node = node.after_stacking(colorscale_key)
     if pos_endpoints:
