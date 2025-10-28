@@ -5,6 +5,7 @@ Written with the help of Claude 3.5 Sonnet.
 """
 
 import hashlib
+import io
 import json
 import logging
 import uuid
@@ -107,6 +108,7 @@ class ModelRecord(RecordBase):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    hash_version: Mapped[str] = mapped_column(String, default="v2")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     is_path_defunct: Mapped[bool] = mapped_column(default=False)
     version_info: Mapped[Optional[dict[str, str]]]
@@ -149,6 +151,7 @@ class ModelRecord(RecordBase):
 MODEL_RECORD_BASE_ATTRS = [
     "id",
     "hash",
+    "hash_version",
     "created_at",
     "expt_name",
     "is_path_defunct",
@@ -788,6 +791,37 @@ def yaml_dump(f, data: Any):
     f.write(f"\n{chr(STRINGS.serialisation.sep_chr)}\n".encode())
 
 
+def hash_pytree(tree: PyTree, hps: TreeNamespace) -> str:
+    """Generate MD5 hash from PyTree structure without saving to file.
+
+    Uses the same serialization format as save_tree for consistency, ensuring
+    that the hash computed here matches what hash_file would return on a saved file.
+
+    Args:
+        tree: PyTree to hash
+        hps: Hyperparameters to serialize alongside the tree
+
+    Returns:
+        MD5 hexdigest of the serialized tree
+    """
+    buffer = io.BytesIO()
+
+    # Serialize hyperparameters (same as yaml_dump does for files)
+    hps_dict = namespace_to_dict(hps)
+    yaml_dump(buffer, hps_dict)
+
+    # Serialize tree leaves (same as save does for files)
+    eqx.tree_serialise_leaves(buffer, tree)
+
+    # Compute MD5 hash
+    buffer.seek(0)
+    md5 = hashlib.md5()
+    for chunk in iter(lambda: buffer.read(4096), b""):
+        md5.update(chunk)
+
+    return md5.hexdigest()
+
+
 def save_tree(
     tree: PyTree,
     directory: Path,
@@ -799,12 +833,11 @@ def save_tree(
     """Save object to file whose name is its hash.
 
     If `hash_` is passed, save to the file with the corresponding
-    filename, ending in `suffix`,
+    filename. If `suffix` is provided, it will be appended to the filename.
     """
 
     if hash_ is not None:
-        if suffix is None:
-            raise ValueError("If `hash_` is provided, `suffix` must also be provided.")
+        # Use the provided hash, with optional suffix
         path = get_hash_path(directory, hash_, suffix=suffix, **kwargs)
     else:
         path = generate_temp_path(directory)
@@ -896,29 +929,52 @@ def save_model_and_add_record(
     train_history: Optional[Any] = None,
     replicate_info: Optional[Any] = None,
     version_info: Optional[Dict[str, str]] = None,
+    commit: bool = True,
+    deferred_ops: Optional[list] = None,
 ) -> ModelRecord:
-    """Save model files with hash-based names and add database record."""
+    """Save model files with hash-based names and add database record.
+
+    Args:
+        session: Database session
+        model: Model to save
+        hps_train: Training hyperparameters
+        train_history: Optional training history
+        replicate_info: Optional replicate information
+        version_info: Optional version information
+        commit: If True, commit immediately. If False, caller must commit.
+        deferred_ops: If provided, append file save operations to this list
+                     instead of executing immediately. Caller must execute them.
+
+    Returns:
+        ModelRecord added to the session (not yet committed if commit=False)
+    """
 
     hps_train = arrays_to_lists(hps_train)
 
     # Replace LDict with plain dict so it is serialisable
     record_hps = flatten_hps(hps_train, ldict_to_dict=True) | dict(version_info=version_info)
-    # If any LDicts have made their way here,
     record_params = namespace_to_dict(record_hps)
 
-    # Save model and get hash-based filename
-    # TODO: Optionally, let the hash/existence checks be independent of `version_info`
-    # i.e. so we don't retrain models just because Equinox got a minor update or something
-    # (alternatively, could just fix the package versions for the project)
-    model_hash, _ = save_tree(model, PATHS.models, hps_train)
+    # Compute hash in memory (no file I/O yet)
+    model_hash = hash_pytree(model, hps_train)
 
-    # Save associated files if provided
-    for tree, suffix in (
-        (train_history, STRINGS.file_suffixes.train_history),
-        (replicate_info, STRINGS.file_suffixes.replicate_info),
-    ):
-        if tree is not None:
-            save_tree(tree, PATHS.models, hps_train, hash_=model_hash, suffix=suffix)
+    # Prepare file save operations
+    def save_files():
+        # Save model with known hash
+        save_tree(model, PATHS.models, hps_train, hash_=model_hash)
+        # Save associated files if provided
+        for tree, suffix in (
+            (train_history, STRINGS.file_suffixes.train_history),
+            (replicate_info, STRINGS.file_suffixes.replicate_info),
+        ):
+            if tree is not None:
+                save_tree(tree, PATHS.models, hps_train, hash_=model_hash, suffix=suffix)
+
+    # Either defer or execute immediately
+    if deferred_ops is not None:
+        deferred_ops.append(save_files)
+    else:
+        save_files()
 
     update_table_schema(
         session.bind,
@@ -930,6 +986,7 @@ def save_model_and_add_record(
     # Create database record
     model_record = ModelRecord(
         hash=model_hash,
+        hash_version="v2",
         is_path_defunct=False,
         has_replicate_info=replicate_info is not None,
         **record_params,
@@ -939,11 +996,13 @@ def save_model_and_add_record(
     existing_record = get_record(session, ModelRecord, hash=model_hash)
     if existing_record is not None:
         session.delete(existing_record)
-        session.commit()
+        if commit:
+            session.commit()
         logger.debug(f"Replacing existing model record with hash {model_hash}")
 
     session.add(model_record)
-    session.commit()
+    if commit:
+        session.commit()
     return model_record
 
 
@@ -979,14 +1038,20 @@ def add_evaluation(
     eval_parameters: Dict[str, Any],
     expt_name: Optional[str] = None,
     version_info: Optional[dict[str, str]] = None,
+    commit: bool = True,
 ) -> EvaluationRecord:
     """Create new notebook evaluation record.
 
     Args:
         session: Database session
-        model_id: ID of the model used (None for training notebooks)
-        expt_name: Name identifying the analysis/experiment
+        models: PyTree of model records used (None for training notebooks)
         eval_parameters: Parameters used for evaluation
+        expt_name: Name identifying the analysis/experiment
+        version_info: Optional version information
+        commit: If True, commit immediately. If False, caller must commit.
+
+    Returns:
+        EvaluationRecord added to the session (not yet committed if commit=False)
     """
     eval_parameters = arrays_to_lists(eval_parameters)
 
@@ -1031,7 +1096,8 @@ def add_evaluation(
         )
         session.add(eval_record)
 
-    session.commit()
+    if commit:
+        session.commit()
     return eval_record
 
 
@@ -1049,6 +1115,8 @@ def add_evaluation_figure(
     model_records: PyTree[ModelRecord] = None,
     save_formats: Optional[str | Sequence[str]] = "png",
     skip_schema_update: bool = False,
+    commit: bool = True,
+    deferred_ops: Optional[list] = None,
     **parameters: Any,
 ) -> FigureRecord:
     """Save figure and create database record with dynamic parameters.
@@ -1059,7 +1127,14 @@ def add_evaluation_figure(
         figure: Plotly or matplotlib figure to save
         identifier: Unique label for this type of figure
         save_formats: The image types to save.
+        skip_schema_update: If True, skip updating the schema
+        commit: If True, commit immediately. If False, caller must commit.
+        deferred_ops: If provided, append file save operations to this list
+                     instead of executing immediately. Caller must execute them.
         **parameters: Additional parameters that distinguish the figure
+
+    Returns:
+        FigureRecord added to the session (not yet committed if commit=False)
     """
     parameters = arrays_to_lists(parameters)
 
@@ -1084,10 +1159,17 @@ def add_evaluation_figure(
     elif isinstance(figure, go.Figure):
         figure_type = "plotly"
 
-    # Save figure in subdirectory with same hash as evaluation
-    eval_record.figure_dir.mkdir(exist_ok=True)
+    # Prepare file save operations
+    def save_files():
+        # Save figure in subdirectory with same hash as evaluation
+        eval_record.figure_dir.mkdir(exist_ok=True)
+        savefig(figure, figure_hash, eval_record.figure_dir, list(save_formats_set))
 
-    savefig(figure, figure_hash, eval_record.figure_dir, list(save_formats_set))
+    # Either defer or execute immediately
+    if deferred_ops is not None:
+        deferred_ops.append(save_files)
+    else:
+        save_files()
 
     # Update schema with new parameters
     if not skip_schema_update:
@@ -1120,11 +1202,13 @@ def add_evaluation_figure(
     existing_record = get_record(session, FigureRecord, hash=figure_hash)
     if existing_record is not None:
         session.delete(existing_record)
-        session.commit()
+        if commit:
+            session.commit()
         logger.debug(f"Replacing existing figure record with hash {figure_hash}")
 
     session.add(figure_record)
-    session.commit()
+    if commit:
+        session.commit()
     return figure_record
 
 
@@ -1349,6 +1433,7 @@ def record_to_hps_train(model_info: PyTree[ModelRecord]) -> TreeNamespace:
     IGNORE_COLS = {
         "id",
         "hash",
+        "hash_version",
         "expt_name",
         "created_at",
         "is_path_defunct",
@@ -1429,6 +1514,7 @@ def fill_missing_train_hps_from_record(
     IGNORE_COLS = {
         "id",
         "hash",
+        "hash_version",
         "expt_name",
         "created_at",
         "is_path_defunct",

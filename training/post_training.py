@@ -427,6 +427,7 @@ def save_training_figures(
     dump_formats: Sequence[str] = ("html",),
     dump_params: Optional[dict | PyTree] = None,
     run_number: Optional[int] = None,
+    deferred_ops: Optional[list] = None,
 ):
     # Save YAML once for this evaluation (if dumping)
     if dump_path is not None:
@@ -457,14 +458,15 @@ def save_training_figures(
             logger.error(f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True)
             raise e
 
-    train_history = eqx.tree_at(
-        lambda th: th.loss["goal_hit_in_window"]["pos"].value,
-        train_history,
-        (
-            train_history.loss["goal_hit_in_window"]["pos"].value
-            + hps.loss.goal_hit_in_window.softmin_tau * jnp.log(20)
-        ),
-    )
+    #! TEMP
+    # train_history = eqx.tree_at(
+    #     lambda th: th.loss["goal_hit_in_window"]["pos"].value,
+    #     train_history,
+    #     (
+    #         train_history.loss["goal_hit_in_window"]["pos"].value
+    #         + hps.loss.goal_hit_in_window.softmin_tau * jnp.log(20)
+    #     ),
+    # )
 
     # Specify the figure-generating functions and their arguments
     fig_specs: dict[str, FigFuncSpec] = dict(
@@ -519,6 +521,8 @@ def save_training_figures(
             plot_id,
             # TODO: let the user specify which formats to save
             save_formats=["png"],
+            commit=deferred_ops is None,  # Only commit if not deferring
+            deferred_ops=deferred_ops,
             **fig_parameters,
         )
 
@@ -691,6 +695,9 @@ def process_model_post_training(
     # ? descriptive of it being specific to post-training eval
     del hps.task.eval_n
 
+    # Collect all file operations to execute after database commit succeeds
+    deferred_ops = []
+
     try:
         # Save new model file with best parameters and get new record
         record_hyperparameters = {
@@ -707,40 +714,51 @@ def process_model_post_training(
             replicate_info=replicate_info,
             # Assume we want to keep the version info from training, not post-training
             version_info=model_record.version_info,
+            commit=False,
+            deferred_ops=deferred_ops,
         )
 
+        # ? Do we really need to make one of these, here? Or should training figures have their own table?
+        eval_info = add_evaluation(
+            session,
+            models=model_record,
+            eval_parameters=dict(
+                n_evals=N_TRIALS_VAL,
+                # n_std_exclude=n_std_exclude,  # Not relevant to the figures that are generated?
+            ),
+            expt_name=f"{model_record.expt_name}__post_training",
+            commit=False,
+        )
+
+        if save_figures:
+            # Save training figures
+            save_training_figures(
+                session,
+                eval_info,
+                train_histories,
+                replicate_info,
+                hps,
+                dump_path=dump_path,
+                dump_formats=dump_formats,
+                dump_params=dump_params,
+                run_number=run_number,
+                deferred_ops=deferred_ops,
+            )
+
+        # Execute all file operations now that database commit succeeded
+        for operation in deferred_ops:
+            operation()
+        logger.debug(f"File operations completed for model {model_record.hash}")
+        # Commit all database changes atomically
+        session.commit()
+        logger.debug(f"Database commit successful for model {model_record.hash}")
+
     except Exception as e:
-        # If anything fails, rollback and restore original record
+        # If anything fails, rollback database changes (no files were saved)
         session.rollback()
         logger.error(f"Failed to process model {model_record.hash}: {e}")
         raise
 
-    # ? Do we really need to make one of these, here? Or should training figures have their own table?
-    eval_info = add_evaluation(
-        session,
-        models=model_record,
-        eval_parameters=dict(
-            n_evals=N_TRIALS_VAL,
-            # n_std_exclude=n_std_exclude,  # Not relevant to the figures that are generated?
-        ),
-        expt_name=f"{model_record.expt_name}__post_training",
-    )
-
-    if save_figures:
-        # Save training figures
-        save_training_figures(
-            session,
-            eval_info,
-            train_histories,
-            replicate_info,
-            hps,
-            dump_path=dump_path,
-            dump_formats=dump_formats,
-            dump_params=dump_params,
-            run_number=run_number,
-        )
-
-    session.commit()
     logger.info(f"Post-training processing finished for model {model_record.hash}")
     return new_record
 

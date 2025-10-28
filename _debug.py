@@ -3,6 +3,7 @@
 import jax.tree as jt
 import plotly.graph_objects as go
 from jax_cookbook import is_module, is_none, is_type
+from jax_cookbook._array import partition_by_indices
 from jax_cookbook.tree import (
     first_leaf as fs,
 )
