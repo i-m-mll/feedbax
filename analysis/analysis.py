@@ -34,7 +34,15 @@ import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.task import AbstractTask
-from jax_cookbook import LDictConstructor, is_module, is_none, is_type, vmap_multi
+from jax_cookbook import (
+    LDictConstructor,
+    MaskedArray,
+    anyf,
+    is_module,
+    is_none,
+    is_type,
+    vmap_multi,
+)
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook._vmap import AxisSpec, expand_axes_spec
 from jax_cookbook.progress import piter
@@ -1180,7 +1188,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         figs_with_paths_flat = figs_flatten_with_paths(figs)
 
         # Construct this for reference to hps that should only vary with the task variant.
-        hps_0 = jt.leaves(hps.get(self.variant, hps), is_leaf=is_type(TreeNamespace))[0]
+        hps_0 = jt.leaves(getattr(hps, self.variant, hps), is_leaf=is_type(TreeNamespace))[0]
 
         ops_params_dict = self._extract_ops_info()
 
@@ -1703,9 +1711,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         the outer PyTree level, but for whatever reason this level is not already
         the outer level of our results PyTree.
         """
+        # Default: treat MaskedArray as a leaf during level rearrangement
+        is_leaf_ = is_type(MaskedArray) if is_leaf is None else anyf(is_leaf, is_type(MaskedArray))
 
         def transpose_dependency(dep_data, **kwargs):
-            return jtree.rearrange_uniform_tree(dep_data, spec, is_leaf=is_leaf)
+            return jtree.rearrange_uniform_tree(dep_data, spec, is_leaf=is_leaf_)
 
         spec_str = "-".join(
             str(...) if s is Ellipsis else _format_level_str(s)
@@ -1723,7 +1733,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             name="after_rearrange_levels",
             dep_name=dependency_name,
             fn=transpose_dependency,
-            params=dict(spec=spec, is_leaf=is_leaf),
+            params=dict(spec=spec, is_leaf=is_leaf_),
             metadata=final_metadata,
         )
 

@@ -531,7 +531,7 @@ def check_records_for_analysis(
             model_info = get_model_record(
                 db,
                 postprocessed=True,
-                exclude_defunct=False,
+                exclude_defunct=True,
                 explain_on_miss=True,
                 **params_query,
             )

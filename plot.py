@@ -969,3 +969,51 @@ def get_add_epoch_bounds_vlines(idxs: Sequence[int] | Mapping[int, dict], option
         return jt.map(_add_vline, figs, data.tasks["full"], is_leaf=is_type(go.Figure))
 
     return add_epoch_bounds_vlines
+
+
+def get_add_aligned_epoch_vline(epoch_idx: int, params: dict | None = None, optional: bool = True):
+    """Returns a function that adds a single vertical line at an aligned epoch boundary.
+
+    This is intended for use with data that has been aligned using `get_align_epoch_start`,
+    where all trials have the same epoch start index (the max of the original starts).
+    Instead of adding one vline per trial, this adds a single vline at the aligned position.
+
+    Args:
+        epoch_idx: The epoch index to mark (e.g., 2 for the third epoch).
+        params: Optional dict of line parameters to override defaults.
+        optional: If True, silently skip if no epoch boundaries are defined.
+                  If False, raise an error in that case.
+
+    Returns:
+        A function that accepts `figs, *, data` and adds the vline to all figures.
+    """
+    default_params = dict(
+        line_width=1,
+        line_dash="dash",
+        line_color="black",
+        opacity=0.2,
+    )
+
+    if params is not None:
+        default_params.update(params)
+
+    def add_aligned_epoch_vline(figs, *, data):
+        def _add_vline(fig, task):
+            trial_specs = task.validation_trials
+            if trial_specs.timeline.epoch_bounds is None:
+                if optional:
+                    return fig
+                else:
+                    raise ValueError("Task has no defined epoch boundaries for plotting")
+
+            # Get the max of the epoch starts across all trials
+            # (this is the aligned position when using default anchor="max")
+            epoch_starts = trial_specs.timeline.epoch_bounds[:, epoch_idx]
+            aligned_position = int(jnp.max(epoch_starts))
+
+            fig.add_vline(x=aligned_position, **default_params)
+            return fig
+
+        return jt.map(_add_vline, figs, data.tasks["full"], is_leaf=is_type(go.Figure))
+
+    return add_aligned_epoch_vline

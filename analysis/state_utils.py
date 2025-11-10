@@ -12,8 +12,8 @@ from equinox import filter_vmap as vmap
 from feedbax.intervene import AbstractIntervenor
 from feedbax.task import AbstractTask
 from jax import lax
-from jax_cookbook import is_module, is_type
-from jaxtyping import Array, Float, PRNGKeyArray
+from jax_cookbook import MaskedArray, is_module, is_type
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax_experiments.analysis.analysis import get_validation_trial_specs
 from feedbax_experiments.constants import REPLICATE_CRITERION
@@ -219,7 +219,7 @@ def get_align_epoch_start(
     """
     Returns a function align_epochs(vars, *, data) that:
       - Pads/aligns each replicate's time axis so the chosen epoch's start aligns across replicates.
-      - Returns a PyTree mirroring `vars`, where each leaf is a (aligned_array, mask_bool_array) tuple.
+      - Returns a PyTree mirroring `vars`, where each leaf is a MaskedArray instance.
     """
 
     def _norm_axis(ax: int, ndim: int) -> int:
@@ -309,13 +309,113 @@ def get_align_epoch_start(
                 masks = jnp.moveaxis(masks, 1, t_ax_after_rep0)
                 masks = jnp.moveaxis(masks, 0, tr_axis)
 
-                return aligned  #! , masks
+                return MaskedArray(aligned, masks)
 
             return jt.map(_align_vars, all_states_for_task)
 
-        return jt.map(_align_vars_by_task, data.tasks, vars, is_leaf=is_module)
+        result = jt.map(_align_vars_by_task, data.tasks, vars, is_leaf=is_module)
+        return result
 
     return align_epochs
+
+
+def trim_tails(
+    tree: PyTree[MaskedArray],
+    tolerance: float = 1.0,
+    time_axis: int = -2,
+    trial_axis: int = -3,
+) -> PyTree[MaskedArray]:
+    """Trim ragged ends of MaskedArray instances to prevent choppy aggregations.
+    
+    When trials have different valid lengths after alignment (e.g., from
+    `get_align_epoch_start`), aggregated plots show discontinuities as trials
+    drop out. This function truncates to a consistent endpoint across all trials.
+    
+    Args:
+        tree: PyTree of MaskedArray instances to trim
+        tolerance: Fraction of trials required to be valid at a timestep.
+            1.0 = truncate at the shortest trial's endpoint
+            0.9 = keep timesteps where ≥90% of trials remain valid
+        time_axis: Axis along which to truncate (default -2)
+        trial_axis: Axis representing trials/replicates (default -3)
+    
+    Returns:
+        PyTree of MaskedArray instances with trimmed data and masks
+    
+    Example:
+        >>> analysis = (
+        ...     Profiles()
+        ...     .after_transform(
+        ...         lambda vars, *, data: get_align_epoch_start(2)(vars, data=data),
+        ...         dependency_names="vars"
+        ...     )
+        ...     .after_transform(
+        ...         partial(trim_tails, tolerance=1.0),
+        ...         dependency_names="vars"
+        ...     )
+        ... )
+    """
+    # Collect all MaskedArray instances
+    masked_arrays = jt.leaves(tree, is_leaf=is_type(MaskedArray))
+    
+    if not masked_arrays:
+        return tree
+    
+    # Find minimum valid timesteps to keep across all arrays
+    min_valid_steps = float('inf')
+    
+    for ma in masked_arrays:
+        # Normalize axes to positive indices
+        ndim = ma.mask.ndim
+        time_ax = time_axis if time_axis >= 0 else ndim + time_axis
+        trial_ax = trial_axis if trial_axis >= 0 else ndim + trial_axis
+        
+        # Move trial and time axes to front: (n_trials, n_timesteps, ...)
+        mask_reordered = jnp.moveaxis(ma.mask, [trial_ax, time_ax], [0, 1])
+        
+        # Check validity per (trial, timestep) by reducing over other dimensions
+        axes_to_check = tuple(range(2, mask_reordered.ndim))
+        if axes_to_check:
+            # If a trial has ANY valid data at a timestep, count it as valid
+            valid_per_trial_time = jnp.any(mask_reordered, axis=axes_to_check)
+        else:
+            valid_per_trial_time = mask_reordered
+        # Shape: (n_trials, n_timesteps)
+        
+        # Count how many trials are valid at each timestep
+        n_trials = valid_per_trial_time.shape[0]
+        trials_valid_per_timestep = jnp.sum(valid_per_trial_time, axis=0)  # Shape: (n_timesteps,)
+        
+        # Apply tolerance threshold
+        threshold = n_trials * tolerance
+        
+        # Find last timestep where enough trials are valid
+        valid_timesteps = jnp.where(trials_valid_per_timestep >= threshold)[0]
+        if valid_timesteps.size > 0:
+            # +1 to convert from index to length (exclusive end)
+            last_valid_timestep = int(valid_timesteps[-1]) + 1
+            min_valid_steps = min(min_valid_steps, last_valid_timestep)
+    
+    # If no valid timesteps found or no truncation needed, return unchanged
+    if min_valid_steps == float('inf') or min_valid_steps == 0:
+        return tree
+    
+    # Truncate all MaskedArray instances to min_valid_steps
+    def _trim_ma(x):
+        if isinstance(x, MaskedArray):
+            time_ax = time_axis if time_axis >= 0 else x.data.ndim + time_axis
+            # Build slice tuple: all axes get :, time axis gets :min_valid_steps
+            slices = tuple(
+                slice(None, min_valid_steps) if i == time_ax else slice(None)
+                for i in range(x.data.ndim)
+            )
+            return MaskedArray(
+                data=x.data[slices],
+                mask=x.mask[slices],
+            )
+        return x
+    
+    return jt.map(_trim_ma, tree, is_leaf=is_type(MaskedArray))
 
 
 def get_symmetric_accel_decel_epochs(states):

@@ -201,22 +201,39 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
             k: v.values() if isinstance(v, LDict) else v for k, v in fig_params.items()
         }
 
+        # Import MaskedArray and anyf to handle masked arrays properly
+        from jax_cookbook import MaskedArray, anyf
+
         # Use dummy *args to convince the static checker that `FigFnParams` is satisfied
         # (the ParamSpec could specify more args, but we only use it for kwargs).
         def _make_fig(node_data: PyTree[Array], *_) -> go.Figure:
-            subplot_titles: list[str] = jt.leaves(jtree.labels(node_data))
+            # Treat MaskedArray as a leaf so we don't flatten it
+            # Both for labels and for extracting the actual data
+            labeled_tree = jtree.labels(node_data, is_leaf=is_type(MaskedArray))
+            subplot_titles: list[str] = jt.leaves(labeled_tree, is_leaf=is_type(MaskedArray))
             fig_params_ = fig_params | dict(subplot_titles=subplot_titles)
 
+            # Get leaves, treating MaskedArray as a leaf (don't flatten it)
+            leaves = jt.leaves(node_data, is_leaf=is_type(MaskedArray))
+            # Unwrap any MaskedArray instances to NaN-masked arrays
+            unwrapped_leaves = [
+                leaf.unwrap() if isinstance(leaf, MaskedArray) else leaf
+                for leaf in leaves
+            ]
+
             return self.fig_fn(
-                jt.leaves(node_data),
+                unwrapped_leaves,
                 *_,
                 **fig_params_,
             )
 
         # one_series can be a single array OR an LDict of leaves (arrays -> subplots)
         if self.subplot_level is not None:
-            input = ldict_level_to_bottom(self.subplot_level, input)
-            is_leaf = LDict.is_of(self.subplot_level)
+            # Pass is_leaf to treat MaskedArray as a leaf when moving levels
+            input = ldict_level_to_bottom(
+                self.subplot_level, input, is_leaf=is_type(MaskedArray)
+            )
+            is_leaf = anyf(LDict.is_of(self.subplot_level), is_type(MaskedArray))
         else:
             is_leaf = None
 

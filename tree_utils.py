@@ -190,16 +190,16 @@ def swap_adjacent_ldict_levels(
         assert node.label == outer_label  # guaranteed by caller
 
         buckets: dict[Any, dict[Any, Any]] = defaultdict(dict)
-        for outer_key, inner_ldict in node.items():
-            if not is_inner(inner_ldict):
-                if isinstance(inner_ldict, LDict):
-                    label = f"LDict.of({inner_ldict.label})"
+        for outer_key, inner_node in node.items():
+            if not is_inner(inner_node):
+                if isinstance(inner_node, LDict):
+                    label = f"LDict.of({inner_node.label})"
                 else:
-                    label = type(inner_ldict)
+                    label = type(inner_node).__name__
                 raise ValueError(
                     f"{outer_label} was expected to hold only {inner_label} children, found {label}"
                 )
-            for inner_key, leaf in inner_ldict.items():
+            for inner_key, leaf in inner_node.items():
                 buckets[inner_key][outer_key] = leaf
 
         # Re-wrap every bucket in an outer-label LDict,

@@ -260,6 +260,12 @@ def train_and_save(
     task_model_pair = training_module.setup_task_model_pair(hps, key=key_init)
     trainer = setup_trainer(hps)
 
+    # Get loss update function if training module provides one
+    if hasattr(training_module, 'get_loss_update_func'):
+        loss_update_func, loss_update_iterations = training_module.get_loss_update_func(hps)
+    else:
+        loss_update_func, loss_update_iterations = None, True
+
     ## Train and save all the models.
     with GracefulInterruptHandler(
         sensitive_msg="Keyboard interrupt caught: will exit cleanly after current model is trained...",
@@ -282,6 +288,8 @@ def train_and_save(
                 log_step=LOG_STEP,
                 save_model_parameters=hps.save_model_parameters,
                 state_reset_iterations=hps.state_reset_iterations,
+                loss_update_func=loss_update_func,
+                loss_update_iterations=loss_update_iterations,
                 # disable_tqdm=True,
             )
             with db_session(autocommit=False) as db:
