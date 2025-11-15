@@ -262,9 +262,9 @@ def train_and_save(
 
     # Get loss update function if training module provides one
     if hasattr(training_module, 'get_loss_update_func'):
-        loss_update_func, loss_update_iterations = training_module.get_loss_update_func(hps)
+        loss_update_func, loss_update_start_iteration = training_module.get_loss_update_func(hps)
     else:
-        loss_update_func, loss_update_iterations = None, True
+        loss_update_func, loss_update_start_iteration = None, 0
 
     ## Train and save all the models.
     with GracefulInterruptHandler(
@@ -289,7 +289,7 @@ def train_and_save(
                 save_model_parameters=hps.save_model_parameters,
                 state_reset_iterations=hps.state_reset_iterations,
                 loss_update_func=loss_update_func,
-                loss_update_iterations=loss_update_iterations,
+                loss_update_start_iteration=loss_update_start_iteration,
                 # disable_tqdm=True,
             )
             with db_session(autocommit=False) as db:

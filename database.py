@@ -211,6 +211,17 @@ class FigureRecord(RecordBase):
     pert__std: Mapped[float] = mapped_column(nullable=True)
     # pert__stds: Mapped[Sequence[float]] = mapped_column(nullable=True)
 
+    def get_path(self, format: str = "png") -> Path:
+        """Get the file path for this figure in the specified format.
+
+        Args:
+            format: File format extension (e.g., "png", "json")
+
+        Returns:
+            Path to the figure file
+        """
+        return PATHS.figures / self.evaluation_hash / f"{self.hash}.{format}"
+
 
 TABLE_NAME_TO_MODEL = {
     mapper.class_.__tablename__: mapper.class_ for mapper in RecordBase.registry.mappers

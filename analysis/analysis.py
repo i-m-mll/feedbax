@@ -1188,7 +1188,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         figs_with_paths_flat = figs_flatten_with_paths(figs)
 
         # Construct this for reference to hps that should only vary with the task variant.
-        hps_0 = jt.leaves(getattr(hps, self.variant, hps), is_leaf=is_type(TreeNamespace))[0]
+        hps_0 = jt.leaves(hps.get(self.variant, hps), is_leaf=is_type(TreeNamespace))[0]
 
         ops_params_dict = self._extract_ops_info()
 
