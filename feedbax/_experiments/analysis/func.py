@@ -9,13 +9,13 @@ from jax_cookbook import map_rich
 from jax_cookbook.misc import construct_tuple_like
 from jaxtyping import PyTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     InputOf,
     SinglePort,
 )
-from feedbax_experiments.types import AnalysisInputData
+from feedbax._experiments.types import AnalysisInputData
 
 
 class ApplyFns(AbstractAnalysis[SinglePort[PyTree[Any]]]):

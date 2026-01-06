@@ -14,16 +14,16 @@ from feedbax.types import SeqOfT
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 
-from feedbax_experiments.analysis.aligned import DEFAULT_VARSET, get_varset_labels
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, NoPorts
-from feedbax_experiments.analysis.state_utils import get_pos_endpoints
-from feedbax_experiments.colors import COLORSCALES
-from feedbax_experiments.config import PLOTLY_CONFIG
-from feedbax_experiments.constants import REPLICATE_CRITERION
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.plot import add_endpoint_traces
-from feedbax_experiments.plot_utils import get_label_str
-from feedbax_experiments.types import AnalysisInputData, TreeNamespace, VarSpec
+from feedbax._experiments.analysis.aligned import DEFAULT_VARSET, get_varset_labels
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, NoPorts
+from feedbax._experiments.analysis.state_utils import get_pos_endpoints
+from feedbax._experiments.colors import COLORSCALES
+from feedbax._experiments.config import PLOTLY_CONFIG
+from feedbax._experiments.constants import REPLICATE_CRITERION
+from feedbax._experiments.misc import deep_merge
+from feedbax._experiments.plot import add_endpoint_traces
+from feedbax._experiments.plot_utils import get_label_str
+from feedbax._experiments.types import AnalysisInputData, TreeNamespace, VarSpec
 
 MEAN_LIGHTEN_FACTOR = PLOTLY_CONFIG.mean_lighten_factor
 

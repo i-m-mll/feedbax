@@ -24,16 +24,16 @@ from rich.logging import RichHandler
 from rich.progress import Progress
 from sqlalchemy.orm import Session
 
-from feedbax_experiments.analysis.aligned import (
+from feedbax._experiments.analysis.aligned import (
     get_aligned_vars,
     get_reach_origins_directions,
 )
-from feedbax_experiments.analysis.state_utils import (
+from feedbax._experiments.analysis.state_utils import (
     get_pos_endpoints,
     vmap_eval_ensemble,
 )
-from feedbax_experiments.config.yaml import get_yaml_loader
-from feedbax_experiments.database import (
+from feedbax._experiments.config.yaml import get_yaml_loader
+from feedbax._experiments.database import (
     MODEL_RECORD_BASE_ATTRS,
     EvaluationRecord,
     ModelRecord,
@@ -45,14 +45,14 @@ from feedbax_experiments.database import (
     query_model_records,
     save_model_and_add_record,
 )
-from feedbax_experiments.misc import log_version_info
-from feedbax_experiments.plot_utils import savefig
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.setup_utils import (
+from feedbax._experiments.misc import log_version_info
+from feedbax._experiments.plot_utils import savefig
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.setup_utils import (
     setup_models_only,
     setup_tasks_only,
 )
-from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace, namespace_to_dict
+from feedbax._experiments.types import LDict, TaskModelPair, TreeNamespace, namespace_to_dict
 
 logger = logging.getLogger(__name__)
 

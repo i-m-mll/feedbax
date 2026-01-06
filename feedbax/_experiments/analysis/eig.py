@@ -10,8 +10,8 @@ from equinox import field
 from jax_cookbook import is_type
 from jaxtyping import Array, Float, PyTree
 
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
-from feedbax_experiments.types import AnalysisInputData, LDict, Polar, TreeNamespace
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
+from feedbax._experiments.types import AnalysisInputData, LDict, Polar, TreeNamespace
 
 DecompResults = namedtuple("DecompResults", ["vals", "vecs_l", "vecs_r"])
 

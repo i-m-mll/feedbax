@@ -11,12 +11,12 @@ from jax_cookbook.tree import (
     first_leaf_shape as fsh,
 )
 
-from feedbax_experiments.misc import location_inspect as loc
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.misc import location_inspect as loc
+from feedbax._experiments.tree_utils import (
     ldict_verbose_label_fn,
     tree_level_labels,
 )
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.tree_utils import (
     pp2 as pp,
 )
 

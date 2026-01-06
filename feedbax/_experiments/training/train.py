@@ -27,22 +27,22 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from sqlalchemy.orm import Session
 
 import feedbax_experiments
-from feedbax_experiments.database import (
+from feedbax._experiments.database import (
     ModelRecord,
     db_session,
     get_db_session,
     get_record,
     save_model_and_add_record,
 )
-from feedbax_experiments.hyperparams import config_to_hps, flatten_hps
-from feedbax_experiments.misc import (
+from feedbax._experiments.hyperparams import config_to_hps, flatten_hps
+from feedbax._experiments.misc import (
     GracefulInterruptHandler,
     GracefulStopRequested,
     log_version_info,
 )
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.tree_utils import pp
-from feedbax_experiments.types import TaskModelPair, TreeNamespace, namespace_to_dict
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.tree_utils import pp
+from feedbax._experiments.types import TaskModelPair, TreeNamespace, namespace_to_dict
 
 from .loss import get_readout_norm_loss
 from .post_training import process_model_post_training

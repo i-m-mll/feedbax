@@ -17,9 +17,9 @@ from jax_cookbook import is_module, is_none
 from jax_cookbook.misc import construct_tuple_like
 from jaxtyping import Array, PyTree
 
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, InputOf
-from feedbax_experiments.analysis.func import CallerPorts, make_argwise_functional
-from feedbax_experiments.types import AnalysisInputData
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, InputOf
+from feedbax._experiments.analysis.func import CallerPorts, make_argwise_functional
+from feedbax._experiments.types import AnalysisInputData
 
 _Tuple = jtree.make_named_tuple_subclass("Tuple")
 

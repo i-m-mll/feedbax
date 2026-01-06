@@ -11,8 +11,8 @@ import plotly.colors as plc
 from jax_cookbook import is_type
 from jaxtyping import PyTree
 
-from feedbax_experiments.config import PLOTLY_CONFIG
-from feedbax_experiments.types import LDict, TreeNamespace
+from feedbax._experiments.config import PLOTLY_CONFIG
+from feedbax._experiments.types import LDict, TreeNamespace
 
 logger = logging.getLogger(__name__)
 

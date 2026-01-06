@@ -11,11 +11,11 @@ from feedbax.bodies import SimpleFeedbackState
 from jax_cookbook import is_type
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, NoPorts
-from feedbax_experiments.analysis.pca import PCA
-from feedbax_experiments.constants import REPLICATE_CRITERION
-from feedbax_experiments.plot_utils import calculate_array_minmax, get_label_str
-from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, NoPorts
+from feedbax._experiments.analysis.pca import PCA
+from feedbax._experiments.constants import REPLICATE_CRITERION
+from feedbax._experiments.plot_utils import calculate_array_minmax, get_label_str
+from feedbax._experiments.types import AnalysisInputData, LDict, TreeNamespace
 
 
 def activity_sample_units(

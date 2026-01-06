@@ -20,20 +20,20 @@ import jax.random as jr
 import plotly.io as pio
 from jax_cookbook.progress import progress_session
 
-from feedbax_experiments.analysis.execution import (
+from feedbax._experiments.analysis.execution import (
     FigDumpManager,
     check_records_for_analysis,
     run_analysis_module,
 )
-from feedbax_experiments.config import (
+from feedbax._experiments.config import (
     PATHS,
     PLOTLY_CONFIG,
     PRNG_CONFIG,
     load_batch_config,
     load_config,
 )
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.misc import deep_merge
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(os.path.basename(__file__))
 

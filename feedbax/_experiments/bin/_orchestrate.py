@@ -5,8 +5,8 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 from jax_cookbook.misc import deep_merge
 
-from feedbax_experiments.config.batch import load_batch_config
-from feedbax_experiments.config.config import load_config
+from feedbax._experiments.config.batch import load_batch_config
+from feedbax._experiments.config.config import load_config
 
 # Called once per *module* (outer loop). Returns an opaque module_ctx passed to later hooks.
 BeforeModule = Callable[[str, Any], Any]  # (module_key, base_config) -> module_ctx

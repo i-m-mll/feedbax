@@ -1,8 +1,8 @@
 from typing import Optional
 
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.plugins.registry import ExperimentRegistry
-from feedbax_experiments.types import TreeNamespace
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.plugins.registry import ExperimentRegistry
+from feedbax._experiments.types import TreeNamespace
 
 from .batch import load_batch_config
 from .config import (
@@ -33,7 +33,7 @@ def configure_globals_for_package(
     package_name: str, registry: Optional[ExperimentRegistry]
 ) -> None:
     """Load package-scoped global resources for `package_name` with precedence:
-    package override -> user config dir -> base feedbax_experiments.config."""
+    package override -> user config dir -> base feedbax._experiments.config."""
     # Using your existing load_config(..., registry=...) behavior:
     constants = load_config_as_ns(f"{package_name}/constants", registry=registry)
     logging_ns = _setup_logging(load_config_as_ns(f"{package_name}/logging", registry=registry))
@@ -55,7 +55,7 @@ if single_package_name is not None:
     configure_globals_for_package(single_package_name, EXPERIMENT_REGISTRY)
 else:
     # Default to base config if no single package is set
-    configure_globals_for_package("feedbax_experiments", None)
+    configure_globals_for_package("feedbax._experiments", None)
 
 
 __all__ = [

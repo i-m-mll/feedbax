@@ -15,10 +15,10 @@ from jax import lax
 from jax_cookbook import MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax_experiments.analysis.analysis import get_validation_trial_specs
-from feedbax_experiments.constants import REPLICATE_CRITERION
-from feedbax_experiments.misc import dynamic_slice_with_padding
-from feedbax_experiments.types import LDict, TreeNamespace
+from feedbax._experiments.analysis.analysis import get_validation_trial_specs
+from feedbax._experiments.constants import REPLICATE_CRITERION
+from feedbax._experiments.misc import dynamic_slice_with_padding
+from feedbax._experiments.types import LDict, TreeNamespace
 
 
 def angle_between_vectors(v2, v1):

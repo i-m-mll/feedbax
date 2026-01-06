@@ -19,17 +19,17 @@ from jax_cookbook.misc import deep_merge
 from jax_cookbook.progress import map_rich
 from jaxtyping import Array, PyTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     PortsType,
     SinglePort,
 )
-from feedbax_experiments.config import PLOTLY_CONFIG
-from feedbax_experiments.hyperparams import flat_key_to_where_fn
-from feedbax_experiments.plot import set_axes_bounds_equal
-from feedbax_experiments.plot_utils import get_label_str
-from feedbax_experiments.tree_utils import ldict_level_to_bottom
-from feedbax_experiments.types import AnalysisInputData, LDict
+from feedbax._experiments.config import PLOTLY_CONFIG
+from feedbax._experiments.hyperparams import flat_key_to_where_fn
+from feedbax._experiments.plot import set_axes_bounds_equal
+from feedbax._experiments.plot_utils import get_label_str
+from feedbax._experiments.tree_utils import ldict_level_to_bottom
+from feedbax._experiments.types import AnalysisInputData, LDict
 
 logger = logging.getLogger(__name__)
 

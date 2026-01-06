@@ -32,7 +32,7 @@ from jax_cookbook import is_type
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jaxtyping import Array, ArrayLike, Float, Int
 
-from feedbax_experiments.config.yaml import get_yaml_loader
+from feedbax._experiments.config.yaml import get_yaml_loader
 
 # logging.basicConfig(
 #     format='(%(name)-20s) %(message)s',

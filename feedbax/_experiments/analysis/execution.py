@@ -28,22 +28,22 @@ from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
 import feedbax_experiments
-from feedbax_experiments.analysis._dependencies import compute_dependency_results
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis._dependencies import compute_dependency_results
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     get_validation_trial_specs,
     logger,
 )
-from feedbax_experiments.colors import COMMON_COLOR_SPECS, setup_colors
+from feedbax._experiments.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
-from feedbax_experiments.config import PATHS
-from feedbax_experiments.config.yaml import get_yaml_loader
-from feedbax_experiments.constants import REPLICATE_CRITERION
+from feedbax._experiments.config import PATHS
+from feedbax._experiments.config.yaml import get_yaml_loader
+from feedbax._experiments.constants import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
 # Added utilities for unflattening record hyperparameters into namespaces
-from feedbax_experiments.database import (
+from feedbax._experiments.database import (
     EvaluationRecord,
     ModelRecord,
     add_evaluation,
@@ -55,18 +55,18 @@ from feedbax_experiments.database import (
 )
 
 # `cast_hps` is needed to convert dictionaries (e.g. `where`) back into the expected objects
-from feedbax_experiments.hyperparams import (
+from feedbax._experiments.hyperparams import (
     config_to_hps,
     flatten_hps,
     use_train_hps_when_none,
 )
-from feedbax_experiments.misc import delete_all_files_in_dir, log_version_info
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.plugins.registry import ExperimentRegistry
-from feedbax_experiments.setup_utils import query_and_load_model
-from feedbax_experiments.training.post_training import process_model_post_training
-from feedbax_experiments.tree_utils import tree_level_labels
-from feedbax_experiments.types import (
+from feedbax._experiments.misc import delete_all_files_in_dir, log_version_info
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.plugins.registry import ExperimentRegistry
+from feedbax._experiments.setup_utils import query_and_load_model
+from feedbax._experiments.training.post_training import process_model_post_training
+from feedbax._experiments.tree_utils import tree_level_labels
+from feedbax._experiments.types import (
     AnalysisInputData,
     LDict,
     TreeNamespace,

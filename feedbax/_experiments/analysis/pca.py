@@ -13,18 +13,18 @@ from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 from sklearn.decomposition import PCA
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     InputOf,
     NoPorts,
 )
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.tree_utils import (
     ldict_level_to_bottom,
     rearrange_ldict_levels,
     tree_level_labels,
 )
-from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
+from feedbax._experiments.types import AnalysisInputData, LDict, TreeNamespace
 
 
 class PCAResults(Module):

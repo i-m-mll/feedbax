@@ -15,10 +15,10 @@ from unittest.mock import DEFAULT
 import jax.tree as jt
 from ruamel.yaml import YAML
 
-from feedbax_experiments.config.yaml import get_yaml_loader
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.plugins.registry import ExperimentRegistry
-from feedbax_experiments.types import TreeNamespace, dict_to_namespace
+from feedbax._experiments.config.yaml import get_yaml_loader
+from feedbax._experiments.misc import deep_merge
+from feedbax._experiments.plugins.registry import ExperimentRegistry
+from feedbax._experiments.types import TreeNamespace, dict_to_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ def _load_defaults_hierarchy(
     """Load hierarchical default configs from root to parent directory.
 
     For name_parts=['part1', 'plant_perts'] and config_type='analysis':
-    - Try to load feedbax_experiments.config.modules.analysis/default.yml
-    - Try to load feedbax_experiments.config.modules.analysis.part1/default.yml
+    - Try to load feedbax._experiments.config.modules.analysis/default.yml
+    - Try to load feedbax._experiments.config.modules.analysis.part1/default.yml
     - Return merged result
     """
     base_subpackage = f"{resource_root}.modules.{config_type}"
@@ -114,7 +114,7 @@ def load_config(
     Precedence (globals):
       1) package override:   {pkg}.config/{resource}.yml  (if registry provided / determined)
       2) user config dir:    {user_config_dir}/{resource}.yml
-      3) base fallback:      feedbax_experiments.config/{resource}.yml
+      3) base fallback:      feedbax._experiments.config/{resource}.yml
 
     Module configs (training/analysis):
       - No user-dir lookup.
@@ -141,7 +141,7 @@ def load_config(
                         f"`{user_config_dir}`. Falling back to base resources."
                     )
 
-            data = _maybe_open_yaml("feedbax_experiments.config", resource_name)
+            data = _maybe_open_yaml("feedbax._experiments.config", resource_name)
             if data is None:
                 raise ValueError(
                     f"Global config '{resource_name}.yml' not found in base package resources."
@@ -177,13 +177,13 @@ def load_config(
                 with open(upath, "r", encoding="utf-8") as f:
                     return yaml.load(f) or {}
 
-        data = _maybe_open_yaml("feedbax_experiments.config", resource_name)
+        data = _maybe_open_yaml("feedbax._experiments.config", resource_name)
         if data is not None:
             return data
 
         raise ValueError(
             f"Global config '{resource_name}.yml' not found in {resource_root}, "
-            f"user config dir, or feedbax_experiments.config."
+            f"user config dir, or feedbax._experiments.config."
         )
 
     # -------- MODULE CONFIGS (training/analysis) --------
@@ -192,8 +192,8 @@ def load_config(
         package_name, resource_root = registry.get_config_resource_root(name, domain=config_type)
     else:
         # Fallback: base package only (not recommended; you generally want a registry here)
-        package_name = "feedbax_experiments"
-        resource_root = "feedbax_experiments.config"
+        package_name = "feedbax._experiments"
+        resource_root = "feedbax._experiments.config"
 
     # Derive the relative (dotted) module path (parents + leaf) from `name`
     if "/" in name:

@@ -24,24 +24,24 @@ from jax_cookbook import is_module, is_type
 from jaxtyping import PRNGKeyArray, PyTree
 from sqlalchemy.orm import Session
 
-from feedbax_experiments.config import PATHS
-from feedbax_experiments.constants import (
+from feedbax._experiments.config import PATHS
+from feedbax._experiments.constants import (
     TASK_EVAL_PARAMS,
 )
-from feedbax_experiments.database import (
+from feedbax._experiments.database import (
     get_model_record,
     load_tree_with_hps,
     load_tree_without_hps,
     record_to_hps_train,
 )
-from feedbax_experiments.misc import (
+from feedbax._experiments.misc import (
     take_model,
 )
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.tree_utils import (
     at_path,
     subdict,
 )
-from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace
+from feedbax._experiments.types import LDict, TaskModelPair, TreeNamespace
 
 
 def get_latest_matching_file(directory: str, pattern: str) -> Optional[str]:

@@ -49,13 +49,13 @@ def setup(
 
     # Now that we're capturing logs, import other package components
     if warn_dedup_default:
-        from feedbax_experiments._warnings import enable_warning_dedup
+        from feedbax._experiments._warnings import enable_warning_dedup
 
         enable_warning_dedup()
 
-    from feedbax_experiments._logging import enable_logging_handlers
-    from feedbax_experiments.config import configure_globals_for_package
-    from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+    from feedbax._experiments._logging import enable_logging_handlers
+    from feedbax._experiments.config import configure_globals_for_package
+    from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
 
     # Infer package that will be run from CLI args, and load its globals
     args_ns = _early_parse(argv)

@@ -30,7 +30,7 @@ from jax_cookbook.progress import piter, progress_piter
 from jax_cookbook.tree import collect_aux_data
 from jaxtyping import PyTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     ExpandTo,
     LiteralInput,
@@ -40,8 +40,8 @@ from feedbax_experiments.analysis.analysis import (
     _FinalOp,
     _format_dict_of_params,
 )
-from feedbax_experiments.misc import get_md5_hexdigest
-from feedbax_experiments.types import AnalysisInputData
+from feedbax._experiments.misc import get_md5_hexdigest
+from feedbax._experiments.types import AnalysisInputData
 
 logger = logging.getLogger(__name__)
 

@@ -12,11 +12,11 @@ from equinox import Module
 from jax_cookbook import is_type
 from jaxtyping import Array, PyTree
 
-from feedbax_experiments.analysis.aligned import AlignedVars, get_varset_labels
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
-from feedbax_experiments.plot_utils import get_label_str
-from feedbax_experiments.tree_utils import move_ldict_level_above, tree_level_labels
-from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
+from feedbax._experiments.analysis.aligned import AlignedVars, get_varset_labels
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
+from feedbax._experiments.plot_utils import get_label_str
+from feedbax._experiments.tree_utils import move_ldict_level_above, tree_level_labels
+from feedbax._experiments.types import AnalysisInputData, LDict, TreeNamespace
 
 
 class ProfilesPorts(AbstractAnalysisPorts):

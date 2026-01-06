@@ -49,10 +49,10 @@ from jax_cookbook.progress import piter
 from jaxtyping import Array, ArrayLike, PyTree
 from sqlalchemy.orm import Session
 
-from feedbax_experiments.config import PATHS, STRINGS
-from feedbax_experiments.config.yaml import get_yaml_loader
-from feedbax_experiments.database import EvaluationRecord, add_evaluation_figure
-from feedbax_experiments.misc import (
+from feedbax._experiments.config import PATHS, STRINGS
+from feedbax._experiments.config.yaml import get_yaml_loader
+from feedbax._experiments.database import EvaluationRecord, add_evaluation_figure
+from feedbax._experiments.misc import (
     camel_to_snake,
     deep_merge,
     field_names,
@@ -62,8 +62,8 @@ from feedbax_experiments.misc import (
     get_origin_type,
     is_json_serializable,
 )
-from feedbax_experiments.plot_utils import figs_flatten_with_paths, savefig
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.plot_utils import figs_flatten_with_paths, savefig
+from feedbax._experiments.tree_utils import (
     DoNotHashTree,
     _align_trees_to_structure,
     _hash_pytree,
@@ -74,7 +74,7 @@ from feedbax_experiments.tree_utils import (
     subdict,
     tree_level_labels,
 )
-from feedbax_experiments.types import (
+from feedbax._experiments.types import (
     AnalysisInputData,
     LDict,
     TreeNamespace,

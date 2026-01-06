@@ -19,17 +19,17 @@ from jax_cookbook import is_module
 from jax_cookbook.tree import first
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     Data,
     InputOf,
 )
-from feedbax_experiments.analysis.fps import get_simple_reach_first_fps
-from feedbax_experiments.analysis.pca import StatesPCA
-from feedbax_experiments.analysis.state_utils import exclude_bad_replicates
-from feedbax_experiments.tree_utils import first
-from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
+from feedbax._experiments.analysis.fps import get_simple_reach_first_fps
+from feedbax._experiments.analysis.pca import StatesPCA
+from feedbax._experiments.analysis.state_utils import exclude_bad_replicates
+from feedbax._experiments.tree_utils import first
+from feedbax._experiments.types import AnalysisInputData, LDict, TreeNamespace
 
 # ########################################################################## #
 # Helper functions from the notebook
@@ -176,7 +176,7 @@ class ReachFPsInPCSpace(AbstractAnalysis[ReachFPsInPCSpacePorts]):
         **kwargs,
     ):
         # Get the best replicate for visualization
-        from feedbax_experiments.analysis.state_utils import get_best_replicate
+        from feedbax._experiments.analysis.state_utils import get_best_replicate
 
         fps = jt.map(
             lambda fps_dict: jtree.stack(list(fps_dict.values())),
@@ -312,7 +312,7 @@ class ReachTrajectoriesInPCSpace(AbstractAnalysis[ReachTrajectoriesInPCSpacePort
         hps_common: TreeNamespace,
         **kwargs,
     ):
-        from feedbax_experiments.analysis.state_utils import get_best_replicate
+        from feedbax._experiments.analysis.state_utils import get_best_replicate
 
         fps = jt.map(
             lambda fps_dict: jtree.stack(list(fps_dict.values())),
@@ -417,7 +417,7 @@ class ReachDirectionTrajectories(AbstractAnalysis[ReachDirectionTrajectoriesPort
         hps_common: TreeNamespace,
         **kwargs,
     ):
-        from feedbax_experiments.analysis.state_utils import get_best_replicate
+        from feedbax._experiments.analysis.state_utils import get_best_replicate
 
         fps = jt.map(
             lambda fps_dict: jtree.stack(list(fps_dict.values())),

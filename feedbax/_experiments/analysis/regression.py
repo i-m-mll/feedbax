@@ -15,10 +15,10 @@ from feedbax.loss import nan_safe_mse
 from feedbax.train import SimpleTrainer, grad_wrap_simple_loss_func
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax_experiments.analysis.aligned import AlignedVars
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
-from feedbax_experiments.tree_utils import ldict_level_keys, tree_level_labels
-from feedbax_experiments.types import AnalysisInputData, LDictTree
+from feedbax._experiments.analysis.aligned import AlignedVars
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
+from feedbax._experiments.tree_utils import ldict_level_keys, tree_level_labels
+from feedbax._experiments.types import AnalysisInputData, LDictTree
 
 
 def prepare_interaction_indices(

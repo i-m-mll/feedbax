@@ -6,19 +6,19 @@ import jax.tree as jt
 import numpy as np
 from jaxtyping import PyTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     InputOf,
 )
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.plot import get_violins
-from feedbax_experiments.plot_utils import get_label_str
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.misc import deep_merge
+from feedbax._experiments.plot import get_violins
+from feedbax._experiments.plot_utils import get_label_str
+from feedbax._experiments.tree_utils import (
     ldict_label_only_fn,
     tree_level_types,
 )
-from feedbax_experiments.types import AnalysisInputData, LDict, LDictConstructor, TreeNamespace
+from feedbax._experiments.types import AnalysisInputData, LDict, LDictConstructor, TreeNamespace
 
 #! TODO
 # measure_ranges = {

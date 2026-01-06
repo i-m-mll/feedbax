@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from feedbax_experiments.config import PATHS
+from feedbax._experiments.config import PATHS
 
 logger = logging.getLogger(__name__)
 

@@ -14,14 +14,14 @@ from jax_cookbook.misc import crop_to_shortest
 from jaxtyping import Array
 from sklearn.neighbors import KDTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     Data,
     InputOf,
 )
-from feedbax_experiments.tree_utils import getitem_at_level
-from feedbax_experiments.types import AnalysisInputData
+from feedbax._experiments.tree_utils import getitem_at_level
+from feedbax._experiments.types import AnalysisInputData
 
 
 class TanglingPorts(AbstractAnalysisPorts):

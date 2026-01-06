@@ -54,7 +54,7 @@ def _call_module_main(mod: ModuleType, argv: Sequence[str]) -> int:
 
 def _dispatch(cmd: str, sub_argv: Sequence[str]) -> int:
     # Try candidates in order until one imports successfully.
-    mod = importlib.import_module("." + cmd, package="feedbax_experiments.bin")
+    mod = importlib.import_module("." + cmd, package="feedbax._experiments.bin")
     if mod is not None:
         return _call_module_main(mod, sub_argv)
     raise SystemExit(f"Could not locate a module for subcommand '{cmd}'. ")

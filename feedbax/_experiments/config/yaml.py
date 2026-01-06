@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML, nodes
 
-from feedbax_experiments.types import Direction, LDict, ResponseVar
+from feedbax._experiments.types import Direction, LDict, ResponseVar
 
 
 class _YamlLiteral:

@@ -4,7 +4,7 @@
 import argparse
 import logging
 
-from feedbax_experiments.dashboard.app import create_app
+from feedbax._experiments.dashboard.app import create_app
 
 logger = logging.getLogger(__name__)
 

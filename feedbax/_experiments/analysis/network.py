@@ -14,11 +14,11 @@ from feedbax.train import SimpleTrainer, grad_wrap_simple_loss_func
 from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax_experiments.analysis.analysis import AbstractAnalysis, NoPorts
-from feedbax_experiments.analysis.state_utils import output_corr
-from feedbax_experiments.misc import center_and_rescale, ravel_except_last
-from feedbax_experiments.plot import get_violins
-from feedbax_experiments.types import AnalysisInputData, LDict, TreeNamespace
+from feedbax._experiments.analysis.analysis import AbstractAnalysis, NoPorts
+from feedbax._experiments.analysis.state_utils import output_corr
+from feedbax._experiments.misc import center_and_rescale, ravel_except_last
+from feedbax._experiments.plot import get_violins
+from feedbax._experiments.types import AnalysisInputData, LDict, TreeNamespace
 
 
 class OutputWeightCorrelation(AbstractAnalysis[NoPorts]):

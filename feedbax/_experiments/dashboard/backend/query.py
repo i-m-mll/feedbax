@@ -8,7 +8,7 @@ from typing import Any, Literal, Optional
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from feedbax_experiments.database import EvaluationRecord, FigureRecord
+from feedbax._experiments.database import EvaluationRecord, FigureRecord
 
 logger = logging.getLogger(__name__)
 

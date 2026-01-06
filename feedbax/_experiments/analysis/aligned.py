@@ -19,22 +19,22 @@ from jax_cookbook import (
 from jax_cookbook._func import compose_
 from jaxtyping import Array, Float, PyTree
 
-from feedbax_experiments.analysis.analysis import (
+from feedbax._experiments.analysis.analysis import (
     AbstractAnalysis,
     NoPorts,
     get_validation_trial_specs,
 )
-from feedbax_experiments.analysis.plot import ScatterPlots
-from feedbax_experiments.analysis.state_utils import (
+from feedbax._experiments.analysis.plot import ScatterPlots
+from feedbax._experiments.analysis.state_utils import (
     get_align_epoch_start,
     get_pos_endpoints,
     get_trial_start_positions,
     unsqueezer,
 )
-from feedbax_experiments.constants import EVAL_REACH_LENGTH
-from feedbax_experiments.misc import _OptionalCallableFieldConverter
-from feedbax_experiments.plot import add_endpoint_traces
-from feedbax_experiments.types import (
+from feedbax._experiments.constants import EVAL_REACH_LENGTH
+from feedbax._experiments.misc import _OptionalCallableFieldConverter
+from feedbax._experiments.plot import add_endpoint_traces
+from feedbax._experiments.types import (
     AnalysisInputData,
     Direction,
     Labels,

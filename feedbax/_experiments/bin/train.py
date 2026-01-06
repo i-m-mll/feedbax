@@ -23,23 +23,23 @@ from jax_cookbook import is_type
 from jax_cookbook.progress import piter
 
 import feedbax_experiments
-from feedbax_experiments.config import (
+from feedbax._experiments.config import (
     PATHS,
     PRNG_CONFIG,
     load_batch_config,
     load_config,
 )
-from feedbax_experiments.database import ModelRecord, db_session
-from feedbax_experiments.misc import deep_merge, discard, log_version_info
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.training.post_training import process_model_post_training
-from feedbax_experiments.training.train import (
+from feedbax._experiments.database import ModelRecord, db_session
+from feedbax._experiments.misc import deep_merge, discard, log_version_info
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.training.post_training import process_model_post_training
+from feedbax._experiments.training.train import (
     prepare_to_train,
     train_and_save,
     train_and_save_from_config,
 )
-from feedbax_experiments.tree_utils import filter_varying_leaves
-from feedbax_experiments.types import TreeNamespace
+from feedbax._experiments.tree_utils import filter_varying_leaves
+from feedbax._experiments.types import TreeNamespace
 
 logger = logging.getLogger(os.path.basename(__file__))
 

@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
 )
 from ruamel.yaml import YAML
 
-from feedbax_experiments.misc import get_md5_hexdigest
+from feedbax._experiments.misc import get_md5_hexdigest
 
 # Minimal HTML template
 TEMPLATE = """

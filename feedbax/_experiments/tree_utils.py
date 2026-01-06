@@ -24,9 +24,9 @@ from jax_cookbook import anyf, hash_callable, is_module, is_none, is_type
 from jax_cookbook._func import falsef
 from jaxtyping import Array, ArrayLike, PyTree, PyTreeDef
 
-from feedbax_experiments.config import STRINGS
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.types import LDict, LDictConstructor, TreeNamespace, _Wrapped
+from feedbax._experiments.config import STRINGS
+from feedbax._experiments.misc import deep_merge
+from feedbax._experiments.types import LDict, LDictConstructor, TreeNamespace, _Wrapped
 
 T = TypeVar("T")
 M = TypeVar("M", bound=Mapping)

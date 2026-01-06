@@ -20,8 +20,8 @@ import pyperclip as clip
 from IPython.display import HTML, display
 from jax_cookbook import is_type
 
-from feedbax_experiments.config import STRINGS
-from feedbax_experiments.misc import filename_join, with_caller_logger
+from feedbax._experiments.config import STRINGS
+from feedbax._experiments.misc import filename_join, with_caller_logger
 
 pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
 

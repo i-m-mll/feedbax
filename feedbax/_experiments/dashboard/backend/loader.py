@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-from feedbax_experiments.config import PATHS
-from feedbax_experiments.database import FigureRecord
+from feedbax._experiments.config import PATHS
+from feedbax._experiments.database import FigureRecord
 
 logger = logging.getLogger(__name__)
 

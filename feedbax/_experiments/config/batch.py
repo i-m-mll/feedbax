@@ -9,10 +9,10 @@ from jax_cookbook.tree import expand_split_keys
 from jaxtyping import PyTree
 from ruamel.yaml import YAML
 
-from feedbax_experiments.config.yaml import _YamlLiteral, get_yaml_loader
-from feedbax_experiments.misc import deep_merge
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax_experiments.plugins.registry import ExperimentRegistry
+from feedbax._experiments.config.yaml import _YamlLiteral, get_yaml_loader
+from feedbax._experiments.misc import deep_merge
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.plugins.registry import ExperimentRegistry
 
 
 def _split_modules(selector: str) -> list[str]:

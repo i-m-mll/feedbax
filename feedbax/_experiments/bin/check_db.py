@@ -3,7 +3,7 @@
 
 import logging
 
-from feedbax_experiments.database import check_model_files, get_db_session
+from feedbax._experiments.database import check_model_files, get_db_session
 
 
 def main():

@@ -43,7 +43,39 @@ dependencies = [
     "tensorboardx>=2.6.2.2",
     "tqdm>=4.67.1",
     "jax-cookbook",
+    # From feedbax_experiments:
+    "alembic>=1.15.1",
+    "dill>=0.3.9",
+    "kaleido==0.2.1",
+    "pandas>=2.1.0",
+    "pillow>=11.1.0",
+    "pyexiv2>=2.15.3",
+    "pyperclip>=1.9.0",
+    "ruamel-yaml>=0.18.0",
+    "rich>=13.9.4",
+    "scikit-learn>=1.6.1",
 ]
+
+[project.optional-dependencies]
+dashboard = [
+    "dash>=2.14.0",
+    "dash-bootstrap-components>=1.5.0",
+]
+notebook = [
+    "ipyfilechooser>=0.6.0",
+    "ipywidgets>=8.1.5",
+    "notebook>=7.4.1",
+]
+plotlyviewer = [
+    "pyqt5>=5.15.11",
+    "pyqtwebengine>=5.15.7",
+]
+
+[project.scripts]
+# Entry points from feedbax_experiments
+feedbax-run = "feedbax._experiments.bin.run:main"
+feedbax-analysis = "feedbax._experiments.bin.analysis:main"
+feedbax-train = "feedbax._experiments.bin.train:main"
 
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"
@@ -67,10 +99,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-packages = ["feedbax"]
+packages = ["feedbax", "feedbax_experiments"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["feedbax"]
+packages = ["feedbax", "feedbax_experiments"]
 
 [tool.pyright]
 include = ["feedbax", "tests"]
@@ -101,7 +133,7 @@ unfixable = ["F401"]
 
 [tool.ruff.lint.per-file-ignores]
 # Scripts often need to run things before importing more things
-"src/feedbax_experiments/bin/*.py" = ["E402"]
+"feedbax/_experiments/bin/*.py" = ["E402"]
 
 [tool.ruff.format]
 indent-style = "space"

@@ -13,12 +13,12 @@ from dash.dependencies import ALL, MATCH
 from dash.exceptions import PreventUpdate
 from sqlalchemy.orm import Session
 
-from feedbax_experiments.config import configure_globals_for_package
-from feedbax_experiments.database import FigureRecord, get_db_session
-from feedbax_experiments.dashboard.backend.loader import FigureLoader
-from feedbax_experiments.dashboard.backend.presets import PresetManager
-from feedbax_experiments.dashboard.backend.query import FilterSpec, FigureQueryEngine
-from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax._experiments.config import configure_globals_for_package
+from feedbax._experiments.database import FigureRecord, get_db_session
+from feedbax._experiments.dashboard.backend.loader import FigureLoader
+from feedbax._experiments.dashboard.backend.presets import PresetManager
+from feedbax._experiments.dashboard.backend.query import FilterSpec, FigureQueryEngine
+from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -1028,7 +1028,7 @@ def register_callbacks(app: dash.Dash):
                             self.evaluation_hash = evaluation_hash
 
                         def get_path(self, format):
-                            from feedbax_experiments.config import PATHS
+                            from feedbax._experiments.config import PATHS
 
                             return PATHS.figures / self.evaluation_hash / f"{self.hash}.{format}"
 

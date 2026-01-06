@@ -11,13 +11,13 @@ import jax_cookbook.tree as jtree
 from jax_cookbook import anyf, is_type, where_attr_strs_to_func
 from jaxtyping import ArrayLike, PyTree
 
-from feedbax_experiments.config import STRINGS, load_config
-from feedbax_experiments.constants import get_iterations_to_save_model_parameters
-from feedbax_experiments.misc import copy_delattr
-from feedbax_experiments.tree_utils import (
+from feedbax._experiments.config import STRINGS, load_config
+from feedbax._experiments.constants import get_iterations_to_save_model_parameters
+from feedbax._experiments.misc import copy_delattr
+from feedbax._experiments.tree_utils import (
     tree_level_labels,
 )
-from feedbax_experiments.types import (
+from feedbax._experiments.types import (
     LDict,
     TaskModelPair,
     TreeNamespace,
@@ -99,7 +99,7 @@ def load_hps(
     If the path is not found, pass it as the experiment id to try to get a default config.
     So you can pass e.g. `"1-1"` to load the default hyperparameters for analysis module 1-1.
     Note that this is like treating `config_path` as a local path to a YAML file in
-    `feedbax_experiments.config`.
+    `feedbax._experiments.config`.
     """
     # Load the defaults and update with the user-specified config
     config = load_config(name, config_type)
