@@ -1,0 +1,229 @@
+/* Custom styles for reduced font sizes (30% reduction from defaults) */
+
+:root {
+    /* Adjust these to control filter-row left margin and badge offset */
+    --filter-builder-left-gap: 2.4rem;
+    --filter-badge-offset: -1.8rem;
+}
+
+body {
+    font-size: 11px;
+}
+
+.form-label {
+    font-size: 11px;
+}
+
+.form-control {
+    font-size: 11px;
+}
+
+.btn {
+    font-size: 11px;
+}
+
+h1 {
+    font-size: 21px;
+}
+
+h4 {
+    font-size: 14px;
+}
+
+.card {
+    font-size: 11px;
+}
+
+.dashboard-card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #495057;
+}
+
+.filter-builder {
+    position: relative;
+    padding-left: var(--filter-builder-left-gap);
+    overflow-x: auto;
+}
+
+.filter-builder .filter-row-container {
+    border: 1px solid #dadada;
+    border-radius: 8px;
+    padding: 0.65rem 0.75rem;
+    margin-bottom: 0.75rem;
+    background-color: #fcfcfc;
+    position: relative;
+    overflow: visible;
+}
+
+.filter-row-container.filter-row--locked {
+    border-color: #a7c6ff;
+    background-color: #f3f7ff;
+}
+
+.filter-row-container.filter-row--incomplete {
+    border-color: #f5c2c7;
+}
+
+.filter-row-container.filter-row--inactive {
+    opacity: 0.6;
+}
+
+.filter-row-container.filter-row--identifier {
+    border-color: #bcd2ff;
+    background-color: #f5f9ff;
+}
+
+.filter-builder .form-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6c757d;
+}
+
+.filter-builder-header-wrapper {
+    padding: 0 0.75rem 0 var(--filter-builder-left-gap);
+    overflow-x: auto;
+}
+
+.filter-builder-grid,
+.filter-row-grid {
+    display: grid;
+    grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.4fr) 110px minmax(160px, 1.4fr) 56px;
+    gap: 0.6rem;
+    align-items: center;
+    min-width: 700px;
+}
+
+.filter-builder-grid {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #6c757d;
+    margin-bottom: 0.35rem;
+}
+
+.filter-row-badge {
+    position: absolute;
+    left: var(--filter-badge-offset);
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.filter-badge-pill {
+    font-size: 0.55rem;
+    line-height: 1.1;
+    text-align: center;
+    display: inline-block;
+    min-width: 1.75rem;
+}
+
+.filter-row--identifier-unset .filter-value-dropdown .Select-control {
+    border: 2px solid #0d6efd;
+    box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.15);
+    background-color: rgba(13, 110, 253, 0.07);
+}
+
+.filter-value-dropdown .Select-control {
+    min-height: 34px;
+}
+
+.filter-row-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+}
+
+.filter-row-actions button {
+    border: none;
+    background: transparent;
+    padding: 0;
+}
+
+.filter-toggle-switch {
+    width: 36px;
+    height: 20px;
+    border-radius: 999px;
+    background-color: #adb5bd;
+    position: relative;
+    transition: background-color 0.2s ease;
+    cursor: pointer;
+}
+
+.filter-toggle-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background-color: #fff;
+    transition: transform 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.filter-toggle-switch.is-active {
+    background-color: #198754;
+}
+
+.filter-toggle-switch.is-active::after {
+    transform: translateX(16px);
+}
+
+.filter-toggle-switch:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.filter-toggle-switch:focus-visible,
+.filter-trash-btn:focus-visible {
+    outline: 2px solid #0d6efd;
+    outline-offset: 2px;
+}
+
+.filter-trash-btn {
+    width: 28px;
+    height: 24px;
+    position: relative;
+    cursor: pointer;
+    color: #6c757d;
+}
+
+.filter-trash-btn::before {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 6px;
+    top: 6px;
+    border: 2px solid currentColor;
+    border-bottom-left-radius: 3px;
+    border-bottom-right-radius: 3px;
+}
+
+.filter-trash-btn::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 9px;
+    right: 9px;
+    height: 2px;
+    border-radius: 2px;
+    background-color: currentColor;
+}
+
+.filter-trash-btn:hover {
+    color: #c1121f;
+}
+
+.filter-trash-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.distinguishing-columns table {
+    font-size: 11px;
+}

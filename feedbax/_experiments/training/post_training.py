@@ -1,0 +1,816 @@
+import argparse
+import logging
+from collections.abc import Callable
+from functools import partial
+from pathlib import Path
+from typing import Any, Optional, Sequence, TypeVar
+from typing import Literal as L
+
+import equinox as eqx
+import feedbax.plot as fbp
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import jax.tree as jt
+import jax_cookbook.tree as jtree
+import numpy as np
+import plotly.graph_objects as go
+from feedbax.misc import attr_str_tree_to_where_func
+from feedbax.train import TaskTrainerHistory, WhereFunc, init_task_trainer_history
+from feedbax.xabdeef.losses import simple_reach_loss
+from jax_cookbook import anyf, identity, is_module, is_type
+from jaxtyping import Array, Int, PyTree
+from rich.logging import RichHandler
+from rich.progress import Progress
+from sqlalchemy.orm import Session
+
+from feedbax_experiments.analysis.aligned import (
+    get_aligned_vars,
+    get_reach_origins_directions,
+)
+from feedbax_experiments.analysis.state_utils import (
+    get_pos_endpoints,
+    vmap_eval_ensemble,
+)
+from feedbax_experiments.config.yaml import get_yaml_loader
+from feedbax_experiments.database import (
+    MODEL_RECORD_BASE_ATTRS,
+    EvaluationRecord,
+    ModelRecord,
+    add_evaluation,
+    add_evaluation_figure,
+    check_model_files,
+    get_db_session,
+    load_tree_with_hps,
+    query_model_records,
+    save_model_and_add_record,
+)
+from feedbax_experiments.misc import log_version_info
+from feedbax_experiments.plot_utils import savefig
+from feedbax_experiments.plugins import EXPERIMENT_REGISTRY
+from feedbax_experiments.setup_utils import (
+    setup_models_only,
+    setup_tasks_only,
+)
+from feedbax_experiments.types import LDict, TaskModelPair, TreeNamespace, namespace_to_dict
+
+logger = logging.getLogger(__name__)
+
+
+# Number of trials to evaluate when deciding which replicates to exclude
+N_TRIALS_VAL = 5
+
+
+T = TypeVar("T")
+
+
+def setup_train_histories(
+    task_model_pairs: PyTree[TaskModelPair],
+    hps_train: TreeNamespace,
+    *,
+    key,
+) -> dict[float, TaskTrainerHistory]:
+    """Returns a skeleton PyTree for the training histories (losses, parameter history, etc.)"""
+    # Assume that where funcs may be lists (normally defined as tuples, but retrieved through sqlite JSON)
+    where_train = jt.map(
+        attr_str_tree_to_where_func,
+        hps_train.where,
+        is_leaf=is_type(list),
+    )
+
+    return jt.map(
+        lambda pair: init_task_trainer_history(
+            pair.task.loss_func,
+            hps_train.n_batches,
+            hps_train.model.n_replicates,
+            ensembled=True,
+            ensemble_random_trials=False,
+            save_model_parameters=jnp.array(hps_train.save_model_parameters),
+            save_trial_specs=None,
+            batch_size=hps_train.batch_size,
+            loss_func_validation=pair.task.loss_func,
+            model=pair.model,
+            where_train=dict(where_train),
+        ),
+        task_model_pairs,
+        is_leaf=is_type(TaskModelPair),
+    )
+
+
+def load_data(training_module, model_record: ModelRecord):
+    """Loads model, hyperparameters and training histories from files."""
+    # Load model and associated data
+    if not model_record.path.exists() or not model_record.train_history_path.exists():
+        logger.error(f"Model or training history file not found for {model_record.hash}")
+        return
+
+    # NOTE: `model` typically contains multiple model replicates.
+    model, hps = load_tree_with_hps(
+        model_record.path,
+        partial(
+            setup_models_only,
+            training_module.setup_task_model_pair,
+        ),
+    )
+    logger.debug("Loaded training models")
+
+    # Get respective validation tasks for each model
+    task = setup_tasks_only(
+        training_module.setup_task_model_pair,
+        hps,
+        key=jr.PRNGKey(0),
+    )
+
+    train_histories, train_history_hps = load_tree_with_hps(
+        model_record.train_history_path,
+        partial(setup_train_histories, TaskModelPair(task, model)),
+    )
+    logger.debug("Loaded train histories")
+
+    return (
+        model,
+        task,
+        hps,
+        train_histories,
+        train_history_hps,
+    )
+
+
+# TODO: map over this entire function and use `jtree.unzip` on the result,
+# instead of mapping multiple times inside this function
+def get_best_iterations_and_losses(
+    train_histories: PyTree[TaskTrainerHistory], save_model_parameters: Array, n_replicates: int
+):
+    """Computes best iterations and corresponding losses for each replicate."""
+    # Get a single array (n_train_iter, n_replicates)
+    loss_history = jt.map(
+        # Use `identity` to avoid taking mean over iterations or replicates
+        lambda history: history.loss.aggregate(leaf_fn=identity),
+        train_histories,
+        is_leaf=is_module,
+    )
+
+    best_save_idx = jt.map(
+        lambda losses: jnp.argmin(losses[save_model_parameters], axis=0),
+        loss_history,
+    )
+
+    best_saved_iterations = jt.map(
+        lambda idx: save_model_parameters[idx].tolist(),
+        best_save_idx,
+    )
+
+    losses_at_best_saved_iteration = jt.map(
+        lambda losses, saved_iterations: (
+            losses[jnp.array(saved_iterations), jnp.arange(n_replicates)]
+        ),
+        loss_history,
+        best_saved_iterations,
+    )
+
+    return best_save_idx, best_saved_iterations, losses_at_best_saved_iteration
+
+
+def get_best_and_included(measure, n_std_exclude=2):
+    best_idx = jnp.argmin(measure).item()
+    bound = (measure[best_idx] + n_std_exclude * measure.std()).item()
+    included = measure < bound
+    return best_idx, included
+
+
+def end_position_error(pos, eval_reach_length=1, last_n_steps=10):
+    # Since the data is aligned, the goal is always at the same position
+    goal_pos = jnp.array([eval_reach_length, 0])
+    error = jnp.mean(jnp.linalg.norm(pos[..., -last_n_steps:, :] - goal_pos, axis=-1), axis=-1)
+    return error
+
+
+def get_measures_to_rate(model, task, hps):
+    states = vmap_eval_ensemble(jr.PRNGKey(0), hps, model, task)
+
+    origins, directions = get_reach_origins_directions(task, model, hps)
+    aligned_pos = get_aligned_vars(
+        states.mechanics.effector.pos - origins[..., None, :],
+        directions,
+    )
+    end_pos_errors = jt.map(
+        partial(end_position_error, eval_reach_length=task.eval_reach_length),
+        aligned_pos,
+    )
+    mean_end_pos_errors = jt.map(
+        lambda x: jnp.mean(x, axis=(0, -1)),  # eval & condition, but not replicate
+        end_pos_errors,
+    )
+
+    return dict(
+        end_pos_error=mean_end_pos_errors,
+    )
+
+
+def _get_most_recent_idxs(idxs: Sequence[int], max_idx: int) -> Any:
+    """Returns the value for the largest key less than or equal to `idx`."""
+    keys = jnp.array(sorted(idxs))
+    key_idxs = np.searchsorted(keys, np.arange(max_idx + 1), side="right")
+    return keys[key_idxs - 1]
+
+
+def get_best_models(
+    model_record: ModelRecord,
+    models: PyTree[eqx.Module, "T"],
+    train_histories: PyTree[TaskTrainerHistory],
+    save_model_parameters: Array,
+    best_save_idx: PyTree[Int[Array, " replicate"]],
+    n_replicates: int,
+    where_train: WhereFunc | dict[str, WhereFunc],
+) -> PyTree[eqx.Module, "T"]:
+    """Serializes models with the best parameters for each replicate and training condition."""
+    # Get a function that returns the `where_fn` used on a given iteration
+    if isinstance(where_train, dict):
+        where_train_idxs = _get_most_recent_idxs(
+            [int(k) for k in where_train.keys()],
+            model_record.n_batches,
+        )
+
+        def get_where_train_for_idx(idx):
+            return where_train[str(where_train_idxs[idx])]
+
+        get_where_train = get_where_train_for_idx
+    else:
+
+        def get_where_train_fixed(idx):
+            return where_train
+
+        get_where_train = get_where_train_fixed
+
+    # TODO: If any model parameters were trainable at the end of the training run,
+    # but were not trainable at the time of the best iteration, then this will keep
+    # the final parameters. However, we should probably keep the value of these parameters
+    # at the best iteration, even though they were not trainable then, since perhaps they
+    # became trainable later (i.e. resulting in the final values) and this may have
+    # affected the final loss.
+    # TODO: Similarly, I think this might fail if two replicates differ in whether a parameter
+    # was trainable at the best iteration; we'll end up trying to do a `jtree.stack` on pytrees
+    # where some array leaves are sometimes `None`. The solution to this is the same as the
+    # solution above: we need to select the best version of parameters that were trainable
+    # *at any point*
+    best_saved_parameters = jtree.stack(
+        [
+            # Select the best parameters for each replicate, for all train histories
+            jt.map(
+                lambda train_history, best_idxs: jtree.take_multi(
+                    # Filter out the parameters that were not trainable at the best iteration
+                    eqx.filter(
+                        train_history.model_parameters,
+                        jtree.filter_spec_leaves(
+                            train_history.model_parameters,
+                            get_where_train(save_model_parameters[int(best_idxs[i])]),
+                        ),
+                        is_leaf=is_module,
+                    ),
+                    [int(best_idxs[i]), i],
+                    [0, 1],
+                ),
+                train_histories,
+                best_save_idx,
+                is_leaf=is_module,
+            )
+            for i in range(n_replicates)
+        ]
+    )
+
+    models_with_best_parameters = eqx.combine(models, best_saved_parameters)
+
+    return models_with_best_parameters
+
+
+# TODO
+#! This no longer works because the model records are kept and post-processed individually.
+#! It probably makes sense to move this to an analysis script since it involves loading
+#! a spread of training conditions (e.g. train_pert_std, as here)
+# def get_replicate_distribution_figure(
+#     measure: LDict[float, Shaped[Array, 'replicates']],
+#     yaxis_title="",
+# ) -> go.Figure:
+
+#     n_replicates = len(jt.leaves(measure)[0])
+
+#     df = pd.DataFrame(measure).reset_index().melt(id_vars='index')
+#     df["index"] = df["index"].astype(str)
+
+#     fig = go.Figure()
+
+#     strips = px.scatter(
+#         df,
+#         x='variable',
+#         y='value',
+#         color="index",
+#         color_discrete_sequence=px.colors.qualitative.Plotly,
+#         # stripmode='overlay',
+#     )
+
+#     strips.update_traces(
+#         marker_size=10,
+#         marker_symbol='circle-open',
+#         marker_line_width=3,
+#     )
+
+#     violins = [
+#         go.Violin(
+#             x=[train_pert_std] * n_replicates,
+#             y=data,
+#             # box_visible=True,
+#             line_color='black',
+#             meanline_visible=True,
+#             fillcolor='lightgrey',
+#             opacity=0.6,
+#             name=f"{train_pert_std}",
+#             showlegend=False,
+#             spanmode='hard',
+#         )
+#         for train_pert_std, data in measure.items()
+#     ]
+
+#     fig.add_traces(violins)
+#     fig.add_traces(strips.data)
+
+#     fig.update_layout(
+#         xaxis_type='category',
+#         width=800,
+#         height=500,
+#         xaxis_title="Train disturbance std.",
+#         yaxis_title=yaxis_title,
+#         # xaxis_range=[-0.5, len(disturbance_stds) + 0.5],
+#         # xaxis_tickvals=np.linspace(0,1.2,4),
+#         # yaxis_type='log',
+#         violingap=0.1,
+#         # showlegend=False,
+#         legend_title='Replicate',
+#         legend_tracegroupgap=4,
+#         # violinmode='overlay',
+#         barmode='overlay',
+#         # boxmode='group',
+#     )
+
+#     return fig
+
+
+def get_train_history_figures(
+    histories: PyTree[TaskTrainerHistory, "T"],
+    best_saved_iteration_by_replicate,
+    included_replicates: Optional[PyTree[dict[str, Array]]] = None,
+) -> PyTree[go.Figure, "T"]:
+    def get_figure(history, best_save_iterations, included_dict):
+        # Filter the loss history to include only the desired replicates
+        # Use the 'best_total_loss' mask since that's what we care about for loss history
+        if included_dict is not None:
+            included_mask = included_dict.get("best_total_loss", None)
+            if included_mask is not None:
+                # Apply mask to each loss term's replicate dimension
+                filtered_loss = jt.map(
+                    lambda loss_array: loss_array[:, included_mask]
+                    if loss_array.ndim > 1
+                    else loss_array,
+                    history.loss,
+                    is_leaf=lambda x: isinstance(x, (jnp.ndarray, np.ndarray)),
+                )
+                # Filter best_save_iterations to match
+                filtered_best_iters = [
+                    iter for iter, include in zip(best_save_iterations, included_mask) if include
+                ]
+            else:
+                filtered_loss = history.loss
+                filtered_best_iters = best_save_iterations
+        else:
+            filtered_loss = history.loss
+            filtered_best_iters = best_save_iterations
+
+        fig = fbp.loss_history(filtered_loss)
+        text = "Best iter. by replicate: " + ", ".join(str(idx) for idx in filtered_best_iters)
+        fig.add_annotation(
+            dict(
+                text=text,
+                showarrow=False,
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=1,
+            )
+        )
+        return fig
+
+    #! TODO: I don't think the map is needed here, anymore
+    return jt.map(
+        lambda history, best_save_iterations, included: get_figure(
+            history, best_save_iterations, included
+        ),
+        histories,
+        best_saved_iteration_by_replicate,
+        included_replicates
+        if included_replicates is not None
+        else jt.map(lambda _: None, histories, is_leaf=is_type(TaskTrainerHistory)),
+        is_leaf=is_type(TaskTrainerHistory),
+    )
+
+
+class FigFuncSpec(eqx.Module):
+    func: Callable[..., go.Figure | LDict[float, go.Figure]]
+    args: tuple[PyTree, ...]
+
+
+def save_training_figures(
+    db_session: Session,
+    eval_info: EvaluationRecord,
+    train_history,
+    replicate_info,
+    hps: PyTree,
+    dump_path: Optional[Path] = None,
+    dump_formats: Sequence[str] = ("html",),
+    dump_params: Optional[dict | PyTree] = None,
+    run_number: Optional[int] = None,
+    deferred_ops: Optional[list] = None,
+):
+    # Save YAML once for this evaluation (if dumping)
+    if dump_path is not None:
+        dump_path.mkdir(exist_ok=True, parents=True)
+
+        # Use dump_params if provided, otherwise full hps
+        params_to_dump = dump_params if dump_params is not None else hps
+
+        # Convert to dict if it's a TreeNamespace
+        if isinstance(params_to_dump, TreeNamespace):
+            params_dict = namespace_to_dict(params_to_dump)
+        elif isinstance(params_to_dump, dict):
+            params_dict = params_to_dump
+        else:
+            # Fallback for other PyTree types
+            params_dict = dict(params_to_dump)
+
+        # Save once with just the hash, not per-figure
+        yaml = get_yaml_loader(typ="safe")
+        if run_number is not None:
+            params_path = dump_path / f"{run_number:03d}_{eval_info.hash}.yaml"
+        else:
+            params_path = dump_path / f"{eval_info.hash}.yaml"
+        try:
+            with open(params_path, "w") as f:
+                yaml.dump(params_dict, f)
+        except Exception as e:
+            logger.error(f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True)
+            raise e
+
+    #! TEMP
+    # train_history = eqx.tree_at(
+    #     lambda th: th.loss["goal_hit_in_window"]["pos"].value,
+    #     train_history,
+    #     (
+    #         train_history.loss["goal_hit_in_window"]["pos"].value
+    #         + hps.loss.goal_hit_in_window.softmin_tau * jnp.log(20)
+    #     ),
+    # )
+
+    # Specify the figure-generating functions and their arguments
+    fig_specs: dict[str, FigFuncSpec] = dict(
+        loss_history=FigFuncSpec(
+            func=get_train_history_figures,
+            args=(
+                train_history,
+                replicate_info["best_saved_iteration_by_replicate"],
+                replicate_info["included_replicates"],
+            ),
+        ),
+        # loss_dist_over_replicates_best=FigFuncSpec(
+        #     func=partial(
+        #         get_replicate_distribution_figure,
+        #         yaxis_title=f"Best batch total loss",
+        #     ),
+        #     args=(replicate_info['losses_at_best_saved_iteration'],),
+        # ),
+        # loss_dist_over_replicates_final=FigFuncSpec(
+        #     func=partial(
+        #         get_replicate_distribution_figure,
+        #         yaxis_title=f"Final batch total loss",
+        #     ),
+        #     args=(replicate_info['losses_at_final_saved_iteration'],),
+        # ),
+        # readout_norm=FigFuncSpec(
+        #     func=partial(
+        #         get_replicate_distribution_figure,
+        #         yaxis_title=f"Frobenius norm of readout weights",
+        #     ),
+        #     args=(replicate_info['readout_norm'],),
+        # ),
+    )
+
+    all_figs = {
+        fig_label: fig_spec.func(*fig_spec.args) for fig_label, fig_spec in fig_specs.items()
+    }
+
+    def save_and_add_figure(fig, plot_id, variant_label, train_std):
+        fig_parameters = dict()
+
+        if variant_label:
+            fig_parameters |= dict(variant_label=variant_label)
+
+        if train_std:
+            fig_parameters |= dict(train__pert__std=float(train_std))
+
+        add_evaluation_figure(
+            db_session,
+            eval_info,
+            fig,
+            plot_id,
+            # TODO: let the user specify which formats to save
+            save_formats=["png"],
+            commit=deferred_ops is None,  # Only commit if not deferring
+            deferred_ops=deferred_ops,
+            **fig_parameters,
+        )
+
+        # Additionally dump figure to specified path if provided
+        if dump_path is not None:
+            if run_number is not None:
+                filename = f"{run_number:03d}_{eval_info.hash}_{plot_id}"
+            else:
+                filename = f"{eval_info.hash}_{plot_id}"
+            savefig(fig, filename, dump_path, dump_formats)
+
+    is_leaf = anyf(LDict.is_of("train__pert__std"), is_type(go.Figure))
+
+    # Save and add records for each figure
+    # TODO: BUT DON'T MAP OVER "train__pert__std"
+    for plot_id, figs in all_figs.items():
+        # Some training notebooks use multiple training methods, and some don't. And some figure functions
+        # return one figure per training condition, while others are summaries. Thus we need to descend
+        # to the "train__pert__std" or `go.Figure` level first, and whatever the label is down to that level, will
+        # label the training method (variant). Then we can descend to the `go.Figure` level, and whatever
+        # label is constructed here will either be the training std (if we originally descended to "train__pert__std"),
+        # or nothing.
+        jt.map(
+            # Map over each set (i.e. training variant) of disturbance train stds
+            lambda fig_set, variant_label: jt.map(
+                lambda fig, train_std: save_and_add_figure(fig, plot_id, variant_label, train_std),
+                # TODO: WHY is jtree.labels here?
+                fig_set,
+                jtree.labels(fig_set, join_with="_", is_leaf=is_type(go.Figure)),
+                is_leaf=is_type(go.Figure),
+            ),
+            figs,
+            jtree.labels(figs, join_with="_", is_leaf=is_leaf),
+            is_leaf=is_leaf,
+        )
+
+        logger.info(f"Saved {plot_id} figure set")
+
+
+def compute_replicate_info(
+    model_record,
+    models,
+    tasks,
+    train_histories,
+    save_model_parameters,
+    n_replicates,
+    n_std_exclude,
+    where_train,
+    hps,
+):
+    best_save_idx, best_saved_iterations, losses_at_best_saved_iteration = (
+        get_best_iterations_and_losses(train_histories, save_model_parameters, n_replicates)
+    )
+
+    # Rate the best total loss, but also some other measures
+    measures = dict(
+        best_total_loss=losses_at_best_saved_iteration,
+        **get_measures_to_rate(models, tasks, hps),
+    )
+
+    best_replicates, included_replicates = jtree.unzip(
+        jt.map(
+            partial(get_best_and_included, n_std_exclude=n_std_exclude),
+            measures,
+        )
+    )
+
+    losses_at_final_saved_iteration = jt.map(
+        lambda history: history.loss.aggregate(leaf_fn=identity)[-1],
+        train_histories,
+        is_leaf=is_module,
+    )
+
+    # Create models with best parameters
+    best_models = get_best_models(
+        model_record,
+        models,
+        train_histories,
+        save_model_parameters,
+        best_save_idx,
+        n_replicates,
+        where_train,
+    )
+
+    readout_norm = jt.map(
+        lambda model: jnp.linalg.norm(model.step.net.readout.weight, axis=(-2, -1), ord="fro"),
+        best_models,
+        is_leaf=is_module,
+    )
+
+    replicate_info = dict(
+        best_save_idx=best_save_idx,
+        best_saved_iteration_by_replicate=best_saved_iterations,
+        losses_at_best_saved_iteration=losses_at_best_saved_iteration,
+        losses_at_final_saved_iteration=losses_at_final_saved_iteration,
+        best_replicates=best_replicates,
+        included_replicates=included_replicates,
+        readout_norm=readout_norm,
+    )
+
+    return replicate_info, best_models
+
+
+def process_model_post_training(
+    session: Session,
+    model_record: ModelRecord,
+    n_std_exclude: float,
+    process_all: bool = True,
+    save_figures: bool = True,
+    dump_path: Optional[Path] = None,
+    dump_formats: Sequence[str] = ("html",),
+    dump_params: Optional[dict | PyTree] = None,
+    run_number: Optional[int] = None,
+) -> ModelRecord | None:
+    """Process a single model record, adding a new record with best parameters and replicate info."""
+
+    if not process_all and (model_record.has_replicate_info or model_record.postprocessed):
+        logger.info(
+            f"Model {model_record.hash[:7]} has been processed previously and process_all is false; skipping"
+        )
+        return
+
+    expt_name = str(model_record.expt_name)
+    training_module = EXPERIMENT_REGISTRY.get_training_module(expt_name)
+
+    where_train = jt.map(
+        attr_str_tree_to_where_func,
+        model_record.where,
+        is_leaf=is_type(list),
+    )
+    # where_train = attr_str_tree_to_where_func(tuple(set(jt.leaves(model_record.where))))
+    n_replicates = int(model_record.model__n_replicates)
+    save_model_parameters = jnp.array(model_record.save_model_parameters)
+
+    all_data = load_data(training_module, model_record)
+
+    #! `tasks` is just a single task, and `models` just a single model;
+    #! since each `model_record` is now associated with a single model-task pair
+    #! TODO: Simply what follows, if possible
+    if all_data is None:
+        return
+    else:
+        (
+            model,
+            task,
+            hps,
+            train_histories,
+            train_history_hyperparams,
+        ) = all_data
+
+    # `vmap_eval_ensemble` will look for this when we try to evaluate the states, however it is not
+    # part of the model hyperparameters
+    hps.task.eval_n = N_TRIALS_VAL
+
+    # Compute replicate info
+    #! TODO: Don't pass things that can be obtained from `hps`: `where_train`, `n_replicates`, `save_model_parameters`
+    replicate_info, best_models = compute_replicate_info(
+        model_record,
+        model,
+        task,
+        train_histories,
+        save_model_parameters,
+        n_replicates,
+        n_std_exclude,
+        where_train,
+        hps,
+    )
+
+    # ? Don't include this in the saved hyperparameters; though, could rename to something more
+    # ? descriptive of it being specific to post-training eval
+    del hps.task.eval_n
+
+    # Collect all file operations to execute after database commit succeeds
+    deferred_ops = []
+
+    try:
+        # Save new model file with best parameters and get new record
+        record_hyperparameters = {
+            key: getattr(model_record, key)
+            for key in model_record.__table__.columns.keys()
+            if key not in MODEL_RECORD_BASE_ATTRS
+        }
+
+        new_record = save_model_and_add_record(
+            session,
+            best_models,
+            hps | dict(n_std_exclude=n_std_exclude, postprocessed=True),
+            train_history=train_histories,
+            replicate_info=replicate_info,
+            # Assume we want to keep the version info from training, not post-training
+            version_info=model_record.version_info,
+            commit=False,
+            deferred_ops=deferred_ops,
+        )
+
+        # ? Do we really need to make one of these, here? Or should training figures have their own table?
+        eval_info = add_evaluation(
+            session,
+            models=model_record,
+            eval_parameters=dict(
+                n_evals=N_TRIALS_VAL,
+                # n_std_exclude=n_std_exclude,  # Not relevant to the figures that are generated?
+            ),
+            expt_name=f"{model_record.expt_name}__post_training",
+            commit=False,
+        )
+
+        if save_figures:
+            # Save training figures
+            save_training_figures(
+                session,
+                eval_info,
+                train_histories,
+                replicate_info,
+                hps,
+                dump_path=dump_path,
+                dump_formats=dump_formats,
+                dump_params=dump_params,
+                run_number=run_number,
+                deferred_ops=deferred_ops,
+            )
+
+        # Execute all file operations now that database commit succeeded
+        for operation in deferred_ops:
+            operation()
+        logger.debug(f"File operations completed for model {model_record.hash}")
+        # Commit all database changes atomically
+        session.commit()
+        logger.debug(f"Database commit successful for model {model_record.hash}")
+
+    except Exception as e:
+        # If anything fails, rollback database changes (no files were saved)
+        session.rollback()
+        logger.error(f"Failed to process model {model_record.hash}: {e}")
+        raise
+
+    logger.info(f"Post-training processing finished for model {model_record.hash}")
+    return new_record
+
+
+def main(
+    n_std_exclude: float = 2.0,
+    process_all: bool = False,
+    save_figures: bool = True,
+):
+    """Process all models in database."""
+    session = get_db_session()
+
+    # Get all model records
+    check_model_files(session)  # Mark any records with missing model files
+    model_records = query_model_records(session)
+    logger.info(f"Found {len(model_records)} model records")
+
+    with Progress() as progress:
+        task = progress.add_task("Processing...", total=len(model_records))
+        for model_record in model_records:
+            try:
+                process_model_post_training(
+                    session,
+                    model_record,
+                    n_std_exclude,
+                    process_all=process_all,
+                    save_figures=save_figures,
+                )
+                progress.update(task, advance=1)
+            except Exception as e:
+                logger.error(f"Skipping model {model_record.hash} due to error: {e}")
+                raise e
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Post-training processing of models.")
+    parser.add_argument(
+        "--n_std_exclude",
+        default=2,
+        type=float,
+        help="Mark replicates this many stds above the best as to-be-excluded",
+    )
+    parser.add_argument(
+        "--process_all",
+        action="store_true",
+        help="Reprocess all models, even if they already have replicate info",
+    )
+    parser.add_argument("--no_figs", action="store_true", help="Do not save training figures")
+    args = parser.parse_args()
+
+    main(
+        args.n_std_exclude,
+        args.process_all,
+        not args.no_figs,
+    )
