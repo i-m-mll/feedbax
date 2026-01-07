@@ -13,8 +13,8 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.pca import PCA
-from feedbax._experiments.constants import REPLICATE_CRITERION
-from feedbax._experiments.plot_utils import calculate_array_minmax, get_label_str
+from feedbax.constants import REPLICATE_CRITERION
+from feedbax.plot_utils import calculate_array_minmax, get_label_str
 from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 
 

@@ -34,12 +34,12 @@ from feedbax.analysis.analysis import (
     get_validation_trial_specs,
     logger,
 )
-from feedbax._experiments.colors import COMMON_COLOR_SPECS, setup_colors
+from feedbax.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
 from feedbax.config import PATHS
 from feedbax.config.yaml import get_yaml_loader
-from feedbax._experiments.constants import REPLICATE_CRITERION
+from feedbax.constants import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
 # Added utilities for unflattening record hyperparameters into namespaces
@@ -60,11 +60,11 @@ from feedbax.hyperparams import (
     flatten_hps,
     use_train_hps_when_none,
 )
-from feedbax._experiments.misc import delete_all_files_in_dir, log_version_info
+from feedbax.misc import delete_all_files_in_dir, log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
-from feedbax._experiments.setup_utils import query_and_load_model
-from feedbax._experiments.training.post_training import process_model_post_training
+from feedbax.setup_utils import query_and_load_model
+from feedbax.training.post_training import process_model_post_training
 from feedbax.tree_utils import tree_level_labels
 from feedbax.types import (
     AnalysisInputData,

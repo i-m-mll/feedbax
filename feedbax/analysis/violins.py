@@ -11,9 +11,9 @@ from feedbax.analysis.analysis import (
     AbstractAnalysisPorts,
     InputOf,
 )
-from feedbax._experiments.misc import deep_merge
-from feedbax._experiments.plot import get_violins
-from feedbax._experiments.plot_utils import get_label_str
+from feedbax.misc import deep_merge
+from feedbax.plot.experiments import get_violins
+from feedbax.plot_utils import get_label_str
 from feedbax.tree_utils import (
     ldict_label_only_fn,
     tree_level_types,

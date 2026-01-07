@@ -1,1 +1,2 @@
-"""Interactive web dashboard for reviewing figures from the database."""
+"""Backward compatibility shim - dashboard is now in feedbax.dashboard."""
+from feedbax.dashboard import *

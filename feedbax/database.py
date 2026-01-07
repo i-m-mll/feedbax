@@ -72,7 +72,7 @@ from feedbax._experiments.misc import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
 )
-from feedbax._experiments.plot_utils import savefig
+from feedbax.plot_utils import savefig
 from feedbax.tree_utils import pp
 from feedbax.types import (
     LDict,

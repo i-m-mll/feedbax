@@ -1,1 +1,2 @@
-"""Backend logic for querying and loading figures from the database."""
+"""Backward compatibility shim - backend is now in feedbax.dashboard.backend."""
+from feedbax.dashboard.backend import *

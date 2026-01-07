@@ -29,7 +29,7 @@ from feedbax.analysis.fp_finder import (
     take_top_fps,
 )
 from feedbax.analysis.pca import PCAResults, StatesPCA
-from feedbax._experiments.plot import plot_fp_pcs
+from feedbax.plot.experiments import plot_fp_pcs
 from feedbax.tree_utils import ldict_level_to_bottom
 from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 

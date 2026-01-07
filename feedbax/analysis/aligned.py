@@ -31,9 +31,9 @@ from feedbax.analysis.state_utils import (
     get_trial_start_positions,
     unsqueezer,
 )
-from feedbax._experiments.constants import EVAL_REACH_LENGTH
-from feedbax._experiments.misc import _OptionalCallableFieldConverter
-from feedbax._experiments.plot import add_endpoint_traces
+from feedbax.constants import EVAL_REACH_LENGTH
+from feedbax.misc import _OptionalCallableFieldConverter
+from feedbax.plot.experiments import add_endpoint_traces
 from feedbax.types import (
     AnalysisInputData,
     Direction,
