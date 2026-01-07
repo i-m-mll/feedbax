@@ -1,64 +1,7 @@
-from typing import Optional
+"""Backward compatibility shim - config is now in feedbax.config."""
 
-from feedbax._experiments.plugins import EXPERIMENT_REGISTRY
-from feedbax._experiments.plugins.registry import ExperimentRegistry
-from feedbax._experiments.types import TreeNamespace
-
-from .batch import load_batch_config
-from .config import (
-    CONFIG_DIR_ENV_VAR_NAME,
-    _setup_logging,
-    _setup_paths,
-    load_config,
-    load_config_as_ns,
-)
-
-# Load project-wide configuration from YAML resources in the `config` subpackage
-# These aren't populated until we call `configure_globals_for_package(...)` at the execution
-# entrypoint, e.g. `run_analysis.py`
-CONSTANTS = TreeNamespace()
-LOGGING = TreeNamespace()
-PATHS = TreeNamespace()
-PLOTLY_CONFIG = TreeNamespace()
-PRNG_CONFIG = TreeNamespace()
-STRINGS = TreeNamespace()
-
-
-def _overwrite_namespace(dst: TreeNamespace, src: TreeNamespace) -> None:
-    dst.__dict__.clear()
-    dst.__dict__.update(src.__dict__)
-
-
-def configure_globals_for_package(
-    package_name: str, registry: Optional[ExperimentRegistry]
-) -> None:
-    """Load package-scoped global resources for `package_name` with precedence:
-    package override -> user config dir -> base feedbax._experiments.config."""
-    # Using your existing load_config(..., registry=...) behavior:
-    constants = load_config_as_ns(f"{package_name}/constants", registry=registry)
-    logging_ns = _setup_logging(load_config_as_ns(f"{package_name}/logging", registry=registry))
-    paths = _setup_paths(load_config_as_ns(f"{package_name}/paths", registry=registry))
-    plotly_cfg = load_config_as_ns(f"{package_name}/plotly", registry=registry)
-    prng_cfg = load_config_as_ns(f"{package_name}/prng", registry=registry)
-    strings = load_config_as_ns(f"{package_name}/strings", registry=registry)
-
-    _overwrite_namespace(CONSTANTS, constants)
-    _overwrite_namespace(LOGGING, logging_ns)
-    _overwrite_namespace(PATHS, paths)
-    _overwrite_namespace(PLOTLY_CONFIG, plotly_cfg)
-    _overwrite_namespace(PRNG_CONFIG, prng_cfg)
-    _overwrite_namespace(STRINGS, strings)
-
-
-single_package_name = EXPERIMENT_REGISTRY.single_package_name()
-if single_package_name is not None:
-    configure_globals_for_package(single_package_name, EXPERIMENT_REGISTRY)
-else:
-    # Default to base config if no single package is set
-    configure_globals_for_package("feedbax._experiments", None)
-
-
-__all__ = [
+# Use lazy imports to avoid circular dependency during feedbax.config initialization
+_EXPORTED_NAMES = [
     "CONFIG_DIR_ENV_VAR_NAME",
     "CONSTANTS",
     "LOGGING",
@@ -69,4 +12,16 @@ __all__ = [
     "load_config",
     "load_config_as_ns",
     "load_batch_config",
+    "configure_globals_for_package",
 ]
+
+def __getattr__(name):
+    if name in _EXPORTED_NAMES or name == "__all__":
+        import feedbax.config as _config
+        if name == "__all__":
+            return _EXPORTED_NAMES
+        return getattr(_config, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+def __dir__():
+    return _EXPORTED_NAMES
