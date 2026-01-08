@@ -73,9 +73,9 @@ plotlyviewer = [
 
 [project.scripts]
 # Entry points from feedbax_experiments
-feedbax-run = "feedbax._experiments.bin.run:main"
-feedbax-analysis = "feedbax._experiments.bin.analysis:main"
-feedbax-train = "feedbax._experiments.bin.train:main"
+feedbax-run = "feedbax.bin.run:main"
+feedbax-analysis = "feedbax.bin.analysis:main"
+feedbax-train = "feedbax.bin.train:main"
 
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"
@@ -99,10 +99,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-packages = ["feedbax", "feedbax_experiments"]
+packages = ["feedbax"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["feedbax", "feedbax_experiments"]
+packages = ["feedbax"]
 
 [tool.pyright]
 include = ["feedbax", "tests"]
@@ -133,7 +133,7 @@ unfixable = ["F401"]
 
 [tool.ruff.lint.per-file-ignores]
 # Scripts often need to run things before importing more things
-"feedbax/_experiments/bin/*.py" = ["E402"]
+"feedbax/bin/*.py" = ["E402"]
 
 [tool.ruff.format]
 indent-style = "space"
