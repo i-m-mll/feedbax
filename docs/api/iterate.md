@@ -1,20 +1,6 @@
-# Iterating a model
+# Iterating components
 
-::: feedbax.iterate.Iterator 
-    options:
-        members: [
-            '__call__',
-            'init',
-        ]
+::: feedbax.iterate.iterate_component
 
-::: feedbax.iterate.ForgetfulIterator
-    options:
-        members: [
-            '__call__',
-            'init',
-        ]
-
-## Abstract base classes
-
-::: feedbax.iterate.AbstractIterator
+::: feedbax.iterate.run_component
     

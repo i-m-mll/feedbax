@@ -18,8 +18,8 @@ Feedbax makes it easy to:
 
 !!! Warning ""
     Feedbax is in active [development](#development). Expect some changes in the near future!
-    
-    In particular, I intend to [replace](https://github.com/i-m-mll/feedbax/discussions/28#discussioncomment-10153895) the staged model approach with a simpler lazy-executing DAG framework.
+
+    The staged model approach has been replaced by an explicit eager graph architecture.
 
 ??? Note "What Feedbax can (and can't) do"
     Feedbax is designed for feedback control of biomechanical models by neural networks, to perform movement tasks in continuous spaces. However, it could also be used for other optimal control problems for which a suitable set of model, cost function, and task trials can be defined.
@@ -59,4 +59,3 @@ There are many features, especially pre-built models and tasks, that could still
 
 - Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have directly influenced this project
 - Special thanks to [Patrick Kidger](https://github.com/patrick-kidger), whose JAX libraries and their documentation often serve as examples to me
-

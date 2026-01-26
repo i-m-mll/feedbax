@@ -4,31 +4,29 @@
 
 ::: feedbax.intervene.CurlField
 
+::: feedbax.intervene.FixedFieldParams
+
+::: feedbax.intervene.FixedField
+
 ::: feedbax.intervene.AddNoise
+
+::: feedbax.intervene.AddNoiseParams
 
 ::: feedbax.intervene.NetworkClamp
 
+::: feedbax.intervene.NetworkIntervenorParams
+
 ::: feedbax.intervene.NetworkConstantInput
+
+::: feedbax.intervene.ConstantInputParams
+
+::: feedbax.intervene.ConstantInput
+
+::: feedbax.intervene.Copy
+
+::: feedbax.intervene.CopyParams
 
 
 ## Adding interventions to tasks and models
 
 ::: feedbax.intervene.schedule_intervenor
-
-::: feedbax.intervene.add_intervenors
-
-::: feedbax.intervene.add_fixed_intervenor
-
-## Base classes
-
-::: feedbax.intervene.AbstractIntervenorInput
-
-::: feedbax.intervene.InputT
-    options:
-        separate_signature: true
-        signature_crossrefs: true
-
-::: feedbax.intervene.AbstractIntervenor
-    options:
-        members: ['__call__', 'transform', 'with_params']
-

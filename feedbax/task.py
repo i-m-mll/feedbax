@@ -5,7 +5,7 @@ TODO:
 - Some of the private functions could be public.
 - Refactor `get_target_seq` and `get_scalar_epoch_seq` redundancy.
     - Also, the way `seq` and `seqs` are generated is similar to `states` in
-      `ForgetfulIterator.init`...
+      the state-history helpers...
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -21,6 +21,7 @@ from functools import cached_property, partial
 from typing import (
     TYPE_CHECKING,
     Generic,
+    ClassVar,
     Literal,
     Optional,
     Self,
@@ -42,18 +43,13 @@ from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 import feedbax.plot.trajectories as plot
 from feedbax._mapping import WhereDict
-from feedbax._model import ModelInput
-from feedbax._staged import AbstractStagedModel
 from feedbax._tree import is_type, tree_call, tree_call_with_keys
+from feedbax.graph import Component, Graph, init_state_from_component
+from feedbax.iterate import run_component
 from feedbax.intervene import (
-    AbstractIntervenor,
-    AbstractIntervenorInput,
     InterventionSpec,
     TimeSeriesParam,
-    schedule_intervenor,
 )
-from feedbax.intervene.intervene import AbstractIntervenorInput
-from feedbax.intervene.remove import remove_all_intervenors
 from feedbax.intervene.schedule import IntervenorLabelStr
 from feedbax.loss import (
     AbstractLoss,
@@ -65,7 +61,7 @@ from feedbax.misc import BatchInfo, is_module, is_none
 from feedbax.state import CartesianState, StateT
 
 if TYPE_CHECKING:
-    from feedbax._model import AbstractModel
+    from feedbax.graph import Component
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +92,55 @@ def _validate_jittable(n_steps: int, eb: Array | None, es: Array | None):
         es = eqx.error_if(es, ~jnp.all(in_range), "event_steps out of range")
 
     return eb, es
+
+
+def _where_key_to_path(where_key) -> str:
+    where_str = WhereDict.key_transform(where_key)
+    return where_str.split("#", maxsplit=1)[0]
+
+
+def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
+    parts = [p for p in path.split(".") if p]
+
+    def _set_component(component: Component, parts, state):
+        if isinstance(component, Graph):
+            if not parts:
+                raise ValueError("Graph-level init requires a node path")
+            node_name = parts[0]
+            if node_name not in component.nodes:
+                raise ValueError(f"Unknown node '{node_name}' in init path '{path}'")
+            return _set_component(component.nodes[node_name], parts[1:], state)
+
+        idx = getattr(component, "state_index", None)
+        if not isinstance(idx, eqx.nn.StateIndex):
+            raise ValueError(f"Component has no state_index for init path '{path}'")
+
+        if parts:
+            import operator as _op
+            comp_state = eqx.tree_at(_op.attrgetter(".".join(parts)), state.get(idx), value)
+            return state.set(idx, comp_state)
+        return state.set(idx, value)
+
+    return _set_component(model, parts, state)
+
+
+def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
+    if isinstance(model, Graph):
+        if isinstance(inputs, Mapping):
+            if set(model.input_ports).issubset(inputs.keys()):
+                return inputs
+            if len(model.input_ports) == 1:
+                return {model.input_ports[0]: inputs}
+        elif len(model.input_ports) == 1:
+            return {model.input_ports[0]: inputs}
+    return inputs
+
+
+def _infer_n_steps(inputs: PyTree) -> int:
+    leaves = jt.leaves(inputs)
+    if not leaves:
+        raise ValueError("Cannot infer n_steps from empty inputs")
+    return int(leaves[0].shape[0])
 
 
 class TrialTimeline(Module):
@@ -266,7 +311,7 @@ class TaskTrialSpec(Module):
     targets: WhereDict[TargetSpec | Mapping[str, TargetSpec]]
     inputs: PyTree
     # target: AbstractVar[PyTree[Array]]
-    intervene: Mapping[IntervenorLabelStr, AbstractIntervenorInput] = field(default_factory=dict)
+    intervene: Mapping[IntervenorLabelStr, PyTree] = field(default_factory=dict)
     timeline: TrialTimeline = field(default_factory=TrialTimeline)
     extra: Optional[Mapping[str, Array]] = None
 
@@ -441,7 +486,7 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         batch_info: Optional[BatchInfo] = None,
     ) -> TaskTrialSpec:
-        spec_intervenor_params = {k: v.intervenor.params for k, v in intervention_specs.items()}
+        spec_intervenor_params = {k: v.params for k, v in intervention_specs.items()}
 
         # TODO: Don't repeat `intervene._eval_intervenor_param_spec`
         # Evaluate any parameters that are defined as trial-varying functions
@@ -531,7 +576,7 @@ class AbstractTask(Module):
     @jax.named_scope("fbx.AbstractTask.eval_trials")
     def eval_trials_with_loss(
         self,
-        model: "AbstractModel[StateT]",
+        model: Component,
         trial_specs: TaskTrialSpec,
         keys: PRNGKeyArray,
     ) -> Tuple[StateT, TermTree]:
@@ -550,7 +595,7 @@ class AbstractTask(Module):
     @jax.named_scope("fbx.AbstractTask.eval_trials")
     def eval_trials(
         self,
-        model: "AbstractModel[StateT]",
+        model: Component,
         trial_specs: TaskTrialSpec,
         keys: PRNGKeyArray,
     ) -> StateT:
@@ -561,26 +606,42 @@ class AbstractTask(Module):
             trial_specs: The set of trials to evaluate the model on.
             keys: For providing randomness during model evaluation.
         """
-        init_states = jax.vmap(model.init)(key=keys)
+        def eval_single(trial_spec, key):
+            key_init, key_run = jr.split(key)
+            init_state = init_state_from_component(model)
 
-        for where_substate, init_substates in trial_specs.inits.items():
-            init_states = eqx.tree_at(
-                where_substate,
-                init_states,
-                init_substates,
+            for where_substate, init_substate in trial_spec.inits.items():
+                path = _where_key_to_path(where_substate)
+                init_state = _set_state_by_path(model, init_state, path, init_substate)
+
+            # Apply intervention params
+            if trial_spec.intervene:
+                indices = model.intervention_state_indices()
+                for label, params in trial_spec.intervene.items():
+                    if label not in indices:
+                        raise ValueError(f"Unknown intervention label '{label}'")
+                    idx = indices[label]
+                    current = init_state.get(idx)
+                    init_state = init_state.set(idx, eqx.combine(params, current))
+
+            init_state = model.state_consistency_update(init_state)
+
+            inputs = _prepare_inputs(model, trial_spec.inputs)
+            n_steps = _infer_n_steps(inputs)
+            outputs, final_state, state_history = run_component(
+                model,
+                inputs,
+                init_state,
+                key=key_run,
+                n_steps=n_steps,
             )
+            return state_history
 
-        init_states = jax.vmap(model.step.state_consistency_update)(init_states)
-
-        return eqx.filter_vmap(model)(  # ), in_axes=(eqx.if_array(0), 0, 0))(
-            ModelInput(trial_specs.inputs, trial_specs.intervene),
-            init_states,
-            keys,
-        )
+        return eqx.filter_vmap(eval_single)(trial_specs, keys)
 
     def eval_with_loss(
         self,
-        model: "AbstractModel[StateT]",
+        model: Component,
         key: PRNGKeyArray,
     ) -> Tuple[StateT, TermTree]:
         """Evaluate a model on the task's validation set of trials.
@@ -601,7 +662,7 @@ class AbstractTask(Module):
 
     def eval(
         self,
-        model: "AbstractModel[StateT]",
+        model: Component,
         key: PRNGKeyArray,
     ) -> StateT:
         """Return states for a model evaluated on the tasks's set of validation trials.
@@ -619,7 +680,7 @@ class AbstractTask(Module):
     def _eval_ensemble(
         self,
         eval_fn: Callable[..., T],
-        models: "AbstractModel[StateT]",
+        models: Component,
         n_replicates: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
@@ -627,7 +688,6 @@ class AbstractTask(Module):
         models_arrays, models_other = eqx.partition(
             models,
             eqx.is_array,
-            is_leaf=lambda x: isinstance(x, AbstractIntervenor),
         )
 
         def evaluate_single(model_arrays, model_other, key):
@@ -648,7 +708,7 @@ class AbstractTask(Module):
 
     def eval_ensemble_with_loss(
         self,
-        models: "AbstractModel[StateT]",
+        models: Component,
         n_replicates: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
@@ -674,7 +734,7 @@ class AbstractTask(Module):
 
     def eval_ensemble(
         self,
-        models: "AbstractModel[StateT]",
+        models: Component,
         n_replicates: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
@@ -701,7 +761,7 @@ class AbstractTask(Module):
     @eqx.filter_jit
     def eval_train_batch(
         self,
-        model: "AbstractModel[StateT]",
+        model: Component,
         batch_info: BatchInfo,
         key: PRNGKeyArray,
     ) -> Tuple[StateT, TermTree, TaskTrialSpec]:
@@ -735,7 +795,7 @@ class AbstractTask(Module):
     @eqx.filter_jit
     def eval_ensemble_train_batch(
         self,
-        models: "AbstractModel[StateT]",
+        models: Component,
         n_replicates: int,
         batch_info: BatchInfo,
         key: PRNGKeyArray,
@@ -759,7 +819,6 @@ class AbstractTask(Module):
         models_arrays, models_other = eqx.partition(
             models,
             eqx.is_array,
-            is_leaf=lambda x: isinstance(x, AbstractIntervenor),
         )
 
         def evaluate_single(model_arrays, model_other, batch_info, key):
@@ -775,66 +834,6 @@ class AbstractTask(Module):
         return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, key_in_axis))(
             models_arrays, models_other, batch_info, key
         )
-
-    @eqx.filter_jit
-    def add_intervenors_to_base_model(
-        self,
-        model: AbstractStagedModel[StateT],
-    ) -> AbstractStagedModel[StateT]:
-        """Add the task's scheduled intervenors to a model.
-
-        Assumes that the model has the appropriate structure to admit the
-        intervention. This depends on the the `where` and `stage_name`
-        properties stored in the task's `intervention_specs` field, since the
-        original call to `schedule_intervenor` that added them to the task.
-
-        - `where` should pick out an `AbstractStagedModel` component of `model`.
-        - If defined, `stage_name` should be the name of one of the stages of
-            the `AbstractStagedModel` component picked out by `where`.
-
-        Any existing intervenors in the model that were scheduled with another
-        task, will be removed to prevent conflicts. Other intervenors which were
-        added directly to the model without being scheduled with a task will
-        not be removed.
-
-        !!! Note
-            This method is mostly useful when evaluating a trained model on a task
-            with a different set of interventions than the one it was trained on.
-        """
-        # Remove all intervenors from the model that don't have underscores
-        base_model = remove_all_intervenors(model, scheduled_only=True)
-
-        # TODO: Split up the logic in `schedule_intervenor` -- maybe we can:
-        #   1. Add to model without needing to copy task.
-        #   2. Add multiple intervenors in a single call to `schedule_intervenors`
-        # Make a copy of `self`, without its spec intervenors
-        base_task = eqx.tree_at(
-            lambda task: task.intervention_specs,
-            self,
-            TaskInterventionSpecs(),
-        )
-
-        # Use schedule_intervenors to reproduce `self`, along with the modified model
-        task, model_ = base_task, base_model
-        for label, spec in self.intervention_specs.training.items():
-            #! This won't work if an intervenor spec is only present in the validation dict
-            if label in self.intervention_specs.validation:
-                intervenor_params_val = self.intervention_specs.validation[label].intervenor.params
-            else:
-                intervenor_params_val = None
-            task, model_ = schedule_intervenor(
-                task,
-                model_,
-                intervenor=spec.intervenor,
-                where=spec.where,
-                label=label,
-                default_active=spec.default_active,
-                intervenor_params_validation=intervenor_params_val,
-                # Only applies if `intervenor_params_val` is None:
-                validation_same_schedule=False,
-            )
-
-        return model_
 
     def add_input(
         self,
@@ -1049,7 +1048,7 @@ class SimpleReaches(AbstractTask):
         effector_init_state, effector_target_state = _pos_only_states(effector_pos_endpoints)
 
         # Broadcast the fixed targets to a sequence with the desired number of
-        # time steps, since that's what `ForgetfulIterator` and `Loss` will expect.
+        # time steps, since that's what the iteration helpers and loss will expect.
         # Hopefully this should not use up any extra memory.
         effector_target_state = jt.map(
             lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
@@ -1581,3 +1580,122 @@ def get_scalar_epoch_seq(
         mask, jnp.asarray(hold_value, dtype=jnp.float32), jnp.array(0.0, dtype=jnp.float32)
     )
     return seq[:, None]  # shape (n_steps, 1)
+
+
+class TaskComponentState(Module):
+    """State view for TaskComponent."""
+
+    step: Array
+    env_state: Optional[PyTree]
+
+
+class TaskComponent(Component):
+    """Component adapter for tasks/environments in an agent loop."""
+
+    input_ports: ClassVar[tuple[str, ...]] = ("agent_output",)
+    output_ports: ClassVar[tuple[str, ...]] = (
+        "target",
+        "observation",
+        "intervention_params",
+    )
+
+    task: AbstractTask = field(static=True)
+    trial_spec: TaskTrialSpec = field(static=True)
+    mode: Literal["open_loop", "closed_loop"] = field(default="open_loop", static=True)
+
+    step_index: eqx.nn.StateIndex
+    env_state_index: Optional[eqx.nn.StateIndex] = None
+
+    step_env: Optional[Callable[[PyTree, PyTree, PRNGKeyArray], tuple[PyTree, PyTree]]] = field(
+        default=None, static=True
+    )
+    get_target: Optional[Callable[[PyTree], PyTree]] = field(default=None, static=True)
+    get_observation: Optional[Callable[[PyTree], PyTree]] = field(default=None, static=True)
+    get_intervention_params: Optional[Callable[[PyTree], PyTree]] = field(
+        default=None, static=True
+    )
+
+    def __init__(
+        self,
+        task: AbstractTask,
+        trial_spec: TaskTrialSpec,
+        *,
+        mode: Literal["open_loop", "closed_loop"] = "open_loop",
+        env_state_init: Optional[PyTree] = None,
+        step_env: Optional[Callable[[PyTree, PyTree, PRNGKeyArray], tuple[PyTree, PyTree]]] = None,
+        get_target: Optional[Callable[[PyTree], PyTree]] = None,
+        get_observation: Optional[Callable[[PyTree], PyTree]] = None,
+        get_intervention_params: Optional[Callable[[PyTree], PyTree]] = None,
+    ):
+        self.task = task
+        self.trial_spec = trial_spec
+        self.mode = mode
+
+        self.step_index = eqx.nn.StateIndex(jnp.array(0, dtype=jnp.int32))
+
+        self.step_env = step_env
+        self.get_target = get_target
+        self.get_observation = get_observation
+        self.get_intervention_params = get_intervention_params
+
+        if self.mode == "closed_loop":
+            if env_state_init is None:
+                raise ValueError("env_state_init is required for closed_loop mode")
+            if self.step_env is None:
+                raise ValueError("step_env is required for closed_loop mode")
+            self.env_state_index = eqx.nn.StateIndex(env_state_init)
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: eqx.nn.State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], eqx.nn.State]:
+        step = state.get(self.step_index)
+
+        if self.mode == "open_loop":
+            target = jt.map(lambda x: x[step], self.trial_spec.inputs)
+            if self.trial_spec.intervene:
+                intervention_params = jt.map(lambda x: x[step], self.trial_spec.intervene)
+            else:
+                intervention_params = {}
+            outputs = {
+                "target": target,
+                "observation": None,
+                "intervention_params": intervention_params,
+            }
+        else:
+            if self.env_state_index is None or self.step_env is None:
+                raise ValueError("closed_loop mode requires env_state_index and step_env")
+            agent_output = inputs.get("agent_output", None)
+            env_state = state.get(self.env_state_index)
+            new_env_state, obs = self.step_env(env_state, agent_output, key)
+            state = state.set(self.env_state_index, new_env_state)
+
+            target = self.get_target(new_env_state) if self.get_target is not None else None
+            observation = (
+                self.get_observation(new_env_state)
+                if self.get_observation is not None
+                else obs
+            )
+            intervention_params = (
+                self.get_intervention_params(new_env_state)
+                if self.get_intervention_params is not None
+                else {}
+            )
+            outputs = {
+                "target": target,
+                "observation": observation,
+                "intervention_params": intervention_params,
+            }
+
+        state = state.set(self.step_index, step + 1)
+        return outputs, state
+
+    def state_view(self, state: eqx.nn.State) -> TaskComponentState:
+        step = state.get(self.step_index)
+        env_state = None
+        if self.env_state_index is not None:
+            env_state = state.get(self.env_state_index)
+        return TaskComponentState(step=step, env_state=env_state)
