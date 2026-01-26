@@ -39,6 +39,8 @@
 
 ::: feedbax.task.AbstractTask
 
+::: feedbax.task.TaskComponent
+
 ## Useful functions for building tasks
 
 ::: feedbax.task.internal_grid_points

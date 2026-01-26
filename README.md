@@ -16,7 +16,7 @@ Feedbax makes it easy to:
 - swap out components of models, and write new components.
 <!-- - track the progress of a training run in Tensorboard. -->
 
-Feedbax is in active [development](#development). Expect some changes in the near future. In particular, I intend to [replace](https://github.com/i-m-mll/feedbax/discussions/28#discussioncomment-10153895) the staged model approach with a simpler lazy-executing DAG framework.
+Feedbax is in active [development](#development). Expect some changes in the near future. The staged model approach has been replaced by an explicit eager graph architecture.
 
 ## Feedbax is a JAX library
 
@@ -53,4 +53,3 @@ There are many features, especially pre-built models and tasks, that could still
 
 - Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have directly influenced this project
 - Special thanks to [Patrick Kidger](https://github.com/patrick-kidger), whose JAX libraries and their documentation often serve as examples to me
-
