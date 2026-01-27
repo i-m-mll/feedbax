@@ -32,6 +32,7 @@ dependencies = [
     "crc32c>=2.7.1",
     "diffrax>=0.7.0",
     "equinox>=0.11.12",
+    "fastapi>=0.110.0",
     "jax>=0.5.2",
     "jaxtyping>=0.2.38",
     "matplotlib>=3.10.1",
@@ -42,6 +43,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "tensorboardx>=2.6.2.2",
     "tqdm>=4.67.1",
+    "uvicorn>=0.29.0",
     "jax-cookbook",
 ]
 
@@ -54,7 +56,7 @@ config-settings = { editable-mode = "compat" }
 
 #! TODO: Replace at release
 [tool.uv.sources.jax-cookbook]
-path = "../../../05 Utils/jax-cookbook"
+path = "/Users/mll/Main/10 Projects/05 Utils/jax-cookbook"
 editable = true
 
 [build-system]

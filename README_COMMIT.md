@@ -1,72 +1,96 @@
-# Commit: [feature/web-ui] Add comprehensive web UI specification
+# Commit: [feature/web-ui] Implement Phase 1 web UI foundation
 
 ## Overview
 
-This commit introduces a detailed specification for a canvas-based web application that will allow interactive construction, visualization, and training of Feedbax models. The spec draws inspiration from Collimator.ai while adapting to Feedbax's eager graph architecture.
+Initial implementation of the canvas-based web UI for Feedbax model construction. This commit delivers the Phase 1 foundation: a working React Flow canvas with custom nodes/edges, FastAPI backend with component registry, and bidirectional JSON serialization.
 
 ## Changes
 
-### Web UI Specification (`docs/WEB_UI_SPEC.md`)
+### Frontend (`web/`) — ~1950 lines TypeScript/React
 
-A ~900-line comprehensive specification covering:
+**Canvas System** (`components/canvas/`)
+- `Canvas.tsx` — React Flow wrapper with background, controls, minimap
+- `CustomNode.tsx` — Component nodes with port visualization (input=blue, output=green)
+- `CustomEdge.tsx` — Wire rendering with cycle detection styling
 
-**Technology Stack**
-- Frontend: React 18 + React Flow 12 + TypeScript + Vite 5 + Tailwind CSS + Zustand
-- Backend: FastAPI + WebSocket + Pydantic
-- Rationale: React Flow is the mature, battle-tested choice for node-based editors; FastAPI integrates naturally with the JAX/Python backend
+**Layout** (`components/layout/`)
+- `Header.tsx` — Project name, file menu placeholder
+- `Sidebar.tsx` — Collapsible left panel container
+- `StatusBar.tsx` — Connection status, validation status
 
-**Data Model & Serialization**
-- TypeScript types mirroring Python `graph.py` structures (`ComponentSpec`, `WireSpec`, `GraphSpec`)
-- Complete JSON project file format including graph, task, training config, and UI state
-- Bidirectional serialization: UI ↔ JSON ↔ Python objects
+**Panels** (`components/panels/`)
+- `ComponentLibrary.tsx` — Searchable, categorized component palette with drag-to-add
+- `PropertiesPanel.tsx` — Parameter editing for selected nodes
+- `TrainingPanel.tsx` — Optimizer/loss configuration UI (scaffold)
+- `InspectorPanel.tsx` — State inspection (scaffold)
+- `RightPanel.tsx` — Tabbed container for properties/training/inspector
 
-**UI/UX Design**
-- Clean, minimal aesthetic inspired by modern tools (Claude Code, Linear, Figma)
-- Three-panel layout: component library (left), canvas (center), properties/training (right)
-- Custom node design with visual ports (input=blue, output=green)
-- Cycle wires rendered distinctly (dashed purple)
+**State Management** (`stores/`)
+- `graphStore.ts` — Zustand store for graph state, React Flow integration, undo/redo
+- `trainingStore.ts` — Training configuration state
 
-**Canvas & Graph Editing**
-- Pure TypeScript implementations of graph surgery operations matching Python API
-- Undo/redo system with 50-state history
-- Validation with inline error display
-- Keyboard shortcuts for power users
+**Graph Logic** (`features/graph/`)
+- `operations.ts` — Pure functions: addNode, removeNode, addWire, removeWire, insertBetween
+- `validation.ts` — Graph validation, cycle detection, error/warning collection
 
-**Training Configuration**
-- Side panel for optimizer and loss function configuration
-- Hierarchical loss builder UI matching `TermTree` structure
-- WebSocket streaming for real-time training progress
-- Start/stop/pause controls with checkpoint management
+**Types** (`types/`)
+- `graph.ts` — ComponentSpec, WireSpec, GraphSpec matching Python structures
+- `components.ts` — ComponentDefinition, ParamSchema
+- `training.ts` — OptimizerSpec, LossTermSpec, TrainingSpec
 
-**Component System**
-- Registry pattern with parameter schemas for auto-generated property editors
-- User component discovery from `~/.feedbax/components/`
-- Future path for in-browser code editor
+**API Client** (`api/`)
+- `client.ts` — REST client with TanStack Query integration
 
-**Implementation Phases**
-- Phase 1: Foundation (canvas, nodes, wiring)
-- Phase 2: Component system (registry, properties)
-- Phase 3: Training integration
-- Phase 4: Execution & debugging
-- Phase 5: Polish
-- Phase 6: Future enhancements (dashboard integration, collaboration)
+### Backend (`feedbax/web/`) — ~960 lines Python
+
+**FastAPI Application**
+- `app.py` — Application factory with CORS, router registration
+- `config.py` — Configuration (ports, paths, user component directory)
+
+**API Endpoints** (`api/`)
+- `graphs.py` — CRUD for graph projects (list, create, get, update, delete, validate)
+- `components.py` — Component registry (list, get, refresh user components)
+- `training.py` — Training job management (start, status, stop)
+- `execution.py` — Simulation execution endpoint
+
+**WebSocket Handlers** (`ws/`)
+- `training.py` — Training progress streaming
+- `simulation.py` — Simulation state streaming
+
+**Services** (`services/`)
+- `component_registry.py` — Component discovery, built-in + user component registration
+- `graph_service.py` — Graph file operations, validation
+- `training_service.py` — Training job execution in background thread
+
+**Serialization**
+- `serialization.py` — Pydantic models, Graph ↔ JSON conversion
+- `decorators.py` — `@register_component` for user-defined components
+
+### Configuration
+
+- `web/vite.config.ts` — Vite with React, path aliases, API proxy
+- `web/tailwind.config.js` — Tailwind with custom colors
+- `web/tsconfig.json` — TypeScript strict mode
+- `scripts/dev.sh` — Start frontend + backend concurrently
+- `scripts/build.sh` — Production build script
+- `pyproject.toml` — Added FastAPI, uvicorn, websockets dependencies
 
 ## Rationale
 
-**Why React + React Flow over Svelte?**
-While Svelte offers better raw performance (~30% faster loads, 1.6KB vs 40KB runtime), React Flow is significantly more mature and battle-tested for node-based editors. The ecosystem support and library quality outweigh the performance delta for this use case.
+**Why implement before finalizing spec?**
+The spec provided sufficient detail to begin implementation. Building the foundation surfaces practical issues early and validates the architecture.
 
-**Why JSON serialization instead of Python code generation?**
-JSON serialization is the modern pattern—bidirectional, version-friendly, and doesn't require string manipulation or syntax handling. The Python side deserializes JSON and instantiates objects. Code generation is fragile and unnecessary.
+**Graph store design**
+The Zustand store maintains both `graphSpec` (canonical data) and React Flow's `nodes`/`edges` (derived for rendering). Changes update both synchronously to avoid drift.
 
-**Why training config in a panel instead of on canvas?**
-TaskTrainer operates at a meta-level—it orchestrates training of the model, not part of the computation graph itself. Putting it on canvas would conflate levels of abstraction. The Task (environment) can be a canvas component since it participates in data flow.
-
-**Why user components via filesystem discovery?**
-Injecting code into the library would be invasive and create versioning issues. Filesystem discovery (`~/.feedbax/components/`) is clean, explicit, and follows standard plugin patterns.
+**Component registry pattern**
+Backend discovers components at startup, exposing metadata (ports, param schemas) via API. Frontend fetches this once and caches. User components loaded from `~/.feedbax/components/`.
 
 ## Files Changed
 
-- `docs/WEB_UI_SPEC.md` - New comprehensive specification (~900 lines)
+- `web/` — Complete frontend application (25 files)
+- `feedbax/web/` — Complete backend module (14 files)
+- `scripts/` — Dev and build scripts
+- `pyproject.toml`, `uv.lock` — New dependencies
 
 *Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>*
