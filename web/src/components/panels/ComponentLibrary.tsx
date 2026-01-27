@@ -52,7 +52,7 @@ export function ComponentLibrary() {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-x-hidden">
       <div className="px-4 pb-4">
         <input
           type="text"

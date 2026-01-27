@@ -58,7 +58,7 @@ export function PropertiesPanel() {
 
       <div className="border-t border-slate-100 pt-4">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400 mb-2">Ports</div>
-        <div className="grid grid-cols-2 gap-4 text-xs text-slate-600">
+        <div className="grid grid-cols-2 gap-4 text-xs text-slate-600 break-words">
           <div>
             <div className="font-semibold text-slate-500 mb-1">Inputs</div>
             <ul className="space-y-1">

@@ -20,7 +20,6 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
     >
       <div className="px-3 py-2 border-b border-slate-100 bg-slate-50/70 rounded-t-xl flex items-center justify-between">
         <div>
-          <div className="text-xs uppercase tracking-[0.25em] text-slate-400">Node</div>
           <div className="text-sm font-medium text-slate-800">{label}</div>
         </div>
         <div className="text-[11px] text-slate-500 truncate max-w-[120px]">{spec.type}</div>

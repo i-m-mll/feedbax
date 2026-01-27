@@ -7,7 +7,7 @@ export function InspectorPanel() {
   const validation = useMemo(() => validateGraph(graph), [graph]);
 
   return (
-    <div className="p-6 space-y-4 text-sm text-slate-600">
+    <div className="p-6 space-y-4 text-sm text-slate-600 overflow-x-hidden">
       <div>
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Inspector</div>
         <div className="text-base font-semibold text-slate-800">State & Ports</div>
