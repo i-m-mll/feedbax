@@ -146,14 +146,14 @@ function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData
   });
 }
 
-function buildEdges(graph: GraphSpec): Edge[] {
+function buildEdges(graph: GraphSpec, edgeStyle: 'bezier' | 'elbow' = 'bezier'): Edge[] {
   return graph.wires.map((wire) => ({
     id: wireId(wire),
     source: wire.source_node,
     target: wire.target_node,
     sourceHandle: wire.source_port,
     targetHandle: wire.target_port,
-    type: 'wire',
+    type: edgeStyle === 'bezier' ? 'wire' : 'elbow',
   }));
 }
 
@@ -207,6 +207,7 @@ interface GraphStoreState {
   uiState: GraphUIState;
   nodes: Node<GraphNodeData>[];
   edges: Edge[];
+  edgeStyle: 'bezier' | 'elbow';
   isDirty: boolean;
   lastSavedAt: string | null;
   past: { graph: GraphSpec; uiState: GraphUIState }[];
@@ -217,6 +218,8 @@ interface GraphStoreState {
   undo: () => void;
   redo: () => void;
   deleteSelected: () => void;
+  setEdgeStyle: (style: 'bezier' | 'elbow') => void;
+  renameNode: (nodeId: string, nextId: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -233,19 +236,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   graph: initial.graph,
   uiState: initial.uiState,
   nodes: buildNodes(initial.graph, initial.uiState),
-  edges: buildEdges(initial.graph),
+  edges: buildEdges(initial.graph, 'bezier'),
+  edgeStyle: 'bezier',
   isDirty: false,
   lastSavedAt: null,
   past: [],
   future: [],
   hydrateGraph: (graph, uiState, graphId) => {
     const normalized = normalizeUiState(graph, uiState);
+    const edgeStyle = get().edgeStyle;
     set({
       graphId: graphId ?? null,
       graph,
       uiState: normalized,
       nodes: buildNodes(graph, normalized),
-      edges: buildEdges(graph),
+      edges: buildEdges(graph, edgeStyle),
       isDirty: false,
       past: [],
       future: [],
@@ -265,7 +270,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       graph: fresh.graph,
       uiState: fresh.uiState,
       nodes: buildNodes(fresh.graph, fresh.uiState),
-      edges: buildEdges(fresh.graph),
+      edges: buildEdges(fresh.graph, 'bezier'),
       isDirty: false,
       lastSavedAt: null,
       past: [],
@@ -284,7 +289,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         graph: previous.graph,
         uiState: normalized,
         nodes: buildNodes(previous.graph, normalized),
-        edges: buildEdges(previous.graph),
+        edges: buildEdges(previous.graph, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -303,12 +308,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         graph: next.graph,
         uiState: normalized,
         nodes: buildNodes(next.graph, normalized),
-        edges: buildEdges(next.graph),
+        edges: buildEdges(next.graph, state.edgeStyle),
         past,
         future,
         isDirty: true,
       };
     });
+  },
+  setEdgeStyle: (style) => {
+    set((state) => ({
+      edgeStyle: style,
+      edges: state.edges.map((edge) => ({
+        ...edge,
+        type: style === 'bezier' ? 'wire' : 'elbow',
+      })),
+    }));
   },
   deleteSelected: () => {
     set((state) => {
@@ -358,6 +372,70 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         uiState,
         nodes,
         edges,
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  renameNode: (nodeId, nextId) => {
+    set((state) => {
+      const trimmed = nextId.trim();
+      if (!trimmed || trimmed === nodeId || state.graph.nodes[trimmed]) {
+        return state;
+      }
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+
+      const graphNodes = { ...state.graph.nodes };
+      const nodeSpec = graphNodes[nodeId];
+      if (!nodeSpec) return state;
+      delete graphNodes[nodeId];
+      graphNodes[trimmed] = nodeSpec;
+
+      const wires = state.graph.wires.map((wire) => ({
+        ...wire,
+        source_node: wire.source_node === nodeId ? trimmed : wire.source_node,
+        target_node: wire.target_node === nodeId ? trimmed : wire.target_node,
+      }));
+
+      const input_bindings = Object.fromEntries(
+        Object.entries(state.graph.input_bindings).map(([key, value]) => [
+          key,
+          [value[0] === nodeId ? trimmed : value[0], value[1]],
+        ])
+      );
+      const output_bindings = Object.fromEntries(
+        Object.entries(state.graph.output_bindings).map(([key, value]) => [
+          key,
+          [value[0] === nodeId ? trimmed : value[0], value[1]],
+        ])
+      );
+
+      const node_states = { ...state.uiState.node_states };
+      const nodeState = node_states[nodeId];
+      if (nodeState) {
+        delete node_states[nodeId];
+        node_states[trimmed] = { ...nodeState, selected: true };
+      }
+
+      const graph: GraphSpec = {
+        ...state.graph,
+        nodes: graphNodes,
+        wires,
+        input_bindings,
+        output_bindings,
+      };
+
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states,
+      };
+
+      return {
+        graph,
+        uiState,
+        nodes: buildNodes(graph, uiState),
+        edges: buildEdges(graph, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -425,6 +503,13 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   onConnect: (connection) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
+    const alreadyUsed = get().edges.some(
+      (edge) =>
+        edge.target === connection.target &&
+        edge.targetHandle === connection.targetHandle
+    );
+    if (alreadyUsed) return;
+    const edgeStyle = get().edgeStyle;
     const edge: Edge = {
       ...connection,
       id: wireId({
@@ -433,7 +518,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         target_node: connection.target,
         target_port: connection.targetHandle,
       }),
-      type: 'wire',
+      type: edgeStyle === 'bezier' ? 'wire' : 'elbow',
     };
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);

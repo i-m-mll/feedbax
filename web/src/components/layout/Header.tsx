@@ -63,12 +63,14 @@ export function Header() {
           FEEDBAX
         </div>
         <div className="h-5 w-px bg-slate-200" />
-        <div className="relative">
+        <div className="relative flex items-center gap-2">
           <button
             className="text-sm font-medium text-ink hover:text-brand-600"
             onClick={() => setMenuOpen((prev) => !prev)}
           >
             Project: {graph.metadata?.name ?? 'Untitled Graph'}
+          </button>
+          {isDirty && <span className="text-amber-500 text-sm">•</span>}
           </button>
           {menuOpen && (
             <div className="absolute left-0 mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-20 p-2">
@@ -125,8 +127,12 @@ export function Header() {
         >
           <Download className="w-4 h-4" />
         </button>
-        <button className="p-1.5 rounded-full hover:bg-slate-100" title={isDirty ? 'Unsaved changes' : 'All changes saved'}>
-          <FolderOpen className={isDirty ? 'w-4 h-4 text-amber-500' : 'w-4 h-4'} />
+        <button
+          className="p-1.5 rounded-full hover:bg-slate-100"
+          title="Open project"
+          onClick={() => setMenuOpen((prev) => !prev)}
+        >
+          <FolderOpen className="w-4 h-4" />
         </button>
         <button className="p-1.5 rounded-full hover:bg-slate-100">
           <Settings className="w-4 h-4" />
