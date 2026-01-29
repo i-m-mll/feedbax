@@ -71,7 +71,6 @@ export function Header() {
             Project: {graph.metadata?.name ?? 'Untitled Graph'}
           </button>
           {isDirty && <span className="text-amber-500 text-sm">•</span>}
-          </button>
           {menuOpen && (
             <div className="absolute left-0 mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-20 p-2">
               <button
