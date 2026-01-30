@@ -87,6 +87,10 @@ export function ComponentLibrary() {
     new Set(['Neural Networks'])
   );
   const { components, isLoading, error } = useComponents();
+  const coreComponents = useMemo(
+    () => components.filter((component) => component.name === 'Subgraph'),
+    [components]
+  );
 
   const byCategory = useMemo(() => {
     const filtered = search
@@ -96,7 +100,8 @@ export function ComponentLibrary() {
         )
       : components;
 
-    return groupComponentsByCategory(filtered);
+    const withoutPinned = filtered.filter((component) => component.name !== 'Subgraph');
+    return groupComponentsByCategory(withoutPinned);
   }, [components, search]);
 
   const toggleCategory = (category: string) => {
@@ -128,6 +133,18 @@ export function ComponentLibrary() {
         )}
         {error && (
           <div className="text-xs text-amber-500">Using local component catalog.</div>
+        )}
+        {coreComponents.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">
+              Structure
+            </div>
+            <div className="space-y-2">
+              {coreComponents.map((component) => (
+                <ComponentCard key={component.name} component={component} />
+              ))}
+            </div>
+          </div>
         )}
         {Object.entries(byCategory).map(([category, components]) => (
           <CategorySection
@@ -196,7 +213,14 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
           <Icon className="w-4 h-4 text-slate-600" />
         </div>
         <div>
-          <div className="text-sm font-semibold text-slate-800">{component.name}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-sm font-semibold text-slate-800">{component.name}</div>
+            {component.is_composite && (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+                Composite
+              </span>
+            )}
+          </div>
           <div className="text-xs text-slate-500">{component.description}</div>
         </div>
       </div>

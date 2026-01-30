@@ -18,6 +18,7 @@ class ComponentMeta:
     output_ports: List[str]
     icon: str = 'box'
     port_types: Optional[PortTypeSpec] = None
+    is_composite: bool = False
 
     @property
     def default_params(self) -> Dict[str, object]:
@@ -35,7 +36,7 @@ class ComponentRegistry:
             ComponentMeta(
                 name='Network',
                 category='Neural Networks',
-                description='Generic recurrent network block.',
+                description='Composite recurrent network template.',
                 param_schema=[
                     ParamSchema(name='input_size', type='int', default=6, min=1, required=True),
                     ParamSchema(name='hidden_size', type='int', default=100, min=1, required=True),
@@ -79,6 +80,7 @@ class ComponentRegistry:
                 input_ports=['input', 'feedback'],
                 output_ports=['output', 'hidden'],
                 icon='CircuitBoard',
+                is_composite=True,
                 port_types=PortTypeSpec(
                     inputs={
                         'input': PortType(dtype='vector'),
@@ -94,12 +96,13 @@ class ComponentRegistry:
         self.register(
             ComponentMeta(
                 name='Subgraph',
-                category='Utilities',
-                description='Composite wrapper for nested graphs.',
+                category='Structure',
+                description='Nested graph container.',
                 param_schema=[],
                 input_ports=[],
                 output_ports=[],
                 icon='Layers',
+                is_composite=True,
             )
         )
         self.register(
@@ -742,6 +745,7 @@ class ComponentRegistry:
                         input_ports=list(meta.get('input_ports', [])),
                         output_ports=list(meta.get('output_ports', [])),
                         icon=meta.get('icon', 'box'),
+                        is_composite=bool(meta.get('is_composite', False)),
                         port_types=(
                             PortTypeSpec(
                                 inputs={
@@ -770,4 +774,5 @@ class ComponentRegistry:
             icon=meta.icon,
             default_params=meta.default_params,
             port_types=meta.port_types,
+            is_composite=meta.is_composite,
         )

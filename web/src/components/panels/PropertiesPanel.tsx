@@ -10,10 +10,13 @@ export function PropertiesPanel() {
   const updateNodeParams = useGraphStore((state) => state.updateNodeParams);
   const renameNode = useGraphStore((state) => state.renameNode);
   const addTap = useGraphStore((state) => state.addTap);
+  const addTapForEdge = useGraphStore((state) => state.addTapForEdge);
   const updateTap = useGraphStore((state) => state.updateTap);
   const removeTap = useGraphStore((state) => state.removeTap);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
   const selectedTapId = useGraphStore((state) => state.selectedTapId);
+  const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId);
+  const edges = useGraphStore((state) => state.edges);
   const { components } = useComponents();
 
   const selectedNode = useMemo(
@@ -23,6 +26,9 @@ export function PropertiesPanel() {
   const taps = graph.taps ?? [];
   const selectedTap = selectedTapId
     ? taps.find((tap) => tap.id === selectedTapId)
+    : undefined;
+  const selectedEdge = selectedEdgeId
+    ? edges.find((edge) => edge.id === selectedEdgeId)
     : undefined;
 
   const [nameValue, setNameValue] = useState('');
@@ -41,6 +47,36 @@ export function PropertiesPanel() {
         onUpdate={(updates) => updateTap(selectedTap.id, updates)}
         onRemove={() => removeTap(selectedTap.id)}
       />
+    );
+  }
+
+  if (selectedEdge && selectedEdge.type !== 'state-flow') {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Edge</div>
+          <div className="mt-2 text-sm text-slate-600">
+            {selectedEdge.source} → {selectedEdge.target}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Taps</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
+              onClick={() => addTapForEdge(selectedEdge.id, 'probe')}
+            >
+              Add Probe Tap
+            </button>
+            <button
+              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
+              onClick={() => addTapForEdge(selectedEdge.id, 'intervention')}
+            >
+              Add Intervention Tap
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 

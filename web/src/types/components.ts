@@ -21,4 +21,5 @@ export interface ComponentDefinition {
   icon: string;
   default_params: ComponentSpec['params'];
   port_types?: PortTypeSpec;
+  is_composite?: boolean;
 }

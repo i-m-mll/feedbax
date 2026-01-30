@@ -878,6 +878,7 @@ interface GraphStoreState {
   past: { graph: GraphSpec; uiState: GraphUIState }[];
   future: { graph: GraphSpec; uiState: GraphUIState }[];
   selectedTapId: string | null;
+  selectedEdgeId: string | null;
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
   markSaved: (graphId: string) => void;
   resetGraph: () => void;
@@ -900,8 +901,10 @@ interface GraphStoreState {
   updateNodeParams: (nodeId: string, paramName: string, value: ComponentSpec['params'][string]) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
+  setSelectedEdge: (edgeId: string | null) => void;
   toggleNodeCollapse: (nodeId: string) => void;
   setAllNodesCollapsed: (collapsed: boolean) => void;
+  addTapForEdge: (edgeId: string, type: TapSpec['type']) => void;
   addTap: (afterNode: string, type: TapSpec['type']) => void;
   updateTap: (tapId: string, updates: Partial<TapSpec>) => void;
   removeTap: (tapId: string) => void;
@@ -923,6 +926,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   past: [],
   future: [],
   selectedTapId: null,
+  selectedEdgeId: null,
   hydrateGraph: (graph, uiState, graphId) => {
     const edgeStyle = get().edgeStyle;
     const migrated = migrateGraphSpec(graph);
@@ -939,6 +943,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       past: [],
       future: [],
       selectedTapId: null,
+      selectedEdgeId: null,
     });
   },
   markSaved: (graphId) => {
@@ -963,6 +968,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       past: [],
       future: [],
       selectedTapId: null,
+      selectedEdgeId: null,
     });
   },
   undo: () => {
@@ -981,6 +987,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         past,
         future,
         isDirty: true,
+        selectedTapId: null,
+        selectedEdgeId: null,
       };
     });
   },
@@ -1000,6 +1008,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         past,
         future,
         isDirty: true,
+        selectedTapId: null,
+        selectedEdgeId: null,
       };
     });
   },
@@ -1442,7 +1452,14 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         past,
         future: [],
         isDirty: true,
-        selectedTapId: state.selectedTapId && tapsToRemove.has(state.selectedTapId) ? null : state.selectedTapId,
+        selectedTapId:
+          state.selectedTapId && tapsToRemove.has(state.selectedTapId)
+            ? null
+            : state.selectedTapId,
+        selectedEdgeId:
+          state.selectedEdgeId && selectedEdgeIds.includes(state.selectedEdgeId)
+            ? null
+            : state.selectedEdgeId,
       };
     });
   },
@@ -1761,6 +1778,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       }
       const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
       const dirty = changes.length > 0;
+      const selectedEdgeId = nextEdges.find((edge) => edge.selected)?.id ?? null;
       return {
         edges: applyEdgeStates(nextEdges, edge_states, state.edgeStyle),
         graph,
@@ -1771,6 +1789,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         past,
         future: shouldRecord ? [] : state.future,
         isDirty: state.isDirty || dirty,
+        selectedEdgeId,
       };
     });
   },
@@ -1945,6 +1964,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           tap_states,
         },
         selectedTapId: null,
+        selectedEdgeId: null,
       };
     });
   },
@@ -1983,6 +2003,19 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           tap_states,
         },
         selectedTapId: tapId,
+        selectedEdgeId: null,
+      };
+    });
+  },
+  setSelectedEdge: (edgeId) => {
+    set((state) => {
+      const edges = state.edges.map((edge) => ({
+        ...edge,
+        selected: edge.id === edgeId,
+      }));
+      return {
+        edges,
+        selectedEdgeId: edgeId,
       };
     });
   },
@@ -2048,6 +2081,54 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         nodes,
         edges: buildEdges(state.graph, { ...state.uiState, node_states }, state.edgeStyle),
         isDirty: true,
+      };
+    });
+  },
+  addTapForEdge: (edgeId, type) => {
+    set((state) => {
+      const edge = state.edges.find((item) => item.id === edgeId);
+      if (!edge || edge.type === 'state-flow') return state;
+      if (!edge.source || !edge.target) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const taps = [...(state.graph.taps ?? [])];
+      const id = createTapId();
+      taps.push({
+        id,
+        type,
+        position: { afterNode: edge.source, targetNode: edge.target },
+        paths: {},
+      });
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        tap_states: {
+          ...(state.uiState.tap_states ?? {}),
+          [id]: {
+            position: computeTapPosition({ ...state.graph, taps }, state.uiState, {
+              id,
+              type,
+              position: { afterNode: edge.source, targetNode: edge.target },
+              paths: {},
+            }),
+            selected: true,
+          },
+        },
+      };
+      return {
+        graph: {
+          ...state.graph,
+          taps,
+        },
+        uiState,
+        nodes: buildNodes({ ...state.graph, taps }, uiState).map((node) => ({
+          ...node,
+          selected: node.id === tapNodeId(id),
+        })),
+        edges: buildEdges({ ...state.graph, taps }, uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+        selectedTapId: id,
+        selectedEdgeId: null,
       };
     });
   },

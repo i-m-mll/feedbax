@@ -19,7 +19,7 @@ import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
-import { ChevronsDown, ChevronsUp, MoveDiagonal, Plus } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
@@ -41,6 +41,8 @@ export function Canvas() {
     addNodeFromComponent,
     setSelectedNode,
     setSelectedTap,
+    setSelectedEdge,
+    addTapForEdge,
     setAllNodesCollapsed,
     graph,
     graphStack,
@@ -187,6 +189,7 @@ export function Canvas() {
         onPaneClick={() => {
           setSelectedNode(null);
           setSelectedTap(null);
+          setSelectedEdge(null);
         }}
         onNodeClick={(_, node) => {
           if (node.type === 'tap') {
@@ -194,7 +197,18 @@ export function Canvas() {
           } else {
             setSelectedTap(null);
             setSelectedNode(node.id);
+            setSelectedEdge(null);
           }
+        }}
+        onEdgeClick={(_, edge) => {
+          if (edge.type === 'state-flow') return;
+          setSelectedEdge(edge.id);
+          setSelectedNode(null);
+          setSelectedTap(null);
+        }}
+        onEdgeDoubleClick={(_, edge) => {
+          if (edge.type === 'state-flow') return;
+          addTapForEdge(edge.id, 'probe');
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
@@ -213,7 +227,7 @@ export function Canvas() {
               onClick={wrapInParentGraph}
               title="Wrap this graph in a new parent"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <span className="text-xs font-mono">..</span>
             </button>
             <div className="h-4 w-px bg-slate-200" />
             {breadcrumbs.map((crumb, index) => {
