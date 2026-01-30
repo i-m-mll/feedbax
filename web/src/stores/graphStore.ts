@@ -24,7 +24,7 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
-const COMPOSITE_TYPES = new Set(['Network']);
+const COMPOSITE_TYPES = new Set(['Network', 'Subgraph']);
 
 interface GraphLayer {
   graph: GraphSpec;
@@ -521,6 +521,7 @@ interface GraphStoreState {
   removeEdgePoint: (edgeId: string, index: number) => void;
   toggleEdgeStyleForEdge: (edgeId: string) => void;
   enterSubgraph: (nodeId: string) => void;
+  wrapInParentGraph: () => void;
   exitToBreadcrumb: (index: number) => void;
   renameNode: (nodeId: string, nextId: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -800,6 +801,69 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
+  wrapInParentGraph: () => {
+    set((state) => {
+      const derivedCurrent = deriveExternalPorts(state.graph);
+      const childNodeId = createNodeName({ nodes: {} } as GraphSpec, 'model');
+      const now = new Date().toISOString();
+      const parentGraph: GraphSpec = {
+        nodes: {
+          [childNodeId]: {
+            type: 'Subgraph',
+            params: {},
+            input_ports: derivedCurrent.input_ports,
+            output_ports: derivedCurrent.output_ports,
+          },
+        },
+        wires: [],
+        input_ports: derivedCurrent.input_ports,
+        output_ports: derivedCurrent.output_ports,
+        input_bindings: Object.fromEntries(
+          derivedCurrent.input_ports.map((port) => [port, [childNodeId, port]])
+        ) as Record<string, [string, string]>,
+        output_bindings: Object.fromEntries(
+          derivedCurrent.output_ports.map((port) => [port, [childNodeId, port]])
+        ) as Record<string, [string, string]>,
+        subgraphs: {
+          [childNodeId]: derivedCurrent,
+        },
+        metadata: {
+          name: state.graph.metadata?.name ?? 'Workspace',
+          description: state.graph.metadata?.description ?? '',
+          created_at: state.graph.metadata?.created_at ?? now,
+          updated_at: now,
+          version: state.graph.metadata?.version ?? '1.0.0',
+        },
+      };
+
+      const parentUi: GraphUIState = {
+        viewport: DEFAULT_VIEWPORT,
+        node_states: {
+          [childNodeId]: {
+            position: { x: 320, y: 220 },
+            collapsed: false,
+            selected: false,
+          },
+        },
+        subgraph_states: {
+          [childNodeId]: state.uiState,
+        },
+      };
+      const normalized = normalizeUiState(parentGraph, parentUi, state.edgeStyle);
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      return {
+        graph: parentGraph,
+        uiState: normalized,
+        nodes: buildNodes(parentGraph, normalized),
+        edges: buildEdges(parentGraph, normalized, state.edgeStyle),
+        graphStack: [],
+        currentGraphLabel: parentGraph.metadata?.name ?? 'Workspace',
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
   exitToBreadcrumb: (index) => {
     set((state) => {
       if (state.graphStack.length === 0) return state;
@@ -1021,6 +1085,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   onNodesChange: (changes) => {
     set((state) => {
+      const removedIds = changes
+        .filter((change) => change.type === 'remove')
+        .map((change) => change.id);
       const shouldRecord = changes.some(
         (change) =>
           change.type === 'remove' ||
@@ -1031,6 +1098,54 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const past = shouldRecord
         ? [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY)
         : state.past;
+      let graph = state.graph;
+      let uiState = state.uiState;
+      let edges = state.edges;
+
+      if (removedIds.length > 0) {
+        const graphNodes = { ...graph.nodes };
+        const subgraphs = { ...(graph.subgraphs ?? {}) };
+        for (const nodeId of removedIds) {
+          delete graphNodes[nodeId];
+          delete subgraphs[nodeId];
+        }
+        const input_bindings = { ...graph.input_bindings };
+        const output_bindings = { ...graph.output_bindings };
+        for (const [key, binding] of Object.entries(input_bindings)) {
+          if (removedIds.includes(binding[0])) {
+            delete input_bindings[key];
+          }
+        }
+        for (const [key, binding] of Object.entries(output_bindings)) {
+          if (removedIds.includes(binding[0])) {
+            delete output_bindings[key];
+          }
+        }
+        edges = edges.filter(
+          (edge) => !removedIds.includes(edge.source) && !removedIds.includes(edge.target)
+        );
+        const node_states = { ...uiState.node_states };
+        for (const nodeId of removedIds) {
+          delete node_states[nodeId];
+        }
+        const subgraph_states = { ...(uiState.subgraph_states ?? {}) };
+        for (const nodeId of removedIds) {
+          delete subgraph_states[nodeId];
+        }
+        uiState = {
+          ...uiState,
+          node_states,
+          subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
+        };
+        graph = {
+          ...graph,
+          nodes: graphNodes,
+          wires: edgesToWires(edges),
+          input_bindings,
+          output_bindings,
+          subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
+        };
+      }
       const sizeUpdates = new Map<string, { width: number; height: number }>();
       for (const change of changes) {
         if (change.type === 'dimensions') {
@@ -1044,7 +1159,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         changes as NodeChange<Node<GraphNodeData>>[],
         state.nodes
       );
-      const node_states = { ...state.uiState.node_states };
+      const node_states = { ...uiState.node_states };
       for (const node of nextNodes) {
         const existing = node_states[node.id] ?? {
           position: { x: node.position.x, y: node.position.y },
@@ -1069,11 +1184,15 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
       }));
       const dirty = changes.some((change) => change.type !== 'select');
+      const edge_states = buildEdgeStates(graph, uiState, state.edgeStyle);
       return {
+        graph,
         nodes: updatedNodes,
+        edges: applyEdgeStates(edges, edge_states, state.edgeStyle),
         uiState: {
-          ...state.uiState,
+          ...uiState,
           node_states,
+          edge_states,
         },
         past,
         future: shouldRecord ? [] : state.future,

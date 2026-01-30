@@ -1,46 +1,33 @@
-# Commit: [feature/web-ui] Fix shelf layout and subgraph persistence
+# Commit: [feature/web-ui] Improve canvas UX and settings
 
 ## Overview
-This commit stabilizes the two-shelf layout with consistent headers, collapse logic,
-and resize behavior, and it persists subgraph graphs/UI state in saved project data.
-It also tightens node port layout/spacing and panel formatting to match the new shelf
-UX.
+This commit tightens canvas UX by fixing delete sync, refining port layout, and
+adding a wrap‑to‑parent graph action. It also introduces a basic settings popover
+for app‑level toggles, including the minimap visibility.
 
 ## Changes
 
-### Two-shelf layout
-- Add dedicated headers for model and workbench shelves with collapse controls
-- Enforce NAND collapse logic and allow full-range splits; hide resize handle when
-  collapsed
-- Remove global header toggles to keep shelf controls in-place
+### Canvas behavior
+- Keep graph data in sync when nodes are removed via UI changes
+- Add a “wrap in parent” action to lift the current graph into a new outer graph
+- Improve port label spacing and vertical centering
 
-### Subgraph persistence
-- Add `subgraphs` to GraphSpec and `subgraph_states` to GraphUIState (TS + Pydantic)
-- Store and propagate subgraph graphs/UI state on enter/exit, rename, and delete
-- Normalize subgraph UI state recursively during hydration
-
-### Node and panel polish
-- Correct port dot placement based on node geometry and align labels
-- Ensure node header spacing avoids name/type collisions
-- Constrain Validation panel callout width for readability
-- Hide edge-style toggle pending full routing tools (tracked separately)
+### Settings and controls
+- Add an app settings popover with a minimap visibility toggle
+- Move resize mode control into a compact canvas toolbar
+- Ensure header menus render above the canvas and show disabled state clearly
 
 ## Rationale
-Keeping shelf controls within each shelf avoids disappearing affordances and makes
-collapse/resize behavior predictable. Persisting subgraphs in the graph model fixes
-UI-only state and enables serialization. Port positioning now derives from geometry
-to keep edges and labels aligned under resize.
+Fixing delete synchronization prevents “ghost” nodes from reappearing when dragging
+new components. A wrap‑to‑parent action supports top‑down modeling workflows, while
+the settings popover and toolbar make global and canvas‑level controls discoverable.
 
 ## Files Changed
-- `web/src/App.tsx`, `web/src/stores/layoutStore.ts`
-- `web/src/components/layout/TopShelf.tsx`
-- `web/src/components/layout/BottomShelf.tsx`
-- `web/src/components/layout/Header.tsx`
 - `web/src/stores/graphStore.ts`
-- `web/src/types/graph.ts`
-- `feedbax/web/models/graph.py`
-- `web/src/components/canvas/CustomNode.tsx`
 - `web/src/components/canvas/Canvas.tsx`
-- `web/src/components/canvas/RoutedEdge.tsx`
-- `web/src/components/panels/ValidationPanel.tsx`
-- `web/src/components/panels/PropertiesPanel.tsx`
+- `web/src/components/canvas/CustomNode.tsx`
+- `web/src/components/layout/Header.tsx`
+- `web/src/stores/settingsStore.ts`
+- `feedbax/web/services/component_registry.py`
+- `web/src/data/components.ts`
+- `web/src/components/panels/ComponentLibrary.tsx`

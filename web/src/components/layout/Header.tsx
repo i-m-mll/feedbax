@@ -11,12 +11,15 @@ import { useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 export function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const graphsQuery = useGraphsList();
   const saveMutation = useSaveGraph();
+  const { showMinimap, toggleMinimap } = useSettingsStore();
   const {
     graph,
     uiState,
@@ -75,7 +78,7 @@ export function Header() {
   };
 
   return (
-    <header className="h-12 flex items-center justify-between px-4 border-b border-slate-100 bg-white/80 backdrop-blur">
+    <header className="relative z-40 h-12 flex items-center justify-between px-4 border-b border-slate-100 bg-white/80 backdrop-blur">
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600">
           <LayoutPanelLeft className="w-4 h-4 text-brand-500" />
@@ -85,13 +88,16 @@ export function Header() {
         <div className="relative flex items-center gap-2">
           <button
             className="text-sm font-medium text-ink hover:text-brand-600"
-            onClick={() => setMenuOpen((prev) => !prev)}
+            onClick={() => {
+              setSettingsOpen(false);
+              setMenuOpen((prev) => !prev);
+            }}
           >
             Project: {graph.metadata?.name ?? 'Untitled Graph'}
           </button>
           {isDirty && <span className="text-amber-500 text-sm">•</span>}
           {menuOpen && (
-            <div className="absolute left-0 mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-20 p-2">
+            <div className="absolute left-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-2">
               <button
                 onClick={() => {
                   resetGraph();
@@ -131,7 +137,7 @@ export function Header() {
       </div>
       <div className="flex items-center gap-3 text-slate-500">
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100"
+          className="p-1.5 rounded-full hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
           title={inSubgraph ? 'Return to model root to save' : 'Save'}
           onClick={handleSave}
           disabled={inSubgraph}
@@ -139,7 +145,7 @@ export function Header() {
           <Save className="w-4 h-4" />
         </button>
         <button
-          className="p-1.5 rounded-full hover:bg-slate-100"
+          className="p-1.5 rounded-full hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
           title={inSubgraph ? 'Return to model root to export' : 'Export JSON'}
           onClick={handleExport}
           disabled={!graphId || exporting || inSubgraph}
@@ -149,13 +155,41 @@ export function Header() {
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="Open project"
-          onClick={() => setMenuOpen((prev) => !prev)}
+          onClick={() => {
+            setSettingsOpen(false);
+            setMenuOpen((prev) => !prev);
+          }}
         >
           <FolderOpen className="w-4 h-4" />
         </button>
-        <button className="p-1.5 rounded-full hover:bg-slate-100">
-          <Settings className="w-4 h-4" />
-        </button>
+        <div className="relative">
+          <button
+            className="p-1.5 rounded-full hover:bg-slate-100"
+            title="Settings"
+            onClick={() => {
+              setMenuOpen(false);
+              setSettingsOpen((prev) => !prev);
+            }}
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+          {settingsOpen && (
+            <div className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-3">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                App Settings
+              </div>
+              <label className="mt-3 flex items-center justify-between text-sm text-slate-600">
+                <span>Show minimap</span>
+                <input
+                  type="checkbox"
+                  checked={showMinimap}
+                  onChange={toggleMinimap}
+                  className="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-500"
+                />
+              </label>
+            </div>
+          )}
+        </div>
         <button className="p-1.5 rounded-full hover:bg-slate-100">
           <User className="w-4 h-4" />
         </button>

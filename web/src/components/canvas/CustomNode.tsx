@@ -2,6 +2,7 @@ import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react';
 import type { GraphNodeData } from '@/types/graph';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 
@@ -15,6 +16,7 @@ const MIN_HEIGHT = 96;
 export function CustomNode({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const { spec, label, collapsed } = nodeData;
+  const resizeMode = useLayoutStore((state) => state.resizeMode);
   const toggleNodeCollapse = useGraphStore((state) => state.toggleNodeCollapse);
   const renameNode = useGraphStore((state) => state.renameNode);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
@@ -33,7 +35,7 @@ export function CustomNode({ data, selected }: NodeProps) {
   const bodyHeight = Math.max(ROW_HEIGHT + BODY_PADDING * 2, height - HEADER_HEIGHT);
   const contentHeight = Math.max(ROW_HEIGHT, bodyHeight - BODY_PADDING * 2);
   const rowHeight = contentHeight / rowCount;
-  const rowCenterInBody = (index: number) => rowHeight * (index + 0.5);
+  const rowCenterInBody = (index: number) => BODY_PADDING + rowHeight * (index + 0.5);
 
   useEffect(() => {
     if (!isEditing) {
@@ -50,7 +52,7 @@ export function CustomNode({ data, selected }: NodeProps) {
       style={{ width, height }}
     >
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && resizeMode}
         minWidth={MIN_WIDTH}
         minHeight={MIN_HEIGHT}
         keepAspectRatio={false}
@@ -171,7 +173,11 @@ export function CustomNode({ data, selected }: NodeProps) {
               'absolute left-0 flex items-center gap-2',
               collapsedEffective ? 'text-slate-400' : 'text-slate-600'
             )}
-            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
+            style={{
+              top: rowCenterInBody(index),
+              left: 12,
+              transform: 'translateY(-50%)',
+            }}
           >
             {!collapsedEffective && <span>{port}</span>}
           </div>
@@ -183,7 +189,11 @@ export function CustomNode({ data, selected }: NodeProps) {
               'absolute right-0 flex items-center gap-2 justify-end',
               collapsedEffective ? 'text-slate-400' : 'text-slate-600'
             )}
-            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
+            style={{
+              top: rowCenterInBody(index),
+              right: 12,
+              transform: 'translateY(-50%)',
+            }}
           >
             {!collapsedEffective && <span>{port}</span>}
           </div>

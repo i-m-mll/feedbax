@@ -72,6 +72,17 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='Subgraph',
+                category='Utilities',
+                description='Composite wrapper for nested graphs.',
+                param_schema=[],
+                input_ports=[],
+                output_ports=[],
+                icon='Layers',
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='MLP',
                 category='Neural Networks',
                 description='Feedforward multilayer perceptron.',

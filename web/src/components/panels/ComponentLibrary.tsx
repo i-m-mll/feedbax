@@ -36,6 +36,7 @@ import {
   Anchor,
   Pause,
   Eye,
+  Layers,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
 import type { ComponentDefinition } from '@/types/components';
@@ -77,6 +78,7 @@ const iconMap = {
   Anchor,
   Pause,
   Eye,
+  Layers,
 };
 
 export function ComponentLibrary() {

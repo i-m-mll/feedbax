@@ -5,10 +5,12 @@ interface LayoutStoreState {
   bottomCollapsed: boolean;
   bottomHeight: number;
   initialized: boolean;
+  resizeMode: boolean;
   toggleTop: (availableHeight: number) => void;
   toggleBottom: (availableHeight: number) => void;
   setBottomHeight: (height: number, availableHeight: number) => void;
   initializeBottomHeight: (availableHeight: number) => void;
+  toggleResizeMode: () => void;
 }
 
 const DEFAULT_BOTTOM_HEIGHT = 320;
@@ -31,6 +33,7 @@ export const useLayoutStore = create<LayoutStoreState>((set) => ({
   bottomCollapsed: false,
   bottomHeight: DEFAULT_BOTTOM_HEIGHT,
   initialized: false,
+  resizeMode: false,
   toggleTop: (availableHeight) => {
     if (availableHeight <= 0) return;
     set((state) => {
@@ -87,5 +90,8 @@ export const useLayoutStore = create<LayoutStoreState>((set) => ({
       availableHeight
     );
     set((state) => (state.initialized ? state : { bottomHeight: target, initialized: true }));
+  },
+  toggleResizeMode: () => {
+    set((state) => ({ resizeMode: !state.resizeMode }));
   },
 }));

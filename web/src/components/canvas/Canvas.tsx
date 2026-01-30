@@ -10,11 +10,14 @@ import {
   BackgroundVariant,
 } from '@xyflow/react';
 import { useGraphStore } from '@/stores/graphStore';
+import { useLayoutStore } from '@/stores/layoutStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { CustomNode } from './CustomNode';
 import { RoutedEdge } from './RoutedEdge';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
+import { ArrowUpRight, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
@@ -37,7 +40,10 @@ export function Canvas() {
     graphStack,
     currentGraphLabel,
     exitToBreadcrumb,
+    wrapInParentGraph,
   } = useGraphStore();
+  const { resizeMode, toggleResizeMode } = useLayoutStore();
+  const showMinimap = useSettingsStore((state) => state.showMinimap);
   const { components } = useComponents();
   const reactFlow = useReactFlow();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -53,7 +59,11 @@ export function Canvas() {
       lastSize.current = { width, height };
       if (!prev || prev.width === 0 || prev.height === 0) return;
       if (width === prev.width && height === prev.height) return;
-      const scale = Math.min(width / prev.width, height / prev.height);
+      const scaleX = width / prev.width;
+      const scaleY = height / prev.height;
+      const dominantScale =
+        Math.abs(scaleY - 1) >= Math.abs(scaleX - 1) ? scaleY : scaleX;
+      const scale = dominantScale;
       if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.01) return;
       const viewport = reactFlow.getViewport();
       const newZoom = Math.max(0.1, Math.min(2.5, viewport.zoom * scale));
@@ -175,7 +185,7 @@ export function Canvas() {
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5f5" />
         <Controls />
-        <MiniMap nodeColor="#9ca3af" />
+        {showMinimap && <MiniMap nodeColor="#9ca3af" />}
         <Panel position="top-left" className="nodrag">
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">
             {breadcrumbs.map((crumb, index) => {
@@ -200,7 +210,31 @@ export function Canvas() {
                 </div>
               );
             })}
+            <div className="h-4 w-px bg-slate-200" />
+            <button
+              className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              onClick={wrapInParentGraph}
+              title="Wrap this graph in a new parent"
+            >
+              <ArrowUpRight className="w-3.5 h-3.5" />
+              Parent
+            </button>
           </div>
+        </Panel>
+        <Panel position="top-right" className="nodrag">
+          <button
+            className={clsx(
+              'flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs shadow-soft',
+              resizeMode
+                ? 'text-brand-600 bg-brand-500/10 border-brand-200'
+                : 'text-slate-500 hover:text-slate-700'
+            )}
+            onClick={toggleResizeMode}
+            title={resizeMode ? 'Exit resize mode' : 'Enter resize mode'}
+          >
+            <MoveDiagonal className="w-3.5 h-3.5" />
+            Resize
+          </button>
         </Panel>
       </ReactFlow>
     </div>
