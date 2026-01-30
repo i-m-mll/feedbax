@@ -22,9 +22,22 @@ export function removeNode(graph: GraphSpec, name: string): GraphSpec {
   const newNodes = { ...graph.nodes };
   delete newNodes[name];
 
+  const removedTapIds = (graph.taps ?? [])
+    .filter(
+      (tap) =>
+        tap.position.afterNode === name ||
+        (tap.position.targetNode && tap.position.targetNode === name)
+    )
+    .map((tap) => tap.id);
+  const removedTapNodes = new Set(removedTapIds.map((id) => `tap:${id}`));
   const newWires = graph.wires.filter(
-    (w) => w.source_node !== name && w.target_node !== name
+    (w) =>
+      w.source_node !== name &&
+      w.target_node !== name &&
+      !removedTapNodes.has(w.source_node) &&
+      !removedTapNodes.has(w.target_node)
   );
+  const newTaps = (graph.taps ?? []).filter((tap) => !removedTapIds.includes(tap.id));
 
   const newInputBindings = { ...graph.input_bindings };
   const newOutputBindings = { ...graph.output_bindings };
@@ -35,13 +48,13 @@ export function removeNode(graph: GraphSpec, name: string): GraphSpec {
   for (const [key, [nodeName]] of Object.entries(newOutputBindings)) {
     if (nodeName === name) delete newOutputBindings[key];
   }
-
   return {
     ...graph,
     nodes: newNodes,
     wires: newWires,
     input_bindings: newInputBindings,
     output_bindings: newOutputBindings,
+    taps: newTaps,
   };
 }
 

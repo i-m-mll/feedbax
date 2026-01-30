@@ -14,17 +14,21 @@ import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { CustomNode } from './CustomNode';
 import { RoutedEdge } from './RoutedEdge';
+import { StateFlowEdge } from './StateFlowEdge';
+import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
-import { MoveDiagonal, Plus } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, MoveDiagonal, Plus } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
+  tap: TapNode,
 };
 
 const edgeTypes = {
   routed: RoutedEdge,
+  'state-flow': StateFlowEdge,
 };
 
 export function Canvas() {
@@ -36,6 +40,8 @@ export function Canvas() {
     onConnect,
     addNodeFromComponent,
     setSelectedNode,
+    setSelectedTap,
+    setAllNodesCollapsed,
     graph,
     graphStack,
     currentGraphLabel,
@@ -121,10 +127,16 @@ export function Canvas() {
     return true;
   }, []);
 
+  const isStateHandle = (handleId?: string | null) =>
+    typeof handleId === 'string' && handleId.startsWith('__state');
+
   const isValidConnection = useCallback(
     (connection: Connection) => {
       if (!connection.target || !connection.targetHandle) return false;
       if (!connection.source || !connection.sourceHandle) return false;
+      if (isStateHandle(connection.sourceHandle) || isStateHandle(connection.targetHandle)) {
+        return false;
+      }
       const inputTaken = edges.some(
         (edge) => edge.target === connection.target && edge.targetHandle === connection.targetHandle
       );
@@ -172,8 +184,18 @@ export function Canvas() {
         onEdgesChange={onEdgesChange}
         onConnect={(connection) => onConnect(connection)}
         isValidConnection={isValidConnection}
-        onPaneClick={() => setSelectedNode(null)}
-        onNodeClick={(_, node) => setSelectedNode(node.id)}
+        onPaneClick={() => {
+          setSelectedNode(null);
+          setSelectedTap(null);
+        }}
+        onNodeClick={(_, node) => {
+          if (node.type === 'tap') {
+            setSelectedTap(node.id.replace(/^tap:/, ''));
+          } else {
+            setSelectedTap(null);
+            setSelectedNode(node.id);
+          }
+        }}
         onDrop={onDrop}
         onDragOver={onDragOver}
         fitView
@@ -219,19 +241,36 @@ export function Canvas() {
           </div>
         </Panel>
         <Panel position="top-right" className="nodrag">
-          <button
-            className={clsx(
-              'flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs shadow-soft',
-              resizeMode
-                ? 'text-brand-600 bg-brand-500/10 border-brand-200'
-                : 'text-slate-500 hover:text-slate-700'
-            )}
-            onClick={toggleResizeMode}
-            title={resizeMode ? 'Exit resize mode' : 'Enter resize mode'}
-          >
-            <MoveDiagonal className="w-3.5 h-3.5" />
-            Resize
-          </button>
+          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs shadow-soft">
+            <button
+              className="flex items-center justify-center text-slate-500 hover:text-slate-700"
+              onClick={() => setAllNodesCollapsed(true)}
+              title="Collapse all nodes"
+            >
+              <ChevronsDown className="w-3.5 h-3.5" />
+            </button>
+            <button
+              className="flex items-center justify-center text-slate-500 hover:text-slate-700"
+              onClick={() => setAllNodesCollapsed(false)}
+              title="Expand all nodes"
+            >
+              <ChevronsUp className="w-3.5 h-3.5" />
+            </button>
+            <div className="h-4 w-px bg-slate-200" />
+            <button
+              className={clsx(
+                'flex items-center gap-2 rounded-full px-2 py-0.5',
+                resizeMode
+                  ? 'text-brand-600 bg-brand-500/10'
+                  : 'text-slate-500 hover:text-slate-700'
+              )}
+              onClick={toggleResizeMode}
+              title={resizeMode ? 'Exit resize mode' : 'Enter resize mode'}
+            >
+              <MoveDiagonal className="w-3.5 h-3.5" />
+              Resize
+            </button>
+          </div>
         </Panel>
       </ReactFlow>
     </div>

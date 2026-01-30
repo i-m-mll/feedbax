@@ -28,6 +28,45 @@ export interface ComponentSpec {
   output_ports: string[];
 }
 
+export interface UserPortSpec {
+  inputs: string[];
+  outputs: string[];
+}
+
+export interface TapTransform {
+  type: string;
+  params: ParamValueObject;
+}
+
+export interface TapSpec {
+  id: string;
+  type: 'probe' | 'intervention';
+  position: {
+    afterNode: string;
+    targetNode?: string;
+  };
+  paths: Record<string, string>;
+  transform?: TapTransform;
+}
+
+export interface TapUIState {
+  position: { x: number; y: number };
+  selected?: boolean;
+}
+
+export type BarnacleKind = 'probe' | 'intervention';
+export type BarnacleTiming = 'input' | 'output';
+
+export interface BarnacleSpec {
+  id: string;
+  kind: BarnacleKind;
+  timing: BarnacleTiming;
+  label: string;
+  read_paths: string[];
+  write_paths: string[];
+  transform: string;
+}
+
 export interface WireSpec {
   source_node: string;
   source_port: string;
@@ -43,6 +82,9 @@ export interface GraphSpec {
   input_bindings: Record<string, [string, string]>;
   output_bindings: Record<string, [string, string]>;
   subgraphs?: Record<string, GraphSpec>;
+  barnacles?: Record<string, BarnacleSpec[]>;
+  user_ports?: Record<string, UserPortSpec>;
+  taps?: TapSpec[];
   metadata?: GraphMetadata;
 }
 
@@ -82,6 +124,7 @@ export interface GraphUIState {
   node_states: Record<string, NodeUIState>;
   edge_states?: Record<string, EdgeUIState>;
   subgraph_states?: Record<string, GraphUIState>;
+  tap_states?: Record<string, TapUIState>;
 }
 
 export interface GraphNodeData extends Record<string, unknown> {
@@ -89,6 +132,10 @@ export interface GraphNodeData extends Record<string, unknown> {
   spec: ComponentSpec;
   collapsed?: boolean;
   size?: { width: number; height: number };
+}
+
+export interface TapNodeData extends Record<string, unknown> {
+  tap: TapSpec;
 }
 
 export interface GraphEdgeData extends Record<string, unknown> {

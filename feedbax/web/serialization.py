@@ -6,8 +6,26 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree as jt
 
 from feedbax.channel import Channel
+from feedbax.components import (
+    Gain,
+    Sum,
+    Multiply,
+    Constant,
+    Ramp,
+    Sine,
+    Pulse,
+    Saturation,
+    DelayLine,
+    Noise,
+    MLP,
+    GRU,
+    LSTM,
+    Spring,
+    Damper,
+)
 from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Component, Graph, Wire
 from feedbax.intervene.intervene import (
@@ -137,6 +155,8 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         if spec.subgraphs
         else None
     )
+    user_ports = dict(spec.user_ports) if spec.user_ports else None
+    taps = list(spec.taps) if spec.taps else None
 
     return GraphSpec(
         nodes=nodes,
@@ -146,6 +166,9 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         input_bindings=input_bindings,
         output_bindings=dict(spec.output_bindings),
         subgraphs=subgraphs,
+        barnacles=spec.barnacles,
+        user_ports=user_ports,
+        taps=taps,
         metadata=spec.metadata,
     )
 
@@ -157,6 +180,11 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
     nodes: dict[str, ComponentSpec] = {}
     subgraphs: dict[str, GraphSpec] = {}
+
+    def _to_native(value: Any):
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        return value
 
     for name, component in graph.nodes.items():
         if isinstance(component, Graph):
@@ -183,6 +211,156 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="Network",
                 params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, Gain):
+            nodes[name] = ComponentSpec(
+                type="Gain",
+                params={"gain": component.gain},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Sum):
+            nodes[name] = ComponentSpec(
+                type="Sum",
+                params={},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Multiply):
+            nodes[name] = ComponentSpec(
+                type="Multiply",
+                params={},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Constant):
+            value = jt.map(_to_native, component.value)
+            nodes[name] = ComponentSpec(
+                type="Constant",
+                params={"value": value},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Ramp):
+            slope = jt.map(_to_native, component.slope)
+            intercept = jt.map(_to_native, component.intercept)
+            nodes[name] = ComponentSpec(
+                type="Ramp",
+                params={"slope": slope, "intercept": intercept, "dt": component.dt},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Sine):
+            amplitude = jt.map(_to_native, component.amplitude)
+            offset = jt.map(_to_native, component.offset)
+            nodes[name] = ComponentSpec(
+                type="Sine",
+                params={
+                    "amplitude": amplitude,
+                    "frequency": component.frequency,
+                    "phase": component.phase,
+                    "offset": offset,
+                    "dt": component.dt,
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Pulse):
+            amplitude = jt.map(_to_native, component.amplitude)
+            offset = jt.map(_to_native, component.offset)
+            nodes[name] = ComponentSpec(
+                type="Pulse",
+                params={
+                    "amplitude": amplitude,
+                    "period": component.period,
+                    "duty_cycle": component.duty_cycle,
+                    "offset": offset,
+                    "dt": component.dt,
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Noise):
+            nodes[name] = ComponentSpec(
+                type="Noise",
+                params={
+                    "mean": component.mean,
+                    "std": component.std,
+                    "shape": list(component.shape),
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Saturation):
+            nodes[name] = ComponentSpec(
+                type="Saturation",
+                params={"min_val": component.min_val, "max_val": component.max_val},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, DelayLine):
+            nodes[name] = ComponentSpec(
+                type="DelayLine",
+                params={"delay": component.delay, "init_value": component.init_value},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, MLP):
+            nodes[name] = ComponentSpec(
+                type="MLP",
+                params={
+                    "input_size": component.input_size,
+                    "output_size": component.output_size,
+                    "hidden_sizes": list(component.hidden_sizes),
+                    "activation": component.activation_name,
+                    "final_activation": component.final_activation_name,
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, GRU):
+            nodes[name] = ComponentSpec(
+                type="GRU",
+                params={"input_size": component.input_size, "hidden_size": component.hidden_size},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, LSTM):
+            nodes[name] = ComponentSpec(
+                type="LSTM",
+                params={"input_size": component.input_size, "hidden_size": component.hidden_size},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Spring):
+            nodes[name] = ComponentSpec(
+                type="Spring",
+                params={"stiffness": component.stiffness},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Damper):
+            nodes[name] = ComponentSpec(
+                type="Damper",
+                params={"damping": component.damping},
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -482,6 +660,113 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
     return TaskComponent(task=task, trial_spec=trial_spec, mode="open_loop")
 
 
+def _build_gain(params: Mapping[str, Any]) -> Gain:
+    return Gain(gain=float(params.get("gain", 1.0)))
+
+
+def _build_sum(params: Mapping[str, Any]) -> Sum:
+    return Sum()
+
+
+def _build_multiply(params: Mapping[str, Any]) -> Multiply:
+    return Multiply()
+
+
+def _build_constant(params: Mapping[str, Any]) -> Constant:
+    return Constant(value=params.get("value", 0.0))
+
+
+def _build_ramp(params: Mapping[str, Any]) -> Ramp:
+    return Ramp(
+        slope=params.get("slope", 1.0),
+        intercept=params.get("intercept", 0.0),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_sine(params: Mapping[str, Any]) -> Sine:
+    return Sine(
+        amplitude=params.get("amplitude", 1.0),
+        frequency=float(params.get("frequency", 1.0)),
+        phase=float(params.get("phase", 0.0)),
+        offset=params.get("offset", 0.0),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_pulse(params: Mapping[str, Any]) -> Pulse:
+    return Pulse(
+        amplitude=params.get("amplitude", 1.0),
+        period=float(params.get("period", 1.0)),
+        duty_cycle=float(params.get("duty_cycle", 0.5)),
+        offset=params.get("offset", 0.0),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_noise(params: Mapping[str, Any]) -> Noise:
+    shape = params.get("shape", [1])
+    if not isinstance(shape, (list, tuple)):
+        shape = [int(shape)]
+    return Noise(
+        mean=float(params.get("mean", 0.0)),
+        std=float(params.get("std", 1.0)),
+        shape=shape,
+    )
+
+
+def _build_saturation(params: Mapping[str, Any]) -> Saturation:
+    return Saturation(
+        min_val=float(params.get("min_val", -1.0)),
+        max_val=float(params.get("max_val", 1.0)),
+    )
+
+
+def _build_delay_line(params: Mapping[str, Any]) -> DelayLine:
+    return DelayLine(
+        delay=int(params.get("delay", 1)),
+        init_value=float(params.get("init_value", 0.0)),
+    )
+
+
+def _build_mlp(params: Mapping[str, Any]) -> MLP:
+    hidden_sizes = params.get("hidden_sizes", [64])
+    if not isinstance(hidden_sizes, (list, tuple)):
+        hidden_sizes = [int(hidden_sizes)]
+    return MLP(
+        input_size=int(params.get("input_size", 1)),
+        output_size=int(params.get("output_size", 1)),
+        hidden_sizes=hidden_sizes,
+        activation=str(params.get("activation", "relu")),
+        final_activation=str(params.get("final_activation", "identity")),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_gru(params: Mapping[str, Any]) -> GRU:
+    return GRU(
+        input_size=int(params.get("input_size", 1)),
+        hidden_size=int(params.get("hidden_size", 1)),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_lstm(params: Mapping[str, Any]) -> LSTM:
+    return LSTM(
+        input_size=int(params.get("input_size", 1)),
+        hidden_size=int(params.get("hidden_size", 1)),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_spring(params: Mapping[str, Any]) -> Spring:
+    return Spring(stiffness=float(params.get("stiffness", 1.0)))
+
+
+def _build_damper(params: Mapping[str, Any]) -> Damper:
+    return Damper(damping=float(params.get("damping", 1.0)))
+
+
 def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
     spec = _migrate_spec(spec)
@@ -498,6 +783,56 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             continue
         if node_spec.type == "Network":
             nodes[node_name] = _build_network(params)
+            continue
+        if node_spec.type == "Gain":
+            nodes[node_name] = _build_gain(params)
+            continue
+        if node_spec.type == "Sum":
+            nodes[node_name] = _build_sum(params)
+            continue
+        if node_spec.type == "Multiply":
+            nodes[node_name] = _build_multiply(params)
+            continue
+        if node_spec.type == "Constant":
+            nodes[node_name] = _build_constant(params)
+            continue
+        if node_spec.type == "Ramp":
+            nodes[node_name] = _build_ramp(params)
+            continue
+        if node_spec.type == "Sine":
+            nodes[node_name] = _build_sine(params)
+            continue
+        if node_spec.type == "Pulse":
+            nodes[node_name] = _build_pulse(params)
+            continue
+        if node_spec.type == "Noise":
+            nodes[node_name] = _build_noise(params)
+            continue
+        if node_spec.type == "Saturation":
+            nodes[node_name] = _build_saturation(params)
+            continue
+        if node_spec.type == "DelayLine":
+            nodes[node_name] = _build_delay_line(params)
+            continue
+        if node_spec.type == "MLP":
+            nodes[node_name] = _build_mlp(params)
+            continue
+        if node_spec.type == "GRU":
+            nodes[node_name] = _build_gru(params)
+            continue
+        if node_spec.type == "LSTM":
+            nodes[node_name] = _build_lstm(params)
+            continue
+        if node_spec.type == "Spring":
+            nodes[node_name] = _build_spring(params)
+            continue
+        if node_spec.type == "Damper":
+            nodes[node_name] = _build_damper(params)
+            continue
+        if node_spec.type in {"TwoLinkArm", "PointMass"}:
+            next_params = dict(params)
+            next_params["plant_type"] = node_spec.type
+            nodes[node_name] = _build_mechanics(next_params)
             continue
         if node_spec.type == "Mechanics":
             nodes[node_name] = _build_mechanics(params)
@@ -576,6 +911,7 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             wire.target_port,
         )
         for wire in spec.wires
+        if wire.source_node in nodes and wire.target_node in nodes
     )
 
     input_bindings = {name: tuple(binding) for name, binding in spec.input_bindings.items()}

@@ -17,6 +17,9 @@ import type {
   ComponentSpec,
   EdgeUIState,
   EdgeRouting,
+  TapSpec,
+  TapUIState,
+  TapNodeData,
 } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 
@@ -25,6 +28,11 @@ const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
 const COMPOSITE_TYPES = new Set(['Network', 'Subgraph']);
+const DEFAULT_NODE_WIDTH = 220;
+const DEFAULT_NODE_HEIGHT = 120;
+const HEADER_HEIGHT = 40;
+const TAP_WIDTH = 28;
+const TAP_HEIGHT = 18;
 
 interface GraphLayer {
   graph: GraphSpec;
@@ -41,6 +49,21 @@ function wireId(wire: {
   target_port: string;
 }) {
   return `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`;
+}
+
+function isTapNodeId(nodeId: string) {
+  return nodeId.startsWith('tap:');
+}
+
+function tapNodeId(tapId: string) {
+  return `tap:${tapId}`;
+}
+
+function createTapId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `tap-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 }
 
 function buildEdgeStates(
@@ -65,6 +88,9 @@ function applyEdgeStates(
   defaultStyle: EdgeRouting['style']
 ) {
   return edges.map((edge) => {
+    if (edge.type === 'state-flow') {
+      return edge;
+    }
     const routing =
       edgeStates[edge.id]?.routing ?? { style: defaultStyle, points: [] };
     return {
@@ -109,9 +135,8 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
         output_ports: ['output', 'hidden'],
       },
       mechanics: {
-        type: 'Mechanics',
+        type: 'TwoLinkArm',
         params: {
-          plant_type: 'TwoLinkArm',
           dt: 0.01,
         },
         input_ports: ['force'],
@@ -159,6 +184,7 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
     output_bindings: {
       effector: ['mechanics', 'effector'],
     },
+    taps: [],
     subgraphs: {},
     metadata: {
       name: 'Reaching Task Model',
@@ -185,6 +211,81 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   };
 
   return { graph, uiState };
+}
+
+function migrateLegacyTaps(graph: GraphSpec): TapSpec[] {
+  const taps: TapSpec[] = graph.taps ? [...graph.taps] : [];
+  const usedIds = new Set(taps.map((tap) => tap.id));
+
+  const addTap = (tap: TapSpec) => {
+    if (usedIds.has(tap.id)) {
+      tap = { ...tap, id: createTapId() };
+    }
+    usedIds.add(tap.id);
+    taps.push(tap);
+  };
+
+  if (graph.barnacles) {
+    for (const [nodeId, barnacles] of Object.entries(graph.barnacles)) {
+      for (const barnacle of barnacles) {
+        const paths: Record<string, string> = {};
+        const usedNames = new Set<string>();
+        for (const path of barnacle.read_paths ?? []) {
+          const base = path.split('.').slice(-1)[0] || 'value';
+          let name = base;
+          let idx = 2;
+          while (usedNames.has(name)) {
+            name = `${base}_${idx}`;
+            idx += 1;
+          }
+          usedNames.add(name);
+          paths[name] = path;
+        }
+        const transform =
+          barnacle.kind === 'intervention'
+            ? {
+                type: barnacle.label || 'intervention',
+                params: {
+                  read_paths: barnacle.read_paths ?? [],
+                  write_paths: barnacle.write_paths ?? [],
+                  transform: barnacle.transform ?? '',
+                },
+              }
+            : undefined;
+        addTap({
+          id: barnacle.id,
+          type: barnacle.kind,
+          position: { afterNode: nodeId },
+          paths,
+          transform,
+        });
+      }
+    }
+  }
+
+  if (graph.user_ports) {
+    for (const [nodeId, ports] of Object.entries(graph.user_ports)) {
+      const paths: Record<string, string> = {};
+      for (const port of ports.outputs ?? []) {
+        paths[port] = port;
+      }
+      for (const port of ports.inputs ?? []) {
+        if (!(port in paths)) {
+          paths[port] = port;
+        }
+      }
+      if (Object.keys(paths).length > 0) {
+        addTap({
+          id: createTapId(),
+          type: 'probe',
+          position: { afterNode: nodeId },
+          paths,
+        });
+      }
+    }
+  }
+
+  return taps;
 }
 
 function migrateGraphSpec(graph: GraphSpec): GraphSpec {
@@ -246,13 +347,17 @@ function migrateGraphSpec(graph: GraphSpec): GraphSpec {
         Object.entries(graph.subgraphs).map(([id, subgraph]) => [id, migrateGraphSpec(subgraph)])
       )
     : undefined;
+  const taps = migrateLegacyTaps(graph);
   return {
     ...graph,
     nodes,
     wires,
     input_ports,
     input_bindings,
+    taps,
     subgraphs,
+    barnacles: undefined,
+    user_ports: undefined,
   };
 }
 
@@ -329,6 +434,7 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
       output: ['decoder', 'output'],
       hidden: ['core', 'hidden'],
     },
+    taps: [],
     subgraphs: {},
     metadata: {
       name: `${label} Graph`,
@@ -366,6 +472,7 @@ function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphU
     output_ports: [],
     input_bindings: {},
     output_bindings: {},
+    taps: [],
     subgraphs: {},
     metadata: {
       name: `${label} Graph`,
@@ -529,16 +636,24 @@ function normalizeUiState(
       subgraph_states[nodeId] = normalizeUiState(subgraph, childState, defaultEdgeStyle);
     }
   }
+  const tap_states = base.tap_states
+    ? Object.fromEntries(
+        Object.entries(base.tap_states).filter(([id]) =>
+          (graph.taps ?? []).some((tap) => tap.id === id)
+        )
+      )
+    : undefined;
 
   return {
     viewport: base.viewport ?? DEFAULT_VIEWPORT,
     node_states,
     edge_states,
     subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
+    tap_states: tap_states && Object.keys(tap_states).length ? tap_states : undefined,
   };
 }
 
-function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
+function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
   return Object.entries(graph.nodes).map(([id, spec]) => {
     const ui = uiState.node_states[id] ?? {
       position: DEFAULT_POSITION,
@@ -562,31 +677,148 @@ function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData
   });
 }
 
+function computeTapPosition(
+  graph: GraphSpec,
+  uiState: GraphUIState,
+  tap: TapSpec
+): { x: number; y: number } {
+  const afterNode = tap.position.afterNode;
+  const sourceState = uiState.node_states[afterNode];
+  if (!sourceState) return { x: DEFAULT_POSITION.x, y: DEFAULT_POSITION.y };
+  const sourceSize = sourceState.size ?? {
+    width: DEFAULT_NODE_WIDTH,
+    height: DEFAULT_NODE_HEIGHT,
+  };
+  const sourcePoint = {
+    x: sourceState.position.x + sourceSize.width,
+    y: sourceState.position.y + HEADER_HEIGHT / 2,
+  };
+  const targetNode =
+    tap.position.targetNode ??
+    graph.wires.find(
+      (wire) => wire.source_node === afterNode && graph.nodes[wire.target_node]
+    )?.target_node;
+  if (!targetNode) {
+    return {
+      x: sourcePoint.x + 160 - TAP_WIDTH / 2,
+      y: sourcePoint.y - TAP_HEIGHT / 2,
+    };
+  }
+  const targetState = uiState.node_states[targetNode];
+  if (!targetState) {
+    return {
+      x: sourcePoint.x + 160 - TAP_WIDTH / 2,
+      y: sourcePoint.y - TAP_HEIGHT / 2,
+    };
+  }
+  const targetSize = targetState.size ?? {
+    width: DEFAULT_NODE_WIDTH,
+    height: DEFAULT_NODE_HEIGHT,
+  };
+  const targetPoint = {
+    x: targetState.position.x,
+    y: targetState.position.y + HEADER_HEIGHT / 2,
+  };
+  return {
+    x: (sourcePoint.x + targetPoint.x) / 2 - TAP_WIDTH / 2,
+    y: (sourcePoint.y + targetPoint.y) / 2 - TAP_HEIGHT / 2,
+  };
+}
+
+function buildTapNodes(graph: GraphSpec, uiState: GraphUIState): Node<TapNodeData>[] {
+  const taps = graph.taps ?? [];
+  return taps.map((tap) => {
+    const tapState = uiState.tap_states?.[tap.id];
+    const position = tapState?.position ?? computeTapPosition(graph, uiState, tap);
+    return {
+      id: tapNodeId(tap.id),
+      type: 'tap',
+      position,
+      data: {
+        tap,
+      },
+      style: { width: TAP_WIDTH, height: TAP_HEIGHT },
+      selected: tapState?.selected ?? false,
+    };
+  });
+}
+
+function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData | TapNodeData>[] {
+  return [...buildComponentNodes(graph, uiState), ...buildTapNodes(graph, uiState)];
+}
+
+function buildStateEdges(graph: GraphSpec): Edge<GraphEdgeData>[] {
+  const pairs = new Set<string>();
+  const edges: Edge<GraphEdgeData>[] = [];
+  for (const wire of graph.wires) {
+    if (isTapNodeId(wire.source_node) || isTapNodeId(wire.target_node)) {
+      continue;
+    }
+    const key = `${wire.source_node}->${wire.target_node}`;
+    if (pairs.has(key)) continue;
+    pairs.add(key);
+    edges.push({
+      id: `state:${key}`,
+      source: wire.source_node,
+      target: wire.target_node,
+      sourceHandle: '__state_out',
+      targetHandle: '__state_in',
+      type: 'state-flow',
+      selectable: false,
+      deletable: false,
+      zIndex: 0,
+    });
+  }
+  return edges;
+}
+
 function buildEdges(
   graph: GraphSpec,
   uiState: GraphUIState,
   defaultStyle: EdgeRouting['style']
 ): Edge<GraphEdgeData>[] {
   const edgeStates = buildEdgeStates(graph, uiState, defaultStyle);
-  return graph.wires.map((wire) => {
-    const id = wireId(wire);
-    return {
-      id,
-      source: wire.source_node,
-      target: wire.target_node,
-      sourceHandle: wire.source_port,
-      targetHandle: wire.target_port,
-      type: 'routed',
-      data: {
-        routing: edgeStates[id]?.routing ?? { style: defaultStyle, points: [] },
-      },
-    };
-  });
+  const collapsed = new Set(
+    Object.entries(uiState.node_states)
+      .filter(([, state]) => state.collapsed)
+      .map(([nodeId]) => nodeId)
+  );
+  const isCollapsed = (nodeId: string) => collapsed.has(nodeId);
+  const isComponent = (nodeId: string) => !isTapNodeId(nodeId);
+  const portEdges = graph.wires
+    .filter(
+      (wire) =>
+        !(isComponent(wire.source_node) && isCollapsed(wire.source_node)) &&
+        !(isComponent(wire.target_node) && isCollapsed(wire.target_node))
+    )
+    .map((wire) => {
+      const id = wireId(wire);
+      return {
+        id,
+        source: wire.source_node,
+        target: wire.target_node,
+        sourceHandle: wire.source_port,
+        targetHandle: wire.target_port,
+        type: 'routed',
+        zIndex: 1,
+        data: {
+          routing: edgeStates[id]?.routing ?? { style: defaultStyle, points: [] },
+        },
+      };
+    });
+  return [...buildStateEdges(graph), ...portEdges];
 }
 
 function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
   return edges
-    .filter((edge) => edge.source && edge.target && edge.sourceHandle && edge.targetHandle)
+    .filter(
+      (edge) =>
+        edge.type !== 'state-flow' &&
+        edge.source &&
+        edge.target &&
+        edge.sourceHandle &&
+        edge.targetHandle
+    )
     .map((edge) => ({
       source_node: edge.source,
       source_port: edge.sourceHandle as string,
@@ -595,18 +827,22 @@ function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
     }));
 }
 
-function updateNodeSpec(nodes: Node<GraphNodeData>[], nodeId: string, spec: ComponentSpec) {
-  return nodes.map((node) =>
-    node.id === nodeId
-      ? {
-          ...node,
-          data: {
-            ...node.data,
-            spec,
-          },
-        }
-      : node
-  );
+function updateNodeSpec(
+  nodes: Node<GraphNodeData | TapNodeData>[],
+  nodeId: string,
+  spec: ComponentSpec
+) {
+  return nodes.map((node) => {
+    if (node.id !== nodeId) return node;
+    if (isTapNodeId(node.id)) return node;
+    return {
+      ...node,
+      data: {
+        ...(node.data as GraphNodeData),
+        spec,
+      },
+    };
+  });
 }
 
 function createNodeName(graph: GraphSpec, base: string) {
@@ -632,7 +868,7 @@ interface GraphStoreState {
   graphId: string | null;
   graph: GraphSpec;
   uiState: GraphUIState;
-  nodes: Node<GraphNodeData>[];
+  nodes: Node<GraphNodeData | TapNodeData>[];
   edges: Edge<GraphEdgeData>[];
   edgeStyle: 'bezier' | 'elbow';
   graphStack: GraphLayer[];
@@ -641,6 +877,7 @@ interface GraphStoreState {
   lastSavedAt: string | null;
   past: { graph: GraphSpec; uiState: GraphUIState }[];
   future: { graph: GraphSpec; uiState: GraphUIState }[];
+  selectedTapId: string | null;
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
   markSaved: (graphId: string) => void;
   resetGraph: () => void;
@@ -662,7 +899,12 @@ interface GraphStoreState {
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
   updateNodeParams: (nodeId: string, paramName: string, value: ComponentSpec['params'][string]) => void;
   setSelectedNode: (nodeId: string | null) => void;
+  setSelectedTap: (tapId: string | null) => void;
   toggleNodeCollapse: (nodeId: string) => void;
+  setAllNodesCollapsed: (collapsed: boolean) => void;
+  addTap: (afterNode: string, type: TapSpec['type']) => void;
+  updateTap: (tapId: string, updates: Partial<TapSpec>) => void;
+  removeTap: (tapId: string) => void;
 }
 
 const initial = createInitialGraph();
@@ -680,6 +922,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   lastSavedAt: null,
   past: [],
   future: [],
+  selectedTapId: null,
   hydrateGraph: (graph, uiState, graphId) => {
     const edgeStyle = get().edgeStyle;
     const migrated = migrateGraphSpec(graph);
@@ -695,6 +938,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       isDirty: false,
       past: [],
       future: [],
+      selectedTapId: null,
     });
   },
   markSaved: (graphId) => {
@@ -718,6 +962,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       lastSavedAt: null,
       past: [],
       future: [],
+      selectedTapId: null,
     });
   },
   undo: () => {
@@ -1114,42 +1359,64 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) {
         return state;
       }
+      const selectedTapIds = selectedNodeIds
+        .filter(isTapNodeId)
+        .map((id) => id.replace(/^tap:/, ''));
+      const selectedComponentIds = selectedNodeIds.filter((id) => !isTapNodeId(id));
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nodes = state.nodes.filter((node) => !selectedNodeIds.includes(node.id));
+      const tapsToRemove = new Set(selectedTapIds);
+      for (const tap of state.graph.taps ?? []) {
+        if (
+          selectedComponentIds.includes(tap.position.afterNode) ||
+          (tap.position.targetNode && selectedComponentIds.includes(tap.position.targetNode))
+        ) {
+          tapsToRemove.add(tap.id);
+        }
+      }
+      const removedTapNodeIds = new Set([...tapsToRemove].map(tapNodeId));
       const edges = state.edges.filter(
         (edge) =>
           !selectedEdgeIds.includes(edge.id) &&
           !selectedNodeIds.includes(edge.source) &&
-          !selectedNodeIds.includes(edge.target)
+          !selectedNodeIds.includes(edge.target) &&
+          !removedTapNodeIds.has(edge.source) &&
+          !removedTapNodeIds.has(edge.target)
       );
       const graphNodes = { ...state.graph.nodes };
       const subgraphs = { ...(state.graph.subgraphs ?? {}) };
-      for (const nodeId of selectedNodeIds) {
+      for (const nodeId of selectedComponentIds) {
         delete graphNodes[nodeId];
         delete subgraphs[nodeId];
       }
+      const taps = (state.graph.taps ?? []).filter((tap) => !tapsToRemove.has(tap.id));
       const input_bindings = { ...state.graph.input_bindings };
       const output_bindings = { ...state.graph.output_bindings };
       for (const [key, binding] of Object.entries(input_bindings)) {
-        if (selectedNodeIds.includes(binding[0])) {
+        if (selectedComponentIds.includes(binding[0])) {
           delete input_bindings[key];
         }
       }
       for (const [key, binding] of Object.entries(output_bindings)) {
-        if (selectedNodeIds.includes(binding[0])) {
+        if (selectedComponentIds.includes(binding[0])) {
           delete output_bindings[key];
         }
       }
       const subgraph_states = { ...(state.uiState.subgraph_states ?? {}) };
-      for (const nodeId of selectedNodeIds) {
+      for (const nodeId of selectedComponentIds) {
         delete subgraph_states[nodeId];
+      }
+      const tap_states = { ...(state.uiState.tap_states ?? {}) };
+      for (const tapId of tapsToRemove) {
+        delete tap_states[tapId];
       }
       const uiState = {
         ...state.uiState,
         node_states: Object.fromEntries(
-          Object.entries(state.uiState.node_states).filter(([nodeId]) => !selectedNodeIds.includes(nodeId))
+          Object.entries(state.uiState.node_states).filter(([nodeId]) => !selectedComponentIds.includes(nodeId))
         ),
         subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
+        tap_states: Object.keys(tap_states).length ? tap_states : undefined,
       };
       let nextGraph: GraphSpec = {
         ...state.graph,
@@ -1157,6 +1424,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         wires: edgesToWires(edges),
         input_bindings,
         output_bindings,
+        taps,
         subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
       };
       if (state.graphStack.length > 0) {
@@ -1174,6 +1442,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         past,
         future: [],
         isDirty: true,
+        selectedTapId: state.selectedTapId && tapsToRemove.has(state.selectedTapId) ? null : state.selectedTapId,
       };
     });
   },
@@ -1195,7 +1464,6 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         subgraphs[trimmed] = subgraphs[nodeId];
         delete subgraphs[nodeId];
       }
-
       const wires = state.graph.wires.map((wire) => ({
         ...wire,
         source_node: wire.source_node === nodeId ? trimmed : wire.source_node,
@@ -1215,6 +1483,17 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ])
       ) as Record<string, [string, string]>;
 
+      const taps = (state.graph.taps ?? []).map((tap) => {
+        const position = { ...tap.position };
+        if (position.afterNode === nodeId) {
+          position.afterNode = trimmed;
+        }
+        if (position.targetNode === nodeId) {
+          position.targetNode = trimmed;
+        }
+        return { ...tap, position };
+      });
+
       const node_states = { ...state.uiState.node_states };
       const nodeState = node_states[nodeId];
       if (nodeState) {
@@ -1233,6 +1512,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         wires,
         input_bindings,
         output_bindings,
+        taps,
         subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
       };
 
@@ -1271,9 +1551,13 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   onNodesChange: (changes) => {
     set((state) => {
-      const removedIds = changes
-        .filter((change) => change.type === 'remove')
-        .map((change) => change.id);
+      const removedRawIds = changes
+        .filter((change) => change.type === 'remove' && 'id' in change)
+        .map((change) => (change as { id: string }).id);
+      const removedTapIds = removedRawIds
+        .filter((id) => isTapNodeId(id))
+        .map((id) => id.replace(/^tap:/, ''));
+      const removedIds = removedRawIds.filter((id) => !isTapNodeId(id));
       const shouldRecord = changes.some(
         (change) =>
           change.type === 'remove' ||
@@ -1288,6 +1572,24 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       let uiState = state.uiState;
       let edges = state.edges;
 
+      if (removedTapIds.length > 0) {
+        const taps = (graph.taps ?? []).filter((tap) => !removedTapIds.includes(tap.id));
+        edges = edges.filter(
+          (edge) =>
+            !removedTapIds.some((tapId) => edge.source === tapNodeId(tapId) || edge.target === tapNodeId(tapId))
+        );
+        graph = {
+          ...graph,
+          taps,
+          wires: edgesToWires(edges),
+        };
+        uiState = {
+          ...uiState,
+          tap_states: Object.fromEntries(
+            Object.entries(uiState.tap_states ?? {}).filter(([id]) => !removedTapIds.includes(id))
+          ),
+        };
+      }
       if (removedIds.length > 0) {
         const graphNodes = { ...graph.nodes };
         const subgraphs = { ...(graph.subgraphs ?? {}) };
@@ -1335,6 +1637,35 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           graph = deriveSubgraphPorts(graph);
         }
       }
+      if (removedIds.length > 0) {
+        const danglingTapIds = (graph.taps ?? [])
+          .filter(
+            (tap) =>
+              removedIds.includes(tap.position.afterNode) ||
+              (tap.position.targetNode && removedIds.includes(tap.position.targetNode))
+          )
+          .map((tap) => tap.id);
+        if (danglingTapIds.length > 0) {
+          const removedTapNodeIds = new Set(danglingTapIds.map(tapNodeId));
+          edges = edges.filter(
+            (edge) =>
+              !removedTapNodeIds.has(edge.source) && !removedTapNodeIds.has(edge.target)
+          );
+          graph = {
+            ...graph,
+            taps: (graph.taps ?? []).filter((tap) => !danglingTapIds.includes(tap.id)),
+            wires: edgesToWires(edges),
+          };
+          const tap_states = { ...(uiState.tap_states ?? {}) };
+          for (const tapId of danglingTapIds) {
+            delete tap_states[tapId];
+          }
+          uiState = {
+            ...uiState,
+            tap_states: Object.keys(tap_states).length ? tap_states : undefined,
+          };
+        }
+      }
       const sizeUpdates = new Map<string, { width: number; height: number }>();
       for (const change of changes) {
         if (change.type === 'dimensions') {
@@ -1344,12 +1675,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           }
         }
       }
-      const nextNodes = applyNodeChanges<Node<GraphNodeData>>(
-        changes as NodeChange<Node<GraphNodeData>>[],
+      const nextNodes = applyNodeChanges<Node<GraphNodeData | TapNodeData>>(
+        changes as NodeChange<Node<GraphNodeData | TapNodeData>>[],
         state.nodes
       );
       const node_states = { ...uiState.node_states };
+      const tap_states: Record<string, TapUIState> = { ...(uiState.tap_states ?? {}) };
       for (const node of nextNodes) {
+        if (isTapNodeId(node.id)) {
+          const tapId = node.id.replace(/^tap:/, '');
+          tap_states[tapId] = {
+            position: node.position,
+            selected: node.selected,
+          };
+          continue;
+        }
         const existing = node_states[node.id] ?? {
           position: { x: node.position.x, y: node.position.y },
           collapsed: false,
@@ -1365,15 +1705,26 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           size,
         };
       }
-      const updatedNodes = nextNodes.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          size: node_states[node.id]?.size ?? node.data.size,
-        },
-      }));
+      const updatedNodes = nextNodes.map((node) => {
+        if (isTapNodeId(node.id)) {
+          return node;
+        }
+        const size =
+          node_states[node.id]?.size ?? (node.data as GraphNodeData).size;
+        return {
+          ...node,
+          data: {
+            ...(node.data as GraphNodeData),
+            size,
+          },
+        };
+      });
       const dirty = changes.some((change) => change.type !== 'select');
       const edge_states = buildEdgeStates(graph, uiState, state.edgeStyle);
+      const nextSelectedTapId =
+        state.selectedTapId && uiState.tap_states?.[state.selectedTapId]
+          ? state.selectedTapId
+          : null;
       return {
         graph,
         nodes: updatedNodes,
@@ -1382,10 +1733,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ...uiState,
           node_states,
           edge_states,
+          tap_states,
         },
         past,
         future: shouldRecord ? [] : state.future,
         isDirty: state.isDirty || dirty,
+        selectedTapId: nextSelectedTapId,
       };
     });
   },
@@ -1424,6 +1777,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   onConnect: (connection, styleOverride) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
+    if (
+      connection.sourceHandle.startsWith('__state') ||
+      connection.targetHandle.startsWith('__state')
+    ) {
+      return;
+    }
     const alreadyUsed = get().edges.some(
       (edge) =>
         edge.target === connection.target &&
@@ -1557,6 +1916,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       }));
       const node_states = { ...state.uiState.node_states };
       for (const node of nodes) {
+        if (isTapNodeId(node.id)) continue;
         const existing = node_states[node.id] ?? {
           position: node.position,
           collapsed: false,
@@ -1567,12 +1927,62 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           selected: node.id === nodeId,
         };
       }
+      const tap_states = { ...(state.uiState.tap_states ?? {}) };
+      for (const node of nodes) {
+        if (!isTapNodeId(node.id)) continue;
+        const tapId = node.id.replace(/^tap:/, '');
+        const existing = tap_states[tapId] ?? { position: node.position };
+        tap_states[tapId] = {
+          ...existing,
+          selected: false,
+        };
+      }
       return {
         nodes,
         uiState: {
           ...state.uiState,
           node_states,
+          tap_states,
         },
+        selectedTapId: null,
+      };
+    });
+  },
+  setSelectedTap: (tapId) => {
+    set((state) => {
+      const targetId = tapId ? tapNodeId(tapId) : null;
+      const nodes = state.nodes.map((node) => ({
+        ...node,
+        selected: node.id === targetId,
+      }));
+      const node_states = { ...state.uiState.node_states };
+      for (const node of nodes) {
+        if (isTapNodeId(node.id)) continue;
+        const existing = node_states[node.id] ?? {
+          position: node.position,
+          collapsed: false,
+          selected: false,
+        };
+        node_states[node.id] = {
+          ...existing,
+          selected: false,
+        };
+      }
+      const tap_states = { ...(state.uiState.tap_states ?? {}) };
+      if (tapId) {
+        const node = nodes.find((item) => item.id === targetId);
+        const position = node?.position ?? DEFAULT_POSITION;
+        const existing = tap_states[tapId] ?? { position };
+        tap_states[tapId] = { ...existing, position, selected: true };
+      }
+      return {
+        nodes,
+        uiState: {
+          ...state.uiState,
+          node_states,
+          tap_states,
+        },
+        selectedTapId: tapId,
       };
     });
   },
@@ -1580,13 +1990,15 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeState = state.uiState.node_states[nodeId];
       if (!nodeState) return state;
+      const nextCollapsed = !nodeState.collapsed;
       const uiState: GraphUIState = {
         ...state.uiState,
         node_states: {
           ...state.uiState.node_states,
           [nodeId]: {
             ...nodeState,
-            collapsed: !nodeState.collapsed,
+            collapsed: nextCollapsed,
+            size: undefined,
           },
         },
       };
@@ -1596,7 +2008,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
               ...node,
               data: {
                 ...node.data,
-                collapsed: !node.data.collapsed,
+                collapsed: nextCollapsed,
+                size: undefined,
               },
             }
           : node
@@ -1604,7 +2017,164 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         uiState,
         nodes,
+        edges: buildEdges(state.graph, uiState, state.edgeStyle),
         isDirty: true,
+      };
+    });
+  },
+  setAllNodesCollapsed: (collapsed) => {
+    set((state) => {
+      const node_states = { ...state.uiState.node_states };
+      for (const nodeId of Object.keys(node_states)) {
+        node_states[nodeId] = {
+          ...node_states[nodeId],
+          collapsed,
+          size: undefined,
+        };
+      }
+      const nodes = state.nodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          collapsed,
+          size: undefined,
+        },
+      }));
+      return {
+        uiState: {
+          ...state.uiState,
+          node_states,
+        },
+        nodes,
+        edges: buildEdges(state.graph, { ...state.uiState, node_states }, state.edgeStyle),
+        isDirty: true,
+      };
+    });
+  },
+  addTap: (afterNode, type) => {
+    set((state) => {
+      if (!state.graph.nodes[afterNode]) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const taps = [...(state.graph.taps ?? [])];
+      const id = createTapId();
+      const targetNode = state.graph.wires.find(
+        (wire) => wire.source_node === afterNode && state.graph.nodes[wire.target_node]
+      )?.target_node;
+      taps.push({
+        id,
+        type,
+        position: { afterNode, targetNode },
+        paths: {},
+      });
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        tap_states: {
+          ...(state.uiState.tap_states ?? {}),
+          [id]: {
+            position: computeTapPosition(state.graph, state.uiState, {
+              id,
+              type,
+              position: { afterNode },
+              paths: {},
+            }),
+            selected: true,
+          },
+        },
+      };
+      const nodes = buildNodes({ ...state.graph, taps }, uiState).map((node) => ({
+        ...node,
+        selected: node.id === tapNodeId(id),
+      }));
+      return {
+        graph: {
+          ...state.graph,
+          taps,
+        },
+        uiState,
+        nodes,
+        edges: buildEdges({ ...state.graph, taps }, uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+        selectedTapId: id,
+      };
+    });
+  },
+  updateTap: (tapId, updates) => {
+    set((state) => {
+      const currentTap = (state.graph.taps ?? []).find((tap) => tap.id === tapId);
+      if (!currentTap) return state;
+      const nextTap: TapSpec = { ...currentTap, ...updates };
+      const taps = (state.graph.taps ?? []).map((tap) => (tap.id === tapId ? nextTap : tap));
+      let wires = state.graph.wires;
+      if (updates.paths) {
+        const prevKeys = new Set(Object.keys(currentTap.paths ?? {}));
+        const nextKeys = new Set(Object.keys(nextTap.paths ?? {}));
+        const removed = [...prevKeys].filter((key) => !nextKeys.has(key));
+        if (removed.length > 0) {
+          wires = wires.filter(
+            (wire) =>
+              !(
+                wire.source_node === tapNodeId(tapId) &&
+                removed.includes(wire.source_port)
+              )
+          );
+        }
+      }
+      let uiState = state.uiState;
+      if (updates.position) {
+        const positionChanged =
+          updates.position.afterNode !== currentTap.position.afterNode ||
+          updates.position.targetNode !== currentTap.position.targetNode;
+        if (positionChanged) {
+          const tap_states = { ...(state.uiState.tap_states ?? {}) };
+          const nextPosition = computeTapPosition({ ...state.graph, taps }, state.uiState, nextTap);
+          tap_states[tapId] = {
+            position: nextPosition,
+            selected: tap_states[tapId]?.selected ?? false,
+          };
+          uiState = {
+            ...state.uiState,
+            tap_states,
+          };
+        }
+      }
+      const graph = { ...state.graph, taps, wires };
+      const nodes = buildNodes(graph, uiState);
+      return {
+        graph,
+        uiState,
+        nodes,
+        edges: buildEdges(graph, uiState, state.edgeStyle),
+        isDirty: true,
+      };
+    });
+  },
+  removeTap: (tapId) => {
+    set((state) => {
+      const taps = (state.graph.taps ?? []).filter((tap) => tap.id !== tapId);
+      const edges = state.edges.filter(
+        (edge) =>
+          edge.source !== tapNodeId(tapId) && edge.target !== tapNodeId(tapId)
+      );
+      const tap_states = { ...(state.uiState.tap_states ?? {}) };
+      delete tap_states[tapId];
+      const graph: GraphSpec = {
+        ...state.graph,
+        taps,
+        wires: edgesToWires(edges),
+      };
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        tap_states: Object.keys(tap_states).length ? tap_states : undefined,
+      };
+      return {
+        graph,
+        uiState,
+        nodes: buildNodes(graph, uiState),
+        edges: buildEdges(graph, uiState, state.edgeStyle),
+        isDirty: true,
+        selectedTapId: state.selectedTapId === tapId ? null : state.selectedTapId,
       };
     });
   },

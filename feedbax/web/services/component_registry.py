@@ -104,6 +104,337 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='Gain',
+                category='Math',
+                description='Multiply input by constant.',
+                param_schema=[
+                    ParamSchema(name='gain', type='float', default=1.0, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='SlidersHorizontal',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Sum',
+                category='Math',
+                description='Add two inputs.',
+                param_schema=[],
+                input_ports=['a', 'b'],
+                output_ports=['output'],
+                icon='Sigma',
+                port_types=PortTypeSpec(
+                    inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Multiply',
+                category='Math',
+                description='Element-wise product.',
+                param_schema=[],
+                input_ports=['a', 'b'],
+                output_ports=['output'],
+                icon='X',
+                port_types=PortTypeSpec(
+                    inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Constant',
+                category='Sources',
+                description='Constant value output.',
+                param_schema=[
+                    ParamSchema(name='value', type='float', default=0.0, required=True),
+                ],
+                input_ports=[],
+                output_ports=['output'],
+                icon='Circle',
+                port_types=PortTypeSpec(
+                    inputs={},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Ramp',
+                category='Sources',
+                description='Linear ramp over time.',
+                param_schema=[
+                    ParamSchema(name='slope', type='float', default=1.0, required=True),
+                    ParamSchema(name='intercept', type='float', default=0.0, required=True),
+                    ParamSchema(name='dt', type='float', default=0.01, required=True),
+                ],
+                input_ports=[],
+                output_ports=['output'],
+                icon='TrendingUp',
+                port_types=PortTypeSpec(
+                    inputs={},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Sine',
+                category='Sources',
+                description='Sinusoidal signal.',
+                param_schema=[
+                    ParamSchema(name='amplitude', type='float', default=1.0, required=True),
+                    ParamSchema(name='frequency', type='float', default=1.0, required=True),
+                    ParamSchema(name='phase', type='float', default=0.0, required=False),
+                    ParamSchema(name='offset', type='float', default=0.0, required=False),
+                    ParamSchema(name='dt', type='float', default=0.01, required=True),
+                ],
+                input_ports=[],
+                output_ports=['output'],
+                icon='AudioWaveform',
+                port_types=PortTypeSpec(
+                    inputs={},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Pulse',
+                category='Sources',
+                description='Pulse/square wave.',
+                param_schema=[
+                    ParamSchema(name='amplitude', type='float', default=1.0, required=True),
+                    ParamSchema(name='period', type='float', default=1.0, required=True),
+                    ParamSchema(name='duty_cycle', type='float', default=0.5, required=True),
+                    ParamSchema(name='offset', type='float', default=0.0, required=False),
+                    ParamSchema(name='dt', type='float', default=0.01, required=True),
+                ],
+                input_ports=[],
+                output_ports=['output'],
+                icon='Activity',
+                port_types=PortTypeSpec(
+                    inputs={},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Noise',
+                category='Signal Processing',
+                description='Random noise source.',
+                param_schema=[
+                    ParamSchema(name='mean', type='float', default=0.0, required=False),
+                    ParamSchema(name='std', type='float', default=1.0, required=True),
+                    ParamSchema(name='shape', type='array', default=[1], required=False),
+                ],
+                input_ports=[],
+                output_ports=['output'],
+                icon='Sparkles',
+                port_types=PortTypeSpec(
+                    inputs={},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Saturation',
+                category='Signal Processing',
+                description='Clamp to min/max range.',
+                param_schema=[
+                    ParamSchema(name='min_val', type='float', default=-1.0, required=True),
+                    ParamSchema(name='max_val', type='float', default=1.0, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='SlidersHorizontal',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='DelayLine',
+                category='Signal Processing',
+                description='Discrete delay buffer.',
+                param_schema=[
+                    ParamSchema(name='delay', type='int', default=1, min=0, required=True),
+                    ParamSchema(name='init_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Clock',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='MLP',
+                category='Neural Networks',
+                description='Multi-layer perceptron.',
+                param_schema=[
+                    ParamSchema(name='input_size', type='int', default=4, min=1, required=True),
+                    ParamSchema(name='output_size', type='int', default=2, min=1, required=True),
+                    ParamSchema(name='hidden_sizes', type='array', default=[64], required=False),
+                    ParamSchema(
+                        name='activation',
+                        type='enum',
+                        options=['relu', 'tanh', 'identity'],
+                        default='relu',
+                        required=False,
+                    ),
+                    ParamSchema(
+                        name='final_activation',
+                        type='enum',
+                        options=['identity', 'tanh', 'relu'],
+                        default='identity',
+                        required=False,
+                    ),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Brain',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='GRU',
+                category='Neural Networks',
+                description='GRU cell.',
+                param_schema=[
+                    ParamSchema(name='input_size', type='int', default=4, min=1, required=True),
+                    ParamSchema(name='hidden_size', type='int', default=4, min=1, required=True),
+                ],
+                input_ports=['input', 'hidden'],
+                output_ports=['output', 'hidden'],
+                icon='BrainCircuit',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='LSTM',
+                category='Neural Networks',
+                description='LSTM cell.',
+                param_schema=[
+                    ParamSchema(name='input_size', type='int', default=4, min=1, required=True),
+                    ParamSchema(name='hidden_size', type='int', default=4, min=1, required=True),
+                ],
+                input_ports=['input', 'hidden', 'cell'],
+                output_ports=['output', 'hidden', 'cell'],
+                icon='BrainCircuit',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'input': PortType(dtype='vector'),
+                        'hidden': PortType(dtype='vector'),
+                        'cell': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'output': PortType(dtype='vector'),
+                        'hidden': PortType(dtype='vector'),
+                        'cell': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Spring',
+                category='Mechanics',
+                description='Linear spring.',
+                param_schema=[
+                    ParamSchema(name='stiffness', type='float', default=1.0, required=True),
+                ],
+                input_ports=['displacement'],
+                output_ports=['force'],
+                icon='Move',
+                port_types=PortTypeSpec(
+                    inputs={'displacement': PortType(dtype='vector')},
+                    outputs={'force': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Damper',
+                category='Mechanics',
+                description='Viscous damper.',
+                param_schema=[
+                    ParamSchema(name='damping', type='float', default=1.0, required=True),
+                ],
+                input_ports=['velocity'],
+                output_ports=['force'],
+                icon='Move',
+                port_types=PortTypeSpec(
+                    inputs={'velocity': PortType(dtype='vector')},
+                    outputs={'force': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='TwoLinkArm',
+                category='Mechanics',
+                description='Two-link arm plant with direct force input.',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
+                ],
+                input_ports=['force'],
+                output_ports=['effector', 'state'],
+                icon='Activity',
+                port_types=PortTypeSpec(
+                    inputs={'force': PortType(dtype='vector')},
+                    outputs={
+                        'effector': PortType(dtype='state'),
+                        'state': PortType(dtype='state'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='PointMass',
+                category='Mechanics',
+                description='Point-mass plant with direct force input.',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
+                ],
+                input_ports=['force'],
+                output_ports=['effector', 'state'],
+                icon='Activity',
+                port_types=PortTypeSpec(
+                    inputs={'force': PortType(dtype='vector')},
+                    outputs={
+                        'effector': PortType(dtype='state'),
+                        'state': PortType(dtype='state'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='Mechanics',
                 category='Mechanics',
                 description='Biomechanical plant simulator for the limb.',
@@ -279,21 +610,6 @@ class ComponentRegistry:
                 port_types=PortTypeSpec(
                     inputs={'input': PortType(dtype='vector')},
                     outputs={'output': PortType(dtype='vector')},
-                ),
-            )
-        )
-        self.register(
-            ComponentMeta(
-                name='Copy',
-                category='Interventions',
-                description='Pass-through for a signal/state.',
-                param_schema=[],
-                input_ports=['input'],
-                output_ports=['output'],
-                icon='Copy',
-                port_types=PortTypeSpec(
-                    inputs={'input': PortType(dtype='any')},
-                    outputs={'output': PortType(dtype='any')},
                 ),
             )
         )
