@@ -60,13 +60,32 @@ export interface NodeUIState {
   selected: boolean;
 }
 
+export interface EdgeRoutingPoint {
+  x: number;
+  y: number;
+}
+
+export interface EdgeRouting {
+  style: 'bezier' | 'elbow';
+  points: EdgeRoutingPoint[];
+}
+
+export interface EdgeUIState {
+  routing: EdgeRouting;
+}
+
 export interface GraphUIState {
   viewport: { x: number; y: number; zoom: number };
   node_states: Record<string, NodeUIState>;
+  edge_states?: Record<string, EdgeUIState>;
 }
 
 export interface GraphNodeData {
   label: string;
   spec: ComponentSpec;
   collapsed?: boolean;
+}
+
+export interface GraphEdgeData {
+  routing?: EdgeRouting;
 }

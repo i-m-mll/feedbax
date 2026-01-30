@@ -34,9 +34,17 @@ export function RoutedEdge({
   const removeEdgePoint = useGraphStore((state) => state.removeEdgePoint);
   const toggleEdgeStyleForEdge = useGraphStore((state) => state.toggleEdgeStyleForEdge);
 
+  const autoElbowPoints =
+    points.length === 0
+      ? [
+          { x: (sourceX + targetX) / 2, y: sourceY },
+          { x: (sourceX + targetX) / 2, y: targetY },
+        ]
+      : points;
+
   const pathPoints = [
     { x: sourceX, y: sourceY },
-    ...points,
+    ...autoElbowPoints,
     { x: targetX, y: targetY },
   ];
 
@@ -54,7 +62,7 @@ export function RoutedEdge({
 
   const handlePathClick = useCallback(
     (event: React.MouseEvent<SVGPathElement>) => {
-      if (!event.altKey) return;
+      if (!event.altKey && !event.shiftKey) return;
       event.stopPropagation();
       const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       addEdgePoint(id, point);

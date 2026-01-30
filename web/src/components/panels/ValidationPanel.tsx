@@ -2,18 +2,17 @@ import { useMemo } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import { validateGraph } from '@/features/graph/validation';
 
-export function InspectorPanel() {
+export function ValidationPanel() {
   const graph = useGraphStore((state) => state.graph);
   const validation = useMemo(() => validateGraph(graph), [graph]);
 
   return (
-    <div className="p-6 space-y-4 text-sm text-slate-600 overflow-x-hidden">
+    <div className="p-6 space-y-4 text-sm text-slate-600">
       <div>
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Inspector</div>
-        <div className="text-base font-semibold text-slate-800">State & Ports</div>
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Validation</div>
+        <div className="text-base font-semibold text-slate-800">Graph Health</div>
       </div>
       <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2">
-        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Graph Validation</div>
         {validation.valid ? (
           <div className="text-sm text-mint-500">Graph is valid.</div>
         ) : (
@@ -37,14 +36,6 @@ export function InspectorPanel() {
             Cycles detected: {validation.cycles.map((cycle) => cycle.join(' → ')).join(', ')}
           </div>
         )}
-      </div>
-      <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4">
-        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">State Tree</div>
-        <div className="text-sm text-slate-600">Awaiting simulation data.</div>
-      </div>
-      <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4">
-        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Port Values</div>
-        <div className="text-sm text-slate-600">No active run.</div>
       </div>
     </div>
   );

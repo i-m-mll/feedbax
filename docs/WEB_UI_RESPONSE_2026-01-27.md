@@ -114,3 +114,24 @@ Here are the two options and their tradeoffs:
 - A lightweight system is fine to start, but we should design the schema so it can expand to shape constraints later.
 
 If you want, I can implement a minimal schema now that supports both and only uses the richer info when present.
+
+---
+
+# Update (2026-01-30)
+
+## Shipped in this pass
+- Two-shelf layout is live with NAND collapse behavior, header toggles, and a resizable bottom shelf.
+- Bottom shelf tabs are horizontally scrollable with left/right fades when needed.
+- Per-edge routing is now stored per edge (style + elbow points), with Shift to start elbow edges.
+- Alt/Shift-click on an edge adds a waypoint; drag points to route; double-click toggles edge style.
+- Collapsed nodes keep their edges visible (handles remain mounted).
+- Port type checking now uses dtype + optional rank/shape (supports `-1` wildcard dims).
+- Component registry expanded: MLP/GRU/LSTM, TwoLinkArm/PointMass/Spring/Damper, ForceField/Clamp/Perturbation, ReachingTask/TrackingTask/HoldTask.
+- Icon mappings updated (AudioWaveform, HeartPulse, etc.) to match available lucide icons.
+
+## Still open
+- Loss tree editor is still a placeholder.
+- Waypoint placement during the initial draw gesture (mid-draw clicks) is not implemented yet.
+
+## Notes
+- Edge routing lives in `ui_state.edge_states`; default edge style only affects new edges.

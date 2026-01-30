@@ -1,12 +1,41 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import {
   Activity,
+  AudioWaveform,
+  Brain,
+  BrainCircuit,
+  BrainCog,
+  Circle,
   CircuitBoard,
   Minus,
   Sigma,
   Signal,
   ChevronDown,
   ChevronRight,
+  Plus,
+  X,
+  SlidersHorizontal,
+  SlidersVertical,
+  Clock,
+  Sparkles,
+  TrendingUp,
+  HeartPulse,
+  Move,
+  MoveHorizontal,
+  Wind,
+  Flag,
+  Pin,
+  Magnet,
+  Shield,
+  Zap,
+  Asterisk,
+  Copy,
+  Target,
+  Timer,
+  Radar,
+  Anchor,
+  Pause,
+  Eye,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
 import type { ComponentDefinition } from '@/types/components';
@@ -16,9 +45,38 @@ import clsx from 'clsx';
 const iconMap = {
   CircuitBoard,
   Activity,
+  AudioWaveform,
+  HeartPulse,
+  Brain,
+  BrainCircuit,
+  BrainCog,
+  Move,
+  MoveHorizontal,
+  Circle,
   Signal,
   Minus,
   Sigma,
+  Plus,
+  X,
+  SlidersHorizontal,
+  SlidersVertical,
+  Clock,
+  Sparkles,
+  TrendingUp,
+  Wind,
+  Flag,
+  Pin,
+  Magnet,
+  Shield,
+  Zap,
+  Asterisk,
+  Copy,
+  Target,
+  Timer,
+  Radar,
+  Anchor,
+  Pause,
+  Eye,
 };
 
 export function ComponentLibrary() {
@@ -37,7 +95,7 @@ export function ComponentLibrary() {
       : components;
 
     return groupComponentsByCategory(filtered);
-  }, [search]);
+  }, [components, search]);
 
   const toggleCategory = (category: string) => {
     setExpandedCategories((prev) => {

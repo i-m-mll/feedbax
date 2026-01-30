@@ -6,22 +6,22 @@ Tracking unresolved issues and planned features.
 
 ## Edge Drawing UX
 
-**Current behavior**: Global toggle between curved and elbow edge styles (top-right button).
+**Current behavior**: Per-edge routing with editable elbow points. Default drawing mode is curved; holding Shift creates elbow edges. Alt/Shift-click on an edge adds an elbow point; drag points to route; double-click toggles edge style.
 
 **Desired behavior**: Per-edge control with drawing tool semantics:
 - Default drawing mode creates curved (bezier) edges
 - Holding Shift (or similar modifier) creates straight/elbow edges
-- Clicking on canvas mid-draw introduces an elbow/waypoint
+- Clicking on canvas mid-draw introduces an elbow/waypoint (partial — currently add points after creation)
 - Clicking on a port initiates or terminates the wire
 - Each edge retains its own style (not global toggle)
 
-**Notes**: Need to investigate React Flow capabilities for custom edge routing with user-defined waypoints, per-edge metadata, and modifier key detection during drawing.
+**Notes**: Waypoint placement during the initial draw gesture is still missing (points are added post-creation).
 
 ---
 
 ## Node Title Editing Causes Resize
 
-**Current behavior**: Component boxes change size when editing their titles, which is jarring.
+**Current behavior**: Fixed width with truncation; no resize on edit (stable layout).
 
 **Desired behavior**: Node size should remain stable during title editing. Options:
 - Fixed minimum width that accommodates reasonable title lengths
@@ -33,7 +33,7 @@ Tracking unresolved issues and planned features.
 
 ## Two-Shelf Layout
 
-**Current behavior**: Single-shelf layout with Training/Inspector tabs in the right sidebar.
+**Current behavior**: Two-shelf layout spanning full width; top shelf is model editor, bottom shelf is workbench tabs with scrollable tabs and edge fades.
 
 **Desired behavior**: Two-shelf layout spanning full page width:
 
@@ -78,7 +78,7 @@ Loss terms refer directly to a state path or port selector string.
 
 ## Port Type System
 
-**Current behavior**: No type checking on port connections.
+**Current behavior**: Simple dtype checking on connection; optional rank/shape compatibility when provided; schema designed for future expansion.
 
 **Desired behavior**: Validate port compatibility at connection time. Optionally color-code port types.
 
@@ -100,12 +100,7 @@ Dtype plus optional rank/shape constraints: `float[2]`, `state[6]`.
 
 ## Component Catalog Coverage
 
-**Current behavior**: Component registry only includes minimal subset:
-- SimpleStagedNetwork
-- Mechanics
-- FeedbackChannel
-- Constant
-- Gain
+**Current behavior**: Component registry expanded to cover core feedbax tasks/interventions, standard signals/math utilities, and additional network/mechanics/task placeholders.
 
 **Missing categories**:
 - **Tasks**: ReachingTask, TrackingTask, etc. — not implemented in UI

@@ -9,12 +9,65 @@ import {
   type Node,
   type NodeChange,
 } from '@xyflow/react';
-import type { GraphSpec, GraphUIState, GraphNodeData, ComponentSpec } from '@/types/graph';
+import type {
+  GraphSpec,
+  GraphUIState,
+  GraphNodeData,
+  GraphEdgeData,
+  ComponentSpec,
+  EdgeUIState,
+  EdgeRouting,
+} from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
+const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
+
+function wireId(wire: {
+  source_node: string;
+  source_port: string;
+  target_node: string;
+  target_port: string;
+}) {
+  return `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`;
+}
+
+function buildEdgeStates(
+  graph: GraphSpec,
+  uiState: GraphUIState,
+  defaultStyle: EdgeRouting['style']
+): Record<string, EdgeUIState> {
+  const existing = uiState.edge_states ?? {};
+  const next: Record<string, EdgeUIState> = {};
+  for (const wire of graph.wires) {
+    const id = wireId(wire);
+    next[id] = existing[id] ?? {
+      routing: { style: defaultStyle, points: [] },
+    };
+  }
+  return next;
+}
+
+function applyEdgeStates(
+  edges: Edge<GraphEdgeData>[],
+  edgeStates: Record<string, EdgeUIState>,
+  defaultStyle: EdgeRouting['style']
+) {
+  return edges.map((edge) => {
+    const routing =
+      edgeStates[edge.id]?.routing ?? { style: defaultStyle, points: [] };
+    return {
+      ...edge,
+      type: 'routed',
+      data: {
+        ...edge.data,
+        routing,
+      },
+    };
+  });
+}
 
 function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
@@ -87,7 +140,7 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
     },
   };
 
-  const uiState: GraphUIState = {
+  const baseUiState: GraphUIState = {
     viewport: DEFAULT_VIEWPORT,
     node_states: {
       network: { position: { x: 300, y: 200 }, collapsed: false, selected: false },
@@ -96,14 +149,19 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
     },
   };
 
+  const uiState: GraphUIState = {
+    ...baseUiState,
+    edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
+  };
+
   return { graph, uiState };
 }
 
-function wireId(wire: { source_node: string; source_port: string; target_node: string; target_port: string }) {
-  return `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`;
-}
-
-function normalizeUiState(graph: GraphSpec, uiState?: GraphUIState | null): GraphUIState {
+function normalizeUiState(
+  graph: GraphSpec,
+  uiState: GraphUIState | null | undefined,
+  defaultEdgeStyle: EdgeRouting['style']
+): GraphUIState {
   const base: GraphUIState = uiState ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
   const node_states = { ...base.node_states };
 
@@ -119,9 +177,12 @@ function normalizeUiState(graph: GraphSpec, uiState?: GraphUIState | null): Grap
     }
   }
 
+  const edge_states = buildEdgeStates(graph, base, defaultEdgeStyle);
+
   return {
     viewport: base.viewport ?? DEFAULT_VIEWPORT,
     node_states,
+    edge_states,
   };
 }
 
@@ -146,18 +207,29 @@ function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData
   });
 }
 
-function buildEdges(graph: GraphSpec, edgeStyle: 'bezier' | 'elbow' = 'bezier'): Edge[] {
-  return graph.wires.map((wire) => ({
-    id: wireId(wire),
-    source: wire.source_node,
-    target: wire.target_node,
-    sourceHandle: wire.source_port,
-    targetHandle: wire.target_port,
-    type: edgeStyle === 'bezier' ? 'wire' : 'elbow',
-  }));
+function buildEdges(
+  graph: GraphSpec,
+  uiState: GraphUIState,
+  defaultStyle: EdgeRouting['style']
+): Edge<GraphEdgeData>[] {
+  const edgeStates = buildEdgeStates(graph, uiState, defaultStyle);
+  return graph.wires.map((wire) => {
+    const id = wireId(wire);
+    return {
+      id,
+      source: wire.source_node,
+      target: wire.target_node,
+      sourceHandle: wire.source_port,
+      targetHandle: wire.target_port,
+      type: 'routed',
+      data: {
+        routing: edgeStates[id]?.routing ?? { style: defaultStyle, points: [] },
+      },
+    };
+  });
 }
 
-function edgesToWires(edges: Edge[]): GraphSpec['wires'] {
+function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
   return edges
     .filter((edge) => edge.source && edge.target && edge.sourceHandle && edge.targetHandle)
     .map((edge) => ({
@@ -206,7 +278,7 @@ interface GraphStoreState {
   graph: GraphSpec;
   uiState: GraphUIState;
   nodes: Node<GraphNodeData>[];
-  edges: Edge[];
+  edges: Edge<GraphEdgeData>[];
   edgeStyle: 'bezier' | 'elbow';
   isDirty: boolean;
   lastSavedAt: string | null;
@@ -219,10 +291,14 @@ interface GraphStoreState {
   redo: () => void;
   deleteSelected: () => void;
   setEdgeStyle: (style: 'bezier' | 'elbow') => void;
+  addEdgePoint: (edgeId: string, point: { x: number; y: number }) => void;
+  updateEdgePoint: (edgeId: string, index: number, point: { x: number; y: number }) => void;
+  removeEdgePoint: (edgeId: string, index: number) => void;
+  toggleEdgeStyleForEdge: (edgeId: string) => void;
   renameNode: (nodeId: string, nextId: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
-  onConnect: (connection: Connection) => void;
+  onConnect: (connection: Connection, styleOverride?: 'bezier' | 'elbow') => void;
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
   updateNodeParams: (nodeId: string, paramName: string, value: ComponentSpec['params'][string]) => void;
   setSelectedNode: (nodeId: string | null) => void;
@@ -236,21 +312,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   graph: initial.graph,
   uiState: initial.uiState,
   nodes: buildNodes(initial.graph, initial.uiState),
-  edges: buildEdges(initial.graph, 'bezier'),
-  edgeStyle: 'bezier',
+  edges: buildEdges(initial.graph, initial.uiState, DEFAULT_EDGE_STYLE),
+  edgeStyle: DEFAULT_EDGE_STYLE,
   isDirty: false,
   lastSavedAt: null,
   past: [],
   future: [],
   hydrateGraph: (graph, uiState, graphId) => {
-    const normalized = normalizeUiState(graph, uiState);
     const edgeStyle = get().edgeStyle;
+    const normalized = normalizeUiState(graph, uiState, edgeStyle);
     set({
       graphId: graphId ?? null,
       graph,
       uiState: normalized,
       nodes: buildNodes(graph, normalized),
-      edges: buildEdges(graph, edgeStyle),
+      edges: buildEdges(graph, normalized, edgeStyle),
       isDirty: false,
       past: [],
       future: [],
@@ -270,7 +346,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       graph: fresh.graph,
       uiState: fresh.uiState,
       nodes: buildNodes(fresh.graph, fresh.uiState),
-      edges: buildEdges(fresh.graph, 'bezier'),
+      edges: buildEdges(fresh.graph, fresh.uiState, DEFAULT_EDGE_STYLE),
       isDirty: false,
       lastSavedAt: null,
       past: [],
@@ -283,13 +359,13 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const previous = state.past[state.past.length - 1];
       const past = state.past.slice(0, -1);
       const future = [cloneSnapshot(state.graph, state.uiState), ...state.future];
-      const normalized = normalizeUiState(previous.graph, previous.uiState);
+      const normalized = normalizeUiState(previous.graph, previous.uiState, state.edgeStyle);
       return {
         ...state,
         graph: previous.graph,
         uiState: normalized,
         nodes: buildNodes(previous.graph, normalized),
-        edges: buildEdges(previous.graph, state.edgeStyle),
+        edges: buildEdges(previous.graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -302,13 +378,13 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const next = state.future[0];
       const future = state.future.slice(1);
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
-      const normalized = normalizeUiState(next.graph, next.uiState);
+      const normalized = normalizeUiState(next.graph, next.uiState, state.edgeStyle);
       return {
         ...state,
         graph: next.graph,
         uiState: normalized,
         nodes: buildNodes(next.graph, normalized),
-        edges: buildEdges(next.graph, state.edgeStyle),
+        edges: buildEdges(next.graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -316,13 +392,130 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     });
   },
   setEdgeStyle: (style) => {
-    set((state) => ({
-      edgeStyle: style,
-      edges: state.edges.map((edge) => ({
-        ...edge,
-        type: style === 'bezier' ? 'wire' : 'elbow',
-      })),
-    }));
+    set((state) => {
+      const edge_states = buildEdgeStates(state.graph, state.uiState, style);
+      return {
+        edgeStyle: style,
+        uiState: {
+          ...state.uiState,
+          edge_states,
+        },
+        edges: applyEdgeStates(state.edges, edge_states, style),
+      };
+    });
+  },
+  addEdgePoint: (edgeId, point) => {
+    set((state) => {
+      const edge_states = buildEdgeStates(state.graph, state.uiState, state.edgeStyle);
+      const existing = edge_states[edgeId];
+      if (!existing) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const routing: EdgeRouting = {
+        ...existing.routing,
+        style: 'elbow',
+        points: [...existing.routing.points, point],
+      };
+      const nextEdgeStates = {
+        ...edge_states,
+        [edgeId]: { routing },
+      };
+      return {
+        uiState: {
+          ...state.uiState,
+          edge_states: nextEdgeStates,
+        },
+        edges: applyEdgeStates(state.edges, nextEdgeStates, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  updateEdgePoint: (edgeId, index, point) => {
+    set((state) => {
+      const edge_states = buildEdgeStates(state.graph, state.uiState, state.edgeStyle);
+      const existing = edge_states[edgeId];
+      if (!existing) return state;
+      if (index < 0 || index >= existing.routing.points.length) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const points = existing.routing.points.map((pt, idx) => (idx === index ? point : pt));
+      const nextEdgeStates = {
+        ...edge_states,
+        [edgeId]: {
+          routing: {
+            ...existing.routing,
+            points,
+          },
+        },
+      };
+      return {
+        uiState: {
+          ...state.uiState,
+          edge_states: nextEdgeStates,
+        },
+        edges: applyEdgeStates(state.edges, nextEdgeStates, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  removeEdgePoint: (edgeId, index) => {
+    set((state) => {
+      const edge_states = buildEdgeStates(state.graph, state.uiState, state.edgeStyle);
+      const existing = edge_states[edgeId];
+      if (!existing) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const points = existing.routing.points.filter((_, idx) => idx !== index);
+      const nextEdgeStates = {
+        ...edge_states,
+        [edgeId]: {
+          routing: {
+            ...existing.routing,
+            points,
+          },
+        },
+      };
+      return {
+        uiState: {
+          ...state.uiState,
+          edge_states: nextEdgeStates,
+        },
+        edges: applyEdgeStates(state.edges, nextEdgeStates, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  toggleEdgeStyleForEdge: (edgeId) => {
+    set((state) => {
+      const edge_states = buildEdgeStates(state.graph, state.uiState, state.edgeStyle);
+      const existing = edge_states[edgeId] ?? {
+        routing: { style: state.edgeStyle, points: [] },
+      };
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const nextStyle = existing.routing.style === 'bezier' ? 'elbow' : 'bezier';
+      const nextEdgeStates = {
+        ...edge_states,
+        [edgeId]: {
+          routing: {
+            ...existing.routing,
+            style: nextStyle,
+          },
+        },
+      };
+      return {
+        uiState: {
+          ...state.uiState,
+          edge_states: nextEdgeStates,
+        },
+        edges: applyEdgeStates(state.edges, nextEdgeStates, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
   },
   deleteSelected: () => {
     set((state) => {
@@ -361,17 +554,22 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           Object.entries(state.uiState.node_states).filter(([nodeId]) => !selectedNodeIds.includes(nodeId))
         ),
       };
+      const nextGraph: GraphSpec = {
+        ...state.graph,
+        nodes: graphNodes,
+        wires: edgesToWires(edges),
+        input_bindings,
+        output_bindings,
+      };
+      const edge_states = buildEdgeStates(nextGraph, uiState, state.edgeStyle);
       return {
-        graph: {
-          ...state.graph,
-          nodes: graphNodes,
-          wires: edgesToWires(edges),
-          input_bindings,
-          output_bindings,
+        graph: nextGraph,
+        uiState: {
+          ...uiState,
+          edge_states,
         },
-        uiState,
         nodes,
-        edges,
+        edges: applyEdgeStates(edges, edge_states, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -426,16 +624,32 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         output_bindings,
       };
 
+      const previousEdgeStates = state.uiState.edge_states ?? {};
+      const edge_states: Record<string, EdgeUIState> = {};
+      for (const wire of wires) {
+        const newId = wireId(wire);
+        const oldId = wireId({
+          source_node: wire.source_node === trimmed ? nodeId : wire.source_node,
+          source_port: wire.source_port,
+          target_node: wire.target_node === trimmed ? nodeId : wire.target_node,
+          target_port: wire.target_port,
+        });
+        edge_states[newId] =
+          previousEdgeStates[oldId] ??
+          previousEdgeStates[newId] ?? { routing: { style: state.edgeStyle, points: [] } };
+      }
+
       const uiState: GraphUIState = {
         ...state.uiState,
         node_states,
+        edge_states,
       };
 
       return {
         graph,
         uiState,
         nodes: buildNodes(graph, uiState),
-        edges: buildEdges(graph, state.edgeStyle),
+        edges: buildEdges(graph, uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -487,12 +701,18 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ? [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY)
         : state.past;
       const nextEdges = applyEdgeChanges(changes, state.edges);
+      const graph: GraphSpec = {
+        ...state.graph,
+        wires: edgesToWires(nextEdges),
+      };
+      const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
       const dirty = changes.length > 0;
       return {
-        edges: nextEdges,
-        graph: {
-          ...state.graph,
-          wires: edgesToWires(nextEdges),
+        edges: applyEdgeStates(nextEdges, edge_states, state.edgeStyle),
+        graph,
+        uiState: {
+          ...state.uiState,
+          edge_states,
         },
         past,
         future: shouldRecord ? [] : state.future,
@@ -500,7 +720,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
-  onConnect: (connection) => {
+  onConnect: (connection, styleOverride) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
     const alreadyUsed = get().edges.some(
@@ -509,8 +729,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         edge.targetHandle === connection.targetHandle
     );
     if (alreadyUsed) return;
-    const edgeStyle = get().edgeStyle;
-    const edge: Edge = {
+    const edgeStyle = styleOverride ?? get().edgeStyle;
+    const edge: Edge<GraphEdgeData> = {
       ...connection,
       id: wireId({
         source_node: connection.source,
@@ -518,16 +738,34 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         target_node: connection.target,
         target_port: connection.targetHandle,
       }),
-      type: edgeStyle === 'bezier' ? 'wire' : 'elbow',
+      type: 'routed',
+      data: {
+        routing: {
+          style: edgeStyle,
+          points: [],
+        },
+      },
     };
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nextEdges = addEdge(edge, state.edges);
+      const graph: GraphSpec = {
+        ...state.graph,
+        wires: edgesToWires(nextEdges),
+      };
+      const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
+      edge_states[edge.id] = {
+        routing: {
+          style: edgeStyle,
+          points: [],
+        },
+      };
       return {
-        edges: nextEdges,
-        graph: {
-          ...state.graph,
-          wires: edgesToWires(nextEdges),
+        edges: applyEdgeStates(nextEdges, edge_states, state.edgeStyle),
+        graph,
+        uiState: {
+          ...state.uiState,
+          edge_states,
         },
         past,
         future: [],
