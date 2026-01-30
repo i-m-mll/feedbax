@@ -7,6 +7,7 @@ export function TrainingPanel() {
   const { trainingSpec, setTrainingSpec, progress, status } = useTrainingStore();
   const { start, stop } = useTraining();
   const graphId = useGraphStore((state) => state.graphId);
+  const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
 
   const percent = useMemo(() => {
     if (!progress) return 0;
@@ -107,13 +108,18 @@ export function TrainingPanel() {
         <div className="text-xs text-amber-600">Training failed. Check console.</div>
       )}
 
-      {!graphId && (
+      {inSubgraph && (
+        <div className="text-xs text-amber-600">
+          Return to the model root to start training.
+        </div>
+      )}
+      {!graphId && !inSubgraph && (
         <div className="text-xs text-amber-600">Save the project before starting training.</div>
       )}
       <button
         className="w-full rounded-full bg-brand-500 text-white py-2 text-sm font-semibold shadow-soft hover:bg-brand-600"
         onClick={status === 'running' ? stop : start}
-        disabled={!graphId}
+        disabled={!graphId || inSubgraph}
       >
         {status === 'running' ? 'Stop Training' : 'Start Training'}
       </button>

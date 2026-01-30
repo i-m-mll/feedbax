@@ -24,6 +24,20 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
+const COMPOSITE_TYPES = new Set(['SimpleStagedNetwork']);
+
+interface GraphLayer {
+  graph: GraphSpec;
+  uiState: GraphUIState;
+  graphId: string | null;
+  label: string;
+  key: string;
+}
+
+interface SubgraphEntry {
+  graph: GraphSpec;
+  uiState: GraphUIState;
+}
 
 function wireId(wire: {
   source_node: string;
@@ -146,6 +160,91 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
       network: { position: { x: 300, y: 200 }, collapsed: false, selected: false },
       mechanics: { position: { x: 600, y: 200 }, collapsed: false, selected: false },
       feedback: { position: { x: 450, y: 400 }, collapsed: false, selected: false },
+    },
+  };
+
+  const uiState: GraphUIState = {
+    ...baseUiState,
+    edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
+  };
+
+  return { graph, uiState };
+}
+
+function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
+  const graph: GraphSpec = {
+    nodes: {
+      encoder: {
+        type: 'MLP',
+        params: {
+          input_size: 6,
+          output_size: 64,
+          hidden_sizes: [64],
+          activation: 'relu',
+        },
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+      core: {
+        type: 'GRU',
+        params: {
+          input_size: 64,
+          hidden_size: 64,
+          output_size: 64,
+          num_layers: 1,
+        },
+        input_ports: ['input'],
+        output_ports: ['output', 'hidden'],
+      },
+      decoder: {
+        type: 'MLP',
+        params: {
+          input_size: 64,
+          output_size: 2,
+          hidden_sizes: [64],
+          activation: 'tanh',
+        },
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [
+      {
+        source_node: 'encoder',
+        source_port: 'output',
+        target_node: 'core',
+        target_port: 'input',
+      },
+      {
+        source_node: 'core',
+        source_port: 'output',
+        target_node: 'decoder',
+        target_port: 'input',
+      },
+    ],
+    input_ports: ['input'],
+    output_ports: ['output'],
+    input_bindings: {
+      input: ['encoder', 'input'],
+    },
+    output_bindings: {
+      output: ['decoder', 'output'],
+    },
+    metadata: {
+      name: `${label} Graph`,
+      description: 'Internal staged network graph.',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      version: '1.0.0',
+    },
+  };
+
+  const baseUiState: GraphUIState = {
+    viewport: DEFAULT_VIEWPORT,
+    node_states: {
+      encoder: { position: { x: 200, y: 220 }, collapsed: false, selected: false },
+      core: { position: { x: 480, y: 220 }, collapsed: false, selected: false },
+      decoder: { position: { x: 760, y: 220 }, collapsed: false, selected: false },
     },
   };
 
@@ -280,6 +379,10 @@ interface GraphStoreState {
   nodes: Node<GraphNodeData>[];
   edges: Edge<GraphEdgeData>[];
   edgeStyle: 'bezier' | 'elbow';
+  graphStack: GraphLayer[];
+  currentGraphLabel: string;
+  currentGraphKey: string;
+  subgraphs: Record<string, SubgraphEntry>;
   isDirty: boolean;
   lastSavedAt: string | null;
   past: { graph: GraphSpec; uiState: GraphUIState }[];
@@ -295,6 +398,8 @@ interface GraphStoreState {
   updateEdgePoint: (edgeId: string, index: number, point: { x: number; y: number }) => void;
   removeEdgePoint: (edgeId: string, index: number) => void;
   toggleEdgeStyleForEdge: (edgeId: string) => void;
+  enterSubgraph: (nodeId: string) => void;
+  exitToBreadcrumb: (index: number) => void;
   renameNode: (nodeId: string, nextId: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
@@ -314,6 +419,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   nodes: buildNodes(initial.graph, initial.uiState),
   edges: buildEdges(initial.graph, initial.uiState, DEFAULT_EDGE_STYLE),
   edgeStyle: DEFAULT_EDGE_STYLE,
+  graphStack: [],
+  currentGraphLabel: initial.graph.metadata?.name ?? 'Model',
+  currentGraphKey: '',
+  subgraphs: {},
   isDirty: false,
   lastSavedAt: null,
   past: [],
@@ -327,6 +436,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       uiState: normalized,
       nodes: buildNodes(graph, normalized),
       edges: buildEdges(graph, normalized, edgeStyle),
+      graphStack: [],
+      currentGraphLabel: graph.metadata?.name ?? 'Model',
+      currentGraphKey: '',
+      subgraphs: {},
       isDirty: false,
       past: [],
       future: [],
@@ -347,6 +460,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       uiState: fresh.uiState,
       nodes: buildNodes(fresh.graph, fresh.uiState),
       edges: buildEdges(fresh.graph, fresh.uiState, DEFAULT_EDGE_STYLE),
+      graphStack: [],
+      currentGraphLabel: fresh.graph.metadata?.name ?? 'Model',
+      currentGraphKey: '',
+      subgraphs: {},
       isDirty: false,
       lastSavedAt: null,
       past: [],
@@ -514,6 +631,74 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         past,
         future: [],
         isDirty: true,
+      };
+    });
+  },
+  enterSubgraph: (nodeId) => {
+    set((state) => {
+      const nodeSpec = state.graph.nodes[nodeId];
+      if (!nodeSpec || !COMPOSITE_TYPES.has(nodeSpec.type)) {
+        return state;
+      }
+      const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
+      const parentKey = state.currentGraphKey;
+      const nextKey = parentKey ? `${parentKey}/${nodeId}` : nodeId;
+      const cached = state.subgraphs[nextKey];
+      const nextLayer = cached ?? createNetworkSubgraph(nodeId);
+      const normalized = normalizeUiState(nextLayer.graph, nextLayer.uiState, state.edgeStyle);
+      return {
+        graphStack: [
+          ...state.graphStack,
+          {
+            graph: state.graph,
+            uiState: state.uiState,
+            graphId: state.graphId,
+            label: parentLabel,
+            key: parentKey,
+          },
+        ],
+        graph: nextLayer.graph,
+        uiState: normalized,
+        nodes: buildNodes(nextLayer.graph, normalized),
+        edges: buildEdges(nextLayer.graph, normalized, state.edgeStyle),
+        currentGraphLabel: nodeId,
+        currentGraphKey: nextKey,
+        past: [],
+        future: [],
+      };
+    });
+  },
+  exitToBreadcrumb: (index) => {
+    set((state) => {
+      if (state.graphStack.length === 0) return state;
+      if (index >= state.graphStack.length) return state;
+      const currentKey = state.currentGraphKey;
+      const subgraphs = {
+        ...state.subgraphs,
+        ...(currentKey
+          ? {
+              [currentKey]: {
+                graph: state.graph,
+                uiState: state.uiState,
+              },
+            }
+          : {}),
+      };
+      const nextStack = state.graphStack.slice(0, index);
+      const nextLayer = state.graphStack[index];
+      const normalized = normalizeUiState(nextLayer.graph, nextLayer.uiState, state.edgeStyle);
+      return {
+        graphStack: nextStack,
+        graph: nextLayer.graph,
+        uiState: normalized,
+        nodes: buildNodes(nextLayer.graph, normalized),
+        edges: buildEdges(nextLayer.graph, normalized, state.edgeStyle),
+        graphId: nextLayer.graphId,
+        currentGraphLabel: nextLayer.label,
+        currentGraphKey: nextLayer.key,
+        subgraphs,
+        past: [],
+        future: [],
       };
     });
   },

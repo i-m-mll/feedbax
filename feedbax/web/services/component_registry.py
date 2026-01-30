@@ -163,7 +163,7 @@ class ComponentRegistry:
                 port_types=PortTypeSpec(
                     inputs={'force': PortType(dtype='vector')},
                     outputs={
-                        'effector': PortType(dtype='state'),
+                        'effector': PortType(dtype='vector'),
                         'state': PortType(dtype='state'),
                     },
                 ),
@@ -183,7 +183,7 @@ class ComponentRegistry:
                 port_types=PortTypeSpec(
                     inputs={'force': PortType(dtype='vector')},
                     outputs={
-                        'effector': PortType(dtype='state'),
+                        'effector': PortType(dtype='vector'),
                         'state': PortType(dtype='state'),
                     },
                 ),
@@ -203,7 +203,7 @@ class ComponentRegistry:
                 port_types=PortTypeSpec(
                     inputs={'force': PortType(dtype='vector')},
                     outputs={
-                        'effector': PortType(dtype='state'),
+                        'effector': PortType(dtype='vector'),
                         'state': PortType(dtype='state'),
                     },
                 ),

@@ -8,6 +8,7 @@ import {
   useLayoutStore,
   BOTTOM_COLLAPSED_HEIGHT,
   MIN_BOTTOM_HEIGHT,
+  MIN_TOP_HEIGHT,
 } from '@/stores/layoutStore';
 
 export default function App() {
@@ -60,7 +61,7 @@ export default function App() {
     }
     const clampedBottom = Math.max(
       MIN_BOTTOM_HEIGHT,
-      Math.min(availableHeight - MIN_BOTTOM_HEIGHT, bottomHeight)
+      Math.min(availableHeight - MIN_TOP_HEIGHT, bottomHeight)
     );
     return {
       topHeight: Math.max(availableHeight - clampedBottom, 0),

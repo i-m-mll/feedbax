@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import {
   Background,
   Controls,
@@ -35,9 +35,14 @@ export function Canvas() {
     edgeStyle,
     setEdgeStyle,
     graph,
+    graphStack,
+    currentGraphLabel,
+    exitToBreadcrumb,
   } = useGraphStore();
   const { components } = useComponents();
   const reactFlow = useReactFlow();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const lastSize = useRef<{ width: number; height: number } | null>(null);
   const [isShiftDown, setIsShiftDown] = useState(false);
 
   useEffect(() => {
@@ -55,9 +60,40 @@ export function Canvas() {
     };
   }, []);
 
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver((entries) => {
+      if (!entries.length) return;
+      const { width, height } = entries[0].contentRect;
+      const prev = lastSize.current;
+      lastSize.current = { width, height };
+      if (!prev || prev.width === 0 || prev.height === 0) return;
+      if (width === prev.width && height === prev.height) return;
+      const scale = Math.min(width / prev.width, height / prev.height);
+      if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.01) return;
+      const viewport = reactFlow.getViewport();
+      const newZoom = Math.max(0.1, Math.min(2.5, viewport.zoom * scale));
+      const centerFlow = {
+        x: (prev.width / 2 - viewport.x) / viewport.zoom,
+        y: (prev.height / 2 - viewport.y) / viewport.zoom,
+      };
+      const nextX = width / 2 - centerFlow.x * newZoom;
+      const nextY = height / 2 - centerFlow.y * newZoom;
+      reactFlow.setViewport({ x: nextX, y: nextY, zoom: newZoom }, { duration: 0 });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [reactFlow]);
+
   const componentMap = useMemo(
     () => new Map(components.map((component) => [component.name, component])),
     [components]
+  );
+
+  const breadcrumbs = useMemo(
+    () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
+    [graphStack, currentGraphLabel]
   );
 
   const getPortType = useCallback(
@@ -132,7 +168,10 @@ export function Canvas() {
   }, []);
 
   return (
-    <div className="w-full h-full bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]">
+    <div
+      ref={containerRef}
+      className="w-full h-full bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -151,10 +190,37 @@ export function Canvas() {
         fitView
         snapToGrid
         snapGrid={[16, 16]}
+        proOptions={{ hideAttribution: true }}
       >
         <Background variant="dots" gap={16} size={1} color="#cbd5f5" />
         <Controls />
         <MiniMap nodeColor="#9ca3af" />
+        <Panel position="top-left" className="nodrag">
+          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">
+            {breadcrumbs.map((crumb, index) => {
+              const isLast = index === breadcrumbs.length - 1;
+              return (
+                <div key={`${crumb}-${index}`} className="flex items-center gap-2">
+                  <button
+                    className={clsx(
+                      'text-xs font-medium',
+                      isLast ? 'text-slate-700' : 'text-brand-600 hover:text-brand-700'
+                    )}
+                    onClick={() => {
+                      if (!isLast) {
+                        exitToBreadcrumb(index);
+                      }
+                    }}
+                    disabled={isLast}
+                  >
+                    {crumb}
+                  </button>
+                  {!isLast && <span className="text-slate-300">/</span>}
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
         <Panel position="top-right" className="nodrag">
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-xs text-slate-500 shadow-soft">
             <span className="px-2 text-[10px] uppercase tracking-[0.2em] text-slate-400">Default</span>

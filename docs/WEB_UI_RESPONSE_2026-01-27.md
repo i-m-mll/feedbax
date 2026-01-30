@@ -142,3 +142,11 @@ If you want, I can implement a minimal schema now that supports both and only us
 - Fixed shelf sizing so top/bottom rows share a border with no vertical gaps; bottom shelf now fills when top is collapsed.
 - Initial shelf state is 50/50 and bottom shelf tabs are always reachable (collapsed height fits the tabs).
 - Curved/Elbow toggle moved into a React Flow `Panel` so it’s clickable.
+
+---
+
+## Update (2026-01-30, subgraph + sizing)
+- Canvas zoom now scales with shelf resizing to preserve relative framing.
+- React Flow attribution watermark hidden.
+- Mechanics output typing aligned so feedback wiring works again.
+- Subgraph navigation scaffolding added with breadcrumbs and SimpleStagedNetwork stub.

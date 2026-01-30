@@ -3,6 +3,7 @@ import type { GraphNodeData } from '@/types/graph';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 
 const PORT_OFFSET = 64;
 const PORT_GAP = 24;
@@ -13,8 +14,10 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
   const { spec, label, collapsed } = data;
   const toggleNodeCollapse = useGraphStore((state) => state.toggleNodeCollapse);
   const renameNode = useGraphStore((state) => state.renameNode);
+  const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const [isEditing, setIsEditing] = useState(false);
   const [nameValue, setNameValue] = useState(label);
+  const isComposite = spec.type === 'SimpleStagedNetwork';
 
   useEffect(() => {
     if (!isEditing) {
@@ -24,14 +27,33 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
 
   return (
     <div
-      onDoubleClick={() => toggleNodeCollapse(label)}
       className={clsx(
         'relative rounded-xl border shadow-soft w-[220px] max-w-[240px] bg-white/90 backdrop-blur',
         selected ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-slate-200'
       )}
     >
-      <div className="px-3 py-2 border-b border-slate-100 bg-slate-50/70 rounded-t-xl flex items-center justify-between gap-3 overflow-hidden">
-        <div className="min-w-0 flex-1">
+      <div
+        className="px-3 py-2 border-b border-slate-100 bg-slate-50/70 rounded-t-xl flex items-center justify-between gap-3 overflow-hidden"
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          if (isComposite) {
+            enterSubgraph(label);
+          } else {
+            toggleNodeCollapse(label);
+          }
+        }}
+      >
+        <div className="min-w-0 flex-1 flex items-center gap-2">
+          <button
+            className="text-slate-400 hover:text-slate-600"
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleNodeCollapse(label);
+            }}
+            title={collapsed ? 'Expand node' : 'Collapse node'}
+          >
+            {collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
           {isEditing ? (
             <input
               value={nameValue}
@@ -68,8 +90,22 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
             </button>
           )}
         </div>
-        <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
-          {spec.type}
+        <div className="flex items-center gap-2">
+          {isComposite && (
+            <button
+              className="text-slate-400 hover:text-brand-600"
+              onClick={(event) => {
+                event.stopPropagation();
+                enterSubgraph(label);
+              }}
+              title="Open subgraph"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+            {spec.type}
+          </div>
         </div>
       </div>
 

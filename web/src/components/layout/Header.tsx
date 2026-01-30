@@ -20,10 +20,21 @@ export function Header() {
   const [exporting, setExporting] = useState(false);
   const graphsQuery = useGraphsList();
   const saveMutation = useSaveGraph();
-  const { graph, uiState, graphId, isDirty, markSaved, hydrateGraph, resetGraph } = useGraphStore();
+  const {
+    graph,
+    uiState,
+    graphId,
+    graphStack,
+    isDirty,
+    markSaved,
+    hydrateGraph,
+    resetGraph,
+  } = useGraphStore();
+  const inSubgraph = graphStack.length > 0;
   const { topCollapsed, bottomCollapsed, toggleTop, toggleBottom } = useLayoutStore();
 
   const handleSave = async () => {
+    if (inSubgraph) return;
     try {
       const response = await saveMutation.mutateAsync({
         graphId,
@@ -139,16 +150,17 @@ export function Header() {
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
-          title="Save"
+          title={inSubgraph ? 'Return to model root to save' : 'Save'}
           onClick={handleSave}
+          disabled={inSubgraph}
         >
           <Save className="w-4 h-4" />
         </button>
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
-          title="Export JSON"
+          title={inSubgraph ? 'Return to model root to export' : 'Export JSON'}
           onClick={handleExport}
-          disabled={!graphId || exporting}
+          disabled={!graphId || exporting || inSubgraph}
         >
           <Download className="w-4 h-4" />
         </button>

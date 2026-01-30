@@ -4,7 +4,7 @@
 
 ## Subgraph Visualization (Descent Mechanism)
 
-**Current behavior**: No subgraph support. All components are flat/leaf nodes on a single canvas.
+**Current behavior**: Subgraph navigation is available for composite nodes (SimpleStagedNetwork). Breadcrumbs show the current path. Subgraph edits are session-only (not yet persisted in the root graph spec).
 
 **Desired behavior (primary)**: Descent/matryoshka navigation for composite nodes:
 - Double-click a composite node → opens new canvas layer showing its internals
@@ -21,12 +21,13 @@
 - Keep canvas component reusable so descent just instantiates another canvas
 - Store navigation stack (which nodes are "open") in UI state
 - Ensure edge routing and layout at each level are independent
+- Persist subgraph structure in the root graph spec (pending)
 
 ---
 
 ## SimpleStagedNetwork → Graph-Based Internal Structure
 
-**Current behavior**: `SimpleStagedNetwork` is a monolithic Python class with hardcoded layer structure. Not editable as a subgraph in the UI.
+**Current behavior**: UI now opens a staged subgraph for `SimpleStagedNetwork` (encoder → core → decoder). This is a UI stub and not yet tied to the Python model implementation.
 
 **Desired behavior**: Refactor to use internal `Graph` structure:
 - Encoder, hidden layers, readout as separate `Component`s wired together
