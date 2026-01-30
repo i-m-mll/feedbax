@@ -38,7 +38,7 @@ class Mechanics(Component):
     """Discretizes and steps a plant with Diffrax."""
 
     input_ports = ("force",)
-    output_ports = ("effector",)
+    output_ports = ("effector", "state")
 
     plant: AbstractPlant
     dt: float
@@ -112,7 +112,7 @@ class Mechanics(Component):
         effector = self.plant.skeleton.effector(plant_state.skeleton)
         new_state = MechanicsState(plant=plant_state, effector=effector, solver=solver_state)
         state = state.set(self.state_index, new_state)
-        return {"effector": effector}, state
+        return {"effector": effector, "state": new_state}, state
 
     def state_view(self, state: State) -> MechanicsState:
         return state.get(self.state_index)

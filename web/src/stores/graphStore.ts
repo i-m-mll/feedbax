@@ -81,16 +81,31 @@ function applyEdgeStates(
 function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
     nodes: {
+      task: {
+        type: 'SimpleReaches',
+        params: {
+          n_steps: 200,
+          workspace: [
+            [-1.0, -1.0],
+            [1.0, 1.0],
+          ],
+          eval_n_directions: 7,
+          eval_reach_length: 0.5,
+          eval_grid_n: 1,
+        },
+        input_ports: [],
+        output_ports: ['inputs', 'targets', 'inits', 'intervene'],
+      },
       network: {
         type: 'Network',
         params: {
           hidden_size: 100,
           input_size: 6,
-          output_size: 2,
+          out_size: 2,
           hidden_type: 'GRUCell',
           out_nonlinearity: 'tanh',
         },
-        input_ports: ['target', 'feedback'],
+        input_ports: ['input', 'feedback'],
         output_ports: ['output', 'hidden'],
       },
       mechanics: {
@@ -114,6 +129,12 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
     },
     wires: [
       {
+        source_node: 'task',
+        source_port: 'inputs',
+        target_node: 'network',
+        target_port: 'input',
+      },
+      {
         source_node: 'feedback',
         source_port: 'output',
         target_node: 'network',
@@ -132,11 +153,9 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
         target_port: 'input',
       },
     ],
-    input_ports: ['target'],
+    input_ports: [],
     output_ports: ['effector'],
-    input_bindings: {
-      target: ['network', 'target'],
-    },
+    input_bindings: {},
     output_bindings: {
       effector: ['mechanics', 'effector'],
     },
@@ -153,9 +172,10 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const baseUiState: GraphUIState = {
     viewport: DEFAULT_VIEWPORT,
     node_states: {
-      network: { position: { x: 300, y: 200 }, collapsed: false, selected: false },
-      mechanics: { position: { x: 600, y: 200 }, collapsed: false, selected: false },
-      feedback: { position: { x: 450, y: 400 }, collapsed: false, selected: false },
+      task: { position: { x: 120, y: 200 }, collapsed: false, selected: false },
+      network: { position: { x: 380, y: 200 }, collapsed: false, selected: false },
+      mechanics: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
+      feedback: { position: { x: 520, y: 400 }, collapsed: false, selected: false },
     },
   };
 
@@ -168,14 +188,59 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
 }
 
 function migrateGraphSpec(graph: GraphSpec): GraphSpec {
+  const renamePort = (
+    nodeId: string,
+    port: string,
+    spec: ComponentSpec
+  ) => {
+    if (spec.type === 'Network' && port === 'target') {
+      return 'input';
+    }
+    return port;
+  };
+
   const nodes = Object.fromEntries(
     Object.entries(graph.nodes).map(([id, spec]) => {
       let nextType = spec.type;
       if (nextType === 'SimpleStagedNetwork') nextType = 'Network';
       if (nextType === 'FeedbackChannel') nextType = 'Channel';
-      return [id, { ...spec, type: nextType }];
+      const nextParams = { ...spec.params };
+      if (nextType === 'Network') {
+        if ('output_size' in nextParams && !('out_size' in nextParams)) {
+          nextParams.out_size = nextParams.output_size;
+        }
+      }
+      const nextSpec: ComponentSpec = {
+        ...spec,
+        type: nextType,
+        params: nextParams,
+      };
+      if (nextType === 'Network' && spec.input_ports.includes('target')) {
+        nextSpec.input_ports = spec.input_ports.map((port) =>
+          port === 'target' ? 'input' : port
+        );
+      }
+      return [id, nextSpec];
     })
   );
+  const wires = graph.wires.map((wire) => {
+    const sourceSpec = nodes[wire.source_node];
+    const targetSpec = nodes[wire.target_node];
+    return {
+      ...wire,
+      source_port: sourceSpec ? renamePort(wire.source_node, wire.source_port, sourceSpec) : wire.source_port,
+      target_port: targetSpec ? renamePort(wire.target_node, wire.target_port, targetSpec) : wire.target_port,
+    };
+  });
+  const input_bindings = Object.fromEntries(
+    Object.entries(graph.input_bindings).map(([name, binding]) => {
+      const [nodeId, port] = binding;
+      const spec = nodes[nodeId];
+      const nextPort = spec ? renamePort(nodeId, port, spec) : port;
+      return [name === 'target' ? 'input' : name, [nodeId, nextPort] as [string, string]];
+    })
+  );
+  const input_ports = graph.input_ports.map((port) => (port === 'target' ? 'input' : port));
   const subgraphs = graph.subgraphs
     ? Object.fromEntries(
         Object.entries(graph.subgraphs).map(([id, subgraph]) => [id, migrateGraphSpec(subgraph)])
@@ -184,6 +249,9 @@ function migrateGraphSpec(graph: GraphSpec): GraphSpec {
   return {
     ...graph,
     nodes,
+    wires,
+    input_ports,
+    input_bindings,
     subgraphs,
   };
 }
@@ -251,10 +319,10 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
         target_port: 'input',
       },
     ],
-    input_ports: ['target', 'feedback'],
+    input_ports: ['input', 'feedback'],
     output_ports: ['output', 'hidden'],
     input_bindings: {
-      target: ['merge', 'a'],
+      input: ['merge', 'a'],
       feedback: ['merge', 'b'],
     },
     output_bindings: {

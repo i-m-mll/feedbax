@@ -62,9 +62,9 @@ def test_task_component_open_loop_steps():
     out2, state = component({}, state, key=jax.random.PRNGKey(1))
     out3, _ = component({}, state, key=jax.random.PRNGKey(2))
 
-    assert (out1["target"] == inputs[0]).all()
-    assert (out2["target"] == inputs[1]).all()
-    assert (out3["target"] == inputs[2]).all()
-    assert out1["intervention_params"]["foo"] == intervene["foo"][0]
-    assert out2["intervention_params"]["foo"] == intervene["foo"][1]
-    assert out3["intervention_params"]["foo"] == intervene["foo"][2]
+    assert (out1["inputs"] == inputs[0]).all()
+    assert (out2["inputs"] == inputs[1]).all()
+    assert (out3["inputs"] == inputs[2]).all()
+    assert out1["intervene"]["foo"] == intervene["foo"][0]
+    assert out2["intervene"]["foo"] == intervene["foo"][1]
+    assert out3["intervene"]["foo"] == intervene["foo"][2]

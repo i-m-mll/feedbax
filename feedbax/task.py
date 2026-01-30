@@ -1592,11 +1592,12 @@ class TaskComponentState(Module):
 class TaskComponent(Component):
     """Component adapter for tasks/environments in an agent loop."""
 
-    input_ports: ClassVar[tuple[str, ...]] = ("agent_output",)
+    input_ports: ClassVar[tuple[str, ...]] = ()
     output_ports: ClassVar[tuple[str, ...]] = (
-        "target",
-        "observation",
-        "intervention_params",
+        "inputs",
+        "targets",
+        "inits",
+        "intervene",
     )
 
     task: AbstractTask = field(static=True)
@@ -1630,6 +1631,8 @@ class TaskComponent(Component):
         self.task = task
         self.trial_spec = trial_spec
         self.mode = mode
+        if self.mode == "closed_loop":
+            self.input_ports = ("agent_output",)
 
         self.step_index = eqx.nn.StateIndex(jnp.array(0, dtype=jnp.int32))
 
@@ -1655,15 +1658,16 @@ class TaskComponent(Component):
         step = state.get(self.step_index)
 
         if self.mode == "open_loop":
-            target = jt.map(lambda x: x[step], self.trial_spec.inputs)
+            inputs = jt.map(lambda x: x[step], self.trial_spec.inputs)
             if self.trial_spec.intervene:
-                intervention_params = jt.map(lambda x: x[step], self.trial_spec.intervene)
+                intervene = jt.map(lambda x: x[step], self.trial_spec.intervene)
             else:
-                intervention_params = {}
+                intervene = {}
             outputs = {
-                "target": target,
-                "observation": None,
-                "intervention_params": intervention_params,
+                "inputs": inputs,
+                "targets": self.trial_spec.targets,
+                "inits": self.trial_spec.inits,
+                "intervene": intervene,
             }
         else:
             if self.env_state_index is None or self.step_env is None:
@@ -1685,9 +1689,10 @@ class TaskComponent(Component):
                 else {}
             )
             outputs = {
-                "target": target,
-                "observation": observation,
-                "intervention_params": intervention_params,
+                "inputs": observation,
+                "targets": target,
+                "inits": self.trial_spec.inits,
+                "intervene": intervention_params,
             }
 
         state = state.set(self.step_index, step + 1)

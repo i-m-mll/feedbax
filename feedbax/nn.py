@@ -538,7 +538,7 @@ class SimpleStagedNetwork(Component):
             return state
         return state + self.hidden_noise_std * jr.normal(key, state.shape)
     input_ports = ("input", "feedback")
-    output_ports = ("output",)
+    output_ports = ("output", "hidden")
 
     def __call__(
         self,
@@ -596,7 +596,7 @@ class SimpleStagedNetwork(Component):
             encoding=encoding,
         )
         state = state.set(self.state_index, new_state)
-        return {"output": output}, state
+        return {"output": output, "hidden": hidden}, state
 
     def init(self):
         output = jnp.zeros(self.out_size) if self.out_size is not None else None
