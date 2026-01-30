@@ -1,10 +1,7 @@
-# Staged models
+# Graph components
 
-::: feedbax.AbstractStagedModel
+::: feedbax.graph.Component
 
-::: feedbax.ModelStage
+::: feedbax.graph.Wire
 
-## Pretty printing of model stages
-
-::: feedbax.pprint_model_spec
-
+::: feedbax.graph.Graph

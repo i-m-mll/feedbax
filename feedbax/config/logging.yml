@@ -1,0 +1,23 @@
+# format_str: "%(asctime)s [%(levelname)s] %(name)s,%(lineno)d: %(message)s"
+console_format_str: '(%(name)s) %(message)s'
+file_format_str: '%(asctime)s [%(levelname)s] %(name)s,%(lineno)d: %(message)s'
+console_level: INFO
+file_level: DEBUG
+pkg_console_levels: 
+  jax: WARNING
+  matplotlib: WARNING
+  kaleido: ERROR
+  sqlalchemy: WARNING
+  alembic: WARNING
+  dill: WARNING
+  choreographer: WARNING
+pkgs_own_files: 
+  jax: DEBUG
+  matplotlib: DEBUG
+  kaleido: DEBUG
+  sqlalchemy: DEBUG
+  alembic: DEBUG
+  dill: DEBUG
+  choreographer: DEBUG
+max_bytes: 1000000
+backup_count: 1

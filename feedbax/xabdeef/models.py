@@ -19,8 +19,7 @@ from feedbax import get_ensemble
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.misc import identity_func
-from feedbax._model import AbstractModel
-from feedbax.iterate import Iterator
+from feedbax.graph import Component
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.nn import PopulationStructure, SimpleStagedNetwork
@@ -125,6 +124,4 @@ def point_mass_nn(
         key=key2,
     )
 
-    model = Iterator(body, n_steps)
-
-    return model
+    return body
