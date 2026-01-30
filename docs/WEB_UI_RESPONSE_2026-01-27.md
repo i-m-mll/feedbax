@@ -135,3 +135,10 @@ If you want, I can implement a minimal schema now that supports both and only us
 
 ## Notes
 - Edge routing lives in `ui_state.edge_states`; default edge style only affects new edges.
+
+---
+
+## Update (2026-01-30, follow-up)
+- Fixed shelf sizing so top/bottom rows share a border with no vertical gaps; bottom shelf now fills when top is collapsed.
+- Initial shelf state is 50/50 and bottom shelf tabs are always reachable (collapsed height fits the tabs).
+- Curved/Elbow toggle moved into a React Flow `Panel` so it’s clickable.

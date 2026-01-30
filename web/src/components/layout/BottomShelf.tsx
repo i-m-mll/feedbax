@@ -13,14 +13,12 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]['id'];
 
-export function BottomShelf() {
+export function BottomShelf({ height }: { height: number }) {
   const [activeTab, setActiveTab] = useState<TabId>('validation');
   const { bottomCollapsed, bottomHeight, toggleBottom, setBottomHeight, topCollapsed } =
     useLayoutStore();
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [fadeState, setFadeState] = useState({ left: false, right: false });
-
-  const height = bottomCollapsed ? 32 : bottomHeight;
 
   const activeContent = useMemo(() => {
     if (activeTab === 'training') return <TrainingPanel />;

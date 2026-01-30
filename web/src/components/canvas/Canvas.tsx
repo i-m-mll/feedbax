@@ -4,6 +4,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  Panel,
   useReactFlow,
   type Connection,
 } from '@xyflow/react';
@@ -154,28 +155,30 @@ export function Canvas() {
         <Background variant="dots" gap={16} size={1} color="#cbd5f5" />
         <Controls />
         <MiniMap nodeColor="#9ca3af" />
-        <div className="absolute right-4 top-4 flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-xs text-slate-500 shadow-soft">
-          <span className="px-2 text-[10px] uppercase tracking-[0.2em] text-slate-400">Default</span>
-          <button
-            className={clsx(
-              'px-2 py-1 rounded-full',
-              edgeStyle === 'bezier' ? 'bg-brand-500/10 text-brand-600' : 'hover:bg-slate-100'
-            )}
-            onClick={() => setEdgeStyle('bezier')}
-          >
-            Curved
-          </button>
-          <button
-            className={clsx(
-              'px-2 py-1 rounded-full',
-              edgeStyle === 'elbow' ? 'bg-brand-500/10 text-brand-600' : 'hover:bg-slate-100'
-            )}
-            onClick={() => setEdgeStyle('elbow')}
-          >
-            Elbow
-          </button>
-          <span className="px-2 text-[10px] text-slate-400">Shift = elbow</span>
-        </div>
+        <Panel position="top-right" className="nodrag">
+          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-xs text-slate-500 shadow-soft">
+            <span className="px-2 text-[10px] uppercase tracking-[0.2em] text-slate-400">Default</span>
+            <button
+              className={clsx(
+                'px-2 py-1 rounded-full',
+                edgeStyle === 'bezier' ? 'bg-brand-500/10 text-brand-600' : 'hover:bg-slate-100'
+              )}
+              onClick={() => setEdgeStyle('bezier')}
+            >
+              Curved
+            </button>
+            <button
+              className={clsx(
+                'px-2 py-1 rounded-full',
+                edgeStyle === 'elbow' ? 'bg-brand-500/10 text-brand-600' : 'hover:bg-slate-100'
+              )}
+              onClick={() => setEdgeStyle('elbow')}
+            >
+              Elbow
+            </button>
+            <span className="px-2 text-[10px] text-slate-400">Shift = elbow</span>
+          </div>
+        </Panel>
       </ReactFlow>
     </div>
   );
