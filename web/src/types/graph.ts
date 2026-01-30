@@ -1,11 +1,12 @@
-export type ParamValue =
-  | number
-  | string
-  | boolean
-  | number[]
-  | ParamValue[]
-  | Record<string, ParamValue>
-  | null;
+export type ParamPrimitive = number | string | boolean | null;
+
+export interface ParamValueObject {
+  [key: string]: ParamValue;
+}
+
+export interface ParamValueArray extends Array<ParamValue> {}
+
+export type ParamValue = ParamPrimitive | ParamValueArray | ParamValueObject;
 
 export interface ParamSchema {
   name: string;
@@ -41,6 +42,7 @@ export interface GraphSpec {
   output_ports: string[];
   input_bindings: Record<string, [string, string]>;
   output_bindings: Record<string, [string, string]>;
+  subgraphs?: Record<string, GraphSpec>;
   metadata?: GraphMetadata;
 }
 
@@ -79,15 +81,16 @@ export interface GraphUIState {
   viewport: { x: number; y: number; zoom: number };
   node_states: Record<string, NodeUIState>;
   edge_states?: Record<string, EdgeUIState>;
+  subgraph_states?: Record<string, GraphUIState>;
 }
 
-export interface GraphNodeData {
+export interface GraphNodeData extends Record<string, unknown> {
   label: string;
   spec: ComponentSpec;
   collapsed?: boolean;
   size?: { width: number; height: number };
 }
 
-export interface GraphEdgeData {
+export interface GraphEdgeData extends Record<string, unknown> {
   routing?: EdgeRouting;
 }

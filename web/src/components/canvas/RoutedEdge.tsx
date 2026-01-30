@@ -24,8 +24,8 @@ export function RoutedEdge({
   targetPosition,
   selected,
   data,
-}: EdgeProps<GraphEdgeData>) {
-  const routing = data?.routing;
+}: EdgeProps) {
+  const routing = (data as GraphEdgeData | undefined)?.routing;
   const isElbow = routing?.style === 'elbow';
   const points = routing?.points ?? [];
   const { screenToFlowPosition } = useReactFlow();

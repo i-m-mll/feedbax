@@ -6,14 +6,11 @@ import {
   FolderOpen,
   Plus,
   Download,
-  ChevronUp,
-  ChevronDown,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
-import { useLayoutStore } from '@/stores/layoutStore';
 
 export function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -31,7 +28,6 @@ export function Header() {
     resetGraph,
   } = useGraphStore();
   const inSubgraph = graphStack.length > 0;
-  const { topCollapsed, bottomCollapsed, toggleTop, toggleBottom } = useLayoutStore();
 
   const handleSave = async () => {
     if (inSubgraph) return;
@@ -134,20 +130,6 @@ export function Header() {
         </div>
       </div>
       <div className="flex items-center gap-3 text-slate-500">
-        <button
-          className="p-1.5 rounded-full hover:bg-slate-100"
-          title={topCollapsed ? 'Expand model shelf' : 'Collapse model shelf'}
-          onClick={toggleTop}
-        >
-          <ChevronUp className={topCollapsed ? 'w-4 h-4 rotate-180' : 'w-4 h-4'} />
-        </button>
-        <button
-          className="p-1.5 rounded-full hover:bg-slate-100"
-          title={bottomCollapsed ? 'Expand workbench shelf' : 'Collapse workbench shelf'}
-          onClick={toggleBottom}
-        >
-          <ChevronDown className={bottomCollapsed ? 'w-4 h-4 rotate-180' : 'w-4 h-4'} />
-        </button>
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title={inSubgraph ? 'Return to model root to save' : 'Save'}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type DragEvent } from 'react';
 import {
   Background,
   Controls,
@@ -7,6 +7,7 @@ import {
   Panel,
   useReactFlow,
   type Connection,
+  BackgroundVariant,
 } from '@xyflow/react';
 import { useGraphStore } from '@/stores/graphStore';
 import { CustomNode } from './CustomNode';
@@ -32,8 +33,6 @@ export function Canvas() {
     onConnect,
     addNodeFromComponent,
     setSelectedNode,
-    edgeStyle,
-    setEdgeStyle,
     graph,
     graphStack,
     currentGraphLabel,
@@ -43,22 +42,6 @@ export function Canvas() {
   const reactFlow = useReactFlow();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
-  const [isShiftDown, setIsShiftDown] = useState(false);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') setIsShiftDown(true);
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') setIsShiftDown(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-    };
-  }, []);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -179,9 +162,7 @@ export function Canvas() {
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={(connection) =>
-          onConnect(connection, isShiftDown ? 'elbow' : edgeStyle)
-        }
+        onConnect={(connection) => onConnect(connection)}
         isValidConnection={isValidConnection}
         onPaneClick={() => setSelectedNode(null)}
         onNodeClick={(_, node) => setSelectedNode(node.id)}
@@ -192,7 +173,7 @@ export function Canvas() {
         snapGrid={[16, 16]}
         proOptions={{ hideAttribution: true }}
       >
-        <Background variant="dots" gap={16} size={1} color="#cbd5f5" />
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5f5" />
         <Controls />
         <MiniMap nodeColor="#9ca3af" />
         <Panel position="top-left" className="nodrag">
@@ -219,30 +200,6 @@ export function Canvas() {
                 </div>
               );
             })}
-          </div>
-        </Panel>
-        <Panel position="top-right" className="nodrag">
-          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-xs text-slate-500 shadow-soft">
-            <span className="px-2 text-[10px] uppercase tracking-[0.2em] text-slate-400">Default</span>
-            <button
-              className={clsx(
-                'px-2 py-1 rounded-full',
-                edgeStyle === 'bezier' ? 'bg-brand-500/10 text-brand-600' : 'hover:bg-slate-100'
-              )}
-              onClick={() => setEdgeStyle('bezier')}
-            >
-              Curved
-            </button>
-            <button
-              className={clsx(
-                'px-2 py-1 rounded-full',
-                edgeStyle === 'elbow' ? 'bg-brand-500/10 text-brand-600' : 'hover:bg-slate-100'
-              )}
-              onClick={() => setEdgeStyle('elbow')}
-            >
-              Elbow
-            </button>
-            <span className="px-2 text-[10px] text-slate-400">Shift = elbow</span>
           </div>
         </Panel>
       </ReactFlow>

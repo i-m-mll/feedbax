@@ -12,8 +12,9 @@ const ROW_HEIGHT = 26;
 const MIN_WIDTH = 180;
 const MIN_HEIGHT = 96;
 
-export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
-  const { spec, label, collapsed } = data;
+export function CustomNode({ data, selected }: NodeProps) {
+  const nodeData = data as GraphNodeData;
+  const { spec, label, collapsed } = nodeData;
   const toggleNodeCollapse = useGraphStore((state) => state.toggleNodeCollapse);
   const renameNode = useGraphStore((state) => state.renameNode);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
@@ -26,12 +27,13 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
   const canCollapse = rowCount > 1;
   const collapsedEffective = collapsed && canCollapse;
   const defaultHeight = HEADER_HEIGHT + BODY_PADDING * 2 + rowCount * ROW_HEIGHT;
-  const baseHeight = data.size?.height ?? defaultHeight;
+  const width = nodeData.size?.width ?? DEFAULT_WIDTH;
+  const baseHeight = nodeData.size?.height ?? defaultHeight;
   const height = collapsedEffective ? Math.min(baseHeight, defaultHeight) : baseHeight;
-  const width = data.size?.width ?? DEFAULT_WIDTH;
-  const bodyHeight = Math.max(ROW_HEIGHT, height - HEADER_HEIGHT - BODY_PADDING * 2);
-  const rowMidpoint = (index: number) =>
-    HEADER_HEIGHT + BODY_PADDING + ((index + 0.5) / rowCount) * bodyHeight;
+  const bodyHeight = Math.max(ROW_HEIGHT + BODY_PADDING * 2, height - HEADER_HEIGHT);
+  const contentHeight = Math.max(ROW_HEIGHT, bodyHeight - BODY_PADDING * 2);
+  const rowHeight = contentHeight / rowCount;
+  const rowCenterInBody = (index: number) => rowHeight * (index + 0.5);
 
   useEffect(() => {
     if (!isEditing) {
@@ -66,7 +68,7 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
           }
         }}
       >
-        <div className="min-w-0 flex-1 flex items-center gap-2">
+        <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
           {canCollapse && (
             <button
               className="text-slate-400 hover:text-slate-600"
@@ -119,7 +121,7 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {isComposite && (
             <button
               className="text-slate-400 hover:text-brand-600"
@@ -139,45 +141,51 @@ export function CustomNode({ data, selected }: NodeProps<GraphNodeData>) {
       </div>
 
       <div
-        className="relative px-3 py-2 text-xs text-slate-600"
-        style={{ height: Math.max(ROW_HEIGHT, height - HEADER_HEIGHT) }}
+        className="relative text-xs text-slate-600"
+        style={{ height: bodyHeight, padding: BODY_PADDING }}
       >
         {spec.input_ports.map((port, index) => (
+          <Handle
+            key={`handle-in-${port}`}
+            type="target"
+            position={Position.Left}
+            id={port}
+            style={{ top: rowCenterInBody(index) }}
+            className="w-3 h-3 bg-brand-500"
+          />
+        ))}
+        {spec.output_ports.map((port, index) => (
+          <Handle
+            key={`handle-out-${port}`}
+            type="source"
+            position={Position.Right}
+            id={port}
+            style={{ top: rowCenterInBody(index) }}
+            className="w-3 h-3 bg-mint-500"
+          />
+        ))}
+        {spec.input_ports.map((port, index) => (
           <div
-            key={port}
+            key={`label-in-${port}`}
             className={clsx(
-              'absolute left-3 flex items-center gap-2',
+              'absolute left-0 flex items-center gap-2',
               collapsedEffective ? 'text-slate-400' : 'text-slate-600'
             )}
-            style={{ top: rowMidpoint(index) - 10 }}
+            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
           >
-            <Handle
-              type="target"
-              position={Position.Left}
-              id={port}
-              style={{ top: rowMidpoint(index) }}
-              className="w-3 h-3 bg-brand-500"
-            />
             {!collapsedEffective && <span>{port}</span>}
           </div>
         ))}
         {spec.output_ports.map((port, index) => (
           <div
-            key={port}
+            key={`label-out-${port}`}
             className={clsx(
-              'absolute right-3 flex items-center gap-2 justify-end',
+              'absolute right-0 flex items-center gap-2 justify-end',
               collapsedEffective ? 'text-slate-400' : 'text-slate-600'
             )}
-            style={{ top: rowMidpoint(index) - 10 }}
+            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
           >
             {!collapsedEffective && <span>{port}</span>}
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={port}
-              style={{ top: rowMidpoint(index) }}
-              className="w-3 h-3 bg-mint-500"
-            />
           </div>
         ))}
         {collapsedEffective && (

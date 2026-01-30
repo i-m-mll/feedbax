@@ -103,12 +103,18 @@ function ParamInput({
   }, [schema.type, schema.default, value]);
 
   if (schema.type === 'int' || schema.type === 'float') {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof schema.default === 'number'
+          ? schema.default
+          : 0;
     return (
       <label className="flex flex-col gap-1 text-xs text-slate-500">
         {schema.name}
         <input
           type="number"
-          value={typeof value === 'number' ? value : schema.default ?? 0}
+          value={numericValue}
           min={schema.min}
           max={schema.max}
           step={schema.step ?? (schema.type === 'int' ? 1 : 0.01)}

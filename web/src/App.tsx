@@ -9,6 +9,7 @@ import {
   BOTTOM_COLLAPSED_HEIGHT,
   MIN_BOTTOM_HEIGHT,
   MIN_TOP_HEIGHT,
+  TOP_COLLAPSED_HEIGHT,
 } from '@/stores/layoutStore';
 
 export default function App() {
@@ -36,26 +37,28 @@ export default function App() {
 
   useEffect(() => {
     if (availableHeight > 0) {
-      initializeBottomHeight(Math.round(availableHeight * 0.5));
+      initializeBottomHeight(availableHeight);
     }
   }, [availableHeight, initializeBottomHeight]);
 
   const { topHeight, bottomEffectiveHeight } = useMemo(() => {
     if (availableHeight <= 0) {
       return {
-        topHeight: topCollapsed ? 0 : undefined,
-        bottomEffectiveHeight: bottomCollapsed ? BOTTOM_COLLAPSED_HEIGHT : undefined,
+        topHeight: undefined,
+        bottomEffectiveHeight: undefined,
       };
     }
     if (topCollapsed) {
+      const bottom = Math.max(availableHeight - TOP_COLLAPSED_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
       return {
-        topHeight: 0,
-        bottomEffectiveHeight: availableHeight,
+        topHeight: TOP_COLLAPSED_HEIGHT,
+        bottomEffectiveHeight: bottom,
       };
     }
     if (bottomCollapsed) {
+      const top = Math.max(availableHeight - BOTTOM_COLLAPSED_HEIGHT, MIN_TOP_HEIGHT);
       return {
-        topHeight: Math.max(availableHeight - BOTTOM_COLLAPSED_HEIGHT, 0),
+        topHeight: top,
         bottomEffectiveHeight: BOTTOM_COLLAPSED_HEIGHT,
       };
     }
@@ -64,7 +67,7 @@ export default function App() {
       Math.min(availableHeight - MIN_TOP_HEIGHT, bottomHeight)
     );
     return {
-      topHeight: Math.max(availableHeight - clampedBottom, 0),
+      topHeight: Math.max(availableHeight - clampedBottom, MIN_TOP_HEIGHT),
       bottomEffectiveHeight: clampedBottom,
     };
   }, [availableHeight, topCollapsed, bottomCollapsed, bottomHeight]);
@@ -82,10 +85,16 @@ export default function App() {
                 : `${topHeight}px ${bottomEffectiveHeight}px`,
           }}
         >
-          <div className={topCollapsed ? 'overflow-hidden' : 'min-h-0'}>
-            {!topCollapsed && <TopShelf />}
+          <div className="min-h-0">
+            <TopShelf
+              height={topHeight ?? TOP_COLLAPSED_HEIGHT}
+              availableHeight={availableHeight}
+            />
           </div>
-          <BottomShelf height={bottomEffectiveHeight ?? BOTTOM_COLLAPSED_HEIGHT} />
+          <BottomShelf
+            height={bottomEffectiveHeight ?? BOTTOM_COLLAPSED_HEIGHT}
+            availableHeight={availableHeight}
+          />
         </div>
       </div>
       <StatusBar />

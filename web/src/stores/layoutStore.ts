@@ -5,49 +5,87 @@ interface LayoutStoreState {
   bottomCollapsed: boolean;
   bottomHeight: number;
   initialized: boolean;
-  toggleTop: () => void;
-  toggleBottom: () => void;
-  setBottomHeight: (height: number) => void;
-  initializeBottomHeight: (height: number) => void;
+  toggleTop: (availableHeight: number) => void;
+  toggleBottom: (availableHeight: number) => void;
+  setBottomHeight: (height: number, availableHeight: number) => void;
+  initializeBottomHeight: (availableHeight: number) => void;
 }
 
 const DEFAULT_BOTTOM_HEIGHT = 320;
-export const MIN_BOTTOM_HEIGHT = 200;
-export const MIN_TOP_HEIGHT = 180;
+export const SHELF_HEADER_HEIGHT = 44;
+export const MIN_BOTTOM_HEIGHT = SHELF_HEADER_HEIGHT;
+export const MIN_TOP_HEIGHT = SHELF_HEADER_HEIGHT;
 export const MAX_BOTTOM_HEIGHT = Number.MAX_SAFE_INTEGER;
-export const BOTTOM_COLLAPSED_HEIGHT = 44;
+export const BOTTOM_COLLAPSED_HEIGHT = SHELF_HEADER_HEIGHT;
+export const TOP_COLLAPSED_HEIGHT = SHELF_HEADER_HEIGHT;
+const DEFAULT_SPLIT_RATIO = 0.5;
 
-export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
+const clampBottomHeight = (height: number, availableHeight: number) => {
+  const maxBottom = Math.max(availableHeight - MIN_TOP_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
+  const minBottom = BOTTOM_COLLAPSED_HEIGHT;
+  return Math.max(minBottom, Math.min(maxBottom, height));
+};
+
+export const useLayoutStore = create<LayoutStoreState>((set) => ({
   topCollapsed: false,
   bottomCollapsed: false,
   bottomHeight: DEFAULT_BOTTOM_HEIGHT,
   initialized: false,
-  toggleTop: () => {
+  toggleTop: (availableHeight) => {
+    if (availableHeight <= 0) return;
     set((state) => {
-      const nextTop = !state.topCollapsed;
-      const nextBottom = state.bottomCollapsed && nextTop ? false : state.bottomCollapsed;
+      if (state.topCollapsed) {
+        const target = clampBottomHeight(
+          Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
+          availableHeight
+        );
+        return {
+          topCollapsed: false,
+          bottomCollapsed: false,
+          bottomHeight: target,
+        };
+      }
+      const expandedBottom = clampBottomHeight(
+        availableHeight - TOP_COLLAPSED_HEIGHT,
+        availableHeight
+      );
       return {
-        topCollapsed: nextTop,
-        bottomCollapsed: nextBottom,
+        topCollapsed: true,
+        bottomCollapsed: false,
+        bottomHeight: expandedBottom,
       };
     });
   },
-  toggleBottom: () => {
+  toggleBottom: (availableHeight) => {
+    if (availableHeight <= 0) return;
     set((state) => {
-      const nextBottom = !state.bottomCollapsed;
-      const nextTop = state.topCollapsed && nextBottom ? false : state.topCollapsed;
+      if (state.bottomCollapsed) {
+        const target = clampBottomHeight(
+          Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
+          availableHeight
+        );
+        return {
+          topCollapsed: false,
+          bottomCollapsed: false,
+          bottomHeight: target,
+        };
+      }
       return {
-        topCollapsed: nextTop,
-        bottomCollapsed: nextBottom,
+        topCollapsed: false,
+        bottomCollapsed: true,
+        bottomHeight: BOTTOM_COLLAPSED_HEIGHT,
       };
     });
   },
-  setBottomHeight: (height) => {
-    const clamped = Math.max(MIN_BOTTOM_HEIGHT, Math.min(MAX_BOTTOM_HEIGHT, height));
+  setBottomHeight: (height, availableHeight) => {
+    const clamped = clampBottomHeight(height, availableHeight);
     set({ bottomHeight: clamped, initialized: true });
   },
-  initializeBottomHeight: (height) => {
-    const clamped = Math.max(MIN_BOTTOM_HEIGHT, Math.min(MAX_BOTTOM_HEIGHT, height));
-    set((state) => (state.initialized ? state : { bottomHeight: clamped, initialized: true }));
+  initializeBottomHeight: (availableHeight) => {
+    const target = clampBottomHeight(
+      Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
+      availableHeight
+    );
+    set((state) => (state.initialized ? state : { bottomHeight: target, initialized: true }));
   },
 }));

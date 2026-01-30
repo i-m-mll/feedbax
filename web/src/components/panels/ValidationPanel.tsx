@@ -12,7 +12,7 @@ export function ValidationPanel() {
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Validation</div>
         <div className="text-base font-semibold text-slate-800">Graph Health</div>
       </div>
-      <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2">
+      <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2 max-w-3xl">
         {validation.valid ? (
           <div className="text-sm text-mint-500">Graph is valid.</div>
         ) : (
