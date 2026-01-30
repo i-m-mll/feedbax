@@ -197,6 +197,62 @@ Result: "Network" subgraph has:
 
 ---
 
+## 10. Barnacles: Probes and Interventions
+
+**Problem**: Probes and interventions need access to the full state at a point in execution, but wires only represent single state slots. There's no way to observe or modify state paths that aren't exposed as ports.
+
+**Desired behavior**: Barnacles are small UI elements that attach to **nodes** (not wires) and can access the full state at that execution point.
+
+**Two types**:
+- **Probes**: Observe state (read-only) for loss targets, plotting, logging
+- **Interventions**: Modify state for perturbations (e.g., CurlField), noise injection, clamps
+
+**Key properties**:
+- Attach to nodes, not wires (since wires only show one state slot)
+- Specify timing: "at input" (before component runs) or "at output" (after)
+- Parameterized: select which state path(s) to observe/modify
+- Visually distinct: appear as small attachments on node sides (like barnacles on a hull)
+
+**Implementation notes**:
+- Barnacle data stored in graph spec per node
+- State path selector UI (introspect available paths at that point)
+- Distinct visual styling from regular ports/wires
+- CurlField and similar interventions become parameterized barnacles, not hardcoded components
+
+**See also**: [Wiki: Barnacles](https://github.com/i-m-mll/feedbax/wiki/Barnacles-(Probes-and-Interventions))
+
+---
+
+## 11. User-Exposed Ports
+
+**Problem**: Components have default ports, but users may want to wire state paths that aren't exposed by default. Currently no way to "break off" an arbitrary piece of state and route it elsewhere.
+
+**Desired behavior**: Users can promote arbitrary state paths to visible, wire-able ports on a node.
+
+**Two kinds of ports**:
+- **Defined ports**: From component type definition, not removable, normal styling
+- **User-added ports**: From user selection, removable, visually distinct (e.g., dashed outline, muted color)
+
+**Workflow**:
+1. Right-click node → "Expose state path..."
+2. State browser shows available paths at that execution point
+3. User selects path (e.g., `state.foo.bar.baz`)
+4. New port appears on node, can be wired
+5. Persists in graph spec (not component definition)
+6. Removable via sidebar or context menu
+
+**Implementation notes**:
+- Node box grows to accommodate new ports
+- User-added ports stored separately in graph spec
+- State introspection API needed to show available paths
+- Visual distinction so users know which ports are built-in vs added
+
+**Relation to barnacles**: Both access state beyond default ports. Barnacles work in-place (observe/modify); user-exposed ports enable wiring to other components.
+
+**See also**: [Wiki: User-Exposed Ports](https://github.com/i-m-mll/feedbax/wiki/Barnacles-(Probes-and-Interventions)#user-exposed-ports)
+
+---
+
 ## Summary of Actions
 
 | Issue | Type | Action |
@@ -210,3 +266,5 @@ Result: "Network" subgraph has:
 | Loss tree placeholder | Feature | Implement tree display and editing (phased) |
 | "Feedback Channel" name | Naming | Rename to "Channel" |
 | Dynamic subgraph ports | Architecture | Implement unbound-port derivation for subgraphs |
+| Barnacles | Architecture | Implement probe/intervention attachments on nodes with full state access |
+| User-exposed ports | Feature | Allow users to promote state paths to wire-able ports |

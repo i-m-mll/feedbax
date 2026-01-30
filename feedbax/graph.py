@@ -169,14 +169,16 @@ class GraphState(Module):
 class Graph(Component):
     """A computational graph of components."""
 
-    nodes: dict[str, Component]
-    wires: tuple[Wire, ...]
+    # All fields must have defaults to avoid ordering issues with ClassVar
+    # inheritance from Component (input_ports, output_ports)
+    nodes: dict[str, Component] = field(default_factory=dict)
+    wires: tuple[Wire, ...] = field(default_factory=tuple)
+    input_bindings: dict[str, tuple[str, str]] = field(default_factory=dict)
+    output_bindings: dict[str, tuple[str, str]] = field(default_factory=dict)
 
-    input_ports: tuple[str, ...]
-    output_ports: tuple[str, ...]
-
-    input_bindings: dict[str, tuple[str, str]]
-    output_bindings: dict[str, tuple[str, str]]
+    # Override ClassVars from Component with instance fields
+    input_ports: tuple[str, ...] = ()
+    output_ports: tuple[str, ...] = ()
 
     state_view_fn: Optional[callable] = field(default=None, static=True)
     state_consistency_fn: Optional[callable] = field(default=None, static=True)
