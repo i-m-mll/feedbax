@@ -9,9 +9,10 @@ import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
 const BODY_PADDING = 12;
-const COLLAPSED_BODY_PADDING = 8;
+const COLLAPSED_BODY_PADDING = 4;
+const COLLAPSED_BODY_HEIGHT = 24;
 const ROW_HEIGHT = 26;
-const COLLAPSED_ROW_HEIGHT = 18;
+const LABEL_OFFSET = 18;
 const MIN_WIDTH = 180;
 const MIN_HEIGHT = 96;
 
@@ -24,23 +25,30 @@ export function CustomNode({ data, selected }: NodeProps) {
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const [isEditing, setIsEditing] = useState(false);
   const [nameValue, setNameValue] = useState(label);
-  const isComposite = spec.type === 'Network';
+  const hasSubgraph = useGraphStore((state) => Boolean(state.graph.subgraphs?.[label]));
+  const isComposite =
+    spec.type === 'Network' || spec.type === 'Subgraph' || hasSubgraph;
   const inputCount = spec.input_ports.length;
   const outputCount = spec.output_ports.length;
   const totalPorts = inputCount + outputCount;
-  const rowCount = Math.max(1, inputCount, outputCount);
   const canCollapse = totalPorts > 1;
   const collapsedEffective = collapsed && canCollapse;
+  const rowCount = collapsedEffective ? 1 : Math.max(1, inputCount, outputCount);
   const bodyPadding = collapsedEffective ? COLLAPSED_BODY_PADDING : BODY_PADDING;
-  const rowHeightTarget = collapsedEffective ? COLLAPSED_ROW_HEIGHT : ROW_HEIGHT;
+  const rowHeightTarget = ROW_HEIGHT;
   const defaultHeight = HEADER_HEIGHT + bodyPadding * 2 + rowCount * rowHeightTarget;
   const width = nodeData.size?.width ?? DEFAULT_WIDTH;
   const baseHeight = nodeData.size?.height ?? defaultHeight;
-  const height = collapsedEffective ? Math.min(baseHeight, defaultHeight) : baseHeight;
-  const bodyHeight = Math.max(rowHeightTarget + bodyPadding * 2, height - HEADER_HEIGHT);
-  const contentHeight = Math.max(rowHeightTarget, bodyHeight - bodyPadding * 2);
+  const height = collapsedEffective ? HEADER_HEIGHT + COLLAPSED_BODY_HEIGHT : baseHeight;
+  const bodyHeight = collapsedEffective
+    ? COLLAPSED_BODY_HEIGHT
+    : Math.max(rowHeightTarget + bodyPadding * 2, height - HEADER_HEIGHT);
+  const contentHeight = collapsedEffective
+    ? COLLAPSED_BODY_HEIGHT
+    : Math.max(rowHeightTarget, bodyHeight - bodyPadding * 2);
   const rowHeight = contentHeight / rowCount;
-  const rowCenterInBody = (index: number) => bodyPadding + rowHeight * (index + 0.5);
+  const rowCenterInBody = (index: number) =>
+    collapsedEffective ? bodyHeight / 2 : bodyPadding + rowHeight * (index + 0.5);
 
   useEffect(() => {
     if (!isEditing) {
@@ -151,63 +159,76 @@ export function CustomNode({ data, selected }: NodeProps) {
         className="relative text-xs text-slate-600"
         style={{ height: bodyHeight, padding: bodyPadding }}
       >
-        {spec.input_ports.map((port, index) => (
-          <Handle
-            key={`handle-in-${port}`}
-            type="target"
-            position={Position.Left}
-            id={port}
-            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
-            className="w-3 h-3 bg-brand-500 z-20"
-          />
-        ))}
-        {spec.output_ports.map((port, index) => (
-          <Handle
-            key={`handle-out-${port}`}
-            type="source"
-            position={Position.Right}
-            id={port}
-            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
-            className="w-3 h-3 bg-mint-500 z-20"
-          />
-        ))}
-        {spec.input_ports.map((port, index) => (
-          <div
-            key={`label-in-${port}`}
-            className={clsx(
-              'absolute left-0 flex items-center gap-2',
-              collapsedEffective ? 'text-slate-400' : 'text-slate-600'
-            )}
-            style={{
-              top: rowCenterInBody(index),
-              left: 12,
-              transform: 'translateY(-50%)',
-            }}
-          >
-            {!collapsedEffective && <span>{port}</span>}
-          </div>
-        ))}
-        {spec.output_ports.map((port, index) => (
-          <div
-            key={`label-out-${port}`}
-            className={clsx(
-              'absolute right-0 flex items-center gap-2 justify-end',
-              collapsedEffective ? 'text-slate-400' : 'text-slate-600'
-            )}
-            style={{
-              top: rowCenterInBody(index),
-              right: 12,
-              transform: 'translateY(-50%)',
-            }}
-          >
-            {!collapsedEffective && <span>{port}</span>}
-          </div>
-        ))}
-        {collapsedEffective && (
-          <div className="absolute left-3 bottom-2 text-[10px] text-slate-400">
-            {inputCount} in • {outputCount} out
-          </div>
-        )}
+        {spec.input_ports.map((port, index) => {
+          const isVisible = !collapsedEffective || index === 0;
+          return (
+            <Handle
+              key={`handle-in-${port}`}
+              type="target"
+              position={Position.Left}
+              id={port}
+              style={{
+                top: rowCenterInBody(collapsedEffective ? 0 : index),
+                transform: 'translateY(-50%)',
+              }}
+              className={clsx(
+                'w-3 h-3 z-20',
+                isVisible
+                  ? 'bg-brand-500'
+                  : 'bg-transparent opacity-0 pointer-events-none border border-transparent'
+              )}
+            />
+          );
+        })}
+        {spec.output_ports.map((port, index) => {
+          const isVisible = !collapsedEffective || index === 0;
+          return (
+            <Handle
+              key={`handle-out-${port}`}
+              type="source"
+              position={Position.Right}
+              id={port}
+              style={{
+                top: rowCenterInBody(collapsedEffective ? 0 : index),
+                transform: 'translateY(-50%)',
+              }}
+              className={clsx(
+                'w-3 h-3 z-20',
+                isVisible
+                  ? 'bg-mint-500'
+                  : 'bg-transparent opacity-0 pointer-events-none border border-transparent'
+              )}
+            />
+          );
+        })}
+        {!collapsedEffective &&
+          spec.input_ports.map((port, index) => (
+            <div
+              key={`label-in-${port}`}
+              className="absolute left-0 flex items-center gap-2 text-slate-600"
+              style={{
+                top: rowCenterInBody(index),
+                left: LABEL_OFFSET,
+                transform: 'translateY(-50%)',
+              }}
+            >
+              <span>{port}</span>
+            </div>
+          ))}
+        {!collapsedEffective &&
+          spec.output_ports.map((port, index) => (
+            <div
+              key={`label-out-${port}`}
+              className="absolute right-0 flex items-center gap-2 justify-end text-slate-600"
+              style={{
+                top: rowCenterInBody(index),
+                right: LABEL_OFFSET,
+                transform: 'translateY(-50%)',
+              }}
+            >
+              <span>{port}</span>
+            </div>
+          ))}
       </div>
     </div>
   );

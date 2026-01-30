@@ -357,7 +357,36 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
   return { graph, uiState };
 }
 
-function deriveExternalPorts(graph: GraphSpec): GraphSpec {
+function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
+  const now = new Date().toISOString();
+  const graph: GraphSpec = {
+    nodes: {},
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+    subgraphs: {},
+    metadata: {
+      name: `${label} Graph`,
+      description: 'Empty subgraph workspace.',
+      created_at: now,
+      updated_at: now,
+      version: '1.0.0',
+    },
+  };
+  const baseUiState: GraphUIState = {
+    viewport: DEFAULT_VIEWPORT,
+    node_states: {},
+  };
+  const uiState: GraphUIState = {
+    ...baseUiState,
+    edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
+  };
+  return { graph, uiState };
+}
+
+function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
   const wiredInputs = new Set(
     graph.wires.map((wire) => `${wire.target_node}:${wire.target_port}`)
   );
@@ -376,11 +405,11 @@ function deriveExternalPorts(graph: GraphSpec): GraphSpec {
   ) => {
     let candidate = name;
     if (used.has(candidate)) {
-      candidate = `${nodeId}_${name}`;
+      candidate = `${nodeId}.${name}`;
     }
     let idx = 2;
     while (used.has(candidate)) {
-      candidate = `${nodeId}_${name}_${idx}`;
+      candidate = `${nodeId}.${name}.${idx}`;
       idx += 1;
     }
     used.add(candidate);
@@ -859,21 +888,25 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   enterSubgraph: (nodeId) => {
     set((state) => {
       const nodeSpec = state.graph.nodes[nodeId];
-      if (!nodeSpec || !COMPOSITE_TYPES.has(nodeSpec.type)) {
+      const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
+      if (!nodeSpec || (!COMPOSITE_TYPES.has(nodeSpec.type) && !hasSubgraph)) {
         return state;
       }
       const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
       const cachedGraph = state.graph.subgraphs?.[nodeId];
       const cachedUi = state.uiState.subgraph_states?.[nodeId];
-      const nextLayer = cachedGraph
+      const nextLayerBase = cachedGraph
         ? { graph: cachedGraph, uiState: cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-        : createNetworkSubgraph(nodeId);
-      const normalized = normalizeUiState(nextLayer.graph, nextLayer.uiState, state.edgeStyle);
+        : nodeSpec.type === 'Network'
+          ? createNetworkSubgraph(nodeId)
+          : createEmptySubgraph(nodeId);
+      const derivedNext = deriveSubgraphPorts(nextLayerBase.graph);
+      const normalized = normalizeUiState(derivedNext, nextLayerBase.uiState, state.edgeStyle);
       const parentGraph: GraphSpec = {
         ...state.graph,
         subgraphs: {
           ...(state.graph.subgraphs ?? {}),
-          [nodeId]: nextLayer.graph,
+          [nodeId]: derivedNext,
         },
       };
       const parentUi: GraphUIState = {
@@ -894,10 +927,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             childNodeId: nodeId,
           },
         ],
-        graph: nextLayer.graph,
+        graph: derivedNext,
         uiState: normalized,
-        nodes: buildNodes(nextLayer.graph, normalized),
-        edges: buildEdges(nextLayer.graph, normalized, state.edgeStyle),
+        nodes: buildNodes(derivedNext, normalized),
+        edges: buildEdges(derivedNext, normalized, state.edgeStyle),
         currentGraphLabel: nodeId,
         past: [],
         future: [],
@@ -910,7 +943,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       if (lastLayer && isWrapperGraph(lastLayer.graph, state.graph, lastLayer.childNodeId)) {
         return state;
       }
-      const derivedCurrent = deriveExternalPorts(state.graph);
+      const derivedCurrent = deriveSubgraphPorts(state.graph);
       const normalizedCurrent = normalizeUiState(derivedCurrent, state.uiState, state.edgeStyle);
       const childNodeId = createNodeName({ nodes: {} } as GraphSpec, 'model');
       const now = new Date().toISOString();
@@ -1018,7 +1051,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       if (state.graphStack.length === 0) return state;
       if (index >= state.graphStack.length) return state;
-      const derivedCurrent = deriveExternalPorts(state.graph);
+      const derivedCurrent = deriveSubgraphPorts(state.graph);
       let childGraph = derivedCurrent;
       let childUi = normalizeUiState(derivedCurrent, state.uiState, state.edgeStyle);
 
@@ -1118,7 +1151,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ),
         subgraph_states: Object.keys(subgraph_states).length ? subgraph_states : undefined,
       };
-      const nextGraph: GraphSpec = {
+      let nextGraph: GraphSpec = {
         ...state.graph,
         nodes: graphNodes,
         wires: edgesToWires(edges),
@@ -1126,6 +1159,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         output_bindings,
         subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
       };
+      if (state.graphStack.length > 0) {
+        nextGraph = deriveSubgraphPorts(nextGraph);
+      }
       const edge_states = buildEdgeStates(nextGraph, uiState, state.edgeStyle);
       return {
         graph: nextGraph,
@@ -1295,6 +1331,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           output_bindings,
           subgraphs: Object.keys(subgraphs).length ? subgraphs : undefined,
         };
+        if (state.graphStack.length > 0) {
+          graph = deriveSubgraphPorts(graph);
+        }
       }
       const sizeUpdates = new Map<string, { width: number; height: number }>();
       for (const change of changes) {
@@ -1360,10 +1399,13 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         changes as EdgeChange<Edge<GraphEdgeData>>[],
         state.edges
       );
-      const graph: GraphSpec = {
+      let graph: GraphSpec = {
         ...state.graph,
         wires: edgesToWires(nextEdges),
       };
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
       const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
       const dirty = changes.length > 0;
       return {
@@ -1408,10 +1450,13 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nextEdges = addEdge(edge, state.edges);
-      const graph: GraphSpec = {
+      let graph: GraphSpec = {
         ...state.graph,
         wires: edgesToWires(nextEdges),
       };
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
       const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
       edge_states[edge.id] = {
         routing: {
@@ -1442,13 +1487,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         input_ports: component.input_ports,
         output_ports: component.output_ports,
       };
-      const graph: GraphSpec = {
+      let graph: GraphSpec = {
         ...state.graph,
         nodes: {
           ...state.graph.nodes,
           [name]: spec,
         },
       };
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
       const uiState: GraphUIState = {
         ...state.uiState,
         node_states: {
