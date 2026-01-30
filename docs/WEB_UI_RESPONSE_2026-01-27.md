@@ -150,3 +150,11 @@ If you want, I can implement a minimal schema now that supports both and only us
 - React Flow attribution watermark hidden.
 - Mechanics output typing aligned so feedback wiring works again.
 - Subgraph navigation scaffolding added with breadcrumbs and SimpleStagedNetwork stub.
+
+---
+
+## Update (2026-01-30, batch 3 fixes)
+- Nodes are now resizable with persisted sizes; port dots align by row.
+- Collapse no longer inflates single-port nodes; collapse hidden when unnecessary.
+- Channel + Network naming updated in the UI catalog.
+- Training panel shows a read-only loss tree structure.

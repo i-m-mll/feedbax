@@ -58,6 +58,7 @@ export interface NodeUIState {
   position: { x: number; y: number };
   collapsed: boolean;
   selected: boolean;
+  size?: { width: number; height: number };
 }
 
 export interface EdgeRoutingPoint {
@@ -84,6 +85,7 @@ export interface GraphNodeData {
   label: string;
   spec: ComponentSpec;
   collapsed?: boolean;
+  size?: { width: number; height: number };
 }
 
 export interface GraphEdgeData {

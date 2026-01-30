@@ -33,9 +33,9 @@ class ComponentRegistry:
     def _register_builtins(self) -> None:
         self.register(
             ComponentMeta(
-                name='SimpleStagedNetwork',
+                name='Network',
                 category='Neural Networks',
-                description='Recurrent neural network with encoder/decoder stages.',
+                description='Generic recurrent network block.',
                 param_schema=[
                     ParamSchema(name='hidden_size', type='int', default=100, min=1, required=True),
                     ParamSchema(name='input_size', type='int', default=6, min=1, required=True),
@@ -246,9 +246,9 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
-                name='FeedbackChannel',
+                name='Channel',
                 category='Channels',
-                description='Delay and noise on sensory feedback.',
+                description='Delay and noise for a signal.',
                 param_schema=[
                     ParamSchema(name='delay', type='int', default=5, min=0, required=True),
                     ParamSchema(name='noise_std', type='float', default=0.01, min=0, required=True),

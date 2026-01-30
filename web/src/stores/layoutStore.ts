@@ -14,7 +14,7 @@ interface LayoutStoreState {
 const DEFAULT_BOTTOM_HEIGHT = 320;
 export const MIN_BOTTOM_HEIGHT = 200;
 export const MIN_TOP_HEIGHT = 180;
-export const MAX_BOTTOM_HEIGHT = 560;
+export const MAX_BOTTOM_HEIGHT = Number.MAX_SAFE_INTEGER;
 export const BOTTOM_COLLAPSED_HEIGHT = 44;
 
 export const useLayoutStore = create<LayoutStoreState>((set, get) => ({

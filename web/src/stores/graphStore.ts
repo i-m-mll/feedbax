@@ -24,7 +24,7 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
-const COMPOSITE_TYPES = new Set(['SimpleStagedNetwork']);
+const COMPOSITE_TYPES = new Set(['Network']);
 
 interface GraphLayer {
   graph: GraphSpec;
@@ -32,6 +32,7 @@ interface GraphLayer {
   graphId: string | null;
   label: string;
   key: string;
+  childNodeId?: string;
 }
 
 interface SubgraphEntry {
@@ -87,7 +88,7 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
     nodes: {
       network: {
-        type: 'SimpleStagedNetwork',
+        type: 'Network',
         params: {
           hidden_size: 100,
           input_size: 6,
@@ -108,7 +109,7 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
         output_ports: ['effector', 'state'],
       },
       feedback: {
-        type: 'FeedbackChannel',
+        type: 'Channel',
         params: {
           delay: 5,
           noise_std: 0.01,
@@ -171,9 +172,30 @@ function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   return { graph, uiState };
 }
 
+function migrateGraphSpec(graph: GraphSpec): GraphSpec {
+  const nodes = Object.fromEntries(
+    Object.entries(graph.nodes).map(([id, spec]) => {
+      let nextType = spec.type;
+      if (nextType === 'SimpleStagedNetwork') nextType = 'Network';
+      if (nextType === 'FeedbackChannel') nextType = 'Channel';
+      return [id, { ...spec, type: nextType }];
+    })
+  );
+  return {
+    ...graph,
+    nodes,
+  };
+}
+
 function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
     nodes: {
+      merge: {
+        type: 'Sum',
+        params: {},
+        input_ports: ['a', 'b'],
+        output_ports: ['output'],
+      },
       encoder: {
         type: 'MLP',
         params: {
@@ -210,6 +232,12 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
     },
     wires: [
       {
+        source_node: 'merge',
+        source_port: 'output',
+        target_node: 'encoder',
+        target_port: 'input',
+      },
+      {
         source_node: 'encoder',
         source_port: 'output',
         target_node: 'core',
@@ -222,13 +250,15 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
         target_port: 'input',
       },
     ],
-    input_ports: ['input'],
-    output_ports: ['output'],
+    input_ports: ['target', 'feedback'],
+    output_ports: ['output', 'hidden'],
     input_bindings: {
-      input: ['encoder', 'input'],
+      target: ['merge', 'a'],
+      feedback: ['merge', 'b'],
     },
     output_bindings: {
       output: ['decoder', 'output'],
+      hidden: ['core', 'hidden'],
     },
     metadata: {
       name: `${label} Graph`,
@@ -242,9 +272,10 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
   const baseUiState: GraphUIState = {
     viewport: DEFAULT_VIEWPORT,
     node_states: {
-      encoder: { position: { x: 200, y: 220 }, collapsed: false, selected: false },
-      core: { position: { x: 480, y: 220 }, collapsed: false, selected: false },
-      decoder: { position: { x: 760, y: 220 }, collapsed: false, selected: false },
+      merge: { position: { x: 140, y: 220 }, collapsed: false, selected: false },
+      encoder: { position: { x: 360, y: 220 }, collapsed: false, selected: false },
+      core: { position: { x: 620, y: 220 }, collapsed: false, selected: false },
+      decoder: { position: { x: 880, y: 220 }, collapsed: false, selected: false },
     },
   };
 
@@ -254,6 +285,85 @@ function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: Grap
   };
 
   return { graph, uiState };
+}
+
+function deriveExternalPorts(graph: GraphSpec): GraphSpec {
+  const wiredInputs = new Set(
+    graph.wires.map((wire) => `${wire.target_node}:${wire.target_port}`)
+  );
+  const wiredOutputs = new Set(
+    graph.wires.map((wire) => `${wire.source_node}:${wire.source_port}`)
+  );
+
+  const inputBindings: Record<string, [string, string]> = {};
+  const outputBindings: Record<string, [string, string]> = {};
+
+  const addUnique = (
+    name: string,
+    used: Set<string>,
+    nodeId: string,
+    port: string
+  ) => {
+    let candidate = name;
+    if (used.has(candidate)) {
+      candidate = `${nodeId}_${name}`;
+    }
+    let idx = 2;
+    while (used.has(candidate)) {
+      candidate = `${nodeId}_${name}_${idx}`;
+      idx += 1;
+    }
+    used.add(candidate);
+    return candidate;
+  };
+
+  const usedInputs = new Set<string>();
+  for (const [name, binding] of Object.entries(graph.input_bindings ?? {})) {
+    const key = `${binding[0]}:${binding[1]}`;
+    if (wiredInputs.has(key)) continue;
+    inputBindings[name] = binding;
+    usedInputs.add(name);
+  }
+
+  for (const [nodeId, nodeSpec] of Object.entries(graph.nodes)) {
+    for (const port of nodeSpec.input_ports) {
+      const key = `${nodeId}:${port}`;
+      if (wiredInputs.has(key)) continue;
+      if (Object.values(inputBindings).some(([n, p]) => n === nodeId && p === port)) {
+        continue;
+      }
+      const name = addUnique(port, usedInputs, nodeId, port);
+      inputBindings[name] = [nodeId, port];
+    }
+  }
+
+  const usedOutputs = new Set<string>();
+  for (const [name, binding] of Object.entries(graph.output_bindings ?? {})) {
+    const key = `${binding[0]}:${binding[1]}`;
+    if (wiredOutputs.has(key)) continue;
+    outputBindings[name] = binding;
+    usedOutputs.add(name);
+  }
+
+  for (const [nodeId, nodeSpec] of Object.entries(graph.nodes)) {
+    for (const port of nodeSpec.output_ports) {
+      const key = `${nodeId}:${port}`;
+      if (wiredOutputs.has(key)) continue;
+      if (Object.values(outputBindings).some(([n, p]) => n === nodeId && p === port)) {
+        continue;
+      }
+      const name = addUnique(port, usedOutputs, nodeId, port);
+      outputBindings[name] = [nodeId, port];
+    }
+  }
+
+  return {
+    ...graph,
+    input_ports: Object.keys(inputBindings),
+    output_ports: Object.keys(outputBindings),
+    input_bindings: inputBindings,
+    output_bindings: outputBindings,
+  };
 }
 
 function normalizeUiState(
@@ -292,14 +402,17 @@ function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData
       collapsed: false,
       selected: false,
     };
+    const size = ui.size;
     return {
       id,
       type: 'component',
       position: ui.position,
+      style: size ? { width: size.width, height: size.height } : undefined,
       data: {
         label: id,
         spec,
         collapsed: ui.collapsed,
+        size,
       },
       selected: ui.selected,
     };
@@ -429,15 +542,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   future: [],
   hydrateGraph: (graph, uiState, graphId) => {
     const edgeStyle = get().edgeStyle;
-    const normalized = normalizeUiState(graph, uiState, edgeStyle);
+    const migrated = migrateGraphSpec(graph);
+    const normalized = normalizeUiState(migrated, uiState, edgeStyle);
     set({
       graphId: graphId ?? null,
-      graph,
+      graph: migrated,
       uiState: normalized,
-      nodes: buildNodes(graph, normalized),
-      edges: buildEdges(graph, normalized, edgeStyle),
+      nodes: buildNodes(migrated, normalized),
+      edges: buildEdges(migrated, normalized, edgeStyle),
       graphStack: [],
-      currentGraphLabel: graph.metadata?.name ?? 'Model',
+      currentGraphLabel: migrated.metadata?.name ?? 'Model',
       currentGraphKey: '',
       subgraphs: {},
       isDirty: false,
@@ -655,6 +769,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             graphId: state.graphId,
             label: parentLabel,
             key: parentKey,
+            childNodeId: nodeId,
           },
         ],
         graph: nextLayer.graph,
@@ -673,19 +788,56 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       if (state.graphStack.length === 0) return state;
       if (index >= state.graphStack.length) return state;
       const currentKey = state.currentGraphKey;
+      const derivedCurrent = deriveExternalPorts(state.graph);
       const subgraphs = {
         ...state.subgraphs,
         ...(currentKey
           ? {
               [currentKey]: {
-                graph: state.graph,
+                graph: derivedCurrent,
                 uiState: state.uiState,
               },
             }
           : {}),
       };
-      const nextStack = state.graphStack.slice(0, index);
-      const nextLayer = state.graphStack[index];
+
+      const stack = [...state.graphStack];
+      let childKey = currentKey;
+      let childLabel = state.currentGraphLabel;
+
+      for (let i = stack.length - 1; i >= index; i -= 1) {
+        const layer = stack[i];
+        const childId = layer.childNodeId ?? childLabel;
+        if (childKey && childId) {
+          const childGraph = subgraphs[childKey]?.graph;
+          if (childGraph && layer.graph.nodes[childId]) {
+            const nextGraph: GraphSpec = {
+              ...layer.graph,
+              nodes: {
+                ...layer.graph.nodes,
+                [childId]: {
+                  ...layer.graph.nodes[childId],
+                  input_ports: childGraph.input_ports,
+                  output_ports: childGraph.output_ports,
+                },
+              },
+            };
+            subgraphs[layer.key] = {
+              graph: nextGraph,
+              uiState: layer.uiState,
+            };
+            stack[i] = {
+              ...layer,
+              graph: nextGraph,
+            };
+          }
+        }
+        childKey = layer.key;
+        childLabel = layer.label;
+      }
+
+      const nextStack = stack.slice(0, index);
+      const nextLayer = stack[index];
       const normalized = normalizeUiState(nextLayer.graph, nextLayer.uiState, state.edgeStyle);
       return {
         graphStack: nextStack,
@@ -847,11 +999,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         (change) =>
           change.type === 'remove' ||
           change.type === 'add' ||
+          change.type === 'dimensions' ||
           (change.type === 'position' && (change as { dragging?: boolean }).dragging === false)
       );
       const past = shouldRecord
         ? [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY)
         : state.past;
+      const sizeUpdates = new Map<string, { width: number; height: number }>();
+      for (const change of changes) {
+        if (change.type === 'dimensions') {
+          const dims = (change as { dimensions?: { width: number; height: number } }).dimensions;
+          if (dims) {
+            sizeUpdates.set(change.id, dims);
+          }
+        }
+      }
       const nextNodes = applyNodeChanges(changes, state.nodes);
       const node_states = { ...state.uiState.node_states };
       for (const node of nextNodes) {
@@ -860,15 +1022,26 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           collapsed: false,
           selected: false,
         };
+        const size =
+          sizeUpdates.get(node.id) ??
+          (node.width && node.height ? { width: node.width, height: node.height } : existing.size);
         node_states[node.id] = {
           ...existing,
           position: { x: node.position.x, y: node.position.y },
           selected: !!node.selected,
+          size,
         };
       }
+      const updatedNodes = nextNodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          size: node_states[node.id]?.size ?? node.data.size,
+        },
+      }));
       const dirty = changes.some((change) => change.type !== 'select');
       return {
-        nodes: nextNodes,
+        nodes: updatedNodes,
         uiState: {
           ...state.uiState,
           node_states,
