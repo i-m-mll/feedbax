@@ -9,7 +9,9 @@ import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
 const BODY_PADDING = 12;
+const COLLAPSED_BODY_PADDING = 8;
 const ROW_HEIGHT = 26;
+const COLLAPSED_ROW_HEIGHT = 18;
 const MIN_WIDTH = 180;
 const MIN_HEIGHT = 96;
 
@@ -25,17 +27,20 @@ export function CustomNode({ data, selected }: NodeProps) {
   const isComposite = spec.type === 'Network';
   const inputCount = spec.input_ports.length;
   const outputCount = spec.output_ports.length;
+  const totalPorts = inputCount + outputCount;
   const rowCount = Math.max(1, inputCount, outputCount);
-  const canCollapse = rowCount > 1;
+  const canCollapse = totalPorts > 1;
   const collapsedEffective = collapsed && canCollapse;
-  const defaultHeight = HEADER_HEIGHT + BODY_PADDING * 2 + rowCount * ROW_HEIGHT;
+  const bodyPadding = collapsedEffective ? COLLAPSED_BODY_PADDING : BODY_PADDING;
+  const rowHeightTarget = collapsedEffective ? COLLAPSED_ROW_HEIGHT : ROW_HEIGHT;
+  const defaultHeight = HEADER_HEIGHT + bodyPadding * 2 + rowCount * rowHeightTarget;
   const width = nodeData.size?.width ?? DEFAULT_WIDTH;
   const baseHeight = nodeData.size?.height ?? defaultHeight;
   const height = collapsedEffective ? Math.min(baseHeight, defaultHeight) : baseHeight;
-  const bodyHeight = Math.max(ROW_HEIGHT + BODY_PADDING * 2, height - HEADER_HEIGHT);
-  const contentHeight = Math.max(ROW_HEIGHT, bodyHeight - BODY_PADDING * 2);
+  const bodyHeight = Math.max(rowHeightTarget + bodyPadding * 2, height - HEADER_HEIGHT);
+  const contentHeight = Math.max(rowHeightTarget, bodyHeight - bodyPadding * 2);
   const rowHeight = contentHeight / rowCount;
-  const rowCenterInBody = (index: number) => BODY_PADDING + rowHeight * (index + 0.5);
+  const rowCenterInBody = (index: number) => bodyPadding + rowHeight * (index + 0.5);
 
   useEffect(() => {
     if (!isEditing) {
@@ -56,7 +61,7 @@ export function CustomNode({ data, selected }: NodeProps) {
         minWidth={MIN_WIDTH}
         minHeight={MIN_HEIGHT}
         keepAspectRatio={false}
-        handleClassName="bg-white border border-slate-300 shadow-soft"
+        handleClassName="bg-white border border-slate-300 shadow-soft z-10"
         lineClassName="border border-dashed border-slate-200"
       />
       <div
@@ -144,7 +149,7 @@ export function CustomNode({ data, selected }: NodeProps) {
 
       <div
         className="relative text-xs text-slate-600"
-        style={{ height: bodyHeight, padding: BODY_PADDING }}
+        style={{ height: bodyHeight, padding: bodyPadding }}
       >
         {spec.input_ports.map((port, index) => (
           <Handle
@@ -152,8 +157,8 @@ export function CustomNode({ data, selected }: NodeProps) {
             type="target"
             position={Position.Left}
             id={port}
-            style={{ top: rowCenterInBody(index) }}
-            className="w-3 h-3 bg-brand-500"
+            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
+            className="w-3 h-3 bg-brand-500 z-20"
           />
         ))}
         {spec.output_ports.map((port, index) => (
@@ -162,8 +167,8 @@ export function CustomNode({ data, selected }: NodeProps) {
             type="source"
             position={Position.Right}
             id={port}
-            style={{ top: rowCenterInBody(index) }}
-            className="w-3 h-3 bg-mint-500"
+            style={{ top: rowCenterInBody(index), transform: 'translateY(-50%)' }}
+            className="w-3 h-3 bg-mint-500 z-20"
           />
         ))}
         {spec.input_ports.map((port, index) => (

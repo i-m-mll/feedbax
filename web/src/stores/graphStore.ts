@@ -436,6 +436,41 @@ function deriveExternalPorts(graph: GraphSpec): GraphSpec {
   };
 }
 
+function arraysEqual<T>(left: T[], right: T[]) {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function isWrapperGraph(
+  parent: GraphSpec,
+  child: GraphSpec,
+  childNodeId?: string
+) {
+  if (!childNodeId) return false;
+  if (parent.wires.length > 0) return false;
+  const nodeIds = Object.keys(parent.nodes);
+  if (nodeIds.length !== 1 || nodeIds[0] !== childNodeId) return false;
+  const node = parent.nodes[childNodeId];
+  if (!node || node.type !== 'Subgraph') return false;
+  if (!parent.subgraphs || parent.subgraphs[childNodeId] !== child) return false;
+  if (!arraysEqual(parent.input_ports, node.input_ports)) return false;
+  if (!arraysEqual(parent.output_ports, node.output_ports)) return false;
+  if (!arraysEqual(parent.input_ports, child.input_ports)) return false;
+  if (!arraysEqual(parent.output_ports, child.output_ports)) return false;
+  for (const port of parent.input_ports) {
+    const binding = parent.input_bindings[port];
+    if (!binding || binding[0] !== childNodeId || binding[1] !== port) return false;
+  }
+  for (const port of parent.output_ports) {
+    const binding = parent.output_bindings[port];
+    if (!binding || binding[0] !== childNodeId || binding[1] !== port) return false;
+  }
+  return true;
+}
+
 function normalizeUiState(
   graph: GraphSpec,
   uiState: GraphUIState | null | undefined,
@@ -871,7 +906,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   wrapInParentGraph: () => {
     set((state) => {
+      const lastLayer = state.graphStack[state.graphStack.length - 1];
+      if (lastLayer && isWrapperGraph(lastLayer.graph, state.graph, lastLayer.childNodeId)) {
+        return state;
+      }
       const derivedCurrent = deriveExternalPorts(state.graph);
+      const normalizedCurrent = normalizeUiState(derivedCurrent, state.uiState, state.edgeStyle);
       const childNodeId = createNodeName({ nodes: {} } as GraphSpec, 'model');
       const now = new Date().toISOString();
       const parentGraph: GraphSpec = {
@@ -914,18 +954,60 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           },
         },
         subgraph_states: {
-          [childNodeId]: state.uiState,
+          [childNodeId]: normalizedCurrent,
         },
       };
-      const normalized = normalizeUiState(parentGraph, parentUi, state.edgeStyle);
+      const normalizedParent = normalizeUiState(parentGraph, parentUi, state.edgeStyle);
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
-      return {
+      const updatedStack = [...state.graphStack];
+      if (updatedStack.length > 0) {
+        const parentLayer = updatedStack[updatedStack.length - 1];
+        const parentChildId = parentLayer.childNodeId;
+        if (parentChildId && parentLayer.graph.nodes[parentChildId]) {
+          const nextGraph: GraphSpec = {
+            ...parentLayer.graph,
+            nodes: {
+              ...parentLayer.graph.nodes,
+              [parentChildId]: {
+                ...parentLayer.graph.nodes[parentChildId],
+                input_ports: parentGraph.input_ports,
+                output_ports: parentGraph.output_ports,
+              },
+            },
+            subgraphs: {
+              ...(parentLayer.graph.subgraphs ?? {}),
+              [parentChildId]: parentGraph,
+            },
+          };
+          const nextUi: GraphUIState = {
+            ...parentLayer.uiState,
+            subgraph_states: {
+              ...(parentLayer.uiState.subgraph_states ?? {}),
+              [parentChildId]: normalizedParent,
+            },
+          };
+          updatedStack[updatedStack.length - 1] = {
+            ...parentLayer,
+            graph: nextGraph,
+            uiState: nextUi,
+          };
+        }
+      }
+      updatedStack.push({
         graph: parentGraph,
-        uiState: normalized,
-        nodes: buildNodes(parentGraph, normalized),
-        edges: buildEdges(parentGraph, normalized, state.edgeStyle),
-        graphStack: [],
-        currentGraphLabel: parentGraph.metadata?.name ?? 'Workspace',
+        uiState: normalizedParent,
+        graphId: state.graphId,
+        label: parentGraph.metadata?.name ?? 'Workspace',
+        childNodeId,
+      });
+
+      return {
+        graph: derivedCurrent,
+        uiState: normalizedCurrent,
+        nodes: buildNodes(derivedCurrent, normalizedCurrent),
+        edges: buildEdges(derivedCurrent, normalizedCurrent, state.edgeStyle),
+        graphStack: updatedStack,
+        currentGraphLabel: state.currentGraphLabel,
         past,
         future: [],
         isDirty: true,

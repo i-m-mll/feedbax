@@ -102,6 +102,26 @@ function ParamInput({
     }
   }, [schema.type, schema.default, value]);
 
+  const parseBounds2d = (raw: ParamValue, fallback: ParamValue | undefined) => {
+    const fallbackValue: number[][] = Array.isArray(fallback)
+      ? (fallback as number[][])
+      : [
+          [0, 0],
+          [1, 1],
+        ];
+    const source: number[][] = Array.isArray(raw) ? (raw as number[][]) : fallbackValue;
+    const minRaw = Array.isArray(source[0]) ? (source[0] as number[]) : fallbackValue[0];
+    const maxRaw = Array.isArray(source[1]) ? (source[1] as number[]) : fallbackValue[1];
+    const safe = (item: unknown, defaultValue: number) =>
+      typeof item === 'number' && Number.isFinite(item) ? item : defaultValue;
+    return {
+      minX: safe(minRaw?.[0], fallbackValue[0][0]),
+      minY: safe(minRaw?.[1], fallbackValue[0][1]),
+      maxX: safe(maxRaw?.[0], fallbackValue[1][0]),
+      maxY: safe(maxRaw?.[1], fallbackValue[1][1]),
+    };
+  };
+
   if (schema.type === 'int' || schema.type === 'float') {
     const numericValue =
       typeof value === 'number'
@@ -155,6 +175,64 @@ function ParamInput({
           ))}
         </select>
       </label>
+    );
+  }
+
+  if (schema.type === 'bounds2d') {
+    const bounds = parseBounds2d(value, schema.default);
+    const update = (next: Partial<typeof bounds>) => {
+      const merged = { ...bounds, ...next };
+      onChange([
+        [merged.minX, merged.minY],
+        [merged.maxX, merged.maxY],
+      ]);
+    };
+    return (
+      <div className="flex flex-col gap-2 text-xs text-slate-500">
+        <div>{schema.name}</div>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1">
+            Min X
+            <input
+              type="number"
+              value={bounds.minX}
+              step={schema.step ?? 0.1}
+              onChange={(event) => update({ minX: Number(event.target.value) })}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            Min Y
+            <input
+              type="number"
+              value={bounds.minY}
+              step={schema.step ?? 0.1}
+              onChange={(event) => update({ minY: Number(event.target.value) })}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            Max X
+            <input
+              type="number"
+              value={bounds.maxX}
+              step={schema.step ?? 0.1}
+              onChange={(event) => update({ maxX: Number(event.target.value) })}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            Max Y
+            <input
+              type="number"
+              value={bounds.maxY}
+              step={schema.step ?? 0.1}
+              onChange={(event) => update({ maxY: Number(event.target.value) })}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
+            />
+          </label>
+        </div>
+      </div>
     );
   }
 

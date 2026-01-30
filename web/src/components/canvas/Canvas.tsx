@@ -17,7 +17,7 @@ import { RoutedEdge } from './RoutedEdge';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
-import { ArrowUpRight, MoveDiagonal } from 'lucide-react';
+import { MoveDiagonal, Plus } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
@@ -61,9 +61,7 @@ export function Canvas() {
       if (width === prev.width && height === prev.height) return;
       const scaleX = width / prev.width;
       const scaleY = height / prev.height;
-      const dominantScale =
-        Math.abs(scaleY - 1) >= Math.abs(scaleX - 1) ? scaleY : scaleX;
-      const scale = dominantScale;
+      const scale = Math.sqrt(scaleX * scaleY);
       if (!Number.isFinite(scale) || Math.abs(scale - 1) < 0.01) return;
       const viewport = reactFlow.getViewport();
       const newZoom = Math.max(0.1, Math.min(2.5, viewport.zoom * scale));
@@ -188,6 +186,14 @@ export function Canvas() {
         {showMinimap && <MiniMap nodeColor="#9ca3af" />}
         <Panel position="top-left" className="nodrag">
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">
+            <button
+              className="flex items-center justify-center rounded-full text-slate-500 hover:text-slate-700"
+              onClick={wrapInParentGraph}
+              title="Wrap this graph in a new parent"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+            <div className="h-4 w-px bg-slate-200" />
             {breadcrumbs.map((crumb, index) => {
               const isLast = index === breadcrumbs.length - 1;
               return (
@@ -210,15 +216,6 @@ export function Canvas() {
                 </div>
               );
             })}
-            <div className="h-4 w-px bg-slate-200" />
-            <button
-              className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
-              onClick={wrapInParentGraph}
-              title="Wrap this graph in a new parent"
-            >
-              <ArrowUpRight className="w-3.5 h-3.5" />
-              Parent
-            </button>
           </div>
         </Panel>
         <Panel position="top-right" className="nodrag">

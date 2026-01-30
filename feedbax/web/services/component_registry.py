@@ -306,7 +306,7 @@ class ComponentRegistry:
                     ParamSchema(name='n_steps', type='int', default=200, min=1, required=True),
                     ParamSchema(
                         name='workspace',
-                        type='array',
+                        type='bounds2d',
                         default=[[-1.0, -1.0], [1.0, 1.0]],
                         required=True,
                     ),
@@ -337,7 +337,7 @@ class ComponentRegistry:
                     ParamSchema(name='n_steps', type='int', default=240, min=1, required=True),
                     ParamSchema(
                         name='workspace',
-                        type='array',
+                        type='bounds2d',
                         default=[[-1.0, -1.0], [1.0, 1.0]],
                         required=True,
                     ),
@@ -366,7 +366,7 @@ class ComponentRegistry:
                     ParamSchema(name='n_steps', type='int', default=200, min=1, required=True),
                     ParamSchema(
                         name='workspace',
-                        type='array',
+                        type='bounds2d',
                         default=[[-1.0, -1.0], [1.0, 1.0]],
                         required=True,
                     ),

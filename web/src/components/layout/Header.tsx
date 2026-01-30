@@ -7,7 +7,7 @@ import {
   Plus,
   Download,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
@@ -17,6 +17,9 @@ export function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const settingsRef = useRef<HTMLDivElement | null>(null);
   const graphsQuery = useGraphsList();
   const saveMutation = useSaveGraph();
   const { showMinimap, toggleMinimap } = useSettingsStore();
@@ -31,6 +34,27 @@ export function Header() {
     resetGraph,
   } = useGraphStore();
   const inSubgraph = graphStack.length > 0;
+
+  useEffect(() => {
+    if (!menuOpen && !settingsOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (
+        menuOpen &&
+        menuRef.current &&
+        !menuRef.current.contains(target) &&
+        !menuTriggerRef.current?.contains(target)
+      ) {
+        setMenuOpen(false);
+      }
+      if (settingsOpen && settingsRef.current && !settingsRef.current.contains(target)) {
+        setSettingsOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [menuOpen, settingsOpen]);
 
   const handleSave = async () => {
     if (inSubgraph) return;
@@ -85,7 +109,7 @@ export function Header() {
           FEEDBAX
         </div>
         <div className="h-5 w-px bg-slate-200" />
-        <div className="relative flex items-center gap-2">
+        <div ref={menuRef} className="relative flex items-center gap-2">
           <button
             className="text-sm font-medium text-ink hover:text-brand-600"
             onClick={() => {
@@ -155,6 +179,7 @@ export function Header() {
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="Open project"
+          ref={menuTriggerRef}
           onClick={() => {
             setSettingsOpen(false);
             setMenuOpen((prev) => !prev);
@@ -162,7 +187,7 @@ export function Header() {
         >
           <FolderOpen className="w-4 h-4" />
         </button>
-        <div className="relative">
+        <div ref={settingsRef} className="relative">
           <button
             className="p-1.5 rounded-full hover:bg-slate-100"
             title="Settings"

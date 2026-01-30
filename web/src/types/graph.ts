@@ -10,7 +10,7 @@ export type ParamValue = ParamPrimitive | ParamValueArray | ParamValueObject;
 
 export interface ParamSchema {
   name: string;
-  type: 'int' | 'float' | 'bool' | 'str' | 'enum' | 'array' | 'object';
+  type: 'int' | 'float' | 'bool' | 'str' | 'enum' | 'array' | 'object' | 'bounds2d';
   default?: ParamValue;
   min?: number;
   max?: number;
