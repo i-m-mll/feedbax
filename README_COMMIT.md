@@ -1,34 +1,42 @@
-# Commit: [feature/web-ui] Implement subgraph navigation and collapse redesign
+# Commit: [develop] Add code generation for Equinox component wrappers
 
 ## Overview
-This commit enables navigation into any composite node (not just Network), redesigns
-the collapse behavior to show a single dot per side with a shrunk box, and implements
-dynamic subgraph port derivation from unconnected internal ports.
+This commit adds infrastructure for automatically generating typed Component wrappers
+from Equinox neural network classes. The generation script introspects Equinox class
+signatures and produces full static-typing-compatible wrapper classes that can be used
+as leaf nodes in feedbax computation graphs.
 
 ## Changes
 
-### Subgraph Navigation
-- `isComposite` now checks `type === 'Network' || type === 'Subgraph' || hasSubgraph`
-- Any node with an entry in `graph.subgraphs[nodeId]` shows the enter button
-- `enterSubgraph` creates an empty subgraph on first entry for non-Network nodes
+### Generation Script (`scripts/generate_eqx_components.py`)
+- Defines `ComponentSpec` dataclass specifying per-class metadata (ports, state handling)
+- Introspects `__init__` signatures using `inspect` module
+- Handles edge cases: `Literal` types, callable defaults, factory defaults, VAR_POSITIONAL
+- Generates properly typed wrapper classes with full docstrings
+- Organizes output by category (linear, conv, rnn, norm, pool, attention, other)
 
-### Collapse Behavior Redesign
-- When collapsed: all port dots except the first are hidden (single dot per side)
-- Labels are completely hidden when collapsed
-- Box height shrinks to `HEADER_HEIGHT + COLLAPSED_BODY_HEIGHT (24px)`
-- Hidden handles remain in DOM but are invisible and non-interactive
-
-### Dynamic Subgraph Ports
-- Renamed `deriveExternalPorts` → `deriveSubgraphPorts` for clarity
-- Called automatically when wiring changes inside a subgraph
-- Derives external ports from internal ports that have no internal connections
+### Generated Components (`feedbax/eqx_components.py`)
+32 Component wrappers covering:
+- **Linear**: `Linear`, `Identity`, `MLP`
+- **Conv**: `Conv1d/2d/3d`, `ConvTranspose1d/2d/3d`
+- **RNN**: `GRUCell`, `LSTMCell`
+- **Normalization**: `LayerNorm`, `RMSNorm`, `GroupNorm`, `BatchNorm`
+- **Pooling**: `MaxPool1d/2d/3d`, `AvgPool1d/2d/3d`, `AdaptiveMaxPool1d/2d/3d`, `AdaptiveAvgPool1d/2d/3d`
+- **Attention**: `MultiheadAttention`, `RotaryPositionalEmbedding`
+- **Other**: `Embedding`, `Dropout`, `PReLU`
 
 ## Rationale
-Subgraph navigation was limited to "Network" type, but any node can have an associated
-subgraph. The collapse redesign reduces visual clutter to a minimal single-dot
-representation while maintaining wire connectivity. Dynamic port derivation ensures
-subgraph interfaces stay in sync with their internal structure.
+The discussion explored three approaches for wrapping Equinox classes:
+1. Manual one-to-one wrapper classes (full static typing but tedious)
+2. Runtime factory + registration (less boilerplate but loses static typing)
+3. Code generation (best of both: committed output has full static typing)
+
+Code generation was chosen because:
+- Equinox is stable (~1 release/year), so regeneration is rare
+- The generated file is committed and has full IDE support
+- The script can be extended to wrap other JAX libraries in the future
+- No runtime magic or loss of type information
 
 ## Files Changed
-- `web/src/components/canvas/CustomNode.tsx` - collapse logic, isComposite check
-- `web/src/stores/graphStore.ts` - enterSubgraph, deriveSubgraphPorts, createEmptySubgraph
+- `scripts/generate_eqx_components.py` - Generation script with class specs and introspection
+- `feedbax/eqx_components.py` - Auto-generated Component wrappers (do not edit manually)
