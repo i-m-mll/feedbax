@@ -28,6 +28,10 @@ export function CustomNode({ data, selected }: NodeProps) {
   const totalPorts = inputCount + outputCount;
   const canCollapse = totalPorts > 1;
   const collapsedEffective = collapsed && canCollapse;
+  const connectedInputs = new Set(nodeData.connected_inputs ?? []);
+  const connectedOutputs = new Set(nodeData.connected_outputs ?? []);
+  const hasStateIn = nodeData.state_in ?? false;
+  const hasStateOut = nodeData.state_out ?? false;
   const rowCount = Math.max(1, inputCount, outputCount);
   const defaultHeight = HEADER_HEIGHT + BODY_PADDING * 2 + rowCount * ROW_HEIGHT;
   const width = nodeData.size?.width ?? DEFAULT_WIDTH;
@@ -59,7 +63,10 @@ export function CustomNode({ data, selected }: NodeProps) {
         position={Position.Left}
         id="__state_in"
         style={{ top: HEADER_HEIGHT / 2, left: HANDLE_OFFSET - 2, transform: 'translateY(-50%)' }}
-        className="w-4 h-4 rounded-full bg-slate-500 border-2 border-white shadow-soft pointer-events-none"
+        className={clsx(
+          'w-4 h-4 rounded-full border-2 border-white shadow-soft cursor-crosshair',
+          hasStateIn ? 'bg-slate-500' : 'bg-slate-300'
+        )}
       />
       <Handle
         type="source"
@@ -70,7 +77,10 @@ export function CustomNode({ data, selected }: NodeProps) {
           right: HANDLE_OFFSET - 2,
           transform: 'translateY(-50%)',
         }}
-        className="w-4 h-4 rounded-full bg-slate-500 border-2 border-white shadow-soft pointer-events-none"
+        className={clsx(
+          'w-4 h-4 rounded-full border-2 border-white shadow-soft cursor-crosshair',
+          hasStateOut ? 'bg-slate-500' : 'bg-slate-300'
+        )}
       />
       <div
         className={clsx(
@@ -141,7 +151,10 @@ export function CustomNode({ data, selected }: NodeProps) {
                 left: HANDLE_OFFSET,
                 transform: 'translateY(-50%)',
               }}
-              className="w-3 h-3 z-20 bg-brand-500"
+              className={clsx(
+                'w-3 h-3 z-20 border border-white shadow-soft',
+                connectedInputs.has(port) ? 'bg-brand-500' : 'bg-slate-300'
+              )}
             />
           ))}
           {spec.output_ports.map((port, index) => (
@@ -155,7 +168,10 @@ export function CustomNode({ data, selected }: NodeProps) {
                 right: HANDLE_OFFSET,
                 transform: 'translateY(-50%)',
               }}
-              className="w-3 h-3 z-20 bg-mint-500"
+              className={clsx(
+                'w-3 h-3 z-20 border border-white shadow-soft',
+                connectedOutputs.has(port) ? 'bg-mint-500' : 'bg-slate-300'
+              )}
             />
           ))}
           {spec.input_ports.map((port, index) => (

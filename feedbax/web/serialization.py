@@ -20,6 +20,7 @@ from feedbax.components import (
     Saturation,
     DelayLine,
     Noise,
+    Linear,
     MLP,
     GRU,
     LSTM,
@@ -315,6 +316,18 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="DelayLine",
                 params={"delay": component.delay, "init_value": component.init_value},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Linear):
+            nodes[name] = ComponentSpec(
+                type="Linear",
+                params={
+                    "input_size": component.input_size,
+                    "output_size": component.output_size,
+                    "use_bias": component.use_bias,
+                },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -743,6 +756,15 @@ def _build_mlp(params: Mapping[str, Any]) -> MLP:
     )
 
 
+def _build_linear(params: Mapping[str, Any]) -> Linear:
+    return Linear(
+        input_size=int(params.get("input_size", 1)),
+        output_size=int(params.get("output_size", 1)),
+        use_bias=bool(params.get("use_bias", True)),
+        key=jr.PRNGKey(0),
+    )
+
+
 def _build_gru(params: Mapping[str, Any]) -> GRU:
     return GRU(
         input_size=int(params.get("input_size", 1)),
@@ -813,6 +835,9 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             continue
         if node_spec.type == "DelayLine":
             nodes[node_name] = _build_delay_line(params)
+            continue
+        if node_spec.type == "Linear":
+            nodes[node_name] = _build_linear(params)
             continue
         if node_spec.type == "MLP":
             nodes[node_name] = _build_mlp(params)

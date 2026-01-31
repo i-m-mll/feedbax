@@ -132,6 +132,10 @@ export interface GraphNodeData extends Record<string, unknown> {
   spec: ComponentSpec;
   collapsed?: boolean;
   size?: { width: number; height: number };
+  connected_inputs?: string[];
+  connected_outputs?: string[];
+  state_in?: boolean;
+  state_out?: boolean;
 }
 
 export interface TapNodeData extends Record<string, unknown> {
@@ -140,4 +144,6 @@ export interface TapNodeData extends Record<string, unknown> {
 
 export interface GraphEdgeData extends Record<string, unknown> {
   routing?: EdgeRouting;
+  primary?: boolean;
+  strength?: number;
 }

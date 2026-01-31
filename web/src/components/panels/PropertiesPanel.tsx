@@ -50,7 +50,7 @@ export function PropertiesPanel() {
     );
   }
 
-  if (selectedEdge && selectedEdge.type !== 'state-flow') {
+  if (selectedEdge && selectedEdge.type === 'state-flow') {
     return (
       <div className="p-6 space-y-6">
         <div>
@@ -75,6 +75,21 @@ export function PropertiesPanel() {
               Add Intervention Tap
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (selectedEdge && selectedEdge.type !== 'state-flow') {
+    return (
+      <div className="p-6 space-y-4">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Port Wire</div>
+        <div className="text-sm text-slate-600">
+          {selectedEdge.source}.{selectedEdge.sourceHandle} → {selectedEdge.target}.
+          {selectedEdge.targetHandle}
+        </div>
+        <div className="text-xs text-slate-400">
+          Port wires are the source of truth for state merging.
         </div>
       </div>
     );

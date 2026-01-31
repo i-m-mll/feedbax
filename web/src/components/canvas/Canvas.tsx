@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import {
   Background,
   Controls,
@@ -44,6 +44,9 @@ export function Canvas() {
     setSelectedEdge,
     addTapForEdge,
     setAllNodesCollapsed,
+    pendingStateMerge,
+    confirmStateMerge,
+    cancelStateMerge,
     graph,
     graphStack,
     currentGraphLabel,
@@ -136,8 +139,15 @@ export function Canvas() {
     (connection: Connection) => {
       if (!connection.target || !connection.targetHandle) return false;
       if (!connection.source || !connection.sourceHandle) return false;
-      if (isStateHandle(connection.sourceHandle) || isStateHandle(connection.targetHandle)) {
-        return false;
+      const sourceIsState = isStateHandle(connection.sourceHandle);
+      const targetIsState = isStateHandle(connection.targetHandle);
+      if (sourceIsState || targetIsState) {
+        return (
+          sourceIsState &&
+          targetIsState &&
+          connection.sourceHandle === '__state_out' &&
+          connection.targetHandle === '__state_in'
+        );
       }
       const inputTaken = edges.some(
         (edge) => edge.target === connection.target && edge.targetHandle === connection.targetHandle
@@ -201,14 +211,14 @@ export function Canvas() {
           }
         }}
         onEdgeClick={(_, edge) => {
-          if (edge.type === 'state-flow') return;
           setSelectedEdge(edge.id);
           setSelectedNode(null);
           setSelectedTap(null);
         }}
         onEdgeDoubleClick={(_, edge) => {
-          if (edge.type === 'state-flow') return;
-          addTapForEdge(edge.id, 'probe');
+          if (edge.type === 'state-flow') {
+            addTapForEdge(edge.id, 'probe');
+          }
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
@@ -287,6 +297,143 @@ export function Canvas() {
           </div>
         </Panel>
       </ReactFlow>
+      {pendingStateMerge && (
+        <StateMergeDialog
+          request={pendingStateMerge}
+          onCancel={cancelStateMerge}
+          onConfirm={confirmStateMerge}
+        />
+      )}
+    </div>
+  );
+}
+
+function StateMergeDialog({
+  request,
+  onCancel,
+  onConfirm,
+}: {
+  request: {
+    sourceNode: string;
+    targetNode: string;
+    sourceOutputs: string[];
+    targetInputs: string[];
+    currentSources: Record<string, { source_node: string; source_port: string } | null>;
+    suggested: Record<string, string | null>;
+    hasExistingConnections: boolean;
+  };
+  onCancel: () => void;
+  onConfirm: (mapping: Record<string, string>) => void;
+}) {
+  const buildInitial = useCallback(() => {
+    const next: Record<string, { selected: boolean; output: string }> = {};
+    for (const input of request.targetInputs) {
+      const suggested = request.suggested[input];
+      const defaultOutput = suggested ?? request.sourceOutputs[0] ?? '';
+      const selected = !request.hasExistingConnections && Boolean(suggested);
+      next[input] = { selected, output: defaultOutput };
+    }
+    return next;
+  }, [request]);
+
+  const [rows, setRows] = useState(buildInitial);
+
+  useEffect(() => {
+    setRows(buildInitial());
+  }, [buildInitial]);
+
+  const hasSelection = Object.values(rows).some((row) => row.selected && row.output);
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/20 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">State Merge</div>
+        <div className="mt-2 text-lg font-semibold text-slate-800">
+          Connect {request.sourceNode} → {request.targetNode}
+        </div>
+        <p className="mt-2 text-sm text-slate-500">
+          Select which inputs should receive state from {request.sourceNode}. Unselected
+          inputs keep their current wiring.
+        </p>
+        <div className="mt-4 space-y-2">
+          <div className="grid grid-cols-[1.2fr_1fr_1.2fr_auto] gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+            <div>Input</div>
+            <div>Current Source</div>
+            <div>Wire From</div>
+            <div />
+          </div>
+          {request.targetInputs.map((input) => {
+            const current = request.currentSources[input];
+            const row = rows[input];
+            return (
+              <div
+                key={input}
+                className="grid grid-cols-[1.2fr_1fr_1.2fr_auto] gap-2 items-center text-sm"
+              >
+                <div className="text-slate-700">{input}</div>
+                <div className="text-slate-500">
+                  {current ? `${current.source_node}.${current.source_port}` : '—'}
+                </div>
+                <select
+                  value={row.output}
+                  disabled={!row.selected || request.sourceOutputs.length === 0}
+                  onChange={(event) =>
+                    setRows((prev) => ({
+                      ...prev,
+                      [input]: { ...prev[input], output: event.target.value },
+                    }))
+                  }
+                  className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700 disabled:bg-slate-50"
+                >
+                  {request.sourceOutputs.length === 0 && <option value="">No outputs</option>}
+                  {request.sourceOutputs.map((output) => (
+                    <option key={output} value={output}>
+                      {request.sourceNode}.{output}
+                    </option>
+                  ))}
+                </select>
+                <label className="flex items-center gap-2 text-xs text-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={row.selected}
+                    onChange={(event) =>
+                      setRows((prev) => ({
+                        ...prev,
+                        [input]: { ...prev[input], selected: event.target.checked },
+                      }))
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-500"
+                  />
+                  Use
+                </label>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button
+            className="rounded-full border border-slate-200 px-4 py-1.5 text-sm text-slate-600 hover:text-slate-800"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-full bg-brand-600 px-4 py-1.5 text-sm text-white shadow-soft disabled:bg-slate-300"
+            disabled={!hasSelection}
+            onClick={() => {
+              const mapping: Record<string, string> = {};
+              for (const [input, row] of Object.entries(rows)) {
+                if (row.selected && row.output) {
+                  mapping[input] = row.output;
+                }
+              }
+              onConfirm(mapping);
+            }}
+          >
+            Connect
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -320,6 +320,25 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='Linear',
+                category='Neural Networks',
+                description='Linear layer.',
+                param_schema=[
+                    ParamSchema(name='input_size', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='output_size', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='use_bias', type='bool', default=True, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Minus',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='GRU',
                 category='Neural Networks',
                 description='GRU cell.',

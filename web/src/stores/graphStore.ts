@@ -17,6 +17,7 @@ import type {
   ComponentSpec,
   EdgeUIState,
   EdgeRouting,
+  WireSpec,
   TapSpec,
   TapUIState,
   TapNodeData,
@@ -42,6 +43,16 @@ interface GraphLayer {
   childNodeId?: string;
 }
 
+interface StateMergeRequest {
+  sourceNode: string;
+  targetNode: string;
+  sourceOutputs: string[];
+  targetInputs: string[];
+  currentSources: Record<string, WireSpec | null>;
+  suggested: Record<string, string | null>;
+  hasExistingConnections: boolean;
+}
+
 function wireId(wire: {
   source_node: string;
   source_port: string;
@@ -49,6 +60,60 @@ function wireId(wire: {
   target_port: string;
 }) {
   return `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`;
+}
+
+function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode: string): StateMergeRequest | null {
+  const sourceSpec = graph.nodes[sourceNode];
+  const targetSpec = graph.nodes[targetNode];
+  if (!sourceSpec || !targetSpec) return null;
+  const currentSources: Record<string, WireSpec | null> = {};
+  for (const input of targetSpec.input_ports) {
+    const existing =
+      graph.wires.find(
+        (wire) => wire.target_node === targetNode && wire.target_port === input
+      ) ?? null;
+    currentSources[input] = existing;
+  }
+  const suggested: Record<string, string | null> = {};
+  for (const input of targetSpec.input_ports) {
+    suggested[input] = sourceSpec.output_ports.includes(input) ? input : null;
+  }
+  const hasExistingConnections = Object.values(currentSources).some(Boolean);
+  return {
+    sourceNode,
+    targetNode,
+    sourceOutputs: [...sourceSpec.output_ports],
+    targetInputs: [...targetSpec.input_ports],
+    currentSources,
+    suggested,
+    hasExistingConnections,
+  };
+}
+
+function applyStateMerge(
+  graph: GraphSpec,
+  sourceNode: string,
+  targetNode: string,
+  mapping: Record<string, string>
+): GraphSpec {
+  const selectedInputs = new Set(Object.keys(mapping));
+  const wires = graph.wires.filter(
+    (wire) => !(wire.target_node === targetNode && selectedInputs.has(wire.target_port))
+  );
+  const nextWires = [...wires];
+  for (const [targetPort, sourcePort] of Object.entries(mapping)) {
+    if (!sourcePort) continue;
+    nextWires.push({
+      source_node: sourceNode,
+      source_port: sourcePort,
+      target_node: targetNode,
+      target_port: targetPort,
+    });
+  }
+  return {
+    ...graph,
+    wires: nextWires,
+  };
 }
 
 function isTapNodeId(nodeId: string) {
@@ -654,6 +719,24 @@ function normalizeUiState(
 }
 
 function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
+  const connectedInputs = new Map<string, Set<string>>();
+  const connectedOutputs = new Map<string, Set<string>>();
+  const stateIn = new Set<string>();
+  const stateOut = new Set<string>();
+  for (const wire of graph.wires) {
+    if (!isTapNodeId(wire.target_node)) {
+      const inputs = connectedInputs.get(wire.target_node) ?? new Set<string>();
+      inputs.add(wire.target_port);
+      connectedInputs.set(wire.target_node, inputs);
+      stateIn.add(wire.target_node);
+    }
+    if (!isTapNodeId(wire.source_node)) {
+      const outputs = connectedOutputs.get(wire.source_node) ?? new Set<string>();
+      outputs.add(wire.source_port);
+      connectedOutputs.set(wire.source_node, outputs);
+      stateOut.add(wire.source_node);
+    }
+  }
   return Object.entries(graph.nodes).map(([id, spec]) => {
     const ui = uiState.node_states[id] ?? {
       position: DEFAULT_POSITION,
@@ -671,6 +754,10 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
         spec,
         collapsed: ui.collapsed,
         size,
+        connected_inputs: Array.from(connectedInputs.get(id) ?? []),
+        connected_outputs: Array.from(connectedOutputs.get(id) ?? []),
+        state_in: stateIn.has(id),
+        state_out: stateOut.has(id),
       },
       selected: ui.selected,
     };
@@ -748,26 +835,39 @@ function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData
 }
 
 function buildStateEdges(graph: GraphSpec): Edge<GraphEdgeData>[] {
-  const pairs = new Set<string>();
-  const edges: Edge<GraphEdgeData>[] = [];
+  const countsByTarget = new Map<string, Map<string, number>>();
   for (const wire of graph.wires) {
     if (isTapNodeId(wire.source_node) || isTapNodeId(wire.target_node)) {
       continue;
     }
-    const key = `${wire.source_node}->${wire.target_node}`;
-    if (pairs.has(key)) continue;
-    pairs.add(key);
-    edges.push({
-      id: `state:${key}`,
-      source: wire.source_node,
-      target: wire.target_node,
-      sourceHandle: '__state_out',
-      targetHandle: '__state_in',
-      type: 'state-flow',
-      selectable: false,
-      deletable: false,
-      zIndex: 0,
-    });
+    const sources = countsByTarget.get(wire.target_node) ?? new Map<string, number>();
+    sources.set(wire.source_node, (sources.get(wire.source_node) ?? 0) + 1);
+    countsByTarget.set(wire.target_node, sources);
+  }
+
+  const edges: Edge<GraphEdgeData>[] = [];
+  for (const [target, sources] of countsByTarget.entries()) {
+    let maxCount = 0;
+    for (const count of sources.values()) {
+      if (count > maxCount) maxCount = count;
+    }
+    for (const [source, count] of sources.entries()) {
+      edges.push({
+        id: `state:${source}->${target}`,
+        source,
+        target,
+        sourceHandle: '__state_out',
+        targetHandle: '__state_in',
+        type: 'state-flow',
+        selectable: true,
+        deletable: false,
+        zIndex: 0,
+        data: {
+          primary: count === maxCount,
+          strength: count,
+        },
+      });
+    }
   }
   return edges;
 }
@@ -879,6 +979,7 @@ interface GraphStoreState {
   future: { graph: GraphSpec; uiState: GraphUIState }[];
   selectedTapId: string | null;
   selectedEdgeId: string | null;
+  pendingStateMerge: StateMergeRequest | null;
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
   markSaved: (graphId: string) => void;
   resetGraph: () => void;
@@ -908,6 +1009,8 @@ interface GraphStoreState {
   addTap: (afterNode: string, type: TapSpec['type']) => void;
   updateTap: (tapId: string, updates: Partial<TapSpec>) => void;
   removeTap: (tapId: string) => void;
+  confirmStateMerge: (mapping: Record<string, string>) => void;
+  cancelStateMerge: () => void;
 }
 
 const initial = createInitialGraph();
@@ -927,6 +1030,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   future: [],
   selectedTapId: null,
   selectedEdgeId: null,
+  pendingStateMerge: null,
   hydrateGraph: (graph, uiState, graphId) => {
     const edgeStyle = get().edgeStyle;
     const migrated = migrateGraphSpec(graph);
@@ -944,6 +1048,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       future: [],
       selectedTapId: null,
       selectedEdgeId: null,
+      pendingStateMerge: null,
     });
   },
   markSaved: (graphId) => {
@@ -969,6 +1074,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       future: [],
       selectedTapId: null,
       selectedEdgeId: null,
+      pendingStateMerge: null,
     });
   },
   undo: () => {
@@ -1796,10 +1902,48 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   onConnect: (connection, styleOverride) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
-    if (
+    const isState =
       connection.sourceHandle.startsWith('__state') ||
-      connection.targetHandle.startsWith('__state')
-    ) {
+      connection.targetHandle.startsWith('__state');
+    if (isState) {
+      if (connection.sourceHandle !== '__state_out' || connection.targetHandle !== '__state_in') {
+        return;
+      }
+      if (connection.source === connection.target) {
+        return;
+      }
+      set((state) => {
+        const request = buildStateMergeRequest(state.graph, connection.source!, connection.target!);
+        if (!request) return state;
+        const autoMappings = Object.entries(request.suggested).filter(([, value]) => value);
+        if (!request.hasExistingConnections && autoMappings.length > 0) {
+          const mapping = Object.fromEntries(autoMappings) as Record<string, string>;
+          const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+          let graph = applyStateMerge(state.graph, request.sourceNode, request.targetNode, mapping);
+          if (state.graphStack.length > 0) {
+            graph = deriveSubgraphPorts(graph);
+          }
+          const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
+          return {
+            graph,
+            nodes: buildNodes(graph, state.uiState),
+            edges: buildEdges(graph, state.uiState, state.edgeStyle),
+            uiState: {
+              ...state.uiState,
+              edge_states,
+            },
+            past,
+            future: [],
+            isDirty: true,
+            pendingStateMerge: null,
+            selectedEdgeId: null,
+          };
+        }
+        return {
+          pendingStateMerge: request,
+          selectedEdgeId: null,
+        };
+      });
       return;
     }
     const alreadyUsed = get().edges.some(
@@ -1965,6 +2109,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
         selectedTapId: null,
         selectedEdgeId: null,
+        pendingStateMerge: null,
       };
     });
   },
@@ -2004,6 +2149,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
         selectedTapId: tapId,
         selectedEdgeId: null,
+        pendingStateMerge: null,
       };
     });
   },
@@ -2016,6 +2162,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       return {
         edges,
         selectedEdgeId: edgeId,
+        pendingStateMerge: null,
       };
     });
   },
@@ -2087,7 +2234,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   addTapForEdge: (edgeId, type) => {
     set((state) => {
       const edge = state.edges.find((item) => item.id === edgeId);
-      if (!edge || edge.type === 'state-flow') return state;
+      if (!edge || edge.type !== 'state-flow') return state;
       if (!edge.source || !edge.target) return state;
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const taps = [...(state.graph.taps ?? [])];
@@ -2258,5 +2405,33 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         selectedTapId: state.selectedTapId === tapId ? null : state.selectedTapId,
       };
     });
+  },
+  confirmStateMerge: (mapping) => {
+    set((state) => {
+      if (!state.pendingStateMerge) return state;
+      const { sourceNode, targetNode } = state.pendingStateMerge;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      let graph = applyStateMerge(state.graph, sourceNode, targetNode, mapping);
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
+      const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
+      return {
+        graph,
+        nodes: buildNodes(graph, state.uiState),
+        edges: buildEdges(graph, state.uiState, state.edgeStyle),
+        uiState: {
+          ...state.uiState,
+          edge_states,
+        },
+        past,
+        future: [],
+        isDirty: true,
+        pendingStateMerge: null,
+      };
+    });
+  },
+  cancelStateMerge: () => {
+    set({ pendingStateMerge: null });
   },
 }));

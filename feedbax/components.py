@@ -282,6 +282,28 @@ class DelayLine(Component):
         return {"output": next_output}, state
 
 
+class Linear(Component):
+    """Linear layer."""
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    layer: eqx.nn.Linear
+    input_size: int = field(static=True)
+    output_size: int = field(static=True)
+    use_bias: bool = field(static=True)
+
+    def __init__(self, input_size: int, output_size: int, use_bias: bool = True, *, key: PRNGKeyArray):
+        self.input_size = int(input_size)
+        self.output_size = int(output_size)
+        self.use_bias = bool(use_bias)
+        self.layer = eqx.nn.Linear(self.input_size, self.output_size, use_bias=self.use_bias, key=key)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        output = self.layer(inputs["input"])
+        return {"output": output}, state
+
+
 class MLP(Component):
     """Multi-layer perceptron."""
 

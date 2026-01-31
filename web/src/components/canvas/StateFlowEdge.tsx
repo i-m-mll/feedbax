@@ -7,6 +7,7 @@ export function StateFlowEdge({
   targetY,
   sourcePosition,
   targetPosition,
+  data,
 }: EdgeProps) {
   const [path] = getBezierPath({
     sourceX,
@@ -16,18 +17,23 @@ export function StateFlowEdge({
     sourcePosition,
     targetPosition,
   });
+  const primary = data?.primary ?? true;
+  const strokeWidth = primary ? 3 : 2.2;
+  const stroke = primary ? '#475569' : '#94a3b8';
+  const dash = primary ? 'none' : '6 6';
 
   return (
     <path
       d={path}
       className="react-flow__edge-path"
       style={{
-        stroke: '#475569',
-        strokeWidth: 3,
-        opacity: 0.9,
+        stroke,
+        strokeWidth,
+        strokeDasharray: dash,
+        opacity: primary ? 0.9 : 0.75,
         fill: 'none',
       }}
-      pointerEvents="none"
+      pointerEvents="stroke"
     />
   );
 }
