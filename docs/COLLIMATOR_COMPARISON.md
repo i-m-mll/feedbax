@@ -328,6 +328,86 @@ The Task is outside, the closed-loop controller is inside a subgraph.
 
 ---
 
+## Part 7: System+Context Architecture Comparison
+
+This section synthesizes a discussion about Collimator's Drake-style System+Context pattern
+versus Feedbax's graph-first approach.
+
+### Two Different "Trees" to Keep Separate
+
+There are two distinct notions of "tree" that often get mixed:
+
+1. **Model structure tree**: a hierarchical view of components/subsystems (a tree of objects)
+2. **State tree**: a hierarchical container for the state values associated with that structure
+
+In Feedbax:
+- The **model** is a graph of components with explicit wiring (can have cycles)
+- The **state** is a functional mapping (Equinox `StateIndex` + `State`)
+- Any **tree view** is currently a derived view for visualization or inspection
+
+In Drake-style System+Context (which Collimator references):
+- The **System** object contains wiring/composition (graph semantics)
+- The **Context** object is a first-class hierarchical state container that mirrors the
+  composition hierarchy of the System
+- The state tree is not an ad-hoc visualization; it is the canonical state representation
+
+### What System+Context Implies
+
+A Drake-style pattern:
+- A **Diagram** (composed system) contains sub-systems
+- The **Context** of the Diagram contains a **Context for each sub-system** (tree of contexts)
+- The graph wiring may include feedback loops, but the state is still a tree because it
+  follows hierarchical composition, not dataflow topology
+
+This is why you can have cycles in the model but still have a tree-shaped state container.
+
+### Hierarchy-First vs Graph-First Trade-offs
+
+**Hierarchy-first advantages** (why it feels nice for simulation tooling):
+- A canonical tree of subsystems gives immediate structure for state, parameters, logging,
+  UI grouping, and serialization
+- Tooling can assume a stable hierarchical address space
+
+**Graph-first advantages**:
+- Natural expression of cycles, feedback, and shared subcomponents
+- Easier to model cross-cutting dependencies without forcing duplication
+
+**Key point**: Graph-first does not prevent hierarchy-style tooling. It just means hierarchy
+is often a view or composition wrapper, not the primary representation.
+
+### Context-like State Tree in Feedbax
+
+A Context-style tree in Feedbax could mean:
+
+**A) Replace the current state system** (major change)
+- State becomes a hierarchical tree of sub-states
+- Execution and updates operate on that tree
+
+**B) Provide a "context view"** (non-intrusive)
+- Keep `StateIndex` + `State` as source-of-truth
+- Construct a structured view of state based on the model hierarchy
+- This gives the benefits of a context tree without changing execution semantics
+
+Given current architecture, (B) is the natural fit.
+
+### How Collimator Treats NN Weights
+
+From public tutorials, NN weights appear as parameters in the Context, not as evolving state.
+Parameters are updated by replacing them in the Context (e.g., `with_parameter(...)`), while
+the simulation treats them as fixed during a run unless explicitly changed between runs.
+
+### Practical Synthesis
+
+- Keep **graph semantics** primary (supports cycles, feedback)
+- Keep **state** as functional `StateIndex` + `State`
+- Provide **context-like structured views** of state based on hierarchy
+- Provide **tree projections** of graph structure for visualization, not as canonical representation
+- Use dynamics-aware grouping (e.g., SCCs) to box coupled ODE subsystems for UI clarity
+
+This yields Collimator-like clarity without sacrificing Feedbax's generality.
+
+---
+
 ## Sources
 
 - [Collimator Main Site](https://www.collimator.ai/)
