@@ -6,7 +6,7 @@
 
 from abc import abstractmethod, abstractproperty
 import logging
-from typing import Optional, TypeVar
+from typing import Generic, Optional, TypeVar
 
 from equinox import Module
 import jax
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # StateT = TypeVar("StateT", Module, Array)
 
 
-class AbstractDynamicalSystem(Module):
+class AbstractDynamicalSystem(Module, Generic[StateT]):
     """Base class for continuous dynamical systems.
 
     ??? dev-note "Development note"

@@ -41,6 +41,26 @@ For best performance, [install JAX](https://jax.readthedocs.io/en/latest/install
 
 Documentation is available [here](https://docs.lprt.ca/feedbax).
 
+## Web UI
+
+Feedbax includes a web interface for visually constructing and training models. To start both the backend API and frontend dev server:
+
+```bash
+./scripts/dev.sh
+```
+
+Or run them separately:
+
+```bash
+# Backend (FastAPI on port 8000)
+uv run uvicorn feedbax.web.app:app --reload --port 8000
+
+# Frontend (Vite/React on port 5173)
+cd web && pnpm dev
+```
+
+Then open http://localhost:5173 in your browser.
+
 ## Development
 
 I started to develop Feedbax while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
