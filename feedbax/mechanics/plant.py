@@ -104,7 +104,9 @@ class AbstractPlant(AbstractDynamicalSystem[PlantState]):
 
 
 class AbstractMuscledPlant(AbstractPlant):
-    muscle_model: AbstractMuscle
+    # Override clip_states to come before muscle_model (dataclass field ordering)
+    clip_states: bool = True
+    muscle_model: AbstractMuscle = field(default=None)  # type: ignore
 
     @property
     def bounds(self) -> PyTree[StateBounds]:
