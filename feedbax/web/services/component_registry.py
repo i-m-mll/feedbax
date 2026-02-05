@@ -721,6 +721,318 @@ class ComponentRegistry:
                 ),
             )
         )
+        # --- Control components ---
+        self.register(
+            ComponentMeta(
+                name='Integrator',
+                category='Control',
+                description='Continuous-time integrator (Euler).',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='initial_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Integral',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Derivative',
+                category='Control',
+                description='Finite-difference derivative.',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='initial_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='TrendingUp',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='StateSpace',
+                category='Control',
+                description='Continuous LTI state-space (Euler).',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Grid3x3',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='TransferFunction',
+                category='Control',
+                description='Transfer function H(s)=num/den.',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='FunctionSquare',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='PID',
+                category='Control',
+                description='Continuous PID with anti-windup.',
+                param_schema=[
+                    ParamSchema(name='Kp', type='float', default=1.0, required=True),
+                    ParamSchema(name='Ki', type='float', default=0.0, required=False),
+                    ParamSchema(name='Kd', type='float', default=0.0, required=False),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='integral_limit', type='float', default=1000.0, required=False),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                ],
+                input_ports=['error'],
+                output_ports=['output'],
+                icon='Gauge',
+                port_types=PortTypeSpec(
+                    inputs={'error': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='PIDDiscrete',
+                category='Control',
+                description='Discrete PID (velocity form).',
+                param_schema=[
+                    ParamSchema(name='Kp', type='float', default=1.0, required=True),
+                    ParamSchema(name='Ki', type='float', default=0.0, required=False),
+                    ParamSchema(name='Kd', type='float', default=0.0, required=False),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='output_limit', type='float', default=1000.0, required=False),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                ],
+                input_ports=['error'],
+                output_ports=['output'],
+                icon='Gauge',
+                port_types=PortTypeSpec(
+                    inputs={'error': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        # --- Discrete components ---
+        self.register(
+            ComponentMeta(
+                name='IntegratorDiscrete',
+                category='Discrete',
+                description='Discrete-time accumulator.',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=1.0, min=0.0, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='initial_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='PlusSquare',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='UnitDelay',
+                category='Discrete',
+                description='Unit delay (z^-1).',
+                param_schema=[
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='initial_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Clock',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='ZeroOrderHold',
+                category='Discrete',
+                description='Sample and hold every N steps.',
+                param_schema=[
+                    ParamSchema(name='hold_steps', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='initial_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Pause',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        # --- Signal processing components ---
+        self.register(
+            ComponentMeta(
+                name='Mux',
+                category='Signal Processing',
+                description='Concatenate inputs into single vector.',
+                param_schema=[
+                    ParamSchema(name='n_inputs', type='int', default=2, min=1, required=True),
+                ],
+                input_ports=['in_0', 'in_1'],
+                output_ports=['output'],
+                icon='GitMerge',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'in_0': PortType(dtype='vector'),
+                        'in_1': PortType(dtype='vector'),
+                    },
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Demux',
+                category='Signal Processing',
+                description='Split vector into multiple outputs.',
+                param_schema=[
+                    ParamSchema(name='sizes', type='array', default=[1, 1], required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['out_0', 'out_1'],
+                icon='GitBranch',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={
+                        'out_0': PortType(dtype='vector'),
+                        'out_1': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Switch',
+                category='Signal Processing',
+                description='Route signal by threshold condition.',
+                param_schema=[
+                    ParamSchema(name='threshold', type='float', default=0.0, required=True),
+                ],
+                input_ports=['condition', 'true_input', 'false_input'],
+                output_ports=['output'],
+                icon='GitCompare',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'condition': PortType(dtype='scalar'),
+                        'true_input': PortType(dtype='any'),
+                        'false_input': PortType(dtype='any'),
+                    },
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='DeadZone',
+                category='Signal Processing',
+                description='Zero output for small inputs.',
+                param_schema=[
+                    ParamSchema(name='threshold', type='float', default=0.1, min=0.0, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='MinusSquare',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='RateLimiter',
+                category='Signal Processing',
+                description='Limit rate of change of signal.',
+                param_schema=[
+                    ParamSchema(name='max_rate', type='float', default=1.0, min=0.0, required=True),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                    ParamSchema(name='initial_value', type='float', default=0.0, required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Gauge',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='HighPassFilter',
+                category='Signal Processing',
+                description='High-pass filter (input - lowpass).',
+                param_schema=[
+                    ParamSchema(name='tau', type='float', default=0.1, min=0.0, required=True),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Filter',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='BandPassFilter',
+                category='Signal Processing',
+                description='Band-pass: high-pass then low-pass.',
+                param_schema=[
+                    ParamSchema(name='tau_low', type='float', default=0.1, min=0.0, required=True),
+                    ParamSchema(name='tau_high', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=True),
+                    ParamSchema(name='n_dims', type='int', default=1, min=1, required=True),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Filter',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
         self.register(
             ComponentMeta(
                 name='Stabilization',
