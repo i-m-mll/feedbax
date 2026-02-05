@@ -510,6 +510,30 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='AcausalSystem',
+                category='Mechanics',
+                description='Assembled acausal mechanical system (mass-spring-damper etc.).',
+                param_schema=[
+                    ParamSchema(name='dt', type='float', default=0.001, min=0.0001, required=True),
+                    ParamSchema(
+                        name='domain',
+                        type='enum',
+                        options=['translational', 'rotational'],
+                        default='translational',
+                        required=False,
+                    ),
+                ],
+                input_ports=['input'],
+                output_ports=['state'],
+                icon='Cog',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'state': PortType(dtype='state')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='Channel',
                 category='Channels',
                 description='Delay and noise for a signal.',

@@ -1,67 +1,121 @@
-# Commit: [feature/muscle-templates] Add muscle models and effector templates
+# Commit: Add acausal mechanical modeling framework
 
 ## Overview
 
-Adds standalone muscle Components and composite effector templates to feedbax,
-enabling muscle-driven simulations without requiring the full musculoskeletal
-DAE infrastructure. Each muscle manages its own activation state via StateIndex
-and uses Euler integration internally.
+Implements a Modelica-style acausal modeling framework for feedbax. Physical
+elements (masses, springs, dampers, etc.) are described as construction-time
+equation descriptors. At `__init__` time, an assembly algorithm compiles all
+element equations and connection constraints into a single JAX-traceable
+vector field, which then runs as a standard `DAEComponent` inside the feedbax
+Graph.
 
 ## Changes
 
-### Standalone Muscle Components (`feedbax/mechanics/muscles/`)
+### Core types (`feedbax/acausal/base.py`)
 
-**ReluMuscle** (~80 LOC): Minimal muscle model where force = activation * F_max.
-First-order activation dynamics with separate tau_activation/tau_deactivation
-time constants. Useful for point-mass tasks where detailed muscle physiology
-is not needed.
+Defines the vocabulary of the acausal framework:
 
-**RigidTendonHillMuscleThelen** (~200 LOC): Thelen 2003 rigid tendon variant
-with pre-computed force-velocity constants following MotorNet's approach. Computes
-active force-length (Gaussian), passive force-length (exponential), and
-force-velocity (piecewise concentric/eccentric) curves. Fiber length determined
-algebraically from musculotendon length minus tendon slack length.
+- **Domain** enum (translational / rotational) determines the physical
+  semantics of ports.
+- **AcausalPort** carries across-variable names (shared at a node) and a
+  through-variable name (summed at a node).
+- **AcausalVar** tracks each scalar variable's status: differential, eliminated
+  by a connection, grounded, or driven by a causal input.
+- **AcausalEquation** stores a callable RHS and its dependencies.
+- **AcausalElement / AcausalConnection** are user-facing descriptors.
+- **StateLayout** maps variable names to indices in the flat state vector.
 
-### Composite Effector Templates (`feedbax/mechanics/templates/`)
+### Assembly algorithm (`feedbax/acausal/assembly.py`)
 
-**Arm6MuscleRigidTendon**: Wraps 6 Thelen muscles with TwoLinkArmMuscleGeometry.
-Takes excitation [6], joint angles [2], angular velocities [2] and outputs
-joint torques [2], muscle forces [6], activations [6].
+The `assemble_system()` function implements the following pipeline:
 
-**PointMass8MuscleRelu**: Wraps 8 ReluMuscle instances with PointMassRadialGeometry
-(4 antagonist pairs at 0/45/90/135 degrees). Takes excitation [8] and outputs
-2D net force, individual muscle forces, and activations.
+1. Collect all variables from all element ports.
+2. Process connections with a Union-Find to identify shared across-variable
+   groups. Pick canonical representatives; eliminate aliases.
+3. Handle special elements: Ground (across vars = 0), ForceSource /
+   TorqueSource (through var = causal input), PrescribedMotion (across vars
+   = causal input), Sensors (read-only output), GearRatio (algebraic
+   constraint).
+4. Build the differential variable list (state vector).
+5. Compile a vector field function that:
+   - Reads state from `y`, inputs and params from `args`.
+   - Evaluates through-variable equations in topological order.
+   - Sums through-vars at each mass/inertia node for force balance.
+   - Returns `dy` with position derivatives (= velocity) and velocity
+     derivatives (= net force / mass).
 
-### Point Mass Radial Geometry (`feedbax/mechanics/geometry.py`)
+All Python-level indexing is pre-computed so the vector field body contains
+only `jnp` operations and integer-literal array access, making it fully
+JAX-traceable.
 
-**PointMassRadialGeometry**: Arranges antagonist muscle pairs radially around a
-2D point mass. Directions are interleaved [pos0, neg0, pos1, neg1, ...].
-Provides `forces_to_force_2d()` to convert individual muscle forces to net 2D force.
+### Sign convention
 
-### Component Registry
+Through-variables at a port represent the force/torque exerted **on the
+external body** connected at that port. For a spring with `pos_a < pos_b`
+(stretched), `force_b = k*(pos_a - pos_b) < 0` pulls B back toward A,
+which is physically correct. The net force on a mass is the sum of all
+connected through-vars (excluding the mass's own).
 
-All four new components registered in the web UI component registry with
-appropriate parameter schemas, port types, and categories (Muscles, Mechanics).
+### Translational elements (`feedbax/acausal/translational.py`)
+
+Mass, LinearSpring, LinearDamper, Ground, ForceSource, PrescribedMotion,
+PositionSensor, VelocitySensor, ForceSensor.
+
+### Rotational elements (`feedbax/acausal/rotational.py`)
+
+Inertia, TorsionalSpring, RotationalDamper, RotationalGround, TorqueSource,
+GearRatio.
+
+### DAEComponent bridge (`feedbax/acausal/system.py`)
+
+`AcausalSystem` subclasses `DAEComponent[AcausalSystemState]`. It runs the
+assembly algorithm in `__init__`, stores the compiled vector field and layout,
+and delegates to diffrax for integration. Input routing collects named causal
+inputs into a flat array.
+
+### Component registry
+
+Registered `AcausalSystem` in the web UI component registry under Mechanics.
+
+### Tests
+
+23 tests covering:
+- Assembly correctness (layout, elimination, grounding, params)
+- Physics (force acceleration, damped oscillation, energy conservation <1%)
+- Multi-connection force balance (3 springs at one node)
+- JIT compilation and gradient flow
+- Sensor readings match state vector
+- Long-horizon stability (10k steps without NaN or divergence)
+- Rotational domain (torsional spring oscillation, gear ratio)
+- Graph integration (constant force, P-controller feedback loop,
+  prescribed motion)
 
 ## Rationale
 
-The existing Hill muscle models in `hill_muscles.py` are tightly coupled to the
-DAE solver framework. These new standalone Components follow the standard feedbax
-Component protocol (input_ports, output_ports, __call__ with State) making them
-composable in Graph topologies. The pre-computed FV constants in the Thelen model
-avoid repeated computation and follow MotorNet's validated approach. Using explicit
-`float32` dtype for StateIndex initial values prevents weak-type promotion issues
-when multiple muscle instances share a State container.
+Modelica-style acausal modeling is the standard approach for multi-domain
+physical systems in engineering. By separating element description (pure
+Python dataclasses) from execution (JAX vector field), we get:
+
+1. **Composability**: Users snap together elements without worrying about
+   causality or variable ordering.
+2. **Differentiability**: The compiled vector field is fully JAX-traceable,
+   enabling gradient-based parameter fitting and neural network integration.
+3. **Graph compatibility**: `AcausalSystem` is a standard `Component`, so it
+   can be wired into feedbax Graphs alongside neural networks, controllers,
+   and other components.
+
+The through-variable sign convention ("force on external body") was chosen
+because it makes force balance at mass nodes a simple sum, avoiding the
+Modelica convention of "flow into component" which requires sign flips.
 
 ## Files Changed
 
-- `feedbax/mechanics/muscles/__init__.py` - New package init
-- `feedbax/mechanics/muscles/relu_muscle.py` - ReluMuscle Component
-- `feedbax/mechanics/muscles/thelen_muscle.py` - RigidTendonHillMuscleThelen Component
-- `feedbax/mechanics/templates/__init__.py` - New package init
-- `feedbax/mechanics/templates/arm_6muscle.py` - Arm6MuscleRigidTendon template
-- `feedbax/mechanics/templates/pointmass_muscles.py` - PointMass8MuscleRelu template
-- `feedbax/mechanics/geometry.py` - Added PointMassRadialGeometry
-- `feedbax/mechanics/__init__.py` - Updated exports
-- `feedbax/web/services/component_registry.py` - Registered new components
-- `tests/test_muscle_templates.py` - 28 tests (all passing)
+- `feedbax/acausal/__init__.py` -- Package init with public exports
+- `feedbax/acausal/base.py` -- Core types (Domain, Port, Var, Equation, Element, Connection, Layout)
+- `feedbax/acausal/assembly.py` -- Union-Find + assembly algorithm + vector field builder
+- `feedbax/acausal/system.py` -- AcausalSystem (DAEComponent bridge)
+- `feedbax/acausal/translational.py` -- Translational-domain elements
+- `feedbax/acausal/rotational.py` -- Rotational-domain elements
+- `feedbax/web/services/component_registry.py` -- Register AcausalSystem
+- `tests/test_acausal.py` -- Core tests (19 tests)
+- `tests/test_acausal_graph.py` -- Graph integration tests (4 tests)
