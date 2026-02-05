@@ -37,7 +37,9 @@ def init_state_from_component(component: "Component") -> State:
                 return getattr(idx, fields[0].name)
         raise ValueError("StateIndex initial value not found")
 
-    state = State()
+    # State() constructor requires a model argument in newer equinox versions
+    # We pass the component to extract StateIndex values
+    state = State(component)
     seen_ids: set[int] = set()
 
     def _set_index(idx: StateIndex, init_value) -> None:

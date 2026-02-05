@@ -3,7 +3,7 @@ from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
 
-from feedbax.graph import Component, Graph, Wire
+from feedbax.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.iterate import iterate_component
 
 
@@ -45,7 +45,7 @@ def test_graph_cycle_iteration():
 
     outputs, _ = graph(
         {},
-        State(),
+        init_state_from_component(graph),
         key=jax.random.PRNGKey(0),
         n_steps=3,
         cycle_init={("inc", "x"): jnp.array(0)},
@@ -60,7 +60,7 @@ def test_iterate_component_state_history():
     outputs, final_state, history = iterate_component(
         component,
         inputs,
-        State(),
+        init_state_from_component(component),
         n_steps=2,
         key=jax.random.PRNGKey(0),
     )

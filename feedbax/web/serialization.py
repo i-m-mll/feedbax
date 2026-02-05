@@ -50,6 +50,12 @@ from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.nn import SimpleStagedNetwork
 from feedbax.noise import Normal
+from feedbax.penzai_component import (
+    PENZAI_AVAILABLE,
+    PenzaiSubgraph,
+    build_penzai_subgraph,
+    get_penzai_builder,
+)
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
 
@@ -523,6 +529,22 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             )
             continue
 
+        if isinstance(component, PenzaiSubgraph):
+            # For PenzaiSubgraph, we store the builder_name if it was created
+            # from a registered builder. Otherwise, we note it as unserializable.
+            # Note: The actual pz_model weights are not serialized here.
+            nodes[name] = ComponentSpec(
+                type="PenzaiSubgraph",
+                params={
+                    "input_port": component.input_ports[0] if component.input_ports else "input",
+                    "output_port": component.output_ports[0] if component.output_ports else "output",
+                    # builder_name would need to be stored on the component for round-tripping
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
         if isinstance(component, TaskComponent):
             task = component.task
             params: dict[str, Any] = {
@@ -924,6 +946,26 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             continue
         if node_spec.type in {"SimpleReaches", "DelayedReaches", "Stabilization"}:
             nodes[node_name] = _build_task_component(node_spec.type, params)
+            continue
+        if node_spec.type == "PenzaiSubgraph":
+            builder_name = str(params.get("builder_name", ""))
+            if not builder_name:
+                raise ValueError(
+                    f"PenzaiSubgraph node '{node_name}' requires 'builder_name' parameter"
+                )
+            if not PENZAI_AVAILABLE:
+                raise ImportError(
+                    "penzai is required to instantiate PenzaiSubgraph. "
+                    "Install with: pip install penzai"
+                )
+            # Build the PenzaiSubgraph using the registered builder
+            builder_params = {k: v for k, v in params.items() if k not in ("builder_name", "input_port", "output_port")}
+            nodes[node_name] = build_penzai_subgraph(
+                builder_name=builder_name,
+                params=builder_params,
+                input_port=str(params.get("input_port", "input")),
+                output_port=str(params.get("output_port", "output")),
+            )
             continue
 
         raise ValueError(f"Unsupported component type '{node_spec.type}'")

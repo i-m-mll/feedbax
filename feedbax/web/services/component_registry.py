@@ -107,6 +107,32 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='PenzaiSubgraph',
+                category='Structure',
+                description='Penzai model wrapper for feedbax Graphs.',
+                param_schema=[
+                    ParamSchema(
+                        name='builder_name',
+                        type='enum',
+                        options=[],  # Populated dynamically from registry
+                        default='',
+                        required=True,
+                    ),
+                    ParamSchema(name='input_port', type='string', default='input', required=False),
+                    ParamSchema(name='output_port', type='string', default='output', required=False),
+                ],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Hexagon',
+                is_composite=True,
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='any')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='Gain',
                 category='Math',
                 description='Multiply input by constant.',
