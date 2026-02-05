@@ -242,7 +242,6 @@ class RigidTendonMusculoskeletalArm(Component):
         activations: Array,
         fiber_lengths: Array,
         fiber_velocities: Array,
-        mt_lengths: Array,
     ) -> Array:
         """Compute forces for all muscles.
 
@@ -250,7 +249,6 @@ class RigidTendonMusculoskeletalArm(Component):
             activations: Muscle activations [n_muscles].
             fiber_lengths: Fiber lengths [n_muscles].
             fiber_velocities: Fiber velocities [n_muscles].
-            mt_lengths: Musculotendon lengths [n_muscles].
 
         Returns:
             Muscle forces [n_muscles].
@@ -320,7 +318,6 @@ class RigidTendonMusculoskeletalArm(Component):
             state.activations,
             state.fiber_lengths,
             state.fiber_velocities,
-            mt_lengths,
         )
 
         # Muscle forces to joint torques
@@ -391,13 +388,11 @@ class RigidTendonMusculoskeletalArm(Component):
         new_fiber_lengths = ms_state.fiber_lengths + self.dt * derivatives.fiber_lengths
 
         # Recompute forces at new state
-        mt_lengths = self.geometry.musculotendon_lengths(new_arm.angle)
         mt_velocities = self.geometry.musculotendon_velocities(new_arm.angle, new_arm.d_angle)
         new_forces = self._compute_muscle_forces(
             new_activations,
             new_fiber_lengths,
             mt_velocities,
-            mt_lengths,
         )
 
         new_state = MusculoskeletalState(
@@ -465,9 +460,9 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     """Musculoskeletal arm with compliant tendon muscles.
 
     This is a full DAE model where tendon compliance introduces
-    stiff dynamics requiring implicit integration.
-
-    Uses Kvaerno5 by default for handling stiff tendon dynamics.
+    stiff dynamics. Uses explicit Euler solver by default for simplicity.
+    For very stiff dynamics, consider using an implicit solver
+    (e.g., ImplicitEuler, Kvaerno3, Kvaerno5).
 
     Warning:
         This is computationally more expensive than the rigid tendon
@@ -516,8 +511,9 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             geometry: Muscle geometry.
             arm_*: Arm physical parameters.
             dt: Integration timestep (smaller than rigid tendon).
-            solver_type: Implicit solver (default Kvaerno5).
-            root_finder: Root finder with tight tolerances.
+            solver_type: Solver type (default Euler). Use implicit solvers
+                (e.g., ImplicitEuler, Kvaerno3) for very stiff dynamics.
+            root_finder: Root finder with tight tolerances (only for implicit solvers).
             key: PRNG key.
         """
         # Store arm parameters
@@ -600,7 +596,15 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         mt_length: Array,
         mp: HillMuscleParams,
     ) -> Array:
-        """Compute fiber velocity from force equilibrium."""
+        """Compute fiber velocity from force equilibrium.
+
+        Inverts the force-velocity relationship to find the velocity that
+        produces the required force. Uses piecewise inversion:
+        - If fv_required < 1.0: concentric (shortening) branch
+        - If fv_required >= 1.0: eccentric (lengthening) branch
+
+        This follows MotorNet's `_normalized_muscle_vel` approach.
+        """
         # Tendon force
         tendon_force = self._compute_tendon_force(fiber_length, mt_length, mp)
 
@@ -618,13 +622,34 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         active_required = jnp.maximum(norm_required - passive, 0.0)
 
         afl = jnp.maximum(activation * fl, 1e-6)
-        fv_required = jnp.clip(active_required / afl, 0.0, 1.4)
+        fv_required = jnp.clip(active_required / afl, 0.0, self.force_velocity.eccentric_force_max)
 
-        # Invert force-velocity
+        # Invert force-velocity relationship (piecewise)
         a = self.force_velocity.concentric_curvature
-        vmax = self.force_velocity.max_shortening_velocity
-        norm_velocity = (fv_required - 1.0) / (1.0 / a + fv_required / (a * vmax))
-        norm_velocity = jnp.clip(norm_velocity, -vmax, vmax * 0.1)
+        b = self.force_velocity.eccentric_curvature
+        fmax = self.force_velocity.eccentric_force_max
+
+        # Concentric branch (fv < 1): shortening
+        # fv = (1 + v/a) / (1 - v/a)  =>  v = a * (fv - 1) / (fv + 1)
+        concentric_vel = a * (fv_required - 1.0) / (fv_required + 1.0 + 1e-8)
+
+        # Eccentric branch (fv >= 1): lengthening
+        # fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
+        # Solve for v:
+        # (fmax - fv) / (fmax - 1) = (1 - v/b) / (1 + v/b)
+        # Let r = (fmax - fv) / (fmax - 1 + 1e-8)
+        # r * (1 + v/b) = 1 - v/b
+        # r + r*v/b = 1 - v/b
+        # v/b * (r + 1) = 1 - r
+        # v = b * (1 - r) / (r + 1 + 1e-8)
+        r = (fmax - fv_required) / (fmax - 1.0 + 1e-8)
+        eccentric_vel = b * (1.0 - r) / (r + 1.0 + 1e-8)
+
+        # Select based on fv_required
+        norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
+
+        # Clamp to reasonable range: -1 (max shortening) to ~0.1 (max lengthening)
+        norm_velocity = jnp.clip(norm_velocity, -1.0, 0.1)
 
         return norm_velocity * mp.vmax * mp.optimal_fiber_length
 
@@ -751,10 +776,22 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         modified_inputs = {"input": excitations}
         outputs, state = super().__call__(modified_inputs, state, key=key)
 
-        # Compute additional outputs
+        # Apply activation bounds clamping after integration
         dae_state = state.get(self.state_index)
         ms_state = dae_state.system
+        clamped_activations = jnp.clip(ms_state.activations, 0.0, 1.0)
+        ms_state = MusculoskeletalState(
+            arm=ms_state.arm,
+            activations=clamped_activations,
+            fiber_lengths=ms_state.fiber_lengths,
+            fiber_velocities=ms_state.fiber_velocities,
+            forces=ms_state.forces,
+        )
+        from feedbax.mechanics.dae import DAEState
+        dae_state = DAEState(system=ms_state, solver=dae_state.solver)
+        state = state.set(self.state_index, dae_state)
 
+        # Compute additional outputs
         effector = self._effector(ms_state.arm)
         mt_lengths = self.geometry.musculotendon_lengths(ms_state.arm.angle)
 

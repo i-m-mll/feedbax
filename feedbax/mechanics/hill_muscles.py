@@ -98,7 +98,8 @@ class PassiveForceLengthCurve(Module):
         Returns:
             Passive force multiplier (>= 0).
         """
-        strain = norm_length - 1.0
+        # Clamp strain to be non-negative (no passive force when shorter than optimal)
+        strain = jnp.clip(norm_length - 1.0, 0.0, None)
         # Exponential passive force
         passive = jnp.where(
             strain > 0,
@@ -116,14 +117,18 @@ class ForceVelocityCurve(Module):
     production. Shortening reduces force (concentric), lengthening
     increases force (eccentric).
 
+    Note:
+        Input velocity should already be normalized by (vmax * optimal_fiber_length).
+        The curve parameters do NOT further normalize the velocity - they only
+        control the curve shape. This matches MotorNet's approach where normalization
+        happens once at the calling site.
+
     Attributes:
-        max_shortening_velocity: Max velocity in optimal lengths/second.
-        concentric_curvature: Shape factor for shortening side.
+        concentric_curvature: Shape factor for shortening side (a_f in Hill model).
         eccentric_curvature: Shape factor for lengthening side.
-        eccentric_force_max: Max normalized force during lengthening.
+        eccentric_force_max: Max normalized force during lengthening (~1.4).
     """
 
-    max_shortening_velocity: float = 10.0  # optimal lengths/second
     concentric_curvature: float = 0.25
     eccentric_curvature: float = 0.25
     eccentric_force_max: float = 1.4
@@ -133,21 +138,24 @@ class ForceVelocityCurve(Module):
 
         Args:
             norm_velocity: Fiber velocity / (vmax * optimal_length).
+                Range roughly [-1, +0.1] where -1 = max shortening, +0.1 = max lengthening.
                 Negative = shortening, positive = lengthening.
 
         Returns:
-            Force multiplier.
+            Force multiplier in range [0, eccentric_force_max].
         """
         # Concentric (shortening): classic Hill hyperbola
-        # (a + F)(v + b) = b(F0 + a) where we solve for F
+        # fv = (1 + v/a) / (1 - v/a) for normalized v in [-1, 0]
+        # This formulation assumes velocity is already normalized to [-1, 0] for shortening
         a = self.concentric_curvature
-        concentric = (1.0 + norm_velocity / a) / (1.0 - norm_velocity / (a * self.max_shortening_velocity))
+        concentric = (1.0 + norm_velocity / a) / (1.0 - norm_velocity / a)
 
         # Eccentric (lengthening): different hyperbola branch
+        # Linear transition from 1.0 at v=0 to eccentric_force_max at v=0.1
         b = self.eccentric_curvature
         fmax = self.eccentric_force_max
-        eccentric = (fmax - (fmax - 1.0) * (1.0 - norm_velocity / b) /
-                    (1.0 + norm_velocity / (b * 0.1 * self.max_shortening_velocity)))
+        # Formulation: fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
+        eccentric = fmax - (fmax - 1.0) * (1.0 - norm_velocity / b) / (1.0 + norm_velocity / b)
 
         # Smooth transition using tanh
         blend = 0.5 * (1.0 + jnp.tanh(norm_velocity * 20.0))
@@ -177,7 +185,8 @@ class TendonForceLengthCurve(Module):
         Returns:
             Normalized tendon force.
         """
-        strain = norm_length - 1.0
+        # Clamp strain to be non-negative (tendon cannot be compressed)
+        strain = jnp.clip(norm_length - 1.0, 0.0, None)
         return jnp.where(
             strain > 0,
             (jnp.exp(self.stiffness * strain / self.strain_at_one_norm_force) - 1.0)
@@ -493,7 +502,8 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
     where the fiber velocity is determined implicitly by force equilibrium
     between fiber and tendon.
 
-    Uses Kvaerno5 solver by default for stiff tendon dynamics.
+    Uses explicit Euler solver by default for simplicity. For very stiff
+    dynamics, consider using an implicit solver (e.g., ImplicitEuler, Kvaerno3).
 
     Attributes:
         muscle_params: Physical muscle parameters.
@@ -664,24 +674,32 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         # Clamp to prevent numerical issues
         active_required = jnp.clip(active_required, 0.0, None)
 
-        # Approximate fiber velocity from force-velocity inversion
-        # This is a simplified inversion; for full accuracy use root finding
+        # Invert force-velocity relationship (piecewise)
+        # This follows MotorNet's approach with separate concentric/eccentric branches
         afl = state.activation * fl
         afl = jnp.maximum(afl, 1e-6)  # Prevent division by zero
         fv_required = active_required / afl
         fv_required = jnp.clip(fv_required, 0.0, self.force_velocity.eccentric_force_max)
 
-        # Simplified inversion of force-velocity curve
         a = self.force_velocity.concentric_curvature
-        vmax = self.force_velocity.max_shortening_velocity
+        b = self.force_velocity.eccentric_curvature
+        fmax = self.force_velocity.eccentric_force_max
 
-        # Solve: fv = (1 + v/a) / (1 - v/(a*vmax)) for v
-        # fv * (1 - v/(a*vmax)) = 1 + v/a
-        # fv - fv*v/(a*vmax) = 1 + v/a
-        # fv - 1 = v/a + fv*v/(a*vmax)
-        # fv - 1 = v * (1/a + fv/(a*vmax))
-        norm_velocity = (fv_required - 1.0) / (1.0 / a + fv_required / (a * vmax))
-        norm_velocity = jnp.clip(norm_velocity, -vmax, vmax * 0.1)
+        # Concentric branch (fv < 1): shortening
+        # fv = (1 + v/a) / (1 - v/a)  =>  v = a * (fv - 1) / (fv + 1)
+        concentric_vel = a * (fv_required - 1.0) / (fv_required + 1.0 + 1e-8)
+
+        # Eccentric branch (fv >= 1): lengthening
+        # fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
+        # Solve for v: v = b * (1 - r) / (r + 1) where r = (fmax - fv) / (fmax - 1)
+        r = (fmax - fv_required) / (fmax - 1.0 + 1e-8)
+        eccentric_vel = b * (1.0 - r) / (r + 1.0 + 1e-8)
+
+        # Select based on fv_required
+        norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
+
+        # Clamp to reasonable range: -1 (max shortening) to ~0.1 (max lengthening)
+        norm_velocity = jnp.clip(norm_velocity, -1.0, 0.1)
 
         d_fiber_length = norm_velocity * self.muscle_params.vmax * self.muscle_params.optimal_fiber_length
 
@@ -740,10 +758,19 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
 
         outputs, state = super().__call__(modified_inputs, state, key=key)
 
-        # Compute actual force from updated state
+        # Apply activation bounds clamping after integration
         dae_state = state.get(self.state_index)
         muscle_state = dae_state.system
+        clamped_activation = jnp.clip(muscle_state.activation, 0.0, 1.0)
+        muscle_state = CompliantTendonState(
+            activation=clamped_activation,
+            fiber_length=muscle_state.fiber_length,
+        )
+        from feedbax.mechanics.dae import DAEState
+        dae_state = DAEState(system=muscle_state, solver=dae_state.solver)
+        state = state.set(self.state_index, dae_state)
 
+        # Compute actual force from updated state
         tendon_length = self.compute_tendon_length(muscle_state.fiber_length, mt_length)
         force = self.compute_tendon_force(tendon_length)
 
