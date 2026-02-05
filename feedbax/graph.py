@@ -22,6 +22,7 @@ import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax._graph import detect_cycles_and_sort
+from feedbax._selectors import Selection, select
 
 
 def init_state_from_component(component: "Component") -> State:
@@ -597,3 +598,53 @@ class Graph(Component):
         graph = graph.add_wire(Wire(source_node, source_port, node_name, input_port))
         graph = graph.add_wire(Wire(node_name, output_port, target_node, target_port))
         return graph
+
+    # ========== Selection API ==========
+
+    def select(self) -> Selection["Graph"]:
+        """Create a Selection over this Graph.
+
+        Returns:
+            A Selection object for fluent selection and modification.
+
+        Example:
+            >>> graph.select().at_instances_of(jnp.ndarray).apply(jnp.zeros_like)
+        """
+        return select(self)
+
+    def select_node(self, name: str) -> Selection["Graph"]:
+        """Create a Selection targeting a specific node by name.
+
+        Args:
+            name: The name of the node to select.
+
+        Returns:
+            A Selection targeting the specified node.
+
+        Raises:
+            KeyError: If the node name does not exist.
+
+        Example:
+            >>> graph.select_node("encoder").apply(lambda n: modified_encoder)
+        """
+        if name not in self.nodes:
+            raise KeyError(f"Node '{name}' does not exist in graph")
+        return select(self).at(lambda g: g.nodes[name])
+
+    def select_nodes_of_type(self, *types: type) -> Selection["Graph"]:
+        """Create a Selection targeting all nodes of the given types.
+
+        Args:
+            *types: One or more Component types to match.
+
+        Returns:
+            A Selection targeting nodes that are instances of any of the types.
+
+        Example:
+            >>> graph.select_nodes_of_type(LinearLayer, MLPLayer).apply(reinit_fn)
+        """
+        # Build a filter spec for the nodes dict
+        def type_predicate(x: Component) -> bool:
+            return isinstance(x, types)
+
+        return select(self).at(lambda g: g.nodes).at_instances_of(*types)

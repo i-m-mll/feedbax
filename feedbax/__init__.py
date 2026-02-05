@@ -15,6 +15,7 @@ from feedbax._model import (
     wrap_stateless_callable,
     wrap_stateless_keyless_callable,
 )
+from feedbax._selectors import Selection, select
 from feedbax.graph import Component, Graph, Wire, init_state_from_component
 from feedbax._tree import (
     get_ensemble,
