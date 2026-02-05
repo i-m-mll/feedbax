@@ -130,3 +130,107 @@ class FirstOrderFilter(Component):
             low=FilterState(output=None, solver=None),
             high=FilterState(output=None, solver=None),
         )
+
+
+class HighPassFilter(Component):
+    """High-pass filter: output = input - lowpass(input).
+
+    Uses a first-order low-pass filter internally. The high-pass response
+    is obtained by subtracting the low-pass filtered signal from the input.
+
+    Args:
+        tau: Time constant for both rise and decay of the internal low-pass.
+        dt: Integration time step.
+        n_dims: Dimensionality of the signal.
+    """
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    tau: float
+    dt: float
+    _lowpass: FirstOrderFilter
+
+    def __init__(
+        self,
+        tau: float = 0.1,
+        dt: float = 0.01,
+        n_dims: int = 1,
+    ):
+        self.tau = float(tau)
+        self.dt = float(dt)
+        input_proto = jnp.zeros(n_dims)
+        self._lowpass = FirstOrderFilter(
+            tau_rise=tau,
+            tau_decay=tau,
+            dt=dt,
+            input_proto=input_proto,
+        )
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        lp_out, state = self._lowpass(inputs, state, key=key)
+        output = inputs["input"] - lp_out["output"]
+        return {"output": output}, state
+
+
+class BandPassFilter(Component):
+    """Band-pass filter: cascade of high-pass and low-pass.
+
+    Passes frequencies between the two cutoffs by first applying a
+    high-pass filter (to reject low frequencies) then a low-pass filter
+    (to reject high frequencies).
+
+    Args:
+        tau_low: Time constant for the high-pass stage (lower frequency bound;
+            larger tau means lower cutoff frequency).
+        tau_high: Time constant for the low-pass stage (upper frequency bound;
+            smaller tau means higher cutoff frequency).
+        dt: Integration time step.
+        n_dims: Dimensionality of the signal.
+    """
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    tau_low: float
+    tau_high: float
+    dt: float
+    _highpass: HighPassFilter
+    _lowpass: FirstOrderFilter
+
+    def __init__(
+        self,
+        tau_low: float = 0.1,
+        tau_high: float = 0.01,
+        dt: float = 0.01,
+        n_dims: int = 1,
+    ):
+        self.tau_low = float(tau_low)
+        self.tau_high = float(tau_high)
+        self.dt = float(dt)
+        input_proto = jnp.zeros(n_dims)
+        self._highpass = HighPassFilter(tau=tau_low, dt=dt, n_dims=n_dims)
+        self._lowpass = FirstOrderFilter(
+            tau_rise=tau_high,
+            tau_decay=tau_high,
+            dt=dt,
+            input_proto=input_proto,
+        )
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        hp_out, state = self._highpass(inputs, state, key=key)
+        lp_inputs = {"input": hp_out["output"]}
+        lp_out, state = self._lowpass(lp_inputs, state, key=key)
+        return {"output": lp_out["output"]}, state

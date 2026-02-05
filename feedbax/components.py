@@ -10,7 +10,7 @@ from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.graph import Component
 
@@ -395,3 +395,186 @@ class LSTM(Component):
         cell_state = inputs["cell"]
         new_hidden, new_cell = self.cell(inputs["input"], hidden, cell_state)
         return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
+
+
+class Mux(Component):
+    """Concatenate multiple inputs into a single vector.
+
+    Creates ``n_inputs`` input ports named ``in_0``, ``in_1``, etc.,
+    and concatenates them along the last axis.
+
+    Args:
+        n_inputs: Number of input ports to create.
+    """
+
+    output_ports = ("output",)
+
+    n_inputs: int = field(static=True)
+    input_ports: tuple[str, ...]
+
+    def __init__(self, n_inputs: int = 2):
+        self.n_inputs = int(n_inputs)
+        self.input_ports = tuple(f"in_{i}" for i in range(self.n_inputs))
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        parts = [jnp.atleast_1d(inputs[f"in_{i}"]) for i in range(self.n_inputs)]
+        output = jnp.concatenate(parts, axis=-1)
+        return {"output": output}, state
+
+
+class Demux(Component):
+    """Split a vector into multiple outputs by size.
+
+    Creates ``len(sizes)`` output ports named ``out_0``, ``out_1``, etc.
+
+    Args:
+        sizes: Tuple of sizes for each output slice along the last axis.
+    """
+
+    input_ports = ("input",)
+
+    sizes: tuple[int, ...] = field(static=True)
+    output_ports: tuple[str, ...]
+
+    def __init__(self, sizes: Sequence[int]):
+        self.sizes = tuple(int(s) for s in sizes)
+        self.output_ports = tuple(f"out_{i}" for i in range(len(self.sizes)))
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        x = inputs["input"]
+        outputs: dict[str, PyTree] = {}
+        start = 0
+        for i, sz in enumerate(self.sizes):
+            outputs[f"out_{i}"] = x[..., start:start + sz]
+            start += sz
+        return outputs, state
+
+
+class Switch(Component):
+    """Route signal based on a threshold condition.
+
+    When ``condition > threshold``, outputs ``true_input``; otherwise
+    outputs ``false_input``.
+
+    Args:
+        threshold: Comparison threshold for routing.
+    """
+
+    input_ports = ("condition", "true_input", "false_input")
+    output_ports = ("output",)
+
+    threshold: float
+
+    def __init__(self, threshold: float = 0.0):
+        self.threshold = float(threshold)
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        cond = inputs["condition"]
+        output = jnp.where(
+            cond > self.threshold,
+            inputs["true_input"],
+            inputs["false_input"],
+        )
+        return {"output": output}, state
+
+
+class DeadZone(Component):
+    """Dead-zone nonlinearity: zero output for small inputs.
+
+    For |u| < threshold, output is zero. For |u| >= threshold,
+    output is u - sign(u) * threshold (shifted toward zero).
+
+    Args:
+        threshold: Half-width of the dead band.
+    """
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    threshold: float
+
+    def __init__(self, threshold: float = 0.1):
+        self.threshold = float(threshold)
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        u = inputs["input"]
+        output = jnp.where(
+            jnp.abs(u) < self.threshold,
+            0.0,
+            u - jnp.sign(u) * self.threshold,
+        )
+        return {"output": output}, state
+
+
+class RateLimiter(Component):
+    """Limit the rate of change of a signal.
+
+    Clamps the per-step change to ``[-max_rate * dt, max_rate * dt]``.
+
+    Args:
+        max_rate: Maximum allowed rate of change (units per second).
+        dt: Time step.
+        n_dims: Dimensionality of the signal.
+        initial_value: Initial previous-output value.
+    """
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    max_rate: float
+    dt: float
+    n_dims: int = field(static=True)
+    state_index: StateIndex
+    _initial_state: Array = field(static=True)
+
+    def __init__(
+        self,
+        max_rate: float = 1.0,
+        dt: float = 0.01,
+        n_dims: int = 1,
+        initial_value: float = 0.0,
+    ):
+        self.max_rate = float(max_rate)
+        self.dt = float(dt)
+        self.n_dims = n_dims
+        self._initial_state = jnp.zeros(n_dims) + initial_value
+        self.state_index = StateIndex(self._initial_state)
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        prev = state.get(self.state_index)
+        u = inputs["input"]
+        max_delta = self.max_rate * self.dt
+        delta = jnp.clip(u - prev, -max_delta, max_delta)
+        output = prev + delta
+        state = state.set(self.state_index, output)
+        return {"output": output}, state
