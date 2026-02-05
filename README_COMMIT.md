@@ -1,82 +1,67 @@
-# Commit: [feature/loss-ui] Add loss term configuration UI with probe management
+# Commit: [feature/muscle-templates] Add muscle models and effector templates
 
 ## Overview
 
-Implements a comprehensive UI for configuring loss terms in the feedbax web interface. Users can now add, edit, and remove loss terms, select probes from the graph, configure time aggregation settings, and see visual feedback linking loss terms to their corresponding graph ports.
+Adds standalone muscle Components and composite effector templates to feedbax,
+enabling muscle-driven simulations without requiring the full musculoskeletal
+DAE infrastructure. Each muscle manages its own activation state via StateIndex
+and uses Euler integration internally.
 
 ## Changes
 
-### Backend: Loss Service (`feedbax/web/services/loss_service.py`)
+### Standalone Muscle Components (`feedbax/mechanics/muscles/`)
 
-New service providing:
-- **Probe extraction**: `get_available_probes()` discovers probes from barnacles, taps, and implicit output ports
-- **Selector resolution**: `resolve_probe_selector()` converts selector strings to probe specifications
-- **Time aggregation building**: `build_time_aggregation()` processes time aggregation specs
-- **Validation**: `validate_loss_spec()` validates loss configurations against the graph
-- **Spec-to-config conversion**: `spec_to_loss_config()` produces configuration for feedbax loss objects
+**ReluMuscle** (~80 LOC): Minimal muscle model where force = activation * F_max.
+First-order activation dynamics with separate tau_activation/tau_deactivation
+time constants. Useful for point-mass tasks where detailed muscle physiology
+is not needed.
 
-### Backend: Training API (`feedbax/web/api/training.py`)
+**RigidTendonHillMuscleThelen** (~200 LOC): Thelen 2003 rigid tendon variant
+with pre-computed force-velocity constants following MotorNet's approach. Computes
+active force-length (Gaussian), passive force-length (exponential), and
+force-velocity (piecewise concentric/eccentric) curves. Fiber length determined
+algebraically from musculotendon length minus tendon slack length.
 
-New endpoints:
-- `GET /api/training/probes/{graph_id}` - List available probes for a graph
-- `POST /api/training/loss/validate` - Validate a loss specification
-- `POST /api/training/loss/resolve-selector` - Resolve a probe selector
+### Composite Effector Templates (`feedbax/mechanics/templates/`)
 
-### Frontend: Components
+**Arm6MuscleRigidTendon**: Wraps 6 Thelen muscles with TwoLinkArmMuscleGeometry.
+Takes excitation [6], joint angles [2], angular velocities [2] and outputs
+joint torques [2], muscle forces [6], activations [6].
 
-**New components:**
-- `ProbeSelector` - Dropdown for selecting probes, grouped by node
-- `TimeAggregationEditor` - Editor for time aggregation mode, range, segment, discount settings
-- `LossTermDetail` - Detail panel for editing individual loss terms
-- `AddLossTermModal` - Modal dialog for adding new loss terms
-- `PortContextMenu` - Right-click menu on ports for quick probe creation
+**PointMass8MuscleRelu**: Wraps 8 ReluMuscle instances with PointMassRadialGeometry
+(4 antagonist pairs at 0/45/90/135 degrees). Takes excitation [8] and outputs
+2D net force, individual muscle forces, and activations.
 
-**Modified components:**
-- `TrainingPanel` - Integrated loss term management with add/remove buttons, detail panel, validation error display
-- `CustomNode` - Added visual highlighting for ports linked to selected loss terms, context menu support
+### Point Mass Radial Geometry (`feedbax/mechanics/geometry.py`)
 
-### Frontend: State Management (`web/src/stores/trainingStore.ts`)
+**PointMassRadialGeometry**: Arranges antagonist muscle pairs radially around a
+2D point mass. Directions are interleaved [pos0, neg0, pos1, neg1, ...].
+Provides `forces_to_force_2d()` to convert individual muscle forces to net 2D force.
 
-Extended store with:
-- `availableProbes` - Cached list of probes from backend
-- `selectedLossPath` - Currently selected loss term path
-- `lossValidationErrors` - Validation errors from backend
-- `highlightedProbeSelector` - Selector for visual highlighting
-- Actions: `updateLossTerm`, `addLossTerm`, `removeLossTerm`
+### Component Registry
 
-### Frontend: Utilities (`web/src/features/loss/`)
-
-- `operations.ts` - Loss term manipulation utilities (get/update/add/remove at path, collect leaves, clone)
-- `validation.ts` - Client-side validation for loss specifications
+All four new components registered in the web UI component registry with
+appropriate parameter schemas, port types, and categories (Muscles, Mechanics).
 
 ## Rationale
 
-The loss function is central to training neural models, and users need fine-grained control over:
-1. **What to measure**: Probe selection determines which signals contribute to the loss
-2. **When to measure**: Time aggregation specifies which timesteps matter
-3. **How to measure**: Norm functions and weights control the loss computation
-
-The visual linking feature (highlighting graph ports when hovering over loss terms) helps users understand the connection between the abstract loss configuration and the concrete graph structure.
-
-The port context menu provides a fast workflow: right-click on any output port to immediately create a loss term targeting that signal.
+The existing Hill muscle models in `hill_muscles.py` are tightly coupled to the
+DAE solver framework. These new standalone Components follow the standard feedbax
+Component protocol (input_ports, output_ports, __call__ with State) making them
+composable in Graph topologies. The pre-computed FV constants in the Thelen model
+avoid repeated computation and follow MotorNet's validated approach. Using explicit
+`float32` dtype for StateIndex initial values prevents weak-type promotion issues
+when multiple muscle instances share a State container.
 
 ## Files Changed
 
-**Backend:**
-- `feedbax/web/services/loss_service.py` - New (180 LOC)
-- `feedbax/web/api/training.py` - Modified (+70 LOC)
-- `tests/test_loss_service.py` - New (200 LOC)
-
-**Frontend:**
-- `web/src/components/panels/ProbeSelector.tsx` - New (80 LOC)
-- `web/src/components/panels/TimeAggregationEditor.tsx` - New (170 LOC)
-- `web/src/components/panels/LossTermDetail.tsx` - New (200 LOC)
-- `web/src/components/modals/AddLossTermModal.tsx` - New (170 LOC)
-- `web/src/components/canvas/PortContextMenu.tsx` - New (90 LOC)
-- `web/src/components/canvas/CustomNode.tsx` - Modified (+60 LOC)
-- `web/src/components/panels/TrainingPanel.tsx` - Modified (+80 LOC)
-- `web/src/stores/trainingStore.ts` - Modified (+80 LOC)
-- `web/src/types/training.ts` - Modified (+40 LOC)
-- `web/src/api/client.ts` - Modified (+20 LOC)
-- `web/src/features/loss/operations.ts` - New (180 LOC)
-- `web/src/features/loss/validation.ts` - New (180 LOC)
+- `feedbax/mechanics/muscles/__init__.py` - New package init
+- `feedbax/mechanics/muscles/relu_muscle.py` - ReluMuscle Component
+- `feedbax/mechanics/muscles/thelen_muscle.py` - RigidTendonHillMuscleThelen Component
+- `feedbax/mechanics/templates/__init__.py` - New package init
+- `feedbax/mechanics/templates/arm_6muscle.py` - Arm6MuscleRigidTendon template
+- `feedbax/mechanics/templates/pointmass_muscles.py` - PointMass8MuscleRelu template
+- `feedbax/mechanics/geometry.py` - Added PointMassRadialGeometry
+- `feedbax/mechanics/__init__.py` - Updated exports
+- `feedbax/web/services/component_registry.py` - Registered new components
+- `tests/test_muscle_templates.py` - 28 tests (all passing)

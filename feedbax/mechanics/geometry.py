@@ -390,3 +390,56 @@ class TwoLinkArmMuscleGeometry(Module):
         """
         R = self.moment_arms(angles)  # [n_muscles, n_joints]
         return R.T @ forces  # [n_joints]
+
+
+# ============================================================================
+# Point Mass Radial Geometry
+# ============================================================================
+
+
+class PointMassRadialGeometry(Module):
+    """Radial geometry for muscles around a 2D point mass.
+
+    Arranges antagonist pairs of muscles at evenly-spaced angles.
+    Default configuration: 4 pairs (8 muscles) at 0, 45, 90, 135 degrees.
+    Each pair has a positive and negative direction muscle.
+    Directions are interleaved: [pos0, neg0, pos1, neg1, ...].
+
+    Attributes:
+        n_muscles: Total number of muscles (2 * n_pairs).
+        directions: Unit direction vectors for each muscle [n_muscles, 2].
+    """
+
+    n_muscles: int = field(static=True)
+    directions: Float[Array, "n_muscles 2"]
+
+    def __init__(self, n_pairs: int = 4):
+        """Initialize radial geometry.
+
+        Args:
+            n_pairs: Number of antagonist pairs.
+        """
+        self.n_muscles = 2 * n_pairs
+        angles = jnp.linspace(0, jnp.pi, n_pairs, endpoint=False)
+        pos_dirs = jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=-1)
+        neg_dirs = -pos_dirs
+
+        # Interleave: [pos0, neg0, pos1, neg1, ...]
+        interleaved = jnp.empty((2 * n_pairs, 2))
+        for i in range(n_pairs):
+            interleaved = interleaved.at[2 * i].set(pos_dirs[i])
+            interleaved = interleaved.at[2 * i + 1].set(neg_dirs[i])
+        self.directions = interleaved
+
+    def forces_to_force_2d(self, forces: Array) -> Array:
+        """Convert individual muscle forces to a 2D net force vector.
+
+        F_2d = sum(force_i * direction_i)
+
+        Args:
+            forces: Muscle forces [n_muscles].
+
+        Returns:
+            Net 2D force vector [2].
+        """
+        return jnp.sum(forces[:, None] * self.directions, axis=0)

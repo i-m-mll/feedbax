@@ -625,6 +625,170 @@ class ComponentRegistry:
                 ),
             )
         )
+        # --- Muscles ---
+        self.register(
+            ComponentMeta(
+                name='ReluMuscle',
+                category='Muscles',
+                description='Simple muscle: force = activation * F_max.',
+                param_schema=[
+                    ParamSchema(
+                        name='max_isometric_force', type='float',
+                        default=500.0, min=0.0, required=True,
+                    ),
+                    ParamSchema(
+                        name='tau_activation', type='float',
+                        default=0.015, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='tau_deactivation', type='float',
+                        default=0.05, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='min_activation', type='float',
+                        default=0.0, min=0.0, required=False,
+                    ),
+                    ParamSchema(
+                        name='dt', type='float',
+                        default=0.01, min=0.001, required=True,
+                    ),
+                ],
+                input_ports=['excitation'],
+                output_ports=['force', 'activation'],
+                icon='Zap',
+                port_types=PortTypeSpec(
+                    inputs={'excitation': PortType(dtype='scalar')},
+                    outputs={
+                        'force': PortType(dtype='scalar'),
+                        'activation': PortType(dtype='scalar'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='RigidTendonHillMuscleThelen',
+                category='Muscles',
+                description='Thelen 2003 rigid tendon Hill muscle.',
+                param_schema=[
+                    ParamSchema(
+                        name='max_isometric_force', type='float',
+                        default=500.0, min=0.0, required=True,
+                    ),
+                    ParamSchema(
+                        name='optimal_muscle_length', type='float',
+                        default=0.1, min=0.001, required=True,
+                    ),
+                    ParamSchema(
+                        name='tendon_slack_length', type='float',
+                        default=0.1, min=0.0, required=True,
+                    ),
+                    ParamSchema(
+                        name='vmax_factor', type='float',
+                        default=10.0, min=1.0, required=False,
+                    ),
+                    ParamSchema(
+                        name='dt', type='float',
+                        default=0.01, min=0.001, required=True,
+                    ),
+                ],
+                input_ports=[
+                    'excitation', 'musculotendon_length',
+                    'musculotendon_velocity',
+                ],
+                output_ports=[
+                    'force', 'activation', 'fiber_length', 'fiber_velocity',
+                ],
+                icon='Zap',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'excitation': PortType(dtype='scalar'),
+                        'musculotendon_length': PortType(dtype='scalar'),
+                        'musculotendon_velocity': PortType(dtype='scalar'),
+                    },
+                    outputs={
+                        'force': PortType(dtype='scalar'),
+                        'activation': PortType(dtype='scalar'),
+                        'fiber_length': PortType(dtype='scalar'),
+                        'fiber_velocity': PortType(dtype='scalar'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='Arm6MuscleRigidTendon',
+                category='Mechanics',
+                description='6-muscle arm with Thelen rigid tendon.',
+                param_schema=[
+                    ParamSchema(
+                        name='dt', type='float',
+                        default=0.01, min=0.001, required=True,
+                    ),
+                    ParamSchema(
+                        name='max_isometric_force', type='float',
+                        default=500.0, min=0.0, required=False,
+                    ),
+                    ParamSchema(
+                        name='optimal_muscle_length', type='float',
+                        default=0.1, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='tendon_slack_length', type='float',
+                        default=0.1, min=0.0, required=False,
+                    ),
+                ],
+                input_ports=['excitation', 'angles', 'angular_velocities'],
+                output_ports=['torques', 'forces', 'activations'],
+                icon='Activity',
+                is_composite=True,
+                port_types=PortTypeSpec(
+                    inputs={
+                        'excitation': PortType(dtype='vector'),
+                        'angles': PortType(dtype='vector'),
+                        'angular_velocities': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'torques': PortType(dtype='vector'),
+                        'forces': PortType(dtype='vector'),
+                        'activations': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='PointMass8MuscleRelu',
+                category='Mechanics',
+                description='8-muscle point mass with ReLU actuators.',
+                param_schema=[
+                    ParamSchema(
+                        name='n_pairs', type='int',
+                        default=4, min=1, required=False,
+                    ),
+                    ParamSchema(
+                        name='max_isometric_force', type='float',
+                        default=500.0, min=0.0, required=False,
+                    ),
+                    ParamSchema(
+                        name='dt', type='float',
+                        default=0.01, min=0.001, required=True,
+                    ),
+                ],
+                input_ports=['excitation'],
+                output_ports=['force_2d', 'forces', 'activations'],
+                icon='Activity',
+                is_composite=True,
+                port_types=PortTypeSpec(
+                    inputs={'excitation': PortType(dtype='vector')},
+                    outputs={
+                        'force_2d': PortType(dtype='vector'),
+                        'forces': PortType(dtype='vector'),
+                        'activations': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
         self.register(
             ComponentMeta(
                 name='NetworkConstantInput',

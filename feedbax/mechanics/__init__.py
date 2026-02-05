@@ -23,6 +23,7 @@ from .geometry import (
     PolynomialMomentArmGeometry,
     WrappingGeometry,
     TwoLinkArmMuscleGeometry,
+    PointMassRadialGeometry,
 )
 
 # Musculoskeletal models
@@ -31,3 +32,9 @@ from .musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
+
+# Standalone muscle Components
+from .muscles import ReluMuscle, RigidTendonHillMuscleThelen
+
+# Pre-built effector templates
+from .templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
