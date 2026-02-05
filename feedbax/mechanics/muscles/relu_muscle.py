@@ -73,7 +73,7 @@ class ReluMuscle(Component):
         self.tau_deactivation = tau_deactivation
         self.min_activation = min_activation
         self.dt = dt
-        self._initial_state = jnp.array(initial_activation, dtype=jnp.float32)
+        self._initial_state = jnp.zeros(()) + initial_activation
         self.state_index = StateIndex(self._initial_state)
 
     def __call__(

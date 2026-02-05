@@ -144,7 +144,7 @@ class RigidTendonHillMuscleThelen(Component):
         self.ce_5 = 8.0 * (self.ce_Af + 1.0)
 
         # State: activation scalar
-        self._initial_state = jnp.array(initial_activation, dtype=jnp.float32)
+        self._initial_state = jnp.zeros(()) + initial_activation
         self.state_index = StateIndex(self._initial_state)
 
     def __call__(
