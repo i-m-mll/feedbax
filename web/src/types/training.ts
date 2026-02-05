@@ -51,3 +51,52 @@ export interface TrainingProgress {
   loss: number;
   metrics: Record<string, number>;
 }
+
+// --- Probe and Loss Types ---
+
+export interface ProbeInfo {
+  id: string;
+  label: string;
+  node: string;
+  timing: 'input' | 'output';
+  selector: string;
+  description?: string;
+}
+
+export interface LossValidationError {
+  path: string[];
+  field: string;
+  message: string;
+}
+
+export interface LossValidationResult {
+  valid: boolean;
+  errors: LossValidationError[];
+}
+
+export type NormFunction = 'squared_l2' | 'l2' | 'l1' | 'huber';
+
+export type TimeAggregationMode = 'all' | 'final' | 'range' | 'segment' | 'custom';
+
+export type DiscountType = 'none' | 'power' | 'linear';
+
+export const NORM_LABELS: Record<NormFunction, string> = {
+  squared_l2: 'Squared L2',
+  l2: 'L2',
+  l1: 'L1',
+  huber: 'Huber',
+};
+
+export const TIME_AGG_LABELS: Record<TimeAggregationMode, string> = {
+  all: 'All steps',
+  final: 'Final step',
+  range: 'Time range',
+  segment: 'Segment',
+  custom: 'Custom indices',
+};
+
+export const DISCOUNT_LABELS: Record<DiscountType, string> = {
+  none: 'None',
+  power: 'Power decay',
+  linear: 'Linear decay',
+};

@@ -3,10 +3,19 @@ import { useTraining } from '@/hooks/useTraining';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
+import { LossTermDetail } from './LossTermDetail';
+import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
+import { fetchProbes, validateLossSpec } from '@/api/client';
 import clsx from 'clsx';
+import { Plus, Trash2, AlertCircle } from 'lucide-react';
 
 export function TrainingPanel() {
   const { trainingSpec, setTrainingSpec, progress, status } = useTrainingStore();
+  const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
+  const setLossValidationErrors = useTrainingStore((state) => state.setLossValidationErrors);
+  const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);
+  const removeLossTerm = useTrainingStore((state) => state.removeLossTerm);
+  const setHighlightedProbeSelector = useTrainingStore((state) => state.setHighlightedProbeSelector);
   const { start, stop } = useTraining();
   const graphId = useGraphStore((state) => state.graphId);
   const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
@@ -14,7 +23,28 @@ export function TrainingPanel() {
     buildDefaultExpanded(trainingSpec.loss)
   );
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addModalParentPath, setAddModalParentPath] = useState<string[]>([]);
+  const [showDetailPanel, setShowDetailPanel] = useState(false);
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // Fetch available probes when graph changes
+  useEffect(() => {
+    if (graphId) {
+      fetchProbes(graphId)
+        .then(setAvailableProbes)
+        .catch((err) => console.warn('Failed to fetch probes:', err));
+    }
+  }, [graphId, setAvailableProbes]);
+
+  // Validate loss spec when it changes
+  useEffect(() => {
+    if (graphId) {
+      validateLossSpec(graphId, trainingSpec.loss)
+        .then((result) => setLossValidationErrors(result.errors))
+        .catch((err) => console.warn('Failed to validate loss:', err));
+    }
+  }, [graphId, trainingSpec.loss, setLossValidationErrors]);
 
   const percent = useMemo(() => {
     if (!progress) return 0;
@@ -71,6 +101,50 @@ export function TrainingPanel() {
     nodeRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, []);
 
+  const handleAddTerm = useCallback((parentPath: string[]) => {
+    setAddModalParentPath(parentPath);
+    setShowAddModal(true);
+  }, []);
+
+  const handleRemoveTerm = useCallback(
+    (path: string[]) => {
+      if (path.length === 0) return; // Cannot remove root
+      if (confirm('Remove this loss term?')) {
+        removeLossTerm(path);
+        if (selectedPath === toPathKey(path)) {
+          setSelectedPath(null);
+          setShowDetailPanel(false);
+        }
+      }
+    },
+    [removeLossTerm, selectedPath]
+  );
+
+  const handleOpenDetail = useCallback((path: string[]) => {
+    setSelectedPath(toPathKey(path));
+    setShowDetailPanel(true);
+  }, []);
+
+  const handleCloseDetail = useCallback(() => {
+    setShowDetailPanel(false);
+  }, []);
+
+  const handleTermHover = useCallback(
+    (term: LossTermSpec | null) => {
+      if (term?.selector) {
+        setHighlightedProbeSelector(term.selector);
+      } else {
+        setHighlightedProbeSelector(null);
+      }
+    },
+    [setHighlightedProbeSelector]
+  );
+
+  const selectedPathArray = useMemo(() => {
+    if (!selectedPath || selectedPath === ROOT_PATH) return [];
+    return selectedPath.split('/');
+  }, [selectedPath]);
+
   return (
     <div className="p-6 space-y-4 text-sm text-slate-600 overflow-x-hidden">
       <div>
@@ -116,14 +190,22 @@ export function TrainingPanel() {
         </div>
         <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Loss Function</div>
+            <div className="flex items-center gap-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Loss Function</div>
+              {lossValidationErrors.length > 0 && (
+                <div className="flex items-center gap-1 text-amber-500" title={`${lossValidationErrors.length} validation error(s)`}>
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span className="text-xs">{lossValidationErrors.length}</span>
+                </div>
+              )}
+            </div>
             <button
               type="button"
-              disabled
-              className="h-7 w-7 rounded-full border border-slate-200 text-slate-300"
-              title="Add loss terms (coming soon)"
+              onClick={() => handleAddTerm([])}
+              className="h-7 w-7 rounded-full border border-slate-200 text-slate-500 hover:bg-white hover:text-brand-500 hover:border-brand-200 transition-colors"
+              title="Add loss term"
             >
-              +
+              <Plus className="w-4 h-4 mx-auto" />
             </button>
           </div>
           <LossEquation terms={equationTerms} onSelect={handleJumpToTerm} />
@@ -136,9 +218,31 @@ export function TrainingPanel() {
             onToggle={handleToggle}
             onSelect={handleSelect}
             onWeightChange={handleWeightChange}
+            onAddChild={handleAddTerm}
+            onRemove={handleRemoveTerm}
+            onOpenDetail={handleOpenDetail}
+            onHover={handleTermHover}
             registerNode={registerNode}
           />
         </div>
+
+        {/* Detail panel */}
+        {showDetailPanel && selectedPath && (
+          <div className="rounded-xl border border-brand-100 bg-white p-4">
+            <LossTermDetail
+              path={selectedPathArray}
+              onClose={handleCloseDetail}
+            />
+          </div>
+        )}
+
+        {/* Add term modal */}
+        {showAddModal && (
+          <AddLossTermModal
+            parentPath={addModalParentPath}
+            onClose={() => setShowAddModal(false)}
+          />
+        )}
         <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Batches</div>
           <div className="flex items-center gap-2">
@@ -244,6 +348,10 @@ function LossTree({
   onToggle,
   onSelect,
   onWeightChange,
+  onAddChild,
+  onRemove,
+  onOpenDetail,
+  onHover,
   registerNode,
 }: {
   term: LossTermSpec;
@@ -254,6 +362,10 @@ function LossTree({
   onToggle: (path: string[]) => void;
   onSelect: (path: string[]) => void;
   onWeightChange: (path: string[], weight: number) => void;
+  onAddChild: (parentPath: string[]) => void;
+  onRemove: (path: string[]) => void;
+  onOpenDetail: (path: string[]) => void;
+  onHover: (term: LossTermSpec | null) => void;
   registerNode: (pathKey: string, node: HTMLDivElement | null) => void;
 }) {
   const entries = term.children ? Object.entries(term.children) : [];
@@ -263,17 +375,22 @@ function LossTree({
   const isSelected = selectedPath === pathKey;
   const detailLines = buildDetailLines(term);
   const showDetails = detailLines.length > 0 && !hasChildren;
+  const isRoot = path.length === 0;
+  const isComposite = term.type === 'Composite' || hasChildren;
 
   return (
     <div className="space-y-2">
       <div
         ref={(node) => registerNode(pathKey, node)}
         className={clsx(
-          'flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm',
+          'group flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm',
           isSelected && 'border-brand-200 ring-1 ring-brand-200'
         )}
         style={{ marginLeft: depth * 12 }}
         onClick={() => onSelect(path)}
+        onDoubleClick={() => onOpenDetail(path)}
+        onMouseEnter={() => onHover(term)}
+        onMouseLeave={() => onHover(null)}
       >
         <div className="flex items-center gap-2">
           {hasChildren ? (
@@ -299,6 +416,35 @@ function LossTree({
           </div>
         </div>
         <div className="flex items-center gap-1 text-xs text-slate-500">
+          {/* Action buttons - show on hover */}
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity mr-2">
+            {isComposite && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onAddChild(path);
+                }}
+                className="p-1 rounded text-slate-400 hover:text-brand-500 hover:bg-brand-50"
+                title="Add child term"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {!isRoot && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRemove(path);
+                }}
+                className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50"
+                title="Remove term"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           <span className="text-slate-400">×</span>
           <input
             type="number"
@@ -334,6 +480,10 @@ function LossTree({
               onToggle={onToggle}
               onSelect={onSelect}
               onWeightChange={onWeightChange}
+              onAddChild={onAddChild}
+              onRemove={onRemove}
+              onOpenDetail={onOpenDetail}
+              onHover={onHover}
               registerNode={registerNode}
             />
           ))}

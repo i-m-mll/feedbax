@@ -3,7 +3,10 @@ import type { GraphNodeData } from '@/types/graph';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
-import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import { useTrainingStore } from '@/stores/trainingStore';
+import { ChevronDown, ChevronRight, ExternalLink, Crosshair } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { PortContextMenu } from './PortContextMenu';
 
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
@@ -21,6 +24,16 @@ export function CustomNode({ data, selected }: NodeProps) {
   const toggleNodeCollapse = useGraphStore((state) => state.toggleNodeCollapse);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const hasSubgraph = useGraphStore((state) => Boolean(state.graph.subgraphs?.[label]));
+  const highlightedProbeSelector = useTrainingStore((state) => state.highlightedProbeSelector);
+
+  // Context menu state for port right-click
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    portName: string;
+    portType: 'input' | 'output';
+  } | null>(null);
+
   const isComposite =
     spec.type === 'Network' || spec.type === 'Subgraph' || hasSubgraph;
   const inputCount = spec.input_ports.length;
@@ -42,11 +55,47 @@ export function CustomNode({ data, selected }: NodeProps) {
   const contentHeight = Math.max(ROW_HEIGHT, bodyHeight - BODY_PADDING * 2);
   const rowHeight = contentHeight / rowCount;
   const rowCenterInBody = (index: number) => BODY_PADDING + rowHeight * (index + 0.5);
+
+  // Check if this node has any highlighted ports
+  const highlightedPorts = useMemo(() => {
+    if (!highlightedProbeSelector) return new Set<string>();
+    const ports = new Set<string>();
+    // Check if selector matches this node's ports
+    if (highlightedProbeSelector.startsWith('port:')) {
+      const portRef = highlightedProbeSelector.slice(5);
+      if (portRef.startsWith(`${label}.`)) {
+        const portName = portRef.slice(label.length + 1);
+        ports.add(portName);
+      }
+    }
+    return ports;
+  }, [highlightedProbeSelector, label]);
+
+  const isNodeHighlighted = highlightedPorts.size > 0;
+
+  const handlePortContextMenu = useCallback(
+    (event: React.MouseEvent, portName: string, portType: 'input' | 'output') => {
+      event.preventDefault();
+      event.stopPropagation();
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        portName,
+        portType,
+      });
+    },
+    []
+  );
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
   return (
     <div
       className={clsx(
-        'relative rounded-xl border shadow-soft bg-white/90 backdrop-blur',
-        selected ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-slate-200'
+        'relative rounded-xl border shadow-soft bg-white/90 backdrop-blur transition-all duration-150',
+        selected ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-slate-200',
+        isNodeHighlighted && !selected && 'border-amber-400 ring-2 ring-amber-200'
       )}
       style={{ width, height }}
     >
@@ -169,9 +218,11 @@ export function CustomNode({ data, selected }: NodeProps) {
                 transform: 'translateY(-50%)',
               }}
               className={clsx(
-                'w-3 h-3 z-20 border border-white shadow-soft',
-                connectedOutputs.has(port) ? 'bg-mint-500' : 'bg-slate-300'
+                'w-3 h-3 z-20 border border-white shadow-soft transition-all duration-150',
+                connectedOutputs.has(port) ? 'bg-mint-500' : 'bg-slate-300',
+                highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125'
               )}
+              onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
             />
           ))}
           {spec.input_ports.map((port, index) => (
@@ -190,17 +241,35 @@ export function CustomNode({ data, selected }: NodeProps) {
           {spec.output_ports.map((port, index) => (
             <div
               key={`label-out-${port}`}
-              className="absolute right-0 flex items-center gap-2 justify-end text-slate-600"
+              className={clsx(
+                'absolute right-0 flex items-center gap-1 justify-end',
+                highlightedPorts.has(port) ? 'text-amber-600 font-medium' : 'text-slate-600'
+              )}
               style={{
                 top: rowCenterInBody(index),
                 right: LABEL_OFFSET,
                 transform: 'translateY(-50%)',
               }}
             >
+              {highlightedPorts.has(port) && (
+                <Crosshair className="w-3 h-3 text-amber-500" />
+              )}
               <span>{port}</span>
             </div>
           ))}
         </div>
+      )}
+
+      {/* Port context menu */}
+      {contextMenu && (
+        <PortContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          nodeName={label}
+          portName={contextMenu.portName}
+          portType={contextMenu.portType}
+          onClose={closeContextMenu}
+        />
       )}
     </div>
   );

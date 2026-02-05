@@ -1,6 +1,6 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import type { TrainingSpec, TaskSpec } from '@/types/training';
+import type { LossTermSpec, ProbeInfo, TrainingSpec, TaskSpec, LossValidationResult } from '@/types/training';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -62,4 +62,30 @@ export async function startTraining(graphId: string, trainingSpec: TrainingSpec,
 
 export async function stopTraining(jobId: string) {
   return request<{ success: boolean }>(`/api/training/${jobId}`, { method: 'DELETE' });
+}
+
+// --- Probe and Loss API ---
+
+export async function fetchProbes(graphId: string): Promise<ProbeInfo[]> {
+  return request<ProbeInfo[]>(`/api/training/probes/${graphId}`);
+}
+
+export async function validateLossSpec(
+  graphId: string,
+  lossSpec: LossTermSpec
+): Promise<LossValidationResult> {
+  return request<LossValidationResult>('/api/training/loss/validate', {
+    method: 'POST',
+    body: JSON.stringify({ graph_id: graphId, loss_spec: lossSpec }),
+  });
+}
+
+export async function resolveSelector(
+  graphId: string,
+  selector: string
+): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>('/api/training/loss/resolve-selector', {
+    method: 'POST',
+    body: JSON.stringify({ graph_id: graphId, selector }),
+  });
 }

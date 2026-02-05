@@ -97,6 +97,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pytest>=9.0.2",
     "ruff>=0.12.11",
 ]
 
