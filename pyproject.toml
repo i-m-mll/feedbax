@@ -42,6 +42,7 @@ dependencies = [
     "polars>=1.24.0",
     "seaborn>=0.13.2",
     "tensorboardx>=2.6.2.2",
+    "treescope>=0.1.1",
     "tqdm>=4.67.1",
     "uvicorn>=0.29.0",
     "jax-cookbook",

@@ -25,14 +25,22 @@ from feedbax.web.models.training import (
     TimeAggregationSpec,
     TrainingSpec,
 )
+from feedbax.web.models.inspection import (
+    CycleAnnotationModel,
+    InspectionStatusResponse,
+    TreescopeRequest,
+    TreescopeResponse,
+)
 
 __all__ = [
     "ComponentDefinition",
     "ComponentSpec",
+    "CycleAnnotationModel",
     "GraphMetadata",
     "GraphProject",
     "GraphSpec",
     "GraphUIState",
+    "InspectionStatusResponse",
     "LossTermSpec",
     "NodeUIState",
     "OptimizerSpec",
@@ -42,6 +50,8 @@ __all__ = [
     "TaskSpec",
     "TimeAggregationSpec",
     "TrainingSpec",
+    "TreescopeRequest",
+    "TreescopeResponse",
     "ValidationError",
     "ValidationResult",
     "ValidationWarning",

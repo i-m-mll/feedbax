@@ -1,4 +1,5 @@
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
+import { TreescopePanel } from '@/components/panels/TreescopePanel';
 
 export function RightPanel() {
   return (
@@ -10,6 +11,7 @@ export function RightPanel() {
       </div>
       <div className="flex-1 overflow-y-auto">
         <PropertiesPanel />
+        <TreescopePanel />
       </div>
     </aside>
   );
