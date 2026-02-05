@@ -6,7 +6,6 @@
 
 import logging
 import math
-from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 from typing import (
@@ -24,13 +23,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 from equinox import Module, field
+from equinox.nn import State, StateIndex
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax._model import wrap_stateless_callable, wrap_stateless_keyless_callable
-from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.intervene import AbstractIntervenor
-from feedbax.intervene.schedule import ArgIntervenors, ModelIntervenors
+from feedbax.graph import Component
 from feedbax.misc import (
     identity_func,
     interleave_unequal,
@@ -314,7 +311,7 @@ class MaskedLinear(Module):
         return result
 
 
-class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
+class SimpleStagedNetwork(Component):
     """A single step of a neural network layer, with optional encoder and readout layers.
 
     Attributes:
@@ -340,7 +337,8 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
     encoder: Optional[Module] = None
     population_structure: Optional[PopulationStructure] = None
 
-    intervenors: ModelIntervenors[NetworkState]
+    state_index: StateIndex
+    _initial_state: NetworkState = field(static=True)
 
     def __init__(
         self,
@@ -356,7 +354,6 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         out_nonlinearity: Callable[[Float], Float] = identity_func,
         hidden_noise_std: Optional[float] = None,
         population_structure: Optional[PopulationStructure] = None,
-        intervenors: Optional[ArgIntervenors] = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -403,8 +400,6 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
             population_structure: Optional population structure defining which hidden units
                 receive inputs and/or contribute to readout. If provided, input and readout
                 weights will be masked to enforce the specified connectivity pattern.
-            intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add
-                to the model at construction time.
             key: Random key for initialising the network.
         """
         key1, key2, key3 = jr.split(key, 3)
@@ -529,140 +524,83 @@ class SimpleStagedNetwork(AbstractStagedModel[NetworkState]):
         else:
             self.out_size = hidden_size
 
-        self.intervenors = self._get_intervenors_dict(intervenors)
+        init_state = NetworkState(
+            input=jnp.zeros(self.input_size),
+            hidden=jnp.zeros(self.hidden_size),
+            output=jnp.zeros(self.out_size) if self.out_size is not None else None,
+            encoding=jnp.zeros(self.encoding_size) if self.encoding_size is not None else None,
+        )
+        self._initial_state = init_state
+        self.state_index = StateIndex(init_state)
 
     def _add_hidden_noise(self, input, state, *, key):
         if self.hidden_noise_std is None:
             return state
         return state + self.hidden_noise_std * jr.normal(key, state.shape)
+    input_ports = ("input", "feedback")
+    output_ports = ("output", "hidden")
 
-    @property
-    def model_spec(self) -> OrderedDict[str, ModelStage[Self, NetworkState]]:
-        """Specifies the network model stages: layers, nonlinearities, and noise.
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        net_state: NetworkState = state.get(self.state_index)
 
-        Only includes stages for the encoding layer, readout layer, hidden noise, and
-        hidden nonlinearity, if the user respectively requests them at the time of
-        construction.
+        input_value = inputs.get("input", None)
+        feedback_value = inputs.get("feedback", None)
 
-        !!! NOTE
-            Inspects the instantiated hidden layer to determine if it is a stateful
-            network (e.g. an RNN). If not (e.g. Linear), it wraps the layer so that
-            it plays well with the state-passing of `AbstractStagedModel`. This assumes
-            that stateful layers will take 2 positional arguments, and stateless layers
-            only 1.
-        """
-        Stage = ModelStage[Self, NetworkState]
+        if input_value is None and feedback_value is None:
+            raise ValueError("SimpleStagedNetwork requires at least one input.")
+
+        if input_value is None:
+            flat_input = jnp.zeros((0,))
+        else:
+            flat_input, _ = ravel_pytree(input_value)
+
+        if feedback_value is None:
+            flat_feedback = jnp.zeros((0,))
+        else:
+            flat_feedback, _ = ravel_pytree(feedback_value)
+
+        x = jnp.concatenate([flat_input, flat_feedback], axis=-1)
+
+        encoding = None
+        if self.encoder is not None:
+            encoding = self.encoder(x)
+            x_hidden = encoding
+        else:
+            x_hidden = x
 
         if n_positional_args(self.hidden) == 1:  # type: ignore
-            hidden_module = lambda self: wrap_stateless_callable(self.hidden)
-            if isinstance(self.hidden, eqx.nn.Linear):
-                logger.warning(
-                    "Network hidden layer is linear but no hidden nonlinearity is defined"
-                )
+            hidden = self.hidden(x_hidden)  # type: ignore
         else:
-            # #TODO: revert this!
-            # def tmp(self):
-            #     def wrapper(input, state, *, key):
-            #         return self.hidden(input, jnp.zeros_like(state))
-            #     return wrapper
-            # hidden_module = lambda self: tmp(self)
-            hidden_module = lambda self: self.hidden
+            hidden = self.hidden(x_hidden, net_state.hidden)  # type: ignore
 
-        spec = OrderedDict(
-            {
-                # Store the flattened network inputs as part of `NetworkState`
-                "input": Stage(
-                    callable=lambda self: lambda input, state, *, key: input,
-                    where_input=lambda input, _: ravel_pytree(input)[0],
-                    where_state=lambda state: state.input,
-                ),
-            }
-        )
-
-        if self.encoder is None:
-            spec |= OrderedDict(
-                {
-                    "hidden": Stage(
-                        callable=hidden_module,
-                        where_input=lambda input, state: state.input,
-                        where_state=lambda state: state.hidden,
-                    ),
-                }
-            )
-        else:
-            spec = OrderedDict(
-                {
-                    "encoder": Stage(
-                        callable=lambda self: lambda input, state, *, key: self.encoder(input),
-                        where_input=lambda input, state: state.input,
-                        where_state=lambda state: state.encoding,
-                    ),
-                    "hidden": Stage(
-                        callable=hidden_module,
-                        where_input=lambda input, state: state.encoding,
-                        where_state=lambda state: state.hidden,
-                    ),
-                }
-            )
-
-        # TODO: conditional on `self.hidden_nonlinearity is not identity_func`?
-        spec |= {
-            "hidden_nonlinearity": Stage(
-                callable=lambda self: wrap_stateless_keyless_callable(self.hidden_nonlinearity),
-                where_input=lambda input, state: state.hidden,
-                where_state=lambda state: state.hidden,
-            ),
-        }
-
+        hidden = self.hidden_nonlinearity(hidden)
         if self.hidden_noise_std is not None:
-            spec |= {
-                "hidden_noise": Stage(
-                    callable=lambda self: self._add_hidden_noise,
-                    where_input=lambda input, state: state.hidden,
-                    where_state=lambda state: state.hidden,
-                ),
-            }
+            hidden = self._add_hidden_noise(None, hidden, key=key)
 
         if self.readout is not None:
-            spec |= {
-                "readout": Stage(
-                    callable=lambda self: wrap_stateless_callable(self.readout),  # type: ignore
-                    where_input=lambda input, state: state.hidden,
-                    where_state=lambda state: state.output,
-                ),
-            }
+            output = self.readout(hidden)  # type: ignore
+            output = self.out_nonlinearity(output)
+        else:
+            output = self.out_nonlinearity(hidden)
 
-        spec |= {
-            "out_nonlinearity": Stage(
-                callable=lambda self: wrap_stateless_keyless_callable(self.out_nonlinearity),
-                where_input=lambda input, state: state.output,
-                where_state=lambda state: state.output,
-            )
-        }
-
-        return spec
-
-    @property
-    def memory_spec(self) -> PyTree[bool]:
-        return NetworkState(
-            input=True,
-            hidden=True,
-            output=True,
-            encoding=True,
+        new_state = NetworkState(
+            input=x,
+            hidden=hidden,
+            output=output,
+            encoding=encoding,
         )
+        state = state.set(self.state_index, new_state)
+        return {"output": output, "hidden": hidden}, state
 
-    def init(self, *, key: PRNGKeyArray):
-        if self.out_size is None:
-            output = None
-        else:
-            output = jnp.zeros(self.out_size)
-
-        if self.encoding_size is None:
-            encoding = None
-        else:
-            encoding = jnp.zeros(self.encoding_size)
-
-        # TODO: Try eval_shape
+    def init(self):
+        output = jnp.zeros(self.out_size) if self.out_size is not None else None
+        encoding = jnp.zeros(self.encoding_size) if self.encoding_size is not None else None
         return NetworkState(
             input=jnp.zeros(self.input_size),
             hidden=jnp.zeros(self.hidden_size),

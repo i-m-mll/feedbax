@@ -6,14 +6,13 @@
 
 from abc import abstractmethod, abstractproperty
 import logging
-from typing import Optional, TypeVar
+from typing import Generic, Optional, TypeVar
 
 from equinox import Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
-from feedbax._model import AbstractModel
 from feedbax.state import StateBounds, StateT
 
 
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 # StateT = TypeVar("StateT", Module, Array)
 
 
-class AbstractDynamicalSystem(AbstractModel[StateT]):
+class AbstractDynamicalSystem(Module, Generic[StateT]):
     """Base class for continuous dynamical systems.
 
     ??? dev-note "Development note"
@@ -68,10 +67,6 @@ class AbstractDynamicalSystem(AbstractModel[StateT]):
     def init(self, *, key: PRNGKeyArray) -> StateT:
         """Returns the initial state of the system."""
         ...
-
-    @property
-    def step(self) -> Module:
-        return self
 
 
 class LTISystem(AbstractDynamicalSystem[Array]):

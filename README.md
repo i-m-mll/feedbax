@@ -16,7 +16,7 @@ Feedbax makes it easy to:
 - swap out components of models, and write new components.
 <!-- - track the progress of a training run in Tensorboard. -->
 
-Feedbax is in active [development](#development). Expect some changes in the near future. In particular, I intend to [replace](https://github.com/i-m-mll/feedbax/discussions/28#discussioncomment-10153895) the staged model approach with a simpler lazy-executing DAG framework.
+Feedbax is in active [development](#development). Expect some changes in the near future. The staged model approach has been replaced by an explicit eager graph architecture.
 
 ## Feedbax is a JAX library
 
@@ -41,6 +41,26 @@ For best performance, [install JAX](https://jax.readthedocs.io/en/latest/install
 
 Documentation is available [here](https://docs.lprt.ca/feedbax).
 
+## Web UI
+
+Feedbax includes a web interface for visually constructing and training models. To start both the backend API and frontend dev server:
+
+```bash
+./scripts/dev.sh
+```
+
+Or run them separately:
+
+```bash
+# Backend (FastAPI on port 8000)
+uv run uvicorn feedbax.web.app:app --reload --port 8000
+
+# Frontend (Vite/React on port 5173)
+cd web && pnpm dev
+```
+
+Then open http://localhost:5173 in your browser.
+
 ## Development
 
 I started to develop Feedbax while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
@@ -53,4 +73,3 @@ There are many features, especially pre-built models and tasks, that could still
 
 - Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have directly influenced this project
 - Special thanks to [Patrick Kidger](https://github.com/patrick-kidger), whose JAX libraries and their documentation often serve as examples to me
-
