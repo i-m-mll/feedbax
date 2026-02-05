@@ -1,82 +1,121 @@
-# Commit: [feature/loss-ui] Add loss term configuration UI with probe management
+# Commit: Add acausal mechanical modeling framework
 
 ## Overview
 
-Implements a comprehensive UI for configuring loss terms in the feedbax web interface. Users can now add, edit, and remove loss terms, select probes from the graph, configure time aggregation settings, and see visual feedback linking loss terms to their corresponding graph ports.
+Implements a Modelica-style acausal modeling framework for feedbax. Physical
+elements (masses, springs, dampers, etc.) are described as construction-time
+equation descriptors. At `__init__` time, an assembly algorithm compiles all
+element equations and connection constraints into a single JAX-traceable
+vector field, which then runs as a standard `DAEComponent` inside the feedbax
+Graph.
 
 ## Changes
 
-### Backend: Loss Service (`feedbax/web/services/loss_service.py`)
+### Core types (`feedbax/acausal/base.py`)
 
-New service providing:
-- **Probe extraction**: `get_available_probes()` discovers probes from barnacles, taps, and implicit output ports
-- **Selector resolution**: `resolve_probe_selector()` converts selector strings to probe specifications
-- **Time aggregation building**: `build_time_aggregation()` processes time aggregation specs
-- **Validation**: `validate_loss_spec()` validates loss configurations against the graph
-- **Spec-to-config conversion**: `spec_to_loss_config()` produces configuration for feedbax loss objects
+Defines the vocabulary of the acausal framework:
 
-### Backend: Training API (`feedbax/web/api/training.py`)
+- **Domain** enum (translational / rotational) determines the physical
+  semantics of ports.
+- **AcausalPort** carries across-variable names (shared at a node) and a
+  through-variable name (summed at a node).
+- **AcausalVar** tracks each scalar variable's status: differential, eliminated
+  by a connection, grounded, or driven by a causal input.
+- **AcausalEquation** stores a callable RHS and its dependencies.
+- **AcausalElement / AcausalConnection** are user-facing descriptors.
+- **StateLayout** maps variable names to indices in the flat state vector.
 
-New endpoints:
-- `GET /api/training/probes/{graph_id}` - List available probes for a graph
-- `POST /api/training/loss/validate` - Validate a loss specification
-- `POST /api/training/loss/resolve-selector` - Resolve a probe selector
+### Assembly algorithm (`feedbax/acausal/assembly.py`)
 
-### Frontend: Components
+The `assemble_system()` function implements the following pipeline:
 
-**New components:**
-- `ProbeSelector` - Dropdown for selecting probes, grouped by node
-- `TimeAggregationEditor` - Editor for time aggregation mode, range, segment, discount settings
-- `LossTermDetail` - Detail panel for editing individual loss terms
-- `AddLossTermModal` - Modal dialog for adding new loss terms
-- `PortContextMenu` - Right-click menu on ports for quick probe creation
+1. Collect all variables from all element ports.
+2. Process connections with a Union-Find to identify shared across-variable
+   groups. Pick canonical representatives; eliminate aliases.
+3. Handle special elements: Ground (across vars = 0), ForceSource /
+   TorqueSource (through var = causal input), PrescribedMotion (across vars
+   = causal input), Sensors (read-only output), GearRatio (algebraic
+   constraint).
+4. Build the differential variable list (state vector).
+5. Compile a vector field function that:
+   - Reads state from `y`, inputs and params from `args`.
+   - Evaluates through-variable equations in topological order.
+   - Sums through-vars at each mass/inertia node for force balance.
+   - Returns `dy` with position derivatives (= velocity) and velocity
+     derivatives (= net force / mass).
 
-**Modified components:**
-- `TrainingPanel` - Integrated loss term management with add/remove buttons, detail panel, validation error display
-- `CustomNode` - Added visual highlighting for ports linked to selected loss terms, context menu support
+All Python-level indexing is pre-computed so the vector field body contains
+only `jnp` operations and integer-literal array access, making it fully
+JAX-traceable.
 
-### Frontend: State Management (`web/src/stores/trainingStore.ts`)
+### Sign convention
 
-Extended store with:
-- `availableProbes` - Cached list of probes from backend
-- `selectedLossPath` - Currently selected loss term path
-- `lossValidationErrors` - Validation errors from backend
-- `highlightedProbeSelector` - Selector for visual highlighting
-- Actions: `updateLossTerm`, `addLossTerm`, `removeLossTerm`
+Through-variables at a port represent the force/torque exerted **on the
+external body** connected at that port. For a spring with `pos_a < pos_b`
+(stretched), `force_b = k*(pos_a - pos_b) < 0` pulls B back toward A,
+which is physically correct. The net force on a mass is the sum of all
+connected through-vars (excluding the mass's own).
 
-### Frontend: Utilities (`web/src/features/loss/`)
+### Translational elements (`feedbax/acausal/translational.py`)
 
-- `operations.ts` - Loss term manipulation utilities (get/update/add/remove at path, collect leaves, clone)
-- `validation.ts` - Client-side validation for loss specifications
+Mass, LinearSpring, LinearDamper, Ground, ForceSource, PrescribedMotion,
+PositionSensor, VelocitySensor, ForceSensor.
+
+### Rotational elements (`feedbax/acausal/rotational.py`)
+
+Inertia, TorsionalSpring, RotationalDamper, RotationalGround, TorqueSource,
+GearRatio.
+
+### DAEComponent bridge (`feedbax/acausal/system.py`)
+
+`AcausalSystem` subclasses `DAEComponent[AcausalSystemState]`. It runs the
+assembly algorithm in `__init__`, stores the compiled vector field and layout,
+and delegates to diffrax for integration. Input routing collects named causal
+inputs into a flat array.
+
+### Component registry
+
+Registered `AcausalSystem` in the web UI component registry under Mechanics.
+
+### Tests
+
+23 tests covering:
+- Assembly correctness (layout, elimination, grounding, params)
+- Physics (force acceleration, damped oscillation, energy conservation <1%)
+- Multi-connection force balance (3 springs at one node)
+- JIT compilation and gradient flow
+- Sensor readings match state vector
+- Long-horizon stability (10k steps without NaN or divergence)
+- Rotational domain (torsional spring oscillation, gear ratio)
+- Graph integration (constant force, P-controller feedback loop,
+  prescribed motion)
 
 ## Rationale
 
-The loss function is central to training neural models, and users need fine-grained control over:
-1. **What to measure**: Probe selection determines which signals contribute to the loss
-2. **When to measure**: Time aggregation specifies which timesteps matter
-3. **How to measure**: Norm functions and weights control the loss computation
+Modelica-style acausal modeling is the standard approach for multi-domain
+physical systems in engineering. By separating element description (pure
+Python dataclasses) from execution (JAX vector field), we get:
 
-The visual linking feature (highlighting graph ports when hovering over loss terms) helps users understand the connection between the abstract loss configuration and the concrete graph structure.
+1. **Composability**: Users snap together elements without worrying about
+   causality or variable ordering.
+2. **Differentiability**: The compiled vector field is fully JAX-traceable,
+   enabling gradient-based parameter fitting and neural network integration.
+3. **Graph compatibility**: `AcausalSystem` is a standard `Component`, so it
+   can be wired into feedbax Graphs alongside neural networks, controllers,
+   and other components.
 
-The port context menu provides a fast workflow: right-click on any output port to immediately create a loss term targeting that signal.
+The through-variable sign convention ("force on external body") was chosen
+because it makes force balance at mass nodes a simple sum, avoiding the
+Modelica convention of "flow into component" which requires sign flips.
 
 ## Files Changed
 
-**Backend:**
-- `feedbax/web/services/loss_service.py` - New (180 LOC)
-- `feedbax/web/api/training.py` - Modified (+70 LOC)
-- `tests/test_loss_service.py` - New (200 LOC)
-
-**Frontend:**
-- `web/src/components/panels/ProbeSelector.tsx` - New (80 LOC)
-- `web/src/components/panels/TimeAggregationEditor.tsx` - New (170 LOC)
-- `web/src/components/panels/LossTermDetail.tsx` - New (200 LOC)
-- `web/src/components/modals/AddLossTermModal.tsx` - New (170 LOC)
-- `web/src/components/canvas/PortContextMenu.tsx` - New (90 LOC)
-- `web/src/components/canvas/CustomNode.tsx` - Modified (+60 LOC)
-- `web/src/components/panels/TrainingPanel.tsx` - Modified (+80 LOC)
-- `web/src/stores/trainingStore.ts` - Modified (+80 LOC)
-- `web/src/types/training.ts` - Modified (+40 LOC)
-- `web/src/api/client.ts` - Modified (+20 LOC)
-- `web/src/features/loss/operations.ts` - New (180 LOC)
-- `web/src/features/loss/validation.ts` - New (180 LOC)
+- `feedbax/acausal/__init__.py` -- Package init with public exports
+- `feedbax/acausal/base.py` -- Core types (Domain, Port, Var, Equation, Element, Connection, Layout)
+- `feedbax/acausal/assembly.py` -- Union-Find + assembly algorithm + vector field builder
+- `feedbax/acausal/system.py` -- AcausalSystem (DAEComponent bridge)
+- `feedbax/acausal/translational.py` -- Translational-domain elements
+- `feedbax/acausal/rotational.py` -- Rotational-domain elements
+- `feedbax/web/services/component_registry.py` -- Register AcausalSystem
+- `tests/test_acausal.py` -- Core tests (19 tests)
+- `tests/test_acausal_graph.py` -- Graph integration tests (4 tests)
