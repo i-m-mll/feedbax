@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useGraphStore } from '@/stores/graphStore';
+import type { GraphSpec } from '@/types/graph';
 import clsx from 'clsx';
 
 interface CycleAnnotation {
@@ -50,6 +51,26 @@ async function fetchTreescope(
   return response.json();
 }
 
+async function fetchTreescopeInline(
+  graph: GraphSpec,
+  options: { maxDepth: number; projectCycles: boolean }
+): Promise<TreescopeResponse> {
+  const response = await fetch('/api/inspection/treescope/inline', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph,
+      max_depth: options.maxDepth,
+      project_cycles: options.projectCycles,
+    }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Failed to render Treescope');
+  }
+  return response.json();
+}
+
 export function TreescopePanel() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [maxDepth, setMaxDepth] = useState(10);
@@ -58,16 +79,27 @@ export function TreescopePanel() {
 
   const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
+  const graphStack = useGraphStore((state) => state.graphStack);
+  const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
 
-  // Debounce the graph changes
-  const [debouncedGraphId, setDebouncedGraphId] = useState(graphId);
+  // Create a stable key for the current graph content so we debounce
+  // and re-query when the graph actually changes (nodes/wires).
+  const graphKey = useMemo(
+    () => JSON.stringify({ nodes: Object.keys(graph.nodes), wires: graph.wires.length }),
+    [graph]
+  );
+
+  const [debouncedGraphKey, setDebouncedGraphKey] = useState(graphKey);
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedGraphId(graphId);
+      setDebouncedGraphKey(graphKey);
     }, 300);
     return () => clearTimeout(timer);
-  }, [graphId, graph]);
+  }, [graphKey]);
+
+  // Whether we have any nodes to visualize
+  const hasNodes = Object.keys(graph.nodes).length > 0;
 
   // Check if treescope is available
   const statusQuery = useQuery({
@@ -77,16 +109,21 @@ export function TreescopePanel() {
     retry: 1,
   });
 
-  // Fetch treescope visualization when graph changes
+  // Fetch treescope visualization when graph changes.
+  // Use the saved-graph endpoint when we have a graphId and are at the
+  // top level; otherwise use the inline endpoint which accepts the
+  // current (possibly subgraph-level) graph spec directly.
   const treescopeQuery = useQuery({
-    queryKey: ['treescope', debouncedGraphId, maxDepth, projectCycles],
+    queryKey: ['treescope', graphId ?? 'inline', debouncedGraphKey, graphStack.length, maxDepth, projectCycles],
     queryFn: () => {
-      if (!debouncedGraphId) {
-        return Promise.resolve(null);
+      if (graphId && graphStack.length === 0) {
+        // Saved graph at top level -- use the persisted endpoint
+        return fetchTreescope(graphId, { maxDepth, projectCycles });
       }
-      return fetchTreescope(debouncedGraphId, { maxDepth, projectCycles });
+      // Either unsaved or inside a subgraph -- use inline rendering
+      return fetchTreescopeInline(graph, { maxDepth, projectCycles });
     },
-    enabled: isExpanded && !!debouncedGraphId && statusQuery.data?.treescope_available,
+    enabled: isExpanded && hasNodes && statusQuery.data?.treescope_available === true,
     staleTime: 30 * 1000,
     retry: 1,
   });
@@ -166,6 +203,13 @@ export function TreescopePanel() {
       {/* Content */}
       {isExpanded && (
         <div className="px-4 pb-4 space-y-3">
+          {/* Subgraph scope indicator */}
+          {graphStack.length > 0 && (
+            <div className="text-[10px] text-slate-400">
+              Showing: {currentGraphLabel}
+            </div>
+          )}
+
           {/* Options */}
           <div className="flex flex-wrap gap-3 text-xs">
             <label className="flex items-center gap-2 text-slate-500">
@@ -191,19 +235,19 @@ export function TreescopePanel() {
           </div>
 
           {/* Status messages */}
-          {!graphId && (
+          {!hasNodes && (
             <div className="rounded bg-slate-50 p-3 text-xs text-slate-500">
-              Save the graph to enable Treescope visualization.
+              Add nodes to see Treescope visualization.
             </div>
           )}
 
-          {graphId && treescopeQuery.isLoading && (
+          {hasNodes && treescopeQuery.isLoading && (
             <div className="rounded bg-slate-50 p-3 text-xs text-slate-500">
               Rendering visualization...
             </div>
           )}
 
-          {graphId && treescopeQuery.error && (
+          {hasNodes && treescopeQuery.error && (
             <div className="rounded bg-red-50 p-3 text-xs text-red-600">
               {treescopeQuery.error instanceof Error
                 ? treescopeQuery.error.message
@@ -231,7 +275,7 @@ export function TreescopePanel() {
           )}
 
           {/* Treescope iframe */}
-          {graphId && treescopeQuery.data?.html && (
+          {hasNodes && treescopeQuery.data?.html && (
             <div className="rounded border border-slate-200 overflow-hidden">
               <iframe
                 ref={iframeRef}

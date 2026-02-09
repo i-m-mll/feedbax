@@ -6,6 +6,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from feedbax.web.models.graph import GraphSpec
+
 
 class CycleAnnotationModel(BaseModel):
     """A back edge that was cut to break a cycle in the graph."""
@@ -22,6 +24,14 @@ class TreescopeRequest(BaseModel):
     roundtrip_mode: bool = Field(
         default=False, description="Render in reconstructable format"
     )
+
+
+class InlineTreescopeRequest(BaseModel):
+    """Request for Treescope visualization from an in-memory graph spec."""
+
+    graph: GraphSpec = Field(description="The graph spec to render")
+    max_depth: int = Field(default=10, ge=1, le=50, description="Maximum tree depth")
+    project_cycles: bool = Field(default=True, description="Include cycle annotations")
 
 
 class TreescopeResponse(BaseModel):
