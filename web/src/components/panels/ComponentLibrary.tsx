@@ -209,19 +209,19 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
       )}
     >
       <div className="flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center">
-          <Icon className="w-4 h-4 text-slate-600" />
+        <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
+          <Icon className="w-5 h-5 text-slate-600" />
         </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-semibold text-slate-800">{component.name}</div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="text-sm font-semibold text-slate-800 truncate">{component.name}</div>
             {component.is_composite && (
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+              <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
                 Composite
               </span>
             )}
           </div>
-          <div className="text-xs text-slate-500">{component.description}</div>
+          <div className="text-xs text-slate-500 line-clamp-2">{component.description}</div>
         </div>
       </div>
     </div>
