@@ -11,6 +11,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import equinox as eqx
 
 from feedbax.graph import init_state_from_component
 from feedbax.acausal import (
@@ -118,7 +119,7 @@ class TestAcausalAssembly:
     def test_params_collected(self):
         """All physical parameters are collected."""
         msd = _make_msd()
-        names = msd.params._names
+        names = set(msd.params.values.keys())
         assert "mass.mass" in names
         assert "spring.stiffness" in names
         assert "damper.damping" in names
@@ -202,6 +203,47 @@ class TestMassSpringDamper:
             f"Position should decay: start={pos_start:.4f}, end={final_pos:.4f}"
         )
 
+    def test_analytical_damped_solution(self):
+        """Damped MSD matches analytical underdamped solution."""
+        mass = 1.0
+        stiffness = 4.0
+        damping = 0.4
+        dt = 0.0005
+        sys = _make_msd(
+            mass=mass, stiffness=stiffness, damping=damping, dt=dt
+        )
+        state = init_state_from_component(sys)
+        key = jr.PRNGKey(0)
+
+        # Initial displacement, zero velocity
+        dae_state = sys.state_view(state)
+        x0 = 1.0
+        y0 = dae_state.system.y.at[0].set(x0)
+        new_sys_state = type(dae_state.system)(y=y0)
+        new_dae = DAEState(system=new_sys_state, solver=dae_state.solver)
+        state = state.set(sys.state_index, new_dae)
+
+        n_steps = 2000
+        positions = []
+        for _ in range(n_steps):
+            key, subkey = jr.split(key)
+            outputs, state = sys({"f_in": jnp.array([0.0])}, state, key=subkey)
+            dae_state = sys.state_view(state)
+            positions.append(dae_state.system.y[0])
+
+        t = jnp.arange(1, n_steps + 1) * dt
+        omega = jnp.sqrt(stiffness / mass)
+        zeta = damping / (2.0 * jnp.sqrt(mass * stiffness))
+        omega_d = omega * jnp.sqrt(1.0 - zeta ** 2)
+        a = x0
+        b = (zeta * omega * x0) / omega_d
+        expected = jnp.exp(-zeta * omega * t) * (
+            a * jnp.cos(omega_d * t) + b * jnp.sin(omega_d * t)
+        )
+        sim = jnp.array(positions)
+        max_err = jnp.max(jnp.abs(sim - expected))
+        assert max_err < 2e-2, f"Max error {max_err} too large"
+
 
 class TestEnergyConservation:
     """Test energy conservation for undamped systems."""
@@ -272,6 +314,35 @@ class TestJITAndGrad:
 
         grad_val = jax.grad(loss_fn)(1.0)
         assert jnp.isfinite(grad_val), f"Got non-finite gradient: {grad_val}"
+
+    def test_vmap_over_params(self):
+        """vmap works over spring stiffness parameters."""
+        mass = 1.0
+        dt = 0.001
+        sys = _make_msd(mass=mass, stiffness=1.0, damping=0.0, dt=dt)
+        state = init_state_from_component(sys)
+
+        dae_state = sys.state_view(state)
+        x0 = 0.5
+        y0 = dae_state.system.y.at[0].set(x0)
+        new_sys_state = type(dae_state.system)(y=y0)
+        new_dae = DAEState(system=new_sys_state, solver=dae_state.solver)
+        state = state.set(sys.state_index, new_dae)
+
+        def step_velocity(k_val):
+            sys_k = eqx.tree_at(
+                lambda s: s.params.values["spring.stiffness"],
+                sys,
+                jnp.zeros(()) + k_val,
+            )
+            outputs, new_state = sys_k({"f_in": jnp.array([0.0])}, state, key=jr.PRNGKey(0))
+            dae_after = sys_k.state_view(new_state)
+            return dae_after.system.y[1]
+
+        ks = jnp.array([1.0, 2.0, 3.0])
+        vels = jax.vmap(step_velocity)(ks)
+        expected = -ks * x0 * dt / mass
+        assert jnp.allclose(vels, expected, atol=1e-6)
 
 
 class TestMultiConnectionNode:
@@ -392,6 +463,42 @@ class TestSensorReadings:
         if vel_from_sensor is not None:
             assert jnp.allclose(vel_from_state, vel_from_sensor, atol=1e-10)
 
+    def test_force_sensor(self):
+        """ForceSensor reads spring force at the node."""
+        stiffness = 5.0
+        sys = AcausalSystem(
+            elements={
+                "wall": Ground("wall"),
+                "mass": Mass("mass", mass=1.0),
+                "spring": LinearSpring("spring", stiffness=stiffness),
+                "f_out": ForceSensor("f_out"),
+            },
+            connections=[
+                AcausalConnection(("wall", "flange"), ("spring", "flange_a")),
+                AcausalConnection(("spring", "flange_b"), ("mass", "flange")),
+                AcausalConnection(("f_out", "flange"), ("mass", "flange")),
+            ],
+            dt=0.001,
+        )
+        state = init_state_from_component(sys)
+        key = jr.PRNGKey(0)
+
+        dae_state = sys.state_view(state)
+        y0 = dae_state.system.y.at[0].set(0.2)
+        new_sys_state = type(dae_state.system)(y=y0)
+        new_dae = DAEState(system=new_sys_state, solver=dae_state.solver)
+        state = state.set(sys.state_index, new_dae)
+
+        outputs, state = sys({}, state, key=key)
+        dae_after = sys.state_view(state)
+        pos = float(dae_after.system.y[0])
+        expected_force = -stiffness * pos
+        force_measured = outputs.get("f_out", None)
+        assert force_measured is not None
+        assert abs(float(force_measured) - expected_force) < 1e-6, (
+            f"Expected {expected_force}, got {force_measured}"
+        )
+
 
 class TestLongHorizonStability:
     """Test long simulations do not produce NaN or diverge."""
@@ -486,3 +593,47 @@ class TestRotationalDomain:
         # If assembly succeeds without error, the test passes
         state = init_state_from_component(sys)
         assert state is not None
+
+    def test_gear_ratio_behavior(self):
+        """Gear ratio scales torque response through the constraint."""
+        ratio = 2.0
+        stiffness = 4.0
+        inertia = 1.0
+        dt = 0.001
+        sys = AcausalSystem(
+            elements={
+                "inertia": Inertia("inertia", inertia=inertia),
+                "gear": GearRatio("gear", ratio=ratio),
+                "spring": TorsionalSpring("spring", stiffness=stiffness),
+            },
+            connections=[
+                AcausalConnection(("inertia", "flange"), ("gear", "flange_a")),
+                AcausalConnection(("spring", "flange_a"), ("gear", "flange_a")),
+                AcausalConnection(("spring", "flange_b"), ("gear", "flange_b")),
+            ],
+            dt=dt,
+        )
+        state = init_state_from_component(sys)
+
+        # Set initial angle
+        dae_state = sys.state_view(state)
+        y0 = dae_state.system.y.at[0].set(1.0)
+        new_sys_state = type(dae_state.system)(y=y0)
+        new_dae = DAEState(system=new_sys_state, solver=dae_state.solver)
+        state = state.set(sys.state_index, new_dae)
+
+        key = jr.PRNGKey(0)
+        outputs, state = sys({}, state, key=key)
+
+        dae_after = sys.state_view(state)
+        vel_after = float(dae_after.system.y[1])
+        # At node A the inertia sees spring.flange_a torque plus gear-
+        # transmitted torque from node B.  For a spring spanning both sides
+        # of the gear: accel = (1 + ratio) * k * (ratio - 1) * theta / J.
+        expected_accel = (
+            (1.0 + ratio) * stiffness * (ratio - 1.0) / inertia
+        )
+        expected_vel = dt * expected_accel
+        assert abs(vel_after - expected_vel) < 1e-6, (
+            f"Expected {expected_vel}, got {vel_after}"
+        )

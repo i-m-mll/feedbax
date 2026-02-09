@@ -85,7 +85,7 @@ class UnionFind:
 def assemble_system(
     elements: dict[str, AcausalElement],
     connections: list[AcausalConnection],
-) -> tuple[StateLayout, Callable, dict[str, float]]:
+) -> tuple[StateLayout, Callable, dict[str, float], Callable]:
     """Assemble acausal elements and connections into a compiled vector field.
 
     Args:
@@ -96,6 +96,7 @@ def assemble_system(
         layout: ``StateLayout`` mapping variable names to state-vector slots.
         vector_field_fn: ``(t, y, args) -> dy`` ready for diffrax.
         params_dict: Initial parameter values.
+        sensor_fn: ``(y, input_vals, params_dict) -> outputs`` for sensors.
     """
 
     # ---- Step 1: Collect all variables and parameters --------------------
@@ -157,6 +158,7 @@ def assemble_system(
     # ---- Step 4: Handle special elements --------------------------------
     grounded: set[str] = set()
     input_vars: dict[str, int] = {}  # var_fqn -> input_index
+    input_specs: dict[str, tuple[str, int]] = {}  # var_fqn -> (element, slot_index)
     input_idx_counter = 0
     output_map: dict[str, str] = {}  # sensor_label -> var_fqn
     gear_infos: list[dict] = []
@@ -177,15 +179,17 @@ def assemble_system(
             for port in elem.ports.values():
                 through_fqn = f"{elem.name}.{port.name}.{port.through_var}"
                 input_vars[through_fqn] = input_idx_counter
+                input_specs[through_fqn] = (elem.name, 0)
                 all_vars[through_fqn].is_input = True
                 input_idx_counter += 1
 
         elif elem.element_type == "prescribed_motion":
             for port in elem.ports.values():
-                for slot in port.across_vars:
+                for slot_idx, slot in enumerate(port.across_vars):
                     fqn = f"{elem.name}.{port.name}.{slot}"
                     canonical = _resolve(fqn, eliminated)
                     input_vars[canonical] = input_idx_counter
+                    input_specs[canonical] = (elem.name, slot_idx)
                     all_vars[canonical].is_input = True
                     all_vars[canonical].is_differential = False
                     input_idx_counter += 1
@@ -202,6 +206,11 @@ def assemble_system(
                 "element": elem,
                 "ratio_key": f"{elem.name}.ratio",
             })
+
+    # Snapshot eliminated before gear processing -- the pre-gear version
+    # is needed to resolve physical nodes correctly (gear elimination must
+    # NOT merge force-balance nodes).
+    eliminated_pre_gear = dict(eliminated)
 
     # Handle gear ratios: eliminate port_b across vars in favour of
     # port_a across vars * ratio.
@@ -240,20 +249,22 @@ def assemble_system(
         _eliminated=eliminated,
         _grounded=grounded,
         _inputs=input_vars,
+        _input_specs=input_specs,
         _outputs=output_map,
         total_size=len(differential),
     )
 
     # ---- Step 6: Build the compiled vector field ------------------------
-    vf_fn = _make_vector_field(
+    vf_fn, sensor_fn = _make_vector_field(
         layout=layout,
         elements=elements,
         connections=connections,
         node_through_vars=node_through_vars,
         gear_infos=gear_infos,
+        eliminated_pre_gear=eliminated_pre_gear,
     )
 
-    return layout, vf_fn, params_dict
+    return layout, vf_fn, params_dict, sensor_fn
 
 
 # ---------------------------------------------------------------------------
@@ -281,11 +292,14 @@ def _make_vector_field(
     connections: list[AcausalConnection],
     node_through_vars: dict[str, list[str]],
     gear_infos: list[dict],
-) -> Callable:
+    eliminated_pre_gear: dict[str, str] | None = None,
+) -> tuple[Callable, Callable]:
     """Build a JAX-traceable vector field function.
 
-    The returned function has signature ``(t, y, args) -> dy`` where
-    ``args = (input_array, params_array)``.
+    The returned functions are:
+        - ``vector_field(t, y, args) -> dy``
+        - ``sensor_fn(y, input_vals, params_dict) -> dict``
+    where ``args = (input_array, params_dict)``.
 
     All Python-level indexing is pre-computed so that the function body
     contains only ``jnp`` operations and integer-literal array indexing,
@@ -318,11 +332,10 @@ def _make_vector_field(
     # Through vars that are not in diff/grounded/input are computed on the fly
     # -- they get resolved later during VF evaluation.
 
-    # Collect sorted param keys and their indices
+    # Collect sorted param keys
     params_keys = sorted(
         set().union(*(elem.params.keys() for elem in elements.values()))
     )
-    param_index: dict[str, int] = {k: i for i, k in enumerate(params_keys)}
 
     # ---- Collect through-variable equations per element ------------------
     through_eqs: list[AcausalEquation] = []
@@ -330,6 +343,51 @@ def _make_vector_field(
         for eq in elem.equations:
             if eq.is_through_def:
                 through_eqs.append(eq)
+
+    # Gear torque transmission via node-B force balance + power conservation.
+    # At node B (massless): sum of non-gear through vars = -gear.flange_b.torque
+    # Power conservation: gear.flange_a.torque = ratio * gear.flange_b.torque
+    _epg = eliminated_pre_gear or eliminated
+    for gi in gear_infos:
+        elem = gi["element"]
+        ratio_key = gi["ratio_key"]
+        tau_a = f"{elem.name}.flange_a.torque"
+        tau_b = f"{elem.name}.flange_b.torque"
+
+        # Find through vars at node B (using pre-gear elimination so we don't
+        # accidentally merge nodes A and B).
+        fqn_b_first = (
+            f"{elem.name}.flange_b.{elem.ports['flange_b'].across_vars[0]}"
+        )
+        canon_b_pre = _resolve(fqn_b_first, _epg)
+        node_b_through: list[str] = []
+        for _nk, tvars in node_through_vars.items():
+            resolved_nk = _resolve(_nk, _epg)
+            if resolved_nk == canon_b_pre:
+                node_b_through.extend(tvars)
+        # Exclude the gear's own flange_b through var
+        node_b_sources = tuple(
+            sorted(set(tv for tv in node_b_through if tv != tau_b))
+        )
+
+        # tau_b = -(sum of other through vars at node B)
+        through_eqs.append(AcausalEquation(
+            lhs_var=tau_b,
+            rhs_fn=lambda vals, _tvars=node_b_sources: (
+                -sum((vals.get(tv, 0.0) for tv in _tvars), 0.0)
+            ),
+            depends_on=node_b_sources,
+            is_through_def=True,
+        ))
+        # tau_a = ratio * tau_b
+        through_eqs.append(AcausalEquation(
+            lhs_var=tau_a,
+            rhs_fn=lambda vals, _tb=tau_b, _r=ratio_key: (
+                vals[_r] * vals[_tb]
+            ),
+            depends_on=(tau_b, ratio_key),
+            is_through_def=True,
+        ))
 
     # ---- Build node force-balance information ---------------------------
     # For each mass/inertia element, find which through vars sum at its node
@@ -363,19 +421,19 @@ def _make_vector_field(
                     f"Mass element '{elem.name}' has no mass/inertia parameter"
                 )
             mass_param_key = mass_param_candidates[0]
-            mass_pidx = param_index[mass_param_key]
 
             # Collect through vars at this node by looking up which node
-            # this port's across var belongs to.
+            # this port's across var belongs to.  Use eliminated_pre_gear
+            # so gear elimination doesn't merge distinct physical nodes.
             first_across = f"{elem.name}.{port.name}.{port.across_vars[0]}"
-            canon_first = _resolve(first_across, eliminated)
+            canon_first = _resolve(first_across, _epg)
 
             # Find all through vars that share this node
             connected_through: list[str] = []
             for _node_key, tvars in node_through_vars.items():
                 # Check if any across var in this node resolves to canon_first
                 # We need to check the node_key resolution
-                resolved_node = _resolve(_node_key, eliminated)
+                resolved_node = _resolve(_node_key, _epg)
                 if resolved_node == canon_first:
                     connected_through.extend(tvars)
 
@@ -392,7 +450,7 @@ def _make_vector_field(
 
             mass_infos.append({
                 "vel_idx": vel_idx,
-                "mass_pidx": mass_pidx,
+                "mass_key": mass_param_key,
                 "through_sources": through_sources,
                 "elem_name": elem.name,
             })
@@ -433,6 +491,8 @@ def _make_vector_field(
         through_eval_infos.append(info)
 
     # ---- Build gear ratio lookup ----------------------------------------
+    # Use pre-gear elimination so the scaled alias is preserved even after
+    # the gear constraint merges nodes in the final eliminated map.
     gear_ratio_scale: dict[str, tuple[str, str]] = {}
     for gi in gear_infos:
         elem = gi["element"]
@@ -440,23 +500,60 @@ def _make_vector_field(
         for slot in elem.ports["flange_a"].across_vars:
             fqn_b = f"{elem.name}.flange_b.{slot}"
             fqn_a = f"{elem.name}.flange_a.{slot}"
-            canon_b = _resolve(fqn_b, eliminated)
-            canon_a = _resolve(fqn_a, eliminated)
+            canon_b = _resolve(fqn_b, _epg)
+            canon_a = _resolve(fqn_a, _epg)
             if canon_b != canon_a:
                 gear_ratio_scale[canon_b] = (canon_a, ratio_key)
 
-    # ---- Output index map -----------------------------------------------
-    output_indices: dict[str, int] = {}
+    # ---- Sensor evaluation info ----------------------------------------
+    mass_through_vars: set[str] = set()
+    for elem in elements.values():
+        if elem.element_type != "mass":
+            continue
+        for port in elem.ports.values():
+            mass_through_vars.add(
+                f"{elem.name}.{port.name}.{port.through_var}"
+            )
+
+    sensor_eval_infos: list[dict] = []
     for label, var_fqn in layout._outputs.items():
         canon = _resolve(var_fqn, eliminated)
         if canon in diff_vars:
-            output_indices[label] = diff_vars.index(canon)
+            continue
+        sum_vars: tuple[str, ...] | None = None
+        sensor_elem = elements.get(label)
+        if (
+            sensor_elem is not None
+            and sensor_elem.element_type == "sensor"
+            and sensor_elem.sensor_output is not None
+        ):
+            port_name, slot_name = sensor_elem.sensor_output
+            port = sensor_elem.ports[port_name]
+            if slot_name == port.through_var:
+                first_across = (
+                    f"{sensor_elem.name}.{port_name}.{port.across_vars[0]}"
+                )
+                canon_first = _resolve(first_across, _epg)
+                connected_through: list[str] = []
+                for _node_key, tvars in node_through_vars.items():
+                    resolved_node = _resolve(_node_key, _epg)
+                    if resolved_node == canon_first:
+                        connected_through.extend(tvars)
+                sensor_through = (
+                    f"{sensor_elem.name}.{port_name}.{port.through_var}"
+                )
+                through_sources = [
+                    tv for tv in set(connected_through)
+                    if tv != sensor_through and tv not in mass_through_vars
+                ]
+                sum_vars = tuple(sorted(through_sources))
+        sensor_eval_infos.append({
+            "label": label,
+            "var_name": canon,
+            "sum_vars": sum_vars,
+        })
 
     # ---- Freeze all pre-computed data -----------------------------------
-    n_state = layout.total_size
-    n_params = len(params_keys)
-    n_inputs = len(input_vars)
-
     # Convert mass_infos through_sources to index-based lookups
     for mi in mass_infos:
         mi["through_sources_frozen"] = tuple(mi["through_sources"])
@@ -466,12 +563,12 @@ def _make_vector_field(
         {k: v for k, v in mi.items()} for mi in mass_infos
     )
     through_eval_frozen = tuple(through_eval_infos)
+    eliminated_items = tuple(eliminated.items())
+    sensor_eval_frozen = tuple(sensor_eval_infos)
 
     # ---- The actual vector field ----------------------------------------
 
-    def vector_field(t, y, args):
-        input_vals, param_vals = args
-
+    def _build_vals(y, input_vals, param_vals):
         # Build a value dict for evaluating through-variable equations.
         # We use a plain dict so through-eq lambdas can look up by name.
         vals: dict[str, object] = {}
@@ -488,20 +585,35 @@ def _make_vector_field(
         for vname, idx in input_vars.items():
             vals[vname] = input_vals[idx]
 
-        # Eliminated (alias) variables -- resolve to canonical
-        for alias, canon in eliminated.items():
-            if canon in vals and alias not in vals:
-                vals[alias] = vals[canon]
+        # Eliminated (alias) variables -- resolve to canonical (handle chains)
+        updated = True
+        while updated:
+            updated = False
+            for alias, canon in eliminated_items:
+                if alias in vals or canon not in vals:
+                    continue
+                if alias in gear_ratio_scale:
+                    _, ratio_key = gear_ratio_scale[alias]
+                    vals[alias] = vals[canon] * param_vals[ratio_key]
+                else:
+                    vals[alias] = vals[canon]
+                updated = True
 
         # Parameters
-        for i, pkey in enumerate(params_keys):
-            vals[pkey] = param_vals[i]
+        for pkey in params_keys:
+            vals[pkey] = param_vals[pkey]
 
         # Evaluate through-variable equations in topological order
         for eq_info in through_eval_frozen:
             lhs = eq_info["lhs_var"]
             fn = eq_info["rhs_fn"]
             vals[lhs] = fn(vals)
+
+        return vals
+
+    def vector_field(t, y, args):
+        input_vals, param_vals = args
+        vals = _build_vals(y, input_vals, param_vals)
 
         # Build dy
         dy = jnp.zeros_like(y)
@@ -513,7 +625,7 @@ def _make_vector_field(
         # Velocity derivatives: d(vel)/dt = net_force / mass
         for mi in mass_infos_frozen:
             vel_idx = mi["vel_idx"]
-            mass_val = param_vals[mi["mass_pidx"]]
+            mass_val = param_vals[mi["mass_key"]]
             # Sum through-variable contributions at this node
             net_force = 0.0
             for tv_name in mi["through_sources_frozen"]:
@@ -529,7 +641,31 @@ def _make_vector_field(
 
         return dy
 
-    return vector_field
+    def sensor_fn(y, input_vals, param_vals):
+        vals = _build_vals(y, input_vals, param_vals)
+        outputs: dict[str, object] = {}
+        for info in sensor_eval_frozen:
+            label = info["label"]
+            var_name = info["var_name"]
+            if var_name in vals:
+                outputs[label] = vals[var_name]
+                continue
+            sum_vars = info["sum_vars"]
+            if sum_vars is None:
+                continue
+            total = 0.0
+            for tv_name in sum_vars:
+                resolved = tv_name
+                while resolved in eliminated:
+                    resolved = eliminated[resolved]
+                if resolved in vals:
+                    total = total + vals[resolved]
+                elif tv_name in vals:
+                    total = total + vals[tv_name]
+            outputs[label] = total
+        return outputs
+
+    return vector_field, sensor_fn
 
 
 # ---------------------------------------------------------------------------

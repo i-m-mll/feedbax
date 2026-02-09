@@ -49,16 +49,13 @@ class AcausalParams(Module):
     """Named parameter array for an acausal system.
 
     Attributes:
-        values: 1-D array of parameter scalars.
-        _names: Parameter names in the same order as ``values``.
+        values: Mapping of parameter names to scalar arrays.
     """
-    values: Float[Array, " n_params"]
-    _names: tuple[str, ...] = field(static=True)
+    values: dict[str, Array]
 
     def get(self, name: str) -> Scalar:
         """Look up a parameter value by name."""
-        idx = self._names.index(name)
-        return self.values[idx]
+        return self.values[name]
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +83,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     params: AcausalParams
     _layout: StateLayout = field(static=True)
     _compiled_vf: Callable = field(static=True)
+    _compiled_sensor_fn: Callable = field(static=True)
     _output_indices: dict[str, int] = field(static=True)
     _input_size_val: int = field(static=True)
 
@@ -112,15 +110,19 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         """
 
         # ---- Assembly ----------------------------------------------------
-        layout, vf_fn, params_dict = assemble_system(elements, connections)
+        layout, vf_fn, params_dict, sensor_fn = assemble_system(
+            elements, connections
+        )
 
         self._layout = layout
         self._compiled_vf = vf_fn
+        self._compiled_sensor_fn = sensor_fn
 
         # ---- Parameters --------------------------------------------------
-        param_names = tuple(sorted(params_dict.keys()))
-        param_values = jnp.array([params_dict[k] for k in param_names])
-        self.params = AcausalParams(values=param_values, _names=param_names)
+        param_values = {
+            name: jnp.zeros(()) + value for name, value in params_dict.items()
+        }
+        self.params = AcausalParams(values=param_values)
 
         # ---- Ports -------------------------------------------------------
         # Input ports: one per causal-input variable (ForceSource, etc.)
@@ -201,19 +203,28 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         # Build a flat input array from the causal input dict
         n_inputs = len(self._layout._inputs)
         if n_inputs > 0:
-            parts: list[Array] = []
-            for vname in sorted(self._layout._inputs.keys()):
-                elem_name = vname.split(".")[0]
+            input_val = jnp.zeros((n_inputs,))
+            for vname, idx in sorted(
+                self._layout._inputs.items(), key=lambda item: item[1]
+            ):
+                elem_name, slot_idx = self._layout._input_specs[vname]
                 val = inputs.get(elem_name, None)
                 if val is None:
                     val = inputs.get("input", jnp.zeros(1))
-                parts.append(jnp.atleast_1d(jnp.asarray(val)).ravel())
-            input_val = jnp.concatenate(parts)
+                arr = jnp.atleast_1d(jnp.asarray(val)).ravel()
+                input_val = input_val.at[idx].set(arr[slot_idx])
         else:
             input_val = jnp.zeros(1)
 
         modified_inputs = {"input": input_val}
-        return super().__call__(modified_inputs, state, key=key)
+        outputs, state = super().__call__(modified_inputs, state, key=key)
+
+        dae_state = self.state_view(state)
+        sensor_outputs = self._compiled_sensor_fn(
+            dae_state.system.y, input_val, self.params.values
+        )
+        outputs.update(sensor_outputs)
+        return outputs, state
 
     def _get_zero_input(self) -> Array:
         """Zero-valued input for solver initialisation."""

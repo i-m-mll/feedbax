@@ -237,3 +237,48 @@ class TestPrescribedMotion:
         # The mass should be pulled towards the driver position
         dae_state = sys.state_view(state)
         assert not jnp.any(jnp.isnan(dae_state.system.y)), "NaN in state"
+
+    def test_multiple_prescribed_motion_input_routing(self):
+        """Inputs route correctly with multiple prescribed motions."""
+        sys = AcausalSystem(
+            elements={
+                "driver1": PrescribedMotion("driver1"),
+                "driver2": PrescribedMotion("driver2"),
+                "mass1": Mass("mass1", mass=1.0),
+                "mass2": Mass("mass2", mass=1.0),
+                "spring1": LinearSpring("spring1", stiffness=5.0),
+                "spring2": LinearSpring("spring2", stiffness=5.0),
+                "force": ForceSource("force"),
+                "x1": PositionSensor("x1"),
+                "x2": PositionSensor("x2"),
+            },
+            connections=[
+                AcausalConnection(("driver1", "flange"), ("spring1", "flange_a")),
+                AcausalConnection(("spring1", "flange_b"), ("mass1", "flange")),
+                AcausalConnection(("driver2", "flange"), ("spring2", "flange_a")),
+                AcausalConnection(("spring2", "flange_b"), ("mass2", "flange")),
+                AcausalConnection(("force", "flange"), ("mass1", "flange")),
+                AcausalConnection(("x1", "flange"), ("mass1", "flange")),
+                AcausalConnection(("x2", "flange"), ("mass2", "flange")),
+            ],
+            dt=0.001,
+        )
+
+        def _run(driver2_pos: float) -> float:
+            state = init_state_from_component(sys)
+            key = jr.PRNGKey(0)
+            inputs = {
+                "driver1": jnp.array([0.0, 0.0]),
+                "driver2": jnp.array([driver2_pos, 0.0]),
+                "force": jnp.array([0.0]),
+            }
+            for _ in range(200):
+                key, subkey = jr.split(key)
+                outputs, state = sys(inputs, state, key=subkey)
+            return float(outputs["x2"])
+
+        pos_with_driver = _run(1.0)
+        pos_without_driver = _run(0.0)
+        assert pos_with_driver - pos_without_driver > 0.05, (
+            "Expected driver2 to affect mass2 position"
+        )

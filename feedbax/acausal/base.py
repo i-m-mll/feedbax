@@ -179,6 +179,7 @@ class StateLayout:
         _eliminated: ``var_name -> canonical_var_name``.
         _grounded: Set of variable names fixed at zero.
         _inputs: ``var_name -> index`` in the causal input array.
+        _input_specs: ``var_name -> (element_name, slot_index)``.
         _outputs: ``output_label -> var_name`` for sensor readings.
         total_size: Length of the flat state vector.
     """
@@ -188,6 +189,7 @@ class StateLayout:
     _eliminated: dict[str, str]
     _grounded: set[str]
     _inputs: dict[str, int]
+    _input_specs: dict[str, tuple[str, int]]
     _outputs: dict[str, str]
     total_size: int
 

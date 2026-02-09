@@ -1,121 +1,84 @@
-# Commit: Add acausal mechanical modeling framework
+# Commit: Fix 5 acausal framework issues from Codex review
 
 ## Overview
 
-Implements a Modelica-style acausal modeling framework for feedbax. Physical
-elements (masses, springs, dampers, etc.) are described as construction-time
-equation descriptors. At `__init__` time, an assembly algorithm compiles all
-element equations and connection constraints into a single JAX-traceable
-vector field, which then runs as a standard `DAEComponent` inside the feedbax
-Graph.
+Post-merge Codex review of the acausal mechanics framework (Workstream 3)
+identified 5 issues: 1 critical, 3 major, 1 minor. All are now fixed and
+verified with 103 passing tests.
 
 ## Changes
 
-### Core types (`feedbax/acausal/base.py`)
+### Issue 1 (Critical): Input routing for multi-input elements
 
-Defines the vocabulary of the acausal framework:
+`AcausalSystem.__call__` was appending the entire element input vector for
+every input variable, duplicating values for elements with multiple inputs
+(e.g. PrescribedMotion has pos+vel). Fixed by adding `input_specs` mapping
+(`var_fqn -> (element_name, slot_index)`) to `StateLayout`, then building
+the flat input array by indexing into each element's input at the correct
+slot.
 
-- **Domain** enum (translational / rotational) determines the physical
-  semantics of ports.
-- **AcausalPort** carries across-variable names (shared at a node) and a
-  through-variable name (summed at a node).
-- **AcausalVar** tracks each scalar variable's status: differential, eliminated
-  by a connection, grounded, or driven by a causal input.
-- **AcausalEquation** stores a callable RHS and its dependencies.
-- **AcausalElement / AcausalConnection** are user-facing descriptors.
-- **StateLayout** maps variable names to indices in the flat state vector.
+### Issue 2 (Major): Gear ratio constraints not enforced
 
-### Assembly algorithm (`feedbax/acausal/assembly.py`)
+Two bugs combined to produce zero torque through gears:
 
-The `assemble_system()` function implements the following pipeline:
+1. **Node merging**: Gear across-variable elimination (`canon_b -> canon_a`
+   in the `eliminated` dict) caused force balance code to resolve node B's
+   key to node A, mixing through-vars from both physical nodes. Spring
+   torques `tau_a = -tau_b` then cancelled to zero. Fixed by saving
+   `eliminated_pre_gear` before gear processing and using it for all
+   node resolution.
 
-1. Collect all variables from all element ports.
-2. Process connections with a Union-Find to identify shared across-variable
-   groups. Pick canonical representatives; eliminate aliases.
-3. Handle special elements: Ground (across vars = 0), ForceSource /
-   TorqueSource (through var = causal input), PrescribedMotion (across vars
-   = causal input), Sensors (read-only output), GearRatio (algebraic
-   constraint).
-4. Build the differential variable list (state vector).
-5. Compile a vector field function that:
-   - Reads state from `y`, inputs and params from `args`.
-   - Evaluates through-variable equations in topological order.
-   - Sums through-vars at each mass/inertia node for force balance.
-   - Returns `dy` with position derivatives (= velocity) and velocity
-     derivatives (= net force / mass).
+2. **Undefined torque**: The old gear equation `tau_b = tau_a / ratio`
+   referenced `tau_a` which was never defined. Replaced with proper
+   node-B balance equations:
+   - `gear.flange_b.torque = -(sum of non-gear through vars at node B)`
+   - `gear.flange_a.torque = ratio * gear.flange_b.torque`
 
-All Python-level indexing is pre-computed so the vector field body contains
-only `jnp` operations and integer-literal array access, making it fully
-JAX-traceable.
+3. **Empty gear_ratio_scale**: The across-variable scaling dict was also
+   built with post-gear `eliminated`, making `canon_b == canon_a` and the
+   dict empty. Fixed by using `_epg` for this lookup too.
 
-### Sign convention
+### Issue 3 (Major): ForceSensor outputs never emitted
 
-Through-variables at a port represent the force/torque exerted **on the
-external body** connected at that port. For a spring with `pos_a < pos_b`
-(stretched), `force_b = k*(pos_a - pos_b) < 0` pulls B back toward A,
-which is physically correct. The net force on a mass is the sum of all
-connected through-vars (excluding the mass's own).
+`output_indices` only included sensors targeting differential state
+variables. ForceSensor targets through-variables (not in state). Added a
+compiled sensor evaluation function (`_compiled_sensor_fn`) that computes
+through-variable sensor values from `(y, input_vals, params)` using the
+same alias resolution and through-equation evaluation as the vector field.
+Called post-ODE-step in `__call__`.
 
-### Translational elements (`feedbax/acausal/translational.py`)
+### Issue 4 (Major): AcausalParams API mismatch
 
-Mass, LinearSpring, LinearDamper, Ground, ForceSource, PrescribedMotion,
-PositionSensor, VelocitySensor, ForceSensor.
+Changed `AcausalParams.values` from flat array + `_names` to
+`dict[str, Array]`. Vector field reads params by key name directly.
+Dict of Arrays is a valid PyTree, so `jax.grad` flows through.
 
-### Rotational elements (`feedbax/acausal/rotational.py`)
+### Issue 5 (Minor): Missing spec tests
 
-Inertia, TorsionalSpring, RotationalDamper, RotationalGround, TorqueSource,
-GearRatio.
-
-### DAEComponent bridge (`feedbax/acausal/system.py`)
-
-`AcausalSystem` subclasses `DAEComponent[AcausalSystemState]`. It runs the
-assembly algorithm in `__init__`, stores the compiled vector field and layout,
-and delegates to diffrax for integration. Input routing collects named causal
-inputs into a flat array.
-
-### Component registry
-
-Registered `AcausalSystem` in the web UI component registry under Mechanics.
-
-### Tests
-
-23 tests covering:
-- Assembly correctness (layout, elimination, grounding, params)
-- Physics (force acceleration, damped oscillation, energy conservation <1%)
-- Multi-connection force balance (3 springs at one node)
-- JIT compilation and gradient flow
-- Sensor readings match state vector
-- Long-horizon stability (10k steps without NaN or divergence)
-- Rotational domain (torsional spring oscillation, gear ratio)
-- Graph integration (constant force, P-controller feedback loop,
-  prescribed motion)
+Added: analytical damped MSD solution comparison, vmap over spring
+stiffness parameters, ForceSensor validation (spring force = -k*x),
+gear ratio behavior test, and multi-PrescribedMotion input routing test.
 
 ## Rationale
 
-Modelica-style acausal modeling is the standard approach for multi-domain
-physical systems in engineering. By separating element description (pure
-Python dataclasses) from execution (JAX vector field), we get:
+The gear ratio fix required careful analysis of how acausal modeling
+handles force balance across kinematic constraints. In Modelica-style
+systems, gear elimination creates an across-variable alias (kinematic
+constraint) but must NOT merge the physical force-balance nodes. The
+through-variable transmission must go through the gear's power-conservation
+equation (`tau_a = ratio * tau_b`) rather than direct node summation.
 
-1. **Composability**: Users snap together elements without worrying about
-   causality or variable ordering.
-2. **Differentiability**: The compiled vector field is fully JAX-traceable,
-   enabling gradient-based parameter fitting and neural network integration.
-3. **Graph compatibility**: `AcausalSystem` is a standard `Component`, so it
-   can be wired into feedbax Graphs alongside neural networks, controllers,
-   and other components.
-
-The through-variable sign convention ("force on external body") was chosen
-because it makes force balance at mass nodes a simple sum, avoiding the
-Modelica convention of "flow into component" which requires sign flips.
+The correct acceleration for the test system (inertia + gear + spring) is
+`(1 + ratio) * k * (ratio - 1) * theta / J` because the inertia sees both
+the direct spring torque at its node AND the gear-transmitted torque from
+the other side of the spring.
 
 ## Files Changed
 
-- `feedbax/acausal/__init__.py` -- Package init with public exports
-- `feedbax/acausal/base.py` -- Core types (Domain, Port, Var, Equation, Element, Connection, Layout)
-- `feedbax/acausal/assembly.py` -- Union-Find + assembly algorithm + vector field builder
-- `feedbax/acausal/system.py` -- AcausalSystem (DAEComponent bridge)
-- `feedbax/acausal/translational.py` -- Translational-domain elements
-- `feedbax/acausal/rotational.py` -- Rotational-domain elements
-- `feedbax/web/services/component_registry.py` -- Register AcausalSystem
-- `tests/test_acausal.py` -- Core tests (19 tests)
-- `tests/test_acausal_graph.py` -- Graph integration tests (4 tests)
+- `feedbax/acausal/assembly.py` -- Major: `eliminated_pre_gear`, gear torque
+  equations, `input_specs`, sensor eval fn, params as dict, `_build_vals`
+- `feedbax/acausal/base.py` -- Added `_input_specs` field to `StateLayout`
+- `feedbax/acausal/system.py` -- `AcausalParams` dict API, sensor fn call,
+  input routing via `input_specs`
+- `tests/test_acausal.py` -- 5 new tests, params API update
+- `tests/test_acausal_graph.py` -- 1 new test (multi-PrescribedMotion)
