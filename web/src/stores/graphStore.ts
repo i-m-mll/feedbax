@@ -28,7 +28,10 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
-const COMPOSITE_TYPES = new Set(['Network', 'Subgraph']);
+const DEFAULT_COMPOSITE_TYPES = new Set([
+  'Network', 'Subgraph', 'PenzaiSubgraph',
+  'Arm6MuscleRigidTendon', 'PointMass8MuscleRelu', 'AcausalSystem',
+]);
 const DEFAULT_NODE_WIDTH = 220;
 const DEFAULT_NODE_HEIGHT = 120;
 const HEADER_HEIGHT = 40;
@@ -41,6 +44,7 @@ interface GraphLayer {
   graphId: string | null;
   label: string;
   childNodeId?: string;
+  contextType?: string;
 }
 
 interface StateMergeRequest {
@@ -558,6 +562,44 @@ function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphU
   return { graph, uiState };
 }
 
+function getSubgraphContext(type: string): string {
+  switch (type) {
+    case 'Network': return 'network';
+    case 'PenzaiSubgraph': return 'penzai';
+    case 'Arm6MuscleRigidTendon':
+    case 'PointMass8MuscleRelu': return 'muscle';
+    case 'AcausalSystem': return 'acausal';
+    default: return 'generic';
+  }
+}
+
+function createPenzaiSubgraph(
+  label: string,
+  _nodeSpec: ComponentSpec
+): { graph: GraphSpec; uiState: GraphUIState } {
+  // Penzai wraps an inner model with passthrough ports
+  return createEmptySubgraph(label);
+}
+
+function createMuscleGroupSubgraph(
+  label: string,
+  _nodeSpec: ComponentSpec
+): { graph: GraphSpec; uiState: GraphUIState } {
+  // Muscle groups start as empty subgraphs to be populated
+  return createEmptySubgraph(label);
+}
+
+const SUBGRAPH_FACTORIES: Record<
+  string,
+  (label: string, nodeSpec: ComponentSpec) => { graph: GraphSpec; uiState: GraphUIState }
+> = {
+  Network: (label) => createNetworkSubgraph(label),
+  PenzaiSubgraph: createPenzaiSubgraph,
+  Arm6MuscleRigidTendon: createMuscleGroupSubgraph,
+  PointMass8MuscleRelu: createMuscleGroupSubgraph,
+  AcausalSystem: (label) => createEmptySubgraph(label),
+};
+
 function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
   const wiredInputs = new Set(
     graph.wires.map((wire) => `${wire.target_node}:${wire.target_port}`)
@@ -973,6 +1015,8 @@ interface GraphStoreState {
   edgeStyle: 'bezier' | 'elbow';
   graphStack: GraphLayer[];
   currentGraphLabel: string;
+  _compositeTypes: Set<string>;
+  currentContext: string;
   isDirty: boolean;
   lastSavedAt: string | null;
   past: { graph: GraphSpec; uiState: GraphUIState }[];
@@ -1011,6 +1055,7 @@ interface GraphStoreState {
   removeTap: (tapId: string) => void;
   confirmStateMerge: (mapping: Record<string, string>) => void;
   cancelStateMerge: () => void;
+  setCompositeTypes: (types: Set<string>) => void;
 }
 
 const initial = createInitialGraph();
@@ -1024,6 +1069,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   edgeStyle: DEFAULT_EDGE_STYLE,
   graphStack: [],
   currentGraphLabel: initial.graph.metadata?.name ?? 'Model',
+  _compositeTypes: new Set(DEFAULT_COMPOSITE_TYPES),
+  currentContext: 'top-level',
   isDirty: false,
   lastSavedAt: null,
   past: [],
@@ -1043,6 +1090,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       edges: buildEdges(migrated, normalized, edgeStyle),
       graphStack: [],
       currentGraphLabel: migrated.metadata?.name ?? 'Model',
+      currentContext: 'top-level',
       isDirty: false,
       past: [],
       future: [],
@@ -1068,6 +1116,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       edges: buildEdges(fresh.graph, fresh.uiState, DEFAULT_EDGE_STYLE),
       graphStack: [],
       currentGraphLabel: fresh.graph.metadata?.name ?? 'Model',
+      currentContext: 'top-level',
       isDirty: false,
       lastSavedAt: null,
       past: [],
@@ -1250,7 +1299,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const nodeSpec = state.graph.nodes[nodeId];
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
-      if (!nodeSpec || (!COMPOSITE_TYPES.has(nodeSpec.type) && !hasSubgraph)) {
+      if (!nodeSpec || (!get()._compositeTypes.has(nodeSpec.type) && !hasSubgraph)) {
         return state;
       }
       const parentLabel = state.currentGraphLabel || state.graph.metadata?.name || 'Model';
@@ -1258,9 +1307,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const cachedUi = state.uiState.subgraph_states?.[nodeId];
       const nextLayerBase = cachedGraph
         ? { graph: cachedGraph, uiState: cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-        : nodeSpec.type === 'Network'
-          ? createNetworkSubgraph(nodeId)
-          : createEmptySubgraph(nodeId);
+        : (SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec) ?? createEmptySubgraph(nodeId));
       const derivedNext = deriveSubgraphPorts(nextLayerBase.graph);
       const normalized = normalizeUiState(derivedNext, nextLayerBase.uiState, state.edgeStyle);
       const parentGraph: GraphSpec = {
@@ -1277,6 +1324,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           [nodeId]: normalized,
         },
       };
+      const context = getSubgraphContext(nodeSpec.type);
       return {
         graphStack: [
           ...state.graphStack,
@@ -1286,6 +1334,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             graphId: state.graphId,
             label: parentLabel,
             childNodeId: nodeId,
+            contextType: context,
           },
         ],
         graph: derivedNext,
@@ -1293,6 +1342,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         nodes: buildNodes(derivedNext, normalized),
         edges: buildEdges(derivedNext, normalized, state.edgeStyle),
         currentGraphLabel: nodeId,
+        currentContext: context,
         past: [],
         future: [],
       };
@@ -1463,6 +1513,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         edges: buildEdges(nextLayer.graph, normalized, state.edgeStyle),
         graphId: nextLayer.graphId,
         currentGraphLabel: nextLayer.label,
+        currentContext: nextStack.length > 0
+          ? (nextStack[nextStack.length - 1].contextType ?? 'top-level')
+          : 'top-level',
         past: [],
         future: [],
       };
@@ -2433,5 +2486,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   cancelStateMerge: () => {
     set({ pendingStateMerge: null });
+  },
+  setCompositeTypes: (types) => {
+    set({ _compositeTypes: types });
   },
 }));

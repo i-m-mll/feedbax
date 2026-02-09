@@ -39,9 +39,19 @@ import {
   Layers,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
+import { useGraphStore } from '@/stores/graphStore';
 import type { ComponentDefinition } from '@/types/components';
 import { groupComponentsByCategory } from '@/utils/components';
 import clsx from 'clsx';
+
+const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
+  'top-level': [],  // no filtering at top level
+  'network': ['Neural Networks', 'Math', 'Signal Processing'],
+  'penzai': ['Neural Networks', 'Math', 'Signal Processing'],
+  'muscle': ['Muscles', 'Math', 'Signal Processing'],
+  'acausal': ['Mechanics', 'Control', 'Math', 'Signal Processing'],
+  'generic': [],
+};
 
 const iconMap = {
   CircuitBoard,
@@ -87,12 +97,13 @@ export function ComponentLibrary() {
     new Set(['Neural Networks'])
   );
   const { components, isLoading, error } = useComponents();
+  const currentContext = useGraphStore((state) => state.currentContext);
   const coreComponents = useMemo(
     () => components.filter((component) => component.name === 'Subgraph'),
     [components]
   );
 
-  const byCategory = useMemo(() => {
+  const { suggestedCategories, otherCategories } = useMemo(() => {
     const filtered = search
       ? components.filter((component) =>
           component.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -101,8 +112,26 @@ export function ComponentLibrary() {
       : components;
 
     const withoutPinned = filtered.filter((component) => component.name !== 'Subgraph');
-    return groupComponentsByCategory(withoutPinned);
-  }, [components, search]);
+    const all = groupComponentsByCategory(withoutPinned);
+
+    const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
+    if (suggested.length === 0) {
+      return { suggestedCategories: {} as Record<string, ComponentDefinition[]>, otherCategories: all };
+    }
+
+    const suggestedCategories: Record<string, ComponentDefinition[]> = {};
+    const otherCategories: Record<string, ComponentDefinition[]> = {};
+
+    for (const [category, comps] of Object.entries(all)) {
+      if (suggested.includes(category)) {
+        suggestedCategories[category] = comps;
+      } else {
+        otherCategories[category] = comps;
+      }
+    }
+
+    return { suggestedCategories, otherCategories };
+  }, [components, search, currentContext]);
 
   const toggleCategory = (category: string) => {
     setExpandedCategories((prev) => {
@@ -146,11 +175,30 @@ export function ComponentLibrary() {
             </div>
           </div>
         )}
-        {Object.entries(byCategory).map(([category, components]) => (
+        {/* Suggested for context */}
+        {Object.keys(suggestedCategories).length > 0 && (
+          <>
+            <div className="text-[10px] text-brand-500 uppercase tracking-widest">
+              Suggested
+            </div>
+            {Object.entries(suggestedCategories).map(([category, comps]) => (
+              <CategorySection
+                key={category}
+                category={category}
+                components={comps}
+                expanded={expandedCategories.has(category)}
+                onToggle={() => toggleCategory(category)}
+              />
+            ))}
+            <div className="border-t border-slate-100 my-1" />
+          </>
+        )}
+        {/* Other categories */}
+        {Object.entries(otherCategories).map(([category, comps]) => (
           <CategorySection
             key={category}
             category={category}
-            components={components}
+            components={comps}
             expanded={expandedCategories.has(category)}
             onToggle={() => toggleCategory(category)}
           />

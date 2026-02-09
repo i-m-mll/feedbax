@@ -530,6 +530,7 @@ class ComponentRegistry:
                     inputs={'input': PortType(dtype='vector')},
                     outputs={'state': PortType(dtype='state')},
                 ),
+                is_composite=True,
             )
         )
         self.register(

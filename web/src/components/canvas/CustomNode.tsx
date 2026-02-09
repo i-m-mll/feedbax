@@ -34,8 +34,9 @@ export function CustomNode({ data, selected }: NodeProps) {
     portType: 'input' | 'output';
   } | null>(null);
 
+  const compositeTypes = useGraphStore((state) => state._compositeTypes);
   const isComposite =
-    spec.type === 'Network' || spec.type === 'Subgraph' || hasSubgraph;
+    compositeTypes.has(spec.type) || hasSubgraph;
   const inputCount = spec.input_ports.length;
   const outputCount = spec.output_ports.length;
   const totalPorts = inputCount + outputCount;
