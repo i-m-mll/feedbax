@@ -37,6 +37,7 @@ import {
   Pause,
   Eye,
   Layers,
+  Info,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
@@ -47,11 +48,14 @@ import clsx from 'clsx';
 const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
   'top-level': [],  // no filtering at top level
   'network': ['Neural Networks', 'Math', 'Signal Processing'],
-  'penzai': ['Neural Networks', 'Math', 'Signal Processing'],
+  'penzai': [],  // penzai models cannot be edited — show nothing
   'muscle': ['Muscles', 'Math', 'Signal Processing'],
   'acausal': ['Mechanics', 'Control', 'Math', 'Signal Processing'],
   'generic': [],
 };
+
+/** Contexts where only the suggested categories should appear (exclusive filtering). */
+const CONTEXT_EXCLUSIVE_FILTER = new Set(['penzai', 'acausal', 'muscle', 'network']);
 
 const iconMap = {
   CircuitBoard,
@@ -98,12 +102,16 @@ export function ComponentLibrary() {
   );
   const { components, isLoading, error } = useComponents();
   const currentContext = useGraphStore((state) => state.currentContext);
+  const isExclusiveContext = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
   const coreComponents = useMemo(
     () => components.filter((component) => component.name === 'Subgraph'),
     [components]
   );
 
-  const { suggestedCategories, otherCategories } = useMemo(() => {
+  const { suggestedCategories, otherCategories } = useMemo<{
+    suggestedCategories: Record<string, ComponentDefinition[]>;
+    otherCategories: Record<string, ComponentDefinition[]>;
+  }>(() => {
     const filtered = search
       ? components.filter((component) =>
           component.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -115,8 +123,18 @@ export function ComponentLibrary() {
     const all = groupComponentsByCategory(withoutPinned);
 
     const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
+
+    // For exclusive contexts with no suggested categories (e.g. penzai), show nothing.
+    if (suggested.length === 0 && isExclusiveContext) {
+      return {
+        suggestedCategories: {},
+        otherCategories: {},
+      };
+    }
+
+    // For non-exclusive contexts with no suggestions (top-level, generic), show everything.
     if (suggested.length === 0) {
-      return { suggestedCategories: {} as Record<string, ComponentDefinition[]>, otherCategories: all };
+      return { suggestedCategories: {}, otherCategories: all };
     }
 
     const suggestedCategories: Record<string, ComponentDefinition[]> = {};
@@ -125,13 +143,18 @@ export function ComponentLibrary() {
     for (const [category, comps] of Object.entries(all)) {
       if (suggested.includes(category)) {
         suggestedCategories[category] = comps;
-      } else {
+      } else if (!isExclusiveContext) {
+        // Only include non-suggested categories when filtering is not exclusive.
         otherCategories[category] = comps;
       }
     }
 
     return { suggestedCategories, otherCategories };
-  }, [components, search, currentContext]);
+  }, [components, search, currentContext, isExclusiveContext]);
+
+  const hasSuggestedCategories = Object.keys(suggestedCategories).length > 0;
+  const hasOtherCategories = Object.keys(otherCategories).length > 0;
+  const suggestedHeaderLabel = isExclusiveContext ? 'Available' : 'Suggested';
 
   const toggleCategory = (category: string) => {
     setExpandedCategories((prev) => {
@@ -163,7 +186,15 @@ export function ComponentLibrary() {
         {error && (
           <div className="text-xs text-amber-500">Using local component catalog.</div>
         )}
-        {coreComponents.length > 0 && (
+        {currentContext === 'penzai' && (
+          <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50/60 p-3">
+            <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-600">
+              Penzai models cannot be edited in the graph editor. Navigate back to add or modify components.
+            </p>
+          </div>
+        )}
+        {coreComponents.length > 0 && currentContext !== 'penzai' && (
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">
               Structure
@@ -176,10 +207,10 @@ export function ComponentLibrary() {
           </div>
         )}
         {/* Suggested for context */}
-        {Object.keys(suggestedCategories).length > 0 && (
+        {hasSuggestedCategories && (
           <>
             <div className="text-[10px] text-brand-500 uppercase tracking-widest">
-              Suggested
+              {suggestedHeaderLabel}
             </div>
             {Object.entries(suggestedCategories).map(([category, comps]) => (
               <CategorySection
@@ -190,7 +221,7 @@ export function ComponentLibrary() {
                 onToggle={() => toggleCategory(category)}
               />
             ))}
-            <div className="border-t border-slate-100 my-1" />
+            {hasOtherCategories && <div className="border-t border-slate-100 my-1" />}
           </>
         )}
         {/* Other categories */}

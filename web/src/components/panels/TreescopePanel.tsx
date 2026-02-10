@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useGraphStore } from '@/stores/graphStore';
 import type { GraphSpec } from '@/types/graph';
@@ -75,8 +75,6 @@ export function TreescopePanel() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [maxDepth, setMaxDepth] = useState(10);
   const [projectCycles, setProjectCycles] = useState(true);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-
   const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
   const graphStack = useGraphStore((state) => state.graphStack);
@@ -128,18 +126,6 @@ export function TreescopePanel() {
     retry: 1,
   });
 
-  // Update iframe content when HTML changes
-  useEffect(() => {
-    if (iframeRef.current && treescopeQuery.data?.html) {
-      const doc = iframeRef.current.contentDocument;
-      if (doc) {
-        doc.open();
-        doc.write(treescopeQuery.data.html);
-        doc.close();
-      }
-    }
-  }, [treescopeQuery.data?.html]);
-
   const cycleCount = treescopeQuery.data?.cycle_count ?? 0;
   const hasCycles = treescopeQuery.data?.has_cycles ?? false;
 
@@ -181,7 +167,7 @@ export function TreescopePanel() {
       >
         <span className="flex items-center gap-2">
           Treescope
-          {hasCycles && (
+          {hasNodes && hasCycles && (
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 normal-case tracking-normal">
               {cycleCount} cycle{cycleCount !== 1 ? 's' : ''}
             </span>
@@ -256,7 +242,7 @@ export function TreescopePanel() {
           )}
 
           {/* Cycle annotations */}
-          {hasCycles && treescopeQuery.data?.cycles && (
+          {hasNodes && hasCycles && treescopeQuery.data?.cycles && (
             <div className="rounded bg-amber-50 p-3 space-y-1">
               <div className="text-xs font-medium text-amber-800">Feedback Loops</div>
               <ul className="text-xs text-amber-700 space-y-0.5">
@@ -278,9 +264,9 @@ export function TreescopePanel() {
           {hasNodes && treescopeQuery.data?.html && (
             <div className="rounded border border-slate-200 overflow-hidden">
               <iframe
-                ref={iframeRef}
                 title="Treescope Visualization"
                 sandbox="allow-scripts"
+                srcDoc={treescopeQuery.data?.html ?? ''}
                 className="w-full h-64 bg-white"
                 style={{ minHeight: '256px', maxHeight: '400px' }}
               />
@@ -288,7 +274,7 @@ export function TreescopePanel() {
           )}
 
           {/* Execution order */}
-          {treescopeQuery.data?.execution_order && (
+          {hasNodes && treescopeQuery.data?.execution_order && (
             <details className="text-xs">
               <summary className="cursor-pointer text-slate-500 hover:text-slate-700">
                 Execution Order
