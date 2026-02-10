@@ -37,6 +37,7 @@ import {
   Pause,
   Eye,
   Layers,
+  Info,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
@@ -47,11 +48,14 @@ import clsx from 'clsx';
 const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
   'top-level': [],  // no filtering at top level
   'network': ['Neural Networks', 'Math', 'Signal Processing'],
-  'penzai': ['Neural Networks', 'Math', 'Signal Processing'],
+  'penzai': [],  // penzai models cannot be edited — show nothing
   'muscle': ['Muscles', 'Math', 'Signal Processing'],
   'acausal': ['Mechanics', 'Control', 'Math', 'Signal Processing'],
   'generic': [],
 };
+
+/** Contexts where only the suggested categories should appear (exclusive filtering). */
+const CONTEXT_EXCLUSIVE_FILTER = new Set(['penzai', 'acausal', 'muscle', 'network']);
 
 const iconMap = {
   CircuitBoard,
@@ -115,6 +119,14 @@ export function ComponentLibrary() {
     const all = groupComponentsByCategory(withoutPinned);
 
     const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
+    const isExclusive = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
+
+    // For exclusive contexts with no suggested categories (e.g. penzai), show nothing.
+    if (suggested.length === 0 && isExclusive) {
+      return { suggestedCategories: {} as Record<string, ComponentDefinition[]>, otherCategories: {} as Record<string, ComponentDefinition[]> };
+    }
+
+    // For non-exclusive contexts with no suggestions (top-level, generic), show everything.
     if (suggested.length === 0) {
       return { suggestedCategories: {} as Record<string, ComponentDefinition[]>, otherCategories: all };
     }
@@ -125,7 +137,8 @@ export function ComponentLibrary() {
     for (const [category, comps] of Object.entries(all)) {
       if (suggested.includes(category)) {
         suggestedCategories[category] = comps;
-      } else {
+      } else if (!isExclusive) {
+        // Only include non-suggested categories when filtering is not exclusive.
         otherCategories[category] = comps;
       }
     }
@@ -163,7 +176,15 @@ export function ComponentLibrary() {
         {error && (
           <div className="text-xs text-amber-500">Using local component catalog.</div>
         )}
-        {coreComponents.length > 0 && (
+        {currentContext === 'penzai' && (
+          <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50/60 p-3">
+            <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-600">
+              Penzai models cannot be edited in the graph editor. Navigate back to add or modify components.
+            </p>
+          </div>
+        )}
+        {coreComponents.length > 0 && currentContext !== 'penzai' && (
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">
               Structure
