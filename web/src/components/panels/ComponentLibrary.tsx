@@ -102,12 +102,16 @@ export function ComponentLibrary() {
   );
   const { components, isLoading, error } = useComponents();
   const currentContext = useGraphStore((state) => state.currentContext);
+  const isExclusiveContext = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
   const coreComponents = useMemo(
     () => components.filter((component) => component.name === 'Subgraph'),
     [components]
   );
 
-  const { suggestedCategories, otherCategories } = useMemo(() => {
+  const { suggestedCategories, otherCategories } = useMemo<{
+    suggestedCategories: Record<string, ComponentDefinition[]>;
+    otherCategories: Record<string, ComponentDefinition[]>;
+  }>(() => {
     const filtered = search
       ? components.filter((component) =>
           component.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -119,16 +123,18 @@ export function ComponentLibrary() {
     const all = groupComponentsByCategory(withoutPinned);
 
     const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
-    const isExclusive = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
 
     // For exclusive contexts with no suggested categories (e.g. penzai), show nothing.
-    if (suggested.length === 0 && isExclusive) {
-      return { suggestedCategories: {} as Record<string, ComponentDefinition[]>, otherCategories: {} as Record<string, ComponentDefinition[]> };
+    if (suggested.length === 0 && isExclusiveContext) {
+      return {
+        suggestedCategories: {},
+        otherCategories: {},
+      };
     }
 
     // For non-exclusive contexts with no suggestions (top-level, generic), show everything.
     if (suggested.length === 0) {
-      return { suggestedCategories: {} as Record<string, ComponentDefinition[]>, otherCategories: all };
+      return { suggestedCategories: {}, otherCategories: all };
     }
 
     const suggestedCategories: Record<string, ComponentDefinition[]> = {};
@@ -137,14 +143,18 @@ export function ComponentLibrary() {
     for (const [category, comps] of Object.entries(all)) {
       if (suggested.includes(category)) {
         suggestedCategories[category] = comps;
-      } else if (!isExclusive) {
+      } else if (!isExclusiveContext) {
         // Only include non-suggested categories when filtering is not exclusive.
         otherCategories[category] = comps;
       }
     }
 
     return { suggestedCategories, otherCategories };
-  }, [components, search, currentContext]);
+  }, [components, search, currentContext, isExclusiveContext]);
+
+  const hasSuggestedCategories = Object.keys(suggestedCategories).length > 0;
+  const hasOtherCategories = Object.keys(otherCategories).length > 0;
+  const suggestedHeaderLabel = isExclusiveContext ? 'Available' : 'Suggested';
 
   const toggleCategory = (category: string) => {
     setExpandedCategories((prev) => {
@@ -197,10 +207,10 @@ export function ComponentLibrary() {
           </div>
         )}
         {/* Suggested for context */}
-        {Object.keys(suggestedCategories).length > 0 && (
+        {hasSuggestedCategories && (
           <>
             <div className="text-[10px] text-brand-500 uppercase tracking-widest">
-              Suggested
+              {suggestedHeaderLabel}
             </div>
             {Object.entries(suggestedCategories).map(([category, comps]) => (
               <CategorySection
@@ -211,7 +221,7 @@ export function ComponentLibrary() {
                 onToggle={() => toggleCategory(category)}
               />
             ))}
-            <div className="border-t border-slate-100 my-1" />
+            {hasOtherCategories && <div className="border-t border-slate-100 my-1" />}
           </>
         )}
         {/* Other categories */}
