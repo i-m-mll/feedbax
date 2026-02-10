@@ -118,6 +118,8 @@ def _render_graph_spec(
             name: set() for name in graph_spec.nodes.keys()
         }
         for wire in graph_spec.wires:
+            if wire.source_node not in adjacency or wire.target_node not in adjacency:
+                continue
             adjacency[wire.source_node].add(wire.target_node)
 
         order, back_edges = detect_cycles_and_sort(adjacency)
