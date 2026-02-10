@@ -18,6 +18,46 @@ router = APIRouter()
 graph_service = GraphService()
 
 
+def _graph_spec_to_tree_dict(graph_spec: GraphSpec) -> dict:
+    """Convert GraphSpec to a treescope-friendly nested dict.
+
+    Treescope renders plain dicts as readable trees, whereas Pydantic models
+    produce unhelpful raw-object dumps.  This helper builds a concise nested
+    structure suitable for ``render_model_html()``.
+
+    Args:
+        graph_spec: The graph specification to convert.
+
+    Returns:
+        A nested dict representing the graph structure.
+    """
+    tree: dict = {}
+    for name, node in graph_spec.nodes.items():
+        node_dict: dict = {"type": node.type}
+        if node.params:
+            node_dict["params"] = dict(node.params)
+        if node.input_ports:
+            node_dict["inputs"] = node.input_ports
+        if node.output_ports:
+            node_dict["outputs"] = node.output_ports
+        tree[name] = node_dict
+
+    if graph_spec.wires:
+        tree["__wires__"] = [
+            f"{w.source_node}.{w.source_port} -> {w.target_node}.{w.target_port}"
+            for w in graph_spec.wires
+        ]
+
+    if graph_spec.subgraphs:
+        for sg_name, sg_spec in graph_spec.subgraphs.items():
+            # Ensure the subgraph key exists (it may not if there is no
+            # corresponding top-level node with that name).
+            tree.setdefault(sg_name, {})
+            tree[sg_name]["subgraph"] = _graph_spec_to_tree_dict(sg_spec)
+
+    return tree
+
+
 def _render_graph_spec(
     graph_spec: GraphSpec,
     max_depth: int = 10,
@@ -53,8 +93,9 @@ def _render_graph_spec(
         )
 
     try:
+        tree_dict = _graph_spec_to_tree_dict(graph_spec)
         html = render_model_html(
-            graph_spec,
+            tree_dict,
             max_depth=max_depth,
             project_cycles=project_cycles,
             roundtrip_mode=roundtrip_mode,
@@ -77,6 +118,8 @@ def _render_graph_spec(
             name: set() for name in graph_spec.nodes.keys()
         }
         for wire in graph_spec.wires:
+            if wire.source_node not in adjacency or wire.target_node not in adjacency:
+                continue
             adjacency[wire.source_node].add(wire.target_node)
 
         order, back_edges = detect_cycles_and_sort(adjacency)
