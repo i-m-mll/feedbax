@@ -266,7 +266,7 @@ export function TreescopePanel() {
               <iframe
                 title="Treescope Visualization"
                 sandbox="allow-scripts"
-                srcdoc={treescopeQuery.data?.html ?? ''}
+                srcDoc={treescopeQuery.data?.html ?? ''}
                 className="w-full h-64 bg-white"
                 style={{ minHeight: '256px', maxHeight: '400px' }}
               />
