@@ -12,6 +12,7 @@ from typing import NamedTuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 import optax
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -26,6 +27,24 @@ from feedbax.training.rl.env import (
 )
 from feedbax.training.rl.policy import ActorCritic
 from feedbax.training.rl.tasks import sample_task_jax
+
+
+def _stack_pytrees(*trees):
+    """Stack compatible pytrees along a new leading axis.
+
+    Handles non-array leaves (e.g. activation functions in eqx.nn.MLP)
+    by keeping the first tree's value. Array leaves are stacked with
+    ``jnp.stack``.
+    """
+    all_flat = [jt.flatten(t) for t in trees]
+    template_treedef = all_flat[0][1]
+    stacked_leaves = []
+    for leaves in zip(*[f[0] for f in all_flat]):
+        if eqx.is_array(leaves[0]):
+            stacked_leaves.append(jnp.stack(leaves))
+        else:
+            stacked_leaves.append(leaves[0])
+    return jt.unflatten(template_treedef, stacked_leaves)
 
 
 class PPOConfig(eqx.Module):
@@ -372,3 +391,245 @@ def train_ppo(
         metrics["mean_entropy"].append(float(jnp.mean(jnp.array(entropies))))
 
     return policy, metrics
+
+
+def train_ppo_batched(
+    batched_plant: AbstractPlant,
+    env_config: RLEnvConfig,
+    ppo_config: PPOConfig,
+    key: PRNGKeyArray,
+    n_envs: int = 512,
+) -> tuple[ActorCritic, dict]:
+    """Train independent PPO policies for B bodies simultaneously.
+
+    Each body gets its own policy; collection and update steps are vmapped
+    over the body batch axis. The outer PPO update loop stays in Python
+    (small number of iterations), while inner operations are JIT-compiled.
+
+    Args:
+        batched_plant: MJXPlant with leading ``(B,)`` dim on array leaves.
+        env_config: RLEnvConfig (shared across all bodies).
+        ppo_config: PPO hyperparameters.
+        key: PRNG key.
+        n_envs: Number of parallel environments per body.
+
+    Returns:
+        Tuple of (batched ActorCritic with ``(B,)`` leading dim,
+        metrics dict with per-body returns).
+    """
+    n_bodies = jt.leaves(batched_plant)[0].shape[0]
+    obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
+    action_dim = env_config.n_muscles
+
+    # Extract config as concrete Python values for JIT tracing
+    n_steps = int(ppo_config.n_steps_per_update)
+    total_timesteps = int(ppo_config.total_timesteps)
+    n_epochs = int(ppo_config.n_epochs)
+    n_minibatches = int(ppo_config.n_minibatches)
+    gamma = float(ppo_config.gamma)
+    gae_lambda = float(ppo_config.gae_lambda)
+    clip_eps = float(ppo_config.clip_eps)
+    vf_coef = float(ppo_config.vf_coef)
+    ent_coef = float(ppo_config.ent_coef)
+    timesteps_per_update = n_steps * n_envs
+    batch_size = n_steps * n_envs
+    minibatch_size = batch_size // n_minibatches
+    n_train_iters = n_epochs * n_minibatches
+
+    # B independent policies
+    key, init_key, env_key = jax.random.split(key, 3)
+    init_keys = jax.random.split(init_key, n_bodies)
+    policies = [
+        ActorCritic(
+            obs_dim, action_dim,
+            int(ppo_config.hidden_dim), int(ppo_config.hidden_layers),
+            key=k,
+        )
+        for k in init_keys
+    ]
+    batched_policy = _stack_pytrees(*policies)
+
+    # Optimizer + B opt_states
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(float(ppo_config.max_grad_norm)),
+        optax.adam(float(ppo_config.lr)),
+    )
+    opt_states = [optimizer.init(eqx.filter(p, eqx.is_array)) for p in policies]
+    batched_opt_state = _stack_pytrees(*opt_states)
+
+    # B × N environments
+    env_keys = jax.random.split(env_key, n_bodies)
+    batched_states = eqx.filter_vmap(
+        lambda plant, k: _init_envs(plant, env_config, k, n_envs),
+    )(batched_plant, env_keys)
+
+    # --- JIT'd vmapped collect ---
+    @eqx.filter_jit
+    def batched_collect(policy, states, key):
+        keys = jax.random.split(key, n_bodies)
+        return eqx.filter_vmap(
+            lambda pl, pol, st, k: _collect_rollout(
+                pl, env_config, pol, st, k, n_steps, n_envs,
+            ),
+        )(batched_plant, policy, states, keys)
+
+    # --- Per-body update (vmapped) ---
+    def update_one(policy, opt_state, rollout, last_values, key):
+        advantages, returns = compute_gae_scan(
+            rollout.rewards, rollout.values, rollout.dones,
+            last_values, gamma, gae_lambda,
+        )
+        flat_obs = rollout.obs.reshape(-1, obs_dim)
+        flat_actions = rollout.actions.reshape(-1, action_dim)
+        flat_logp = rollout.log_probs.reshape(-1)
+        flat_adv = advantages.reshape(-1)
+        flat_ret = returns.reshape(-1)
+        flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
+
+        # Partition policy into dynamic (arrays) and static (activation fns,
+        # etc.) so that only valid JAX types enter the fori_loop carry.
+        dynamic_policy, static_policy = eqx.partition(policy, eqx.is_array)
+
+        def train_step(i, carry):
+            dynamic_policy, opt_state, key = carry
+            policy = eqx.combine(dynamic_policy, static_policy)
+            perm_key = jax.random.fold_in(key, i // n_minibatches)
+            perm = jax.random.permutation(perm_key, batch_size)
+            start = (i % n_minibatches) * minibatch_size
+            mb_idx = jax.lax.dynamic_slice(perm, (start,), (minibatch_size,))
+
+            (_, _), grads = eqx.filter_value_and_grad(
+                _ppo_loss, has_aux=True,
+            )(
+                policy,
+                flat_obs[mb_idx], flat_actions[mb_idx], flat_logp[mb_idx],
+                flat_adv[mb_idx], flat_ret[mb_idx],
+                clip_eps, vf_coef, ent_coef,
+            )
+
+            updates, opt_state = optimizer.update(grads, opt_state, policy)
+            policy = eqx.apply_updates(policy, updates)
+            dynamic_policy, _ = eqx.partition(policy, eqx.is_array)
+            return dynamic_policy, opt_state, key
+
+        dynamic_policy, opt_state, _ = jax.lax.fori_loop(
+            0, n_train_iters, train_step, (dynamic_policy, opt_state, key),
+        )
+        policy = eqx.combine(dynamic_policy, static_policy)
+        mean_reward = jnp.mean(rollout.rewards)
+        return policy, opt_state, mean_reward
+
+    @eqx.filter_jit
+    def batched_update(policy, opt_state, rollout, last_values, key):
+        keys = jax.random.split(key, n_bodies)
+        return eqx.filter_vmap(update_one)(
+            policy, opt_state, rollout, last_values, keys,
+        )
+
+    # --- Training loop ---
+    metrics: dict[str, object] = {
+        "updates": 0,
+        "timesteps": 0,
+        "per_body_mean_return": [],
+    }
+
+    while metrics["timesteps"] < total_timesteps:
+        key, collect_key, update_key = jax.random.split(key, 3)
+
+        batched_states, batched_rollout, batched_last_values, _ = (
+            batched_collect(batched_policy, batched_states, collect_key)
+        )
+
+        metrics["timesteps"] = int(metrics["timesteps"]) + timesteps_per_update
+
+        batched_policy, batched_opt_state, per_body_rewards = batched_update(
+            batched_policy, batched_opt_state,
+            batched_rollout, batched_last_values, update_key,
+        )
+
+        metrics["updates"] = int(metrics["updates"]) + 1
+        per_body_returns = per_body_rewards * env_config.n_steps
+        metrics["per_body_mean_return"].append(per_body_returns)
+
+    return batched_policy, metrics
+
+
+@eqx.filter_jit
+def collect_rollouts_batched(
+    batched_plant: AbstractPlant,
+    env_config: RLEnvConfig,
+    batched_policy: ActorCritic,
+    key: PRNGKeyArray,
+    task_types: Array,
+) -> dict:
+    """Collect R rollouts per body for B bodies simultaneously.
+
+    Uses scan-based rollout collection vmapped over bodies and rollouts.
+
+    Args:
+        batched_plant: MJXPlant with leading ``(B,)`` on array leaves.
+        env_config: Shared environment configuration.
+        batched_policy: ActorCritic with leading ``(B,)`` on array leaves.
+        key: PRNG key.
+        task_types: Task type per rollout, shape ``(R,)``.
+
+    Returns:
+        Dict with arrays of shape ``(B, R, T, ...)``.
+        Keys: ``timestamps``, ``task_target``, ``joint_angles``,
+        ``joint_velocities``, ``muscle_activations``, ``effector_pos``.
+    """
+    n_bodies = jt.leaves(batched_plant)[0].shape[0]
+    n_rollouts = task_types.shape[0]
+    n_steps = env_config.n_steps
+
+    all_keys = jax.random.split(key, n_bodies * n_rollouts)
+    all_keys = all_keys.reshape(n_bodies, n_rollouts, 2)
+
+    timestamps = jnp.arange(n_steps) * env_config.dt
+
+    def single_rollout(plant, policy, key, task_type):
+        key, task_key, reset_key = jax.random.split(key, 3)
+        task = sample_task_jax(timestamps, task_key, task_type=task_type)
+        state = rl_env_reset(plant, env_config, task, reset_key)
+
+        sk0 = state.plant_state.skeleton
+        eff0 = plant.skeleton.effector(sk0)
+
+        def step_fn(carry, _):
+            state, key = carry
+            key, act_key = jax.random.split(key)
+            obs = rl_env_get_obs(plant, env_config, state)
+            action, _, _ = policy.sample_action(obs, act_key)
+            next_state, _, _, _ = rl_env_step(plant, env_config, state, action)
+            sk = next_state.plant_state.skeleton
+            eff = plant.skeleton.effector(sk)
+            return (next_state, key), (
+                sk.qpos, sk.qvel, next_state.muscle_activations, eff.pos,
+            )
+
+        (_, _), (qpos_rest, qvel_rest, acts_rest, eff_rest) = jax.lax.scan(
+            step_fn, (state, key), None, length=n_steps - 1,
+        )
+
+        qpos = jnp.concatenate([sk0.qpos[None], qpos_rest])
+        qvel = jnp.concatenate([sk0.qvel[None], qvel_rest])
+        acts = jnp.concatenate([state.muscle_activations[None], acts_rest])
+        eff_pos = jnp.concatenate([eff0.pos[None], eff_rest])
+
+        return {
+            "timestamps": timestamps,
+            "task_target": task.target_pos,
+            "joint_angles": qpos,
+            "joint_velocities": qvel,
+            "muscle_activations": acts,
+            "effector_pos": eff_pos,
+        }
+
+    def body_rollouts(plant, policy, keys):
+        return eqx.filter_vmap(
+            lambda k, tt: single_rollout(plant, policy, k, tt),
+        )(keys, task_types)
+
+    return eqx.filter_vmap(body_rollouts)(
+        batched_plant, batched_policy, all_keys,
+    )

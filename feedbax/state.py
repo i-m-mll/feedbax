@@ -6,7 +6,7 @@
 
 from collections.abc import Callable
 from copy import deepcopy
-from functools import cached_property
+
 import logging
 from typing import (
     Optional,
@@ -41,7 +41,7 @@ class StateBounds(Module, Generic[StateT]):
     low: Optional[StateT]
     high: Optional[StateT]
 
-    @cached_property
+    @property
     def filter_spec(self) -> PyTree[bool]:
         """A matching PyTree, indicated which parts of the state are bounded."""
         return jt.map(
