@@ -254,6 +254,7 @@ def sample_task_jax(
     timestamps: Float[Array, " T"],
     key: PRNGKeyArray,
     reach_radius: float = 0.5,
+    task_type: int | Array | None = None,
 ) -> TaskSpec:
     """Fully JAX-traceable task sampler for vmapped/scanned environments.
 
@@ -267,6 +268,8 @@ def sample_task_jax(
         timestamps: Time points, shape ``(T,)``.
         key: PRNG key.
         reach_radius: Workspace radius for reach/hold tasks.
+        task_type: Force a specific task type (0-3), or None to sample
+            uniformly. May be a traced integer (safe inside vmap).
 
     Returns:
         Sampled TaskSpec with dynamically selected task type.
@@ -275,7 +278,8 @@ def sample_task_jax(
     dt = timestamps[1] - timestamps[0]
 
     key, type_key, k1, k2, k3 = jax.random.split(key, 5)
-    task_type = jax.random.randint(type_key, (), 0, 4)
+    if task_type is None:
+        task_type = jax.random.randint(type_key, (), 0, 4)
 
     # --- Reach (minimum-jerk) ---
     rk1, rk2 = jax.random.split(k1)

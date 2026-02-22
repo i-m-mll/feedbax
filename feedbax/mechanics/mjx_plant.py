@@ -6,12 +6,13 @@ through the standard ``vector_field()`` interface for Diffrax integration.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Optional
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
@@ -87,6 +88,61 @@ class MJXPlant(AbstractPlant):
         )
 
         return cls(skeleton=skeleton, clip_states=clip_states, key=key)
+
+    @classmethod
+    def build_batch(
+        cls,
+        presets: Sequence,
+        chain_config,
+        sim_config,
+        *,
+        clip_states: bool = True,
+    ) -> MJXPlant:
+        """Build N MJXPlants from presets, stack into vmappable batch.
+
+        All presets must produce the same model topology (same nq, nv, nbody,
+        nu). Only numeric parameters (masses, lengths, damping, etc.) may
+        differ.
+
+        Args:
+            presets: Sequence of BodyPreset instances.
+            chain_config: ChainConfig with topology (shared).
+            sim_config: SimConfig with timing (shared).
+            clip_states: Whether to clip states to joint limits.
+
+        Returns:
+            MJXPlant with leading ``(B,)`` dim on all array leaves.
+        """
+        plants = [
+            cls.from_body_preset(p, chain_config, sim_config,
+                                 clip_states=clip_states)
+            for p in presets
+        ]
+
+        ref = plants[0].skeleton
+        for i, p in enumerate(plants[1:], 1):
+            assert p.skeleton.nq == ref.nq, (
+                f"Body {i}: nq={p.skeleton.nq} != {ref.nq}"
+            )
+            assert p.skeleton.nv == ref.nv, (
+                f"Body {i}: nv={p.skeleton.nv} != {ref.nv}"
+            )
+            assert p.skeleton.nbody == ref.nbody, (
+                f"Body {i}: nbody={p.skeleton.nbody} != {ref.nbody}"
+            )
+
+        # MJX Model puts geometry-dependent arrays (geom_rbound_hfield etc.)
+        # into the pytree auxiliary data, so different bodies have different
+        # treedefs. We flatten each plant, stack the array leaves, and
+        # unflatten with the first plant's treedef (the auxiliary data only
+        # affects collision detection, not forward dynamics).
+        all_flat = [jt.flatten(p) for p in plants]
+        template_treedef = all_flat[0][1]
+        stacked_leaves = [
+            jnp.stack(leaves)
+            for leaves in zip(*[f[0] for f in all_flat])
+        ]
+        return jt.unflatten(template_treedef, stacked_leaves)
 
     @jax.named_scope("fbx.MJXPlant.vector_field")
     def vector_field(
