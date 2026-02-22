@@ -1,0 +1,252 @@
+"""Functional RL environment for GPU-parallel training.
+
+All state lives in RLEnvState. Functions are pure and JIT/vmap-compatible.
+Works with any feedbax AbstractPlant via Diffrax Euler integration.
+"""
+
+from __future__ import annotations
+
+from typing import NamedTuple
+
+import diffrax as dfx
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.tree as jt
+from jaxtyping import Array, Float, PRNGKeyArray
+
+from feedbax.mechanics.plant import AbstractPlant, PlantState
+from feedbax.training.rl.rewards import compute_reward
+from feedbax.training.rl.tasks import TaskSpec, sample_task_jax
+
+
+class RLEnvConfig(eqx.Module):
+    """Static configuration for the RL environment.
+
+    Attributes:
+        n_steps: Number of timesteps per episode.
+        dt: Physics timestep in seconds.
+        n_joints: Number of joints.
+        n_muscles: Number of muscle actuators.
+        tau_act: Muscle activation time constant in seconds.
+        tau_deact: Muscle deactivation time constant in seconds.
+        effort_weight: Reward effort penalty weight.
+        velocity_weight: Reward velocity penalty weight.
+        hold_bonus: Reward hold bonus.
+        hold_threshold: Reward hold threshold in meters.
+        action_scale: Scale factor for actions (maps [0,1] to torque range).
+        action_offset: Offset for actions after scaling.
+    """
+
+    n_steps: int = eqx.field(static=True)
+    dt: float
+    n_joints: int = eqx.field(static=True)
+    n_muscles: int = eqx.field(static=True)
+    tau_act: float = 0.01
+    tau_deact: float = 0.04
+    effort_weight: float = 0.005
+    velocity_weight: float = 0.1
+    hold_bonus: float = 1.0
+    hold_threshold: float = 0.02
+    action_scale: float = 1.0
+    action_offset: float = 0.0
+
+
+class RLEnvState(NamedTuple):
+    """Carries simulation state and episode bookkeeping.
+
+    Attributes:
+        plant_state: Current plant state (skeleton + optional muscles).
+        muscle_activations: Current muscle activation levels, shape ``(n_muscles,)``.
+        prev_effector: Previous effector position for velocity estimation, shape ``(2,)``.
+        t_index: Current timestep index.
+        task: Current task specification.
+    """
+
+    plant_state: PlantState
+    muscle_activations: Float[Array, " n_muscles"]
+    prev_effector: Float[Array, " 2"]
+    t_index: Float[Array, ""]
+    task: TaskSpec
+
+
+def rl_env_reset(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    task: TaskSpec,
+    key: PRNGKeyArray,
+) -> RLEnvState:
+    """Reset the RL environment with a new task.
+
+    Args:
+        plant: The plant model.
+        config: Environment configuration.
+        task: Task specification for this episode.
+        key: PRNG key for state initialization.
+
+    Returns:
+        Initial RLEnvState.
+    """
+    plant_state = plant.init(key=key)
+    effector = plant.skeleton.effector(plant_state.skeleton)
+
+    return RLEnvState(
+        plant_state=plant_state,
+        muscle_activations=jnp.zeros(config.n_muscles),
+        prev_effector=effector.pos,
+        t_index=jnp.array(0, dtype=jnp.int32),
+        task=task,
+    )
+
+
+def rl_env_get_obs(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    state: RLEnvState,
+) -> Float[Array, " obs_dim"]:
+    """Extract observation vector from environment state.
+
+    Observation includes: joint positions, joint velocities, muscle activations,
+    effector position, target position, target velocity, and phase.
+
+    Args:
+        plant: The plant model.
+        config: Environment configuration.
+        state: Current environment state.
+
+    Returns:
+        Flat observation array.
+    """
+    skeleton_state = state.plant_state.skeleton
+    effector = plant.skeleton.effector(skeleton_state)
+    t = state.t_index
+    target_pos = state.task.target_pos[t]
+    target_vel = state.task.target_vel[t]
+    phase = jnp.array([t / jnp.maximum(config.n_steps - 1, 1)])
+
+    # Extract joint positions and velocities from skeleton state leaves
+    skeleton_leaves = jt.leaves(skeleton_state)
+    # First leaf is typically positions, second is velocities
+    qpos = skeleton_leaves[0]
+    qvel = skeleton_leaves[1] if len(skeleton_leaves) > 1 else jnp.zeros_like(qpos)
+
+    return jnp.concatenate([
+        jnp.atleast_1d(qpos),
+        jnp.atleast_1d(qvel),
+        state.muscle_activations,
+        effector.pos,
+        target_pos,
+        target_vel,
+        phase,
+    ])
+
+
+def rl_env_step(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    state: RLEnvState,
+    action: Float[Array, " n_muscles"],
+) -> tuple[RLEnvState, Float[Array, " obs_dim"], Float[Array, ""], Float[Array, ""]]:
+    """Step the RL environment forward by one control step.
+
+    Applies first-order muscle activation dynamics, steps the plant via
+    Diffrax Euler integration, computes reward, and checks episode termination.
+
+    Args:
+        plant: The plant model.
+        config: Environment configuration.
+        state: Current environment state.
+        action: Muscle excitation commands in [0, 1], shape ``(n_muscles,)``.
+
+    Returns:
+        Tuple of (new_state, observation, reward, done).
+    """
+    action = jnp.clip(action, 0.0, 1.0)
+    t = state.t_index
+
+    # First-order muscle activation dynamics
+    tau = jnp.where(
+        action > state.muscle_activations,
+        config.tau_act,
+        config.tau_deact,
+    )
+    da = (action - state.muscle_activations) / jnp.maximum(tau, 1e-6)
+    new_activations = jnp.clip(
+        state.muscle_activations + config.dt * da, 0.0, 1.0
+    )
+
+    # Scale actions for non-muscle plants
+    ctrl = new_activations * config.action_scale + config.action_offset
+
+    # Step plant via Diffrax Euler
+    term = dfx.ODETerm(plant.vector_field)
+    solver = dfx.Euler()
+    plant_state = plant.kinematics_update(ctrl, state.plant_state)
+    new_plant_state, _, _, _, _ = solver.step(
+        term, 0, config.dt, plant_state, ctrl, None, made_jump=False,
+    )
+
+    # Compute effector state
+    effector = plant.skeleton.effector(new_plant_state.skeleton)
+    effector_vel = (effector.pos - state.prev_effector) / config.dt
+
+    # Reward
+    target_pos = state.task.target_pos[t]
+    target_vel = state.task.target_vel[t]
+    reward = compute_reward(
+        task_type=jnp.asarray(state.task.task_type, dtype=jnp.float32),
+        effector_pos=effector.pos,
+        target_pos=target_pos,
+        effector_vel=effector_vel,
+        target_vel=target_vel,
+        muscle_excitations=action,
+        effort_weight=config.effort_weight,
+        velocity_weight=config.velocity_weight,
+        hold_bonus=config.hold_bonus,
+        hold_threshold=config.hold_threshold,
+    )
+
+    new_t = t + 1
+    done = (new_t >= config.n_steps).astype(jnp.float32)
+
+    new_state = RLEnvState(
+        plant_state=new_plant_state,
+        muscle_activations=new_activations,
+        prev_effector=effector.pos,
+        t_index=new_t,
+        task=state.task,
+    )
+
+    obs = rl_env_get_obs(plant, config, new_state)
+    return new_state, obs, reward, done
+
+
+def auto_reset(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    state: RLEnvState,
+    done: Float[Array, ""],
+    key: PRNGKeyArray,
+) -> RLEnvState:
+    """Reset environments that are done, keeping others unchanged.
+
+    Args:
+        plant: The plant model.
+        config: Environment configuration.
+        state: Current environment state.
+        done: Whether the episode is done (1.0) or not (0.0).
+        key: PRNG key for new task and state generation.
+
+    Returns:
+        Conditionally reset RLEnvState.
+    """
+    key, task_key, reset_key = jax.random.split(key, 3)
+    timestamps = jnp.arange(config.n_steps) * config.dt
+    new_task = sample_task_jax(timestamps, task_key)
+    new_state = rl_env_reset(plant, config, new_task, reset_key)
+
+    return jt.map(
+        lambda old, new: jnp.where(done, new, old),
+        state,
+        new_state,
+    )
