@@ -73,6 +73,10 @@ plotlyviewer = [
     "pyqt5>=5.15.11",
     "pyqtwebengine>=5.15.7",
 ]
+mjx = [
+    "mujoco>=3.0.0",
+    "mujoco-mjx>=0.1.0",
+]
 
 [project.scripts]
 # Entry points from feedbax_experiments
