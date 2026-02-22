@@ -57,6 +57,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
     nq: int = field(static=True)
     nv: int = field(static=True)
     nbody: int = field(static=True)
+    _bounds: StateBounds  # Cached at init from concrete model data
 
     def __init__(
         self,
@@ -64,12 +65,33 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         effector_site_id: int,
         effector_body_id: int,
     ):
+        import numpy as np
+
         self.mjx_model = mjx_model
         self.effector_site_id = effector_site_id
         self.effector_body_id = effector_body_id
         self.nq = int(mjx_model.nq)
         self.nv = int(mjx_model.nv)
         self.nbody = int(mjx_model.nbody)
+
+        # Compute bounds eagerly from concrete model data (not inside JIT)
+        jnt_range = np.asarray(mjx_model.jnt_range)  # (njnt, 2)
+        has_limits = np.any(jnt_range != 0)
+        if has_limits:
+            self._bounds = StateBounds(
+                low=MJXSkeletonState(
+                    qpos=jnp.array(jnt_range[:self.nq, 0]),
+                    qvel=None,
+                    xfrc_applied=None,
+                ),
+                high=MJXSkeletonState(
+                    qpos=jnp.array(jnt_range[:self.nq, 1]),
+                    qvel=None,
+                    xfrc_applied=None,
+                ),
+            )
+        else:
+            self._bounds = StateBounds(low=None, high=None)
 
     def _reconstruct_data(
         self, state: MJXSkeletonState, ctrl: Array | None = None
@@ -246,23 +268,5 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
 
     @property
     def bounds(self) -> StateBounds[MJXSkeletonState]:
-        """State bounds derived from MuJoCo joint limits."""
-        jnt_range = jnp.array(self.mjx_model.jnt_range)  # (njnt, 2)
-        has_limits = jnp.any(jnt_range != 0, axis=-1)
-
-        if jnp.any(has_limits):
-            low_qpos = jnt_range[:, 0]
-            high_qpos = jnt_range[:, 1]
-            return StateBounds(
-                low=MJXSkeletonState(
-                    qpos=low_qpos[:self.nq],
-                    qvel=None,
-                    xfrc_applied=None,
-                ),
-                high=MJXSkeletonState(
-                    qpos=high_qpos[:self.nq],
-                    qvel=None,
-                    xfrc_applied=None,
-                ),
-            )
-        return StateBounds(low=None, high=None)
+        """State bounds derived from MuJoCo joint limits (cached at init)."""
+        return self._bounds

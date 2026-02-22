@@ -31,7 +31,7 @@ class MJXPlant(AbstractPlant):
     """
 
     skeleton: MJXSkeleton
-    clip_states: bool
+    clip_states: bool = eqx.field(static=True)
 
     def __init__(
         self,
