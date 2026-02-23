@@ -17,7 +17,11 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.training.rl.rewards import compute_reward
-from feedbax.training.rl.tasks import TaskSpec, sample_task_jax
+from feedbax.training.rl.tasks import (
+    TaskParams,
+    sample_task_params_jax,
+    target_at_t,
+)
 
 
 class RLEnvConfig(eqx.Module):
@@ -67,13 +71,13 @@ class RLEnvState(NamedTuple):
     muscle_activations: Float[Array, " n_muscles"]
     prev_effector: Float[Array, " 2"]
     t_index: Float[Array, ""]
-    task: TaskSpec
+    task: TaskParams
 
 
 def rl_env_reset(
     plant: AbstractPlant,
     config: RLEnvConfig,
-    task: TaskSpec,
+    task: TaskParams,
     key: PRNGKeyArray,
 ) -> RLEnvState:
     """Reset the RL environment with a new task.
@@ -120,8 +124,7 @@ def rl_env_get_obs(
     skeleton_state = state.plant_state.skeleton
     effector = plant.skeleton.effector(skeleton_state)
     t = state.t_index
-    target_pos = state.task.target_pos[t]
-    target_vel = state.task.target_vel[t]
+    target_pos, target_vel = target_at_t(state.task, t)
     phase = jnp.array([t / jnp.maximum(config.n_steps - 1, 1)])
 
     # Extract joint positions and velocities from skeleton state leaves
@@ -191,8 +194,7 @@ def rl_env_step(
     effector_vel = (effector.pos - state.prev_effector) / config.dt
 
     # Reward
-    target_pos = state.task.target_pos[t]
-    target_vel = state.task.target_vel[t]
+    target_pos, target_vel = target_at_t(state.task, t)
     reward = compute_reward(
         task_type=jnp.asarray(state.task.task_type, dtype=jnp.float32),
         effector_pos=effector.pos,
@@ -241,8 +243,9 @@ def auto_reset(
         Conditionally reset RLEnvState.
     """
     key, task_key, reset_key = jax.random.split(key, 3)
-    timestamps = jnp.arange(config.n_steps) * config.dt
-    new_task = sample_task_jax(timestamps, task_key)
+    new_task = sample_task_params_jax(
+        task_key, None, config.n_steps, config.dt
+    )
     new_state = rl_env_reset(plant, config, new_task, reset_key)
 
     return jt.map(

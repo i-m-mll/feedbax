@@ -13,7 +13,7 @@ from feedbax.training.rl.env import (
     rl_env_reset,
     rl_env_step,
 )
-from feedbax.training.rl.tasks import sample_task_jax
+from feedbax.training.rl.tasks import sample_task_params_jax
 
 
 @pytest.fixture
@@ -40,8 +40,7 @@ def config():
 
 @pytest.fixture
 def task(key):
-    timestamps = jnp.arange(100) * 0.01
-    return sample_task_jax(timestamps, key)
+    return sample_task_params_jax(key, None, 100, 0.01)
 
 
 @pytest.fixture

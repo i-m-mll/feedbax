@@ -26,7 +26,10 @@ from feedbax.training.rl.env import (
     rl_env_step,
 )
 from feedbax.training.rl.policy import ActorCritic
-from feedbax.training.rl.tasks import sample_task_jax
+from feedbax.training.rl.tasks import (
+    reconstruct_trajectory,
+    sample_task_params_jax,
+)
 
 
 def _stack_pytrees(*trees):
@@ -252,11 +255,9 @@ def _init_envs(
     Returns:
         Batched RLEnvState.
     """
-    timestamps = jnp.arange(cfg.n_steps) * cfg.dt
-
     def init_one(key):
         key, task_key, reset_key = jax.random.split(key, 3)
-        task = sample_task_jax(timestamps, task_key)
+        task = sample_task_params_jax(task_key, None, cfg.n_steps, cfg.dt)
         return rl_env_reset(plant, cfg, task, reset_key)
 
     keys = jax.random.split(key, n_envs)
@@ -585,11 +586,11 @@ def collect_rollouts_batched(
     all_keys = jax.random.split(key, n_bodies * n_rollouts)
     all_keys = all_keys.reshape(n_bodies, n_rollouts, 2)
 
-    timestamps = jnp.arange(n_steps) * env_config.dt
-
     def single_rollout(plant, policy, key, task_type):
         key, task_key, reset_key = jax.random.split(key, 3)
-        task = sample_task_jax(timestamps, task_key, task_type=task_type)
+        task = sample_task_params_jax(
+            task_key, task_type, env_config.n_steps, env_config.dt
+        )
         state = rl_env_reset(plant, env_config, task, reset_key)
 
         sk0 = state.plant_state.skeleton
@@ -616,9 +617,11 @@ def collect_rollouts_batched(
         acts = jnp.concatenate([state.muscle_activations[None], acts_rest])
         eff_pos = jnp.concatenate([eff0.pos[None], eff_rest])
 
+        target_pos, _ = reconstruct_trajectory(task)
+        timestamps = jnp.arange(n_steps) * env_config.dt
         return {
             "timestamps": timestamps,
-            "task_target": task.target_pos,
+            "task_target": target_pos,
             "joint_angles": qpos,
             "joint_velocities": qvel,
             "muscle_activations": acts,
