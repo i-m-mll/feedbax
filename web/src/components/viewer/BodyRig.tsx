@@ -5,7 +5,6 @@ import { forwardKinematics } from '@/utils/kinematics';
 interface BodyRigProps {
   jointAngles: number[];
   segmentLengths: number[];
-  effectorPos: number[];
   effectorTrace: number[][];
 }
 

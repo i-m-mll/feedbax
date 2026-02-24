@@ -30,11 +30,21 @@ function XYGrid() {
 }
 
 export function Scene({ trajectoryData, frame, segmentLengths }: SceneProps) {
-  const lengths = segmentLengths ?? DEFAULT_SEGMENT_LENGTHS;
+  // Derive segment lengths from body_preset_flat[0:n_joints] if available
+  const lengths = useMemo(() => {
+    if (segmentLengths) return segmentLengths;
+    if (trajectoryData) {
+      const nJoints = trajectoryData.joint_angles[0]?.length ?? 3;
+      const fromPreset = trajectoryData.body_preset_flat.slice(0, nJoints);
+      if (fromPreset.length === nJoints && fromPreset.every(v => v > 0)) {
+        return fromPreset;
+      }
+    }
+    return DEFAULT_SEGMENT_LENGTHS;
+  }, [segmentLengths, trajectoryData]);
   const frameIdx = Math.max(0, Math.min(Math.floor(frame), (trajectoryData?.timestamps.length ?? 1) - 1));
 
   const jointAngles = trajectoryData?.joint_angles[frameIdx] ?? [];
-  const effectorPos = trajectoryData?.effector_pos[frameIdx] ?? [0, 0];
   const taskTarget = trajectoryData?.task_target[frameIdx] ?? [0, 0];
   const taskType = trajectoryData?.task_type ?? 0;
 
@@ -73,7 +83,6 @@ export function Scene({ trajectoryData, frame, segmentLengths }: SceneProps) {
           <BodyRig
             jointAngles={jointAngles}
             segmentLengths={lengths}
-            effectorPos={effectorPos}
             effectorTrace={effectorTrace}
           />
           <TargetMarker

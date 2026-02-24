@@ -9,7 +9,8 @@ export function forwardKinematics(
 ): [number, number, number][] {
   const positions: [number, number, number][] = [[0, 0, 0]];
   let cumulativeAngle = 0;
-  for (let i = 0; i < jointAngles.length; i++) {
+  const n = Math.min(jointAngles.length, segmentLengths.length);
+  for (let i = 0; i < n; i++) {
     cumulativeAngle += jointAngles[i];
     const prev = positions[positions.length - 1];
     positions.push([
