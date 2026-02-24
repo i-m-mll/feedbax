@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from feedbax.web.api import graphs, components, training, execution, inspection, trajectories
+from feedbax.web.api import graphs, components, training, execution, inspection, trajectories, statistics
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
 
@@ -29,6 +29,9 @@ def create_app() -> FastAPI:
     app.include_router(inspection.router, prefix='/api/inspection', tags=['inspection'])
     app.include_router(
         trajectories.router, prefix='/api/trajectories', tags=['trajectories'],
+    )
+    app.include_router(
+        statistics.router, prefix='/api/trajectories', tags=['statistics'],
     )
 
     app.include_router(ws_training.router, prefix='/ws', tags=['websocket'])

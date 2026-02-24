@@ -5,6 +5,7 @@ import { TrainingPanel } from '@/components/panels/TrainingPanel';
 import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
+import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ChevronDown } from 'lucide-react';
 
 const tabs = [
@@ -12,6 +13,7 @@ const tabs = [
   { id: 'training', label: 'Training' },
   { id: 'analysis', label: 'Analysis' },
   { id: 'trajectories', label: 'Trajectories' },
+  { id: 'statistics', label: 'Statistics' },
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
@@ -33,6 +35,7 @@ export function BottomShelf({
     if (activeTab === 'training') return <TrainingPanel />;
     if (activeTab === 'analysis') return <AnalysisPanel />;
     if (activeTab === 'trajectories') return <TrajectoryPanel />;
+    if (activeTab === 'statistics') return <StatisticsPanel />;
     return <ValidationPanel />;
   }, [activeTab]);
 
@@ -125,7 +128,7 @@ export function BottomShelf({
       {!bottomCollapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
-          className={activeTab === 'trajectories' ? 'overflow-hidden' : 'overflow-y-auto'}
+          className={activeTab === 'trajectories' || activeTab === 'statistics' ? 'overflow-hidden' : 'overflow-y-auto'}
         >
           {activeContent}
         </div>

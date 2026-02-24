@@ -2,6 +2,13 @@ import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type { LossTermSpec, ProbeInfo, TrainingSpec, TaskSpec, LossValidationResult } from '@/types/training';
 import type { TrajectoryDataset, TrajectoryMetadata, TrajectoryData } from '@/types/trajectory';
+import type {
+  StatisticsResponse,
+  TimeseriesResponse,
+  HistogramResponse,
+  ScatterResponse,
+  DiagnosticsResponse,
+} from '@/types/statistics';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -116,5 +123,60 @@ export async function filterTrajectories(
   if (filters.task_type !== undefined) params.set('task_type', String(filters.task_type));
   return request<{ indices: number[]; count: number }>(
     `/api/trajectories/${encodeURIComponent(dataset)}/filter?${params}`,
+  );
+}
+
+// --- Statistics API ---
+
+export async function fetchStatsSummary(
+  dataset: string,
+  groupBy: string,
+): Promise<StatisticsResponse> {
+  const params = new URLSearchParams({ group_by: groupBy });
+  return request<StatisticsResponse>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/stats/summary?${params}`,
+  );
+}
+
+export async function fetchStatsTimeseries(
+  dataset: string,
+  metric: string,
+  groupBy: string,
+): Promise<TimeseriesResponse> {
+  const params = new URLSearchParams({ metric, group_by: groupBy });
+  return request<TimeseriesResponse>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/stats/timeseries?${params}`,
+  );
+}
+
+export async function fetchStatsHistogram(
+  dataset: string,
+  metric: string,
+  groupBy: string,
+  bins?: number,
+): Promise<HistogramResponse> {
+  const params = new URLSearchParams({ metric, group_by: groupBy });
+  if (bins !== undefined) params.set('bins', String(bins));
+  return request<HistogramResponse>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/stats/histogram?${params}`,
+  );
+}
+
+export async function fetchStatsScatter(
+  dataset: string,
+  xMetric: string,
+  yMetric: string,
+): Promise<ScatterResponse> {
+  const params = new URLSearchParams({ x_metric: xMetric, y_metric: yMetric });
+  return request<ScatterResponse>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/stats/scatter?${params}`,
+  );
+}
+
+export async function fetchStatsDiagnostics(
+  dataset: string,
+): Promise<DiagnosticsResponse> {
+  return request<DiagnosticsResponse>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/stats/diagnostics`,
   );
 }
