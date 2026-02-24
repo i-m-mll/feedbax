@@ -18,6 +18,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.training.rl.rewards import compute_reward
 from feedbax.training.rl.tasks import (
+    TASK_HOLD,
     TaskParams,
     sample_task_params_jax,
     target_at_t,
@@ -227,14 +228,50 @@ def rl_env_step(
     action = jnp.clip(action, 0.0, 1.0)
     t = state.t_index
 
+    # Apply HOLD perturbation as an impulse force before the physics sub-steps.
+    # Bug: 67e2e5e — The force is set on the effector body at the perturbation
+    # timestep, persists across frame_skip sub-steps, then is cleared after
+    # integration so it acts as a single control-step impulse.
+    is_perturb_step = (t == state.task.perturb_time_idx)
+    is_hold = (jnp.asarray(state.task.task_type) == TASK_HOLD)
+    apply_perturb = is_perturb_step & is_hold
+
+    perturbed_skeleton = plant.skeleton.update_state_given_effector_force(
+        state.task.perturb_force, state.plant_state.skeleton,
+    )
+    perturbed_plant_state = eqx.tree_at(
+        lambda s: s.skeleton,
+        state.plant_state,
+        jt.map(
+            lambda orig, pert: jnp.where(apply_perturb, pert, orig),
+            state.plant_state.skeleton,
+            perturbed_skeleton,
+        ),
+    )
+
     # Run frame_skip physics sub-steps with constant action.
-    init_carry = (state.plant_state, state.muscle_activations)
+    init_carry = (perturbed_plant_state, state.muscle_activations)
 
     def substep_body(_, carry):
         return _physics_substep(plant, config, action, carry)
 
     new_plant_state, new_activations = jax.lax.fori_loop(
         0, config.frame_skip, substep_body, init_carry,
+    )
+
+    # Clear external forces after the physics sub-steps so the perturbation
+    # does not leak into subsequent control steps.
+    cleared_skeleton = plant.skeleton.update_state_given_effector_force(
+        jnp.zeros(2), new_plant_state.skeleton,
+    )
+    new_plant_state = eqx.tree_at(
+        lambda s: s.skeleton,
+        new_plant_state,
+        jt.map(
+            lambda orig, cleared: jnp.where(apply_perturb, cleared, orig),
+            new_plant_state.skeleton,
+            cleared_skeleton,
+        ),
     )
 
     # Compute effector state — use analytical velocity from the skeleton

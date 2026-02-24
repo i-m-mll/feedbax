@@ -259,12 +259,25 @@ def sample_task_params_jax(
     reach_perturb = jnp.zeros((2,))
 
     # --- Hold ---
+    # Bug: 67e2e5e -- Randomize perturbation direction, magnitude, and timing
+    key, hk1, hk2, hk3 = jax.random.split(key, 4)
     hold_pos = jax.random.uniform(
         k2, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
     )
     hold_cp = jnp.zeros((6, 2))
-    hold_perturb_idx = jnp.array(n_steps // 2, dtype=jnp.int32)
-    hold_perturb = jnp.array([3.0, 0.0])
+    # Random perturbation direction (uniform angle)
+    perturb_angle = jax.random.uniform(hk1, shape=(), minval=0.0, maxval=2 * jnp.pi)
+    # Random magnitude (normal, clipped to avoid degenerate cases)
+    perturb_mag = jnp.clip(
+        jax.random.normal(hk2, shape=()) * 1.0 + 3.0, 0.5, 6.0,
+    )
+    hold_perturb = perturb_mag * jnp.array(
+        [jnp.cos(perturb_angle), jnp.sin(perturb_angle)],
+    )
+    # Jittered timing (+-10% of episode around midpoint)
+    hold_perturb_idx = jax.random.randint(
+        hk3, shape=(), minval=int(0.4 * n_steps), maxval=int(0.6 * n_steps) + 1,
+    ).astype(jnp.int32)
 
     # --- Track ---
     n_pts = 6
