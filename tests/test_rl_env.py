@@ -51,12 +51,10 @@ def state(plant, config, task, key):
 class TestRLEnvReset:
     def test_shapes(self, state, config):
         assert state.muscle_activations.shape == (config.n_muscles,)
-        assert state.prev_effector.shape == (2,)
         assert state.t_index == 0
 
     def test_finite(self, state):
         assert jnp.all(jnp.isfinite(state.muscle_activations))
-        assert jnp.all(jnp.isfinite(state.prev_effector))
 
 
 class TestRLEnvStep:

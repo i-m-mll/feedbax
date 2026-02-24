@@ -62,14 +62,12 @@ class RLEnvState(NamedTuple):
     Attributes:
         plant_state: Current plant state (skeleton + optional muscles).
         muscle_activations: Current muscle activation levels, shape ``(n_muscles,)``.
-        prev_effector: Previous effector position for velocity estimation, shape ``(2,)``.
         t_index: Current timestep index.
         task: Current task specification.
     """
 
     plant_state: PlantState
     muscle_activations: Float[Array, " n_muscles"]
-    prev_effector: Float[Array, " 2"]
     t_index: Float[Array, ""]
     task: TaskParams
 
@@ -92,12 +90,10 @@ def rl_env_reset(
         Initial RLEnvState.
     """
     plant_state = plant.init(key=key)
-    effector = plant.skeleton.effector(plant_state.skeleton)
 
     return RLEnvState(
         plant_state=plant_state,
         muscle_activations=jnp.zeros(config.n_muscles),
-        prev_effector=effector.pos,
         t_index=jnp.array(0, dtype=jnp.int32),
         task=task,
     )
@@ -189,9 +185,11 @@ def rl_env_step(
         term, 0, config.dt, plant_state, ctrl, None, made_jump=False,
     )
 
-    # Compute effector state
+    # Compute effector state — use analytical velocity from the skeleton
+    # (e.g. MJX's data.site_xvelp) instead of finite-difference approximation.
+    # Bug: 67e2e5e
     effector = plant.skeleton.effector(new_plant_state.skeleton)
-    effector_vel = (effector.pos - state.prev_effector) / config.dt
+    effector_vel = effector.vel
 
     # Reward
     target_pos, target_vel = target_at_t(state.task, t)
@@ -216,7 +214,6 @@ def rl_env_step(
     new_state = RLEnvState(
         plant_state=new_plant_state,
         muscle_activations=new_activations,
-        prev_effector=effector.pos,
         t_index=new_t,
         task=state.task,
     )
