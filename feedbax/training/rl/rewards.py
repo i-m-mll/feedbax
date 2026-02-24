@@ -41,11 +41,20 @@ def compute_reward(
     velocity_weight: float,
     hold_bonus: float,
     hold_threshold: float,
+    step: Float[Array, ""] | None = None,
+    n_steps: int | None = None,
 ) -> Float[Array, ""]:
     """JIT-compatible reward using ``jnp.where`` for task-type branching.
 
     Computes a scalar reward based on distance to target, effort cost,
     velocity tracking, and task-specific bonuses.
+
+    The velocity penalty is discounted by episode phase so the agent is
+    free to move early in the episode and only penalized for residual
+    velocity near the end.  When ``step`` and ``n_steps`` are provided
+    the discount is ``(step / (n_steps - 1)) ** 2`` (quadratic ramp
+    from 0 to 1).  When omitted the penalty applies at full strength
+    every step (backward-compatible).
 
     Args:
         task_type: Integer task type as a scalar array.
@@ -58,6 +67,11 @@ def compute_reward(
         velocity_weight: Velocity error penalty weight.
         hold_bonus: Bonus for holding within threshold.
         hold_threshold: Distance threshold for hold bonus.
+        step: Current timestep index (scalar int32 array). Optional for
+            backward compatibility; when ``None`` the velocity discount
+            is 1.0 (no discount).
+        n_steps: Total timesteps per episode. Required when ``step`` is
+            provided.
 
     Returns:
         Scalar reward value.
@@ -71,7 +85,20 @@ def compute_reward(
         jnp.linalg.norm(effector_vel),
     )
 
-    reward = -distance - effort_weight * effort - velocity_weight * vel_error
+    # Bug: 3014308 -- Quadratic ramp: near-zero penalty early, full penalty
+    # at episode end. Prevents the "freeze trap" where the agent learns to
+    # never move because velocity is penalized uniformly.
+    if step is not None and n_steps is not None:
+        phase = step / jnp.maximum(n_steps - 1, 1)
+        vel_discount = phase ** 2
+    else:
+        vel_discount = 1.0
+
+    reward = (
+        -distance
+        - effort_weight * effort
+        - velocity_weight * vel_discount * vel_error
+    )
 
     reward += jnp.where(
         (task_type == TASK_HOLD) & (distance < hold_threshold),
