@@ -2,6 +2,9 @@
 
 MJXPlant wraps an MJXSkeleton and exposes MuJoCo's monolithic dynamics
 through the standard ``vector_field()`` interface for Diffrax integration.
+
+Muscle activations are converted to joint torques via the moment arm
+matrix in JAX, so MuJoCo only sees per-joint torque actuators.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton, MJXSkeletonState
@@ -23,8 +26,12 @@ from feedbax.state import StateBounds
 class MJXPlant(AbstractPlant):
     """MuJoCo/MJX plant model implementing feedbax's AbstractPlant interface.
 
-    MJX dynamics are monolithic — the ``vector_field()`` is overridden
+    MJX dynamics are monolithic -- the ``vector_field()`` is overridden
     directly rather than composed via ``dynamics_spec``.
+
+    Muscle activations (from the RL env) are converted to joint torques
+    via ``moment_arms.T @ (muscle_gear * activations)`` before being
+    passed to MuJoCo's per-joint torque actuators.
 
     Attributes:
         skeleton: The MJXSkeleton providing physics computations.
@@ -32,23 +39,56 @@ class MJXPlant(AbstractPlant):
         segment_lengths: Segment lengths from the body preset, shape
             ``(n_joints,)``. Used for FK-based reachable target sampling.
             ``None`` if constructed without a body preset.
+        moment_arms: Signed moment arm matrix, shape ``(n_muscles, n_joints)``.
+            Computed as ``magnitudes * topology.sign``.
+        muscle_gear: Maximum isometric force per muscle, shape ``(n_muscles,)``.
+            Computed as ``PCSA * specific_tension``.
     """
 
     skeleton: MJXSkeleton
     clip_states: bool = eqx.field(static=True)
     segment_lengths: Array | None
+    moment_arms: Float[Array, "n_muscles n_joints"]
+    muscle_gear: Float[Array, " n_muscles"]
 
     def __init__(
         self,
         skeleton: MJXSkeleton,
         clip_states: bool = True,
         segment_lengths: Array | None = None,
+        moment_arms: Array | None = None,
+        muscle_gear: Array | None = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
         self.skeleton = skeleton
         self.clip_states = clip_states
         self.segment_lengths = segment_lengths
+        # Defaults for backward compat: identity-like mapping if not provided.
+        if moment_arms is None:
+            nu = int(skeleton.input_size)
+            moment_arms = jnp.eye(nu)
+        if muscle_gear is None:
+            n_muscles = moment_arms.shape[0]
+            muscle_gear = jnp.ones(n_muscles)
+        self.moment_arms = jnp.asarray(moment_arms)
+        self.muscle_gear = jnp.asarray(muscle_gear)
+
+    def _muscle_activations_to_joint_torques(
+        self, activations: Float[Array, " n_muscles"],
+    ) -> Float[Array, " n_joints"]:
+        """Convert muscle activations [0,1] to joint torques via moment arms.
+
+        ``torques = R^T @ (gear * activations)``
+
+        Args:
+            activations: Muscle activation levels in [0, 1], shape ``(n_muscles,)``.
+
+        Returns:
+            Joint torques, shape ``(n_joints,)``.
+        """
+        muscle_forces = self.muscle_gear * activations
+        return self.moment_arms.T @ muscle_forces
 
     @classmethod
     def from_body_preset(
@@ -93,10 +133,23 @@ class MJXPlant(AbstractPlant):
             effector_body_id=effector_body_id,
         )
 
+        # Bug: 138bbe5 — Compute signed moment arms and muscle gear from preset.
+        topology = chain_config.muscle_topology
+        moment_arms = (
+            preset.muscle_moment_arm_magnitudes * topology.sign
+        )
+        # Zero out entries where muscle does not span the joint.
+        moment_arms = jnp.where(topology.routing, moment_arms, 0.0)
+
+        specific_tension = 30.0  # N/cm^2
+        muscle_gear = preset.muscle_pcsa * specific_tension
+
         return cls(
             skeleton=skeleton,
             clip_states=clip_states,
             segment_lengths=jnp.asarray(preset.segment_lengths),
+            moment_arms=moment_arms,
+            muscle_gear=muscle_gear,
             key=key,
         )
 
@@ -161,23 +214,25 @@ class MJXPlant(AbstractPlant):
     ) -> PlantState:
         """Compute time derivatives via MJX forward dynamics.
 
-        Overrides the base ``AbstractPlant.vector_field`` because MJX
-        dynamics are monolithic (no skeleton + muscle decomposition).
+        Converts muscle-level activations to joint torques via the moment
+        arm matrix before passing to MuJoCo.
 
         Args:
             t: Time (unused).
             state: Current plant state.
-            input: Actuator controls.
+            input: Muscle activations, shape ``(n_muscles,)``.
 
         Returns:
             PlantState with time derivatives.
         """
-        d_skeleton = self.skeleton.vector_field(t, state.skeleton, input)
+        # Bug: 138bbe5 — Convert muscle activations to joint torques.
+        joint_torques = self._muscle_activations_to_joint_torques(input)
+        d_skeleton = self.skeleton.vector_field(t, state.skeleton, joint_torques)
         return PlantState(skeleton=d_skeleton, muscles=None)
 
     @property
     def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
-        """Empty — MJXPlant overrides ``vector_field`` directly."""
+        """Empty -- MJXPlant overrides ``vector_field`` directly."""
         return {}
 
     def kinematics_update(
@@ -189,10 +244,9 @@ class MJXPlant(AbstractPlant):
     ) -> PlantState:
         """Apply instantaneous updates (state clipping if enabled).
 
-        MuJoCo handles muscle dynamics internally, so this is minimal.
-
         Args:
-            input: Actuator controls.
+            input: Muscle activations (unused here, torque conversion is in
+                ``vector_field``).
             state: Current plant state.
             key: Unused.
 
@@ -223,5 +277,10 @@ class MJXPlant(AbstractPlant):
 
     @property
     def input_size(self) -> int:
-        """Number of actuator inputs."""
-        return self.skeleton.input_size
+        """Number of muscle inputs (policy output dimension).
+
+        This returns ``n_muscles`` (not ``n_joints``), because the RL
+        policy outputs per-muscle activations.  The moment arm conversion
+        to ``n_joints`` torques happens inside ``vector_field``.
+        """
+        return self.moment_arms.shape[0]
