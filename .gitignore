@@ -12,6 +12,7 @@ examples/markdown/
 
 # saved models
 models/
+!feedbax/web/models/
 *.eqx
 
 # data and media
