@@ -206,6 +206,8 @@ def rl_env_step(
         velocity_weight=config.velocity_weight,
         hold_bonus=config.hold_bonus,
         hold_threshold=config.hold_threshold,
+        step=t,
+        n_steps=config.n_steps,
     )
 
     new_t = t + 1
