@@ -30,6 +30,10 @@ interface TrajectoryStoreState {
   filterBodyIdx: number | null;
   filterTaskType: number | null;
 
+  // Display options
+  showTargetTrace: boolean;
+  toggleTargetTrace: () => void;
+
   // Actions
   loadDatasets: () => Promise<void>;
   selectDataset: (name: string) => Promise<void>;
@@ -68,6 +72,12 @@ export const useTrajectoryStore = create<TrajectoryStoreState>((set, get) => ({
   // Filters
   filterBodyIdx: null,
   filterTaskType: null,
+
+  // Display options
+  showTargetTrace: true,
+  toggleTargetTrace: () => {
+    set((state) => ({ showTargetTrace: !state.showTargetTrace }));
+  },
 
   // Actions
   loadDatasets: async () => {

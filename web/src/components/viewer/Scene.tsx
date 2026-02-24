@@ -13,6 +13,7 @@ interface SceneProps {
   trajectoryData: TrajectoryData | null;
   frame: number;
   segmentLengths?: number[];
+  showTargetTrace?: boolean;
 }
 
 /**
@@ -29,7 +30,7 @@ function XYGrid() {
   );
 }
 
-export function Scene({ trajectoryData, frame, segmentLengths }: SceneProps) {
+export function Scene({ trajectoryData, frame, segmentLengths, showTargetTrace = true }: SceneProps) {
   // Derive segment lengths from body_preset_flat[0:n_joints] if available
   const lengths = useMemo(() => {
     if (segmentLengths) return segmentLengths;
@@ -54,6 +55,13 @@ export function Scene({ trajectoryData, frame, segmentLengths }: SceneProps) {
     const start = Math.max(0, frameIdx - TRACE_WINDOW);
     return trajectoryData.effector_pos.slice(start, frameIdx + 1);
   }, [trajectoryData, frameIdx]);
+
+  // Build target trace from past frames
+  const targetTrace = useMemo(() => {
+    if (!trajectoryData || !showTargetTrace) return undefined;
+    const start = Math.max(0, frameIdx - TRACE_WINDOW);
+    return trajectoryData.task_target.slice(start, frameIdx + 1);
+  }, [trajectoryData, frameIdx, showTargetTrace]);
 
   return (
     <Canvas
@@ -88,6 +96,7 @@ export function Scene({ trajectoryData, frame, segmentLengths }: SceneProps) {
           <TargetMarker
             position={[taskTarget[0], taskTarget[1]]}
             taskType={taskType}
+            trace={targetTrace}
           />
         </>
       )}
