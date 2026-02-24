@@ -342,8 +342,10 @@ def auto_reset(
         Conditionally reset RLEnvState.
     """
     key, task_key, reset_key = jax.random.split(key, 3)
+    seg_lens = getattr(plant, "segment_lengths", None)
     new_task = sample_task_params_jax(
-        task_key, None, config.n_steps, config.dt
+        task_key, None, config.n_steps, config.dt,
+        segment_lengths=seg_lens,
     )
     new_state = rl_env_reset(plant, config, new_task, reset_key)
 

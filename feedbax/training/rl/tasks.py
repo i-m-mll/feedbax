@@ -115,6 +115,53 @@ class TaskParams(NamedTuple):
         )
 
 
+def _fk_planar(
+    joint_angles: Float[Array, " n_joints"],
+    segment_lengths: Float[Array, " n_joints"],
+) -> Float[Array, " 2"]:
+    """Forward kinematics for a planar serial arm.
+
+    Computes the end-effector position from joint angles and segment lengths.
+    Works with any number of joints (not hardcoded to a specific topology).
+
+    Args:
+        joint_angles: Angle of each joint, shape ``(n_joints,)``.
+        segment_lengths: Length of each segment, shape ``(n_joints,)``.
+
+    Returns:
+        End-effector position in Cartesian space, shape ``(2,)``.
+    """
+    cumulative_angles = jnp.cumsum(joint_angles)
+    x = jnp.sum(segment_lengths * jnp.cos(cumulative_angles))
+    y = jnp.sum(segment_lengths * jnp.sin(cumulative_angles))
+    return jnp.array([x, y])
+
+
+def _sample_reachable_pos(
+    key: PRNGKeyArray,
+    segment_lengths: Float[Array, " n_joints"],
+) -> Float[Array, " 2"]:
+    """Sample a reachable effector position via random joint angles + FK.
+
+    Joint angles are sampled in ``[0.1*pi, 0.9*pi]`` to avoid workspace
+    boundary extremes (fully extended or fully folded configurations).
+    The resulting position is reachable by construction since it comes
+    from valid joint angles through forward kinematics.
+
+    Args:
+        key: PRNG key.
+        segment_lengths: Segment lengths, shape ``(n_joints,)``.
+
+    Returns:
+        Reachable Cartesian position, shape ``(2,)``.
+    """
+    n_joints = segment_lengths.shape[0]
+    angles = jax.random.uniform(
+        key, shape=(n_joints,), minval=0.1 * jnp.pi, maxval=0.9 * jnp.pi,
+    )
+    return _fk_planar(angles, segment_lengths)
+
+
 def _finite_diff_velocity(
     positions: Float[Array, "T 2"], dt: Float[Array, ""],
 ) -> Float[Array, "T 2"]:
@@ -183,8 +230,12 @@ def _swing_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
     t0 = jnp.asarray(params.t0)
     dt = jnp.asarray(params.dt)
     t = t0 + dt * t_index
+    # Derive swing radius from start_pos (set to [radius, 0] at sampling time)
+    # so that FK-aware sampling propagates through to trajectory reconstruction.
+    radius = jnp.sqrt(params.start_pos[0] ** 2 + params.start_pos[1] ** 2)
+    radius = jnp.maximum(radius, 1e-6)  # Avoid degenerate zero radius
     angle = 0.6 * jnp.sin(2 * jnp.pi * 0.5 * t)
-    return jnp.stack([0.45 * jnp.cos(angle), 0.45 * jnp.sin(angle)], axis=-1)
+    return jnp.stack([radius * jnp.cos(angle), radius * jnp.sin(angle)], axis=-1)
 
 
 def _target_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
@@ -234,10 +285,34 @@ def sample_task_params_jax(
     n_steps: int,
     dt: float,
     *,
+    segment_lengths: Float[Array, " n_joints"] | None = None,
     reach_radius: float = 0.5,
     track_radius: float = 0.35,
 ) -> TaskParams:
-    """Sample compact task parameters in a fully JAX-traceable way."""
+    """Sample compact task parameters in a fully JAX-traceable way.
+
+    When ``segment_lengths`` is provided, targets are sampled in joint space
+    and mapped to Cartesian space via forward kinematics. This guarantees all
+    targets are physically reachable by the arm. When ``segment_lengths`` is
+    ``None``, falls back to uniform Cartesian sampling within ``reach_radius``
+    (legacy behavior, no reachability guarantee).
+
+    Args:
+        key: PRNG key.
+        task_type: Force a specific task type (0-3), or ``None`` to sample
+            uniformly. May be a traced integer (safe inside vmap).
+        n_steps: Number of timesteps per episode.
+        dt: Physics timestep in seconds.
+        segment_lengths: Segment lengths for FK-based reachable sampling.
+            Shape ``(n_joints,)``. If ``None``, uses legacy Cartesian sampling.
+        reach_radius: Workspace radius for legacy Cartesian sampling.
+        track_radius: Workspace radius for legacy tracking control points.
+
+    Returns:
+        Sampled TaskParams.
+    """
+    use_fk = segment_lengths is not None
+
     key, type_key, k1, k2, k3 = jax.random.split(key, 5)
     if task_type is None:
         task_type = jax.random.randint(type_key, (), 0, 4)
@@ -248,12 +323,16 @@ def sample_task_params_jax(
 
     # --- Reach ---
     rk1, rk2 = jax.random.split(k1)
-    reach_start = jax.random.uniform(
-        rk1, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
-    )
-    reach_end = jax.random.uniform(
-        rk2, (2,), minval=-reach_radius, maxval=reach_radius,
-    )
+    if use_fk:
+        reach_start = _sample_reachable_pos(rk1, segment_lengths)
+        reach_end = _sample_reachable_pos(rk2, segment_lengths)
+    else:
+        reach_start = jax.random.uniform(
+            rk1, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+        )
+        reach_end = jax.random.uniform(
+            rk2, (2,), minval=-reach_radius, maxval=reach_radius,
+        )
     reach_cp = jnp.zeros((6, 2))
     reach_perturb_idx = jnp.array(0, dtype=jnp.int32)
     reach_perturb = jnp.zeros((2,))
@@ -261,9 +340,12 @@ def sample_task_params_jax(
     # --- Hold ---
     # Bug: 67e2e5e -- Randomize perturbation direction, magnitude, and timing
     key, hk1, hk2, hk3 = jax.random.split(key, 4)
-    hold_pos = jax.random.uniform(
-        k2, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
-    )
+    if use_fk:
+        hold_pos = _sample_reachable_pos(k2, segment_lengths)
+    else:
+        hold_pos = jax.random.uniform(
+            k2, (2,), minval=-reach_radius * 0.5, maxval=reach_radius * 0.5,
+        )
     hold_cp = jnp.zeros((6, 2))
     # Random perturbation direction (uniform angle)
     perturb_angle = jax.random.uniform(hk1, shape=(), minval=0.0, maxval=2 * jnp.pi)
@@ -282,20 +364,35 @@ def sample_task_params_jax(
     # --- Track ---
     n_pts = 6
     k3a, k3b = jax.random.split(k3)
-    angles = jax.random.uniform(k3a, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
-    radii = track_radius * (0.6 + 0.4 * jax.random.uniform(k3b, (n_pts,)))
-    track_cp = jnp.stack(
-        [radii * jnp.cos(angles), radii * jnp.sin(angles)], axis=-1,
-    )
+    if use_fk:
+        # Sample each control point as a reachable position via FK
+        cp_keys = jax.random.split(k3a, n_pts)
+        track_cp = jax.vmap(_sample_reachable_pos, in_axes=(0, None))(
+            cp_keys, segment_lengths,
+        )
+    else:
+        angles = jax.random.uniform(k3a, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
+        radii = track_radius * (0.6 + 0.4 * jax.random.uniform(k3b, (n_pts,)))
+        track_cp = jnp.stack(
+            [radii * jnp.cos(angles), radii * jnp.sin(angles)], axis=-1,
+        )
     track_perturb_idx = jnp.array(0, dtype=jnp.int32)
     track_perturb = jnp.zeros((2,))
 
     # --- Swing ---
-    swing_start = jnp.array([0.45, 0.0])
+    # When FK is available, derive swing radius from arm reach instead of
+    # using a hardcoded 0.45. Use ~60% of max reach for the oscillation
+    # center, keeping the full swing arc within the reachable workspace.
+    if use_fk:
+        swing_radius = 0.6 * jnp.sum(segment_lengths)
+    else:
+        swing_radius = jnp.asarray(0.45)
+    swing_start = jnp.array([swing_radius, 0.0])
     swing_t = tf
     swing_angle = 0.6 * jnp.sin(2 * jnp.pi * 0.5 * swing_t)
     swing_end = jnp.stack(
-        [0.45 * jnp.cos(swing_angle), 0.45 * jnp.sin(swing_angle)], axis=-1,
+        [swing_radius * jnp.cos(swing_angle), swing_radius * jnp.sin(swing_angle)],
+        axis=-1,
     )
     swing_cp = jnp.zeros((6, 2))
     swing_perturb_idx = jnp.array(0, dtype=jnp.int32)

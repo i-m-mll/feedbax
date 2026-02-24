@@ -257,7 +257,11 @@ def _init_envs(
     """
     def init_one(key):
         key, task_key, reset_key = jax.random.split(key, 3)
-        task = sample_task_params_jax(task_key, None, cfg.n_steps, cfg.dt)
+        seg_lens = getattr(plant, "segment_lengths", None)
+        task = sample_task_params_jax(
+            task_key, None, cfg.n_steps, cfg.dt,
+            segment_lengths=seg_lens,
+        )
         return rl_env_reset(plant, cfg, task, reset_key)
 
     keys = jax.random.split(key, n_envs)
@@ -588,8 +592,10 @@ def collect_rollouts_batched(
 
     def single_rollout(plant, policy, key, task_type):
         key, task_key, reset_key = jax.random.split(key, 3)
+        seg_lens = getattr(plant, "segment_lengths", None)
         task = sample_task_params_jax(
-            task_key, task_type, env_config.n_steps, env_config.dt
+            task_key, task_type, env_config.n_steps, env_config.dt,
+            segment_lengths=seg_lens,
         )
         state = rl_env_reset(plant, env_config, task, reset_key)
 

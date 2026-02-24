@@ -29,20 +29,26 @@ class MJXPlant(AbstractPlant):
     Attributes:
         skeleton: The MJXSkeleton providing physics computations.
         clip_states: Whether to clip states to bounds after integration.
+        segment_lengths: Segment lengths from the body preset, shape
+            ``(n_joints,)``. Used for FK-based reachable target sampling.
+            ``None`` if constructed without a body preset.
     """
 
     skeleton: MJXSkeleton
     clip_states: bool = eqx.field(static=True)
+    segment_lengths: Array | None
 
     def __init__(
         self,
         skeleton: MJXSkeleton,
         clip_states: bool = True,
+        segment_lengths: Array | None = None,
         *,
         key: Optional[PRNGKeyArray] = None,
     ):
         self.skeleton = skeleton
         self.clip_states = clip_states
+        self.segment_lengths = segment_lengths
 
     @classmethod
     def from_body_preset(
@@ -87,7 +93,12 @@ class MJXPlant(AbstractPlant):
             effector_body_id=effector_body_id,
         )
 
-        return cls(skeleton=skeleton, clip_states=clip_states, key=key)
+        return cls(
+            skeleton=skeleton,
+            clip_states=clip_states,
+            segment_lengths=jnp.asarray(preset.segment_lengths),
+            key=key,
+        )
 
     @classmethod
     def build_batch(
