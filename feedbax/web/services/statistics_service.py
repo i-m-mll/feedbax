@@ -148,11 +148,13 @@ class StatisticsService:
         if len(finite_vals) == 0:
             edges = np.linspace(0, 1, bins + 1)
         else:
-            edges = np.linspace(
-                float(np.min(finite_vals)),
-                float(np.max(finite_vals)),
-                bins + 1,
-            )
+            lo = float(np.min(finite_vals))
+            hi = float(np.max(finite_vals))
+            # Bug: c722539 -- identical min/max produces non-monotonic edges
+            if lo == hi:
+                lo -= 0.5
+                hi += 0.5
+            edges = np.linspace(lo, hi, bins + 1)
 
         result_groups: list[HistogramGroup] = []
         for key, label, indices in groups_map:
@@ -564,7 +566,13 @@ class StatisticsService:
         return self._traj._cache[(str(path), mtime)]
 
     def _get_mtime(self, dataset: str) -> float:
-        """Return the current mtime for *dataset*'s NPZ file."""
+        """Return the current mtime for *dataset*'s NPZ file.
+
+        Validates that the dataset exists first (delegates to
+        ``TrajectoryService.get_metadata`` which raises a 404 if missing).
+        """
+        # Bug: c722539 -- validate dataset before accessing mtime
+        self._traj.get_metadata(dataset)
         path = self._traj._resolve_path(dataset)
         return path.stat().st_mtime
 
@@ -573,6 +581,11 @@ def _nanpercentile_list(arr: np.ndarray, percentile: float) -> list[float]:
     """Compute a percentile along axis 0, returning a list of Python floats.
 
     Handles NaN values gracefully via ``np.nanpercentile``.
+    Returns NaN-filled list if the array has no trajectories (axis-0 is empty).
     """
+    # Bug: c722539 -- empty subset crashes np.nanpercentile
+    if arr.shape[0] == 0:
+        n_cols = arr.shape[1] if arr.ndim >= 2 else 0
+        return [float('nan')] * n_cols
     result = np.nanpercentile(arr, percentile, axis=0)
     return [float(v) for v in result]
