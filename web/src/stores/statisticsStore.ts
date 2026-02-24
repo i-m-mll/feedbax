@@ -64,7 +64,13 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 
   // Actions
   setGroupBy: (groupBy: string) => {
-    set({ groupBy });
+    // Bug: 4cb86c8 — clear cached chart data so stale groupBy results don't linger
+    set({
+      groupBy,
+      timeseriesData: null,
+      histogramData: null,
+      scatterData: null,
+    });
   },
 
   setSelectedMetric: (metric: string) => {
@@ -83,6 +89,9 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const summaryData = await fetchStatsSummary(dataset, groupBy);
+      // Bug: 4cb86c8 — discard stale response if params changed during fetch
+      const current = get();
+      if (current.groupBy !== groupBy || useTrajectoryStore.getState().activeDataset !== dataset) return;
       set({ summaryData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -97,6 +106,8 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const timeseriesData = await fetchStatsTimeseries(dataset, selectedMetric, groupBy);
+      const current = get();
+      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) return;
       set({ timeseriesData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -111,6 +122,8 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const histogramData = await fetchStatsHistogram(dataset, selectedMetric, groupBy);
+      const current = get();
+      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) return;
       set({ histogramData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -125,6 +138,8 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const scatterData = await fetchStatsScatter(dataset, scatterXMetric, scatterYMetric);
+      const current = get();
+      if (current.scatterXMetric !== scatterXMetric || current.scatterYMetric !== scatterYMetric || useTrajectoryStore.getState().activeDataset !== dataset) return;
       set({ scatterData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -138,6 +153,7 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const diagnosticsData = await fetchStatsDiagnostics(dataset);
+      if (useTrajectoryStore.getState().activeDataset !== dataset) return;
       set({ diagnosticsData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -148,7 +164,7 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
 // Subscribe to activeDataset changes from trajectoryStore —
 // auto-load summary + diagnostics when dataset changes.
 let _prevDataset: string | null = null;
-useTrajectoryStore.subscribe((state) => {
+const _unsubDataset = useTrajectoryStore.subscribe((state) => {
   const activeDataset = state.activeDataset;
   if (activeDataset && activeDataset !== _prevDataset) {
     _prevDataset = activeDataset;
@@ -166,3 +182,11 @@ useTrajectoryStore.subscribe((state) => {
     _prevDataset = null;
   }
 });
+
+// Bug: 4cb86c8 — prevent subscription stacking on HMR reload
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    _unsubDataset();
+    _prevDataset = null;
+  });
+}
