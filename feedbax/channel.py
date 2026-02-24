@@ -4,36 +4,33 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
-from functools import partial
+from collections.abc import Callable
+import dataclasses
 import logging
-from typing import Generic, Optional, Self, Tuple, Union
+from typing import Generic, Optional, Tuple, TypeVar
 
 import equinox as eqx
 from equinox import Module, field
+from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
-import jax.random as jr
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.intervene.schedule import ModelIntervenors
-from feedbax.noise import Normal, ZeroNoise
-from feedbax._staged import AbstractStagedModel, ModelStage
-from feedbax.state import StateT
-from feedbax._tree import leaves_of_type, random_split_like_tree
+from feedbax.graph import Component
+from feedbax.noise import Normal
+from feedbax._tree import random_split_like_tree
 
 
 logger = logging.getLogger(__name__)
 
 
 class ChannelState(Module):
-    """Type of state PyTree operated on by [`Channel`][feedbax.channel.Channel] instances.
+    """State for a delay/noise channel.
 
     Attributes:
         output: The current output of the channel.
-        queue: A tuple of previous inputs to the channel, with the most recent appearing last.
+        queue: A tuple of previous inputs to the channel, with most recent last.
         noise: The noise added to the current output, if any.
     """
 
@@ -42,13 +39,16 @@ class ChannelState(Module):
     noise: Optional[PyTree[Array, "T"]]
 
 
+StateT = TypeVar("StateT")
+
+
 class ChannelSpec(Module, Generic[StateT]):
-    """Specifies how to build a [`Channel`][feedbax.channel.Channel], with respect to the state PyTree of its owner.
+    """Specifies how to build a feedback channel from a state.
 
     Attributes:
         where: A function that selects the subtree of feedback states.
         delay: The number of previous inputs to store in the queue.
-        noise_std: The standard deviation of the noise to add to the output.
+        noise_func: Optional noise function.
     """
 
     where: Callable[[StateT], PyTree[Array]]
@@ -56,153 +56,102 @@ class ChannelSpec(Module, Generic[StateT]):
     noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = None
 
 
-class Channel(AbstractStagedModel[ChannelState]):
-    """A noisy queue.
+class Channel(Component):
+    """A noisy delay line."""
 
-    !!! NOTE
-        This can be used for modeling an axon, tract, wire, or other delayed
-        and semi-reliable connection between model components.
-
-    Attributes:
-        delay: The number of previous inputs stored in the queue. May be zero.
-        noise_func: Generates noise for the channel. Can be any function that
-            takes a key and an array, and returns noise samples with the same
-            shape as the array. If `None`, no noise is added.
-        add_noise: Whether noise is turned on. This allows us to perform model
-            surgery to toggle noise without setting `noise_func` to `None`.
-        input_proto: A PyTree of arrays with the same structure/shapes as the
-            inputs to the channel will have.
-        intervenors: [Intervenors][feedbax.intervene.AbstractIntervenor] to add
-            to the model at construction time.
-    """
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     delay: int
-    noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = Normal()
-    add_noise: bool = True
-    input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
-    init_value: float = 0
-    intervenors: ModelIntervenors[ChannelState] = field(init=False)
+    noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]]
+    add_noise: bool
+    input_proto: PyTree[Array]
+    init_value: float
+    state_index: StateIndex
+    _initial_state: ChannelState = field(static=True)
 
-    def __post_init__(self):
-        self.intervenors = self._get_intervenors_dict({})
-
-    def __check_init__(self):
-        if not isinstance(self.delay, int):
+    def __init__(
+        self,
+        delay: int,
+        noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = Normal(),
+        add_noise: bool = True,
+        input_proto: Optional[PyTree[Array]] = None,
+        init_value: float = 0.0,
+    ):
+        if not isinstance(delay, int):
             raise ValueError("Delay must be an integer")
+        self.delay = delay
+        self.noise_func = noise_func
+        self.add_noise = add_noise
+        if input_proto is None:
+            input_proto = jnp.zeros(1)
+        self.input_proto = input_proto
+        self.init_value = init_value
 
-    def _update_queue(
-        self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray
-    ):
-        return ChannelState(
-            output=state.queue[0],
-            queue=state.queue[1:] + (input,),
-            noise=state.noise,
-        )
+        self._initial_state = self._initial_state_value(input_proto)
+        self.state_index = StateIndex(self._initial_state)
 
-    def _update_queue_zerodelay(
-        self, input: PyTree[Array], state: ChannelState, *, key: PRNGKeyArray
-    ):
-        return ChannelState(
-            output=input,
-            queue=state.queue,
-            noise=state.noise,
-        )
-
-    def _add_noise(self, input, state, *, key):
-        assert self.noise_func is not None
-        noise = jt.map(
-            self.noise_func,
-            random_split_like_tree(key, input),
-            input,
-        )
-        output = jt.map(lambda x, y: x + y, input, noise)
-        return noise, output
-
-    @property
-    def model_spec(self) -> OrderedDict[str, ModelStage[Self, ChannelState]]:
-        """Returns an `OrderedDict` that specifies the stages of the channel model.
-
-        Always includes a queue input-output stage. Optionally includes
-        a stage that adds noise to the output, if `noise_std` was not
-        `None` at construction time.
-        """
-        Stage = ModelStage[Self, ChannelState]
-
-        update_queue = (
-            self._update_queue
-            if self.delay > 0
-            else self._update_queue_zerodelay
-        )
-
-        spec = OrderedDict(
-            {
-                "update_queue": Stage(
-                    callable=lambda self: update_queue,
-                    where_input=lambda input, state: input,
-                    where_state=lambda state: state,
-                ),
-            }
-        )
-
-        if self.add_noise and self.noise_func is not None:
-            spec |= {
-                "add_noise": Stage(
-                    callable=lambda self: self._add_noise,
-                    where_input=lambda input, state: state.output,
-                    where_state=lambda state: (state.noise, state.output),
-                ),
-            }
-
-        return spec
-
-    @property
-    def memory_spec(self) -> PyTree[bool]:
-        return ChannelState(
-            output=True,
-            queue=False,  # type: ignore
-            noise=False,
-        )
-
-    def init(self, *, key: PRNGKeyArray) -> ChannelState:
-        """Returns an empty `ChannelState` for the channel."""
-        input_init = jt.map(
-            lambda x: jnp.full_like(x, self.init_value), self.input_proto
-        )
-
+    def _initial_state_value(self, input_proto: PyTree[Array]) -> ChannelState:
+        input_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
         if not self.add_noise or self.noise_func is None:
             noise_init = None
         else:
             noise_init = input_init
+        queue = self.delay * (input_init,)
+        return ChannelState(output=input_init, queue=queue, noise=noise_init)
 
-        return ChannelState(
-            output=input_init,
-            queue=self.delay * (input_init,),
-            noise=noise_init,
-        )
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        channel_state: ChannelState = state.get(self.state_index)
+        input_value = inputs["input"]
+
+        if self.delay > 0:
+            output = channel_state.queue[0]
+            new_queue = channel_state.queue[1:] + (input_value,)
+        else:
+            output = input_value
+            new_queue = channel_state.queue
+
+        noise = None
+        if self.add_noise and self.noise_func is not None:
+            noise = jt.map(
+                self.noise_func,
+                random_split_like_tree(key, output),
+                output,
+            )
+            output = jt.map(lambda x, y: x + y, output, noise)
+
+        new_state = ChannelState(output=output, queue=new_queue, noise=noise)
+        state = state.set(self.state_index, new_state)
+        return {"output": output}, state
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":
-        """Returns a similar `Channel` with a changed input structure."""
-        return eqx.tree_at(lambda channel: channel.input_proto, self, input_proto)
+        """Return a similar Channel with a changed input structure."""
+        new_initial_state = self._initial_state_value(input_proto)
+        new_state_index = StateIndex(new_initial_state)
+        return dataclasses.replace(
+            self,
+            input_proto=input_proto,
+            state_index=new_state_index,
+            _initial_state=new_initial_state,
+        )
 
 
 def toggle_channel_noise(tree, enabled: Optional[bool] = None):
-    """Disable/enable noise in all `Channel` leaves of a PyTree.
-
-    The toggling works on a leaf-by-leaf basis unless `enabled` is specified.
-    Thus some noise might be enabled while other noise is disabled, through a
-    single call to this function.
-    """
+    """Disable/enable noise in all Channel leaves of a PyTree."""
     if enabled is None:
         replace_fn = lambda x: not x
     else:
         replace_fn = lambda _: enabled
 
     return eqx.tree_at(
-        partial(leaves_of_type, Channel),
+        lambda channel: channel.add_noise,
         tree,
-        replace_fn=lambda channel: eqx.tree_at(
-            lambda channel: channel.add_noise,
-            channel,
-            replace_fn=replace_fn,
-        ),
+        replace_fn,
+        is_leaf=lambda x: isinstance(x, Channel),
     )

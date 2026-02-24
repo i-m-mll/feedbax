@@ -26,6 +26,7 @@ models/
 img/
 _img/
 data/
+!web/src/data/
 
 # logs
 *.log
@@ -180,3 +181,8 @@ dmypy.json
 # vscode
 *.code-workspace
 .claude-story/
+
+# TypeScript/Vite build artifacts
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts

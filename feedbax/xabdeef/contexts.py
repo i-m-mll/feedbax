@@ -14,7 +14,7 @@ from jaxtyping import PRNGKeyArray
 import optax  # type: ignore
 
 from feedbax import get_ensemble
-from feedbax._model import AbstractModel
+from feedbax.graph import Component
 from feedbax.task import AbstractTask, SimpleReaches
 from feedbax.train import TaskTrainer, TaskTrainerHistory
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -39,9 +39,9 @@ class TrainingContext(eqx.Module):
         ensembled: Whether `model` is an ensemble of models.
     """
 
-    model: AbstractModel
+    model: Component
     task: AbstractTask
-    where_train: Callable = lambda model: model.step.net
+    where_train: Callable = lambda model: model.net
     ensembled: bool = False
 
     def train(
@@ -54,7 +54,7 @@ class TrainingContext(eqx.Module):
         optimizer_cls: Callable[..., optax.GradientTransformation] = optax.adam,
         key: PRNGKeyArray,
         **kwargs: Any,
-    ) -> tuple[AbstractModel, TaskTrainerHistory]:
+    ) -> tuple[Component, TaskTrainerHistory]:
         """Train the model on the task.
 
         Arguments:
@@ -99,7 +99,7 @@ def point_mass_nn_simple_reaches(
     encoding_size: Optional[int] = None,
     hidden_size: int = 50,
     hidden_type: type[eqx.Module] = eqx.nn.GRUCell,
-    where_train: Callable = lambda model: model.step.net,
+    where_train: Callable = lambda model: model.net,
     feedback_delay_steps: int = 0,
     eval_grid_n: int = 1,
     eval_n_directions: int = 7,

@@ -1,0 +1,22 @@
+
+figures:
+  # append a period to these abbreviations if they appear while constructing figure labels from column names
+  abbrev_terms: [std, pert, amp, eval]
+
+hps_level_label_sep: "__"  # joins keys when flattening hyperparameter trees, e.g. for DB column names
+
+serialisation:
+  sep_chr: 29  # boundary character between hyperparameters and Equinox-serialised data
+
+db_table_names:  #! Do not change these after the database has been created!
+  models: 'models'
+  evaluations: 'evaluations'
+  figures: 'figures'
+
+file_suffixes: 
+  replicate_info: "replicate_info"
+  train_history: "train_history" 
+
+
+
+  

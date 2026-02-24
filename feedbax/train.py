@@ -25,15 +25,15 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 from numpy._core.numeric import True_
 from tensorboardX import SummaryWriter  # type: ignore
 
-from feedbax import is_type, loss
-from feedbax._model import AbstractModel, ModelInput
+from feedbax import is_type
+from feedbax.graph import Component, init_state_from_component
 from feedbax._tree import (
     filter_spec_leaves,
     tree_infer_batch_size,
     tree_set,
     tree_take,
 )
-from feedbax.intervene import AbstractIntervenor
+from feedbax.iterate import run_component
 from feedbax.loss import AbstractLoss, CompositeLoss, TermTree
 from feedbax.misc import (
     BatchInfo,
@@ -42,10 +42,9 @@ from feedbax.misc import (
     delete_contents,
     exponential_smoothing,
     is_none,
-    unkwargkey,
 )
 from feedbax.state import StateT
-from feedbax.task import AbstractTask, TaskTrialSpec
+from feedbax.task import AbstractTask, TaskTrialSpec, _prepare_inputs, _set_state_by_path, _where_key_to_path
 
 LOSS_FMT = ".2e"
 
@@ -53,7 +52,7 @@ LOSS_FMT = ".2e"
 logger = logging.getLogger(__name__)
 
 
-WhereFunc: TypeAlias = Callable[[AbstractModel[StateT]], Any]
+WhereFunc: TypeAlias = Callable[[Component], Any]
 
 
 class TaskTrainerHistory(eqx.Module):
@@ -71,7 +70,7 @@ class TaskTrainerHistory(eqx.Module):
     loss: TermTree[AbstractLoss] | Array
     loss_validation: TermTree[AbstractLoss] | Array
     learning_rate: Optional[Array] = None
-    model_parameters: Optional[AbstractModel] = None
+    model_parameters: Optional[Component] = None
     trial_specs: dict[int, TaskTrialSpec] = field(default_factory=dict)
 
 
@@ -81,15 +80,15 @@ def get_model_parameters(model, where_train_spec):
 
 def update_opt_state(new, old, where_train_spec):
     """After re-initializing the `opt_state`, keep the optimizer state for parameters still being trained."""
-    opt_state_flat, treedef = jt.flatten(new, is_leaf=is_type(AbstractModel))
-    opt_state_flat_old = jt.leaves(old, is_leaf=is_type(AbstractModel))
+    opt_state_flat, treedef = jt.flatten(new, is_leaf=is_type(Component))
+    opt_state_flat_old = jt.leaves(old, is_leaf=is_type(Component))
     opt_state_flat_new = [
         eqx.combine(
             # Replace the new, empty opt state with the old one, where relevant
             eqx.filter(old, where_train_spec),
             new,
         )
-        if isinstance(new, AbstractModel)
+        if isinstance(new, Component)
         else new
         for new, old in zip(opt_state_flat, opt_state_flat_old)
     ]
@@ -156,7 +155,7 @@ class TaskTrainer(eqx.Module):
     def __call__(
         self,
         task: AbstractTask,
-        model: AbstractModel[StateT],
+        model: Component,
         n_batches: int,
         batch_size: int,
         where_train: WhereFunc | dict[int, WhereFunc],
@@ -278,9 +277,7 @@ class TaskTrainer(eqx.Module):
 
         if ensembled:
             # Infer the number of replicates from shape of trainable arrays
-            n_replicates = tree_infer_batch_size(
-                model, exclude=lambda x: isinstance(x, AbstractIntervenor)
-            )
+            n_replicates = tree_infer_batch_size(model)
             init_opt_state = eqx.filter_vmap(self.optimizer.init)
         else:
             # Unlikely to be used for anything, due to ensembled operations being in
@@ -401,18 +398,14 @@ class TaskTrainer(eqx.Module):
 
         # Passing the flattened pytrees through `_train_step` gives a slight
         # performance improvement. See the docstring of `_train_step`.
-        flat_model, treedef_model = jtu.tree_flatten(
-            model,
-            is_leaf=lambda x: isinstance(x, AbstractIntervenor),
-        )
+        flat_model, treedef_model = jtu.tree_flatten(model)
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
 
         if ensembled:
             # We only vmap over axis 0 of the *array* components of the model.
             flat_model_arr_spec = jt.map(
-                lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
+                lambda x: eqx.if_array(0),
                 flat_model,
-                is_leaf=lambda x: isinstance(x, AbstractIntervenor),
             )
 
             if ensemble_random_trials:
@@ -442,16 +435,6 @@ class TaskTrainer(eqx.Module):
                 out_axes=out_axes,
             )
 
-            # We can't simply flatten `model_array_spec` to get `flat_model_array_spec`,
-            # even if we use `is_leaf=is_none`.
-            # model_array_spec = jt.map(
-            #     lambda x: eqx.if_array(0) if not isinstance(x, AbstractIntervenor) else None,
-            #     model,
-            #     is_leaf=lambda x: isinstance(x, AbstractIntervenor),
-            # )
-            # evaluate = eqx.filter_vmap(
-            #     task.eval_with_loss, in_axes=(model_array_spec, 0)
-            # )
             def evaluate(model, key):
                 return task.eval_ensemble_with_loss(
                     model,
@@ -812,16 +795,29 @@ class TaskTrainer(eqx.Module):
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
 
-        init_states = eqx.filter_vmap(unkwargkey(model.init))(keys_init)
+        def _make_state(_):
+            return init_state_from_component(model)
 
-        for where_substate, init_substates in trial_specs.inits.items():
-            init_states = eqx.tree_at(
-                where_substate,
-                init_states,
-                init_substates,
-            )
+        init_states = eqx.filter_vmap(_make_state)(keys_init)
 
-        init_states = eqx.filter_vmap(model.step.state_consistency_update)(init_states)
+        intervention_indices = model.intervention_state_indices()
+
+        def _apply_inits(state, trial_spec):
+            for where_substate, init_substate in trial_spec.inits.items():
+                path = _where_key_to_path(where_substate)
+                state = _set_state_by_path(model, state, path, init_substate)
+
+            if trial_spec.intervene:
+                for label, params in trial_spec.intervene.items():
+                    if label not in intervention_indices:
+                        raise ValueError(f"Unknown intervention label '{label}'")
+                    idx = intervention_indices[label]
+                    current = state.get(idx)
+                    state = state.set(idx, eqx.combine(params, current))
+
+            return model.state_consistency_update(state)
+
+        init_states = eqx.filter_vmap(_apply_inits)(init_states, trial_specs)
 
         diff_model, static_model = eqx.partition(model, where_train_spec)
 
@@ -844,7 +840,7 @@ class TaskTrainer(eqx.Module):
         for update_func in update_funcs:
             model = update_func(model, states)
 
-        flat_model = jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AbstractIntervenor))
+        flat_model = jtu.tree_leaves(model)
         flat_opt_state = jtu.tree_leaves(opt_state)
 
         return losses, trial_specs, flat_model, flat_opt_state, grads
@@ -852,7 +848,7 @@ class TaskTrainer(eqx.Module):
     def _save_checkpoint(
         self,
         batch: int,
-        model: AbstractModel[StateT],
+        model: Component,
         opt_state: optax.OptState,
         history: TaskTrainerHistory,
     ):
@@ -866,10 +862,10 @@ class TaskTrainer(eqx.Module):
 
     def _load_last_checkpoint(
         self,
-        model: AbstractModel[StateT],
+        model: Component,
         opt_state: optax.OptState,
         history: TaskTrainerHistory,
-    ) -> Tuple[Optional[Path], int, AbstractModel[StateT], optax.OptState, TaskTrainerHistory]:
+    ) -> Tuple[Optional[Path], int, Component, optax.OptState, TaskTrainerHistory]:
         try:
             with open(self.chkpt_dir / "last_batch.txt", "r") as f:
                 last_batch = int(f.read())
@@ -886,7 +882,7 @@ class TaskTrainer(eqx.Module):
 
 
 def _get_trainable_params_superset(
-    model: AbstractModel[StateT],
+    model: Component,
     where_train: WhereFunc | dict[int, WhereFunc],
 ) -> PyTree[bool]:
     """Get a boolean mask for all parameters that are trainable at any point."""
@@ -914,7 +910,7 @@ def init_task_trainer_history(
     task: Optional[AbstractTask] = None,
     loss_func_validation: Optional[AbstractLoss] = None,
     batch_size: Optional[int] = None,
-    model: Optional[AbstractModel[StateT]] = None,
+    model: Optional[Component] = None,
     where_train: Optional[WhereFunc | dict[int, WhereFunc]] = None,
 ):
     if ensembled:
@@ -1100,20 +1096,35 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
       is a `TaskTrainer`-specific function, then `Task` could provide an interface
     """
 
+    def _infer_n_steps(inputs):
+        leaves = jt.leaves(inputs)
+        if not leaves:
+            raise ValueError("Cannot infer n_steps from empty inputs")
+        return int(leaves[0].shape[0])
+
     @wraps(loss_func)
     def wrapper(
-        diff_model: AbstractModel[StateT],
-        static_model: AbstractModel[StateT],  #! Type is technically not identical to `diff_model`
+        diff_model: Component,
+        static_model: Component,
         trial_specs: TaskTrialSpec,
         init_states: StateT,  #! has a batch dimension
         keys: PRNGKeyArray,  # per trial
     ) -> Tuple[Array, Tuple[TermTree[AbstractLoss], StateT]]:
         model = eqx.combine(diff_model, static_model)
 
-        # ? will `in_axes` ever change?
-        states: StateT = eqx.filter_vmap(model)(
-            ModelInput(trial_specs.inputs, trial_specs.intervene), init_states, keys
-        )
+        def _run_trial(trial_spec, init_state, key):
+            inputs = _prepare_inputs(model, trial_spec.inputs)
+            n_steps = _infer_n_steps(inputs)
+            _, _, state_history = run_component(
+                model,
+                inputs,
+                init_state,
+                key=key,
+                n_steps=n_steps,
+            )
+            return state_history
+
+        states: StateT = eqx.filter_vmap(_run_trial)(trial_specs, init_states, keys)
 
         losses = loss_func(states, trial_specs, model)
 
@@ -1141,7 +1152,7 @@ class HebbianGRUUpdate(eqx.Module):
     mode: Literal["default", "differential"] = "default"
     weight_type: Literal["candidate", "update", "reset"] = "candidate"
 
-    def __call__(self, model: AbstractModel[StateT], states: StateT) -> AbstractModel[StateT]:
+    def __call__(self, model: Component, states: StateT) -> Component:
         x = states.net.hidden
 
         if self.mode == "default":
