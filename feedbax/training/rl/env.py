@@ -48,6 +48,8 @@ class RLEnvConfig(eqx.Module):
         hold_threshold: Reward hold threshold in meters.
         action_scale: Scale factor for actions (maps [0,1] to torque range).
         action_offset: Offset for actions after scaling.
+        default_task_type: When set (e.g. ``0`` for REACH), ``auto_reset``
+            always uses this task type.  ``None`` samples randomly.
     """
 
     n_steps: int = eqx.field(static=True)
@@ -63,6 +65,9 @@ class RLEnvConfig(eqx.Module):
     hold_threshold: float = 0.02
     action_scale: float = 1.0
     action_offset: float = 0.0
+    default_task_type: int | None = eqx.field(static=True, default=None)
+    """When set, ``auto_reset`` always uses this task type instead of
+    sampling randomly.  ``None`` preserves the default random behaviour."""
 
 
 class RLEnvState(NamedTuple):
@@ -343,8 +348,10 @@ def auto_reset(
     """
     key, task_key, reset_key = jax.random.split(key, 3)
     seg_lens = getattr(plant, "segment_lengths", None)
+    # Bug: 2055433 — static override: always use default_task_type when set.
+    task_type = config.default_task_type  # None → random (existing behaviour)
     new_task = sample_task_params_jax(
-        task_key, None, config.n_steps, config.dt,
+        task_key, task_type, config.n_steps, config.dt,
         segment_lengths=seg_lens,
     )
     new_state = rl_env_reset(plant, config, new_task, reset_key)
@@ -354,3 +361,21 @@ def auto_reset(
         state,
         new_state,
     )
+
+
+def compute_n_steps(episode_duration: float, dt: float, frame_skip: int = 1) -> int:
+    """Compute correct n_steps accounting for frame_skip.
+
+    Each control step spans ``frame_skip * dt`` seconds of simulated time,
+    so the number of control steps in an episode is
+    ``episode_duration / (dt * frame_skip)``.
+
+    Args:
+        episode_duration: Total episode length in seconds.
+        dt: Physics timestep in seconds.
+        frame_skip: Number of physics sub-steps per control step.
+
+    Returns:
+        Number of control steps per episode.
+    """
+    return int(round(episode_duration / (dt * frame_skip)))
