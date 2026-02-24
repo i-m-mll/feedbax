@@ -6,11 +6,17 @@ and chain/simulation configurations.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import equinox as eqx
 import numpy as np
 from jaxtyping import Array, Float
 
 from feedbax.mechanics.body import BodyPreset
+from feedbax.mechanics.muscle_config import (
+    MuscleTopology,
+    default_monoarticular_topology,
+)
 
 
 class ChainConfig(eqx.Module):
@@ -18,15 +24,25 @@ class ChainConfig(eqx.Module):
 
     Attributes:
         n_joints: Number of rotational joints.
-        muscles_per_joint: Number of muscles per joint (typically 2 for antagonist pairs).
+        muscle_topology: Static muscle-joint connectivity.  Defaults to a
+            monoarticular layout with 2 muscles per joint if not provided.
     """
 
     n_joints: int = 3
-    muscles_per_joint: int = 2
+    muscle_topology: Optional[MuscleTopology] = None
+
+    def __post_init__(self):
+        if self.muscle_topology is None:
+            object.__setattr__(
+                self,
+                "muscle_topology",
+                default_monoarticular_topology(self.n_joints),
+            )
 
     @property
     def n_muscles(self) -> int:
-        return self.n_joints * self.muscles_per_joint
+        """Total number of muscles."""
+        return self.muscle_topology.n_muscles
 
 
 class SimConfig(eqx.Module):
@@ -143,7 +159,7 @@ def build_model(
         parent = body
         x_offset = length
 
-    # Muscle attachment sites.
+    # Muscle attachment sites (visual / reference only).
     for i in range(muscle_config.n_muscles):
         origin_body = body_map[muscle_config.origin_body[i]]
         insert_body = body_map[muscle_config.insertion_body[i]]
@@ -154,17 +170,17 @@ def build_model(
         _set_if_attr(insert_site, "pos", muscle_config.insertion_pos[i].tolist())
         _set_if_attr(insert_site, "size", [0.005, 0.005, 0.005])
 
-    # Joint actuators representing muscles.
-    specific_tension = 30.0  # N/cm^2
-    moment_arm_scale = 0.03  # meters
-    for i in range(chain_config.n_muscles):
+    # General torque actuators — one per joint.
+    # Bug: 138bbe5 — Muscle-to-torque conversion happens in JAX (MJXPlant),
+    # so MuJoCo only needs unity-gear torque actuators on each joint.
+    for j in range(chain_config.n_joints):
         act = spec.add_actuator()
-        _set_if_attr(act, "name", f"muscle{i}")
+        _set_if_attr(act, "name", f"torque_{j}")
         if hasattr(act, "set_to_motor"):
             act.set_to_motor()
         elif hasattr(mujoco, "mjtActuator"):
             _set_if_attr(act, "type", mujoco.mjtActuator.mjACT_MOTOR)
-        joint_name = joint_names[int(muscle_config.joint_index[i])]
+        joint_name = joint_names[j]
         if hasattr(act, "target"):
             act.trntype = mujoco.mjtTrn.mjTRN_JOINT
             act.target = joint_name
@@ -172,14 +188,11 @@ def build_model(
             act.joint = joint_name
         else:
             _set_if_attr(act, "trntype", mujoco.mjtTrn.mjTRN_JOINT)
-            joint_obj = joint_objects[int(muscle_config.joint_index[i])]
+            joint_obj = joint_objects[j]
             if hasattr(act, "trnid") and hasattr(joint_obj, "id"):
                 act.trnid = [joint_obj.id, 0]
-        pcsa = float(preset.muscle_pcsa[i])
-        max_force = pcsa * specific_tension
-        gear = float(np.sign(muscle_config.moment_arm[i]) * moment_arm_scale * max_force)
-        _set_if_attr(act, "gear", [gear, 0, 0, 0, 0, 0])
-        _set_if_attr(act, "ctrlrange", [0.0, 1.0])
+        _set_if_attr(act, "gear", [1.0, 0, 0, 0, 0, 0])
+        _set_if_attr(act, "ctrlrange", [-100.0, 100.0])
         _set_if_attr(act, "ctrllimited", True)
 
     return spec.compile()
