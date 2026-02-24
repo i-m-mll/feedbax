@@ -31,6 +31,7 @@ def config():
     return RLEnvConfig(
         n_steps=100,
         dt=0.01,
+        frame_skip=1,
         n_joints=2,
         n_muscles=2,
         action_scale=10.0,
@@ -51,12 +52,10 @@ def state(plant, config, task, key):
 class TestRLEnvReset:
     def test_shapes(self, state, config):
         assert state.muscle_activations.shape == (config.n_muscles,)
-        assert state.prev_effector.shape == (2,)
         assert state.t_index == 0
 
     def test_finite(self, state):
         assert jnp.all(jnp.isfinite(state.muscle_activations))
-        assert jnp.all(jnp.isfinite(state.prev_effector))
 
 
 class TestRLEnvStep:

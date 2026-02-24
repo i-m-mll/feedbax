@@ -31,7 +31,7 @@ def key():
 
 @pytest.fixture
 def chain_config():
-    return ChainConfig(n_joints=3, muscles_per_joint=2)
+    return ChainConfig(n_joints=3)
 
 
 @pytest.fixture
