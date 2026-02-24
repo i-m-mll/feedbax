@@ -28,8 +28,14 @@ class RLEnvConfig(eqx.Module):
     """Static configuration for the RL environment.
 
     Attributes:
-        n_steps: Number of timesteps per episode.
+        n_steps: Number of control steps per episode.  Each control step runs
+            ``frame_skip`` physics sub-steps, so the episode spans
+            ``n_steps * frame_skip * dt`` seconds of simulated time.
         dt: Physics timestep in seconds.
+        frame_skip: Number of physics sub-steps per control step.  The action
+            (muscle command) is held constant across sub-steps while activation
+            dynamics and physics are integrated at the finer ``dt`` resolution.
+            With ``dt=0.002`` and ``frame_skip=5`` the control rate is 100 Hz.
         n_joints: Number of joints.
         n_muscles: Number of muscle actuators.
         tau_act: Muscle activation time constant in seconds.
@@ -46,6 +52,7 @@ class RLEnvConfig(eqx.Module):
     dt: float
     n_joints: int = eqx.field(static=True)
     n_muscles: int = eqx.field(static=True)
+    frame_skip: int = eqx.field(static=True, default=5)
     tau_act: float = 0.01
     tau_deact: float = 0.04
     effort_weight: float = 0.005
@@ -149,6 +156,51 @@ def rl_env_get_obs(
     ])
 
 
+def _physics_substep(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    action: Float[Array, " n_muscles"],
+    carry: tuple[PlantState, Float[Array, " n_muscles"]],
+) -> tuple[PlantState, Float[Array, " n_muscles"]]:
+    """Run one physics sub-step: activation dynamics + Euler integration.
+
+    The muscle command (``action``) is held constant; only activations and
+    the plant state evolve.
+
+    Args:
+        plant: The plant model.
+        config: Environment configuration.
+        action: Muscle excitation command (constant across sub-steps).
+        carry: Tuple of (plant_state, muscle_activations).
+
+    Returns:
+        Updated (plant_state, muscle_activations) after one ``dt`` step.
+    """
+    plant_state, activations = carry
+
+    # First-order muscle activation dynamics (per sub-step at physics dt)
+    tau = jnp.where(
+        action > activations,
+        config.tau_act,
+        config.tau_deact,
+    )
+    da = (action - activations) / jnp.maximum(tau, 1e-6)
+    activations = jnp.clip(activations + config.dt * da, 0.0, 1.0)
+
+    # Scale activations to control signal
+    ctrl = activations * config.action_scale + config.action_offset
+
+    # Diffrax Euler integration
+    term = dfx.ODETerm(plant.vector_field)
+    solver = dfx.Euler()
+    plant_state = plant.kinematics_update(ctrl, plant_state)
+    plant_state, _, _, _, _ = solver.step(
+        term, 0, config.dt, plant_state, ctrl, None, made_jump=False,
+    )
+
+    return plant_state, activations
+
+
 def rl_env_step(
     plant: AbstractPlant,
     config: RLEnvConfig,
@@ -157,8 +209,11 @@ def rl_env_step(
 ) -> tuple[RLEnvState, Float[Array, " obs_dim"], Float[Array, ""], Float[Array, ""]]:
     """Step the RL environment forward by one control step.
 
-    Applies first-order muscle activation dynamics, steps the plant via
-    Diffrax Euler integration, computes reward, and checks episode termination.
+    Runs ``config.frame_skip`` physics sub-steps per control step via
+    ``jax.lax.fori_loop``.  The action (muscle command) is held constant
+    across sub-steps while activation dynamics and physics are integrated
+    at the finer ``dt`` resolution.  Only the final sub-step state is
+    returned.  Bug: 67e2e5e
 
     Args:
         plant: The plant model.
@@ -172,26 +227,14 @@ def rl_env_step(
     action = jnp.clip(action, 0.0, 1.0)
     t = state.t_index
 
-    # First-order muscle activation dynamics
-    tau = jnp.where(
-        action > state.muscle_activations,
-        config.tau_act,
-        config.tau_deact,
-    )
-    da = (action - state.muscle_activations) / jnp.maximum(tau, 1e-6)
-    new_activations = jnp.clip(
-        state.muscle_activations + config.dt * da, 0.0, 1.0
-    )
+    # Run frame_skip physics sub-steps with constant action.
+    init_carry = (state.plant_state, state.muscle_activations)
 
-    # Scale actions for non-muscle plants
-    ctrl = new_activations * config.action_scale + config.action_offset
+    def substep_body(_, carry):
+        return _physics_substep(plant, config, action, carry)
 
-    # Step plant via Diffrax Euler
-    term = dfx.ODETerm(plant.vector_field)
-    solver = dfx.Euler()
-    plant_state = plant.kinematics_update(ctrl, state.plant_state)
-    new_plant_state, _, _, _, _ = solver.step(
-        term, 0, config.dt, plant_state, ctrl, None, made_jump=False,
+    new_plant_state, new_activations = jax.lax.fori_loop(
+        0, config.frame_skip, substep_body, init_carry,
     )
 
     # Compute effector state — use analytical velocity from the skeleton

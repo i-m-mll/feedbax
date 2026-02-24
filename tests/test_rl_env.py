@@ -31,6 +31,7 @@ def config():
     return RLEnvConfig(
         n_steps=100,
         dt=0.01,
+        frame_skip=1,
         n_joints=2,
         n_muscles=2,
         action_scale=10.0,
