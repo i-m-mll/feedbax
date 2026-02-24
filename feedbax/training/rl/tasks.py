@@ -2,15 +2,17 @@
 
 Provides task types (reach, hold, track, swing) with both Python-level
 and fully JAX-traceable samplers for use in vmapped/scanned environments.
+Includes curriculum learning support for progressive target distance scaling.
 """
 
 from __future__ import annotations
 
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 
 # Task type constants
@@ -25,6 +27,98 @@ TASK_NAMES = {
     TASK_TRACK: "track",
     TASK_SWING: "swing",
 }
+
+# --- Curriculum learning: progressive target distance ---
+# Bug: 2055433 -- Each stage fraction defines max target distance as a
+# proportion of total arm reach, ramping from easy (nearby) to full workspace.
+CURRICULUM_STAGES: Float[Array, " 6"] = jnp.array(
+    [0.2, 0.35, 0.5, 0.65, 0.8, 0.9],
+)
+
+
+class CurriculumState(eqx.Module):
+    """Curriculum state for progressive target distance scaling.
+
+    Tracks the current curriculum stage and consecutive-success window
+    for deciding when to advance to the next stage. All fields are
+    scalar JAX arrays for JIT/vmap compatibility.
+
+    Attributes:
+        stage: Current curriculum stage index (0-based).
+        success_count: Consecutive successful updates in current window.
+        total_count: Total updates evaluated in current window.
+        max_target_fraction: Current max target distance as fraction of
+            arm reach, derived from ``CURRICULUM_STAGES[stage]``.
+    """
+
+    stage: Int[Array, ""]
+    success_count: Int[Array, ""]
+    total_count: Int[Array, ""]
+    max_target_fraction: Float[Array, ""]
+
+
+def init_curriculum() -> CurriculumState:
+    """Initialize curriculum state at stage 0 (fraction 0.2)."""
+    return CurriculumState(
+        stage=jnp.array(0, dtype=jnp.int32),
+        success_count=jnp.array(0, dtype=jnp.int32),
+        total_count=jnp.array(0, dtype=jnp.int32),
+        max_target_fraction=CURRICULUM_STAGES[0],
+    )
+
+
+def update_curriculum(
+    state: CurriculumState,
+    success_rate: Float[Array, ""],
+    window_size: int = 5,
+) -> CurriculumState:
+    """Update curriculum state after a PPO update.
+
+    Advances to the next stage when ``window_size`` consecutive updates
+    achieve ``success_rate >= 0.85``. A single failure resets the
+    consecutive counter. All logic uses ``jnp.where`` for JIT compatibility.
+
+    Args:
+        state: Current curriculum state.
+        success_rate: Success rate from the latest PPO update (scalar).
+        window_size: Number of consecutive successful updates required
+            to advance. Default: 5.
+
+    Returns:
+        Updated curriculum state.
+    """
+    # Bug: 2055433 -- Consecutive success tracking for stage advancement.
+    is_success = success_rate >= 0.85
+    new_success_count = jnp.where(
+        is_success, state.success_count + 1, jnp.array(0, dtype=jnp.int32),
+    )
+    new_total_count = state.total_count + 1
+
+    # Advance stage when we hit the required consecutive successes
+    should_advance = new_success_count >= window_size
+    max_stage = CURRICULUM_STAGES.shape[0] - 1
+    new_stage = jnp.where(
+        should_advance,
+        jnp.minimum(state.stage + 1, max_stage),
+        state.stage,
+    )
+
+    # Reset counters on stage advancement
+    new_success_count = jnp.where(
+        should_advance, jnp.array(0, dtype=jnp.int32), new_success_count,
+    )
+    new_total_count = jnp.where(
+        should_advance, jnp.array(0, dtype=jnp.int32), new_total_count,
+    )
+
+    new_fraction = CURRICULUM_STAGES[new_stage]
+
+    return CurriculumState(
+        stage=new_stage,
+        success_count=new_success_count,
+        total_count=new_total_count,
+        max_target_fraction=new_fraction,
+    )
 
 
 class TaskSpec(NamedTuple):
@@ -288,6 +382,7 @@ def sample_task_params_jax(
     segment_lengths: Float[Array, " n_joints"] | None = None,
     reach_radius: float = 0.5,
     track_radius: float = 0.35,
+    max_target_distance: float | Float[Array, ""] | None = None,
 ) -> TaskParams:
     """Sample compact task parameters in a fully JAX-traceable way.
 
@@ -296,6 +391,11 @@ def sample_task_params_jax(
     targets are physically reachable by the arm. When ``segment_lengths`` is
     ``None``, falls back to uniform Cartesian sampling within ``reach_radius``
     (legacy behavior, no reachability guarantee).
+
+    When ``max_target_distance`` is provided, the REACH target's distance
+    from the start position is clamped to this value. This supports
+    curriculum learning where the agent first learns nearby reaches before
+    progressing to the full workspace. Other task types are unaffected.
 
     Args:
         key: PRNG key.
@@ -307,6 +407,9 @@ def sample_task_params_jax(
             Shape ``(n_joints,)``. If ``None``, uses legacy Cartesian sampling.
         reach_radius: Workspace radius for legacy Cartesian sampling.
         track_radius: Workspace radius for legacy tracking control points.
+        max_target_distance: Maximum distance from start to reach target.
+            When ``None``, no clamping is applied (full workspace).
+            Bug: 2055433 -- curriculum learning support.
 
     Returns:
         Sampled TaskParams.
@@ -333,6 +436,16 @@ def sample_task_params_jax(
         reach_end = jax.random.uniform(
             rk2, (2,), minval=-reach_radius, maxval=reach_radius,
         )
+    # Bug: 2055433 -- Clamp reach target distance for curriculum learning.
+    # Scale the direction vector from start to end so the distance does not
+    # exceed max_target_distance, preserving the sampled direction.
+    if max_target_distance is not None:
+        direction = reach_end - reach_start
+        dist = jnp.sqrt(jnp.sum(direction ** 2))
+        safe_dist = jnp.maximum(dist, 1e-8)
+        scale = jnp.minimum(jnp.asarray(max_target_distance) / safe_dist, 1.0)
+        reach_end = reach_start + direction * scale
+
     reach_cp = jnp.zeros((6, 2))
     reach_perturb_idx = jnp.array(0, dtype=jnp.int32)
     reach_perturb = jnp.zeros((2,))
