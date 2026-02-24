@@ -1,6 +1,7 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type { LossTermSpec, ProbeInfo, TrainingSpec, TaskSpec, LossValidationResult } from '@/types/training';
+import type { TrajectoryDataset, TrajectoryMetadata, TrajectoryData } from '@/types/trajectory';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -88,4 +89,32 @@ export async function resolveSelector(
     method: 'POST',
     body: JSON.stringify({ graph_id: graphId, selector }),
   });
+}
+
+// --- Trajectory API ---
+
+export async function fetchTrajectoryDatasets(): Promise<TrajectoryDataset[]> {
+  return request<TrajectoryDataset[]>('/api/trajectories/datasets');
+}
+
+export async function fetchTrajectoryMetadata(dataset: string): Promise<TrajectoryMetadata> {
+  return request<TrajectoryMetadata>(`/api/trajectories/${encodeURIComponent(dataset)}/metadata`);
+}
+
+export async function fetchTrajectory(dataset: string, index: number): Promise<TrajectoryData> {
+  return request<TrajectoryData>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/${index}`,
+  );
+}
+
+export async function filterTrajectories(
+  dataset: string,
+  filters: { body_idx?: number; task_type?: number },
+): Promise<{ indices: number[]; count: number }> {
+  const params = new URLSearchParams();
+  if (filters.body_idx !== undefined) params.set('body_idx', String(filters.body_idx));
+  if (filters.task_type !== undefined) params.set('task_type', String(filters.task_type));
+  return request<{ indices: number[]; count: number }>(
+    `/api/trajectories/${encodeURIComponent(dataset)}/filter?${params}`,
+  );
 }
