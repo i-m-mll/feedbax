@@ -19,6 +19,7 @@ from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.training.rl.rewards import compute_reward
 from feedbax.training.rl.tasks import (
     TASK_HOLD,
+    TASK_REACH,
     TaskParams,
     sample_task_params_jax,
     target_at_t,
@@ -297,8 +298,18 @@ def rl_env_step(
         n_steps=config.n_steps,
     )
 
+    # Bug: 67e2e5e — Early termination on success for REACH tasks.
+    # Agent is done when it reaches within hold_threshold of the target.
+    distance = jnp.linalg.norm(effector.pos - target_pos)
+    reached_target = distance < config.hold_threshold
+    is_reach = (jnp.asarray(state.task.task_type) == TASK_REACH)
+    early_done = is_reach & reached_target
+
     new_t = t + 1
-    done = (new_t >= config.n_steps).astype(jnp.float32)
+    done = jnp.maximum(
+        (new_t >= config.n_steps).astype(jnp.float32),
+        early_done.astype(jnp.float32),
+    )
 
     new_state = RLEnvState(
         plant_state=new_plant_state,
