@@ -12,6 +12,10 @@ from feedbax.mechanics.model_builder import (
     get_body_id,
     get_site_id,
 )
+from feedbax.mechanics.muscle_config import (
+    default_6muscle_2link_topology,
+    default_monoarticular_topology,
+)
 
 
 @pytest.fixture
@@ -21,7 +25,7 @@ def key():
 
 @pytest.fixture
 def chain_config():
-    return ChainConfig(n_joints=3, muscles_per_joint=2)
+    return ChainConfig(n_joints=3)
 
 
 @pytest.fixture
@@ -41,14 +45,20 @@ def model(preset, chain_config, sim_config):
 
 
 class TestChainConfig:
-    def test_n_muscles(self):
-        cfg = ChainConfig(n_joints=3, muscles_per_joint=2)
+    def test_n_muscles_default(self):
+        cfg = ChainConfig(n_joints=3)
+        assert cfg.n_muscles == 6  # 3 joints * 2 muscles/joint
+
+    def test_n_muscles_custom_topology(self):
+        topo = default_6muscle_2link_topology()
+        cfg = ChainConfig(n_joints=2, muscle_topology=topo)
         assert cfg.n_muscles == 6
 
     def test_defaults(self):
         cfg = ChainConfig()
         assert cfg.n_joints == 3
-        assert cfg.muscles_per_joint == 2
+        assert cfg.muscle_topology is not None
+        assert cfg.muscle_topology.n_joints == 3
 
 
 class TestSimConfig:
@@ -65,7 +75,8 @@ class TestBuildModel:
         assert model.nv == 3
 
     def test_actuators(self, model, chain_config):
-        assert model.nu == chain_config.n_muscles
+        # Now one torque actuator per joint, not per muscle.
+        assert model.nu == chain_config.n_joints
 
     def test_effector_site(self, model):
         sid = get_site_id(model, "effector")

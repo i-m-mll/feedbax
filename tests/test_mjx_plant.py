@@ -26,7 +26,7 @@ def key():
 
 @pytest.fixture
 def chain_config():
-    return ChainConfig(n_joints=3, muscles_per_joint=2)
+    return ChainConfig(n_joints=3)
 
 
 @pytest.fixture
@@ -59,8 +59,9 @@ def skeleton(mj_model, mjx_model, chain_config):
 
 
 @pytest.fixture
-def plant(skeleton):
-    return MJXPlant(skeleton=skeleton, clip_states=False)
+def plant(preset, chain_config, sim_config):
+    """Build MJXPlant via from_body_preset so moment_arms/muscle_gear are set."""
+    return MJXPlant.from_body_preset(preset, chain_config, sim_config, clip_states=False)
 
 
 @pytest.fixture
@@ -165,8 +166,9 @@ class TestMJXPlantInit:
 
 
 class TestMJXPlantInputSize:
-    def test_matches_model(self, plant, mjx_model):
-        assert plant.input_size == int(mjx_model.nu)
+    def test_matches_n_muscles(self, plant):
+        # input_size is n_muscles (policy output dim), not n_joints (MuJoCo nu).
+        assert plant.input_size == plant.moment_arms.shape[0]
 
 
 class TestMJXPlantVectorField:

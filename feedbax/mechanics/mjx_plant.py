@@ -133,13 +133,13 @@ class MJXPlant(AbstractPlant):
             effector_body_id=effector_body_id,
         )
 
-        # Bug: 138bbe5 — Compute signed moment arms and muscle gear from preset.
+        # Bug: 138bbe5 -- Compute signed moment arms and muscle gear from preset.
         topology = chain_config.muscle_topology
         moment_arms = (
-            preset.muscle_moment_arm_magnitudes * topology.sign
+            preset.muscle_moment_arm_magnitudes * topology.sign_array
         )
         # Zero out entries where muscle does not span the joint.
-        moment_arms = jnp.where(topology.routing, moment_arms, 0.0)
+        moment_arms = jnp.where(topology.routing_array, moment_arms, 0.0)
 
         specific_tension = 30.0  # N/cm^2
         muscle_gear = preset.muscle_pcsa * specific_tension

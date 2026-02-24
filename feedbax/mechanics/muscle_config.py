@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Bool, Float, Int
 
 from feedbax.mechanics.body import BodyPreset
@@ -19,6 +20,11 @@ from feedbax.mechanics.body import BodyPreset
 # ---------------------------------------------------------------------------
 
 
+def _to_nested_tuple(arr: np.ndarray) -> tuple[tuple, ...]:
+    """Convert a 2D numpy array to a nested tuple for hashable static storage."""
+    return tuple(tuple(row) for row in arr)
+
+
 class MuscleTopology(eqx.Module):
     """Static muscle-joint connectivity shared across a body batch.
 
@@ -26,25 +32,38 @@ class MuscleTopology(eqx.Module):
     in a vmapped batch share the same topology without duplicating
     these arrays on the leading batch dimension.
 
+    The ``routing`` and ``sign`` fields are stored as nested tuples (not
+    arrays) to avoid equinox warnings about JAX/numpy arrays in static
+    fields.  Use the ``routing_array`` and ``sign_array`` properties for
+    JAX-compatible array access.
+
     Attributes:
-        routing: Boolean mask indicating which muscles span which joints,
-            shape ``(n_muscles, n_joints)``.
-        sign: Signed direction per muscle-joint pair (+1 flexion, -1 extension,
-            0 not connected), shape ``(n_muscles, n_joints)``.
+        routing: Nested tuple of booleans, shape ``(n_muscles, n_joints)``.
+        sign: Nested tuple of ints (+1/-1/0), shape ``(n_muscles, n_joints)``.
     """
 
-    routing: Bool[Array, "n_muscles n_joints"] = eqx.field(static=True)
-    sign: Int[Array, "n_muscles n_joints"] = eqx.field(static=True)
+    routing: tuple[tuple[bool, ...], ...] = eqx.field(static=True)
+    sign: tuple[tuple[int, ...], ...] = eqx.field(static=True)
 
     @property
     def n_muscles(self) -> int:
         """Number of muscles."""
-        return self.routing.shape[0]
+        return len(self.routing)
 
     @property
     def n_joints(self) -> int:
         """Number of joints."""
-        return self.routing.shape[1]
+        return len(self.routing[0]) if self.routing else 0
+
+    @property
+    def routing_array(self) -> Bool[Array, "n_muscles n_joints"]:
+        """Boolean routing mask as a JAX array."""
+        return jnp.array(self.routing, dtype=bool)
+
+    @property
+    def sign_array(self) -> Int[Array, "n_muscles n_joints"]:
+        """Signed direction matrix as a JAX array."""
+        return jnp.array(self.sign, dtype=jnp.int32)
 
 
 def default_6muscle_2link_topology() -> MuscleTopology:
@@ -61,22 +80,22 @@ def default_6muscle_2link_topology() -> MuscleTopology:
     Returns:
         MuscleTopology with ``(6, 2)`` routing and sign arrays.
     """
-    routing = jnp.array([
-        [True, False],   # shoulder flexor
-        [True, False],   # shoulder extensor
-        [False, True],   # elbow flexor
-        [False, True],   # elbow extensor
-        [True, True],    # biarticular flexor
-        [True, True],    # biarticular extensor
-    ])
-    sign = jnp.array([
-        [+1, 0],    # shoulder flexor
-        [-1, 0],    # shoulder extensor
-        [0, +1],    # elbow flexor
-        [0, -1],    # elbow extensor
-        [+1, +1],   # biarticular flexor
-        [-1, -1],   # biarticular extensor
-    ], dtype=jnp.int32)
+    routing = (
+        (True, False),   # shoulder flexor
+        (True, False),   # shoulder extensor
+        (False, True),   # elbow flexor
+        (False, True),   # elbow extensor
+        (True, True),    # biarticular flexor
+        (True, True),    # biarticular extensor
+    )
+    sign = (
+        (+1, 0),    # shoulder flexor
+        (-1, 0),    # shoulder extensor
+        (0, +1),    # elbow flexor
+        (0, -1),    # elbow extensor
+        (+1, +1),   # biarticular flexor
+        (-1, -1),   # biarticular extensor
+    )
     return MuscleTopology(routing=routing, sign=sign)
 
 
@@ -98,14 +117,17 @@ def default_monoarticular_topology(
         MuscleTopology with ``(n_muscles, n_joints)`` arrays.
     """
     n_muscles = n_joints * muscles_per_joint
-    routing = jnp.zeros((n_muscles, n_joints), dtype=bool)
-    sign = jnp.zeros((n_muscles, n_joints), dtype=jnp.int32)
+    routing_list = [[False] * n_joints for _ in range(n_muscles)]
+    sign_list = [[0] * n_joints for _ in range(n_muscles)]
     for j in range(n_joints):
         for m in range(muscles_per_joint):
             idx = j * muscles_per_joint + m
-            routing = routing.at[idx, j].set(True)
-            sign = sign.at[idx, j].set(1 if m % 2 == 0 else -1)
-    return MuscleTopology(routing=routing, sign=sign)
+            routing_list[idx][j] = True
+            sign_list[idx][j] = 1 if m % 2 == 0 else -1
+    return MuscleTopology(
+        routing=tuple(tuple(row) for row in routing_list),
+        sign=tuple(tuple(row) for row in sign_list),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +211,10 @@ def default_muscle_config(
 
     # Build attachment sites for each muscle based on topology routing.
     for i in range(n_muscles):
-        # Find the joints this muscle spans.
-        spanned = [j for j in range(n_joints) if bool(topology.routing[i, j])]
+        # Find the joints this muscle spans (tuple indexing).
+        spanned = [j for j in range(n_joints) if topology.routing[i][j]]
         if not spanned:
-            # Defensive — muscle spans no joint (should not happen).
+            # Defensive -- muscle spans no joint (should not happen).
             origin_body.append("world")
             insertion_body.append("link0")
             continue
@@ -207,9 +229,8 @@ def default_muscle_config(
         child_name = f"link{last_joint}"
         child_len = float(lengths[last_joint])
 
-        # Sign for lateral offset: flexor → +y, extensor → -y.
-        # Use the sign at the first spanned joint to choose offset direction.
-        sign_val = float(topology.sign[i, first_joint])
+        # Sign for lateral offset: flexor -> +y, extensor -> -y.
+        sign_val = topology.sign[i][first_joint]
         lateral = sign_val * y_offset if sign_val != 0 else y_offset
 
         origin_body.append(parent_name)
@@ -221,16 +242,17 @@ def default_muscle_config(
             jnp.array([0.1 * child_len, lateral, 0.0])
         )
 
-    # Build the signed moment arm matrix.
+    # Build the signed moment arm matrix using JAX array views of topology.
+    sign_arr = topology.sign_array
+    routing_arr = topology.routing_array
+
     if hasattr(preset, "muscle_moment_arm_magnitudes"):
-        moment_arms = preset.muscle_moment_arm_magnitudes * topology.sign
+        moment_arms = preset.muscle_moment_arm_magnitudes * sign_arr
     else:
         # Legacy fallback: uniform magnitude from lateral offset.
-        moment_arms = jnp.full(
-            (n_muscles, n_joints), y_offset,
-        ) * topology.sign
+        moment_arms = jnp.full((n_muscles, n_joints), y_offset) * sign_arr
     # Zero out entries where muscle does not span the joint.
-    moment_arms = jnp.where(topology.routing, moment_arms, 0.0)
+    moment_arms = jnp.where(routing_arr, moment_arms, 0.0)
 
     return MuscleConfig(
         origin_body=tuple(origin_body),
