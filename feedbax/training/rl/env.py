@@ -123,11 +123,20 @@ def rl_env_get_obs(
     target_pos, target_vel = target_at_t(state.task, t)
     phase = jnp.array([t / jnp.maximum(config.n_steps - 1, 1)])
 
-    # Extract joint positions and velocities from skeleton state leaves
-    skeleton_leaves = jt.leaves(skeleton_state)
-    # First leaf is typically positions, second is velocities
-    qpos = skeleton_leaves[0]
-    qvel = skeleton_leaves[1] if len(skeleton_leaves) > 1 else jnp.zeros_like(qpos)
+    # Extract joint positions and velocities via named attributes.
+    # MJXSkeletonState uses .qpos/.qvel; TwoLinkArmState uses .angle/.d_angle.
+    # Bug: 67e2e5e — replaces brittle jt.leaves ordering.
+    if hasattr(skeleton_state, "qpos"):
+        qpos = skeleton_state.qpos
+        qvel = skeleton_state.qvel
+    elif hasattr(skeleton_state, "angle"):
+        qpos = skeleton_state.angle
+        qvel = skeleton_state.d_angle
+    else:
+        raise TypeError(
+            f"Unknown skeleton state type {type(skeleton_state).__name__}: "
+            "expected .qpos/.qvel or .angle/.d_angle attributes"
+        )
 
     return jnp.concatenate([
         jnp.atleast_1d(qpos),
