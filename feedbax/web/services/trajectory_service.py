@@ -155,6 +155,8 @@ class TrajectoryService:
     ) -> tuple[list[int], int]:
         """Return indices of trajectories matching the given filters."""
         self._validate_dataset_name(dataset)
+        # Ensure handle is fresh (evicts stale caches on mtime change).
+        self._load(dataset)
 
         # Ensure filter arrays are cached.
         if dataset not in self._filter_cache:
@@ -194,6 +196,12 @@ class TrajectoryService:
         """
         path = self._resolve_path(dataset)
         if not path.is_file():
+            # Evict any cached handles for this path before raising.
+            stale = [k for k in self._cache if k[0] == str(path)]
+            for k in stale:
+                self._cache.pop(k).close()
+            self._metadata_cache.pop(dataset, None)
+            self._filter_cache.pop(dataset, None)
             raise HTTPException(status_code=404, detail=f'Dataset "{dataset}" not found')
 
         mtime = path.stat().st_mtime

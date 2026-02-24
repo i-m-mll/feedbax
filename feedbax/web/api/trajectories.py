@@ -48,5 +48,7 @@ async def get_trajectory(
     field_list: list[str] | None = None
     if fields is not None:
         field_list = [f.strip() for f in fields.split(',') if f.strip()]
+        if not field_list:
+            field_list = None  # empty -> return all fields
     data = service.get_trajectory(dataset, index, field_list)
     return Response(content=json.dumps(data), media_type='application/json')
