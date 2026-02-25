@@ -63,7 +63,7 @@ class CDENetwork(Component):
     Attributes:
         obs_dim: Dimensionality of the observation vector (static).
         hidden_dim: Dimensionality of the CDE hidden state (static).
-        out_size: Dimensionality of the action output. Matches
+        out_size: Dimensionality of the action output (static). Matches
             SimpleStagedNetwork attribute name for compatibility.
         vector_field: MLP mapping h -> flattened matrix of shape
             (hidden_dim * obs_dim,). Reshaped to (hidden_dim, obs_dim)
@@ -75,7 +75,7 @@ class CDENetwork(Component):
 
     obs_dim: int = field(static=True)
     hidden_dim: int = field(static=True)
-    out_size: int
+    out_size: int = field(static=True)
     vector_field: eqx.nn.MLP
     readout: eqx.nn.Linear
     h0: Float[Array, "hidden_dim"]

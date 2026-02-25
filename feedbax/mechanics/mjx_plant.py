@@ -97,6 +97,7 @@ class MJXPlant(AbstractPlant):
         chain_config,
         sim_config,
         *,
+        differentiable: bool = False,
         clip_states: bool = True,
         key: Optional[PRNGKeyArray] = None,
     ) -> MJXPlant:
@@ -106,6 +107,9 @@ class MJXPlant(AbstractPlant):
             preset: BodyPreset with physical parameters.
             chain_config: ChainConfig with topology.
             sim_config: SimConfig with timing.
+            differentiable: If True, configure the MuJoCo solver for
+                reverse-mode differentiability (fixed iterations, no
+                contacts). See ``build_model`` for details.
             clip_states: Whether to clip states to joint limits.
             key: Optional PRNG key.
 
@@ -119,7 +123,9 @@ class MJXPlant(AbstractPlant):
             to_mjx,
         )
 
-        mj_model = build_model(preset, chain_config, sim_config)
+        mj_model = build_model(
+            preset, chain_config, sim_config, differentiable=differentiable,
+        )
         mjx_model = to_mjx(mj_model)
 
         effector_site_id = get_site_id(mj_model, "effector")
@@ -160,6 +166,7 @@ class MJXPlant(AbstractPlant):
         chain_config,
         sim_config,
         *,
+        differentiable: bool = False,
         clip_states: bool = True,
     ) -> MJXPlant:
         """Build N MJXPlants from presets, stack into vmappable batch.
@@ -172,6 +179,9 @@ class MJXPlant(AbstractPlant):
             presets: Sequence of BodyPreset instances.
             chain_config: ChainConfig with topology (shared).
             sim_config: SimConfig with timing (shared).
+            differentiable: If True, configure the MuJoCo solver for
+                reverse-mode differentiability. Passed through to
+                ``from_body_preset``.
             clip_states: Whether to clip states to joint limits.
 
         Returns:
@@ -179,6 +189,7 @@ class MJXPlant(AbstractPlant):
         """
         plants = [
             cls.from_body_preset(p, chain_config, sim_config,
+                                 differentiable=differentiable,
                                  clip_states=clip_states)
             for p in presets
         ]
