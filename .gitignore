@@ -23,6 +23,7 @@ models/
 *.pt
 *.gif
 *.svg
+!web/public/icon.svg
 img/
 _img/
 data/

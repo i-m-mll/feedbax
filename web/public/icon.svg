@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#18181b"/>
+  <text
+    x="256" y="380"
+    font-family="'Space Grotesk', 'Inter', system-ui, sans-serif"
+    font-size="400"
+    font-weight="700"
+    fill="#f4f5f7"
+    text-anchor="middle"
+  >F</text>
+</svg>
