@@ -928,35 +928,19 @@ def _batched_collect_rollouts_extended(
     """Vectorized rollout collection with dynamically gated enhancements."""
     n_bodies = jt.leaves(batched_plant)[0].shape[0]
     keys = jax.random.split(key, n_bodies)
+    # Bug: a39e7d0 — capture broadcast args via closure to avoid PjitFunction leaf
+    # bug with explicit in_axes in JAX 0.9 + equinox 0.13.4.
     return eqx.filter_vmap(
-        _collect_rollout_extended,
-        in_axes=(
-            0, None, 0, 0, 0,
-            None, None,
-            0, 0, 0,
-            None, None,
-            None, None, None,
-            None, None,
+        lambda pl, pol, st, k, on_st, lat_st, cur_st: _collect_rollout_extended(
+            pl, env_config, pol, st, k,
+            n_steps, n_envs,
+            on_st, lat_st, cur_st,
+            lattice_resample_interval, curriculum_arm_reach,
+            use_obs_norm, use_lattice, use_curriculum,
+            task_type, single_task,
         ),
-    )(
-        batched_plant,
-        env_config,
-        policy,
-        states,
-        keys,
-        n_steps,
-        n_envs,
-        obs_norm_state,
-        lattice_state,
-        curriculum_state,
-        lattice_resample_interval,
-        curriculum_arm_reach,
-        use_obs_norm,
-        use_lattice,
-        use_curriculum,
-        task_type,
-        single_task,
-    )
+    )(batched_plant, policy, states, keys,
+      obs_norm_state, lattice_state, curriculum_state)
 
 
 def _update_one(
@@ -1040,24 +1024,15 @@ def _batched_update(
     """Vectorized PPO update over bodies."""
     n_bodies = rollout.obs.shape[0]
     keys = jax.random.split(key, n_bodies)
+    # Bug: a39e7d0 — capture broadcast args via closure to avoid PjitFunction leaf
+    # bug with explicit in_axes in JAX 0.9 + equinox 0.13.4.
     return eqx.filter_vmap(
-        _update_one,
-        in_axes=(0, 0, 0, 0, 0, None, None, None, None, None, None, None, None),
-    )(
-        policy,
-        opt_state,
-        rollout,
-        last_values,
-        keys,
-        optimizer,
-        gamma,
-        gae_lambda,
-        clip_eps,
-        vf_coef,
-        ent_coef,
-        n_minibatches,
-        n_train_iters,
-    )
+        lambda pol, opt, roll, lv, k: _update_one(
+            pol, opt, roll, lv, k,
+            optimizer, gamma, gae_lambda, clip_eps, vf_coef, ent_coef,
+            n_minibatches, n_train_iters,
+        ),
+    )(policy, opt_state, rollout, last_values, keys)
 
 
 @eqx.filter_jit
