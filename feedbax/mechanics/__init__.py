@@ -1,5 +1,8 @@
 from .mechanics import Mechanics, MechanicsState
 
+# Physics backend abstraction
+from .backend import PhysicsBackend, PhysicsState, DiffraxBackend, MJXBackend
+
 # DAE components
 from .dae import DAEComponent, DAEState, DAEParams
 
