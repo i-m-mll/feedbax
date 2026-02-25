@@ -36,10 +36,16 @@ T = TypeVar("T")
 
 
 class SimpleFeedbackState(Module):
-    """State for the SimpleFeedback graph."""
+    """State for the SimpleFeedback graph.
+
+    Note: ``net`` is typed as ``Module`` rather than ``NetworkState`` to
+    accommodate alternative controller state types (e.g. CDENetworkState).
+    Both ``NetworkState`` and ``CDENetworkState`` provide ``hidden`` and
+    ``output`` fields, which are the only fields accessed by downstream code.
+    """
 
     mechanics: MechanicsState
-    net: NetworkState
+    net: Module
     feedback: PyTree[ChannelState]
     efferent: ChannelState
     force_filter: FilterState
@@ -137,13 +143,13 @@ class SimpleFeedback(Graph):
     _feedback_specs: PyTree[ChannelSpec]
     feedback_channels: FeedbackChannels
     mechanics: Mechanics
-    net: SimpleStagedNetwork
+    net: Component
     efferent_channel: Channel
     force_lp: Optional[FirstOrderFilter]
 
     def __init__(
         self,
-        net: SimpleStagedNetwork,
+        net: Component,
         mechanics: Mechanics,
         feedback_spec: Union[
             PyTree[ChannelSpec], PyTree[Mapping[str, Any]]
