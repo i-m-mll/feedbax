@@ -45,6 +45,7 @@ from feedbax._tree import (
     tree_unzip,
     tree_zip,
 )
+from feedbax.nn_cde import CDENetwork, CDENetworkState
 from feedbax.intervene import is_intervenor
 from feedbax.loss import is_termtree
 from feedbax.misc import is_module

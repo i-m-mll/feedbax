@@ -225,6 +225,32 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
             lambda s: s.xfrc_applied, state, xfrc,
         )
 
+    @jax.named_scope("fbx.MJXSkeleton.step")
+    def step(self, state: MJXSkeletonState, ctrl: Array) -> MJXSkeletonState:
+        """One discrete MuJoCo step via ``mjx.step()``.
+
+        Unlike ``vector_field()`` (which returns derivatives for Diffrax
+        integration), this method performs a full discrete-time integration
+        step using MuJoCo's native integrator.
+
+        Args:
+            state: Current skeleton state.
+            ctrl: Actuator controls, shape ``(nu,)``.
+
+        Returns:
+            Updated MJXSkeletonState after one MuJoCo timestep.
+        """
+        from mujoco import mjx
+
+        data = self._reconstruct_data(state, ctrl=ctrl)
+        data = mjx.step(self.mjx_model, data)
+
+        return MJXSkeletonState(
+            qpos=data.qpos,
+            qvel=data.qvel,
+            xfrc_applied=data.xfrc_applied,
+        )
+
     def inverse_kinematics(self, effector_state: CartesianState) -> MJXSkeletonState:
         """Not implemented for MJX skeletons.
 
