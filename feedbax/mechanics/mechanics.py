@@ -34,6 +34,38 @@ from feedbax.state import CartesianState
 logger = logging.getLogger(__name__)
 
 
+def _warm_up_cached_properties(obj: object) -> None:
+    """Force evaluation of all ``cached_property`` attributes on an object tree.
+
+    Some modules (e.g. ``PointMass``) use ``functools.cached_property`` to
+    lazily compute matrices. When these modules are captured in closures
+    traced by JAX (``lax.scan``, ``lax.fori_loop``, ``eqx.filter_checkpoint``),
+    the first access inside the traced context creates a mutable side effect
+    (setting the cached value on the object), causing an
+    ``UnexpectedTracerError``. Calling this function before entering the
+    traced context materializes all cached values, avoiding the issue.
+    """
+    from functools import cached_property as _cached_property
+
+    cls = type(obj)
+    for name in dir(cls):
+        if isinstance(getattr(cls, name, None), _cached_property):
+            try:
+                getattr(obj, name)
+            except Exception:
+                pass
+
+    # Recurse into Equinox module fields
+    if hasattr(obj, '__dataclass_fields__'):
+        for field_name in obj.__dataclass_fields__:
+            try:
+                child = getattr(obj, field_name)
+            except Exception:
+                continue
+            if isinstance(child, Module):
+                _warm_up_cached_properties(child)
+
+
 class MechanicsState(Module):
     """State for a mechanical plant integration step.
 
@@ -257,25 +289,34 @@ class Mechanics(Component):
             aux=mechanics_state.solver,
         )
 
-        # Define the substep function
-        def do_substep(carry: PhysicsState, _: None) -> tuple[PhysicsState, None]:
-            return backend.substep(self.plant, carry, action), None
+        # Warm up cached_property attributes on the plant before entering
+        # JAX-traced code (scan/fori_loop/checkpoint). Modules like PointMass
+        # use functools.cached_property for matrices (A, B, etc.), which
+        # creates side effects when first accessed inside a traced context.
+        # Accessing them here (outside the transform) materializes the cache
+        # so traced code finds them already populated.
+        # Bug: 928d494 — prevents UnexpectedTracerError from cached_property
+        _warm_up_cached_properties(self.plant)
+
+        plant = self.plant
+
+        def do_substep(carry: PhysicsState) -> PhysicsState:
+            return backend.substep(plant, carry, action)
 
         # Optionally apply gradient checkpointing
         # Bug: 928d494 — remat_substep reduces memory for long substep chains
         if self.remat_substep:
             do_substep = eqx.filter_checkpoint(do_substep)
 
-        # Scan over substeps
+        # Run substeps via fori_loop (compatible with cached_property modules)
         if backend.n_substeps == 1:
-            # Avoid scan overhead for single substep
-            physics_state = backend.substep(self.plant, physics_state, action)
+            physics_state = do_substep(physics_state)
         else:
-            physics_state, _ = jax.lax.scan(
-                do_substep,
-                physics_state,
-                None,
-                length=backend.n_substeps,
+            def _fori_body(_, carry):
+                return do_substep(carry)
+
+            physics_state = jax.lax.fori_loop(
+                0, backend.n_substeps, _fori_body, physics_state,
             )
 
         # Extract effector via backend
