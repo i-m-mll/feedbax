@@ -61,7 +61,14 @@ class TestDefaultTaskType:
         )
 
         # Create an initial state, then trigger auto_reset many times.
-        task = sample_task_params_jax(key, TASK_REACH, config.n_steps, config.dt)
+        task = sample_task_params_jax(
+            key, TASK_REACH, config.n_steps, config.dt,
+            segment_lengths=jnp.array([0.3, 0.25]),
+            use_fk=False,
+            max_target_distance=10.0,
+            use_curriculum=False,
+            single_task=True,
+        )
         state = rl_env_reset(plant, config, task, key)
         done = jnp.array(1.0)
 

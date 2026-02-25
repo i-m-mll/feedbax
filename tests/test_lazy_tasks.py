@@ -31,11 +31,24 @@ def dt():
     return 0.01
 
 
+SEGMENT_LENGTHS = jnp.array([0.3, 0.25])
+
+# Default keyword args for sample_task_params_jax (legacy Cartesian sampling,
+# no curriculum, fixed task type).
+DEFAULT_KW = dict(
+    segment_lengths=SEGMENT_LENGTHS,
+    use_fk=False,
+    max_target_distance=10.0,
+    use_curriculum=False,
+    single_task=True,
+)
+
+
 @pytest.mark.parametrize("task_type", [TASK_REACH, TASK_HOLD, TASK_TRACK, TASK_SWING])
 def test_target_at_t_matches_task_spec(key, n_steps, dt, task_type):
     timestamps = jnp.arange(n_steps) * dt
     task_spec = sample_task_jax(timestamps, key, task_type=task_type)
-    params = sample_task_params_jax(key, task_type, n_steps, dt)
+    params = sample_task_params_jax(key, task_type, n_steps, dt, **DEFAULT_KW)
 
     t_idx = jnp.arange(n_steps)
     pos, vel = jax.vmap(lambda t: target_at_t(params, t))(t_idx)
@@ -48,7 +61,7 @@ def test_target_at_t_matches_task_spec(key, n_steps, dt, task_type):
 def test_reconstruct_trajectory_matches_task_spec(key, n_steps, dt, task_type):
     timestamps = jnp.arange(n_steps) * dt
     task_spec = sample_task_jax(timestamps, key, task_type=task_type)
-    params = sample_task_params_jax(key, task_type, n_steps, dt)
+    params = sample_task_params_jax(key, task_type, n_steps, dt, **DEFAULT_KW)
 
     pos, vel = reconstruct_trajectory(params)
 
@@ -57,7 +70,7 @@ def test_reconstruct_trajectory_matches_task_spec(key, n_steps, dt, task_type):
 
 
 def test_sample_task_params_shapes(key, n_steps, dt):
-    params = sample_task_params_jax(key, TASK_TRACK, n_steps, dt)
+    params = sample_task_params_jax(key, TASK_TRACK, n_steps, dt, **DEFAULT_KW)
     assert params.start_pos.shape == (2,)
     assert params.end_pos.shape == (2,)
     assert params.control_points.shape == (6, 2)
@@ -67,7 +80,7 @@ def test_sample_task_params_shapes(key, n_steps, dt):
 
 def test_jit_and_vmap_compatible(key, n_steps, dt):
     jitted_sampler = jax.jit(
-        lambda k: sample_task_params_jax(k, TASK_REACH, n_steps, dt)
+        lambda k: sample_task_params_jax(k, TASK_REACH, n_steps, dt, **DEFAULT_KW)
     )
     params = jitted_sampler(key)
 
@@ -83,7 +96,7 @@ def test_jit_and_vmap_compatible(key, n_steps, dt):
 
     keys = jax.random.split(key, 4)
     params_batched = jax.vmap(
-        lambda k: sample_task_params_jax(k, TASK_HOLD, n_steps, dt)
+        lambda k: sample_task_params_jax(k, TASK_HOLD, n_steps, dt, **DEFAULT_KW)
     )(keys)
     batched_pos, batched_vel = jax.vmap(reconstruct_trajectory)(params_batched)
     assert batched_pos.shape == (4, n_steps, 2)

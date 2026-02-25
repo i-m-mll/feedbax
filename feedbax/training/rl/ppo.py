@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import optax
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from feedbax.mechanics.plant import AbstractPlant
 from feedbax.training.rl.env import (
@@ -274,9 +274,16 @@ def _init_envs(
     def init_one(key):
         key, task_key, reset_key = jax.random.split(key, 3)
         seg_lens = getattr(plant, "segment_lengths", None)
+        use_fk = seg_lens is not None
+        if seg_lens is None:
+            seg_lens = jnp.zeros((cfg.n_joints,), dtype=jnp.float32)
         task = sample_task_params_jax(
-            task_key, None, cfg.n_steps, cfg.dt,
+            task_key, 0, cfg.n_steps, cfg.dt,
             segment_lengths=seg_lens,
+            use_fk=use_fk,
+            max_target_distance=0.0,
+            use_curriculum=False,
+            single_task=False,
         )
         return rl_env_reset(plant, cfg, task, reset_key)
 
@@ -453,8 +460,6 @@ def train_ppo_batched(
     vf_coef = float(ppo_config.vf_coef)
     ent_coef = float(ppo_config.ent_coef)
     timesteps_per_update = n_steps * n_envs
-    batch_size = n_steps * n_envs
-    minibatch_size = batch_size // n_minibatches
     n_train_iters = n_epochs * n_minibatches
 
     # B independent policies
@@ -609,9 +614,16 @@ def collect_rollouts_batched(
     def single_rollout(plant, policy, key, task_type):
         key, task_key, reset_key = jax.random.split(key, 3)
         seg_lens = getattr(plant, "segment_lengths", None)
+        use_fk = seg_lens is not None
+        if seg_lens is None:
+            seg_lens = jnp.zeros((env_config.n_joints,), dtype=jnp.float32)
         task = sample_task_params_jax(
             task_key, task_type, env_config.n_steps, env_config.dt,
             segment_lengths=seg_lens,
+            use_fk=use_fk,
+            max_target_distance=0.0,
+            use_curriculum=False,
+            single_task=True,
         )
         state = rl_env_reset(plant, env_config, task, reset_key)
 
@@ -670,9 +682,8 @@ def collect_rollouts_batched(
 class TrainingEnhancements:
     """Configuration for optional training enhancements.
 
-    All flags are static (known at trace time) and can be used with Python
-    ``if`` statements inside JIT-compiled functions without causing retracing
-    issues.
+    Flags are used to gate enhancements dynamically inside JIT-compiled
+    functions, enabling a single compiled program across combinations.
 
     Attributes:
         obs_norm: Enable running observation normalization (Welford).
@@ -697,16 +708,16 @@ class ExtendedTrainingState(eqx.Module):
     """State for extended training with all enhancements.
 
     Attributes:
-        obs_norm_state: Running obs statistics per body, or ``None``.
-        lattice_state: LATTICE noise state per body per env, or ``None``.
-        curriculum_state: Curriculum stage per body, or ``None``.
+        obs_norm_state: Running obs statistics per body.
+        lattice_state: LATTICE noise state per body per env.
+        curriculum_state: Curriculum stage per body.
         update_count: Current PPO update number.
         total_updates: Total expected updates (for annealing schedule).
     """
 
-    obs_norm_state: ObsNormState | None
-    lattice_state: LatticeNoiseState | None
-    curriculum_state: CurriculumState | None
+    obs_norm_state: ObsNormState
+    lattice_state: LatticeNoiseState
+    curriculum_state: CurriculumState
     update_count: Int[Array, ""]
     total_updates: Int[Array, ""]
 
@@ -718,11 +729,14 @@ def _auto_reset_curriculum(
     done: Float[Array, ""],
     key: PRNGKeyArray,
     max_target_distance: Float[Array, ""],
+    use_curriculum: Bool[Array, ""],
+    task_type: Int[Array, ""],
+    single_task: Bool[Array, ""],
 ) -> RLEnvState:
-    """Auto-reset with curriculum-aware max_target_distance.
+    """Auto-reset with optional curriculum-aware max_target_distance.
 
-    Identical to ``auto_reset`` but passes ``max_target_distance`` to
-    ``sample_task_params_jax`` for curriculum learning.
+    Identical to ``auto_reset`` but passes ``max_target_distance`` and
+    ``use_curriculum`` to ``sample_task_params_jax`` for curriculum learning.
 
     Args:
         plant: The plant model.
@@ -731,17 +745,25 @@ def _auto_reset_curriculum(
         done: Whether the episode is done (1.0) or not (0.0).
         key: PRNG key.
         max_target_distance: Maximum distance from start to reach target.
+        use_curriculum: Whether to clamp the reach target distance.
+        task_type: Fixed task type used when ``single_task`` is True.
+        single_task: Whether to use a fixed task type instead of sampling.
 
     Returns:
         Conditionally reset RLEnvState.
     """
     key, task_key, reset_key = jax.random.split(key, 3)
     seg_lens = getattr(plant, "segment_lengths", None)
-    task_type = config.default_task_type
+    use_fk = seg_lens is not None
+    if seg_lens is None:
+        seg_lens = jnp.zeros((config.n_joints,), dtype=jnp.float32)
     new_task = sample_task_params_jax(
         task_key, task_type, config.n_steps, config.dt,
         segment_lengths=seg_lens,
+        use_fk=use_fk,
         max_target_distance=max_target_distance,
+        use_curriculum=use_curriculum,
+        single_task=single_task,
     )
     new_state = rl_env_reset(plant, config, new_task, reset_key)
 
@@ -760,17 +782,22 @@ def _collect_rollout_extended(
     key: PRNGKeyArray,
     n_steps: int,
     n_envs: int,
-    *,
-    obs_norm_state: ObsNormState | None,
-    lattice_state: LatticeNoiseState | None,
+    obs_norm_state: ObsNormState,
+    lattice_state: LatticeNoiseState,
+    curriculum_state: CurriculumState,
     lattice_resample_interval: int,
-    max_target_distance: Float[Array, ""] | None,
+    curriculum_arm_reach: float,
+    use_obs_norm: Bool[Array, ""],
+    use_lattice: Bool[Array, ""],
+    use_curriculum: Bool[Array, ""],
+    task_type: Int[Array, ""],
+    single_task: Bool[Array, ""],
 ) -> tuple[
     RLEnvState,
     Rollout,
     Float[Array, " N"],
     PRNGKeyArray,
-    LatticeNoiseState | None,
+    LatticeNoiseState,
 ]:
     """Collect a batched rollout with optional enhancements.
 
@@ -785,10 +812,16 @@ def _collect_rollout_extended(
         key: PRNG key.
         n_steps: Number of steps to collect.
         n_envs: Number of parallel environments.
-        obs_norm_state: Running obs statistics for normalization, or ``None``.
-        lattice_state: LATTICE noise state, or ``None``.
+        obs_norm_state: Running obs statistics for normalization.
+        lattice_state: LATTICE noise state.
+        curriculum_state: Curriculum state for distance scaling.
         lattice_resample_interval: Steps between noise resamples.
-        max_target_distance: Curriculum max target distance, or ``None``.
+        curriculum_arm_reach: Total arm reach for curriculum distance scaling.
+        use_obs_norm: Whether to normalize observations.
+        use_lattice: Whether to apply LATTICE noise.
+        use_curriculum: Whether to clamp reach target distance.
+        task_type: Fixed task type used when ``single_task`` is True.
+        single_task: Whether to use a fixed task type instead of sampling.
 
     Returns:
         Tuple of (final_states, rollout, last_values, updated_key,
@@ -796,104 +829,251 @@ def _collect_rollout_extended(
     """
     v_get_obs = jax.vmap(rl_env_get_obs, in_axes=(None, None, 0))
     v_step = jax.vmap(rl_env_step, in_axes=(None, None, 0, 0))
+    use_obs_norm = jnp.asarray(use_obs_norm)
+    use_lattice = jnp.asarray(use_lattice)
+    use_curriculum = jnp.asarray(use_curriculum)
+    task_type = jnp.asarray(task_type, dtype=jnp.int32)
+    single_task = jnp.asarray(single_task)
 
-    use_obs_norm = obs_norm_state is not None
-    use_lattice = lattice_state is not None
-    use_curriculum = max_target_distance is not None
+    max_target_distance = curriculum_state.max_target_fraction * curriculum_arm_reach
+    v_auto_reset = jax.vmap(
+        _auto_reset_curriculum, in_axes=(None, None, 0, 0, 0, None, None, None, None),
+    )
 
-    if use_curriculum:
-        v_auto_reset = jax.vmap(
-            _auto_reset_curriculum, in_axes=(None, None, 0, 0, 0, None),
-        )
-    else:
-        v_auto_reset = jax.vmap(auto_reset, in_axes=(None, None, 0, 0, 0))
+    init_carry = (states, key, lattice_state)
 
-    # Build the initial carry for the scan. Include lattice_state only
-    # when LATTICE is enabled so that we don't pass None through lax.scan.
-    if use_lattice:
-        # lattice_state has shape (N, hidden_dim) for noise and (N,) for counter
-        # since it's vmapped over environments by the caller's vmap over bodies.
-        # But here we need per-env noise. We replicate the single body's
-        # lattice noise to N envs inside the scan step via broadcasting.
-        init_carry = (states, key, lattice_state)
-    else:
-        init_carry = (states, key)
-
-    def scan_step_lattice(carry, _):
+    def scan_step(carry, _):
         states, key, lat_state = carry
-        key, act_key, reset_key, noise_key = jax.random.split(key, 4)
+
+        def split_with_lattice(key):
+            key, act_key, reset_key, noise_key = jax.random.split(key, 4)
+            return key, act_key, reset_key, noise_key
+
+        def split_without_lattice(key):
+            key, act_key, reset_key = jax.random.split(key, 3)
+            return key, act_key, reset_key, key
+
+        key, act_key, reset_key, noise_key = jax.lax.cond(
+            use_lattice, split_with_lattice, split_without_lattice, key,
+        )
 
         obs = v_get_obs(plant, cfg, states)
-        if use_obs_norm:
-            obs = normalize_obs(obs_norm_state, obs)
+        obs_normed = normalize_obs(obs_norm_state, obs)
+        obs = jnp.where(use_obs_norm, obs_normed, obs)
 
         act_keys = jax.random.split(act_key, n_envs)
-        # LATTICE: inject noise into each env's action sampling
         actions, log_probs, values = jax.vmap(
-            sample_action_with_noise, in_axes=(None, 0, 0, None),
-        )(policy, obs, act_keys, lat_state.noise)
+            sample_action_with_noise, in_axes=(None, 0, 0, None, None),
+        )(policy, obs, act_keys, lat_state.noise, use_lattice)
 
         states, _, rewards, dones = v_step(plant, cfg, states, actions)
 
         reset_keys = jax.random.split(reset_key, n_envs)
-        if use_curriculum:
-            states = v_auto_reset(
-                plant, cfg, states, dones, reset_keys, max_target_distance,
-            )
-        else:
-            states = v_auto_reset(plant, cfg, states, dones, reset_keys)
-
-        # Resample LATTICE noise (shared across envs for this body)
-        lat_state = maybe_resample_noise(
-            lat_state, noise_key, lattice_resample_interval,
+        states = v_auto_reset(
+            plant, cfg, states, dones, reset_keys,
+            max_target_distance, use_curriculum, task_type, single_task,
         )
+
+        def _resample(state):
+            return maybe_resample_noise(state, noise_key, lattice_resample_interval)
+
+        lat_state = jax.lax.cond(use_lattice, _resample, lambda s: s, lat_state)
 
         return (states, key, lat_state), (
             obs, actions, log_probs, values, rewards, dones,
         )
 
-    def scan_step_basic(carry, _):
-        states, key = carry
-        key, act_key, reset_key = jax.random.split(key, 3)
-
-        obs = v_get_obs(plant, cfg, states)
-        if use_obs_norm:
-            obs = normalize_obs(obs_norm_state, obs)
-
-        act_keys = jax.random.split(act_key, n_envs)
-        actions, log_probs, values = jax.vmap(policy.sample_action)(obs, act_keys)
-
-        states, _, rewards, dones = v_step(plant, cfg, states, actions)
-
-        reset_keys = jax.random.split(reset_key, n_envs)
-        if use_curriculum:
-            states = v_auto_reset(
-                plant, cfg, states, dones, reset_keys, max_target_distance,
-            )
-        else:
-            states = v_auto_reset(plant, cfg, states, dones, reset_keys)
-
-        return (states, key), (obs, actions, log_probs, values, rewards, dones)
-
-    if use_lattice:
-        (states, key, lattice_state), (
-            obs, actions, log_probs, values, rewards, dones,
-        ) = jax.lax.scan(scan_step_lattice, init_carry, None, length=n_steps)
-    else:
-        (states, key), (
-            obs, actions, log_probs, values, rewards, dones,
-        ) = jax.lax.scan(scan_step_basic, init_carry, None, length=n_steps)
+    (states, key, lattice_state), (
+        obs, actions, log_probs, values, rewards, dones,
+    ) = jax.lax.scan(scan_step, init_carry, None, length=n_steps)
 
     # Bootstrap last values
     final_obs = v_get_obs(plant, cfg, states)
-    if use_obs_norm:
-        final_obs = normalize_obs(obs_norm_state, final_obs)
+    final_obs_normed = normalize_obs(obs_norm_state, final_obs)
+    final_obs = jnp.where(use_obs_norm, final_obs_normed, final_obs)
     _, _, last_values = jax.vmap(policy.sample_action)(
         final_obs, jax.random.split(key, n_envs),
     )
 
     rollout = Rollout(obs, actions, log_probs, values, rewards, dones)
     return states, rollout, last_values, key, lattice_state
+
+
+@eqx.filter_jit
+def _batched_collect_rollouts_extended(
+    batched_plant: AbstractPlant,
+    env_config: RLEnvConfig,
+    policy: ActorCritic,
+    states: RLEnvState,
+    key: PRNGKeyArray,
+    obs_norm_state: ObsNormState,
+    lattice_state: LatticeNoiseState,
+    curriculum_state: CurriculumState,
+    n_steps: int,
+    n_envs: int,
+    lattice_resample_interval: int,
+    curriculum_arm_reach: float,
+    use_obs_norm: Bool[Array, ""],
+    use_lattice: Bool[Array, ""],
+    use_curriculum: Bool[Array, ""],
+    task_type: Int[Array, ""],
+    single_task: Bool[Array, ""],
+) -> tuple[
+    RLEnvState,
+    Rollout,
+    Float[Array, " B N"],
+    PRNGKeyArray,
+    LatticeNoiseState,
+]:
+    """Vectorized rollout collection with dynamically gated enhancements."""
+    n_bodies = jt.leaves(batched_plant)[0].shape[0]
+    keys = jax.random.split(key, n_bodies)
+    return eqx.filter_vmap(
+        _collect_rollout_extended,
+        in_axes=(
+            0, None, 0, 0, 0,
+            None, None,
+            0, 0, 0,
+            None, None,
+            None, None, None,
+            None, None,
+        ),
+    )(
+        batched_plant,
+        env_config,
+        policy,
+        states,
+        keys,
+        n_steps,
+        n_envs,
+        obs_norm_state,
+        lattice_state,
+        curriculum_state,
+        lattice_resample_interval,
+        curriculum_arm_reach,
+        use_obs_norm,
+        use_lattice,
+        use_curriculum,
+        task_type,
+        single_task,
+    )
+
+
+def _update_one(
+    policy: ActorCritic,
+    opt_state: optax.OptState,
+    rollout: Rollout,
+    last_values: Float[Array, " N"],
+    key: PRNGKeyArray,
+    optimizer: optax.GradientTransformation,
+    gamma: float,
+    gae_lambda: float,
+    clip_eps: float,
+    vf_coef: float,
+    ent_coef: float,
+    n_minibatches: int,
+    n_train_iters: int,
+) -> tuple[ActorCritic, optax.OptState, Float[Array, ""]]:
+    """Single-body PPO update step."""
+    advantages, returns = compute_gae_scan(
+        rollout.rewards, rollout.values, rollout.dones,
+        last_values, gamma, gae_lambda,
+    )
+    flat_obs = rollout.obs.reshape(-1, rollout.obs.shape[-1])
+    flat_actions = rollout.actions.reshape(-1, rollout.actions.shape[-1])
+    flat_logp = rollout.log_probs.reshape(-1)
+    flat_adv = advantages.reshape(-1)
+    flat_ret = returns.reshape(-1)
+    flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
+
+    batch_size = flat_obs.shape[0]
+    minibatch_size = batch_size // n_minibatches
+
+    dynamic_policy, static_policy = eqx.partition(policy, eqx.is_array)
+
+    def train_step(i, carry):
+        dynamic_policy, opt_state, key = carry
+        policy = eqx.combine(dynamic_policy, static_policy)
+        perm_key = jax.random.fold_in(key, i // n_minibatches)
+        perm = jax.random.permutation(perm_key, batch_size)
+        start = (i % n_minibatches) * minibatch_size
+        mb_idx = jax.lax.dynamic_slice(perm, (start,), (minibatch_size,))
+
+        (_, _), grads = eqx.filter_value_and_grad(
+            _ppo_loss, has_aux=True,
+        )(
+            policy,
+            flat_obs[mb_idx], flat_actions[mb_idx], flat_logp[mb_idx],
+            flat_adv[mb_idx], flat_ret[mb_idx],
+            clip_eps, vf_coef, ent_coef,
+        )
+
+        updates, opt_state = optimizer.update(grads, opt_state, policy)
+        policy = eqx.apply_updates(policy, updates)
+        dynamic_policy, _ = eqx.partition(policy, eqx.is_array)
+        return dynamic_policy, opt_state, key
+
+    dynamic_policy, opt_state, _ = jax.lax.fori_loop(
+        0, n_train_iters, train_step, (dynamic_policy, opt_state, key),
+    )
+    policy = eqx.combine(dynamic_policy, static_policy)
+    mean_reward = jnp.mean(rollout.rewards)
+    return policy, opt_state, mean_reward
+
+
+@eqx.filter_jit
+def _batched_update(
+    policy: ActorCritic,
+    opt_state: optax.OptState,
+    rollout: Rollout,
+    last_values: Float[Array, " B N"],
+    key: PRNGKeyArray,
+    optimizer: optax.GradientTransformation,
+    gamma: float,
+    gae_lambda: float,
+    clip_eps: float,
+    vf_coef: float,
+    ent_coef: float,
+    n_minibatches: int,
+    n_train_iters: int,
+) -> tuple[ActorCritic, optax.OptState, Float[Array, " B"]]:
+    """Vectorized PPO update over bodies."""
+    n_bodies = rollout.obs.shape[0]
+    keys = jax.random.split(key, n_bodies)
+    return eqx.filter_vmap(
+        _update_one,
+        in_axes=(0, 0, 0, 0, 0, None, None, None, None, None, None, None, None),
+    )(
+        policy,
+        opt_state,
+        rollout,
+        last_values,
+        keys,
+        optimizer,
+        gamma,
+        gae_lambda,
+        clip_eps,
+        vf_coef,
+        ent_coef,
+        n_minibatches,
+        n_train_iters,
+    )
+
+
+@eqx.filter_jit
+def _update_obs_norm_batched(
+    obs_norm_st: ObsNormState,
+    obs_batch: Float[Array, "B S obs_dim"],
+) -> ObsNormState:
+    return eqx.filter_vmap(update_obs_norm)(obs_norm_st, obs_batch)
+
+
+@eqx.filter_jit
+def _update_curriculum_batched(
+    curric_st: CurriculumState,
+    success_rates: Float[Array, " B"],
+) -> CurriculumState:
+    return eqx.filter_vmap(update_curriculum)(curric_st, success_rates)
 
 
 def _compute_success_rate(
@@ -946,9 +1126,8 @@ def train_ppo_batched_extended(
     inserts hooks for observation normalization, LATTICE exploration noise,
     curriculum learning, and reward annealing.
 
-    Enhancement hooks are gated by Python ``if`` on the static
-    ``TrainingEnhancements`` flags, so disabled enhancements incur zero
-    overhead (no extra tracing or runtime cost).
+    Enhancement hooks are gated dynamically inside JIT using boolean flags,
+    enabling a single compiled program across enhancement combinations.
 
     Args:
         batched_plant: MJXPlant with leading ``(B,)`` dim on array leaves.
@@ -1016,200 +1195,38 @@ def train_ppo_batched_extended(
 
     # --- Initialize enhancement states ---
     # Bug: 2055433 -- per-body enhancement state initialization.
-    batched_obs_norm: ObsNormState | None = None
-    if enhancements.obs_norm:
-        batched_obs_norm = _stack_pytrees(
-            *[init_obs_norm(obs_dim) for _ in range(n_bodies)]
-        )
+    batched_obs_norm = _stack_pytrees(
+        *[init_obs_norm(obs_dim) for _ in range(n_bodies)]
+    )
 
-    batched_lattice: LatticeNoiseState | None = None
+    hidden_dim = int(ppo_config.hidden_dim)
     if enhancements.lattice_noise:
-        hidden_dim = int(ppo_config.hidden_dim)
         key, lattice_key = jax.random.split(key)
         lattice_keys = jax.random.split(lattice_key, n_bodies)
         batched_lattice = eqx.filter_vmap(
             lambda k: init_lattice_noise(hidden_dim, k),
         )(lattice_keys)
-
-    batched_curriculum: CurriculumState | None = None
-    if enhancements.curriculum:
-        batched_curriculum = _stack_pytrees(
-            *[init_curriculum() for _ in range(n_bodies)]
+    else:
+        zero_noise = jnp.zeros((hidden_dim,))
+        zero_state = LatticeNoiseState(
+            noise=zero_noise,
+            steps_since_resample=jnp.array(0, dtype=jnp.int32),
         )
+        batched_lattice = _stack_pytrees(*[zero_state for _ in range(n_bodies)])
 
-    # --- JIT'd vmapped collect ---
-    @eqx.filter_jit
-    def batched_collect(policy, states, key, obs_norm_st, lattice_st, curric_st):
-        keys = jax.random.split(key, n_bodies)
+    batched_curriculum = _stack_pytrees(
+        *[init_curriculum() for _ in range(n_bodies)]
+    )
 
-        # Compute per-body max_target_distance from curriculum
-        max_dist = None
-        if enhancements.curriculum and curric_st is not None:
-            max_dist = curric_st.max_target_fraction * enhancements.curriculum_arm_reach
+    use_obs_norm = jnp.asarray(enhancements.obs_norm, dtype=bool)
+    use_lattice = jnp.asarray(enhancements.lattice_noise, dtype=bool)
+    use_curriculum = jnp.asarray(enhancements.curriculum, dtype=bool)
 
-        def collect_one(pl, pol, st, k, on_st, lat_st, mtd):
-            return _collect_rollout_extended(
-                pl, env_config, pol, st, k, n_steps, n_envs,
-                obs_norm_state=on_st,
-                lattice_state=lat_st,
-                lattice_resample_interval=enhancements.lattice_resample_interval,
-                max_target_distance=mtd,
-            )
-
-        # Build vmap in_axes depending on which enhancements are active
-        if enhancements.obs_norm and enhancements.lattice_noise and enhancements.curriculum:
-            # vmap over: plant, policy, states, keys, obs_norm, lattice, max_dist
-            return eqx.filter_vmap(collect_one)(
-                batched_plant, policy, states, keys, obs_norm_st, lattice_st, max_dist,
-            )
-        elif enhancements.obs_norm and enhancements.lattice_noise:
-            def _collect_no_curric(pl, pol, st, k, on_st, lat_st):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=on_st,
-                    lattice_state=lat_st,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=None,
-                )
-            return eqx.filter_vmap(_collect_no_curric)(
-                batched_plant, policy, states, keys, obs_norm_st, lattice_st,
-            )
-        elif enhancements.obs_norm and enhancements.curriculum:
-            def _collect_no_lattice(pl, pol, st, k, on_st, mtd):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=on_st,
-                    lattice_state=None,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=mtd,
-                )
-            return eqx.filter_vmap(_collect_no_lattice)(
-                batched_plant, policy, states, keys, obs_norm_st, max_dist,
-            )
-        elif enhancements.lattice_noise and enhancements.curriculum:
-            def _collect_no_norm(pl, pol, st, k, lat_st, mtd):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=None,
-                    lattice_state=lat_st,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=mtd,
-                )
-            return eqx.filter_vmap(_collect_no_norm)(
-                batched_plant, policy, states, keys, lattice_st, max_dist,
-            )
-        elif enhancements.obs_norm:
-            def _collect_norm_only(pl, pol, st, k, on_st):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=on_st,
-                    lattice_state=None,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=None,
-                )
-            return eqx.filter_vmap(_collect_norm_only)(
-                batched_plant, policy, states, keys, obs_norm_st,
-            )
-        elif enhancements.lattice_noise:
-            def _collect_lattice_only(pl, pol, st, k, lat_st):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=None,
-                    lattice_state=lat_st,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=None,
-                )
-            return eqx.filter_vmap(_collect_lattice_only)(
-                batched_plant, policy, states, keys, lattice_st,
-            )
-        elif enhancements.curriculum:
-            def _collect_curric_only(pl, pol, st, k, mtd):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=None,
-                    lattice_state=None,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=mtd,
-                )
-            return eqx.filter_vmap(_collect_curric_only)(
-                batched_plant, policy, states, keys, max_dist,
-            )
-        else:
-            def _collect_baseline(pl, pol, st, k):
-                return _collect_rollout_extended(
-                    pl, env_config, pol, st, k, n_steps, n_envs,
-                    obs_norm_state=None,
-                    lattice_state=None,
-                    lattice_resample_interval=enhancements.lattice_resample_interval,
-                    max_target_distance=None,
-                )
-            return eqx.filter_vmap(_collect_baseline)(
-                batched_plant, policy, states, keys,
-            )
-
-    # --- Per-body PPO update (vmapped) ---
-    # Bug: 2055433 -- Same structure as train_ppo_batched's update_one,
-    # but uses potentially-normalized obs from the rollout.
-    def update_one(policy, opt_state, rollout, last_values, key):
-        advantages, returns = compute_gae_scan(
-            rollout.rewards, rollout.values, rollout.dones,
-            last_values, gamma, gae_lambda,
-        )
-        flat_obs = rollout.obs.reshape(-1, obs_dim)
-        flat_actions = rollout.actions.reshape(-1, action_dim)
-        flat_logp = rollout.log_probs.reshape(-1)
-        flat_adv = advantages.reshape(-1)
-        flat_ret = returns.reshape(-1)
-        flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
-
-        dynamic_policy, static_policy = eqx.partition(policy, eqx.is_array)
-
-        def train_step(i, carry):
-            dynamic_policy, opt_state, key = carry
-            policy = eqx.combine(dynamic_policy, static_policy)
-            perm_key = jax.random.fold_in(key, i // n_minibatches)
-            perm = jax.random.permutation(perm_key, batch_size)
-            start = (i % n_minibatches) * minibatch_size
-            mb_idx = jax.lax.dynamic_slice(perm, (start,), (minibatch_size,))
-
-            (_, _), grads = eqx.filter_value_and_grad(
-                _ppo_loss, has_aux=True,
-            )(
-                policy,
-                flat_obs[mb_idx], flat_actions[mb_idx], flat_logp[mb_idx],
-                flat_adv[mb_idx], flat_ret[mb_idx],
-                clip_eps, vf_coef, ent_coef,
-            )
-
-            updates, opt_state = optimizer.update(grads, opt_state, policy)
-            policy = eqx.apply_updates(policy, updates)
-            dynamic_policy, _ = eqx.partition(policy, eqx.is_array)
-            return dynamic_policy, opt_state, key
-
-        dynamic_policy, opt_state, _ = jax.lax.fori_loop(
-            0, n_train_iters, train_step, (dynamic_policy, opt_state, key),
-        )
-        policy = eqx.combine(dynamic_policy, static_policy)
-        mean_reward = jnp.mean(rollout.rewards)
-        return policy, opt_state, mean_reward
-
-    @eqx.filter_jit
-    def batched_update(policy, opt_state, rollout, last_values, key):
-        keys = jax.random.split(key, n_bodies)
-        return eqx.filter_vmap(update_one)(
-            policy, opt_state, rollout, last_values, keys,
-        )
-
-    # --- JIT'd vmapped obs-norm and curriculum updates ---
-    if enhancements.obs_norm:
-        @eqx.filter_jit
-        def _update_obs_norm_batched(obs_norm_st, obs_batch):
-            return eqx.filter_vmap(update_obs_norm)(obs_norm_st, obs_batch)
-
-    if enhancements.curriculum:
-        @eqx.filter_jit
-        def _update_curriculum_batched(curric_st, success_rates):
-            return eqx.filter_vmap(update_curriculum)(curric_st, success_rates)
+    default_task_type = env_config.default_task_type
+    single_task = default_task_type is not None
+    task_type = 0 if default_task_type is None else int(default_task_type)
+    task_type = jnp.asarray(task_type, dtype=jnp.int32)
+    single_task = jnp.asarray(single_task)
 
     # --- Training loop ---
     metrics: dict[str, object] = {
@@ -1229,9 +1246,24 @@ def train_ppo_batched_extended(
         key, collect_key, update_key = jax.random.split(key, 3)
 
         # --- Collect rollouts with enhancements ---
-        collect_result = batched_collect(
-            batched_policy, batched_states, collect_key,
-            batched_obs_norm, batched_lattice, batched_curriculum,
+        collect_result = _batched_collect_rollouts_extended(
+            batched_plant,
+            env_config,
+            batched_policy,
+            batched_states,
+            collect_key,
+            batched_obs_norm,
+            batched_lattice,
+            batched_curriculum,
+            n_steps,
+            n_envs,
+            enhancements.lattice_resample_interval,
+            enhancements.curriculum_arm_reach,
+            use_obs_norm,
+            use_lattice,
+            use_curriculum,
+            task_type,
+            single_task,
         )
 
         # Unpack: 5-tuple (states, rollout, last_values, key, lattice_state)
@@ -1241,16 +1273,29 @@ def train_ppo_batched_extended(
         # collect_result[3] is the updated key (per-body), we use our own
         returned_lattice = collect_result[4]
 
-        # Update lattice state if enabled
-        if enhancements.lattice_noise and returned_lattice is not None:
-            batched_lattice = returned_lattice
+        batched_lattice = jt.map(
+            lambda old, new: jnp.where(use_lattice, new, old),
+            batched_lattice,
+            returned_lattice,
+        )
 
         metrics["timesteps"] = int(metrics["timesteps"]) + timesteps_per_update
 
         # --- PPO update ---
-        batched_policy, batched_opt_state, per_body_rewards = batched_update(
-            batched_policy, batched_opt_state,
-            batched_rollout, batched_last_values, update_key,
+        batched_policy, batched_opt_state, per_body_rewards = _batched_update(
+            batched_policy,
+            batched_opt_state,
+            batched_rollout,
+            batched_last_values,
+            update_key,
+            optimizer,
+            gamma,
+            gae_lambda,
+            clip_eps,
+            vf_coef,
+            ent_coef,
+            n_minibatches,
+            n_train_iters,
         )
 
         metrics["updates"] = int(metrics["updates"]) + 1
@@ -1261,11 +1306,15 @@ def train_ppo_batched_extended(
         update_count += 1
 
         # Obs norm: update running stats with collected observations
-        if enhancements.obs_norm and batched_obs_norm is not None:
-            # batched_rollout.obs: (B, T, N, obs_dim)
-            # Reshape to (B, T*N, obs_dim) for batch update
-            all_obs = batched_rollout.obs.reshape(n_bodies, -1, obs_dim)
-            batched_obs_norm = _update_obs_norm_batched(batched_obs_norm, all_obs)
+        # batched_rollout.obs: (B, T, N, obs_dim)
+        # Reshape to (B, T*N, obs_dim) for batch update
+        all_obs = batched_rollout.obs.reshape(n_bodies, -1, obs_dim)
+        updated_obs_norm = _update_obs_norm_batched(batched_obs_norm, all_obs)
+        batched_obs_norm = jt.map(
+            lambda old, new: jnp.where(use_obs_norm, new, old),
+            batched_obs_norm,
+            updated_obs_norm,
+        )
 
         # Per-body success rate
         # batched_rollout.dones: (B, T, N)
@@ -1273,10 +1322,15 @@ def train_ppo_batched_extended(
         metrics["per_body_success_rate"].append(per_body_success)
 
         # Curriculum: update per-body stages
-        if enhancements.curriculum and batched_curriculum is not None:
-            batched_curriculum = _update_curriculum_batched(
-                batched_curriculum, per_body_success,
-            )
+        updated_curriculum = _update_curriculum_batched(
+            batched_curriculum, per_body_success,
+        )
+        batched_curriculum = jt.map(
+            lambda old, new: jnp.where(use_curriculum, new, old),
+            batched_curriculum,
+            updated_curriculum,
+        )
+        if enhancements.curriculum:
             metrics["curriculum_stages"].append(batched_curriculum.stage)
 
         # Bug: 2055433 -- Linear distance_weight annealing from 1.0 to 0.0.
@@ -1296,7 +1350,7 @@ def train_ppo_batched_extended(
             metrics["distance_weight_schedule"].append(distance_weight)
 
     # Store final obs norm mean
-    if enhancements.obs_norm and batched_obs_norm is not None:
+    if enhancements.obs_norm:
         metrics["obs_norm_mean"] = batched_obs_norm.mean
 
     return batched_policy, metrics
