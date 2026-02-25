@@ -202,9 +202,9 @@ class ActorCritic(eqx.Module):
 
     def _apply_mlp(self, mlp: eqx.nn.MLP, obs: Float[Array, "... obs_dim"]) -> Array:
         """Apply MLP, handling batched inputs via vmap."""
-        if obs.ndim == 1:
-            return mlp(obs)
-        return jax.vmap(mlp)(obs)
+        obs_batched = jnp.atleast_2d(obs)
+        out = jax.vmap(mlp)(obs_batched)
+        return out.reshape(obs.shape[:-1] + out.shape[1:])
 
     def forward(
         self, obs: Float[Array, "... obs_dim"]
@@ -293,6 +293,7 @@ def forward_with_latent_noise(
     policy: ActorCritic,
     obs: Float[Array, " obs_dim"],
     latent_noise: Float[Array, " hidden_dim"],
+    use_lattice: bool = True,
 ) -> tuple[BetaParams, Float[Array, ""]]:
     """Forward pass with LATTICE noise injected into the actor's hidden layer.
 
@@ -305,13 +306,14 @@ def forward_with_latent_noise(
         obs: Single observation, shape ``(obs_dim,)``.
         latent_noise: Noise vector, shape ``(hidden_dim,)``. Use zeros for
             behavior identical to the standard forward pass.
+        use_lattice: Whether to apply latent noise.
 
     Returns:
         Tuple of (BetaParams, value).
     """
     # Actor: inject noise into hidden representation
     hidden = policy._actor_hidden(obs)
-    hidden_noisy = hidden + latent_noise
+    hidden_noisy = jnp.where(jnp.asarray(use_lattice), hidden + latent_noise, hidden)
     params = policy._actor_output_from_hidden(hidden_noisy)
     alpha = jax.nn.softplus(params[..., : policy.action_dim]) + 1.0
     beta = jax.nn.softplus(params[..., policy.action_dim :]) + 1.0
@@ -327,6 +329,7 @@ def sample_action_with_noise(
     obs: Float[Array, " obs_dim"],
     key: PRNGKeyArray,
     latent_noise: Float[Array, " hidden_dim"],
+    use_lattice: bool = True,
 ) -> tuple[Float[Array, " action_dim"], Float[Array, ""], Float[Array, ""]]:
     """Sample an action from the policy with LATTICE latent-space noise.
 
@@ -339,11 +342,12 @@ def sample_action_with_noise(
         obs: Single observation, shape ``(obs_dim,)``.
         key: PRNG key for action sampling.
         latent_noise: Noise vector, shape ``(hidden_dim,)``.
+        use_lattice: Whether to apply latent noise.
 
     Returns:
         Tuple of (action, log_prob, value).
     """
-    dist, value = forward_with_latent_noise(policy, obs, latent_noise)
+    dist, value = forward_with_latent_noise(policy, obs, latent_noise, use_lattice)
     action = dist.sample(key)
     action = jnp.clip(action, 1e-4, 1.0 - 1e-4)
     log_prob = jnp.sum(dist.log_prob(action), axis=-1)

@@ -37,8 +37,9 @@ class TestComputeReward:
     def test_hold_bonus(self, base_kwargs):
         r_hold = compute_reward(task_type=jnp.float32(TASK_HOLD), **base_kwargs)
         r_reach = compute_reward(task_type=jnp.float32(TASK_REACH), **base_kwargs)
-        # Hold gets bonus when on target, reach doesn't
-        assert float(r_hold) > float(r_reach)
+        # New reward design: proximity bonus applies to ALL task types
+        # (task_type is kept for API compat but unused), so both get same reward.
+        assert float(r_hold) == pytest.approx(float(r_reach))
 
     def test_effort_penalty(self, base_kwargs):
         r_zero = compute_reward(task_type=jnp.float32(TASK_REACH), **base_kwargs)

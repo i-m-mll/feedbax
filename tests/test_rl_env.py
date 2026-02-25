@@ -39,9 +39,19 @@ def config():
     )
 
 
+SEGMENT_LENGTHS = jnp.array([0.3, 0.25])
+
+
 @pytest.fixture
 def task(key):
-    return sample_task_params_jax(key, None, 100, 0.01)
+    return sample_task_params_jax(
+        key, 0, 100, 0.01,
+        segment_lengths=SEGMENT_LENGTHS,
+        use_fk=False,
+        max_target_distance=10.0,
+        use_curriculum=False,
+        single_task=False,
+    )
 
 
 @pytest.fixture

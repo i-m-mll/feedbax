@@ -14,7 +14,14 @@ import jax.tree as jt
 import jax.tree_util as jtu
 import pytest
 
-from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState, PointMass, StateT
+from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState, PointMass
+
+try:
+    from feedbax.mechanics.skeleton import StateT
+except ImportError:
+    # StateT is not exported from the skeleton module (pre-existing issue on develop).
+    # Define a local TypeVar as a stand-in for type annotations in this test file.
+    StateT = TypeVar("StateT", bound=AbstractSkeletonState)
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
 from feedbax.state import CartesianState
 

@@ -94,6 +94,9 @@ class TestCurriculumState:
         assert int(state.stage) == 0
 
 
+SEGMENT_LENGTHS = jnp.array([0.3, 0.25])
+
+
 class TestTargetDistanceClamping:
     def test_target_distance_clamped(self, key):
         """With max_target_distance=0.1, sampled reach targets stay within 0.1m."""
@@ -102,7 +105,11 @@ class TestTargetDistanceClamping:
         for k in keys:
             params = sample_task_params_jax(
                 k, task_type=0, n_steps=100, dt=0.01,
+                segment_lengths=SEGMENT_LENGTHS,
+                use_fk=False,
                 max_target_distance=max_dist,
+                use_curriculum=True,
+                single_task=True,
             )
             direction = params.end_pos - params.start_pos
             dist = float(jnp.sqrt(jnp.sum(direction ** 2)))
@@ -119,7 +126,10 @@ class TestTargetDistanceClamping:
             params = sample_task_params_jax(
                 k, task_type=0, n_steps=100, dt=0.01,
                 segment_lengths=segment_lengths,
+                use_fk=True,
                 max_target_distance=max_dist,
+                use_curriculum=True,
+                single_task=True,
             )
             direction = params.end_pos - params.start_pos
             dist = float(jnp.sqrt(jnp.sum(direction ** 2)))
@@ -128,13 +138,22 @@ class TestTargetDistanceClamping:
             )
 
     def test_none_max_distance_no_effect(self, key):
-        """Without max_target_distance, sampling is unchanged."""
+        """Without curriculum, max_target_distance has no effect."""
         params_a = sample_task_params_jax(
             key, task_type=0, n_steps=100, dt=0.01,
+            segment_lengths=SEGMENT_LENGTHS,
+            use_fk=False,
+            max_target_distance=10.0,
+            use_curriculum=False,
+            single_task=True,
         )
         params_b = sample_task_params_jax(
             key, task_type=0, n_steps=100, dt=0.01,
-            max_target_distance=None,
+            segment_lengths=SEGMENT_LENGTHS,
+            use_fk=False,
+            max_target_distance=0.01,
+            use_curriculum=False,
+            single_task=True,
         )
         assert jnp.allclose(params_a.start_pos, params_b.start_pos)
         assert jnp.allclose(params_a.end_pos, params_b.end_pos)
@@ -145,10 +164,19 @@ class TestTargetDistanceClamping:
         # First sample without clamping to get the original direction
         params_unclamped = sample_task_params_jax(
             key, task_type=0, n_steps=100, dt=0.01,
+            segment_lengths=SEGMENT_LENGTHS,
+            use_fk=False,
+            max_target_distance=10.0,
+            use_curriculum=False,
+            single_task=True,
         )
         params_clamped = sample_task_params_jax(
             key, task_type=0, n_steps=100, dt=0.01,
+            segment_lengths=SEGMENT_LENGTHS,
+            use_fk=False,
             max_target_distance=max_dist,
+            use_curriculum=True,
+            single_task=True,
         )
         # Start positions should be identical (clamping only affects end)
         assert jnp.allclose(params_unclamped.start_pos, params_clamped.start_pos)

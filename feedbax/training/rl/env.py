@@ -348,11 +348,20 @@ def auto_reset(
     """
     key, task_key, reset_key = jax.random.split(key, 3)
     seg_lens = getattr(plant, "segment_lengths", None)
+    use_fk = seg_lens is not None
+    if seg_lens is None:
+        seg_lens = jnp.zeros((config.n_joints,), dtype=jnp.float32)
     # Bug: 2055433 — static override: always use default_task_type when set.
-    task_type = config.default_task_type  # None → random (existing behaviour)
+    default_task_type = config.default_task_type  # None → random (existing behaviour)
+    single_task = default_task_type is not None
+    task_type = 0 if default_task_type is None else int(default_task_type)
     new_task = sample_task_params_jax(
         task_key, task_type, config.n_steps, config.dt,
         segment_lengths=seg_lens,
+        use_fk=use_fk,
+        max_target_distance=0.0,
+        use_curriculum=False,
+        single_task=single_task,
     )
     new_state = rl_env_reset(plant, config, new_task, reset_key)
 
