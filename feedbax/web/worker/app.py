@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Deque, Dict, Optional, Tuple
 
+import numpy as np
+
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -43,6 +45,7 @@ class _Job:
     status: WorkerStatus = WorkerStatus.IDLE
     batch: int = 0
     last_loss: float = 0.0
+    snapshot_interval: int = 100
     # Monotonically increasing sequence counter; protected by _seq_lock.
     _seq: int = 0
     _seq_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -53,6 +56,34 @@ class _Job:
             seq = self._seq
             self._seq += 1
             return seq
+
+
+def _make_trajectory_event(job: _Job, batch: int, loss: float) -> dict:
+    """Generate a synthetic 2D reaching trajectory snapshot."""
+    n_steps = 50
+    t = np.linspace(0.0, 0.5, n_steps).tolist()
+    target_x = random.uniform(0.1, 0.3)
+    target_y = random.uniform(0.1, 0.3)
+    noise_scale = loss * 0.1
+    rng = np.random.default_rng()
+    noise_x = rng.normal(0.0, noise_scale, n_steps)
+    noise_y = rng.normal(0.0, noise_scale, n_steps)
+    progress = np.linspace(0.0, 1.0, n_steps)
+    effector = [
+        [float(target_x * s + nx), float(target_y * s + ny)]
+        for s, nx, ny in zip(progress, noise_x, noise_y)
+    ]
+    return {
+        "type": "training_trajectory",
+        "job_id": job.job_id,
+        "batch": batch,
+        "trajectory": {
+            "effector": effector,
+            "target": [target_x, target_y],
+            "t": t,
+            "n_steps": n_steps,
+        },
+    }
 
 
 def _run_training(job: _Job) -> None:
@@ -108,6 +139,10 @@ def _run_training(job: _Job) -> None:
                     "message": log_line,
                 },
             )
+
+            # Emit trajectory snapshot every snapshot_interval batches.
+            if (batch + 1) % job.snapshot_interval == 0:
+                _emit(job, _make_trajectory_event(job, batch + 1, loss))
 
         job.status = WorkerStatus.COMPLETED
         _emit(
@@ -287,5 +322,21 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                     break
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
+
+    @app.get("/checkpoint", dependencies=[_auth_dep])
+    def checkpoint():
+        """Return checkpoint metadata for the current job.
+
+        ``weights_available`` is ``False`` for now; real weight serialisation
+        will be added in Phase 6 when actual JAX training runs are wired up.
+        """
+        job = _state.get("current")
+        if job is None:
+            return {"batch": 0, "loss": 0.0, "weights_available": False}
+        return {
+            "batch": job.batch,
+            "loss": job.last_loss,
+            "weights_available": False,
+        }
 
     return app

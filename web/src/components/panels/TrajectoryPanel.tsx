@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { TASK_TYPE_LABELS } from '@/types/trajectory';
 import { Scene } from '@/components/viewer/Scene';
 import { PlaybackControls } from '@/components/viewer/PlaybackControls';
+import { useTrainingStore } from '@/stores/trainingStore';
+import type { TrajectorySnapshot } from '@/stores/trainingStore';
 
 export function TrajectoryPanel() {
   const {
@@ -24,6 +26,9 @@ export function TrajectoryPanel() {
     applyFilter,
     selectTrajectory,
   } = useTrajectoryStore();
+
+  const latestTrajectory = useTrainingStore((state) => state.latestTrajectory);
+  const [liveMode, setLiveMode] = useState(false);
 
   // Load datasets on mount
   useEffect(() => {
@@ -131,6 +136,23 @@ export function TrajectoryPanel() {
         {/* Spacer */}
         <div className="flex-1" />
 
+        {/* Live mode toggle */}
+        <button
+          type="button"
+          onClick={() => setLiveMode((v) => !v)}
+          className={clsx(
+            'rounded-full border px-2.5 py-0.5 text-[10px] font-semibold transition-colors',
+            liveMode
+              ? 'border-brand-400 bg-brand-500/10 text-brand-600'
+              : 'border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-50',
+            !latestTrajectory && 'opacity-50 cursor-not-allowed',
+          )}
+          disabled={!latestTrajectory}
+          title={latestTrajectory ? 'Toggle live trajectory overlay' : 'No live trajectory available yet'}
+        >
+          Live
+        </button>
+
         {/* Trajectory index navigator */}
         {filteredIndices && filteredIndices.length > 0 && (
           <div className="flex items-center gap-1">
@@ -192,10 +214,104 @@ export function TrajectoryPanel() {
           trajectoryData={trajectoryData}
           frame={playback.frame}
         />
+
+        {/* Live trajectory overlay */}
+        {liveMode && latestTrajectory && (
+          <div className="absolute inset-0 pointer-events-none">
+            <LiveTrajectoryView snapshot={latestTrajectory} />
+          </div>
+        )}
       </div>
 
       {/* Playback controls */}
       {trajectoryData && <PlaybackControls />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live trajectory viewer (2D SVG overlay, no joint angles required)
+// ---------------------------------------------------------------------------
+
+const LIVE_PADDING = 24; // px padding inside the SVG viewport
+const LIVE_SIZE = 200;   // SVG viewport size in px
+
+/**
+ * Simple 2D SVG overlay that draws the latest streamed effector path and
+ * target position.  Coordinates are normalised to a unit square and mapped
+ * into the SVG viewport with a small padding margin.
+ */
+function LiveTrajectoryView({ snapshot }: { snapshot: TrajectorySnapshot }) {
+  const { effector, target } = snapshot;
+
+  // Determine data bounds so we can normalise to the viewport.
+  const allX = effector.map(([x]) => x).concat([target[0]]);
+  const allY = effector.map(([, y]) => y).concat([target[1]]);
+  const minX = Math.min(...allX);
+  const maxX = Math.max(...allX);
+  const minY = Math.min(...allY);
+  const maxY = Math.max(...allY);
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const range = Math.max(rangeX, rangeY);
+
+  const inner = LIVE_SIZE - LIVE_PADDING * 2;
+
+  const toSvg = (x: number, y: number): [number, number] => [
+    LIVE_PADDING + ((x - minX) / range) * inner,
+    // Flip Y so positive Y points up
+    LIVE_SIZE - LIVE_PADDING - ((y - minY) / range) * inner,
+  ];
+
+  const pathD = effector
+    .map(([x, y], i) => {
+      const [sx, sy] = toSvg(x, y);
+      return `${i === 0 ? 'M' : 'L'}${sx.toFixed(1)},${sy.toFixed(1)}`;
+    })
+    .join(' ');
+
+  const [tx, ty] = toSvg(target[0], target[1]);
+  const [ox, oy] = toSvg(effector[0]?.[0] ?? 0, effector[0]?.[1] ?? 0);
+  const [ex, ey] = toSvg(
+    effector[effector.length - 1]?.[0] ?? 0,
+    effector[effector.length - 1]?.[1] ?? 0,
+  );
+
+  return (
+    <div
+      className="absolute bottom-4 right-4 rounded-xl border border-brand-200 bg-white/90 shadow-soft"
+      style={{ width: LIVE_SIZE, height: LIVE_SIZE }}
+    >
+      <div className="absolute top-1.5 left-2 text-[9px] font-semibold uppercase tracking-widest text-brand-500">
+        Live · batch {snapshot.batch}
+      </div>
+      <svg width={LIVE_SIZE} height={LIVE_SIZE} className="block">
+        {/* Effector trace */}
+        <path
+          d={pathD}
+          fill="none"
+          stroke="#6366f1"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          opacity={0.85}
+        />
+        {/* Origin dot */}
+        <circle cx={ox} cy={oy} r={3} fill="#94a3b8" />
+        {/* End-effector dot */}
+        <circle cx={ex} cy={ey} r={4} fill="#6366f1" />
+        {/* Target marker */}
+        <circle
+          cx={tx}
+          cy={ty}
+          r={6}
+          fill="none"
+          stroke="#10b981"
+          strokeWidth={1.5}
+          opacity={0.9}
+        />
+        <circle cx={tx} cy={ty} r={2} fill="#10b981" opacity={0.9} />
+      </svg>
     </div>
   );
 }

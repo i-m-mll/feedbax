@@ -123,6 +123,26 @@ async def get_status(base_url: str, auth_token: Optional[str] = None) -> dict:
         return resp.json()
 
 
+async def get_checkpoint(base_url: str, auth_token: Optional[str] = None) -> dict:
+    """GET /checkpoint and return the raw checkpoint metadata dict.
+
+    Args:
+        base_url: Worker base URL.
+        auth_token: Optional shared secret.
+
+    Returns:
+        Dict with keys ``batch``, ``loss``, ``weights_available``.
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{base_url}/checkpoint",
+            headers=_auth_headers(auth_token),
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def stream_events(
     base_url: str,
     auth_token: Optional[str] = None,
