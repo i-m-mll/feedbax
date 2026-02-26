@@ -1,9 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, AsyncIterator
+from typing import Dict, List, Optional, AsyncIterator
 import asyncio
 import queue
+import random
 import threading
 import time
 import uuid
@@ -23,7 +24,10 @@ class TrainingProgress:
     batch: int
     total_batches: int
     loss: float
-    metrics: Dict[str, float]
+    loss_terms: Dict[str, float]
+    grad_norm: float
+    step_time_ms: float
+    log_lines: List[str]
     status: TrainingStatus
 
 
@@ -71,13 +75,33 @@ class TrainingService:
                 decay = 0.98 ** batch
                 loss = start_loss * decay
                 job.last_loss = loss
+
+                # Synthetic per-term losses with small random noise, summing near total loss.
+                noise = lambda: random.uniform(-0.005, 0.005)
+                loss_terms = {
+                    'tracking': max(0.0, 0.70 * loss + noise()),
+                    'effort': max(0.0, 0.20 * loss + noise()),
+                    'smoothness': max(0.0, 0.07 * loss + noise()),
+                    'hidden_reg': max(0.0, 0.03 * loss + noise()),
+                }
+
+                # Synthetic grad_norm: starts ~1.0, decays with training.
+                grad_norm = max(0.01, 1.0 * decay + random.uniform(-0.02, 0.02))
+
+                step_time_ms = random.uniform(30.0, 60.0)
+
+                log_line = f"Step {batch + 1} | loss={loss:.4f} | grad_norm={grad_norm:.3f}"
+
                 job.progress_queue.put(
                     TrainingProgress(
                         job_id=job_id,
                         batch=batch + 1,
                         total_batches=job.total_batches,
                         loss=loss,
-                        metrics={'loss': loss, 'grad_norm': max(0.05, 0.5 * decay)},
+                        loss_terms=loss_terms,
+                        grad_norm=grad_norm,
+                        step_time_ms=step_time_ms,
+                        log_lines=[log_line],
                         status=TrainingStatus.RUNNING,
                     )
                 )
