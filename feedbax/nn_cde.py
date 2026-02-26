@@ -163,7 +163,7 @@ class CDENetwork(Component):
         """
         dX = obs - obs_prev
         M = self.vector_field(h).reshape(self.hidden_dim, self.obs_dim)
-        return h + M @ dX
+        return jnp.tanh(h + M @ dX)
 
     def _get_action(self, h: Float[Array, "hidden_dim"]) -> Float[Array, "action_dim"]:
         """Compute bounded action from hidden state.
