@@ -49,7 +49,18 @@ export interface TrainingProgress {
   batch: number;
   total_batches: number;
   loss: number;
-  metrics: Record<string, number>;
+  loss_terms: Record<string, number>;
+  grad_norm: number;
+  step_time_ms: number;
+  metrics: Record<string, number>;  // keep for backwards compat
+  status: string;
+}
+
+export interface TrainingLogLine {
+  batch: number;
+  level: 'info' | 'warning' | 'error';
+  message: string;
+  timestamp: number;  // Date.now() when received
 }
 
 // --- Probe and Loss Types ---

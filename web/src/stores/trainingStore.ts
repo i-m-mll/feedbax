@@ -7,6 +7,7 @@ import type {
   TrainingSpec,
   TaskSpec,
   TrainingProgress,
+  TrainingLogLine,
 } from '@/types/training';
 
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
@@ -78,12 +79,17 @@ const defaultTaskSpec: TaskSpec = {
   },
 };
 
+const MAX_LOSS_HISTORY = 2000;
+const MAX_CONSOLE_LOGS = 5000;
+
 interface TrainingStoreState {
   trainingSpec: TrainingSpec;
   taskSpec: TaskSpec;
   status: TrainingStatus;
   jobId: string | null;
   progress: TrainingProgress | null;
+  lossHistory: TrainingProgress[];
+  consoleLogs: TrainingLogLine[];
   // Loss UI state
   availableProbes: ProbeInfo[];
   selectedLossPath: string[] | null;
@@ -95,6 +101,9 @@ interface TrainingStoreState {
   setStatus: (status: TrainingStatus) => void;
   setJobId: (jobId: string | null) => void;
   setProgress: (progress: TrainingProgress | null) => void;
+  appendProgress: (p: TrainingProgress) => void;
+  appendLog: (l: TrainingLogLine) => void;
+  clearHistory: () => void;
   // Loss actions
   setAvailableProbes: (probes: ProbeInfo[]) => void;
   setSelectedLossPath: (path: string[] | null) => void;
@@ -111,6 +120,8 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   status: 'idle',
   jobId: null,
   progress: null,
+  lossHistory: [],
+  consoleLogs: [],
   // Loss UI state
   availableProbes: [],
   selectedLossPath: null,
@@ -137,7 +148,30 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
     })),
   setStatus: (status) => set({ status }),
   setJobId: (jobId) => set({ jobId }),
-  setProgress: (progress) => set({ progress }),
+  setProgress: (progress) => {
+    set((state) => {
+      if (progress === null) return { progress };
+      const next = state.lossHistory.length >= MAX_LOSS_HISTORY
+        ? [...state.lossHistory.slice(1), progress]
+        : [...state.lossHistory, progress];
+      return { progress, lossHistory: next };
+    });
+  },
+  appendProgress: (p) =>
+    set((state) => {
+      const next = state.lossHistory.length >= MAX_LOSS_HISTORY
+        ? [...state.lossHistory.slice(1), p]
+        : [...state.lossHistory, p];
+      return { lossHistory: next };
+    }),
+  appendLog: (l) =>
+    set((state) => {
+      const next = state.consoleLogs.length >= MAX_CONSOLE_LOGS
+        ? [...state.consoleLogs.slice(1), l]
+        : [...state.consoleLogs, l];
+      return { consoleLogs: next };
+    }),
+  clearHistory: () => set({ lossHistory: [], consoleLogs: [] }),
   // Loss actions
   setAvailableProbes: (probes) => set({ availableProbes: probes }),
   setSelectedLossPath: (path) => set({ selectedLossPath: path }),

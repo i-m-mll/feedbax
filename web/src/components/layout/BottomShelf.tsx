@@ -6,11 +6,13 @@ import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
+import { ConsolePanel } from '@/components/panels/ConsolePanel';
 import { ChevronDown } from 'lucide-react';
 
 const tabs = [
   { id: 'validation', label: 'Validation' },
   { id: 'training', label: 'Training' },
+  { id: 'console', label: 'Console' },
   { id: 'analysis', label: 'Analysis' },
   { id: 'trajectories', label: 'Trajectories' },
   { id: 'statistics', label: 'Statistics' },
@@ -33,6 +35,7 @@ export function BottomShelf({
 
   const activeContent = useMemo(() => {
     if (activeTab === 'training') return <TrainingPanel />;
+    if (activeTab === 'console') return <ConsolePanel />;
     if (activeTab === 'analysis') return <AnalysisPanel />;
     if (activeTab === 'trajectories') return <TrajectoryPanel />;
     if (activeTab === 'statistics') return <StatisticsPanel />;
@@ -128,7 +131,7 @@ export function BottomShelf({
       {!bottomCollapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
-          className={activeTab === 'trajectories' || activeTab === 'statistics' ? 'overflow-hidden' : 'overflow-y-auto'}
+          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' ? 'overflow-hidden' : 'overflow-y-auto'}
         >
           {activeContent}
         </div>

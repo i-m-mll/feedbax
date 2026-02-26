@@ -8,9 +8,21 @@ import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
 import { fetchProbes, validateLossSpec } from '@/api/client';
 import clsx from 'clsx';
 import { Plus, Trash2, AlertCircle } from 'lucide-react';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
+
+const LOSS_TERM_COLORS = ['#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
 
 export function TrainingPanel() {
-  const { trainingSpec, setTrainingSpec, progress, status } = useTrainingStore();
+  const { trainingSpec, setTrainingSpec, progress, status, lossHistory } = useTrainingStore();
   const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
   const setLossValidationErrors = useTrainingStore((state) => state.setLossValidationErrors);
   const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);
@@ -266,23 +278,77 @@ export function TrainingPanel() {
         </div>
       </div>
 
-      {progress && (
-        <div className="rounded-xl border border-slate-100 bg-white p-4 space-y-2">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>Progress</span>
-            <span>
-              {progress.batch}/{progress.total_batches}
-            </span>
+      <div className="rounded-xl border border-slate-100 bg-white p-4 space-y-3">
+        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Loss</div>
+        {lossHistory.length > 0 ? (
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={lossHistory} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+              <XAxis
+                dataKey="batch"
+                tick={{ fontSize: 10, fill: '#94a3b8' }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                scale="log"
+                domain={['auto', 'auto']}
+                tick={{ fontSize: 10, fill: '#94a3b8' }}
+                tickLine={false}
+                axisLine={false}
+                width={48}
+              />
+              <Tooltip
+                contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                labelFormatter={(v) => `Batch ${v}`}
+              />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Line
+                type="monotone"
+                dataKey="loss"
+                stroke="#6366f1"
+                dot={false}
+                strokeWidth={1.5}
+                name="total loss"
+                isAnimationActive={false}
+              />
+              {lossHistory.length > 0 &&
+                Object.keys(lossHistory[0].loss_terms ?? {}).map((termKey, idx) => (
+                  <Line
+                    key={termKey}
+                    type="monotone"
+                    dataKey={`loss_terms.${termKey}`}
+                    stroke={LOSS_TERM_COLORS[idx % LOSS_TERM_COLORS.length]}
+                    dot={false}
+                    strokeWidth={1}
+                    name={termKey}
+                    isAnimationActive={false}
+                  />
+                ))}
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-[160px] flex items-center justify-center text-xs text-slate-400">
+            Waiting for training data...
           </div>
-          <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-            <div
-              className="h-full bg-brand-500 transition-all"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-          <div className="text-xs text-slate-500">Loss: {progress.loss.toFixed(4)}</div>
-        </div>
-      )}
+        )}
+        {progress && (
+          <>
+            <div className="flex items-center justify-between text-xs text-slate-500">
+              <span>Progress</span>
+              <span>
+                {progress.batch}/{progress.total_batches}
+              </span>
+            </div>
+            <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+              <div
+                className="h-full bg-brand-500 transition-all"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+          </>
+        )}
+      </div>
       {status === 'completed' && (
         <div className="text-xs text-mint-500">Training completed.</div>
       )}
