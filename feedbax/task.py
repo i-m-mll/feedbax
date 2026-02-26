@@ -136,7 +136,25 @@ def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
     return inputs
 
 
-def _infer_n_steps(inputs: PyTree) -> int:
+def _infer_n_steps(inputs: PyTree, timeline=None) -> int:
+    """Infer number of timesteps from inputs, preferring explicit timeline value.
+
+    Checks ``timeline.n_steps`` first if a timeline is provided, then falls
+    back to reading the leading dimension of the first leaf of ``inputs``.
+
+    Used by :class:`AbstractTask` and also by ``feedbax.train`` to avoid
+    duplicating this inference logic.
+
+    Args:
+        inputs: A PyTree whose leaves are arrays with a leading time dimension.
+        timeline: Optional :class:`TrialTimeline`; its ``n_steps`` field takes
+            precedence over the array-shape inference when present.
+
+    Returns:
+        The number of timesteps.
+    """
+    if timeline is not None and timeline.n_steps is not None:
+        return int(timeline.n_steps)
     leaves = jt.leaves(inputs)
     if not leaves:
         raise ValueError("Cannot infer n_steps from empty inputs")
@@ -566,6 +584,68 @@ class AbstractTask(Module):
 
         return trial_specs
 
+    # ------------------------------------------------------------------
+    # TaskProtocol-compatible interface
+    # ------------------------------------------------------------------
+
+    def sample_trial(
+        self,
+        key: PRNGKeyArray,
+        batch_info: Optional[BatchInfo] = None,
+    ) -> TaskTrialSpec:
+        """Generate a training trial specification (TaskProtocol-compatible).
+
+        Delegates to :meth:`get_train_trial_with_intervenor_params`, which
+        includes intervention parameter sampling and input dependency
+        resolution.
+
+        Args:
+            key: A JAX random key.
+            batch_info: Optional batch information for curriculum or
+                schedule-dependent tasks.
+
+        Returns:
+            A fully resolved :class:`TaskTrialSpec` for one training trial.
+        """
+        return self.get_train_trial_with_intervenor_params(key, batch_info)
+
+    def episode_length(self, trial_spec: TaskTrialSpec) -> int:
+        """Return the number of timesteps in a trial (TaskProtocol-compatible).
+
+        Prefers ``trial_spec.timeline.n_steps`` when available; otherwise
+        infers the length from the leading dimension of the input arrays.
+
+        Args:
+            trial_spec: A trial specification, as returned by
+                :meth:`sample_trial` or :meth:`get_train_trial_with_intervenor_params`.
+
+        Returns:
+            The number of timesteps.
+        """
+        # Bug: c19f563 — canonical episode-length query for TaskProtocol
+        return _infer_n_steps(trial_spec.inputs, trial_spec.timeline)
+
+    def compute_loss(
+        self,
+        states: PyTree,
+        trial_spec: TaskTrialSpec,
+        model: Component,
+    ) -> TermTree:
+        """Compute training loss from a completed trajectory (TaskProtocol-compatible).
+
+        Delegates to ``self.loss_func``.
+
+        Args:
+            states: The model state history collected during the episode.
+            trial_spec: The trial specification used to generate the episode.
+            model: The model that produced the states (used by some loss
+                functions for regularisation).
+
+        Returns:
+            A :class:`TermTree` containing the scalar loss and its components.
+        """
+        return self.loss_func(states, trial_spec, model)
+
     @property
     @abstractmethod
     def n_validation_trials(self) -> int:
@@ -627,7 +707,7 @@ class AbstractTask(Module):
             init_state = model.state_consistency_update(init_state)
 
             inputs = _prepare_inputs(model, trial_spec.inputs)
-            n_steps = _infer_n_steps(inputs)
+            n_steps = _infer_n_steps(inputs, trial_spec.timeline)
             outputs, final_state, state_history = run_component(
                 model,
                 inputs,
