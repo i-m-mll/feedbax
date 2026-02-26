@@ -21,8 +21,11 @@ import type {
   TapSpec,
   TapUIState,
   TapNodeData,
+  SubgraphPreview,
+  ParamValue,
 } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+import type { CdeSubgraphTemplate } from '@/lib/cdeTemplates';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -786,9 +789,14 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
       selected: false,
     };
     const size = ui.size;
+    // Nodes that carry a _subgraph param are rendered by SubgraphNode.
+    const isSubgraphNode = Boolean(spec.params._subgraph);
+    const subgraph = isSubgraphNode
+      ? (spec.params._subgraph as unknown as SubgraphPreview)
+      : undefined;
     return {
       id,
-      type: 'component',
+      type: isSubgraphNode ? 'subgraph' : 'component',
       position: ui.position,
       style: size ? { width: size.width, height: size.height } : undefined,
       data: {
@@ -800,6 +808,7 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
         connected_outputs: Array.from(connectedOutputs.get(id) ?? []),
         state_in: stateIn.has(id),
         state_out: stateOut.has(id),
+        subgraph,
       },
       selected: ui.selected,
     };
@@ -1043,6 +1052,7 @@ interface GraphStoreState {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection, styleOverride?: 'bezier' | 'elbow') => void;
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
+  addSubgraphNode: (template: CdeSubgraphTemplate, position: { x: number; y: number }) => void;
   updateNodeParams: (nodeId: string, paramName: string, value: ComponentSpec['params'][string]) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
@@ -2061,6 +2071,62 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         params: { ...component.default_params },
         input_ports: component.input_ports,
         output_ports: component.output_ports,
+      };
+      let graph: GraphSpec = {
+        ...state.graph,
+        nodes: {
+          ...state.graph.nodes,
+          [name]: spec,
+        },
+      };
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states: {
+          ...state.uiState.node_states,
+          [name]: {
+            position,
+            collapsed: false,
+            selected: true,
+          },
+        },
+      };
+      const nodes = buildNodes(graph, uiState).map((node) => ({
+        ...node,
+        selected: node.id === name,
+      }));
+      return {
+        graph,
+        uiState,
+        nodes,
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  addSubgraphNode: (template, position) => {
+    set((state) => {
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const name = createNodeName(state.graph, template.name.replace(/\s+/g, '_'));
+      // Subgraph preview is stored in spec.params._subgraph so buildComponentNodes
+      // can detect it and emit type: 'subgraph' for the React Flow node.
+      const subgraphPreview: SubgraphPreview = {
+        nodes: template.nodes as unknown[],
+        edges: template.edges as unknown[],
+        inputPorts: template.inputPorts,
+        outputPorts: template.outputPorts,
+      };
+      const spec: ComponentSpec = {
+        type: 'CDESubgraph',
+        params: {
+          _subgraph: subgraphPreview as unknown as ParamValue,
+          _template: template.name,
+        },
+        input_ports: template.inputPorts,
+        output_ports: template.outputPorts,
       };
       let graph: GraphSpec = {
         ...state.graph,

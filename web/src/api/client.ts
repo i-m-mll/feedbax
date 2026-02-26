@@ -72,6 +72,19 @@ export async function stopTraining(jobId: string) {
   return request<{ success: boolean }>(`/api/training/${jobId}`, { method: 'DELETE' });
 }
 
+export async function connectWorker(url: string, authToken: string | null) {
+  return request<{ ok: boolean; url: string }>('/api/training/worker/connect', {
+    method: 'POST',
+    body: JSON.stringify({ url, auth_token: authToken }),
+  });
+}
+
+export async function fetchWorkerStatus() {
+  return request<{ mode: 'local' | 'remote'; url: string | null; connected: boolean }>(
+    '/api/training/worker/status'
+  );
+}
+
 // --- Probe and Loss API ---
 
 export async function fetchProbes(graphId: string): Promise<ProbeInfo[]> {
@@ -96,6 +109,45 @@ export async function resolveSelector(
     method: 'POST',
     body: JSON.stringify({ graph_id: graphId, selector }),
   });
+}
+
+// --- Orchestration API ---
+
+export interface OrchestrationStatusResponse {
+  status: string;
+  instance_name: string | null;
+  worker_url: string | null;
+  internal_ip: string | null;
+  external_ip: string | null;
+  error: string | null;
+}
+
+export interface LaunchInstanceRequest {
+  project: string;
+  zone: string;
+  machine_type?: string;
+  preemptible?: boolean;
+  worker_port?: number;
+  auth_token?: string | null;
+  ts_auth_key?: string | null;
+}
+
+export async function launchInstance(params: LaunchInstanceRequest) {
+  return request<{ status: string; instance_name: string | null; worker_url: string | null }>(
+    '/api/orchestration/launch',
+    {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }
+  );
+}
+
+export async function fetchOrchestrationStatus(): Promise<OrchestrationStatusResponse> {
+  return request<OrchestrationStatusResponse>('/api/orchestration/status');
+}
+
+export async function terminateInstance() {
+  return request<{ ok: boolean }>('/api/orchestration/instance', { method: 'DELETE' });
 }
 
 // --- Trajectory API ---

@@ -1,5 +1,7 @@
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useTraining } from '@/hooks/useTraining';
+import { useWorkerConfig } from '@/hooks/useWorkerConfig';
+import { useOrchestration } from '@/hooks/useOrchestration';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
@@ -7,7 +9,7 @@ import { LossTermDetail } from './LossTermDetail';
 import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
 import { fetchProbes, validateLossSpec } from '@/api/client';
 import clsx from 'clsx';
-import { Plus, Trash2, AlertCircle } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2 } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -29,6 +31,18 @@ export function TrainingPanel() {
   const removeLossTerm = useTrainingStore((state) => state.removeLossTerm);
   const setHighlightedProbeSelector = useTrainingStore((state) => state.setHighlightedProbeSelector);
   const { start, stop } = useTraining();
+  const { workerMode, workerUrl, workerConnected, connecting, error: workerError, connect } =
+    useWorkerConfig();
+  const {
+    status: cloudStatus,
+    instanceName: cloudInstanceName,
+    workerUrl: cloudWorkerUrl,
+    launching: cloudLaunching,
+    terminating: cloudTerminating,
+    error: cloudError,
+    launch: cloudLaunch,
+    terminate: cloudTerminate,
+  } = useOrchestration();
   const graphId = useGraphStore((state) => state.graphId);
   const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
@@ -39,6 +53,19 @@ export function TrainingPanel() {
   const [addModalParentPath, setAddModalParentPath] = useState<string[]>([]);
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // Remote worker UI state
+  const [remoteExpanded, setRemoteExpanded] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [remoteToken, setRemoteToken] = useState('');
+  // Cloud panel UI state
+  const [cloudExpanded, setCloudExpanded] = useState(false);
+  const [cloudProject, setCloudProject] = useState('');
+  const [cloudZone, setCloudZone] = useState('us-central1-a');
+  const [cloudMachineType, setCloudMachineType] = useState('n1-standard-4');
+  const [cloudPreemptible, setCloudPreemptible] = useState(true);
+  const [cloudWorkerPort, setCloudWorkerPort] = useState(8765);
+  const [cloudAuthToken, setCloudAuthToken] = useState('');
+  const [cloudTsAuthKey, setCloudTsAuthKey] = useState('');
 
   // Fetch available probes when graph changes
   useEffect(() => {
@@ -164,6 +191,201 @@ export function TrainingPanel() {
         <div className="text-base font-semibold text-slate-800">Configuration</div>
       </div>
       <div className="space-y-3">
+        {/* Remote Worker section */}
+        <div className="rounded-xl border border-slate-100 bg-slate-50/70 overflow-hidden">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setRemoteExpanded((v) => !v)}
+          >
+            <div className="flex items-center gap-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Remote Worker</div>
+              {/* Status chip */}
+              <span
+                className={clsx(
+                  'rounded-full px-2 py-0.5 text-[10px] font-medium',
+                  workerMode === 'remote' && workerConnected
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : workerMode === 'remote'
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'bg-slate-100 text-slate-500'
+                )}
+              >
+                {workerMode === 'remote' ? (workerConnected ? 'remote connected' : 'remote disconnected') : 'local'}
+              </span>
+            </div>
+            {remoteExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+            )}
+          </button>
+          {remoteExpanded && (
+            <div className="border-t border-slate-100 px-4 pb-4 pt-3 space-y-2">
+              <input
+                type="url"
+                placeholder="http://100.x.x.x:8765"
+                value={remoteUrl}
+                onChange={(e) => setRemoteUrl(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              <input
+                type="password"
+                placeholder="Auth token (optional)"
+                value={remoteToken}
+                onChange={(e) => setRemoteToken(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              {workerError && (
+                <div className="text-xs text-red-500">{workerError}</div>
+              )}
+              <button
+                type="button"
+                disabled={connecting || !remoteUrl.trim()}
+                onClick={() => connect(remoteUrl.trim(), remoteToken.trim() || null)}
+                className="w-full rounded-lg bg-brand-500 py-1.5 text-xs font-semibold text-white disabled:opacity-50 hover:bg-brand-600 transition-colors"
+              >
+                {connecting ? 'Connecting…' : 'Connect'}
+              </button>
+              {workerUrl && (
+                <div className="truncate text-[10px] text-slate-400" title={workerUrl}>
+                  {workerUrl}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        {/* Cloud panel */}
+        <div className="rounded-xl border border-slate-100 bg-slate-50/70 overflow-hidden">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setCloudExpanded((v) => !v)}
+          >
+            <div className="flex items-center gap-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Cloud</div>
+              <CloudStatusChip status={cloudStatus} />
+            </div>
+            {cloudExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+            )}
+          </button>
+          {cloudExpanded && (
+            <div className="border-t border-slate-100 px-4 pb-4 pt-3 space-y-2">
+              <input
+                type="text"
+                placeholder="GCP Project (e.g. my-project)"
+                value={cloudProject}
+                onChange={(e) => setCloudProject(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              <input
+                type="text"
+                placeholder="Zone (e.g. us-central1-a)"
+                value={cloudZone}
+                onChange={(e) => setCloudZone(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              <div className="space-y-0.5">
+                <input
+                  type="text"
+                  placeholder="Machine type (e.g. n1-standard-4)"
+                  value={cloudMachineType}
+                  onChange={(e) => setCloudMachineType(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+                />
+                <div className="text-[10px] text-slate-400 pl-1">
+                  Use <code className="font-mono">ct5lp-hightpu-4t</code> for TPU
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={cloudPreemptible}
+                  onChange={(e) => setCloudPreemptible(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm text-slate-600">Preemptible</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={cloudWorkerPort}
+                  onChange={(e) => setCloudWorkerPort(Number(e.target.value))}
+                  className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                />
+                <span className="text-xs text-slate-400">worker port</span>
+              </div>
+              <input
+                type="password"
+                placeholder="Auth token (optional)"
+                value={cloudAuthToken}
+                onChange={(e) => setCloudAuthToken(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              <div className="space-y-0.5">
+                <input
+                  type="password"
+                  placeholder="Tailscale auth key (optional)"
+                  value={cloudTsAuthKey}
+                  onChange={(e) => setCloudTsAuthKey(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+                />
+                <div className="text-[10px] text-slate-400 pl-1">
+                  Hint: set <code className="font-mono">FEEDBAX_TS_AUTH_KEY</code> in env
+                </div>
+              </div>
+              {cloudError && (
+                <div className="text-xs text-red-500">{cloudError}</div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={cloudLaunching || cloudStatus === 'creating' || cloudStatus === 'connecting' || !cloudProject.trim()}
+                  onClick={() =>
+                    cloudLaunch({
+                      project: cloudProject.trim(),
+                      zone: cloudZone.trim(),
+                      machine_type: cloudMachineType.trim(),
+                      preemptible: cloudPreemptible,
+                      worker_port: cloudWorkerPort,
+                      auth_token: cloudAuthToken.trim() || null,
+                      ts_auth_key: cloudTsAuthKey.trim() || null,
+                    })
+                  }
+                  className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500 py-1.5 text-xs font-semibold text-white disabled:opacity-50 hover:bg-emerald-600 transition-colors"
+                >
+                  {(cloudLaunching || cloudStatus === 'creating' || cloudStatus === 'connecting') && (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  )}
+                  Launch instance
+                </button>
+                <button
+                  type="button"
+                  disabled={cloudTerminating || cloudStatus === 'idle' || cloudInstanceName === null}
+                  onClick={cloudTerminate}
+                  className="flex-1 rounded-lg bg-red-500 py-1.5 text-xs font-semibold text-white disabled:opacity-50 hover:bg-red-600 transition-colors"
+                >
+                  {cloudTerminating ? 'Terminating…' : 'Terminate'}
+                </button>
+              </div>
+              {cloudInstanceName && (
+                <div className="truncate text-[10px] text-slate-400" title={cloudInstanceName}>
+                  {cloudInstanceName}
+                </div>
+              )}
+              {cloudWorkerUrl && (
+                <div className="truncate text-[10px] text-slate-400" title={cloudWorkerUrl}>
+                  {cloudWorkerUrl}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Optimizer</div>
           <div className="flex items-center gap-2">
@@ -355,6 +577,36 @@ export function TrainingPanel() {
       {status === 'error' && (
         <div className="text-xs text-amber-600">Training failed. Check console.</div>
       )}
+
+      {/* Checkpoint section */}
+      <div className="rounded-xl border border-slate-100 bg-white p-4 space-y-2">
+        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Checkpoint</div>
+        {progress ? (
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>
+              Batch <span className="font-semibold text-slate-700">{progress.batch}</span>
+              {' · '}
+              Loss <span className="font-semibold text-slate-700">{progress.loss.toExponential(3)}</span>
+            </span>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400">No checkpoint yet</div>
+        )}
+        <div className="relative group">
+          <button
+            type="button"
+            disabled
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-xs font-semibold text-slate-400 cursor-not-allowed"
+            aria-label="Download checkpoint"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download checkpoint
+          </button>
+          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap rounded bg-slate-700 px-2 py-1 text-[10px] text-white shadow">
+            Available when connected to real training worker
+          </div>
+        </div>
+      </div>
 
       {inSubgraph && (
         <div className="text-xs text-amber-600">
@@ -702,4 +954,27 @@ function sanitizeSymbol(label: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return cleaned.length > 0 ? cleaned : 'term';
+}
+
+function CloudStatusChip({ status }: { status: string }) {
+  const cfg: Record<string, { label: string; className: string; spinner?: boolean }> = {
+    idle: { label: 'idle', className: 'bg-slate-100 text-slate-500' },
+    creating: { label: 'creating', className: 'bg-amber-100 text-amber-700', spinner: true },
+    connecting: { label: 'connecting', className: 'bg-amber-100 text-amber-700', spinner: true },
+    running: { label: 'running', className: 'bg-emerald-100 text-emerald-700' },
+    preempted: { label: 'preempted', className: 'bg-red-100 text-red-700' },
+    error: { label: 'error', className: 'bg-red-100 text-red-700' },
+  };
+  const { label, className, spinner } = cfg[status] ?? cfg.idle;
+  return (
+    <span
+      className={clsx(
+        'flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium',
+        className
+      )}
+    >
+      {spinner && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+      {label}
+    </span>
+  );
 }

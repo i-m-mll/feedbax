@@ -4,8 +4,18 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 
 export function useTraining() {
-  const { trainingSpec, taskSpec, status, jobId, setStatus, setJobId, setProgress, appendLog, clearHistory } =
-    useTrainingStore();
+  const {
+    trainingSpec,
+    taskSpec,
+    status,
+    jobId,
+    setStatus,
+    setJobId,
+    setProgress,
+    appendLog,
+    clearHistory,
+    setLatestTrajectory,
+  } = useTrainingStore();
   const graphId = useGraphStore((state) => state.graphId);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -38,6 +48,17 @@ export function useTraining() {
             timestamp: Date.now(),
           });
         }
+        if (payload.type === 'training_trajectory') {
+          const traj = payload.trajectory;
+          if (traj) {
+            setLatestTrajectory({
+              batch: payload.batch,
+              effector: traj.effector,
+              target: traj.target,
+              t: traj.t,
+            });
+          }
+        }
         if (payload.type === 'training_complete') {
           setStatus('completed');
           ws.close();
@@ -51,7 +72,7 @@ export function useTraining() {
         wsRef.current = null;
       };
     },
-    [setProgress, setStatus, appendLog]
+    [setProgress, setStatus, appendLog, setLatestTrajectory]
   );
 
   const start = useCallback(async () => {

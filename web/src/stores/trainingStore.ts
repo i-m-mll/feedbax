@@ -10,7 +10,15 @@ import type {
   TrainingLogLine,
 } from '@/types/training';
 
+export interface TrajectorySnapshot {
+  batch: number;
+  effector: [number, number][];
+  target: [number, number];
+  t: number[];
+}
+
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
+export type WorkerMode = 'local' | 'remote';
 
 const defaultTrainingSpec: TrainingSpec = {
   optimizer: {
@@ -90,11 +98,21 @@ interface TrainingStoreState {
   progress: TrainingProgress | null;
   lossHistory: TrainingProgress[];
   consoleLogs: TrainingLogLine[];
+  // Trajectory snapshot streamed during training
+  latestTrajectory: TrajectorySnapshot | null;
   // Loss UI state
   availableProbes: ProbeInfo[];
   selectedLossPath: string[] | null;
   lossValidationErrors: LossValidationError[];
   highlightedProbeSelector: string | null;
+  // Remote worker state
+  workerMode: WorkerMode;
+  workerUrl: string | null;
+  workerConnected: boolean;
+  // Cloud orchestration state
+  orchestrationStatus: string;
+  orchestrationInstanceName: string | null;
+  orchestrationWorkerUrl: string | null;
   // Actions
   setTrainingSpec: (spec: Partial<TrainingSpec>) => void;
   setTaskSpec: (spec: Partial<TaskSpec>) => void;
@@ -104,6 +122,7 @@ interface TrainingStoreState {
   appendProgress: (p: TrainingProgress) => void;
   appendLog: (l: TrainingLogLine) => void;
   clearHistory: () => void;
+  setLatestTrajectory: (snapshot: TrajectorySnapshot | null) => void;
   // Loss actions
   setAvailableProbes: (probes: ProbeInfo[]) => void;
   setSelectedLossPath: (path: string[] | null) => void;
@@ -112,6 +131,14 @@ interface TrainingStoreState {
   updateLossTerm: (path: string[], updates: Partial<LossTermSpec>) => void;
   addLossTerm: (parentPath: string[], key: string, term: LossTermSpec) => void;
   removeLossTerm: (path: string[]) => void;
+  // Worker actions
+  setWorkerConfig: (mode: WorkerMode, url: string | null, connected: boolean) => void;
+  // Orchestration actions
+  setOrchestrationState: (
+    status: string,
+    instanceName: string | null,
+    workerUrl: string | null
+  ) => void;
 }
 
 export const useTrainingStore = create<TrainingStoreState>((set) => ({
@@ -122,11 +149,20 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   progress: null,
   lossHistory: [],
   consoleLogs: [],
+  latestTrajectory: null,
   // Loss UI state
   availableProbes: [],
   selectedLossPath: null,
   lossValidationErrors: [],
   highlightedProbeSelector: null,
+  // Remote worker state
+  workerMode: 'local',
+  workerUrl: null,
+  workerConnected: false,
+  // Cloud orchestration state
+  orchestrationStatus: 'idle',
+  orchestrationInstanceName: null,
+  orchestrationWorkerUrl: null,
   // Actions
   setTrainingSpec: (spec) =>
     set((state) => ({
@@ -171,7 +207,8 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
         : [...state.consoleLogs, l];
       return { consoleLogs: next };
     }),
-  clearHistory: () => set({ lossHistory: [], consoleLogs: [] }),
+  clearHistory: () => set({ lossHistory: [], consoleLogs: [], latestTrajectory: null }),
+  setLatestTrajectory: (snapshot) => set({ latestTrajectory: snapshot }),
   // Loss actions
   setAvailableProbes: (probes) => set({ availableProbes: probes }),
   setSelectedLossPath: (path) => set({ selectedLossPath: path }),
@@ -198,6 +235,16 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
         loss: removeLossTermAtPath(state.trainingSpec.loss, path),
       },
     })),
+  // Worker actions
+  setWorkerConfig: (mode, url, connected) =>
+    set({ workerMode: mode, workerUrl: url, workerConnected: connected }),
+  // Orchestration actions
+  setOrchestrationState: (status, instanceName, workerUrl) =>
+    set({
+      orchestrationStatus: status,
+      orchestrationInstanceName: instanceName,
+      orchestrationWorkerUrl: workerUrl,
+    }),
 }));
 
 // Helper functions for loss term manipulation

@@ -13,6 +13,7 @@ import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { CustomNode } from './CustomNode';
+import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
 import { StateFlowEdge } from './StateFlowEdge';
 import { TapNode } from './TapNode';
@@ -23,6 +24,7 @@ import { ChevronsDown, ChevronsUp, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
+  subgraph: SubgraphNode,
   tap: TapNode,
 };
 
