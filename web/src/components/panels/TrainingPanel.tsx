@@ -8,7 +8,7 @@ import { LossTermDetail } from './LossTermDetail';
 import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
 import { fetchProbes, validateLossSpec } from '@/api/client';
 import clsx from 'clsx';
-import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -426,6 +426,36 @@ export function TrainingPanel() {
       {status === 'error' && (
         <div className="text-xs text-amber-600">Training failed. Check console.</div>
       )}
+
+      {/* Checkpoint section */}
+      <div className="rounded-xl border border-slate-100 bg-white p-4 space-y-2">
+        <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Checkpoint</div>
+        {progress ? (
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>
+              Batch <span className="font-semibold text-slate-700">{progress.batch}</span>
+              {' · '}
+              Loss <span className="font-semibold text-slate-700">{progress.loss.toExponential(3)}</span>
+            </span>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400">No checkpoint yet</div>
+        )}
+        <div className="relative group">
+          <button
+            type="button"
+            disabled
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-xs font-semibold text-slate-400 cursor-not-allowed"
+            aria-label="Download checkpoint"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download checkpoint
+          </button>
+          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap rounded bg-slate-700 px-2 py-1 text-[10px] text-white shadow">
+            Available when connected to real training worker
+          </div>
+        </div>
+      </div>
 
       {inSubgraph && (
         <div className="text-xs text-amber-600">
