@@ -39,5 +39,8 @@ from .musculoskeletal import (
 # Standalone muscle Components
 from .muscles import ReluMuscle, RigidTendonHillMuscleThelen
 
+# Analytical musculoskeletal plant (pure JAX, no MuJoCo)
+from .analytical_plant import AnalyticalMusculoskeletalPlant, AnalyticalMuscleState
+
 # Pre-built effector templates
 from .templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu

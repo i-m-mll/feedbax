@@ -73,6 +73,7 @@ def build_model(
     chain_config: ChainConfig,
     sim_config: SimConfig,
     muscle_config=None,
+    differentiable: bool = False,
 ):
     """Build a MuJoCo model for a planar chain using MjSpec.
 
@@ -85,6 +86,10 @@ def build_model(
         sim_config: Simulation timing configuration.
         muscle_config: Optional muscle attachment configuration. If None,
             a default flexor/extensor layout is created.
+        differentiable: If True, configure the solver for reverse-mode
+            differentiability: fixed iteration count (``iterations=1``,
+            ``ls_iterations=0``) so MJX uses ``fori_loop`` instead of
+            ``while_loop``, and globally disable contacts.
 
     Returns:
         Compiled ``mujoco.MjModel`` instance.
@@ -99,6 +104,17 @@ def build_model(
 
     _set_if_attr(spec.option, "timestep", float(sim_config.dt))
     _set_if_attr(spec.option, "gravity", [0.0, -9.81, 0.0])
+
+    if differentiable:
+        # Use fixed solver iterations so MJX emits fori_loop (not while_loop),
+        # which supports reverse-mode AD. Disable contacts globally to avoid
+        # additional non-differentiable collision detection paths.
+        spec.option.iterations = 1
+        spec.option.ls_iterations = 0
+        spec.option.disableflags = (
+            int(spec.option.disableflags)
+            | int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
+        )
 
     if hasattr(spec, "compiler") and hasattr(spec.compiler, "angle"):
         spec.compiler.angle = "radian"
