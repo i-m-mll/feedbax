@@ -88,7 +88,7 @@ async def stop_training(job_id: str):
 
 @router.get('/{job_id}/checkpoint')
 async def get_checkpoint(job_id: str):
-    checkpoint = training_service.latest_checkpoint(job_id)
+    checkpoint = await training_service.latest_checkpoint(job_id)
     if checkpoint is None:
         raise HTTPException(status_code=404, detail='Job not found')
     return checkpoint

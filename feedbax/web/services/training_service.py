@@ -210,22 +210,31 @@ class TrainingService:
                 self._last_loss = float(event["loss"])
             yield TrainingEvent(raw=event)
 
-    def latest_checkpoint(self, job_id: str) -> Optional[dict]:
-        """Return a stub checkpoint dict for the given job.
+    async def latest_checkpoint(self, job_id: str) -> Optional[dict]:
+        """Return checkpoint metadata for the given job by querying the worker.
+
+        Proxies to the worker's ``GET /checkpoint`` endpoint when a worker URL
+        is configured and the requested job matches the current job.
 
         Args:
             job_id: The job ID.
 
         Returns:
-            A dict with checkpoint metadata, or ``None`` if unknown.
+            A dict with checkpoint metadata (keys: ``batch``, ``loss``,
+            ``weights_available``), or ``None`` if the job is unknown.
         """
         if self._current_job_id != job_id:
             return None
-        return {
-            "checkpoint_path": None,
-            "job_id": job_id,
-            "loss": self._last_loss,
-        }
+        if self._base_url is None:
+            return {"batch": 0, "loss": self._last_loss, "weights_available": False}
+        try:
+            data = await worker_client.get_checkpoint(
+                self._base_url, auth_token=self._auth_token
+            )
+            data["job_id"] = job_id
+            return data
+        except Exception:
+            return {"batch": 0, "loss": self._last_loss, "weights_available": False}
 
     def last_loss(self, job_id: str) -> Optional[float]:
         """Return the last recorded loss for the given job.
