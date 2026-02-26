@@ -7,7 +7,7 @@ import random
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional
 
@@ -28,7 +28,7 @@ class _Job:
     total_batches: int
     event_queue: queue.Queue
     stop_event: threading.Event
-    thread: threading.Thread
+    thread: Optional[threading.Thread] = None
     status: WorkerStatus = WorkerStatus.IDLE
     batch: int = 0
     last_loss: float = 0.0
@@ -109,9 +109,6 @@ def _run_training(job: _Job) -> None:
         job.event_queue.put(None)
 
 
-_SENTINEL = object()  # typed sentinel for type-narrowing clarity
-
-
 def create_app() -> FastAPI:
     """Create and return the worker FastAPI application."""
     app = FastAPI(title="Feedbax Training Worker", version="0.1.0")
@@ -135,11 +132,12 @@ def create_app() -> FastAPI:
             total_batches=total_batches,
             event_queue=event_queue,
             stop_event=stop_event,
-            thread=threading.Thread(target=_run_training, args=(job,), daemon=True),
             status=WorkerStatus.RUNNING,
         )
+        thread = threading.Thread(target=_run_training, args=(job,), daemon=True)
+        job.thread = thread
         _state["current"] = job
-        job.thread.start()
+        thread.start()
         return {"job_id": job_id}
 
     @app.post("/stop")
@@ -189,7 +187,8 @@ def create_app() -> FastAPI:
                     )
                 except queue.Empty:
                     # Worker still alive; keep the connection open.
-                    if not job.thread.is_alive():
+                    t = job.thread
+                    if t is None or not t.is_alive():
                         break
                     continue
 

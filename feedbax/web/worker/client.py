@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 
 import httpx
 

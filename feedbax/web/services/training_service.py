@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
-from feedbax.web.worker import client as worker_client
+import feedbax.web.worker.client as worker_client
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ class TrainingService:
         except Exception:
             return {"status": "error", "batch": 0, "total_batches": 0, "last_loss": 0.0}
 
-    async def stream_progress(self, job_id: str) -> AsyncIterator[TrainingEvent]:
+    async def stream_progress(self, _job_id: str) -> AsyncIterator[TrainingEvent]:
         """Relay the worker SSE stream as :class:`TrainingEvent` objects.
 
         Args:
