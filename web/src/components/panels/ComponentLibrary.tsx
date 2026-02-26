@@ -206,7 +206,7 @@ export function ComponentLibrary() {
         />
       </div>
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
-        {isLoading && (
+        {isLoading && components.length === 0 && (
           <div className="text-xs text-slate-400">Loading components...</div>
         )}
         {error && (
