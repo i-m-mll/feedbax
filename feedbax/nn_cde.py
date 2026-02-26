@@ -10,12 +10,22 @@ where f_theta is a learned vector field that maps the hidden state to a matrix,
 LTC-inspired dissipation for hidden state stability. Actions are read out via a
 sigmoid-bounded linear layer for muscle excitations in [0, 1].
 
+Optionally, the simple linear decay can be replaced with an Anti-NF gated decay
+mechanism (Kuleshov et al. 2024, "DeNOTS: Stable Deep Neural ODEs"), where a
+GRU cell computes adaptive per-dimension negative feedback:
+
+    gated_feedback = GRU(obs, -h)
+    h' = h + f_theta(h) @ dX + alpha * gated_feedback
+
+The GRU receives the observation as input and the negated hidden state as its
+hidden state, learning input-dependent decay that adapts to the current regime.
+
 :copyright: Copyright 2024-2025 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import equinox as eqx
 import jax
@@ -66,21 +76,30 @@ class CDENetwork(Component):
         hidden_dim: Dimensionality of the CDE hidden state (static).
         out_size: Dimensionality of the action output (static). Matches
             SimpleStagedNetwork attribute name for compatibility.
+        use_anti_nf: Whether to use Anti-NF gated decay (True) or simple
+            linear decay (False). Static field, traced out at JIT time.
         vector_field: MLP mapping h -> flattened matrix of shape
             (hidden_dim * obs_dim,). Reshaped to (hidden_dim, obs_dim)
             for the CDE step.
         readout: Linear layer mapping h -> action_dim.
-        decay: Hidden state decay rate (LTC-inspired dissipation).
         h0: Learned initial hidden state vector.
+        anti_nf_gate: GRUCell for Anti-NF gated decay, or None when
+            use_anti_nf is False. Input is obs, hidden state is -h.
+        alpha: Feedback strength scalar for Anti-NF gated decay.
+        decay: Hidden state decay rate (LTC-inspired dissipation). Used
+            only when use_anti_nf is False.
         state_index: Equinox StateIndex for state management.
     """
 
     obs_dim: int = field(static=True)
     hidden_dim: int = field(static=True)
     out_size: int = field(static=True)
+    use_anti_nf: bool = field(static=True)
     vector_field: eqx.nn.MLP
     readout: eqx.nn.Linear
     h0: Float[Array, "hidden_dim"]
+    anti_nf_gate: Union[eqx.nn.GRUCell, None]
+    alpha: float
 
     state_index: StateIndex
     _initial_state: CDENetworkState = field(static=True)
@@ -98,6 +117,8 @@ class CDENetwork(Component):
         vf_width: int = 64,
         vf_depth: int = 2,
         decay: float = 0.1,
+        use_anti_nf: bool = True,
+        alpha: float = 1.0,
         *,
         key: PRNGKeyArray,
     ):
@@ -112,15 +133,30 @@ class CDENetwork(Component):
             vf_width: Width of hidden layers in the vector field MLP.
             vf_depth: Number of hidden layers in the vector field MLP.
             decay: Hidden state decay rate (LTC-inspired dissipation). Pulls
-                h toward zero each step, preventing unbounded drift.
+                h toward zero each step, preventing unbounded drift. Only
+                used when use_anti_nf is False.
+            use_anti_nf: Whether to use DeNOTS Anti-NF gated decay (True)
+                or simple linear decay (False).
+            alpha: Feedback strength scalar for Anti-NF gated decay.
             key: PRNG key for parameter initialization.
         """
-        key_vf, key_readout, key_h0 = jr.split(key, 3)
+        key_vf, key_readout, key_h0, key_gate = jr.split(key, 4)
 
         self.obs_dim = obs_dim
         self.hidden_dim = hidden_dim
         self.out_size = out_size
         self.decay = decay
+        self.use_anti_nf = use_anti_nf
+        self.alpha = alpha
+
+        # Anti-NF gated decay (DeNOTS): GRU receives obs as input, -h as
+        # hidden state, producing learned input-dependent negative feedback.
+        if use_anti_nf:
+            self.anti_nf_gate = eqx.nn.GRUCell(
+                input_size=obs_dim, hidden_size=hidden_dim, key=key_gate,
+            )
+        else:
+            self.anti_nf_gate = None
 
         # Vector field: h -> matrix(hidden_dim, obs_dim), stored flat.
         # tanh final activation bounds output to [-1, 1], which bounds dh per
@@ -166,17 +202,32 @@ class CDENetwork(Component):
         which bounds each element of M to [-1, 1] and thus bounds ||dh|| by
         ||dX|| per step (Kidger's canonical CDE stability approach).
 
+        When use_anti_nf is True, the simple linear decay is replaced with
+        GRU-gated adaptive negative feedback (DeNOTS Anti-NF). The GRU
+        receives the observation as input and -h as hidden state, learning
+        input-dependent per-dimension decay.
+
         Args:
             h: Current hidden state.
             obs: Current observation vector.
             obs_prev: Previous observation vector.
 
         Returns:
-            Updated hidden state: h' = h + M @ dX - decay * h.
+            Updated hidden state.
         """
         dX = obs - obs_prev
         M = self.vector_field(h).reshape(self.hidden_dim, self.obs_dim)
-        h_new = h + M @ dX - self.decay * h
+        cde_update = M @ dX
+
+        if self.use_anti_nf:
+            # DeNOTS Anti-NF: GRU-gated adaptive decay
+            # GRU input=obs, hidden=-h -> output is gated negative feedback
+            gated_feedback = self.anti_nf_gate(obs, -h)
+            h_new = h + cde_update + self.alpha * gated_feedback
+        else:
+            # Simple linear decay (v8 behavior)
+            h_new = h + cde_update - self.decay * h
+
         return h_new
 
     def _get_action(self, h: Float[Array, "hidden_dim"]) -> Float[Array, "action_dim"]:
