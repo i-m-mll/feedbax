@@ -125,6 +125,10 @@ class CDENetwork(Component):
 
         # Readout: h -> action_dim
         self.readout = eqx.nn.Linear(hidden_dim, out_size, key=key_readout)
+        # Quiescent start: sigmoid(-5) ≈ 0.007, muscles start near-zero
+        self.readout = eqx.tree_at(
+            lambda l: l.bias, self.readout, -5.0 * jnp.ones(out_size)
+        )
 
         # Learned initial hidden state (small random init)
         self.h0 = 0.01 * jr.normal(key_h0, (hidden_dim,))
