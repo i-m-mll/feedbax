@@ -10,6 +10,13 @@ import type {
   TrainingLogLine,
 } from '@/types/training';
 
+export interface TrajectorySnapshot {
+  batch: number;
+  effector: [number, number][];
+  target: [number, number];
+  t: number[];
+}
+
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
 export type WorkerMode = 'local' | 'remote';
 
@@ -91,6 +98,8 @@ interface TrainingStoreState {
   progress: TrainingProgress | null;
   lossHistory: TrainingProgress[];
   consoleLogs: TrainingLogLine[];
+  // Trajectory snapshot streamed during training
+  latestTrajectory: TrajectorySnapshot | null;
   // Loss UI state
   availableProbes: ProbeInfo[];
   selectedLossPath: string[] | null;
@@ -109,6 +118,7 @@ interface TrainingStoreState {
   appendProgress: (p: TrainingProgress) => void;
   appendLog: (l: TrainingLogLine) => void;
   clearHistory: () => void;
+  setLatestTrajectory: (snapshot: TrajectorySnapshot | null) => void;
   // Loss actions
   setAvailableProbes: (probes: ProbeInfo[]) => void;
   setSelectedLossPath: (path: string[] | null) => void;
@@ -129,6 +139,7 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   progress: null,
   lossHistory: [],
   consoleLogs: [],
+  latestTrajectory: null,
   // Loss UI state
   availableProbes: [],
   selectedLossPath: null,
@@ -182,7 +193,8 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
         : [...state.consoleLogs, l];
       return { consoleLogs: next };
     }),
-  clearHistory: () => set({ lossHistory: [], consoleLogs: [] }),
+  clearHistory: () => set({ lossHistory: [], consoleLogs: [], latestTrajectory: null }),
+  setLatestTrajectory: (snapshot) => set({ latestTrajectory: snapshot }),
   // Loss actions
   setAvailableProbes: (probes) => set({ availableProbes: probes }),
   setSelectedLossPath: (path) => set({ selectedLossPath: path }),
