@@ -3,10 +3,11 @@
 Implements a Neural Controlled Differential Equation (CDE) controller as a
 drop-in replacement for SimpleStagedNetwork. The CDE update rule is:
 
-    h' = h + f_theta(h) @ (obs - obs_prev)
+    h' = h + f_theta(h) @ (obs - obs_prev) - decay * h
 
 where f_theta is a learned vector field that maps the hidden state to a matrix,
-and (obs - obs_prev) is the observation increment. Actions are read out via a
+(obs - obs_prev) is the observation increment, and the decay term provides
+LTC-inspired dissipation for hidden state stability. Actions are read out via a
 sigmoid-bounded linear layer for muscle excitations in [0, 1].
 
 :copyright: Copyright 2024-2025 by MLL <mll@mll.bio>.
@@ -51,7 +52,7 @@ class CDENetwork(Component):
     """Neural CDE controller -- drop-in replacement for SimpleStagedNetwork.
 
     CDE update (Euler discretization, dt cancels with dX/dt):
-        h' = h + f_theta(h) @ (obs - obs_prev)
+        h' = h + f_theta(h) @ (obs - obs_prev) - decay * h
 
     Action readout:
         action = sigmoid(readout(h))
@@ -69,6 +70,7 @@ class CDENetwork(Component):
             (hidden_dim * obs_dim,). Reshaped to (hidden_dim, obs_dim)
             for the CDE step.
         readout: Linear layer mapping h -> action_dim.
+        decay: Hidden state decay rate (LTC-inspired dissipation).
         h0: Learned initial hidden state vector.
         state_index: Equinox StateIndex for state management.
     """
@@ -86,6 +88,8 @@ class CDENetwork(Component):
     input_ports = ("input", "feedback")
     output_ports = ("output", "hidden")
 
+    decay: float
+
     def __init__(
         self,
         obs_dim: int,
@@ -93,6 +97,7 @@ class CDENetwork(Component):
         out_size: int,
         vf_width: int = 64,
         vf_depth: int = 2,
+        decay: float = 0.1,
         *,
         key: PRNGKeyArray,
     ):
@@ -106,6 +111,8 @@ class CDENetwork(Component):
                 muscles or force dimensions).
             vf_width: Width of hidden layers in the vector field MLP.
             vf_depth: Number of hidden layers in the vector field MLP.
+            decay: Hidden state decay rate (LTC-inspired dissipation). Pulls
+                h toward zero each step, preventing unbounded drift.
             key: PRNG key for parameter initialization.
         """
         key_vf, key_readout, key_h0 = jr.split(key, 3)
@@ -113,6 +120,7 @@ class CDENetwork(Component):
         self.obs_dim = obs_dim
         self.hidden_dim = hidden_dim
         self.out_size = out_size
+        self.decay = decay
 
         # Vector field: h -> matrix(hidden_dim, obs_dim), stored flat.
         # tanh final activation bounds output to [-1, 1], which bounds dh per
@@ -164,11 +172,11 @@ class CDENetwork(Component):
             obs_prev: Previous observation vector.
 
         Returns:
-            Updated hidden state: h' = h + M @ dX.
+            Updated hidden state: h' = h + M @ dX - decay * h.
         """
         dX = obs - obs_prev
         M = self.vector_field(h).reshape(self.hidden_dim, self.obs_dim)
-        h_new = h + M @ dX
+        h_new = h + M @ dX - self.decay * h
         return h_new
 
     def _get_action(self, h: Float[Array, "hidden_dim"]) -> Float[Array, "action_dim"]:
