@@ -106,6 +106,8 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
     force_length: ForceLengthCurve = field(static=True)
     passive_force_length: PassiveForceLengthCurve = field(static=True)
     force_velocity: ForceVelocityCurve = field(static=True)
+    max_acceleration: float = 500.0  # rad/s^2 — safety clamp for ODE stability
+    max_velocity: float = 50.0  # rad/s — safety clamp for ODE stability
 
     def __init__(
         self,
@@ -351,9 +353,11 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
             - ``skeleton.d_angle`` = angular accelerations
             - ``muscles.activations`` = activation derivatives
         """
-        excitations = input
+        excitations = jnp.clip(input, 0.0, 1.0)
         angles = state.skeleton.angle
-        d_angles = state.skeleton.d_angle
+        d_angles = jnp.clip(
+            state.skeleton.d_angle, -self.max_velocity, self.max_velocity,
+        )
         activations = state.muscles.activations
 
         # --- Activation dynamics ---
@@ -380,6 +384,10 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
 
         # --- Lagrangian dynamics ---
         dd_angles = self._lagrangian_dynamics(angles, d_angles, joint_torques)
+        # Safety clamp: prevent extreme accelerations that blow up ODE integration.
+        dd_angles = jnp.clip(
+            dd_angles, -self.max_acceleration, self.max_acceleration,
+        )
 
         return PlantState(
             skeleton=TwoLinkArmState(
