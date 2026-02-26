@@ -72,6 +72,19 @@ export async function stopTraining(jobId: string) {
   return request<{ success: boolean }>(`/api/training/${jobId}`, { method: 'DELETE' });
 }
 
+export async function connectWorker(url: string, authToken: string | null) {
+  return request<{ ok: boolean; url: string }>('/api/training/worker/connect', {
+    method: 'POST',
+    body: JSON.stringify({ url, auth_token: authToken }),
+  });
+}
+
+export async function fetchWorkerStatus() {
+  return request<{ mode: 'local' | 'remote'; url: string | null; connected: boolean }>(
+    '/api/training/worker/status'
+  );
+}
+
 // --- Probe and Loss API ---
 
 export async function fetchProbes(graphId: string): Promise<ProbeInfo[]> {

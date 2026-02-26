@@ -11,6 +11,7 @@ import type {
 } from '@/types/training';
 
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
+export type WorkerMode = 'local' | 'remote';
 
 const defaultTrainingSpec: TrainingSpec = {
   optimizer: {
@@ -95,6 +96,10 @@ interface TrainingStoreState {
   selectedLossPath: string[] | null;
   lossValidationErrors: LossValidationError[];
   highlightedProbeSelector: string | null;
+  // Remote worker state
+  workerMode: WorkerMode;
+  workerUrl: string | null;
+  workerConnected: boolean;
   // Actions
   setTrainingSpec: (spec: Partial<TrainingSpec>) => void;
   setTaskSpec: (spec: Partial<TaskSpec>) => void;
@@ -112,6 +117,8 @@ interface TrainingStoreState {
   updateLossTerm: (path: string[], updates: Partial<LossTermSpec>) => void;
   addLossTerm: (parentPath: string[], key: string, term: LossTermSpec) => void;
   removeLossTerm: (path: string[]) => void;
+  // Worker actions
+  setWorkerConfig: (mode: WorkerMode, url: string | null, connected: boolean) => void;
 }
 
 export const useTrainingStore = create<TrainingStoreState>((set) => ({
@@ -127,6 +134,10 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   selectedLossPath: null,
   lossValidationErrors: [],
   highlightedProbeSelector: null,
+  // Remote worker state
+  workerMode: 'local',
+  workerUrl: null,
+  workerConnected: false,
   // Actions
   setTrainingSpec: (spec) =>
     set((state) => ({
@@ -198,6 +209,9 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
         loss: removeLossTermAtPath(state.trainingSpec.loss, path),
       },
     })),
+  // Worker actions
+  setWorkerConfig: (mode, url, connected) =>
+    set({ workerMode: mode, workerUrl: url, workerConnected: connected }),
 }));
 
 // Helper functions for loss term manipulation
