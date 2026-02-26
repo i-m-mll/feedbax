@@ -109,6 +109,10 @@ interface TrainingStoreState {
   workerMode: WorkerMode;
   workerUrl: string | null;
   workerConnected: boolean;
+  // Cloud orchestration state
+  orchestrationStatus: string;
+  orchestrationInstanceName: string | null;
+  orchestrationWorkerUrl: string | null;
   // Actions
   setTrainingSpec: (spec: Partial<TrainingSpec>) => void;
   setTaskSpec: (spec: Partial<TaskSpec>) => void;
@@ -129,6 +133,12 @@ interface TrainingStoreState {
   removeLossTerm: (path: string[]) => void;
   // Worker actions
   setWorkerConfig: (mode: WorkerMode, url: string | null, connected: boolean) => void;
+  // Orchestration actions
+  setOrchestrationState: (
+    status: string,
+    instanceName: string | null,
+    workerUrl: string | null
+  ) => void;
 }
 
 export const useTrainingStore = create<TrainingStoreState>((set) => ({
@@ -149,6 +159,10 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   workerMode: 'local',
   workerUrl: null,
   workerConnected: false,
+  // Cloud orchestration state
+  orchestrationStatus: 'idle',
+  orchestrationInstanceName: null,
+  orchestrationWorkerUrl: null,
   // Actions
   setTrainingSpec: (spec) =>
     set((state) => ({
@@ -224,6 +238,13 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   // Worker actions
   setWorkerConfig: (mode, url, connected) =>
     set({ workerMode: mode, workerUrl: url, workerConnected: connected }),
+  // Orchestration actions
+  setOrchestrationState: (status, instanceName, workerUrl) =>
+    set({
+      orchestrationStatus: status,
+      orchestrationInstanceName: instanceName,
+      orchestrationWorkerUrl: workerUrl,
+    }),
 }));
 
 // Helper functions for loss term manipulation

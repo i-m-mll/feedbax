@@ -111,6 +111,45 @@ export async function resolveSelector(
   });
 }
 
+// --- Orchestration API ---
+
+export interface OrchestrationStatusResponse {
+  status: string;
+  instance_name: string | null;
+  worker_url: string | null;
+  internal_ip: string | null;
+  external_ip: string | null;
+  error: string | null;
+}
+
+export interface LaunchInstanceRequest {
+  project: string;
+  zone: string;
+  machine_type?: string;
+  preemptible?: boolean;
+  worker_port?: number;
+  auth_token?: string | null;
+  ts_auth_key?: string | null;
+}
+
+export async function launchInstance(params: LaunchInstanceRequest) {
+  return request<{ status: string; instance_name: string | null; worker_url: string | null }>(
+    '/api/orchestration/launch',
+    {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }
+  );
+}
+
+export async function fetchOrchestrationStatus(): Promise<OrchestrationStatusResponse> {
+  return request<OrchestrationStatusResponse>('/api/orchestration/status');
+}
+
+export async function terminateInstance() {
+  return request<{ ok: boolean }>('/api/orchestration/instance', { method: 'DELETE' });
+}
+
 // --- Trajectory API ---
 
 export async function fetchTrajectoryDatasets(): Promise<TrajectoryDataset[]> {
