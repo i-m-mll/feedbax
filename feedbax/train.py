@@ -44,7 +44,7 @@ from feedbax.misc import (
     is_none,
 )
 from feedbax.state import StateT
-from feedbax.task import AbstractTask, TaskTrialSpec, _prepare_inputs, _set_state_by_path, _where_key_to_path
+from feedbax.task import AbstractTask, TaskTrialSpec, _infer_n_steps, _prepare_inputs, _set_state_by_path, _where_key_to_path
 
 LOSS_FMT = ".2e"
 
@@ -845,6 +845,75 @@ class TaskTrainer(eqx.Module):
 
         return losses, trial_specs, flat_model, flat_opt_state, grads
 
+    @classmethod
+    def from_graph(
+        cls,
+        model: Component,
+        optimizer: optax.GradientTransformation,
+        checkpointing: bool = True,
+        chkpt_dir: str | Path = "/tmp/feedbax-checkpoints",
+        enable_tensorboard: bool = False,
+        tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
+        model_update_funcs: Sequence[Callable] = (),
+    ) -> "tuple[TaskTrainer, AbstractTask]":
+        """Construct a TaskTrainer by discovering a TaskComponent in a graph.
+
+        Traverses the graph's nodes to find a TaskComponent instance and
+        extracts its associated AbstractTask.
+
+        Arguments:
+            model: A Graph component whose nodes will be searched for a
+                TaskComponent.
+            optimizer: The Optax optimizer to use for training.
+            checkpointing: Whether to save model checkpoints during training.
+            chkpt_dir: The directory in which to save model checkpoints.
+            enable_tensorboard: Whether to keep logs for Tensorboard.
+            tensorboard_logdir: The directory in which to save Tensorboard logs.
+            model_update_funcs: State-dependent offline update functions.
+
+        Returns:
+            A ``(TaskTrainer, AbstractTask)`` tuple, where the task is the one
+            discovered inside the graph.
+
+        Raises:
+            ValueError: If the model is not a Graph with a ``nodes`` mapping,
+                or if zero or more than one TaskComponent is found.
+        """
+        # Bug: 7d6dad4 — graph-based task discovery for TaskTrainer
+        from feedbax.task import TaskComponent
+
+        nodes = getattr(model, 'nodes', None)
+        if nodes is None:
+            raise ValueError(
+                "model has no 'nodes' attribute. Pass a Graph instance or "
+                "use TaskTrainer(...) directly."
+            )
+
+        task_components = [
+            node for node in nodes.values()
+            if isinstance(node, TaskComponent)
+        ]
+        if len(task_components) == 0:
+            raise ValueError(
+                "No TaskComponent found in graph. Use TaskTrainer(...) directly."
+            )
+        if len(task_components) > 1:
+            raise ValueError(
+                f"Multiple TaskComponents found in graph ({len(task_components)}). "
+                "Specify which task to use by constructing TaskTrainer directly."
+            )
+
+        discovered_task: AbstractTask = task_components[0].task
+        trainer = cls(
+            optimizer=optimizer,
+            checkpointing=checkpointing,
+            chkpt_dir=chkpt_dir,
+            enable_tensorboard=enable_tensorboard,
+            tensorboard_logdir=tensorboard_logdir,
+            model_update_funcs=model_update_funcs,
+        )
+        return trainer, discovered_task
+
     def _save_checkpoint(
         self,
         batch: int,
@@ -1096,12 +1165,6 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
       is a `TaskTrainer`-specific function, then `Task` could provide an interface
     """
 
-    def _infer_n_steps(inputs):
-        leaves = jt.leaves(inputs)
-        if not leaves:
-            raise ValueError("Cannot infer n_steps from empty inputs")
-        return int(leaves[0].shape[0])
-
     @wraps(loss_func)
     def wrapper(
         diff_model: Component,
@@ -1114,7 +1177,13 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
 
         def _run_trial(trial_spec, init_state, key):
             inputs = _prepare_inputs(model, trial_spec.inputs)
-            n_steps = _infer_n_steps(inputs)
+            # Bug: 7d6dad4 — prefer timeline.n_steps when available; falls back to
+            # inferring from input array shape when timeline has no n_steps set.
+            timeline = getattr(trial_spec, 'timeline', None)
+            if timeline is not None and getattr(timeline, 'n_steps', None) is not None:
+                n_steps = timeline.n_steps
+            else:
+                n_steps = _infer_n_steps(inputs)
             _, _, state_history = run_component(
                 model,
                 inputs,
