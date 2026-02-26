@@ -133,13 +133,10 @@ export function TreescopePanel() {
     setIsExpanded((prev) => !prev);
   }, []);
 
-  // If treescope is not available, show a minimal panel
+  // While the status check is in flight, render nothing — avoids showing
+  // "Loading inspection status..." in the properties panel when idle.
   if (statusQuery.isLoading) {
-    return (
-      <div className="border-t border-slate-100 p-4">
-        <div className="text-xs text-slate-400">Loading inspection status...</div>
-      </div>
-    );
+    return null;
   }
 
   if (!statusQuery.data?.treescope_available) {
