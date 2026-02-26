@@ -58,6 +58,34 @@ class _Job:
             return seq
 
 
+def _make_trajectory_event(job: _Job, batch: int, loss: float) -> dict:
+    """Generate a synthetic 2D reaching trajectory snapshot."""
+    n_steps = 50
+    t = np.linspace(0.0, 0.5, n_steps).tolist()
+    target_x = random.uniform(0.1, 0.3)
+    target_y = random.uniform(0.1, 0.3)
+    noise_scale = loss * 0.1
+    rng = np.random.default_rng()
+    noise_x = rng.normal(0.0, noise_scale, n_steps)
+    noise_y = rng.normal(0.0, noise_scale, n_steps)
+    progress = np.linspace(0.0, 1.0, n_steps)
+    effector = [
+        [float(target_x * s + nx), float(target_y * s + ny)]
+        for s, nx, ny in zip(progress, noise_x, noise_y)
+    ]
+    return {
+        "type": "training_trajectory",
+        "job_id": job.job_id,
+        "batch": batch,
+        "trajectory": {
+            "effector": effector,
+            "target": [target_x, target_y],
+            "t": t,
+            "n_steps": n_steps,
+        },
+    }
+
+
 def _run_training(job: _Job) -> None:
     """Synthetic training loop — runs in a background thread."""
     try:
@@ -139,47 +167,6 @@ def _run_training(job: _Job) -> None:
     finally:
         # Sentinel: tells SSE generator the stream is done.
         job.event_queue.put(None)
-
-
-def _make_trajectory_event(job: _Job, batch: int, loss: float) -> dict:
-    """Generate a synthetic 2D reaching trajectory snapshot.
-
-    Produces a linear reach from the origin toward a random target with
-    Gaussian noise scaled by the current loss, so the trajectory visually
-    improves as training progresses.
-
-    Args:
-        job: The current training job (provides job_id and _seq).
-        batch: Current batch number (1-indexed).
-        loss: Current training loss, used to scale trajectory noise.
-
-    Returns:
-        A ``training_trajectory`` event dict (without seq — caller adds it).
-    """
-    n_steps = 50
-    t = np.linspace(0.0, 0.5, n_steps).tolist()
-    target_x = random.uniform(0.1, 0.3)
-    target_y = random.uniform(0.1, 0.3)
-    noise_scale = loss * 0.1
-    rng = np.random.default_rng()
-    noise_x = rng.normal(0.0, noise_scale, n_steps)
-    noise_y = rng.normal(0.0, noise_scale, n_steps)
-    progress = np.linspace(0.0, 1.0, n_steps)
-    effector = [
-        [float(target_x * s + nx), float(target_y * s + ny)]
-        for s, nx, ny in zip(progress, noise_x, noise_y)
-    ]
-    return {
-        "type": "training_trajectory",
-        "job_id": job.job_id,
-        "batch": batch,
-        "trajectory": {
-            "effector": effector,
-            "target": [target_x, target_y],
-            "t": t,
-            "n_steps": n_steps,
-        },
-    }
 
 
 def _emit(job: _Job, event: dict) -> None:
