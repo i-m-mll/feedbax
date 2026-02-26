@@ -1,5 +1,6 @@
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useTraining } from '@/hooks/useTraining';
+import { useWorkerConfig } from '@/hooks/useWorkerConfig';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
@@ -7,7 +8,7 @@ import { LossTermDetail } from './LossTermDetail';
 import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
 import { fetchProbes, validateLossSpec } from '@/api/client';
 import clsx from 'clsx';
-import { Plus, Trash2, AlertCircle } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -29,6 +30,8 @@ export function TrainingPanel() {
   const removeLossTerm = useTrainingStore((state) => state.removeLossTerm);
   const setHighlightedProbeSelector = useTrainingStore((state) => state.setHighlightedProbeSelector);
   const { start, stop } = useTraining();
+  const { workerMode, workerUrl, workerConnected, connecting, error: workerError, connect } =
+    useWorkerConfig();
   const graphId = useGraphStore((state) => state.graphId);
   const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
@@ -39,6 +42,10 @@ export function TrainingPanel() {
   const [addModalParentPath, setAddModalParentPath] = useState<string[]>([]);
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // Remote worker UI state
+  const [remoteExpanded, setRemoteExpanded] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [remoteToken, setRemoteToken] = useState('');
 
   // Fetch available probes when graph changes
   useEffect(() => {
@@ -164,6 +171,70 @@ export function TrainingPanel() {
         <div className="text-base font-semibold text-slate-800">Configuration</div>
       </div>
       <div className="space-y-3">
+        {/* Remote Worker section */}
+        <div className="rounded-xl border border-slate-100 bg-slate-50/70 overflow-hidden">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setRemoteExpanded((v) => !v)}
+          >
+            <div className="flex items-center gap-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Remote Worker</div>
+              {/* Status chip */}
+              <span
+                className={clsx(
+                  'rounded-full px-2 py-0.5 text-[10px] font-medium',
+                  workerMode === 'remote' && workerConnected
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : workerMode === 'remote'
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'bg-slate-100 text-slate-500'
+                )}
+              >
+                {workerMode === 'remote' ? (workerConnected ? 'remote connected' : 'remote disconnected') : 'local'}
+              </span>
+            </div>
+            {remoteExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+            )}
+          </button>
+          {remoteExpanded && (
+            <div className="border-t border-slate-100 px-4 pb-4 pt-3 space-y-2">
+              <input
+                type="url"
+                placeholder="http://100.x.x.x:8765"
+                value={remoteUrl}
+                onChange={(e) => setRemoteUrl(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              <input
+                type="password"
+                placeholder="Auth token (optional)"
+                value={remoteToken}
+                onChange={(e) => setRemoteToken(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm placeholder-slate-300"
+              />
+              {workerError && (
+                <div className="text-xs text-red-500">{workerError}</div>
+              )}
+              <button
+                type="button"
+                disabled={connecting || !remoteUrl.trim()}
+                onClick={() => connect(remoteUrl.trim(), remoteToken.trim() || null)}
+                className="w-full rounded-lg bg-brand-500 py-1.5 text-xs font-semibold text-white disabled:opacity-50 hover:bg-brand-600 transition-colors"
+              >
+                {connecting ? 'Connecting…' : 'Connect'}
+              </button>
+              {workerUrl && (
+                <div className="truncate text-[10px] text-slate-400" title={workerUrl}>
+                  {workerUrl}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4 space-y-2">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Optimizer</div>
           <div className="flex items-center gap-2">
