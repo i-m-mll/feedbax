@@ -127,6 +127,18 @@ export interface GraphUIState {
   tap_states?: Record<string, TapUIState>;
 }
 
+/** Internal graph carried by a SubgraphNode for the nested preview canvas. */
+export interface SubgraphPreview {
+  /** Internal React Flow nodes (type: 'component'). */
+  nodes: unknown[];
+  /** Internal React Flow edges. */
+  edges: unknown[];
+  /** Port names exposed as inputs on the parent canvas. */
+  inputPorts: string[];
+  /** Port names exposed as outputs on the parent canvas. */
+  outputPorts: string[];
+}
+
 export interface GraphNodeData extends Record<string, unknown> {
   label: string;
   spec: ComponentSpec;
@@ -136,6 +148,8 @@ export interface GraphNodeData extends Record<string, unknown> {
   connected_outputs?: string[];
   state_in?: boolean;
   state_out?: boolean;
+  /** Present only on subgraph-typed nodes; carries the nested graph preview. */
+  subgraph?: SubgraphPreview;
 }
 
 export interface TapNodeData extends Record<string, unknown> {
