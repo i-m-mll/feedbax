@@ -44,6 +44,7 @@ dependencies = [
     "tensorboardx>=2.6.2.2",
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
+    "httpx>=0.27.0",
     "uvicorn>=0.29.0",
     "jax-cookbook",
     # From feedbax_experiments:
