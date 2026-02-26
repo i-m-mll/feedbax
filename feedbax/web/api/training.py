@@ -22,22 +22,19 @@ class TrainingRequest(BaseModel):
 
 @router.post('')
 async def start_training(payload: TrainingRequest):
-    job_id = training_service.start_training(payload.training_spec.n_batches)
+    job_id = await training_service.start_training(payload.training_spec.n_batches)
     return {'job_id': job_id}
 
 
 @router.get('/{job_id}')
 async def get_training_status(job_id: str):
-    try:
-        status = training_service.get_status(job_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail='Job not found') from exc
+    status = await training_service.get_status()
     return {'status': status}
 
 
 @router.delete('/{job_id}')
 async def stop_training(job_id: str):
-    training_service.stop_training(job_id)
+    await training_service.stop_training()
     return {'success': True}
 
 
