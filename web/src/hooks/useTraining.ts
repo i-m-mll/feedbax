@@ -4,7 +4,7 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 
 export function useTraining() {
-  const { trainingSpec, taskSpec, status, jobId, setStatus, setJobId, setProgress } =
+  const { trainingSpec, taskSpec, status, jobId, setStatus, setJobId, setProgress, appendLog, clearHistory } =
     useTrainingStore();
   const graphId = useGraphStore((state) => state.graphId);
   const wsRef = useRef<WebSocket | null>(null);
@@ -22,9 +22,21 @@ export function useTraining() {
             batch: payload.batch,
             total_batches: payload.total_batches,
             loss: payload.loss,
+            loss_terms: payload.loss_terms ?? {},
+            grad_norm: payload.grad_norm ?? 0,
+            step_time_ms: payload.step_time_ms ?? 0,
             metrics: payload.metrics ?? {},
+            status: payload.status ?? 'running',
           });
           setStatus('running');
+        }
+        if (payload.type === 'training_log') {
+          appendLog({
+            batch: payload.batch,
+            level: payload.level ?? 'info',
+            message: payload.message,
+            timestamp: Date.now(),
+          });
         }
         if (payload.type === 'training_complete') {
           setStatus('completed');
@@ -39,7 +51,7 @@ export function useTraining() {
         wsRef.current = null;
       };
     },
-    [setProgress, setStatus]
+    [setProgress, setStatus, appendLog]
   );
 
   const start = useCallback(async () => {
@@ -48,6 +60,7 @@ export function useTraining() {
       return;
     }
     try {
+      clearHistory();
       const response = await startTraining(graphId, trainingSpec, taskSpec);
       setJobId(response.job_id);
       setStatus('running');
@@ -55,7 +68,7 @@ export function useTraining() {
     } catch {
       setStatus('error');
     }
-  }, [graphId, trainingSpec, taskSpec, setJobId, setStatus, connect]);
+  }, [graphId, trainingSpec, taskSpec, setJobId, setStatus, connect, clearHistory]);
 
   const stop = useCallback(async () => {
     if (!jobId) return;
