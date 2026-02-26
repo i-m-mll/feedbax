@@ -149,7 +149,7 @@ class CDENetwork(Component):
         obs: Float[Array, "obs_dim"],
         obs_prev: Float[Array, "obs_dim"],
     ) -> Float[Array, "hidden_dim"]:
-        """Single CDE Euler step.
+        """Single CDE step with norm clipping.
 
         Args:
             h: Current hidden state.
@@ -157,13 +157,20 @@ class CDENetwork(Component):
             obs_prev: Previous observation vector.
 
         Returns:
-            Updated hidden state h' = h + M @ dX where
-            M = vector_field(h).reshape(hidden_dim, obs_dim) and
-            dX = obs - obs_prev.
+            Updated hidden state with norm clipping: h' = clip_norm(h + M @ dX).
+            Hidden state magnitude is bounded at sqrt(hidden_dim) ≈ 16 for dim=256.
         """
         dX = obs - obs_prev
         M = self.vector_field(h).reshape(self.hidden_dim, self.obs_dim)
-        return jnp.tanh(h + M @ dX)
+        h_new = h + M @ dX
+        # Norm clipping: bound hidden state magnitude without killing gradients.
+        # If |h| < max_norm, gradient is 1 (pass-through). If |h| > max_norm,
+        # scale down to max_norm. max_norm = sqrt(hidden_dim) keeps per-element
+        # values at O(1) on average.
+        norm = jnp.linalg.norm(h_new)
+        max_norm = jnp.sqrt(jnp.float32(self.hidden_dim))
+        scale = jnp.minimum(1.0, max_norm / jnp.maximum(norm, 1e-8))
+        return h_new * scale
 
     def _get_action(self, h: Float[Array, "hidden_dim"]) -> Float[Array, "action_dim"]:
         """Compute bounded action from hidden state.
