@@ -1,5 +1,5 @@
 > [!NOTE]
-> **Feedbax is under active development, with a major release planned for Q2 2026.** Feel free to explore, but know that things will soon look somewhat different (and better!).
+> **Feedbax is under active development, with a major release planned for Q2 2026.** Feel free to explore, but know that things will soon look somewhat different (and improved!).
 
 # Getting started
 
