@@ -24,6 +24,7 @@ models/
 *.gif
 *.svg
 !web/public/icon.svg
+!web/src/assets/logo.svg
 img/
 _img/
 data/

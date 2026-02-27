@@ -1,5 +1,4 @@
 import {
-  LayoutPanelLeft,
   Settings,
   User,
   Save,
@@ -7,6 +6,7 @@ import {
   Plus,
   Download,
 } from 'lucide-react';
+import LogoSvg from '@/assets/logo.svg?url';
 import { useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
@@ -105,7 +105,7 @@ export function Header() {
     <header className="relative z-40 h-12 flex items-center justify-between px-4 border-b border-slate-100 bg-white/80 backdrop-blur">
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600">
-          <LayoutPanelLeft className="w-4 h-4 text-brand-500" />
+          <img src={LogoSvg} alt="feedbax studio logo" className="h-7 w-7" />
           FEEDBAX
         </div>
         <div className="h-5 w-px bg-slate-200" />
