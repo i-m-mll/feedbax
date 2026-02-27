@@ -1,3 +1,6 @@
+> [!NOTE]
+> **Feedbax is under active development, with a major new release planned for Q2 2026.** The current version is functional and documented, but the API will change significantly. Feel free to explore — just know that things will look quite different when the new release lands.
+
 # Getting started
 
 Feedbax is a [JAX](https://jax.readthedocs.io/en/latest/beginner_guide.html#beginner-guide) library for optimal feedback control with neural networks.
