@@ -1,11 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="96" fill="#18181b"/>
-  <text
-    x="256" y="380"
-    font-family="'Space Grotesk', 'Inter', system-ui, sans-serif"
-    font-size="400"
-    font-weight="700"
-    fill="#f4f5f7"
-    text-anchor="middle"
-  >F</text>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 741 741" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:1.5;">
+    <rect id="Artboard2" x="0" y="0" width="740.7" height="740.7" style="fill:none;"/>
+    <path d="M193.54,616.352L194.079,184.827L583.536,122.367" style="fill:none;stroke:black;stroke-width:180px;"/>
+    <g>
+        <path d="M278.351,386.66L349.902,386.66" style="fill:none;"/>
+        <path d="M458.351,251.66L278.351,386.66L458.351,521.66L458.351,251.66Z" style="fill:rgb(33,48,130);"/>
+        <path d="M349.902,392.66L278.351,392.66C275.04,392.66 272.351,389.971 272.351,386.66C272.351,383.348 275.04,380.66 278.351,380.66L349.831,380.66L349.902,392.66Z" style="fill:rgb(33,48,130);"/>
+    </g>
+    <path d="M402.188,476.558L402.391,296.559L628.665,296.813L628.463,476.813L402.188,476.558Z" style="fill:rgb(33,48,130);"/>
+    <rect x="111.328" y="498.532" width="172.803" height="172.803" style="fill:white;stroke:black;stroke-width:70px;"/>
+    <circle cx="201.232" cy="192.521" r="93.985" style="fill:white;stroke:black;stroke-width:70px;"/>
 </svg>
