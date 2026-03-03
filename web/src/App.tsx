@@ -3,6 +3,7 @@ import { Header } from '@/components/layout/Header';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { TopShelf } from '@/components/layout/TopShelf';
 import { BottomShelf } from '@/components/layout/BottomShelf';
+import { Divider } from '@/components/layout/Divider';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
 import {
   useLayoutStore,
@@ -10,6 +11,7 @@ import {
   MIN_BOTTOM_HEIGHT,
   MIN_TOP_HEIGHT,
   TOP_COLLAPSED_HEIGHT,
+  DIVIDER_HEIGHT,
 } from '@/stores/layoutStore';
 
 export default function App() {
@@ -48,15 +50,16 @@ export default function App() {
         bottomEffectiveHeight: undefined,
       };
     }
+    const adjustedAvailable = availableHeight - DIVIDER_HEIGHT;
     if (topCollapsed) {
-      const bottom = Math.max(availableHeight - TOP_COLLAPSED_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
+      const bottom = Math.max(adjustedAvailable - TOP_COLLAPSED_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
       return {
         topHeight: TOP_COLLAPSED_HEIGHT,
         bottomEffectiveHeight: bottom,
       };
     }
     if (bottomCollapsed) {
-      const top = Math.max(availableHeight - BOTTOM_COLLAPSED_HEIGHT, MIN_TOP_HEIGHT);
+      const top = Math.max(adjustedAvailable - BOTTOM_COLLAPSED_HEIGHT, MIN_TOP_HEIGHT);
       return {
         topHeight: top,
         bottomEffectiveHeight: BOTTOM_COLLAPSED_HEIGHT,
@@ -64,10 +67,10 @@ export default function App() {
     }
     const clampedBottom = Math.max(
       MIN_BOTTOM_HEIGHT,
-      Math.min(availableHeight - MIN_TOP_HEIGHT, bottomHeight)
+      Math.min(adjustedAvailable - MIN_TOP_HEIGHT, bottomHeight)
     );
     return {
-      topHeight: Math.max(availableHeight - clampedBottom, MIN_TOP_HEIGHT),
+      topHeight: Math.max(adjustedAvailable - clampedBottom, MIN_TOP_HEIGHT),
       bottomEffectiveHeight: clampedBottom,
     };
   }, [availableHeight, topCollapsed, bottomCollapsed, bottomHeight]);
@@ -81,16 +84,14 @@ export default function App() {
           style={{
             gridTemplateRows:
               topHeight === undefined || bottomEffectiveHeight === undefined
-                ? '1fr auto'
-                : `${topHeight}px ${bottomEffectiveHeight}px`,
+                ? '1fr auto auto'
+                : `${topHeight}px ${DIVIDER_HEIGHT}px ${bottomEffectiveHeight}px`,
           }}
         >
           <div className="min-h-0">
-            <TopShelf
-              height={topHeight ?? TOP_COLLAPSED_HEIGHT}
-              availableHeight={availableHeight}
-            />
+            <TopShelf height={topHeight ?? TOP_COLLAPSED_HEIGHT} />
           </div>
+          <Divider availableHeight={availableHeight} />
           <BottomShelf
             height={bottomEffectiveHeight ?? BOTTOM_COLLAPSED_HEIGHT}
             availableHeight={availableHeight}

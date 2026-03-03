@@ -7,7 +7,6 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
-import { ChevronDown } from 'lucide-react';
 
 const tabs = [
   { id: 'validation', label: 'Validation' },
@@ -28,8 +27,7 @@ export function BottomShelf({
   availableHeight: number;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>('validation');
-  const { bottomCollapsed, bottomHeight, toggleBottom, setBottomHeight, topCollapsed } =
-    useLayoutStore();
+  const { bottomCollapsed, toggleBottom } = useLayoutStore();
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [fadeState, setFadeState] = useState({ left: false, right: false });
 
@@ -68,27 +66,8 @@ export function BottomShelf({
       className="relative bg-white/90 backdrop-blur-sm border-t border-slate-100"
       style={{ height }}
     >
-      {!bottomCollapsed && !topCollapsed && (
-        <div
-          className="absolute -top-2 left-1/2 h-4 w-12 -translate-x-1/2 cursor-row-resize rounded-full bg-slate-200/70"
-          onPointerDown={(event) => {
-            const startY = event.clientY;
-            const startHeight = bottomHeight;
-            const onMove = (moveEvent: PointerEvent) => {
-              const delta = startY - moveEvent.clientY;
-              setBottomHeight(startHeight + delta, availableHeight);
-            };
-            const onUp = () => {
-              window.removeEventListener('pointermove', onMove);
-              window.removeEventListener('pointerup', onUp);
-            };
-            window.addEventListener('pointermove', onMove);
-            window.addEventListener('pointerup', onUp);
-          }}
-        />
-      )}
       <div
-        className="flex items-center justify-between px-4 gap-4"
+        className="flex items-center px-4 gap-4"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
         <div className="relative flex-1 min-w-0">
@@ -118,15 +97,6 @@ export function BottomShelf({
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
         </div>
-        <button
-          className="p-1 rounded-full text-slate-500 hover:text-slate-700 hover:bg-slate-100"
-          title={bottomCollapsed ? 'Expand workbench shelf' : 'Collapse workbench shelf'}
-          onClick={() => toggleBottom(availableHeight)}
-        >
-          <ChevronDown
-            className={`w-4 h-4 transition-transform ${bottomCollapsed ? 'rotate-180' : ''}`}
-          />
-        </button>
       </div>
       {!bottomCollapsed && (
         <div
