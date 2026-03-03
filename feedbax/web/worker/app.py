@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Deque, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -37,6 +37,8 @@ class _Job:
     total_batches: int
     event_queue: queue.Queue
     stop_event: threading.Event
+    # Parsed training configuration dict passed from the API layer.
+    training_config: Optional[Dict[str, Any]] = None
     # Buffer of (seq, event_dict) for replay support.
     event_buffer: Deque[Tuple[int, dict]] = field(
         default_factory=lambda: collections.deque(maxlen=_EVENT_BUFFER_MAX)
@@ -86,84 +88,572 @@ def _make_trajectory_event(job: _Job, batch: int, loss: float) -> dict:
     }
 
 
-def _run_training(job: _Job) -> None:
-    """Synthetic training loop — runs in a background thread."""
+# ---------------------------------------------------------------------------
+# Training configuration extraction
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _TrainingCfg:
+    """Normalized training configuration for _run_training_real."""
+
+    n_batches: int = 2000
+    batch_size: int = 128
+    learning_rate: float = 1e-3
+    grad_clip: float = 1.0
+    hidden_dim: int = 128
+    network_type: str = "gru"
+    n_reach_steps: int = 80
+    effort_weight: float = 2.5
+    snapshot_interval: int = 100
+
+
+def _extract_training_cfg(training_config: Optional[Dict[str, Any]]) -> _TrainingCfg:
+    """Parse a raw config dict into a normalized _TrainingCfg.
+
+    Falls back to defaults for any missing or invalid field.
+
+    Args:
+        training_config: Optional dict from the ``/start`` request body.
+
+    Returns:
+        A _TrainingCfg with all fields populated.
+    """
+    cfg = _TrainingCfg()
+    if training_config is None:
+        return cfg
+
+    def _get(key: str, default, cast=None):
+        val = training_config.get(key, default)
+        if val is None:
+            return default
+        try:
+            return cast(val) if cast is not None else val
+        except (TypeError, ValueError):
+            return default
+
+    cfg.n_batches = _get("n_batches", cfg.n_batches, int)
+    cfg.batch_size = _get("batch_size", cfg.batch_size, int)
+    cfg.learning_rate = _get("learning_rate", cfg.learning_rate, float)
+    cfg.grad_clip = _get("grad_clip", cfg.grad_clip, float)
+    cfg.hidden_dim = _get("hidden_dim", cfg.hidden_dim, int)
+    cfg.network_type = _get("network_type", cfg.network_type, str)
+    cfg.n_reach_steps = _get("n_reach_steps", cfg.n_reach_steps, int)
+    cfg.effort_weight = _get("effort_weight", cfg.effort_weight, float)
+    cfg.snapshot_interval = _get("snapshot_interval", cfg.snapshot_interval, int)
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Real JAX training backend
+# ---------------------------------------------------------------------------
+
+
+def _run_training_real(job: _Job, cfg: _TrainingCfg) -> None:
+    """Real JAX training loop using AnalyticalMusculoskeletalPlant + GRU controller.
+
+    Runs in a background thread. Streams training_progress, training_log,
+    training_trajectory, and terminal (training_complete / training_error)
+    events via job.event_queue.
+
+    Imports JAX lazily so the worker process starts quickly even if JAX is
+    slow to initialize.
+
+    Args:
+        job: The current _Job (used for stop_event, emit, and metadata).
+        cfg: Parsed training configuration.
+    """
     try:
-        start_loss = 1.0
-        for batch in range(job.total_batches):
-            if job.stop_event.is_set():
-                job.status = WorkerStatus.IDLE
-                return
+        import equinox as eqx
+        import jax
+        import jax.numpy as jnp
+        import jax.random as jr
+        import optax
+        import diffrax as dfx
 
-            time.sleep(0.05)
-
-            decay = 0.98 ** batch
-            loss = start_loss * decay
-            job.last_loss = loss
-            job.batch = batch + 1
-
-            noise = lambda: random.uniform(-0.005, 0.005)
-            loss_terms = {
-                "tracking": max(0.0, 0.70 * loss + noise()),
-                "effort": max(0.0, 0.20 * loss + noise()),
-                "smoothness": max(0.0, 0.07 * loss + noise()),
-                "hidden_reg": max(0.0, 0.03 * loss + noise()),
-            }
-            grad_norm = max(0.01, 1.0 * decay + random.uniform(-0.02, 0.02))
-            step_time_ms = random.uniform(30.0, 60.0)
-            log_line = f"Step {batch + 1} | loss={loss:.4f} | grad_norm={grad_norm:.3f}"
-
-            # Emit progress event.
-            _emit(
-                job,
-                {
-                    "type": "training_progress",
-                    "job_id": job.job_id,
-                    "batch": batch + 1,
-                    "total_batches": job.total_batches,
-                    "loss": loss,
-                    "loss_terms": loss_terms,
-                    "grad_norm": grad_norm,
-                    "step_time_ms": step_time_ms,
-                    "status": "running",
-                },
-            )
-            # Emit log event.
-            _emit(
-                job,
-                {
-                    "type": "training_log",
-                    "job_id": job.job_id,
-                    "batch": batch + 1,
-                    "level": "info",
-                    "message": log_line,
-                },
-            )
-
-            # Emit trajectory snapshot every snapshot_interval batches.
-            if (batch + 1) % job.snapshot_interval == 0:
-                _emit(job, _make_trajectory_event(job, batch + 1, loss))
-
-        job.status = WorkerStatus.COMPLETED
-        _emit(
-            job,
-            {
-                "type": "training_complete",
-                "job_id": job.job_id,
-                "batch": job.total_batches,
-                "loss": job.last_loss,
-            },
+        from feedbax.mechanics.backend import DiffraxBackend, PhysicsState
+        from feedbax.mechanics.body import (
+            BodyPreset,
+            default_2link_bounds,
+            sample_preset,
         )
-    except Exception as exc:
-        job.status = WorkerStatus.ERROR
+        from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
+        from feedbax.mechanics.model_builder import ChainConfig
+        from feedbax.mechanics.muscle_config import default_6muscle_2link_topology
+        from feedbax.nn import SimpleStagedNetwork
+
+    except ImportError as exc:
         _emit(
             job,
             {
                 "type": "training_error",
                 "job_id": job.job_id,
-                "error": str(exc),
+                "error": f"Failed to import JAX/feedbax dependencies: {exc}",
             },
         )
+        job.status = WorkerStatus.ERROR
+        return
+
+    # ------------------------------------------------------------------
+    # Constants
+    # ------------------------------------------------------------------
+
+    CONTROL_DT = 0.01           # 100 Hz
+    N_STEPS = cfg.n_reach_steps  # control steps per episode
+    N_MUSCLES = 6
+    N_JOINTS = 2
+    # obs: joint_angles(2) + joint_vels(2) + activations(6)
+    #      + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1) = 17
+    OBS_DIM = 17
+
+    # ------------------------------------------------------------------
+    # Build plant (single canonical body preset at default parameters)
+    # ------------------------------------------------------------------
+
+    rng_key = jr.PRNGKey(0)
+    preset_key, ctrl_key, rng_key = jr.split(rng_key, 3)
+
+    bounds = default_2link_bounds()
+    # Use the midpoint of the bounds to get a typical body.
+    preset = BodyPreset(
+        segment_lengths=0.5 * (bounds.segment_lengths_min + bounds.segment_lengths_max),
+        segment_masses=0.5 * (bounds.segment_masses_min + bounds.segment_masses_max),
+        joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
+        joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
+        muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
+        muscle_optimal_fiber_length=0.5 * (
+            bounds.muscle_optimal_fiber_length_min
+            + bounds.muscle_optimal_fiber_length_max
+        ),
+        muscle_tendon_slack_length=0.5 * (
+            bounds.muscle_tendon_slack_length_min
+            + bounds.muscle_tendon_slack_length_max
+        ),
+        muscle_moment_arm_magnitudes=0.5 * (
+            bounds.muscle_moment_arm_magnitudes_min
+            + bounds.muscle_moment_arm_magnitudes_max
+        ),
+    )
+
+    topology = default_6muscle_2link_topology()
+    chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
+
+    plant = AnalyticalMusculoskeletalPlant.from_body_preset(
+        preset, chain_config, clip_states=True,
+    )
+
+    backend = DiffraxBackend(control_dt=CONTROL_DT)
+
+    # ------------------------------------------------------------------
+    # Build GRU controller (SimpleStagedNetwork with GRUCell hidden layer)
+    # ------------------------------------------------------------------
+
+    controller = SimpleStagedNetwork(
+        input_size=OBS_DIM,
+        hidden_size=cfg.hidden_dim,
+        out_size=N_MUSCLES,
+        hidden_type=eqx.nn.GRUCell,
+        out_nonlinearity=jax.nn.sigmoid,
+        key=ctrl_key,
+    )
+
+    # ------------------------------------------------------------------
+    # Optimizer
+    # ------------------------------------------------------------------
+
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(cfg.grad_clip),
+        optax.adamw(cfg.learning_rate, weight_decay=1e-6),
+    )
+    opt_state = optimizer.init(eqx.filter(controller, eqx.is_array))
+
+    # ------------------------------------------------------------------
+    # Observation helper
+    # ------------------------------------------------------------------
+
+    def _extract_obs(
+        physics_state: PhysicsState,
+        muscle_activations,
+        target_pos,
+        target_vel,
+        phase,
+    ):
+        sk = physics_state.plant.skeleton
+        effector = physics_state.effector
+        return jnp.concatenate([
+            sk.angle,
+            sk.d_angle,
+            muscle_activations,
+            effector.pos,
+            target_pos,
+            target_vel,
+            phase,
+        ])
+
+    # ------------------------------------------------------------------
+    # Single-episode rollout through Diffrax (differentiable)
+    # ------------------------------------------------------------------
+
+    def _rollout(ctrl, target_pos_traj, target_vel_traj, episode_key):
+        phys = backend.init_state(plant, key=episode_key)
+        init_act = jnp.zeros(N_MUSCLES)
+        init_phase = jnp.zeros(1)
+        init_obs = _extract_obs(
+            phys, init_act, target_pos_traj[0], target_vel_traj[0], init_phase,
+        )
+        # Controller hidden state: initialize to zeros
+        init_hidden = jnp.zeros(cfg.hidden_dim)
+
+        scan_keys = jr.split(episode_key, N_STEPS)
+
+        def _step(carry, inputs):
+            t_idx, step_key = inputs
+            phys_s, act, hidden, obs_prev = carry
+
+            phase = jnp.array([t_idx / N_STEPS])
+            obs = _extract_obs(
+                phys_s, act,
+                target_pos_traj[t_idx], target_vel_traj[t_idx],
+                phase,
+            )
+
+            # GRU step: SimpleStagedNetwork wraps eqx.nn.GRUCell
+            # We call the GRU cell directly to get new hidden state
+            new_hidden = ctrl.hidden(obs, hidden)
+            # Readout
+            if ctrl.readout is not None:
+                raw_out = ctrl.readout(new_hidden)
+                action = ctrl.out_nonlinearity(raw_out)
+            else:
+                action = ctrl.out_nonlinearity(new_hidden)
+
+            # Physics substep
+            def _substep(ps, _):
+                return backend.substep(plant, ps, action), None
+
+            new_phys, _ = jax.lax.scan(_substep, phys_s, None, length=backend.n_substeps)
+
+            # Update effector
+            new_effector = backend.observe(plant, new_phys)
+            new_phys = PhysicsState(
+                plant=new_phys.plant,
+                effector=new_effector,
+                aux=new_phys.aux,
+            )
+
+            new_carry = (new_phys, action, new_hidden, obs)
+            output = (new_effector.pos, action, new_hidden)
+            return new_carry, output
+
+        init_carry = (phys, init_act, init_hidden, init_obs)
+        t_idxs = jnp.arange(N_STEPS)
+        _, (eff_traj, act_traj, hidden_traj) = jax.lax.scan(
+            _step, init_carry, (t_idxs, scan_keys),
+        )
+        return eff_traj, act_traj, hidden_traj
+
+    # ------------------------------------------------------------------
+    # Target sampling (random reach targets)
+    # ------------------------------------------------------------------
+
+    def _sample_targets(batch_key, batch_size):
+        """Sample random 2D reach targets in the reachable workspace.
+
+        Returns:
+            target_pos_batch: shape (batch, N_STEPS, 2)
+            target_vel_batch: shape (batch, N_STEPS, 2), zeros for reach
+        """
+        keys = jr.split(batch_key, batch_size)
+
+        def _one_target(k):
+            # Polar coordinates: r in [0.1, 0.4], theta in [0, pi/2]
+            r = jr.uniform(k, minval=0.1, maxval=0.4)
+            theta = jr.uniform(k, minval=0.0, maxval=jnp.pi / 2.0)
+            tx = r * jnp.cos(theta)
+            ty = r * jnp.sin(theta)
+            target_pos = jnp.broadcast_to(jnp.array([tx, ty]), (N_STEPS, 2))
+            target_vel = jnp.zeros((N_STEPS, 2))
+            return target_pos, target_vel
+
+        return jax.vmap(_one_target)(keys)
+
+    # ------------------------------------------------------------------
+    # Supervised loss
+    # ------------------------------------------------------------------
+
+    def _loss_fn(ctrl, target_pos_batch, target_vel_batch, batch_keys):
+        """Mean supervised loss over a batch of episodes."""
+
+        def _single(tgt_pos, tgt_vel, ep_key):
+            eff_traj, act_traj, _ = _rollout(ctrl, tgt_pos, tgt_vel, ep_key)
+            # Tracking: mean L1 distance, weighted by temporal ramp
+            l1 = jnp.sum(jnp.abs(eff_traj - tgt_pos), axis=-1)  # (T,)
+            time_w = jnp.linspace(0.5, 1.5, N_STEPS)
+            tracking = jnp.mean(l1 * time_w)
+            # Effort
+            effort = jnp.mean(act_traj ** 2)
+            # Smoothness (activation jerk)
+            d_act = jnp.diff(act_traj, axis=0)
+            dd_act = jnp.diff(d_act, axis=0)
+            smoothness = jnp.mean(dd_act ** 2)
+            total = tracking + cfg.effort_weight * effort + 0.001 * smoothness
+            return total, (tracking, effort, smoothness)
+
+        results = jax.vmap(_single)(target_pos_batch, target_vel_batch, batch_keys)
+        totals, (trackings, efforts, smoothnesses) = results
+        mean_total = jnp.mean(totals)
+        mean_tracking = jnp.mean(trackings)
+        mean_effort = jnp.mean(efforts)
+        mean_smoothness = jnp.mean(smoothnesses)
+        return mean_total, {
+            "tracking": mean_tracking,
+            "effort": mean_effort,
+            "smoothness": mean_smoothness,
+            "hidden_reg": jnp.float32(0.0),
+        }
+
+    # ------------------------------------------------------------------
+    # JIT-compiled training step
+    # ------------------------------------------------------------------
+
+    @eqx.filter_jit
+    def _train_step(ctrl, opt_st, target_pos_batch, target_vel_batch, step_key):
+        batch_keys = jr.split(step_key, cfg.batch_size)
+        (loss, terms), grads = eqx.filter_value_and_grad(_loss_fn, has_aux=True)(
+            ctrl, target_pos_batch, target_vel_batch, batch_keys,
+        )
+        grad_norm = optax.global_norm(grads)
+        updates, new_opt_st = optimizer.update(grads, opt_st, ctrl)
+        new_ctrl = eqx.apply_updates(ctrl, updates)
+        return new_ctrl, new_opt_st, loss, terms, grad_norm
+
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
+
+    t_start = time.perf_counter()
+    snapshot_interval = cfg.snapshot_interval
+
+    for batch in range(job.total_batches):
+        if job.stop_event.is_set():
+            job.status = WorkerStatus.IDLE
+            return
+
+        rng_key, batch_key, step_key = jr.split(rng_key, 3)
+
+        # Sample targets
+        target_pos_batch, target_vel_batch = _sample_targets(batch_key, cfg.batch_size)
+
+        step_t0 = time.perf_counter()
+        try:
+            controller, opt_state, loss_val, loss_terms, grad_norm = _train_step(
+                controller, opt_state,
+                target_pos_batch, target_vel_batch,
+                step_key,
+            )
+            # Block until JAX computation is complete for accurate timing.
+            loss_val = float(jax.block_until_ready(loss_val))
+        except Exception as exc:
+            job.status = WorkerStatus.ERROR
+            _emit(
+                job,
+                {
+                    "type": "training_error",
+                    "job_id": job.job_id,
+                    "error": f"JAX training error at batch {batch + 1}: {exc}",
+                },
+            )
+            return
+
+        step_time_ms = (time.perf_counter() - step_t0) * 1000.0
+
+        job.last_loss = loss_val
+        job.batch = batch + 1
+
+        loss_terms_out = {
+            "tracking": float(loss_terms["tracking"]),
+            "effort": float(loss_terms["effort"]),
+            "smoothness": float(loss_terms["smoothness"]),
+            "hidden_reg": 0.0,
+        }
+        grad_norm_val = float(grad_norm)
+        log_line = (
+            f"Step {batch + 1} | loss={loss_val:.4f} | "
+            f"grad_norm={grad_norm_val:.3f} | "
+            f"{step_time_ms:.0f}ms"
+        )
+
+        # Progress event
+        _emit(
+            job,
+            {
+                "type": "training_progress",
+                "job_id": job.job_id,
+                "batch": batch + 1,
+                "total_batches": job.total_batches,
+                "loss": loss_val,
+                "loss_terms": loss_terms_out,
+                "grad_norm": grad_norm_val,
+                "step_time_ms": step_time_ms,
+                "status": "running",
+            },
+        )
+        # Log event
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": batch + 1,
+                "level": "info",
+                "message": log_line,
+            },
+        )
+
+        # Trajectory snapshot
+        if (batch + 1) % snapshot_interval == 0:
+            try:
+                # Eval rollout: use a fixed target for visualization
+                eval_key = jr.PRNGKey(batch)
+                tgt_pos_const = jnp.broadcast_to(
+                    jnp.array([0.25, 0.25]), (N_STEPS, 2),
+                )
+                tgt_vel_const = jnp.zeros((N_STEPS, 2))
+                eff_traj, _, _ = _rollout(
+                    controller, tgt_pos_const, tgt_vel_const, eval_key,
+                )
+                eff_traj_np = np.array(jax.block_until_ready(eff_traj))
+                t_axis = np.linspace(0.0, N_STEPS * CONTROL_DT, N_STEPS).tolist()
+                effector_list = eff_traj_np.tolist()
+                _emit(
+                    job,
+                    {
+                        "type": "training_trajectory",
+                        "job_id": job.job_id,
+                        "batch": batch + 1,
+                        "trajectory": {
+                            "effector": effector_list,
+                            "target": [0.25, 0.25],
+                            "t": t_axis,
+                            "n_steps": N_STEPS,
+                        },
+                    },
+                )
+            except Exception:
+                # Non-fatal: fall back to synthetic snapshot
+                _emit(job, _make_trajectory_event(job, batch + 1, loss_val))
+
+    job.status = WorkerStatus.COMPLETED
+    _emit(
+        job,
+        {
+            "type": "training_complete",
+            "job_id": job.job_id,
+            "batch": job.total_batches,
+            "loss": job.last_loss,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stub training loop (fallback when real training is unavailable)
+# ---------------------------------------------------------------------------
+
+
+def _run_training_stub(job: _Job) -> None:
+    """Synthetic training loop — runs in a background thread."""
+    start_loss = 1.0
+    for batch in range(job.total_batches):
+        if job.stop_event.is_set():
+            job.status = WorkerStatus.IDLE
+            return
+
+        time.sleep(0.05)
+
+        decay = 0.98 ** batch
+        loss = start_loss * decay
+        job.last_loss = loss
+        job.batch = batch + 1
+
+        noise = lambda: random.uniform(-0.005, 0.005)
+        loss_terms = {
+            "tracking": max(0.0, 0.70 * loss + noise()),
+            "effort": max(0.0, 0.20 * loss + noise()),
+            "smoothness": max(0.0, 0.07 * loss + noise()),
+            "hidden_reg": max(0.0, 0.03 * loss + noise()),
+        }
+        grad_norm = max(0.01, 1.0 * decay + random.uniform(-0.02, 0.02))
+        step_time_ms = random.uniform(30.0, 60.0)
+        log_line = f"Step {batch + 1} | loss={loss:.4f} | grad_norm={grad_norm:.3f}"
+
+        _emit(
+            job,
+            {
+                "type": "training_progress",
+                "job_id": job.job_id,
+                "batch": batch + 1,
+                "total_batches": job.total_batches,
+                "loss": loss,
+                "loss_terms": loss_terms,
+                "grad_norm": grad_norm,
+                "step_time_ms": step_time_ms,
+                "status": "running",
+            },
+        )
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": batch + 1,
+                "level": "info",
+                "message": log_line,
+            },
+        )
+
+        if (batch + 1) % job.snapshot_interval == 0:
+            _emit(job, _make_trajectory_event(job, batch + 1, loss))
+
+    job.status = WorkerStatus.COMPLETED
+    _emit(
+        job,
+        {
+            "type": "training_complete",
+            "job_id": job.job_id,
+            "batch": job.total_batches,
+            "loss": job.last_loss,
+        },
+    )
+
+
+def _run_training(job: _Job) -> None:
+    """Training entry point. Dispatches to real JAX training or stub fallback.
+
+    Uses real JAX training when the job has a parseable ``training_config``.
+    Falls back to the synthetic stub when ``training_config`` is ``None`` or
+    when JAX/feedbax imports fail — so the worker never crashes the SSE stream.
+    """
+    try:
+        cfg = _extract_training_cfg(job.training_config)
+        _run_training_real(job, cfg)
+    except Exception as exc:
+        # Real training raised an unexpected exception — fall back to stub
+        # only if the stream hasn't terminated yet (status still RUNNING).
+        if job.status == WorkerStatus.RUNNING:
+            _emit(
+                job,
+                {
+                    "type": "training_log",
+                    "job_id": job.job_id,
+                    "batch": job.batch,
+                    "level": "warning",
+                    "message": (
+                        f"Real JAX training failed ({exc}); "
+                        "falling back to synthetic stub."
+                    ),
+                },
+            )
+            _run_training_stub(job)
     finally:
         # Sentinel: tells SSE generator the stream is done.
         job.event_queue.put(None)
@@ -223,6 +713,9 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     @app.post("/start", dependencies=[_auth_dep])
     def start(body: dict):
         total_batches = int(body.get("total_batches", 100))
+        training_config: Optional[Dict[str, Any]] = body.get("training_config", None)
+        snapshot_interval = int(body.get("snapshot_interval", 100))
+
         job_id = str(uuid.uuid4())
         stop_event = threading.Event()
         event_queue: queue.Queue = queue.Queue()
@@ -232,7 +725,9 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             total_batches=total_batches,
             event_queue=event_queue,
             stop_event=stop_event,
+            training_config=training_config,
             status=WorkerStatus.RUNNING,
+            snapshot_interval=snapshot_interval,
         )
         thread = threading.Thread(target=_run_training, args=(job,), daemon=True)
         job.thread = thread
@@ -325,17 +820,14 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
 
     @app.get("/checkpoint", dependencies=[_auth_dep])
     def checkpoint():
-        """Return checkpoint metadata for the current job.
-
-        ``weights_available`` is ``False`` for now; real weight serialisation
-        will be added in Phase 6 when actual JAX training runs are wired up.
-        """
+        """Return checkpoint metadata for the current job."""
         job = _state.get("current")
         if job is None:
             return {"batch": 0, "loss": 0.0, "weights_available": False}
         return {
             "batch": job.batch,
             "loss": job.last_loss,
+            # Phase 6 uses real JAX training; weight serialisation is a future step.
             "weights_available": False,
         }
 

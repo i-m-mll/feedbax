@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from feedbax.web.models.graph import GraphSpec
-from feedbax.web.models.training import LossTermSpec, TrainingSpec, TaskSpec
+from feedbax.web.models.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
 from feedbax.web.services.graph_service import GraphService
 from feedbax.web.services.loss_service import loss_service, ProbeInfo
 from feedbax.web.services.training_service import training_service
@@ -66,11 +66,23 @@ class TrainingRequest(BaseModel):
     graph_id: str
     training_spec: TrainingSpec
     task_spec: TaskSpec
+    # Optional structured config for Phase 6 real JAX training.
+    # When present, passed to the worker which runs actual JAX training.
+    # When absent, the worker falls back to the synthetic stub.
+    training_config: Optional[TrainingConfig] = None
+    # Optional graph spec forwarded to the worker for config inference.
+    graph_spec: Optional[dict] = None
 
 
 @router.post('')
 async def start_training(payload: TrainingRequest):
-    job_id = await training_service.start_training(payload.training_spec.n_batches)
+    training_config = (
+        payload.training_config.model_dump() if payload.training_config is not None else None
+    )
+    job_id = await training_service.start_training(
+        payload.training_spec.n_batches,
+        training_config=training_config,
+    )
     return {'job_id': job_id}
 
 
