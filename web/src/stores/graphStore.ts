@@ -1020,6 +1020,7 @@ export interface GraphSnapshot {
   uiState: GraphUIState;
   graphId: string | null;
   isDirty: boolean;
+  lastSavedAt: string | null;
   graphStack: GraphLayer[];
   currentGraphLabel: string;
   currentContext: string;
@@ -1140,6 +1141,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentGraphLabel: snapshot.currentGraphLabel,
       currentContext: snapshot.currentContext,
       isDirty: snapshot.isDirty,
+      lastSavedAt: snapshot.lastSavedAt,
       past: snapshot.past,
       future: snapshot.future,
       selectedTapId: snapshot.selectedTapId,

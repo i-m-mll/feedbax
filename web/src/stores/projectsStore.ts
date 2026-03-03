@@ -28,6 +28,7 @@ function captureGraphSnapshot(): GraphSnapshot {
     uiState: s.uiState,
     graphId: s.graphId,
     isDirty: s.isDirty,
+    lastSavedAt: s.lastSavedAt,
     graphStack: s.graphStack,
     currentGraphLabel: s.currentGraphLabel,
     currentContext: s.currentContext,
@@ -58,6 +59,7 @@ function makeInitialGraphSnapshot(): GraphSnapshot {
     uiState,
     graphId: null,
     isDirty: false,
+    lastSavedAt: null,
     graphStack: [],
     currentGraphLabel: graph.metadata?.name ?? 'Model',
     currentContext: 'top-level',
@@ -123,10 +125,11 @@ interface ProjectsStoreState {
 }
 
 function buildInitialTab(): OpenTab {
+  const graphSnapshot = captureGraphSnapshot();
   return {
     tabId: generateTabId(),
-    label: captureGraphSnapshot().currentGraphLabel || 'Model',
-    graphSnapshot: captureGraphSnapshot(),
+    label: graphSnapshot.currentGraphLabel || 'Model',
+    graphSnapshot,
     trainingSnapshot: captureTrainingSnapshot(),
   };
 }
@@ -195,6 +198,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         uiState,
         graphId,
         isDirty: false,
+        lastSavedAt: null,
         graphStack: [],
         currentGraphLabel: graph.metadata?.name ?? 'Model',
         currentContext: 'top-level',
@@ -304,10 +308,13 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
   };
 });
 
-// Subscribe to graphStore graph name changes to keep active tab label in sync
+// Subscribe to graphStore graph name changes to keep active tab label in sync.
+// Manual deduplication: only call updateActiveTabLabel when the name actually changes.
+let _lastGraphName = useGraphStore.getState().graph.metadata?.name ?? '';
 useGraphStore.subscribe((state) => {
-  const name = state.graph.metadata?.name;
-  if (name) {
+  const name = state.graph.metadata?.name ?? '';
+  if (name && name !== _lastGraphName) {
+    _lastGraphName = name;
     useProjectsStore.getState().updateActiveTabLabel(name);
   }
 });

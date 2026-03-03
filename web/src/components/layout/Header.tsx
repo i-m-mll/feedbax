@@ -104,7 +104,7 @@ export function Header() {
               <span className="truncate min-w-0">
                 {tab.label}
               </span>
-              {isActive && isDirty && (
+              {(isActive ? isDirty : tab.graphSnapshot.isDirty) && (
                 <span className="flex-none text-amber-500 text-xs leading-none">•</span>
               )}
               {tabs.length > 1 && (
