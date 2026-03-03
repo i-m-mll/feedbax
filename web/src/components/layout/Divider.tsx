@@ -1,6 +1,6 @@
 import React from 'react';
 import { useLayoutStore, DIVIDER_HEIGHT } from '@/stores/layoutStore';
-import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { ChevronUp, ChevronDown } from 'lucide-react';
 
 interface DividerProps {
   availableHeight: number;
@@ -32,7 +32,7 @@ export function Divider({ availableHeight }: DividerProps) {
   return (
     <div
       className="relative flex items-center border-t border-slate-200 bg-white"
-      style={{ height: DIVIDER_HEIGHT }}
+      style={{ height: DIVIDER_HEIGHT, overflow: 'visible' }}
     >
       {/* Drag pill — center, only shown when both expanded */}
       {isDraggable && (
@@ -44,44 +44,27 @@ export function Divider({ availableHeight }: DividerProps) {
         </div>
       )}
 
-      {/* Collapse/expand buttons — right side */}
-      <div className="absolute right-2 flex flex-col items-center gap-0">
-        {topCollapsed ? (
-          /* Top is collapsed: show single restore button */
+      {/* Collapse/expand buttons — right side, straddle the divider line */}
+      <div className="absolute right-3 top-1/2 -translate-y-1/2" style={{ overflow: 'visible' }}>
+        {/* ChevronUp — sits above the line */}
+        {!bottomCollapsed && (
           <button
-            className="p-0.5 text-slate-300 hover:text-slate-500"
-            title="Expand top pane"
+            className="absolute bottom-[6px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+            title={topCollapsed ? 'Expand top pane' : 'Collapse top pane'}
             onClick={() => toggleTop(availableHeight)}
           >
-            <ChevronsUpDown className="w-3.5 h-3.5" />
+            <ChevronUp className="w-3 h-3" />
           </button>
-        ) : bottomCollapsed ? (
-          /* Bottom is collapsed: show single restore button */
+        )}
+        {/* ChevronDown — sits below the line */}
+        {!topCollapsed && (
           <button
-            className="p-0.5 text-slate-300 hover:text-slate-500"
-            title="Expand bottom pane"
+            className="absolute top-[6px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+            title={bottomCollapsed ? 'Expand bottom pane' : 'Collapse bottom pane'}
             onClick={() => toggleBottom(availableHeight)}
           >
-            <ChevronsUpDown className="w-3.5 h-3.5" />
+            <ChevronDown className="w-3 h-3" />
           </button>
-        ) : (
-          /* Both expanded: show ChevronUp (collapse top) and ChevronDown (collapse bottom) */
-          <>
-            <button
-              className="p-0.5 text-slate-300 hover:text-slate-500"
-              title="Collapse top pane"
-              onClick={() => toggleTop(availableHeight)}
-            >
-              <ChevronUp className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="p-0.5 text-slate-300 hover:text-slate-500"
-              title="Collapse bottom pane"
-              onClick={() => toggleBottom(availableHeight)}
-            >
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-          </>
         )}
       </div>
     </div>
