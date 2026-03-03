@@ -1,6 +1,13 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import type { LossTermSpec, ProbeInfo, TrainingSpec, TaskSpec, LossValidationResult } from '@/types/training';
+import type {
+  LossTermSpec,
+  ProbeInfo,
+  TrainingSpec,
+  TaskSpec,
+  TrainingConfig,
+  LossValidationResult,
+} from '@/types/training';
 import type { TrajectoryDataset, TrajectoryMetadata, TrajectoryData } from '@/types/trajectory';
 import type {
   StatisticsResponse,
@@ -61,10 +68,22 @@ export async function exportGraph(graphId: string, format: 'json' | 'python') {
   });
 }
 
-export async function startTraining(graphId: string, trainingSpec: TrainingSpec, taskSpec: TaskSpec) {
+export async function startTraining(
+  graphId: string,
+  trainingSpec: TrainingSpec,
+  taskSpec: TaskSpec,
+  graphSpec?: GraphSpec,
+  trainingConfig?: TrainingConfig,
+) {
   return request<{ job_id: string }>('/api/training', {
     method: 'POST',
-    body: JSON.stringify({ graph_id: graphId, training_spec: trainingSpec, task_spec: taskSpec }),
+    body: JSON.stringify({
+      graph_id: graphId,
+      training_spec: trainingSpec,
+      task_spec: taskSpec,
+      ...(graphSpec !== undefined ? { graph_spec: graphSpec } : {}),
+      ...(trainingConfig !== undefined ? { training_config: trainingConfig } : {}),
+    }),
   });
 }
 

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from feedbax.web.models.graph import ParamSchema, ParamValue
+from feedbax.web.models.graph import GraphSpec, GraphUIState, ParamSchema, ParamValue
 
 
 class PortType(BaseModel):
@@ -37,3 +37,5 @@ class ComponentDefinition(BaseModel):
     default_params: Dict[str, ParamValue] = Field(default_factory=dict)
     port_types: Optional[PortTypeSpec] = None
     is_composite: bool = False
+    template_graph: Optional[GraphSpec] = None
+    template_ui_state: Optional[GraphUIState] = None

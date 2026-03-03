@@ -111,3 +111,34 @@ export const DISCOUNT_LABELS: Record<DiscountType, string> = {
   power: 'Power decay',
   linear: 'Linear decay',
 };
+
+// --- Training request payload types (Phase 6) ---
+
+/**
+ * Derived training configuration extracted from the graph and UI controls.
+ * Sent alongside the full graph_spec so the backend can use it directly
+ * without re-parsing the graph on every start.
+ */
+export interface TrainingConfig {
+  n_batches: number;
+  batch_size: number;
+  learning_rate: number;
+  grad_clip: number;
+  hidden_dim: number;
+  network_type: string;
+  n_reach_steps: number;
+  effort_weight: number;
+}
+
+/**
+ * Full payload sent to POST /api/training.
+ * graph_spec and training_config are optional so that old callers without
+ * the new fields remain compatible.
+ */
+export interface TrainingStartPayload {
+  graph_id: string;
+  training_spec: TrainingSpec;
+  task_spec: TaskSpec;
+  graph_spec?: import('@/types/graph').GraphSpec;
+  training_config?: TrainingConfig;
+}

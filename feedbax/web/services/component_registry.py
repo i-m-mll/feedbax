@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 import importlib.util
 
 from feedbax.web.models.component import ComponentDefinition, PortTypeSpec, PortType
-from feedbax.web.models.graph import ParamSchema
+from feedbax.web.models.graph import ComponentSpec, GraphSpec, GraphUIState, NodeUIState, ParamSchema, WireSpec
 
 if TYPE_CHECKING:
     from feedbax.web.models.graph import ParamValue
@@ -22,6 +22,8 @@ class ComponentMeta:
     icon: str = 'box'
     port_types: Optional[PortTypeSpec] = None
     is_composite: bool = False
+    template_graph: Optional[GraphSpec] = None
+    template_ui_state: Optional[GraphUIState] = None
 
     @property
     def default_params(self) -> Dict[str, ParamValue]:
@@ -406,6 +408,45 @@ class ComponentRegistry:
                         'output': PortType(dtype='vector'),
                         'hidden': PortType(dtype='vector'),
                         'cell': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='GRUOracle',
+                category='Neural Networks',
+                description=(
+                    'GRU-based oracle/policy network that maps observations to '
+                    'muscle excitations. Feedback port accepts previous observation '
+                    'for interface compatibility but the GRU ignores it (uses its '
+                    'hidden state instead).'
+                ),
+                param_schema=[
+                    ParamSchema(
+                        name='hidden_size', type='int',
+                        default=128, min=1, required=True,
+                    ),
+                    ParamSchema(
+                        name='n_layers', type='int',
+                        default=1, min=1, required=False,
+                    ),
+                    ParamSchema(
+                        name='out_size', type='int',
+                        default=6, min=1, required=True,
+                    ),
+                ],
+                input_ports=['input', 'feedback'],
+                output_ports=['output', 'hidden'],
+                icon='BrainCircuit',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'input': PortType(dtype='vector'),
+                        'feedback': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'output': PortType(dtype='vector'),
+                        'hidden': PortType(dtype='vector'),
                     },
                 ),
             )
@@ -813,6 +854,53 @@ class ComponentRegistry:
                         'force_2d': PortType(dtype='vector'),
                         'forces': PortType(dtype='vector'),
                         'activations': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='AnalyticalMusculoskeletalPlant',
+                category='Mechanics',
+                description=(
+                    'Two-link arm musculoskeletal plant with pure JAX Lagrangian '
+                    'dynamics and Hill-type rigid-tendon muscles. Fully '
+                    'differentiable; no MuJoCo dependency. ODE state: 2 joint '
+                    'angles + 2 angular velocities + 6 muscle activations.'
+                ),
+                param_schema=[
+                    ParamSchema(
+                        name='dt', type='float',
+                        default=0.01, min=0.0001, required=True,
+                    ),
+                    ParamSchema(
+                        name='n_steps', type='int',
+                        default=1, min=1, required=False,
+                    ),
+                    ParamSchema(
+                        name='tau_act', type='float',
+                        default=0.01, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='tau_deact', type='float',
+                        default=0.04, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='clip_states', type='bool',
+                        default=True, required=False,
+                    ),
+                ],
+                input_ports=['excitation'],
+                output_ports=['effector', 'state'],
+                icon='Activity',
+                is_composite=False,
+                port_types=PortTypeSpec(
+                    inputs={
+                        'excitation': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'effector': PortType(dtype='vector'),
+                        'state': PortType(dtype='state'),
                     },
                 ),
             )
@@ -1253,6 +1341,311 @@ class ComponentRegistry:
                 ),
             )
         )
+        # --- CDE Controllers ---
+        self._register_cde_templates()
+
+    def _register_cde_templates(self) -> None:
+        """Register CDE subgraph preset templates with their internal template graphs."""
+
+        # NOTE: CDE template graphs use several display-only node types (Input, Subtract,
+        # Reshape, MatMul, Scale, Sigmoid) that are not registered as Studio primitives.
+        # These are used for visual architecture documentation in the nested subgraph preview.
+        # Full executability requires registering those primitives (future work).
+
+        _cde_port_types = PortTypeSpec(
+            inputs={
+                'obs': PortType(dtype='vector'),
+                'obs_prev': PortType(dtype='vector'),
+                'h_prev': PortType(dtype='vector'),
+            },
+            outputs={
+                'h_new': PortType(dtype='vector'),
+                'action': PortType(dtype='vector'),
+            },
+        )
+        _cde_input_ports = ['obs', 'obs_prev', 'h_prev']
+        _cde_output_ports = ['h_new', 'action']
+
+        # ------------------------------------------------------------------ #
+        # Layout constants — mirror the cdeTemplates.ts column/row grid
+        # ------------------------------------------------------------------ #
+        COL0, COL1, COL2, COL3, COL4, COL5, COL6 = 20, 160, 320, 480, 640, 800, 960
+        ROW_TOP, ROW_MID, ROW_BOT = 40, 160, 280
+        COL_GATE = 340
+
+        # ------------------------------------------------------------------ #
+        # Helpers: make ComponentSpec / WireSpec / NodeUIState
+        # ------------------------------------------------------------------ #
+        def _node(type_: str, input_ports: list[str], output_ports: list[str], **params) -> ComponentSpec:
+            return ComponentSpec(type=type_, params=params, input_ports=input_ports, output_ports=output_ports)
+
+        def _wire(src_node: str, src_port: str, tgt_node: str, tgt_port: str) -> WireSpec:
+            return WireSpec(source_node=src_node, source_port=src_port, target_node=tgt_node, target_port=tgt_port)
+
+        def _pos(x: int, y: int) -> NodeUIState:
+            return NodeUIState(position={'x': float(x), 'y': float(y)}, collapsed=False, selected=False)
+
+        # ------------------------------------------------------------------ #
+        # Standard CDE
+        # ------------------------------------------------------------------ #
+        standard_nodes = {
+            'obs_in':      _node('Input',    [],              ['obs']),
+            'obs_prev_in': _node('Input',    [],              ['obs_prev']),
+            'h_prev_in':   _node('Input',    [],              ['h_prev']),
+            'subtract':    _node('Subtract', ['a', 'b'],      ['out']),
+            'vf':          _node('MLP',      ['input'],       ['output'], hidden_size=128, activation='tanh'),
+            'reshape':     _node('Reshape',  ['input'],       ['output']),
+            'matmul':      _node('MatMul',   ['a', 'b'],      ['out']),
+            'sum_h':       _node('Sum',      ['a', 'b'],      ['output']),
+            'linear':      _node('Linear',   ['input'],       ['output']),
+            'sigmoid':     _node('Sigmoid',  ['input'],       ['output']),
+        }
+        standard_wires = [
+            _wire('obs_in',      'obs',      'subtract',  'a'),
+            _wire('obs_prev_in', 'obs_prev', 'subtract',  'b'),
+            _wire('h_prev_in',   'h_prev',   'vf',        'input'),
+            _wire('vf',          'output',   'reshape',   'input'),
+            _wire('reshape',     'output',   'matmul',    'a'),
+            _wire('subtract',    'out',      'matmul',    'b'),
+            _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
+            _wire('matmul',      'out',      'sum_h',     'b'),
+            _wire('sum_h',       'output',   'linear',    'input'),
+            _wire('linear',      'output',   'sigmoid',   'input'),
+        ]
+        standard_ui = GraphUIState(node_states={
+            'obs_in':      _pos(COL0, ROW_TOP),
+            'obs_prev_in': _pos(COL0, ROW_MID),
+            'h_prev_in':   _pos(COL0, ROW_BOT),
+            'subtract':    _pos(COL1, ROW_TOP),
+            'vf':          _pos(COL2, ROW_BOT),
+            'reshape':     _pos(COL3, ROW_BOT),
+            'matmul':      _pos(COL3, ROW_TOP),
+            'sum_h':       _pos(COL4, ROW_MID),
+            'linear':      _pos(COL5, ROW_MID),
+            'sigmoid':     _pos(COL6, ROW_MID),
+        })
+        self.register(ComponentMeta(
+            name='CDE Standard',
+            category='CDE Controllers',
+            description='Basic CDE step: VectorField × dX → h_new, Linear → Sigmoid → action.',
+            param_schema=[],
+            input_ports=_cde_input_ports,
+            output_ports=_cde_output_ports,
+            icon='BrainCircuit',
+            is_composite=True,
+            port_types=_cde_port_types,
+            template_graph=GraphSpec(
+                nodes=standard_nodes,
+                wires=standard_wires,
+                input_ports=_cde_input_ports,
+                output_ports=_cde_output_ports,
+            ),
+            template_ui_state=standard_ui,
+        ))
+
+        # ------------------------------------------------------------------ #
+        # CDE + Decay
+        # ------------------------------------------------------------------ #
+        decay_nodes = {
+            'obs_in':      _node('Input',    [],                 ['obs']),
+            'obs_prev_in': _node('Input',    [],                 ['obs_prev']),
+            'h_prev_in':   _node('Input',    [],                 ['h_prev']),
+            'subtract':    _node('Subtract', ['a', 'b'],         ['out']),
+            'vf':          _node('MLP',      ['input'],          ['output'], hidden_size=128, activation='tanh'),
+            'reshape':     _node('Reshape',  ['input'],          ['output']),
+            'matmul':      _node('MatMul',   ['a', 'b'],         ['out']),
+            'decay':       _node('Scale',    ['input'],          ['output'], scale=-0.1),
+            'sum_h':       _node('Sum',      ['a', 'b', 'c'],    ['output']),
+            'linear':      _node('Linear',   ['input'],          ['output']),
+            'sigmoid':     _node('Sigmoid',  ['input'],          ['output']),
+        }
+        decay_wires = [
+            _wire('obs_in',      'obs',      'subtract',  'a'),
+            _wire('obs_prev_in', 'obs_prev', 'subtract',  'b'),
+            _wire('h_prev_in',   'h_prev',   'vf',        'input'),
+            _wire('vf',          'output',   'reshape',   'input'),
+            _wire('reshape',     'output',   'matmul',    'a'),
+            _wire('subtract',    'out',      'matmul',    'b'),
+            _wire('h_prev_in',   'h_prev',   'decay',     'input'),
+            _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
+            _wire('matmul',      'out',      'sum_h',     'b'),
+            _wire('decay',       'output',   'sum_h',     'c'),
+            _wire('sum_h',       'output',   'linear',    'input'),
+            _wire('linear',      'output',   'sigmoid',   'input'),
+        ]
+        decay_ui = GraphUIState(node_states={
+            'obs_in':      _pos(COL0, ROW_TOP),
+            'obs_prev_in': _pos(COL0, ROW_MID),
+            'h_prev_in':   _pos(COL0, ROW_BOT),
+            'subtract':    _pos(COL1, ROW_TOP),
+            'vf':          _pos(COL2, ROW_BOT),
+            'reshape':     _pos(COL3, ROW_BOT),
+            'matmul':      _pos(COL3, ROW_TOP),
+            'decay':       _pos(COL2, ROW_MID),
+            'sum_h':       _pos(COL4, ROW_MID),
+            'linear':      _pos(COL5, ROW_MID),
+            'sigmoid':     _pos(COL6, ROW_MID),
+        })
+        self.register(ComponentMeta(
+            name='CDE + Decay',
+            category='CDE Controllers',
+            description='CDE with exponential decay: h_new = h_prev + M×dX − decay×h_prev.',
+            param_schema=[],
+            input_ports=_cde_input_ports,
+            output_ports=_cde_output_ports,
+            icon='TrendingUp',
+            is_composite=True,
+            port_types=_cde_port_types,
+            template_graph=GraphSpec(
+                nodes=decay_nodes,
+                wires=decay_wires,
+                input_ports=_cde_input_ports,
+                output_ports=_cde_output_ports,
+            ),
+            template_ui_state=decay_ui,
+        ))
+
+        # ------------------------------------------------------------------ #
+        # CDE + Anti-NF
+        # ------------------------------------------------------------------ #
+        antinf_nodes = {
+            'obs_in':      _node('Input',    [],                 ['obs']),
+            'obs_prev_in': _node('Input',    [],                 ['obs_prev']),
+            'h_prev_in':   _node('Input',    [],                 ['h_prev']),
+            'subtract':    _node('Subtract', ['a', 'b'],         ['out']),
+            'negate_h':    _node('Scale',    ['input'],          ['output'], scale=-1.0),
+            'vf':          _node('MLP',      ['input'],          ['output'], hidden_size=128, activation='tanh'),
+            'reshape':     _node('Reshape',  ['input'],          ['output']),
+            'matmul':      _node('MatMul',   ['a', 'b'],         ['out']),
+            'gru_gate':    _node('GRU',      ['input', 'hidden'], ['output', 'hidden'], hidden_size=64),
+            'alpha':       _node('Scale',    ['input'],          ['output'], scale=0.1),
+            'sum_h':       _node('Sum',      ['a', 'b', 'c'],    ['output']),
+            'linear':      _node('Linear',   ['input'],          ['output']),
+            'sigmoid':     _node('Sigmoid',  ['input'],          ['output']),
+        }
+        antinf_wires = [
+            _wire('obs_in',      'obs',      'subtract',  'a'),
+            _wire('obs_prev_in', 'obs_prev', 'subtract',  'b'),
+            _wire('h_prev_in',   'h_prev',   'vf',        'input'),
+            _wire('vf',          'output',   'reshape',   'input'),
+            _wire('reshape',     'output',   'matmul',    'a'),
+            _wire('subtract',    'out',      'matmul',    'b'),
+            _wire('h_prev_in',   'h_prev',   'negate_h',  'input'),
+            _wire('obs_in',      'obs',      'gru_gate',  'input'),
+            _wire('negate_h',    'output',   'gru_gate',  'hidden'),
+            _wire('gru_gate',    'output',   'alpha',     'input'),
+            _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
+            _wire('matmul',      'out',      'sum_h',     'b'),
+            _wire('alpha',       'output',   'sum_h',     'c'),
+            _wire('sum_h',       'output',   'linear',    'input'),
+            _wire('linear',      'output',   'sigmoid',   'input'),
+        ]
+        antinf_ui = GraphUIState(node_states={
+            'obs_in':      _pos(COL0, ROW_TOP),
+            'obs_prev_in': _pos(COL0, ROW_MID),
+            'h_prev_in':   _pos(COL0, ROW_BOT),
+            'subtract':    _pos(COL1, ROW_TOP),
+            'negate_h':    _pos(COL1, ROW_BOT),
+            'vf':          _pos(COL2, ROW_MID),
+            'reshape':     _pos(COL3, ROW_TOP),
+            'matmul':      _pos(COL3, ROW_TOP + 80),
+            'gru_gate':    _pos(COL_GATE, ROW_BOT),
+            'alpha':       _pos(COL4, ROW_BOT),
+            'sum_h':       _pos(COL4 + 80, ROW_MID),
+            'linear':      _pos(COL5, ROW_MID),
+            'sigmoid':     _pos(COL6, ROW_MID),
+        })
+        self.register(ComponentMeta(
+            name='CDE + Anti-NF',
+            category='CDE Controllers',
+            description='CDE with Anti-NF gate: GRU(obs, −h) × α provides gated feedback correction.',
+            param_schema=[],
+            input_ports=_cde_input_ports,
+            output_ports=_cde_output_ports,
+            icon='BrainCog',
+            is_composite=True,
+            port_types=_cde_port_types,
+            template_graph=GraphSpec(
+                nodes=antinf_nodes,
+                wires=antinf_wires,
+                input_ports=_cde_input_ports,
+                output_ports=_cde_output_ports,
+            ),
+            template_ui_state=antinf_ui,
+        ))
+
+        # ------------------------------------------------------------------ #
+        # CDE Hybrid v9b
+        # ------------------------------------------------------------------ #
+        hybrid_nodes = {
+            'obs_in':      _node('Input',    [],                       ['obs']),
+            'obs_prev_in': _node('Input',    [],                       ['obs_prev']),
+            'h_prev_in':   _node('Input',    [],                       ['h_prev']),
+            'subtract':    _node('Subtract', ['a', 'b'],               ['out']),
+            'vf':          _node('MLP',      ['input'],                ['output'], hidden_size=128, activation='tanh'),
+            'reshape':     _node('Reshape',  ['input'],                ['output']),
+            'matmul':      _node('MatMul',   ['a', 'b'],               ['out']),
+            'decay':       _node('Scale',    ['input'],                ['output'], scale=-0.1),
+            'negate_h':    _node('Scale',    ['input'],                ['output'], scale=-1.0),
+            'gru_gate':    _node('GRU',      ['input', 'hidden'],      ['output', 'hidden'], hidden_size=64),
+            'alpha':       _node('Scale',    ['input'],                ['output'], scale=0.1),
+            'sum_h':       _node('Sum',      ['a', 'b', 'c', 'd'],     ['output']),
+            'linear':      _node('Linear',   ['input'],                ['output']),
+            'sigmoid':     _node('Sigmoid',  ['input'],                ['output']),
+        }
+        hybrid_wires = [
+            _wire('obs_in',      'obs',      'subtract',  'a'),
+            _wire('obs_prev_in', 'obs_prev', 'subtract',  'b'),
+            _wire('h_prev_in',   'h_prev',   'vf',        'input'),
+            _wire('vf',          'output',   'reshape',   'input'),
+            _wire('reshape',     'output',   'matmul',    'a'),
+            _wire('subtract',    'out',      'matmul',    'b'),
+            _wire('h_prev_in',   'h_prev',   'decay',     'input'),
+            _wire('h_prev_in',   'h_prev',   'negate_h',  'input'),
+            _wire('obs_in',      'obs',      'gru_gate',  'input'),
+            _wire('negate_h',    'output',   'gru_gate',  'hidden'),
+            _wire('gru_gate',    'output',   'alpha',     'input'),
+            _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
+            _wire('matmul',      'out',      'sum_h',     'b'),
+            _wire('decay',       'output',   'sum_h',     'c'),
+            _wire('alpha',       'output',   'sum_h',     'd'),
+            _wire('sum_h',       'output',   'linear',    'input'),
+            _wire('linear',      'output',   'sigmoid',   'input'),
+        ]
+        hybrid_ui = GraphUIState(node_states={
+            'obs_in':      _pos(COL0, ROW_TOP),
+            'obs_prev_in': _pos(COL0, ROW_MID),
+            'h_prev_in':   _pos(COL0, ROW_BOT),
+            'subtract':    _pos(COL1, ROW_TOP),
+            'vf':          _pos(COL1, ROW_BOT),
+            'reshape':     _pos(COL2, ROW_BOT),
+            'matmul':      _pos(COL2, ROW_TOP),
+            'decay':       _pos(COL2, ROW_MID),
+            'negate_h':    _pos(COL2, ROW_BOT + 80),
+            'gru_gate':    _pos(COL3, ROW_BOT + 80),
+            'alpha':       _pos(COL4, ROW_BOT + 80),
+            'sum_h':       _pos(COL4, ROW_MID),
+            'linear':      _pos(COL5, ROW_MID),
+            'sigmoid':     _pos(COL6, ROW_MID),
+        })
+        self.register(ComponentMeta(
+            name='CDE Hybrid v9b',
+            category='CDE Controllers',
+            description='Production architecture: fixed-decay floor + Anti-NF gate (v9b hybrid).',
+            param_schema=[],
+            input_ports=_cde_input_ports,
+            output_ports=_cde_output_ports,
+            icon='Sparkles',
+            is_composite=True,
+            port_types=_cde_port_types,
+            template_graph=GraphSpec(
+                nodes=hybrid_nodes,
+                wires=hybrid_wires,
+                input_ports=_cde_input_ports,
+                output_ports=_cde_output_ports,
+            ),
+            template_ui_state=hybrid_ui,
+        ))
 
     def register(self, meta: ComponentMeta) -> None:
         self._components[meta.name] = meta
@@ -1324,4 +1717,6 @@ class ComponentRegistry:
             default_params=meta.default_params,
             port_types=meta.port_types,
             is_composite=meta.is_composite,
+            template_graph=meta.template_graph,
+            template_ui_state=meta.template_ui_state,
         )

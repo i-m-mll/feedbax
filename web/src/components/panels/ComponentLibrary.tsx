@@ -43,7 +43,6 @@ import { useComponents } from '@/hooks/useComponents';
 import { useGraphStore } from '@/stores/graphStore';
 import type { ComponentDefinition } from '@/types/components';
 import { groupComponentsByCategory } from '@/utils/components';
-import { CDE_TEMPLATES, type CdeSubgraphTemplate } from '@/lib/cdeTemplates';
 import clsx from 'clsx';
 
 const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
@@ -103,8 +102,6 @@ export function ComponentLibrary() {
   );
   const { components, isLoading, error } = useComponents();
   const currentContext = useGraphStore((state) => state.currentContext);
-  const addSubgraphNode = useGraphStore((state) => state.addSubgraphNode);
-  const uiViewport = useGraphStore((state) => state.uiState.viewport);
   const isExclusiveContext = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
   const coreComponents = useMemo(
     () => components.filter((component) => component.name === 'Subgraph'),
@@ -171,29 +168,6 @@ export function ComponentLibrary() {
     });
   };
 
-  /** Compute a flow-space position near the current viewport center for click-to-insert. */
-  const insertPosition = useMemo(() => {
-    // Convert viewport center to flow coordinates.
-    // Flow position = (screen - pan) / zoom. We use a nominal 800×600 canvas estimate.
-    const CANVAS_W = 800;
-    const CANVAS_H = 600;
-    return {
-      x: (CANVAS_W / 2 - uiViewport.x) / uiViewport.zoom,
-      y: (CANVAS_H / 2 - uiViewport.y) / uiViewport.zoom,
-    };
-  }, [uiViewport]);
-
-  const [cdeSectionExpanded, setCdeSectionExpanded] = useState(true);
-
-  const filteredCdeTemplates = useMemo(() => {
-    if (!search) return CDE_TEMPLATES;
-    const lower = search.toLowerCase();
-    return CDE_TEMPLATES.filter(
-      (t) =>
-        t.name.toLowerCase().includes(lower) || t.description.toLowerCase().includes(lower)
-    );
-  }, [search]);
-
   return (
     <div className="flex flex-col h-full overflow-x-hidden">
       <div className="px-4 pb-4">
@@ -230,33 +204,6 @@ export function ComponentLibrary() {
                 <ComponentCard key={component.name} component={component} />
               ))}
             </div>
-          </div>
-        )}
-        {/* CDE Controllers — template-driven subgraph nodes */}
-        {filteredCdeTemplates.length > 0 && currentContext !== 'penzai' && (
-          <div className="space-y-2">
-            <button
-              onClick={() => setCdeSectionExpanded((v) => !v)}
-              className="w-full flex items-center justify-between text-left text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]"
-            >
-              CDE Controllers
-              {cdeSectionExpanded ? (
-                <ChevronDown className="w-3 h-3" />
-              ) : (
-                <ChevronRight className="w-3 h-3" />
-              )}
-            </button>
-            {cdeSectionExpanded && (
-              <div className="space-y-2">
-                {filteredCdeTemplates.map((template) => (
-                  <CdeTemplateCard
-                    key={template.name}
-                    template={template}
-                    onInsert={() => addSubgraphNode(template, insertPosition)}
-                  />
-                ))}
-              </div>
-            )}
           </div>
         )}
         {/* Suggested for context */}
@@ -325,6 +272,8 @@ function CategorySection({
 
 function ComponentCard({ component }: { component: ComponentDefinition }) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
+  // Components with a template_graph are CDE presets: use violet accent to match old styling.
+  const isCdeTemplate = Boolean(component.template_graph);
 
   const onDragStart = (event: DragEvent<HTMLDivElement>) => {
     event.dataTransfer.setData('application/feedbax-component', component.name);
@@ -336,18 +285,32 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
       draggable
       onDragStart={onDragStart}
       className={clsx(
-        'rounded-xl border border-slate-100 bg-white/90 p-3 shadow-soft cursor-grab transition',
-        'hover:border-slate-200 hover:-translate-y-0.5'
+        'rounded-xl bg-white/90 p-3 shadow-soft cursor-grab transition',
+        isCdeTemplate
+          ? 'border border-violet-100 hover:border-violet-300 hover:-translate-y-0.5 hover:shadow'
+          : 'border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5'
       )}
     >
       <div className="flex items-center gap-2">
-        <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
-          <Icon className="w-5 h-5 text-slate-600" />
+        <div
+          className={clsx(
+            'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
+            isCdeTemplate ? 'bg-violet-50' : 'bg-slate-100'
+          )}
+        >
+          <Icon
+            className={clsx('w-5 h-5', isCdeTemplate ? 'text-violet-500' : 'text-slate-600')}
+          />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="text-sm font-semibold text-slate-800 truncate">{component.name}</div>
-            {component.is_composite && (
+            {isCdeTemplate && (
+              <span className="shrink-0 rounded-full bg-violet-50 border border-violet-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-500">
+                Subgraph
+              </span>
+            )}
+            {!isCdeTemplate && component.is_composite && (
               <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
                 Composite
               </span>
@@ -357,41 +320,5 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
         </div>
       </div>
     </div>
-  );
-}
-
-function CdeTemplateCard({
-  template,
-  onInsert,
-}: {
-  template: CdeSubgraphTemplate;
-  onInsert: () => void;
-}) {
-  const Icon = iconMap[template.icon as keyof typeof iconMap] ?? BrainCircuit;
-
-  return (
-    <button
-      type="button"
-      onClick={onInsert}
-      className={clsx(
-        'w-full text-left rounded-xl border border-violet-100 bg-white/90 p-3 shadow-soft',
-        'cursor-pointer transition hover:border-violet-300 hover:-translate-y-0.5 hover:shadow'
-      )}
-    >
-      <div className="flex items-center gap-2">
-        <div className="w-9 h-9 rounded-lg bg-violet-50 flex items-center justify-center shrink-0">
-          <Icon className="w-5 h-5 text-violet-500" />
-        </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="text-sm font-semibold text-slate-800 truncate">{template.name}</div>
-            <span className="shrink-0 rounded-full bg-violet-50 border border-violet-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-500">
-              Subgraph
-            </span>
-          </div>
-          <div className="text-xs text-slate-500 line-clamp-2">{template.description}</div>
-        </div>
-      </div>
-    </button>
   );
 }

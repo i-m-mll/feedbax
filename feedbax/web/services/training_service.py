@@ -139,18 +139,29 @@ class TrainingService:
     # Public interface (mirrors the old TrainingService API)
     # ------------------------------------------------------------------
 
-    async def start_training(self, total_batches: int) -> str:
+    async def start_training(
+        self,
+        total_batches: int,
+        training_config: Optional[dict] = None,
+    ) -> str:
         """Start a training job on the worker.
 
         Args:
             total_batches: Number of training steps.
+            training_config: Optional dict forwarded to the worker as the
+                ``training_config`` key in the ``/start`` request body.
+                When present, the worker runs real JAX training; when ``None``
+                it falls back to the synthetic stub.
 
         Returns:
             The job ID assigned by the worker.
         """
         base_url = await self._ensure_worker()
         job_id = await worker_client.start_job(
-            base_url, total_batches, auth_token=self._auth_token
+            base_url,
+            total_batches,
+            training_config=training_config,
+            auth_token=self._auth_token,
         )
         self._current_job_id = job_id
         self._last_loss = 0.0

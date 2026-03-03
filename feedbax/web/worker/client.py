@@ -43,7 +43,7 @@ async def wait_for_health(
     Raises:
         RuntimeError: If the worker does not respond within *timeout* seconds.
     """
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     headers = _auth_headers(auth_token)
     async with httpx.AsyncClient() as client:
         while True:
@@ -56,7 +56,7 @@ async def wait_for_health(
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass
 
-            if asyncio.get_event_loop().time() >= deadline:
+            if asyncio.get_running_loop().time() >= deadline:
                 raise RuntimeError("Training worker failed to start")
 
             await asyncio.sleep(interval)
@@ -65,6 +65,7 @@ async def wait_for_health(
 async def start_job(
     base_url: str,
     total_batches: int,
+    training_config: Optional[dict] = None,
     auth_token: Optional[str] = None,
 ) -> str:
     """POST /start and return the assigned job_id.
@@ -72,15 +73,21 @@ async def start_job(
     Args:
         base_url: Worker base URL.
         total_batches: Number of training steps to run.
+        training_config: Optional dict forwarded to the worker as the
+            ``training_config`` key. When ``None``, the worker uses default
+            training configuration values; real JAX training is always attempted.
         auth_token: Optional shared secret.
 
     Returns:
         The ``job_id`` string assigned by the worker.
     """
+    body: dict = {"total_batches": total_batches}
+    if training_config is not None:
+        body["training_config"] = training_config
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url}/start",
-            json={"total_batches": total_batches},
+            json=body,
             headers=_auth_headers(auth_token),
             timeout=10.0,
         )
