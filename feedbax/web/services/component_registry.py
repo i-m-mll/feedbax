@@ -412,6 +412,45 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='GRUOracle',
+                category='Neural Networks',
+                description=(
+                    'GRU-based oracle/policy network that maps observations to '
+                    'muscle excitations. Feedback port accepts previous observation '
+                    'for interface compatibility but the GRU ignores it (uses its '
+                    'hidden state instead).'
+                ),
+                param_schema=[
+                    ParamSchema(
+                        name='hidden_size', type='int',
+                        default=128, min=1, required=True,
+                    ),
+                    ParamSchema(
+                        name='n_layers', type='int',
+                        default=1, min=1, required=False,
+                    ),
+                    ParamSchema(
+                        name='out_size', type='int',
+                        default=6, min=1, required=True,
+                    ),
+                ],
+                input_ports=['input', 'feedback'],
+                output_ports=['output', 'hidden'],
+                icon='BrainCircuit',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'input': PortType(dtype='vector'),
+                        'feedback': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'output': PortType(dtype='vector'),
+                        'hidden': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='Spring',
                 category='Mechanics',
                 description='Linear spring.',
@@ -813,6 +852,53 @@ class ComponentRegistry:
                         'force_2d': PortType(dtype='vector'),
                         'forces': PortType(dtype='vector'),
                         'activations': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='AnalyticalMusculoskeletalPlant',
+                category='Mechanics',
+                description=(
+                    'Two-link arm musculoskeletal plant with pure JAX Lagrangian '
+                    'dynamics and Hill-type rigid-tendon muscles. Fully '
+                    'differentiable; no MuJoCo dependency. ODE state: 2 joint '
+                    'angles + 2 angular velocities + 6 muscle activations.'
+                ),
+                param_schema=[
+                    ParamSchema(
+                        name='dt', type='float',
+                        default=0.01, min=0.0001, required=True,
+                    ),
+                    ParamSchema(
+                        name='n_steps', type='int',
+                        default=1, min=1, required=False,
+                    ),
+                    ParamSchema(
+                        name='tau_act', type='float',
+                        default=0.01, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='tau_deact', type='float',
+                        default=0.04, min=0.001, required=False,
+                    ),
+                    ParamSchema(
+                        name='clip_states', type='bool',
+                        default=True, required=False,
+                    ),
+                ],
+                input_ports=['excitation'],
+                output_ports=['effector', 'state'],
+                icon='Activity',
+                is_composite=False,
+                port_types=PortTypeSpec(
+                    inputs={
+                        'excitation': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'effector': PortType(dtype='vector'),
+                        'state': PortType(dtype='state'),
                     },
                 ),
             )
