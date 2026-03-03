@@ -65,6 +65,7 @@ async def wait_for_health(
 async def start_job(
     base_url: str,
     total_batches: int,
+    training_config: Optional[dict] = None,
     auth_token: Optional[str] = None,
 ) -> str:
     """POST /start and return the assigned job_id.
@@ -72,15 +73,21 @@ async def start_job(
     Args:
         base_url: Worker base URL.
         total_batches: Number of training steps to run.
+        training_config: Optional dict forwarded to the worker as the
+            ``training_config`` key. When present, the worker runs real JAX
+            training; when ``None`` it uses the synthetic stub.
         auth_token: Optional shared secret.
 
     Returns:
         The ``job_id`` string assigned by the worker.
     """
+    body: dict = {"total_batches": total_batches}
+    if training_config is not None:
+        body["training_config"] = training_config
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url}/start",
-            json={"total_batches": total_batches},
+            json=body,
             headers=_auth_headers(auth_token),
             timeout=10.0,
         )
