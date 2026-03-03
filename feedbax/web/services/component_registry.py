@@ -1,11 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 import importlib.util
 
 from feedbax.web.models.component import ComponentDefinition, PortTypeSpec, PortType
-from feedbax.web.models.graph import ParamSchema, ParamValue
+from feedbax.web.models.graph import ParamSchema
+
+if TYPE_CHECKING:
+    from feedbax.web.models.graph import ParamValue
 
 
 @dataclass
