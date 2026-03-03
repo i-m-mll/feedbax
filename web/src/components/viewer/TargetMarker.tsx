@@ -13,9 +13,10 @@ const CROSS_SIZE = 0.015;
 interface TargetMarkerProps {
   position: [number, number];
   taskType: number;
+  trace?: number[][];
 }
 
-export function TargetMarker({ position, taskType }: TargetMarkerProps) {
+export function TargetMarker({ position, taskType, trace }: TargetMarkerProps) {
   const color = TASK_COLORS[taskType] ?? '#9b9cab';
   const [x, y] = position;
 
@@ -36,6 +37,14 @@ export function TargetMarker({ position, taskType }: TargetMarkerProps) {
     [x, y],
   );
 
+  // Target trace as 3D points (z=0)
+  const tracePoints = useMemo(() => {
+    if (!trace || trace.length < 2) return null;
+    return trace.map(
+      (p): [number, number, number] => [p[0], p[1], 0],
+    );
+  }, [trace]);
+
   return (
     <group>
       <Line points={hLine} color={color} lineWidth={2.5} />
@@ -44,6 +53,15 @@ export function TargetMarker({ position, taskType }: TargetMarkerProps) {
         <sphereGeometry args={[0.005, 12, 12]} />
         <meshStandardMaterial color={color} transparent opacity={0.6} />
       </mesh>
+      {tracePoints && (
+        <Line
+          points={tracePoints}
+          color={color}
+          lineWidth={1.5}
+          transparent
+          opacity={0.35}
+        />
+      )}
     </group>
   );
 }
