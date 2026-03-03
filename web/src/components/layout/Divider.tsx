@@ -1,3 +1,4 @@
+import React from 'react';
 import { useLayoutStore, DIVIDER_HEIGHT } from '@/stores/layoutStore';
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 
