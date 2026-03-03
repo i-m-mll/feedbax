@@ -1,4 +1,4 @@
-import type { ComponentSpec, ParamSchema } from '@/types/graph';
+import type { ComponentSpec, GraphSpec, GraphUIState, ParamSchema } from '@/types/graph';
 
 export interface PortType {
   dtype: string;
@@ -22,4 +22,8 @@ export interface ComponentDefinition {
   default_params: ComponentSpec['params'];
   port_types?: PortTypeSpec;
   is_composite?: boolean;
+  /** Pre-filled internal graph for composite components dragged from the palette. */
+  template_graph?: GraphSpec;
+  /** Default UI positions for nodes in template_graph. */
+  template_ui_state?: GraphUIState;
 }

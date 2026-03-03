@@ -25,7 +25,6 @@ import type {
   ParamValue,
 } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import type { CdeSubgraphTemplate } from '@/lib/cdeTemplates';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -776,6 +775,47 @@ function normalizeUiState(
   };
 }
 
+/**
+ * Convert a backend GraphSpec + optional GraphUIState into a SubgraphPreview so
+ * that a component with template_graph can be instantiated as a subgraph node.
+ */
+function templateGraphToSubgraphPreview(
+  graph: GraphSpec,
+  uiState?: GraphUIState
+): SubgraphPreview {
+  const DEFAULT_X = 200;
+  const DEFAULT_Y = 200;
+  const SPACING_X = 160;
+  const nodes = Object.entries(graph.nodes).map(([id, spec], index) => {
+    const nodeUiState = uiState?.node_states?.[id];
+    const position = nodeUiState?.position ?? { x: DEFAULT_X + index * SPACING_X, y: DEFAULT_Y };
+    return {
+      id,
+      type: 'component',
+      position,
+      data: {
+        label: id,
+        spec,
+        collapsed: nodeUiState?.collapsed ?? false,
+      },
+    };
+  });
+  const edges = graph.wires.map((wire) => ({
+    id: `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`,
+    source: wire.source_node,
+    target: wire.target_node,
+    sourceHandle: wire.source_port,
+    targetHandle: wire.target_port,
+    type: 'routed',
+  }));
+  return {
+    nodes,
+    edges,
+    inputPorts: graph.input_ports,
+    outputPorts: graph.output_ports,
+  };
+}
+
 function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
   const connectedInputs = new Map<string, Set<string>>();
   const connectedOutputs = new Map<string, Set<string>>();
@@ -1083,7 +1123,6 @@ interface GraphStoreState {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection, styleOverride?: 'bezier' | 'elbow') => void;
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
-  addSubgraphNode: (template: CdeSubgraphTemplate, position: { x: number; y: number }) => void;
   updateNodeParams: (nodeId: string, paramName: string, value: ComponentSpec['params'][string]) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
@@ -2119,68 +2158,28 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const name = createNodeName(state.graph, component.name);
-      const spec: ComponentSpec = {
-        type: component.name,
-        params: { ...component.default_params },
-        input_ports: component.input_ports,
-        output_ports: component.output_ports,
-      };
-      let graph: GraphSpec = {
-        ...state.graph,
-        nodes: {
-          ...state.graph.nodes,
-          [name]: spec,
-        },
-      };
-      if (state.graphStack.length > 0) {
-        graph = deriveSubgraphPorts(graph);
-      }
-      const uiState: GraphUIState = {
-        ...state.uiState,
-        node_states: {
-          ...state.uiState.node_states,
-          [name]: {
-            position,
-            collapsed: false,
-            selected: true,
-          },
-        },
-      };
-      const nodes = buildNodes(graph, uiState).map((node) => ({
-        ...node,
-        selected: node.id === name,
-      }));
-      return {
-        graph,
-        uiState,
-        nodes,
-        past,
-        future: [],
-        isDirty: true,
-      };
-    });
-  },
-  addSubgraphNode: (template, position) => {
-    set((state) => {
-      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
-      const name = createNodeName(state.graph, template.name.replace(/\s+/g, '_'));
-      // Subgraph preview is stored in spec.params._subgraph so buildComponentNodes
-      // can detect it and emit type: 'subgraph' for the React Flow node.
-      const subgraphPreview: SubgraphPreview = {
-        nodes: template.nodes as unknown[],
-        edges: template.edges as unknown[],
-        inputPorts: template.inputPorts,
-        outputPorts: template.outputPorts,
-      };
-      const spec: ComponentSpec = {
-        type: 'CDESubgraph',
-        params: {
-          _subgraph: subgraphPreview as unknown as ParamValue,
-          _template: template.name,
-        },
-        input_ports: template.inputPorts,
-        output_ports: template.outputPorts,
-      };
+      // If the component definition carries a template_graph (CDE presets etc.),
+      // instantiate it as a subgraph node so it gets the nested preview canvas.
+      const hasTemplate = Boolean(component.template_graph);
+      const subgraphPreview = hasTemplate
+        ? templateGraphToSubgraphPreview(component.template_graph!, component.template_ui_state)
+        : undefined;
+      const spec: ComponentSpec = hasTemplate
+        ? {
+            type: 'CDESubgraph',
+            params: {
+              _subgraph: subgraphPreview as unknown as ParamValue,
+              _template: component.name,
+            },
+            input_ports: component.input_ports,
+            output_ports: component.output_ports,
+          }
+        : {
+            type: component.name,
+            params: { ...component.default_params },
+            input_ports: component.input_ports,
+            output_ports: component.output_ports,
+          };
       let graph: GraphSpec = {
         ...state.graph,
         nodes: {
