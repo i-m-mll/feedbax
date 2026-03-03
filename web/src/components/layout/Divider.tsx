@@ -31,7 +31,7 @@ export function Divider({ availableHeight }: DividerProps) {
 
   return (
     <div
-      className="relative flex items-center border-t border-slate-200 bg-white"
+      className="relative flex items-center border-t border-slate-200 bg-white z-10"
       style={{ height: DIVIDER_HEIGHT, overflow: 'visible' }}
     >
       {/* Drag pill — center, only shown when both expanded */}
@@ -49,7 +49,7 @@ export function Divider({ availableHeight }: DividerProps) {
         {/* ChevronUp — sits above the line */}
         {!bottomCollapsed && (
           <button
-            className="absolute bottom-[6px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+            className={`absolute ${topCollapsed ? 'top-[10px]' : 'bottom-[10px]'} right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors`}
             title={topCollapsed ? 'Expand top pane' : 'Collapse top pane'}
             onClick={() => toggleTop(availableHeight)}
           >
@@ -59,7 +59,7 @@ export function Divider({ availableHeight }: DividerProps) {
         {/* ChevronDown — sits below the line */}
         {!topCollapsed && (
           <button
-            className="absolute top-[6px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+            className="absolute top-[10px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
             title={bottomCollapsed ? 'Expand bottom pane' : 'Collapse bottom pane'}
             onClick={() => toggleBottom(availableHeight)}
           >
