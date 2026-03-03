@@ -20,7 +20,7 @@ export interface TrajectorySnapshot {
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
 export type WorkerMode = 'local' | 'remote';
 
-const defaultTrainingSpec: TrainingSpec = {
+export const defaultTrainingSpec: TrainingSpec = {
   optimizer: {
     type: 'adam',
     params: {
@@ -72,7 +72,7 @@ const defaultTrainingSpec: TrainingSpec = {
   batch_size: 64,
 };
 
-const defaultTaskSpec: TaskSpec = {
+export const defaultTaskSpec: TaskSpec = {
   type: 'ReachingTask',
   params: {
     n_targets: 8,

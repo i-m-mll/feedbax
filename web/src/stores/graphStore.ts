@@ -41,7 +41,7 @@ const HEADER_HEIGHT = 40;
 const TAP_WIDTH = 28;
 const TAP_HEIGHT = 18;
 
-interface GraphLayer {
+export interface GraphLayer {
   graph: GraphSpec;
   uiState: GraphUIState;
   graphId: string | null;
@@ -50,7 +50,7 @@ interface GraphLayer {
   contextType?: string;
 }
 
-interface StateMergeRequest {
+export interface StateMergeRequest {
   sourceNode: string;
   targetNode: string;
   sourceOutputs: string[];
@@ -176,7 +176,7 @@ function applyEdgeStates(
   });
 }
 
-function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
+export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
     nodes: {
       task: {
@@ -1015,6 +1015,22 @@ function cloneSnapshot(graph: GraphSpec, uiState: GraphUIState) {
   return JSON.parse(JSON.stringify({ graph, uiState })) as { graph: GraphSpec; uiState: GraphUIState };
 }
 
+export interface GraphSnapshot {
+  graph: GraphSpec;
+  uiState: GraphUIState;
+  graphId: string | null;
+  isDirty: boolean;
+  graphStack: GraphLayer[];
+  currentGraphLabel: string;
+  currentContext: string;
+  edgeStyle: 'bezier' | 'elbow';
+  past: { graph: GraphSpec; uiState: GraphUIState }[];
+  future: { graph: GraphSpec; uiState: GraphUIState }[];
+  selectedTapId: string | null;
+  selectedEdgeId: string | null;
+  pendingStateMerge: StateMergeRequest | null;
+}
+
 interface GraphStoreState {
   graphId: string | null;
   graph: GraphSpec;
@@ -1034,6 +1050,7 @@ interface GraphStoreState {
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
+  restoreSnapshot: (snapshot: GraphSnapshot) => void;
   markSaved: (graphId: string) => void;
   resetGraph: () => void;
   undo: () => void;
@@ -1107,6 +1124,27 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       selectedTapId: null,
       selectedEdgeId: null,
       pendingStateMerge: null,
+    });
+  },
+  restoreSnapshot: (snapshot) => {
+    const { edgeStyle } = snapshot;
+    const normalized = normalizeUiState(snapshot.graph, snapshot.uiState, edgeStyle);
+    set({
+      graphId: snapshot.graphId,
+      graph: snapshot.graph,
+      uiState: normalized,
+      nodes: buildNodes(snapshot.graph, normalized),
+      edges: buildEdges(snapshot.graph, normalized, edgeStyle),
+      edgeStyle,
+      graphStack: snapshot.graphStack,
+      currentGraphLabel: snapshot.currentGraphLabel,
+      currentContext: snapshot.currentContext,
+      isDirty: snapshot.isDirty,
+      past: snapshot.past,
+      future: snapshot.future,
+      selectedTapId: snapshot.selectedTapId,
+      selectedEdgeId: snapshot.selectedEdgeId,
+      pendingStateMerge: snapshot.pendingStateMerge,
     });
   },
   markSaved: (graphId) => {
