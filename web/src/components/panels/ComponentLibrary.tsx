@@ -385,8 +385,8 @@ function CdeTemplateCard({
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="text-sm font-semibold text-slate-800 truncate">{template.name}</div>
-            <span className="shrink-0 rounded-full bg-violet-50 border border-violet-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-500">
-              Subgraph
+            <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+              Composite
             </span>
           </div>
           <div className="text-xs text-slate-500 line-clamp-2">{template.description}</div>

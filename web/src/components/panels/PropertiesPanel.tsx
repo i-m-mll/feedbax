@@ -143,20 +143,29 @@ export function PropertiesPanel() {
         <div className="text-sm text-slate-500 mt-2">{nodeSpec.type}</div>
       </div>
 
-      <div className="space-y-3">
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
-        {(component?.param_schema ?? []).map((param) => (
-          <ParamInput
-            key={param.name}
-            schema={param}
-            value={nodeSpec.params[param.name] ?? param.default ?? null}
-            onChange={(value) => updateNodeParams(selectedNode.id, param.name, value)}
-          />
-        ))}
-        {!component && (
-          <div className="text-sm text-slate-400">No schema for this component yet.</div>
-        )}
-      </div>
+      {component?.is_composite ? (
+        <div className="space-y-3">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
+          <div className="text-sm text-slate-400">
+            Enter this component to edit its internal structure.
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
+          {(component?.param_schema ?? []).map((param) => (
+            <ParamInput
+              key={param.name}
+              schema={param}
+              value={nodeSpec.params[param.name] ?? param.default ?? null}
+              onChange={(value) => updateNodeParams(selectedNode.id, param.name, value)}
+            />
+          ))}
+          {!component && (
+            <div className="text-sm text-slate-400">No schema for this component yet.</div>
+          )}
+        </div>
+      )}
 
       <div className="border-t border-slate-100 pt-4">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400 mb-2">Ports</div>
