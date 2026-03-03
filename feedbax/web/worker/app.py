@@ -169,13 +169,11 @@ def _run_training_real(job: _Job, cfg: _TrainingCfg) -> None:
         import jax.numpy as jnp
         import jax.random as jr
         import optax
-        import diffrax as dfx
 
         from feedbax.mechanics.backend import DiffraxBackend, PhysicsState
         from feedbax.mechanics.body import (
             BodyPreset,
             default_2link_bounds,
-            sample_preset,
         )
         from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
         from feedbax.mechanics.model_builder import ChainConfig
@@ -627,11 +625,11 @@ def _run_training_stub(job: _Job) -> None:
 
 
 def _run_training(job: _Job) -> None:
-    """Training entry point. Dispatches to real JAX training or stub fallback.
+    """Training entry point. Always attempts real JAX training.
 
-    Uses real JAX training when the job has a parseable ``training_config``.
-    Falls back to the synthetic stub when ``training_config`` is ``None`` or
-    when JAX/feedbax imports fail — so the worker never crashes the SSE stream.
+    Only falls back to the synthetic stub on exception — so the worker never
+    crashes the SSE stream. When ``training_config`` is ``None``, defaults from
+    ``_TrainingCfg`` are used for real training.
     """
     try:
         cfg = _extract_training_cfg(job.training_config)
@@ -784,7 +782,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             ]
 
         async def _generate():
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # --- Replay phase ---
             for event in replay_events:

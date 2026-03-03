@@ -2166,10 +2166,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         : undefined;
       const spec: ComponentSpec = hasTemplate
         ? {
-            type: 'CDESubgraph',
+            type: component.name,  // Use the actual component name as the type
             params: {
               _subgraph: subgraphPreview as unknown as ParamValue,
-              _template: component.name,
             },
             input_ports: component.input_ports,
             output_ports: component.output_ports,

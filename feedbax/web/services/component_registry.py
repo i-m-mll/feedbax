@@ -1347,6 +1347,11 @@ class ComponentRegistry:
     def _register_cde_templates(self) -> None:
         """Register CDE subgraph preset templates with their internal template graphs."""
 
+        # NOTE: CDE template graphs use several display-only node types (Input, Subtract,
+        # Reshape, MatMul, Scale, Sigmoid) that are not registered as Studio primitives.
+        # These are used for visual architecture documentation in the nested subgraph preview.
+        # Full executability requires registering those primitives (future work).
+
         _cde_port_types = PortTypeSpec(
             inputs={
                 'obs': PortType(dtype='vector'),
@@ -1391,7 +1396,7 @@ class ComponentRegistry:
             'vf':          _node('MLP',      ['input'],       ['output'], hidden_size=128, activation='tanh'),
             'reshape':     _node('Reshape',  ['input'],       ['output']),
             'matmul':      _node('MatMul',   ['a', 'b'],      ['out']),
-            'sum_h':       _node('Sum',      ['a', 'b'],      ['out']),
+            'sum_h':       _node('Sum',      ['a', 'b'],      ['output']),
             'linear':      _node('Linear',   ['input'],       ['output']),
             'sigmoid':     _node('Sigmoid',  ['input'],       ['output']),
         }
@@ -1404,7 +1409,7 @@ class ComponentRegistry:
             _wire('subtract',    'out',      'matmul',    'b'),
             _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
             _wire('matmul',      'out',      'sum_h',     'b'),
-            _wire('sum_h',       'out',      'linear',    'input'),
+            _wire('sum_h',       'output',   'linear',    'input'),
             _wire('linear',      'output',   'sigmoid',   'input'),
         ]
         standard_ui = GraphUIState(node_states={
@@ -1450,7 +1455,7 @@ class ComponentRegistry:
             'reshape':     _node('Reshape',  ['input'],          ['output']),
             'matmul':      _node('MatMul',   ['a', 'b'],         ['out']),
             'decay':       _node('Scale',    ['input'],          ['output'], scale=-0.1),
-            'sum_h':       _node('Sum',      ['a', 'b', 'c'],    ['out']),
+            'sum_h':       _node('Sum',      ['a', 'b', 'c'],    ['output']),
             'linear':      _node('Linear',   ['input'],          ['output']),
             'sigmoid':     _node('Sigmoid',  ['input'],          ['output']),
         }
@@ -1465,7 +1470,7 @@ class ComponentRegistry:
             _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
             _wire('matmul',      'out',      'sum_h',     'b'),
             _wire('decay',       'output',   'sum_h',     'c'),
-            _wire('sum_h',       'out',      'linear',    'input'),
+            _wire('sum_h',       'output',   'linear',    'input'),
             _wire('linear',      'output',   'sigmoid',   'input'),
         ]
         decay_ui = GraphUIState(node_states={
@@ -1512,9 +1517,9 @@ class ComponentRegistry:
             'vf':          _node('MLP',      ['input'],          ['output'], hidden_size=128, activation='tanh'),
             'reshape':     _node('Reshape',  ['input'],          ['output']),
             'matmul':      _node('MatMul',   ['a', 'b'],         ['out']),
-            'gru_gate':    _node('GRUCell',  ['input', 'hx'],    ['output'], hidden_size=64),
+            'gru_gate':    _node('GRU',      ['input', 'hidden'], ['output', 'hidden'], hidden_size=64),
             'alpha':       _node('Scale',    ['input'],          ['output'], scale=0.1),
-            'sum_h':       _node('Sum',      ['a', 'b', 'c'],    ['out']),
+            'sum_h':       _node('Sum',      ['a', 'b', 'c'],    ['output']),
             'linear':      _node('Linear',   ['input'],          ['output']),
             'sigmoid':     _node('Sigmoid',  ['input'],          ['output']),
         }
@@ -1527,12 +1532,12 @@ class ComponentRegistry:
             _wire('subtract',    'out',      'matmul',    'b'),
             _wire('h_prev_in',   'h_prev',   'negate_h',  'input'),
             _wire('obs_in',      'obs',      'gru_gate',  'input'),
-            _wire('negate_h',    'output',   'gru_gate',  'hx'),
+            _wire('negate_h',    'output',   'gru_gate',  'hidden'),
             _wire('gru_gate',    'output',   'alpha',     'input'),
             _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
             _wire('matmul',      'out',      'sum_h',     'b'),
             _wire('alpha',       'output',   'sum_h',     'c'),
-            _wire('sum_h',       'out',      'linear',    'input'),
+            _wire('sum_h',       'output',   'linear',    'input'),
             _wire('linear',      'output',   'sigmoid',   'input'),
         ]
         antinf_ui = GraphUIState(node_states={
@@ -1582,9 +1587,9 @@ class ComponentRegistry:
             'matmul':      _node('MatMul',   ['a', 'b'],               ['out']),
             'decay':       _node('Scale',    ['input'],                ['output'], scale=-0.1),
             'negate_h':    _node('Scale',    ['input'],                ['output'], scale=-1.0),
-            'gru_gate':    _node('GRUCell',  ['input', 'hx'],          ['output'], hidden_size=64),
+            'gru_gate':    _node('GRU',      ['input', 'hidden'],      ['output', 'hidden'], hidden_size=64),
             'alpha':       _node('Scale',    ['input'],                ['output'], scale=0.1),
-            'sum_h':       _node('Sum',      ['a', 'b', 'c', 'd'],     ['out']),
+            'sum_h':       _node('Sum',      ['a', 'b', 'c', 'd'],     ['output']),
             'linear':      _node('Linear',   ['input'],                ['output']),
             'sigmoid':     _node('Sigmoid',  ['input'],                ['output']),
         }
@@ -1598,13 +1603,13 @@ class ComponentRegistry:
             _wire('h_prev_in',   'h_prev',   'decay',     'input'),
             _wire('h_prev_in',   'h_prev',   'negate_h',  'input'),
             _wire('obs_in',      'obs',      'gru_gate',  'input'),
-            _wire('negate_h',    'output',   'gru_gate',  'hx'),
+            _wire('negate_h',    'output',   'gru_gate',  'hidden'),
             _wire('gru_gate',    'output',   'alpha',     'input'),
             _wire('h_prev_in',   'h_prev',   'sum_h',     'a'),
             _wire('matmul',      'out',      'sum_h',     'b'),
             _wire('decay',       'output',   'sum_h',     'c'),
             _wire('alpha',       'output',   'sum_h',     'd'),
-            _wire('sum_h',       'out',      'linear',    'input'),
+            _wire('sum_h',       'output',   'linear',    'input'),
             _wire('linear',      'output',   'sigmoid',   'input'),
         ]
         hybrid_ui = GraphUIState(node_states={

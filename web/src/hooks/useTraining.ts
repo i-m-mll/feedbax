@@ -138,6 +138,7 @@ export function useTraining() {
         }
         if (payload.type === 'training_error') {
           setStatus('error');
+          ws.close();
         }
       };
 
