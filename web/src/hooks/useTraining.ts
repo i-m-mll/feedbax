@@ -2,6 +2,78 @@ import { useCallback, useRef } from 'react';
 import { startTraining, stopTraining } from '@/api/client';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
+import type { GraphSpec } from '@/types/graph';
+import type { TrainingConfig } from '@/types/training';
+
+/**
+ * Map from the Network node's hidden_type param to the canonical network_type
+ * string expected by the backend training script.
+ */
+const HIDDEN_TYPE_TO_NETWORK_TYPE: Record<string, string> = {
+  GRUCell: 'gru',
+  LSTMCell: 'lstm',
+  SimpleRNNCell: 'rnn',
+  CDECell: 'cde',
+  LeakyRNNCell: 'leaky_rnn',
+};
+
+/**
+ * Extract network hyperparameters from a graph spec by finding the first node
+ * whose component type is "Network".
+ */
+function extractNetworkParams(
+  graph: GraphSpec
+): { hidden_dim: number; network_type: string } {
+  const networkNode = Object.values(graph.nodes).find(
+    (node) => node.type === 'Network'
+  );
+
+  if (!networkNode) {
+    return { hidden_dim: 64, network_type: 'gru' };
+  }
+
+  const hiddenDim =
+    typeof networkNode.params.hidden_size === 'number'
+      ? networkNode.params.hidden_size
+      : typeof networkNode.params.hidden_dim === 'number'
+      ? networkNode.params.hidden_dim
+      : 64;
+
+  const hiddenType =
+    typeof networkNode.params.hidden_type === 'string'
+      ? networkNode.params.hidden_type
+      : typeof networkNode.params.cell_type === 'string'
+      ? networkNode.params.cell_type
+      : 'GRUCell';
+
+  const networkType = HIDDEN_TYPE_TO_NETWORK_TYPE[hiddenType] ?? hiddenType.toLowerCase();
+
+  return { hidden_dim: hiddenDim, network_type: networkType };
+}
+
+/**
+ * Build a TrainingConfig from the current graph and training spec.
+ * Hardcoded fields (grad_clip, n_reach_steps, effort_weight) will be
+ * configurable via UI in a future phase.
+ */
+function buildTrainingConfig(
+  graph: GraphSpec,
+  n_batches: number,
+  batch_size: number,
+  learning_rate: number
+): TrainingConfig {
+  const { hidden_dim, network_type } = extractNetworkParams(graph);
+  return {
+    n_batches,
+    batch_size,
+    learning_rate,
+    grad_clip: 1.0,
+    hidden_dim,
+    network_type,
+    n_reach_steps: 80,
+    effort_weight: 2.5,
+  };
+}
 
 export function useTraining() {
   const {
@@ -17,6 +89,7 @@ export function useTraining() {
     setLatestTrajectory,
   } = useTrainingStore();
   const graphId = useGraphStore((state) => state.graphId);
+  const graph = useGraphStore((state) => state.graph);
   const wsRef = useRef<WebSocket | null>(null);
 
   const connect = useCallback(
@@ -82,14 +155,30 @@ export function useTraining() {
     }
     try {
       clearHistory();
-      const response = await startTraining(graphId, trainingSpec, taskSpec);
+      const learningRate =
+        typeof trainingSpec.optimizer.params.learning_rate === 'number'
+          ? trainingSpec.optimizer.params.learning_rate
+          : 0.001;
+      const trainingConfig = buildTrainingConfig(
+        graph,
+        trainingSpec.n_batches,
+        trainingSpec.batch_size,
+        learningRate
+      );
+      const response = await startTraining(
+        graphId,
+        trainingSpec,
+        taskSpec,
+        graph,
+        trainingConfig
+      );
       setJobId(response.job_id);
       setStatus('running');
       connect(response.job_id);
     } catch {
       setStatus('error');
     }
-  }, [graphId, trainingSpec, taskSpec, setJobId, setStatus, connect, clearHistory]);
+  }, [graphId, graph, trainingSpec, taskSpec, setJobId, setStatus, connect, clearHistory]);
 
   const stop = useCallback(async () => {
     if (!jobId) return;
@@ -106,3 +195,7 @@ export function useTraining() {
     stop,
   };
 }
+
+// Re-export for consumers that want to display a config summary without
+// triggering a full training start.
+export { extractNetworkParams, buildTrainingConfig };

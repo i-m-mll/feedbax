@@ -1,5 +1,5 @@
 import { useTrainingStore } from '@/stores/trainingStore';
-import { useTraining } from '@/hooks/useTraining';
+import { useTraining, extractNetworkParams } from '@/hooks/useTraining';
 import { useWorkerConfig } from '@/hooks/useWorkerConfig';
 import { useOrchestration } from '@/hooks/useOrchestration';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -44,7 +44,11 @@ export function TrainingPanel() {
     terminate: cloudTerminate,
   } = useOrchestration();
   const graphId = useGraphStore((state) => state.graphId);
+  const graph = useGraphStore((state) => state.graph);
   const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
+
+  // Derived network params for the config summary chip row
+  const networkParams = useMemo(() => extractNetworkParams(graph), [graph]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     buildDefaultExpanded(trainingSpec.loss)
   );
@@ -616,6 +620,20 @@ export function TrainingPanel() {
       {!graphId && !inSubgraph && (
         <div className="text-xs text-amber-600">Save the project before starting training.</div>
       )}
+
+      {/* Training config summary — shows what will be sent to the backend */}
+      <TrainingConfigSummary
+        networkType={networkParams.network_type}
+        hiddenDim={networkParams.hidden_dim}
+        nBatches={trainingSpec.n_batches}
+        batchSize={trainingSpec.batch_size}
+        learningRate={
+          typeof trainingSpec.optimizer.params.learning_rate === 'number'
+            ? trainingSpec.optimizer.params.learning_rate
+            : 0.001
+        }
+      />
+
       <button
         className="w-full rounded-full bg-brand-500 text-white py-2 text-sm font-semibold shadow-soft hover:bg-brand-600"
         onClick={status === 'running' ? stop : start}
@@ -954,6 +972,55 @@ function sanitizeSymbol(label: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return cleaned.length > 0 ? cleaned : 'term';
+}
+
+// ---------------------------------------------------------------------------
+// Training config summary
+// ---------------------------------------------------------------------------
+
+interface TrainingConfigSummaryProps {
+  networkType: string;
+  hiddenDim: number;
+  nBatches: number;
+  batchSize: number;
+  learningRate: number;
+}
+
+/**
+ * Read-only summary of what will be sent to the backend when Start is clicked.
+ * Gives the user visual confirmation that Studio has parsed their graph.
+ */
+function TrainingConfigSummary({
+  networkType,
+  hiddenDim,
+  nBatches,
+  batchSize,
+  learningRate,
+}: TrainingConfigSummaryProps) {
+  const chips: { label: string; value: string }[] = [
+    { label: 'net', value: networkType },
+    { label: 'dim', value: String(hiddenDim) },
+    { label: 'batches', value: String(nBatches) },
+    { label: 'batch size', value: String(batchSize) },
+    { label: 'lr', value: learningRate.toExponential(1) },
+  ];
+
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3 space-y-1.5">
+      <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Config summary</div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map(({ label, value }) => (
+          <span
+            key={label}
+            className="inline-flex items-baseline gap-1 rounded-md bg-white border border-slate-200 px-2 py-0.5 text-[11px]"
+          >
+            <span className="text-slate-400">{label}</span>
+            <span className="font-mono font-semibold text-slate-700">{value}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function CloudStatusChip({ status }: { status: string }) {
