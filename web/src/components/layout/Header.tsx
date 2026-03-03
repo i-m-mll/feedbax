@@ -7,7 +7,6 @@ import {
   Download,
   X,
 } from 'lucide-react';
-import LogoSvg from '@/assets/logo.svg?url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
@@ -103,7 +102,7 @@ export function Header() {
     <header className="relative z-40 h-12 flex items-center gap-2 px-3 border-b border-slate-100 bg-white/80 backdrop-blur">
       {/* Logo — fixed width */}
       <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600 pr-2">
-        <img src={LogoSvg} alt="feedbax studio logo" className="h-7 w-7" />
+        <img src="/icon.svg" alt="feedbax studio logo" className="h-7 w-7" />
       </div>
 
       {/* Scrollable tab bar — fills remaining space */}
