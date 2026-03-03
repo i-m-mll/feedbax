@@ -8,7 +8,7 @@ import {
   X,
 } from 'lucide-react';
 import LogoSvg from '@/assets/logo.svg?url';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
@@ -18,6 +18,11 @@ import { useProjectsStore } from '@/stores/projectsStore';
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [pendingTab, setPendingTab] = useState<{ name: string } | null>(null);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const pendingInputRef = useRef<HTMLInputElement | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const saveMutation = useSaveGraph();
   const { showMinimap, toggleMinimap } = useSettingsStore();
@@ -29,8 +34,23 @@ export function Header() {
     isDirty,
     markSaved,
   } = useGraphStore();
-  const { tabs, activeTabId, openNewTab, openProjectInTab, switchTab, closeTab } = useProjectsStore();
+  const { tabs, activeTabId, openNewTab, openProjectInTab, switchTab, closeTab, renameTab } = useProjectsStore();
   const inSubgraph = graphStack.length > 0;
+
+  // Focus pending tab input when it appears
+  useEffect(() => {
+    if (pendingTab !== null && pendingInputRef.current) {
+      pendingInputRef.current.focus();
+    }
+  }, [pendingTab]);
+
+  // Focus rename input when it appears
+  useEffect(() => {
+    if (renamingTabId !== null && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingTabId]);
 
   const handleSave = async () => {
     if (inSubgraph) return;
@@ -90,24 +110,59 @@ export function Header() {
       <div className="flex-1 min-w-0 flex items-center overflow-x-auto gap-1 no-scrollbar">
         {tabs.map((tab) => {
           const isActive = tab.tabId === activeTabId;
+          const isRenaming = renamingTabId === tab.tabId;
           return (
-            <button
+            <div
               key={tab.tabId}
-              onClick={() => switchTab(tab.tabId)}
               className={[
-                'flex-none flex items-center gap-1.5 h-8 px-3 rounded-lg text-sm font-medium max-w-[160px] group transition-colors',
+                'flex-none flex items-center gap-1.5 h-8 px-3 rounded-lg text-sm font-medium max-w-[160px] group transition-colors cursor-pointer',
                 isActive
                   ? 'bg-slate-100 text-slate-900'
                   : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700',
               ].join(' ')}
+              onClick={() => switchTab(tab.tabId)}
             >
-              <span className="truncate min-w-0">
-                {tab.label}
-              </span>
-              {(isActive ? isDirty : tab.graphSnapshot.isDirty) && (
+              {isRenaming ? (
+                <input
+                  ref={renameInputRef}
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const name = renameValue.trim() || tab.label;
+                      renameTab(tab.tabId, name);
+                      setRenamingTabId(null);
+                    } else if (e.key === 'Escape') {
+                      setRenamingTabId(null);
+                    }
+                    e.stopPropagation();
+                  }}
+                  onBlur={() => {
+                    const name = renameValue.trim() || tab.label;
+                    renameTab(tab.tabId, name);
+                    setRenamingTabId(null);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-transparent outline-none text-sm text-slate-900 w-24 min-w-0"
+                  autoFocus
+                />
+              ) : (
+                <span
+                  className="truncate min-w-0"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingTabId(tab.tabId);
+                    setRenameValue(tab.label);
+                  }}
+                >
+                  {tab.label}
+                </span>
+              )}
+              {!isRenaming && (isActive ? isDirty : tab.graphSnapshot.isDirty) && (
                 <span className="flex-none text-amber-500 text-xs leading-none">•</span>
               )}
-              {tabs.length > 1 && (
+              {!isRenaming && tabs.length > 1 && (
                 <span
                   role="button"
                   tabIndex={0}
@@ -130,11 +185,41 @@ export function Header() {
                   <X className="w-3 h-3" />
                 </span>
               )}
-            </button>
+            </div>
           );
         })}
+        {pendingTab !== null && (
+          <div className="flex items-center px-2 py-1 rounded-lg bg-slate-100 border border-blue-400">
+            <input
+              ref={pendingInputRef}
+              type="text"
+              value={pendingTab.name}
+              onChange={(e) => setPendingTab({ name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const name = pendingTab.name.trim() || 'Untitled';
+                  openNewTab(name);
+                  setPendingTab(null);
+                } else if (e.key === 'Escape') {
+                  setPendingTab(null);
+                }
+              }}
+              onBlur={() => {
+                // Confirm on blur too (user clicked away)
+                const name = pendingTab.name.trim();
+                if (name) {
+                  openNewTab(name);
+                }
+                setPendingTab(null);
+              }}
+              className="bg-transparent outline-none text-sm text-slate-900 w-28 min-w-0"
+              placeholder="Tab name..."
+              autoFocus
+            />
+          </div>
+        )}
         <button
-          onClick={openNewTab}
+          onClick={() => setPendingTab({ name: '' })}
           className="flex-none p-1.5 rounded-lg text-slate-400 hover:bg-slate-50 hover:text-slate-600"
           title="New project tab"
         >

@@ -285,6 +285,19 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
   return { graph, uiState };
 }
 
+export function createBlankGraph(): GraphSpec {
+  const now = new Date().toISOString();
+  return {
+    nodes: {},
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+    metadata: { name: '', created_at: now, updated_at: now, version: '1.0.0' },
+  };
+}
+
 function migrateLegacyTaps(graph: GraphSpec): TapSpec[] {
   const taps: TapSpec[] = graph.taps ? [...graph.taps] : [];
   const usedIds = new Set(taps.map((tap) => tap.id));
