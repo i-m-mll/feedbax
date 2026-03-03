@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 import importlib.util
 
 from feedbax.web.models.component import ComponentDefinition, PortTypeSpec, PortType
-from feedbax.web.models.graph import ParamSchema
+from feedbax.web.models.graph import ParamSchema, ParamValue
 
 
 @dataclass
@@ -21,7 +21,7 @@ class ComponentMeta:
     is_composite: bool = False
 
     @property
-    def default_params(self) -> Dict[str, object]:
+    def default_params(self) -> Dict[str, ParamValue]:
         return {schema.name: schema.default for schema in self.param_schema}
 
 
