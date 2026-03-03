@@ -1,11 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 import importlib.util
 
 from feedbax.web.models.component import ComponentDefinition, PortTypeSpec, PortType
 from feedbax.web.models.graph import ParamSchema
+
+if TYPE_CHECKING:
+    from feedbax.web.models.graph import ParamValue
 
 
 @dataclass
@@ -21,7 +24,7 @@ class ComponentMeta:
     is_composite: bool = False
 
     @property
-    def default_params(self) -> Dict[str, object]:
+    def default_params(self) -> Dict[str, ParamValue]:
         return {schema.name: schema.default for schema in self.param_schema}
 
 
@@ -118,8 +121,8 @@ class ComponentRegistry:
                         default='',
                         required=True,
                     ),
-                    ParamSchema(name='input_port', type='string', default='input', required=False),
-                    ParamSchema(name='output_port', type='string', default='output', required=False),
+                    ParamSchema(name='input_port', type='str', default='input', required=False),
+                    ParamSchema(name='output_port', type='str', default='output', required=False),
                 ],
                 input_ports=['input'],
                 output_ports=['output'],
