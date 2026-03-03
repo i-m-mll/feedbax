@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { useGraphStore, createInitialGraph, type GraphSnapshot, type GraphLayer, type StateMergeRequest } from '@/stores/graphStore';
+import { useGraphStore, createInitialGraph, createBlankGraph, type GraphSnapshot, type GraphLayer, type StateMergeRequest } from '@/stores/graphStore';
 import { useTrainingStore, defaultTrainingSpec, defaultTaskSpec } from '@/stores/trainingStore';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { useStatisticsStore } from '@/stores/statisticsStore';
@@ -72,6 +72,31 @@ function makeInitialGraphSnapshot(): GraphSnapshot {
   };
 }
 
+function makeBlankGraphSnapshot(name: string): GraphSnapshot {
+  const graph = createBlankGraph();
+  graph.metadata!.name = name;
+  const uiState: GraphUIState = {
+    viewport: { x: 0, y: 0, zoom: 1 },
+    node_states: {},
+  };
+  return {
+    graph,
+    uiState,
+    graphId: null,
+    isDirty: false,
+    lastSavedAt: null,
+    graphStack: [],
+    currentGraphLabel: name,
+    currentContext: 'top-level',
+    edgeStyle: 'bezier',
+    past: [],
+    future: [],
+    selectedTapId: null,
+    selectedEdgeId: null,
+    pendingStateMerge: null,
+  };
+}
+
 function makeInitialTrainingSnapshot(): TrainingSnapshot {
   return {
     trainingSpec: defaultTrainingSpec,
@@ -117,11 +142,12 @@ function resetStatisticsStoreForTabSwitch() {
 interface ProjectsStoreState {
   tabs: OpenTab[];
   activeTabId: string;
-  openNewTab: () => void;
+  openNewTab: (name: string) => void;
   openProjectInTab: (graphId: string, graph: GraphSpec, uiState: GraphUIState) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   updateActiveTabLabel: (label: string) => void;
+  renameTab: (tabId: string, name: string) => void;
 }
 
 function buildInitialTab(): OpenTab {
@@ -141,7 +167,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
     tabs: [firstTab],
     activeTabId: firstTab.tabId,
 
-    openNewTab: () => {
+    openNewTab: (name: string) => {
       // Save current tab state
       const { tabs, activeTabId } = get();
       const updatedTabs = tabs.map((tab) =>
@@ -155,12 +181,12 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
           : tab
       );
 
-      // Create fresh snapshots for the new tab
-      const newGraphSnapshot = makeInitialGraphSnapshot();
+      // Create a blank snapshot for the new tab
+      const newGraphSnapshot = makeBlankGraphSnapshot(name);
       const newTrainingSnapshot = makeInitialTrainingSnapshot();
       const newTab: OpenTab = {
         tabId: generateTabId(),
-        label: newGraphSnapshot.currentGraphLabel,
+        label: name,
         graphSnapshot: newGraphSnapshot,
         trainingSnapshot: newTrainingSnapshot,
       };
@@ -304,6 +330,28 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
           tab.tabId === activeTabId ? { ...tab, label } : tab
         ),
       });
+    },
+
+    renameTab: (tabId, name) => {
+      const { tabs, activeTabId } = get();
+      set({
+        tabs: tabs.map((tab) =>
+          tab.tabId === tabId ? { ...tab, label: name } : tab
+        ),
+      });
+      // If renaming the active tab, also update graphStore's currentGraphLabel and graph metadata
+      if (tabId === activeTabId) {
+        const gs = useGraphStore.getState();
+        useGraphStore.setState({
+          currentGraphLabel: name,
+          graph: {
+            ...gs.graph,
+            metadata: gs.graph.metadata
+              ? { ...gs.graph.metadata, name }
+              : { name, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), version: '1.0.0' },
+          },
+        });
+      }
     },
   };
 });
