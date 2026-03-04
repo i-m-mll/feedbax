@@ -2412,7 +2412,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ? { ...node, data: { ...node.data, reversed: nextReversed } }
           : node
       );
-      return { uiState, nodes, isDirty: true };
+      return { uiState, nodes, edges: buildEdges(state.graph, uiState, state.edgeStyle), isDirty: true };
     });
   },
   setAllNodesCollapsed: (collapsed) => {
