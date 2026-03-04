@@ -3,6 +3,7 @@ import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
+  Position,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -940,7 +941,7 @@ function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData
   return [...buildComponentNodes(graph, uiState), ...buildTapNodes(graph, uiState)];
 }
 
-function buildStateEdges(graph: GraphSpec): Edge<GraphEdgeData>[] {
+function buildStateEdges(graph: GraphSpec, uiState: GraphUIState): Edge<GraphEdgeData>[] {
   const countsByTarget = new Map<string, Map<string, number>>();
   for (const wire of graph.wires) {
     if (isTapNodeId(wire.source_node) || isTapNodeId(wire.target_node)) {
@@ -950,6 +951,12 @@ function buildStateEdges(graph: GraphSpec): Edge<GraphEdgeData>[] {
     sources.set(wire.source_node, (sources.get(wire.source_node) ?? 0) + 1);
     countsByTarget.set(wire.target_node, sources);
   }
+
+  const reversedNodes = new Set(
+    Object.entries(uiState.node_states)
+      .filter(([, state]) => state.reversed)
+      .map(([nodeId]) => nodeId)
+  );
 
   const edges: Edge<GraphEdgeData>[] = [];
   for (const [target, sources] of countsByTarget.entries()) {
@@ -968,6 +975,8 @@ function buildStateEdges(graph: GraphSpec): Edge<GraphEdgeData>[] {
         selectable: true,
         deletable: false,
         zIndex: 0,
+        sourcePosition: reversedNodes.has(source) ? Position.Left : Position.Right,
+        targetPosition: reversedNodes.has(target) ? Position.Right : Position.Left,
         data: {
           primary: count === maxCount,
           strength: count,
@@ -989,6 +998,11 @@ function buildEdges(
       .filter(([, state]) => state.collapsed)
       .map(([nodeId]) => nodeId)
   );
+  const reversedNodes = new Set(
+    Object.entries(uiState.node_states)
+      .filter(([, state]) => state.reversed)
+      .map(([nodeId]) => nodeId)
+  );
   const isCollapsed = (nodeId: string) => collapsed.has(nodeId);
   const isComponent = (nodeId: string) => !isTapNodeId(nodeId);
   const portEdges = graph.wires
@@ -1007,12 +1021,14 @@ function buildEdges(
         targetHandle: wire.target_port,
         type: 'routed',
         zIndex: 1,
+        sourcePosition: reversedNodes.has(wire.source_node) ? Position.Left : Position.Right,
+        targetPosition: reversedNodes.has(wire.target_node) ? Position.Right : Position.Left,
         data: {
           routing: edgeStates[id]?.routing ?? { style: defaultStyle, points: [] },
         },
       };
     });
-  return [...buildStateEdges(graph), ...portEdges];
+  return [...buildStateEdges(graph, uiState), ...portEdges];
 }
 
 function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
