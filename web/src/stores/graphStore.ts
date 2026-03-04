@@ -797,6 +797,7 @@ function templateGraphToSubgraphPreview(
         label: id,
         spec,
         collapsed: nodeUiState?.collapsed ?? false,
+        reversed: nodeUiState?.reversed ?? false,
       },
     };
   });
@@ -856,6 +857,7 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
         label: id,
         spec,
         collapsed: ui.collapsed,
+        reversed: ui.reversed ?? false,
         size,
         connected_inputs: Array.from(connectedInputs.get(id) ?? []),
         connected_outputs: Array.from(connectedOutputs.get(id) ?? []),
@@ -1128,6 +1130,7 @@ interface GraphStoreState {
   setSelectedTap: (tapId: string | null) => void;
   setSelectedEdge: (edgeId: string | null) => void;
   toggleNodeCollapse: (nodeId: string) => void;
+  toggleNodeReversed: (nodeId: string) => void;
   setAllNodesCollapsed: (collapsed: boolean) => void;
   addTapForEdge: (edgeId: string, type: TapSpec['type']) => void;
   addTap: (afterNode: string, type: TapSpec['type']) => void;
@@ -1972,6 +1975,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           position: { x: node.position.x, y: node.position.y },
           collapsed: false,
           selected: false,
+          size: undefined,
         };
         const size =
           sizeUpdates.get(node.id) ??
@@ -2370,6 +2374,29 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         edges: buildEdges(state.graph, uiState, state.edgeStyle),
         isDirty: true,
       };
+    });
+  },
+  toggleNodeReversed: (nodeId) => {
+    set((state) => {
+      const nodeState = state.uiState.node_states[nodeId];
+      if (!nodeState) return state;
+      const nextReversed = !nodeState.reversed;
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states: {
+          ...state.uiState.node_states,
+          [nodeId]: {
+            ...nodeState,
+            reversed: nextReversed,
+          },
+        },
+      };
+      const nodes = state.nodes.map((node) =>
+        node.id === nodeId
+          ? { ...node, data: { ...node.data, reversed: nextReversed } }
+          : node
+      );
+      return { uiState, nodes, isDirty: true };
     });
   },
   setAllNodesCollapsed: (collapsed) => {

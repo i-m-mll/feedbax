@@ -103,6 +103,7 @@ export interface NodeUIState {
   collapsed: boolean;
   selected: boolean;
   size?: { width: number; height: number };
+  reversed?: boolean;
 }
 
 export interface EdgeRoutingPoint {
@@ -143,6 +144,7 @@ export interface GraphNodeData extends Record<string, unknown> {
   label: string;
   spec: ComponentSpec;
   collapsed?: boolean;
+  reversed?: boolean;
   size?: { width: number; height: number };
   connected_inputs?: string[];
   connected_outputs?: string[];
