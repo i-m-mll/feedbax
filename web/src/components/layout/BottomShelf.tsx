@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
 import { TrainingPanel } from '@/components/panels/TrainingPanel';
-import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
 
 const tabs = [
-  { id: 'validation', label: 'Validation' },
   { id: 'training', label: 'Training' },
   { id: 'console', label: 'Console' },
   { id: 'analysis', label: 'Analysis' },
@@ -26,7 +24,7 @@ export function BottomShelf({
   height: number;
   availableHeight: number;
 }) {
-  const [activeTab, setActiveTab] = useState<TabId>('validation');
+  const [activeTab, setActiveTab] = useState<TabId>('training');
   const { bottomCollapsed, toggleBottom } = useLayoutStore();
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [fadeState, setFadeState] = useState({ left: false, right: false });
@@ -36,8 +34,7 @@ export function BottomShelf({
     if (activeTab === 'console') return <ConsolePanel />;
     if (activeTab === 'analysis') return <AnalysisPanel />;
     if (activeTab === 'trajectories') return <TrajectoryPanel />;
-    if (activeTab === 'statistics') return <StatisticsPanel />;
-    return <ValidationPanel />;
+    return <StatisticsPanel />;
   }, [activeTab]);
 
   const updateFades = useCallback(() => {

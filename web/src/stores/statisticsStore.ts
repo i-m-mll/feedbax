@@ -47,7 +47,7 @@ interface StatisticsStoreState {
 export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
   // Settings
   groupBy: 'none',
-  selectedMetric: 'final_distance',
+  selectedMetric: 'distance_to_target',
   scatterXMetric: 'final_distance',
   scatterYMetric: 'effort',
 
@@ -91,7 +91,10 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
       const summaryData = await fetchStatsSummary(dataset, groupBy);
       // Bug: 4cb86c8 — discard stale response if params changed during fetch
       const current = get();
-      if (current.groupBy !== groupBy || useTrajectoryStore.getState().activeDataset !== dataset) return;
+      if (current.groupBy !== groupBy || useTrajectoryStore.getState().activeDataset !== dataset) {
+        set({ loading: false });
+        return;
+      }
       set({ summaryData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -107,7 +110,10 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     try {
       const timeseriesData = await fetchStatsTimeseries(dataset, selectedMetric, groupBy);
       const current = get();
-      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) return;
+      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
+        set({ loading: false });
+        return;
+      }
       set({ timeseriesData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -123,7 +129,10 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     try {
       const histogramData = await fetchStatsHistogram(dataset, selectedMetric, groupBy);
       const current = get();
-      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) return;
+      if (current.groupBy !== groupBy || current.selectedMetric !== selectedMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
+        set({ loading: false });
+        return;
+      }
       set({ histogramData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -139,7 +148,10 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     try {
       const scatterData = await fetchStatsScatter(dataset, scatterXMetric, scatterYMetric);
       const current = get();
-      if (current.scatterXMetric !== scatterXMetric || current.scatterYMetric !== scatterYMetric || useTrajectoryStore.getState().activeDataset !== dataset) return;
+      if (current.scatterXMetric !== scatterXMetric || current.scatterYMetric !== scatterYMetric || useTrajectoryStore.getState().activeDataset !== dataset) {
+        set({ loading: false });
+        return;
+      }
       set({ scatterData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -153,7 +165,10 @@ export const useStatisticsStore = create<StatisticsStoreState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const diagnosticsData = await fetchStatsDiagnostics(dataset);
-      if (useTrajectoryStore.getState().activeDataset !== dataset) return;
+      if (useTrajectoryStore.getState().activeDataset !== dataset) {
+        set({ loading: false });
+        return;
+      }
       set({ diagnosticsData, loading: false });
     } catch (err) {
       set({ error: String(err), loading: false });
