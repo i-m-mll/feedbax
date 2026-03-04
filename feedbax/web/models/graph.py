@@ -134,6 +134,7 @@ class NodeUIState(BaseModel):
     position: Dict[str, float]
     collapsed: bool = False
     selected: bool = False
+    reversed: bool = False
     size: Optional[Dict[str, float]] = None
 
 
