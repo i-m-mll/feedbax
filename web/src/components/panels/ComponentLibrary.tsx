@@ -37,6 +37,8 @@ import {
   Pause,
   Eye,
   Layers,
+  Hexagon,
+  Cog,
   Info,
 } from 'lucide-react';
 import { useComponents } from '@/hooks/useComponents';
@@ -56,6 +58,9 @@ const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
 
 /** Contexts where only the suggested categories should appear (exclusive filtering). */
 const CONTEXT_EXCLUSIVE_FILTER = new Set(['penzai', 'acausal', 'muscle', 'network']);
+
+/** Blank subgraph type containers — shown at top under Structure with a purple "Type" badge. */
+const SUBGRAPH_TYPES = new Set(['Subgraph', 'PenzaiSubgraph', 'AcausalSystem']);
 
 const iconMap = {
   CircuitBoard,
@@ -93,6 +98,8 @@ const iconMap = {
   Pause,
   Eye,
   Layers,
+  Hexagon,
+  Cog,
 };
 
 export function ComponentLibrary() {
@@ -104,7 +111,7 @@ export function ComponentLibrary() {
   const currentContext = useGraphStore((state) => state.currentContext);
   const isExclusiveContext = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
   const coreComponents = useMemo(
-    () => components.filter((component) => component.name === 'Subgraph'),
+    () => components.filter((component) => SUBGRAPH_TYPES.has(component.name)),
     [components]
   );
 
@@ -119,7 +126,7 @@ export function ComponentLibrary() {
         )
       : components;
 
-    const withoutPinned = filtered.filter((component) => component.name !== 'Subgraph');
+    const withoutPinned = filtered.filter((component) => !SUBGRAPH_TYPES.has(component.name));
     const all = groupComponentsByCategory(withoutPinned);
 
     const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
@@ -272,6 +279,8 @@ function CategorySection({
 
 function ComponentCard({ component }: { component: ComponentDefinition }) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
+  // Blank subgraph type containers (Subgraph, PenzaiSubgraph, AcausalSystem) get purple "Type" badge.
+  const isSubgraphType = SUBGRAPH_TYPES.has(component.name);
   // Components with a template_graph are CDE presets: use violet accent to match old styling.
   const isCdeTemplate = Boolean(component.template_graph);
 
@@ -286,31 +295,38 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
       onDragStart={onDragStart}
       className={clsx(
         'rounded-xl bg-white/90 p-3 shadow-soft cursor-grab transition',
-        isCdeTemplate
-          ? 'border border-violet-100 hover:border-violet-300 hover:-translate-y-0.5 hover:shadow'
-          : 'border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5'
+        isSubgraphType
+          ? 'border border-violet-200 hover:border-violet-400 hover:-translate-y-0.5 hover:shadow'
+          : isCdeTemplate
+            ? 'border border-violet-100 hover:border-violet-300 hover:-translate-y-0.5 hover:shadow'
+            : 'border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5'
       )}
     >
       <div className="flex items-center gap-2">
         <div
           className={clsx(
             'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
-            isCdeTemplate ? 'bg-violet-50' : 'bg-slate-100'
+            isSubgraphType ? 'bg-violet-100' : isCdeTemplate ? 'bg-violet-50' : 'bg-slate-100'
           )}
         >
           <Icon
-            className={clsx('w-5 h-5', isCdeTemplate ? 'text-violet-500' : 'text-slate-600')}
+            className={clsx('w-5 h-5', isSubgraphType ? 'text-violet-600' : isCdeTemplate ? 'text-violet-500' : 'text-slate-600')}
           />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="text-sm font-semibold text-slate-800 truncate">{component.name}</div>
-            {isCdeTemplate && (
-              <span className="shrink-0 rounded-full bg-violet-50 border border-violet-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-500">
-                Subgraph
+            {isSubgraphType && (
+              <span className="shrink-0 rounded-full bg-violet-100 border border-violet-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-600">
+                Type
               </span>
             )}
-            {!isCdeTemplate && component.is_composite && (
+            {!isSubgraphType && isCdeTemplate && (
+              <span className="shrink-0 rounded-full bg-violet-50 border border-violet-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-500">
+                Preset
+              </span>
+            )}
+            {!isSubgraphType && !isCdeTemplate && component.is_composite && (
               <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
                 Composite
               </span>
