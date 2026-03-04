@@ -124,7 +124,7 @@ export function CustomNode({ data, selected }: NodeProps) {
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
         }}
         className={clsx(
-          'w-5 h-5 border-2 border-white shadow-soft cursor-crosshair',
+          'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
           hasStateIn ? 'bg-slate-500' : 'bg-slate-300'
         )}
       />
@@ -141,7 +141,7 @@ export function CustomNode({ data, selected }: NodeProps) {
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
         }}
         className={clsx(
-          'w-5 h-5 border-2 border-white shadow-soft cursor-crosshair',
+          'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
           hasStateOut ? 'bg-slate-500' : 'bg-slate-300'
         )}
       />
@@ -262,7 +262,7 @@ export function CustomNode({ data, selected }: NodeProps) {
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
               }}
               className={clsx(
-                'w-[18px] h-[18px] z-20 border border-white shadow-soft',
+                'w-[22px] h-[22px] z-20 border border-white shadow-soft',
                 connectedInputs.has(port) ? 'bg-brand-500' : 'bg-slate-300'
               )}
             />
@@ -282,7 +282,7 @@ export function CustomNode({ data, selected }: NodeProps) {
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
               }}
               className={clsx(
-                'w-[18px] h-[18px] z-20 border border-white shadow-soft transition-all duration-150',
+                'w-[22px] h-[22px] z-20 border border-white shadow-soft transition-all duration-150',
                 connectedOutputs.has(port) ? 'bg-mint-500' : 'bg-slate-300',
                 highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125'
               )}
