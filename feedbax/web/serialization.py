@@ -396,11 +396,10 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 else:
                     plant_type = type(skeleton).__name__
             params = {
-                "plant_type": plant_type,
                 "dt": component.dt,
             }
             nodes[name] = ComponentSpec(
-                type="Mechanics",
+                type=plant_type,
                 params=params,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -880,9 +879,6 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             next_params = dict(params)
             next_params["plant_type"] = node_spec.type
             nodes[node_name] = _build_mechanics(next_params)
-            continue
-        if node_spec.type == "Mechanics":
-            nodes[node_name] = _build_mechanics(params)
             continue
         if node_spec.type == "Channel":
             nodes[node_name] = _build_channel(params)

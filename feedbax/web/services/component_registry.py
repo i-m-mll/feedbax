@@ -527,33 +527,6 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
-                name='Mechanics',
-                category='Mechanics',
-                description='Biomechanical plant simulator for the limb.',
-                param_schema=[
-                    ParamSchema(
-                        name='plant_type',
-                        type='enum',
-                        options=['TwoLinkArm', 'PointMass'],
-                        default='TwoLinkArm',
-                        required=True,
-                    ),
-                    ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
-                ],
-                input_ports=['force'],
-                output_ports=['effector', 'state'],
-                icon='Activity',
-                port_types=PortTypeSpec(
-                    inputs={'force': PortType(dtype='vector')},
-                    outputs={
-                        'effector': PortType(dtype='state'),
-                        'state': PortType(dtype='state'),
-                    },
-                ),
-            )
-        )
-        self.register(
-            ComponentMeta(
                 name='AcausalSystem',
                 category='Mechanics',
                 description='Assembled acausal mechanical system (mass-spring-damper etc.).',
