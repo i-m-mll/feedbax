@@ -1,10 +1,16 @@
+import { useState } from 'react';
 import { ComponentLibrary } from '@/components/panels/ComponentLibrary';
+import { TaskLibrary } from '@/components/panels/TaskLibrary';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import clsx from 'clsx';
+
+type ActiveTab = 'components' | 'tasks';
 
 export function Sidebar() {
   const { leftSidebarWidth, leftSidebarVisible, toggleLeftSidebar, setLeftSidebarWidth } =
     useLayoutStore();
+  const [activeTab, setActiveTab] = useState<ActiveTab>('components');
 
   if (!leftSidebarVisible) {
     return (
@@ -26,9 +32,30 @@ export function Sidebar() {
       className="border-r border-slate-100 bg-white/90 backdrop-blur-sm flex flex-col relative shrink-0"
     >
       <div className="px-4 pt-4 pb-2 flex items-center justify-between">
-        <h2 className="font-display text-xs uppercase tracking-[0.3em] text-slate-400">
-          Components
-        </h2>
+        <div className="flex gap-1">
+          <button
+            onClick={() => setActiveTab('components')}
+            className={clsx(
+              'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
+              activeTab === 'components'
+                ? 'bg-slate-100 text-slate-700 font-semibold'
+                : 'text-slate-400 hover:text-slate-600'
+            )}
+          >
+            Components
+          </button>
+          <button
+            onClick={() => setActiveTab('tasks')}
+            className={clsx(
+              'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
+              activeTab === 'tasks'
+                ? 'bg-slate-100 text-slate-700 font-semibold'
+                : 'text-slate-400 hover:text-slate-600'
+            )}
+          >
+            Tasks
+          </button>
+        </div>
         <button
           onClick={toggleLeftSidebar}
           className="p-1 rounded text-slate-400 hover:text-slate-600"
@@ -37,7 +64,7 @@ export function Sidebar() {
           <PanelLeftClose className="w-3.5 h-3.5" />
         </button>
       </div>
-      <ComponentLibrary />
+      {activeTab === 'components' ? <ComponentLibrary /> : <TaskLibrary />}
       <div
         className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-brand-300/50 active:bg-brand-400/50"
         onPointerDown={(e) => {
