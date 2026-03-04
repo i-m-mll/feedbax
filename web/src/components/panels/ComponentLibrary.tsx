@@ -127,7 +127,10 @@ export function ComponentLibrary() {
       : components;
 
     const withoutPinned = filtered.filter((component) => !SUBGRAPH_TYPES.has(component.name));
-    const all = groupComponentsByCategory(withoutPinned);
+    const withoutCdeInExclusiveContext = isExclusiveContext
+      ? withoutPinned.filter((component) => !component.template_graph)
+      : withoutPinned;
+    const all = groupComponentsByCategory(withoutCdeInExclusiveContext);
 
     const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
 
