@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useTrainingStore } from '@/stores/trainingStore';
-import { ChevronDown, ChevronRight, ExternalLink, Crosshair } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
 
@@ -22,9 +22,12 @@ export function CustomNode({ data, selected }: NodeProps) {
   const { spec, label, collapsed } = nodeData;
   const resizeMode = useLayoutStore((state) => state.resizeMode);
   const toggleNodeCollapse = useGraphStore((state) => state.toggleNodeCollapse);
+  const toggleNodeReversed = useGraphStore((state) => state.toggleNodeReversed);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const hasSubgraph = useGraphStore((state) => Boolean(state.graph.subgraphs?.[label]));
   const highlightedProbeSelector = useTrainingStore((state) => state.highlightedProbeSelector);
+
+  const reversed = nodeData.reversed ?? false;
 
   // Context menu state for port right-click
   const [contextMenu, setContextMenu] = useState<{
@@ -110,31 +113,41 @@ export function CustomNode({ data, selected }: NodeProps) {
       />
       <Handle
         type="target"
-        position={Position.Left}
+        position={reversed ? Position.Right : Position.Left}
         id="__state_in"
-        style={{ top: HEADER_HEIGHT / 2, left: HANDLE_OFFSET - 2, transform: 'translateY(-50%)' }}
+        style={{
+          top: HEADER_HEIGHT / 2,
+          [reversed ? 'right' : 'left']: HANDLE_OFFSET - 2,
+          transform: 'translateY(-50%)',
+          clipPath: reversed
+            ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
+            : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+        }}
         className={clsx(
-          'w-4 h-4 rounded-full border-2 border-white shadow-soft cursor-crosshair',
+          'w-5 h-5 border-2 border-white shadow-soft cursor-crosshair',
           hasStateIn ? 'bg-slate-500' : 'bg-slate-300'
         )}
       />
       <Handle
         type="source"
-        position={Position.Right}
+        position={reversed ? Position.Left : Position.Right}
         id="__state_out"
         style={{
           top: HEADER_HEIGHT / 2,
-          right: HANDLE_OFFSET - 2,
+          [reversed ? 'left' : 'right']: HANDLE_OFFSET - 2,
           transform: 'translateY(-50%)',
+          clipPath: reversed
+            ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
+            : 'polygon(0% 0%, 100% 50%, 0% 100%)',
         }}
         className={clsx(
-          'w-4 h-4 rounded-full border-2 border-white shadow-soft cursor-crosshair',
+          'w-5 h-5 border-2 border-white shadow-soft cursor-crosshair',
           hasStateOut ? 'bg-slate-500' : 'bg-slate-300'
         )}
       />
       <div
         className={clsx(
-          'px-3 py-2 bg-slate-50/70 flex items-center justify-between gap-3 overflow-hidden',
+          'px-3 py-2 bg-slate-50/70 flex items-center gap-3 overflow-hidden',
           collapsedEffective ? 'rounded-xl' : 'border-b border-slate-100 rounded-t-xl'
         )}
         onDoubleClick={(event) => {
@@ -146,28 +159,48 @@ export function CustomNode({ data, selected }: NodeProps) {
           }
         }}
       >
-        <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
-          {canCollapse && (
-            <button
-              className="text-slate-400 hover:text-slate-600"
-              onClick={(event) => {
-                event.stopPropagation();
-                toggleNodeCollapse(label);
-              }}
-              title={collapsed ? 'Expand node' : 'Collapse node'}
-            >
-              {collapsed ? (
-                <ChevronRight className="w-3 h-3" />
-              ) : (
-                <ChevronDown className="w-3 h-3" />
-              )}
-            </button>
-          )}
-          <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
-            {label}
+        {/* Left slot: name+chevron (normal) or type string (reversed) */}
+        {reversed ? (
+          !collapsedEffective && (
+            <div className="text-[11px] text-slate-500 shrink-0 truncate max-w-[110px]" title={spec.type}>
+              {spec.type}
+            </div>
+          )
+        ) : (
+          <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
+            {canCollapse && (
+              <button
+                className="text-slate-400 hover:text-slate-600"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleNodeCollapse(label);
+                }}
+                title={collapsed ? 'Expand node' : 'Collapse node'}
+              >
+                {collapsed ? (
+                  <ChevronRight className="w-3 h-3" />
+                ) : (
+                  <ChevronDown className="w-3 h-3" />
+                )}
+              </button>
+            )}
+            <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
+              {label}
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
+        )}
+        {/* Right slot: action icons + type (normal) or name+chevron (reversed) */}
+        <div className={clsx('flex items-center gap-2 shrink-0', reversed && 'ml-auto')}>
+          <button
+            className="text-slate-400 hover:text-brand-600"
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleNodeReversed(label);
+            }}
+            title={reversed ? 'Restore default direction' : 'Reverse node direction'}
+          >
+            <ArrowLeftRight className="w-3.5 h-3.5" />
+          </button>
           {isComposite && (
             <button
               className="text-slate-400 hover:text-brand-600"
@@ -180,10 +213,34 @@ export function CustomNode({ data, selected }: NodeProps) {
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           )}
-          {!collapsedEffective && (
-            <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
-              {spec.type}
-            </div>
+          {reversed ? (
+            <>
+              <div className="text-sm font-medium text-slate-800 truncate" title={label}>
+                {label}
+              </div>
+              {canCollapse && (
+                <button
+                  className="text-slate-400 hover:text-slate-600"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggleNodeCollapse(label);
+                  }}
+                  title={collapsed ? 'Expand node' : 'Collapse node'}
+                >
+                  {collapsed ? (
+                    <ChevronLeft className="w-3 h-3" />
+                  ) : (
+                    <ChevronDown className="w-3 h-3" />
+                  )}
+                </button>
+              )}
+            </>
+          ) : (
+            !collapsedEffective && (
+              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                {spec.type}
+              </div>
+            )
           )}
         </div>
       </div>
@@ -194,15 +251,18 @@ export function CustomNode({ data, selected }: NodeProps) {
             <Handle
               key={`handle-in-${port}`}
               type="target"
-              position={Position.Left}
+              position={reversed ? Position.Right : Position.Left}
               id={port}
               style={{
                 top: rowCenterInBody(index),
-                left: HANDLE_OFFSET,
+                [reversed ? 'right' : 'left']: HANDLE_OFFSET,
                 transform: 'translateY(-50%)',
+                clipPath: reversed
+                  ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
+                  : 'polygon(0% 0%, 100% 50%, 0% 100%)',
               }}
               className={clsx(
-                'w-3 h-3 z-20 border border-white shadow-soft',
+                'w-[18px] h-[18px] z-20 border border-white shadow-soft',
                 connectedInputs.has(port) ? 'bg-brand-500' : 'bg-slate-300'
               )}
             />
@@ -211,15 +271,18 @@ export function CustomNode({ data, selected }: NodeProps) {
             <Handle
               key={`handle-out-${port}`}
               type="source"
-              position={Position.Right}
+              position={reversed ? Position.Left : Position.Right}
               id={port}
               style={{
                 top: rowCenterInBody(index),
-                right: HANDLE_OFFSET,
+                [reversed ? 'left' : 'right']: HANDLE_OFFSET,
                 transform: 'translateY(-50%)',
+                clipPath: reversed
+                  ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
+                  : 'polygon(0% 0%, 100% 50%, 0% 100%)',
               }}
               className={clsx(
-                'w-3 h-3 z-20 border border-white shadow-soft transition-all duration-150',
+                'w-[18px] h-[18px] z-20 border border-white shadow-soft transition-all duration-150',
                 connectedOutputs.has(port) ? 'bg-mint-500' : 'bg-slate-300',
                 highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125'
               )}
@@ -229,10 +292,13 @@ export function CustomNode({ data, selected }: NodeProps) {
           {spec.input_ports.map((port, index) => (
             <div
               key={`label-in-${port}`}
-              className="absolute left-0 flex items-center gap-2 text-slate-600"
+              className={clsx(
+                'absolute flex items-center gap-2 text-slate-600',
+                reversed && 'flex-row-reverse'
+              )}
               style={{
                 top: rowCenterInBody(index),
-                left: LABEL_OFFSET,
+                [reversed ? 'right' : 'left']: LABEL_OFFSET,
                 transform: 'translateY(-50%)',
               }}
             >
@@ -243,12 +309,13 @@ export function CustomNode({ data, selected }: NodeProps) {
             <div
               key={`label-out-${port}`}
               className={clsx(
-                'absolute right-0 flex items-center gap-1 justify-end',
+                'absolute flex items-center gap-1',
+                reversed ? 'justify-start' : 'justify-end',
                 highlightedPorts.has(port) ? 'text-amber-600 font-medium' : 'text-slate-600'
               )}
               style={{
                 top: rowCenterInBody(index),
-                right: LABEL_OFFSET,
+                [reversed ? 'left' : 'right']: LABEL_OFFSET,
                 transform: 'translateY(-50%)',
               }}
             >
