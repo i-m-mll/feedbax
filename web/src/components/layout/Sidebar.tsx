@@ -1,12 +1,11 @@
 import { useState } from 'react';
 import { ComponentLibrary } from '@/components/panels/ComponentLibrary';
 import { TaskLibrary } from '@/components/panels/TaskLibrary';
-import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import clsx from 'clsx';
 
-type ActiveTab = 'components' | 'tasks' | 'validate';
+type ActiveTab = 'components' | 'tasks';
 
 export function Sidebar() {
   const { leftSidebarWidth, leftSidebarVisible, toggleLeftSidebar, setLeftSidebarWidth } =
@@ -56,17 +55,6 @@ export function Sidebar() {
           >
             Tasks
           </button>
-          <button
-            onClick={() => setActiveTab('validate')}
-            className={clsx(
-              'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
-              activeTab === 'validate'
-                ? 'bg-slate-100 text-slate-700 font-semibold'
-                : 'text-slate-400 hover:text-slate-600'
-            )}
-          >
-            Validate
-          </button>
         </div>
         <button
           onClick={toggleLeftSidebar}
@@ -78,7 +66,6 @@ export function Sidebar() {
       </div>
       {activeTab === 'components' && <ComponentLibrary />}
       {activeTab === 'tasks' && <TaskLibrary />}
-      {activeTab === 'validate' && <ValidationPanel />}
       <div
         className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-brand-300/50 active:bg-brand-400/50"
         onPointerDown={(e) => {
