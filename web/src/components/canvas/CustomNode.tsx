@@ -1,11 +1,11 @@
-import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react';
+import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { GraphNodeData } from '@/types/graph';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Crosshair } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
 
 const DEFAULT_WIDTH = 220;
@@ -17,7 +17,7 @@ const HANDLE_OFFSET = -6;
 const MIN_WIDTH = 180;
 const MIN_HEIGHT = 96;
 
-export function CustomNode({ data, selected }: NodeProps) {
+export function CustomNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const { spec, label, collapsed } = nodeData;
   const resizeMode = useLayoutStore((state) => state.resizeMode);
@@ -28,6 +28,11 @@ export function CustomNode({ data, selected }: NodeProps) {
   const highlightedProbeSelector = useTrainingStore((state) => state.highlightedProbeSelector);
 
   const reversed = nodeData.reversed ?? false;
+
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, reversed, updateNodeInternals]);
 
   // Context menu state for port right-click
   const [contextMenu, setContextMenu] = useState<{
@@ -122,6 +127,8 @@ export function CustomNode({ data, selected }: NodeProps) {
           clipPath: reversed
             ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+          width: '24px',
+          height: '24px',
         }}
         className={clsx(
           'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
@@ -139,6 +146,8 @@ export function CustomNode({ data, selected }: NodeProps) {
           clipPath: reversed
             ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+          width: '24px',
+          height: '24px',
         }}
         className={clsx(
           'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
@@ -260,6 +269,8 @@ export function CustomNode({ data, selected }: NodeProps) {
                 clipPath: reversed
                   ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+                width: '22px',
+                height: '22px',
               }}
               className={clsx(
                 'w-[22px] h-[22px] z-20 border border-white shadow-soft',
@@ -280,6 +291,8 @@ export function CustomNode({ data, selected }: NodeProps) {
                 clipPath: reversed
                   ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+                width: '22px',
+                height: '22px',
               }}
               className={clsx(
                 'w-[22px] h-[22px] z-20 border border-white shadow-soft transition-all duration-150',
