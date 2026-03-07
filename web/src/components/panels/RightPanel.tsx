@@ -1,5 +1,6 @@
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { TreescopePanel } from '@/components/panels/TreescopePanel';
+import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { PanelRightOpen, PanelRightClose } from 'lucide-react';
 
@@ -41,6 +42,7 @@ export function RightPanel() {
       <div className="flex-1 overflow-y-auto">
         <PropertiesPanel />
         <TreescopePanel />
+        <ValidationPanel />
       </div>
       <div
         className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-brand-300/50 active:bg-brand-400/50"
