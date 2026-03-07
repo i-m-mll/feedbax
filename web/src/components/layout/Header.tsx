@@ -1,6 +1,5 @@
 import {
   Settings,
-  User,
   Save,
   FolderOpen,
   Plus,
@@ -11,8 +10,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
-import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -22,9 +21,7 @@ export function Header() {
   const [renameValue, setRenameValue] = useState('');
   const pendingInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
-  const settingsRef = useRef<HTMLDivElement | null>(null);
   const saveMutation = useSaveGraph();
-  const { showMinimap, toggleMinimap } = useSettingsStore();
   const {
     graph,
     uiState,
@@ -99,6 +96,8 @@ export function Header() {
   };
 
   return (
+    <>
+    {settingsOpen && <SettingsOverlay onClose={() => setSettingsOpen(false)} />}
     <header className="relative z-40 h-12 flex items-center gap-2 px-3 border-b border-slate-100 bg-white/80 backdrop-blur">
       {/* Logo — fixed width */}
       <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600 pr-2">
@@ -245,36 +244,16 @@ export function Header() {
           <Download className="w-4 h-4" />
         </button>
         <OpenProjectDropdown onOpen={handleOpen} onBeforeOpen={() => setSettingsOpen(false)} />
-        <div ref={settingsRef} className="relative">
-          <button
-            className="p-1.5 rounded-full hover:bg-slate-100"
-            title="Settings"
-            onClick={() => setSettingsOpen((prev) => !prev)}
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-          {settingsOpen && (
-            <div className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-3">
-              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
-                App Settings
-              </div>
-              <label className="mt-3 flex items-center justify-between text-sm text-slate-600">
-                <span>Show minimap</span>
-                <input
-                  type="checkbox"
-                  checked={showMinimap}
-                  onChange={toggleMinimap}
-                  className="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-500"
-                />
-              </label>
-            </div>
-          )}
-        </div>
-        <button className="p-1.5 rounded-full hover:bg-slate-100">
-          <User className="w-4 h-4" />
+        <button
+          className="p-1.5 rounded-full hover:bg-slate-100"
+          title="Settings"
+          onClick={() => setSettingsOpen((prev) => !prev)}
+        >
+          <Settings className="w-4 h-4" />
         </button>
       </div>
     </header>
+    </>
   );
 }
 
