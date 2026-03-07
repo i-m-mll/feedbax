@@ -745,6 +745,7 @@ function normalizeUiState(
         position: { x: DEFAULT_POSITION.x + offset, y: DEFAULT_POSITION.y + offset },
         collapsed: false,
         selected: false,
+        reversed: false,
       };
       offset += 60;
     }
