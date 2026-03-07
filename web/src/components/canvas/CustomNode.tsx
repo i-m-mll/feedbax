@@ -122,6 +122,8 @@ export function CustomNode({ data, selected }: NodeProps) {
           clipPath: reversed
             ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+          width: '24px',
+          height: '24px',
         }}
         className={clsx(
           'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
@@ -139,6 +141,8 @@ export function CustomNode({ data, selected }: NodeProps) {
           clipPath: reversed
             ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+          width: '24px',
+          height: '24px',
         }}
         className={clsx(
           'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
@@ -260,6 +264,8 @@ export function CustomNode({ data, selected }: NodeProps) {
                 clipPath: reversed
                   ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+                width: '22px',
+                height: '22px',
               }}
               className={clsx(
                 'w-[22px] h-[22px] z-20 border border-white shadow-soft',
@@ -280,6 +286,8 @@ export function CustomNode({ data, selected }: NodeProps) {
                 clipPath: reversed
                   ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
+                width: '22px',
+                height: '22px',
               }}
               className={clsx(
                 'w-[22px] h-[22px] z-20 border border-white shadow-soft transition-all duration-150',
