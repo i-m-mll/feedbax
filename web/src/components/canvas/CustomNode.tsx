@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useTrainingStore } from '@/stores/trainingStore';
-import { ArrowLeftRight, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Crosshair } from 'lucide-react';
+import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
 
@@ -127,13 +127,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           clipPath: reversed
             ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-          width: '24px',
-          height: '24px',
+          width: '8px',
+          height: '8px',
         }}
-        className={clsx(
-          'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
-          hasStateIn ? 'bg-slate-500' : 'bg-slate-300'
-        )}
+        className="w-2 h-2 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
       />
       <Handle
         type="source"
@@ -146,13 +143,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           clipPath: reversed
             ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-          width: '24px',
-          height: '24px',
+          width: '8px',
+          height: '8px',
         }}
-        className={clsx(
-          'w-6 h-6 border-2 border-white shadow-soft cursor-crosshair',
-          hasStateOut ? 'bg-slate-500' : 'bg-slate-300'
-        )}
+        className="w-2 h-2 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
       />
       <div
         className={clsx(
@@ -163,12 +157,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           event.stopPropagation();
           if (isComposite) {
             enterSubgraph(label);
-          } else if (canCollapse) {
-            toggleNodeCollapse(label);
           }
         }}
       >
-        {/* Left slot: name+chevron (normal) or type string (reversed) */}
+        {/* Left slot: name (normal) or type string (reversed) */}
         {reversed ? (
           !collapsedEffective && (
             <div className="text-[11px] text-slate-500 shrink-0 truncate max-w-[110px]" title={spec.type}>
@@ -177,22 +169,6 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           )
         ) : (
           <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
-            {canCollapse && (
-              <button
-                className="text-slate-400 hover:text-slate-600"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  toggleNodeCollapse(label);
-                }}
-                title={collapsed ? 'Expand node' : 'Collapse node'}
-              >
-                {collapsed ? (
-                  <ChevronRight className="w-3 h-3" />
-                ) : (
-                  <ChevronDown className="w-3 h-3" />
-                )}
-              </button>
-            )}
             <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
               {label}
             </div>
@@ -227,22 +203,6 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               <div className="text-sm font-medium text-slate-800 truncate" title={label}>
                 {label}
               </div>
-              {canCollapse && (
-                <button
-                  className="text-slate-400 hover:text-slate-600"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    toggleNodeCollapse(label);
-                  }}
-                  title={collapsed ? 'Expand node' : 'Collapse node'}
-                >
-                  {collapsed ? (
-                    <ChevronLeft className="w-3 h-3" />
-                  ) : (
-                    <ChevronDown className="w-3 h-3" />
-                  )}
-                </button>
-              )}
             </>
           ) : (
             !collapsedEffective && (
@@ -269,13 +229,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 clipPath: reversed
                   ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-                width: '22px',
-                height: '22px',
+                width: '8px',
+                height: '8px',
               }}
-              className={clsx(
-                'w-[22px] h-[22px] z-20 border border-white shadow-soft',
-                connectedInputs.has(port) ? 'bg-brand-500' : 'bg-slate-300'
-              )}
+              className="w-2 h-2 z-20 border border-white shadow-soft bg-slate-400"
             />
           ))}
           {spec.output_ports.map((port, index) => (
@@ -291,12 +248,11 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 clipPath: reversed
                   ? 'polygon(100% 0%, 0% 50%, 100% 100%)'
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
-                width: '22px',
-                height: '22px',
+                width: '8px',
+                height: '8px',
               }}
               className={clsx(
-                'w-[22px] h-[22px] z-20 border border-white shadow-soft transition-all duration-150',
-                connectedOutputs.has(port) ? 'bg-mint-500' : 'bg-slate-300',
+                'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
                 highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125'
               )}
               onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
