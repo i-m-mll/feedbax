@@ -73,10 +73,21 @@ export function Header() {
         viewport: { x: 0, y: 0, zoom: 1 },
         node_states: {},
       });
+      localStorage.setItem('feedbax:lastProjectId', id);
     } catch (error) {
       console.error(error);
     }
   };
+
+  // Auto-load the last opened project on mount
+  useEffect(() => {
+    if (graphId !== null) return;
+    const lastId = localStorage.getItem('feedbax:lastProjectId');
+    if (lastId) {
+      handleOpen(lastId);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleExport = async () => {
     if (!graphId) return;

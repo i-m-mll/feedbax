@@ -748,6 +748,12 @@ function normalizeUiState(
         reversed: false,
       };
       offset += 60;
+    } else {
+      // Explicitly ensure reversed is always defined (not undefined from older saves)
+      node_states[nodeId] = {
+        ...node_states[nodeId],
+        reversed: node_states[nodeId].reversed ?? false,
+      };
     }
   }
 
