@@ -350,6 +350,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
               ? { ...gs.graph.metadata, name }
               : { name, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), version: '1.0.0' },
           },
+          isDirty: true,
         });
       }
     },

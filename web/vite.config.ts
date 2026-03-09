@@ -12,6 +12,12 @@ export default defineConfig({
         navigateFallback: '/index.html',
         runtimeCaching: [
           {
+            // Graph state must never be served from cache (Cache-Control: no-store is ignored by NetworkFirst)
+            urlPattern: /^https?:\/\/.*\/api\/graphs(\/.*)?$/i,
+            handler: 'NetworkOnly',
+          },
+          {
+            // Training status, probes, etc. can tolerate brief staleness
             urlPattern: /^https?:\/\/.*\/api\/.*/i,
             handler: 'NetworkFirst',
             options: {
