@@ -161,6 +161,7 @@ class GraphProject(BaseModel):
     metadata: GraphMetadata
     graph: GraphSpec
     ui_state: Optional[GraphUIState] = None
+    demo_training_data: Optional[Any] = None
 
 
 class ValidationError(BaseModel):

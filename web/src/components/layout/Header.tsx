@@ -11,6 +11,7 @@ import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
 import { useGraphStore } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useTrainingStore } from '@/stores/trainingStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 
 export function Header() {
@@ -73,6 +74,9 @@ export function Header() {
         viewport: { x: 0, y: 0, zoom: 1 },
         node_states: {},
       });
+      if (data.demo_training_data) {
+        useTrainingStore.getState().seedDemoData(data.demo_training_data);
+      }
       localStorage.setItem('feedbax:lastProjectId', id);
     } catch (error) {
       console.error(error);

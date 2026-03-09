@@ -37,7 +37,11 @@ async def get_graph(graph_id: str):
         record = service.get_graph(graph_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
-    return {'graph': record.project.graph, 'ui_state': record.project.ui_state}
+    return {
+        'graph': record.project.graph,
+        'ui_state': record.project.ui_state,
+        'demo_training_data': record.project.demo_training_data,
+    }
 
 
 @router.put('/{graph_id}')
