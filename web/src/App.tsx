@@ -65,15 +65,19 @@ export default function App() {
   useEffect(() => {
     const handlePageHide = (event: PageTransitionEvent) => {
       if (event.persisted) return; // page going into bfcache, not unloading
-      const { isDirty: dirty, graphId: gid, graph, uiState } = useGraphStore.getState();
+      const { isDirty: dirty, graphId: gid, graph, uiState, graphStack } = useGraphStore.getState();
       if (!dirty || !gid) return;
+      // Always save the root graph — if inside a subgraph, graphStack[0] is the root context.
+      // Saving the current (subgraph) view to the top-level ID would corrupt the project.
+      const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+      const rootUiState = graphStack.length > 0 ? graphStack[0].uiState : uiState;
       // Cancel pending debounce timer
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
       }
       const body = new Blob(
-        [JSON.stringify({ graph, ui_state: uiState })],
+        [JSON.stringify({ graph: rootGraph, ui_state: rootUiState })],
         { type: 'application/json' }
       );
       const sent = navigator.sendBeacon(`/api/graphs/${gid}/beacon`, body);
@@ -82,7 +86,7 @@ export default function App() {
         fetch(`/api/graphs/${gid}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ graph, ui_state: uiState }),
+          body: JSON.stringify({ graph: rootGraph, ui_state: rootUiState }),
           keepalive: true,
         }).catch(() => {});
       }
