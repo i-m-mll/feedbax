@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { toast, Toaster } from 'sonner';
 import { Header } from '@/components/layout/Header';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { TopShelf } from '@/components/layout/TopShelf';
@@ -28,19 +29,67 @@ export default function App() {
   const graphStack = useGraphStore((s) => s.graphStack);
   const inSubgraph = graphStack.length > 0;
 
+  // Lifted timer ref so the pagehide handler can cancel a pending debounce.
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guard against concurrent in-flight saves; re-arm after completion if still dirty.
+  const savingRef = useRef(false);
+
   useEffect(() => {
     if (!isDirty || !graphId || inSubgraph) return;
-    const timer = setTimeout(async () => {
+
+    const doSave = async () => {
+      if (savingRef.current) return;
+      savingRef.current = true;
       const { graph, uiState, markSaved } = useGraphStore.getState();
       try {
         await updateGraph(graphId, graph, uiState);
         markSaved(graphId);
       } catch (e) {
-        console.warn('[auto-save] failed:', e);
+        toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
+      } finally {
+        savingRef.current = false;
+        // If a new edit arrived while the PUT was in-flight, re-arm the timer.
+        if (useGraphStore.getState().isDirty) {
+          timerRef.current = setTimeout(doSave, AUTO_SAVE_DELAY_MS);
+        }
       }
-    }, AUTO_SAVE_DELAY_MS);
-    return () => clearTimeout(timer);
+    };
+
+    timerRef.current = setTimeout(doSave, AUTO_SAVE_DELAY_MS);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
   }, [isDirty, graphId, inSubgraph]);
+
+  // Flush unsaved changes on page unload via sendBeacon (more reliable than beforeunload).
+  useEffect(() => {
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) return; // page going into bfcache, not unloading
+      const { isDirty: dirty, graphId: gid, graph, uiState } = useGraphStore.getState();
+      if (!dirty || !gid) return;
+      // Cancel pending debounce timer
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      const body = new Blob(
+        [JSON.stringify({ graph, ui_state: uiState })],
+        { type: 'application/json' }
+      );
+      const sent = navigator.sendBeacon(`/api/graphs/${gid}/beacon`, body);
+      if (!sent) {
+        // Fallback: keepalive fetch (fire-and-forget)
+        fetch(`/api/graphs/${gid}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ graph, ui_state: uiState }),
+          keepalive: true,
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    return () => window.removeEventListener('pagehide', handlePageHide);
+  }, []); // empty deps — reads from store at event time
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [availableHeight, setAvailableHeight] = useState(0);
@@ -102,6 +151,8 @@ export default function App() {
   }, [availableHeight, topCollapsed, bottomCollapsed, bottomHeight]);
 
   return (
+    <>
+    <Toaster theme="dark" position="bottom-right" />
     <div className="min-h-screen flex flex-col">
       <Header />
       <div ref={containerRef} className="flex-1 min-h-0">
@@ -126,5 +177,6 @@ export default function App() {
       </div>
       <StatusBar />
     </div>
+    </>
   );
 }
