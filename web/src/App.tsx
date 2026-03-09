@@ -5,6 +5,8 @@ import { TopShelf } from '@/components/layout/TopShelf';
 import { BottomShelf } from '@/components/layout/BottomShelf';
 import { Divider } from '@/components/layout/Divider';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
+import { useGraphStore } from '@/stores/graphStore';
+import { updateGraph } from '@/api/client';
 import {
   useLayoutStore,
   BOTTOM_COLLAPSED_HEIGHT,
@@ -14,8 +16,32 @@ import {
   DIVIDER_HEIGHT,
 } from '@/stores/layoutStore';
 
+const AUTO_SAVE_DELAY_MS = 800;
+
 export default function App() {
   useAppShortcuts();
+
+  // Debounced auto-save: 800ms after the last dirty change, save to backend.
+  // Only fires when a graphId exists (i.e., graph was already saved at least once).
+  const isDirty = useGraphStore((s) => s.isDirty);
+  const graphId = useGraphStore((s) => s.graphId);
+  const graphStack = useGraphStore((s) => s.graphStack);
+  const inSubgraph = graphStack.length > 0;
+
+  useEffect(() => {
+    if (!isDirty || !graphId || inSubgraph) return;
+    const timer = setTimeout(async () => {
+      const { graph, uiState, markSaved } = useGraphStore.getState();
+      try {
+        await updateGraph(graphId, graph, uiState);
+        markSaved(graphId);
+      } catch (e) {
+        console.warn('[auto-save] failed:', e);
+      }
+    }, AUTO_SAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isDirty, graphId, inSubgraph]);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [availableHeight, setAvailableHeight] = useState(0);
   const {

@@ -51,7 +51,12 @@ export interface DemoTrainingData {
 }
 
 export async function fetchGraph(graphId: string) {
-  return request<{ graph: GraphSpec; ui_state: GraphUIState | null; demo_training_data: DemoTrainingData | null }>(`/api/graphs/${graphId}`);
+  return request<{
+    graph: GraphSpec;
+    ui_state: GraphUIState | null;
+    demo_training_data: DemoTrainingData | null;
+    metadata: { name: string; description?: string; created_at?: string; updated_at?: string } | null;
+  }>(`/api/graphs/${graphId}`);
 }
 
 export async function createGraph(graph: GraphSpec, uiState: GraphUIState | null) {
