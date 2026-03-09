@@ -2024,7 +2024,11 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           },
         };
       });
-      const dirty = changes.some((change) => change.type !== 'select');
+      const dirty = changes.some((change) => {
+        if (change.type === 'select') return false;
+        if (change.type === 'dimensions' && !(change as { resizing?: boolean }).resizing) return false;
+        return true;
+      });
       const edge_states = buildEdgeStates(graph, uiState, state.edgeStyle);
       const nextSelectedTapId =
         state.selectedTapId && uiState.tap_states?.[state.selectedTapId]
@@ -2049,7 +2053,11 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   onEdgesChange: (changes) => {
     set((state) => {
-      const shouldRecord = changes.some((change) => change.type !== 'select');
+      const shouldRecord = changes.some((change) => {
+        if (change.type === 'select') return false;
+        if (change.type === 'dimensions' && !(change as { resizing?: boolean }).resizing) return false;
+        return true;
+      });
       const past = shouldRecord
         ? [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY)
         : state.past;
