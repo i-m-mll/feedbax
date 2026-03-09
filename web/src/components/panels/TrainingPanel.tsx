@@ -7,7 +7,7 @@ import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
 import { LossTermDetail } from './LossTermDetail';
 import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
-import { fetchProbes, validateLossSpec } from '@/api/client';
+import { fetchProbes, validateLossSpec, downloadCheckpoint } from '@/api/client';
 import clsx from 'clsx';
 import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2 } from 'lucide-react';
 import {
@@ -24,7 +24,7 @@ import {
 const LOSS_TERM_COLORS = ['#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
 
 export function TrainingPanel() {
-  const { trainingSpec, setTrainingSpec, progress, status, lossHistory } = useTrainingStore();
+  const { trainingSpec, setTrainingSpec, progress, status, lossHistory, jobId } = useTrainingStore();
   const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
   const setLossValidationErrors = useTrainingStore((state) => state.setLossValidationErrors);
   const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);
@@ -596,20 +596,38 @@ export function TrainingPanel() {
         ) : (
           <div className="text-xs text-slate-400">No checkpoint yet</div>
         )}
-        <div className="relative group">
+        {status === 'completed' && jobId ? (
           <button
             type="button"
-            disabled
-            className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-xs font-semibold text-slate-400 cursor-not-allowed"
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-brand-200 bg-brand-50 py-1.5 text-xs font-semibold text-brand-700 hover:bg-brand-100 transition-colors"
             aria-label="Download checkpoint"
+            onClick={async () => {
+              try {
+                await downloadCheckpoint(jobId);
+              } catch (e) {
+                console.error('Checkpoint download failed', e);
+              }
+            }}
           >
             <Download className="w-3.5 h-3.5" />
-            Download checkpoint
+            Download weights
           </button>
-          <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap rounded bg-slate-700 px-2 py-1 text-[10px] text-white shadow">
-            Available when connected to real training worker
+        ) : (
+          <div className="relative group">
+            <button
+              type="button"
+              disabled
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 py-1.5 text-xs font-semibold text-slate-400 cursor-not-allowed"
+              aria-label="Download checkpoint"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download checkpoint
+            </button>
+            <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block whitespace-nowrap rounded bg-slate-700 px-2 py-1 text-[10px] text-white shadow">
+              Available when connected to real training worker
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {inSubgraph && (

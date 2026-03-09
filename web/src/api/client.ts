@@ -130,6 +130,26 @@ export async function resolveSelector(
   });
 }
 
+export async function fetchCheckpoint(jobId: string) {
+  return request<{ batch: number; loss: number; weights_available: boolean }>(
+    `/api/training/${jobId}/checkpoint`
+  );
+}
+
+export async function downloadCheckpoint(jobId: string): Promise<void> {
+  const response = await fetch(`/api/training/${jobId}/checkpoint/download`);
+  if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `feedbax_checkpoint_${jobId}.eqx`;
+  document.body.appendChild(a); // Firefox requires an attached element
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // --- Orchestration API ---
 
 export interface OrchestrationStatusResponse {
@@ -149,6 +169,7 @@ export interface LaunchInstanceRequest {
   worker_port?: number;
   auth_token?: string | null;
   ts_auth_key?: string | null;
+  feedbax_install_cmd?: string;
 }
 
 export async function launchInstance(params: LaunchInstanceRequest) {
