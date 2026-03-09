@@ -1,8 +1,12 @@
 from __future__ import annotations
+import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
@@ -82,6 +86,8 @@ async def start_training(payload: TrainingRequest):
     job_id = await training_service.start_training(
         payload.training_spec.n_batches,
         training_config=training_config,
+        training_spec=payload.training_spec.model_dump(),
+        task_spec=payload.task_spec.model_dump(),
     )
     return {'job_id': job_id}
 
@@ -104,6 +110,32 @@ async def get_checkpoint(job_id: str):
     if checkpoint is None:
         raise HTTPException(status_code=404, detail='Job not found')
     return checkpoint
+
+
+@router.get('/{job_id}/checkpoint/download')
+async def download_checkpoint(job_id: str):
+    """Download the serialized checkpoint file for a completed training job.
+
+    Proxies the binary ``.eqx`` file from the worker through the Studio
+    backend to the browser.  A temporary file is used for the proxy and
+    cleaned up automatically after the response is sent.
+    """
+    fd, dest = tempfile.mkstemp(suffix=".eqx")
+    os.close(fd)
+    try:
+        await training_service.download_checkpoint(job_id, dest)
+    except ValueError:
+        os.unlink(dest)
+        raise HTTPException(status_code=404, detail='Job not found')
+    except RuntimeError as exc:
+        os.unlink(dest)
+        raise HTTPException(status_code=503, detail=str(exc))
+    return FileResponse(
+        dest,
+        media_type="application/octet-stream",
+        filename=f"feedbax_checkpoint_{job_id}.eqx",
+        background=BackgroundTask(os.unlink, dest),
+    )
 
 
 # --- Probe and Loss Configuration Endpoints ---
