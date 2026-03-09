@@ -1,4 +1,5 @@
 import { useTrainingStore } from '@/stores/trainingStore';
+import { TrajectoryViewer } from './TrajectoryViewer';
 import { useTraining, extractNetworkParams } from '@/hooks/useTraining';
 import { useWorkerConfig } from '@/hooks/useWorkerConfig';
 import { useOrchestration } from '@/hooks/useOrchestration';
@@ -24,7 +25,7 @@ import {
 const LOSS_TERM_COLORS = ['#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
 
 export function TrainingPanel() {
-  const { trainingSpec, setTrainingSpec, progress, status, lossHistory, jobId } = useTrainingStore();
+  const { trainingSpec, setTrainingSpec, progress, status, lossHistory, jobId, latestTrajectory } = useTrainingStore();
   const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
   const setLossValidationErrors = useTrainingStore((state) => state.setLossValidationErrors);
   const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);
@@ -574,6 +575,7 @@ export function TrainingPanel() {
             </div>
           </>
         )}
+        {(lossHistory.length > 0 || latestTrajectory !== null) && <TrajectoryViewer />}
       </div>
       {status === 'completed' && (
         <div className="text-xs text-mint-500">Training completed.</div>
