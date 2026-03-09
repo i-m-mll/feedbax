@@ -56,6 +56,16 @@ async def update_graph(graph_id: str, payload: GraphUpdateRequest):
     return {'success': True}
 
 
+@router.post('/{graph_id}/beacon')
+async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
+    """sendBeacon endpoint for pagehide saves; returns 204 No Content."""
+    try:
+        service.update_graph(graph_id, payload.graph, payload.ui_state)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail='Graph not found') from exc
+    return Response(status_code=204)
+
+
 @router.delete('/{graph_id}')
 async def delete_graph(graph_id: str):
     service.delete_graph(graph_id)
