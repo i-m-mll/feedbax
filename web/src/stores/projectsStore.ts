@@ -143,7 +143,7 @@ interface ProjectsStoreState {
   tabs: OpenTab[];
   activeTabId: string;
   openNewTab: (name: string) => void;
-  openProjectInTab: (graphId: string, graph: GraphSpec, uiState: GraphUIState) => void;
+  openProjectInTab: (graphId: string, graph: GraphSpec, uiState: GraphUIState, projectName?: string) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   updateActiveTabLabel: (label: string) => void;
@@ -206,7 +206,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
     },
 
-    openProjectInTab: (graphId, graph, uiState) => {
+    openProjectInTab: (graphId, graph, uiState, projectName) => {
       const { tabs, activeTabId } = get();
       const updatedTabs = tabs.map((tab) =>
         tab.tabId === activeTabId
@@ -226,7 +226,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         isDirty: false,
         lastSavedAt: null,
         graphStack: [],
-        currentGraphLabel: graph.metadata?.name ?? 'Model',
+        currentGraphLabel: projectName ?? graph.metadata?.name ?? 'Untitled',
         currentContext: 'top-level',
         edgeStyle: 'bezier',
         past: [],

@@ -73,7 +73,7 @@ export function Header() {
       openProjectInTab(id, data.graph, data.ui_state ?? {
         viewport: { x: 0, y: 0, zoom: 1 },
         node_states: {},
-      });
+      }, data.metadata?.name ?? undefined);
       if (data.demo_training_data) {
         useTrainingStore.getState().seedDemoData(data.demo_training_data);
       }
