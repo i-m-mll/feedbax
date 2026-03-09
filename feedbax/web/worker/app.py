@@ -16,7 +16,7 @@ from typing import Any, Deque, Dict, Optional, Tuple
 import numpy as np
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 
@@ -45,6 +45,11 @@ class _Job:
     )
     thread: Optional[threading.Thread] = None
     status: WorkerStatus = WorkerStatus.IDLE
+    # Spec dicts forwarded from the API layer.
+    training_spec: Optional[Dict[str, Any]] = None
+    task_spec: Optional[Dict[str, Any]] = None
+    # Path to the serialized checkpoint file after training completes.
+    checkpoint_path: Optional[str] = None
     batch: int = 0
     last_loss: float = 0.0
     snapshot_interval: int = 100
@@ -108,40 +113,132 @@ class _TrainingCfg:
     snapshot_interval: int = 100
 
 
-def _extract_training_cfg(training_config: Optional[Dict[str, Any]]) -> _TrainingCfg:
+def _extract_training_cfg(
+    training_config: Optional[Dict[str, Any]],
+    task_spec: Optional[Dict[str, Any]] = None,
+) -> _TrainingCfg:
     """Parse a raw config dict into a normalized _TrainingCfg.
 
     Falls back to defaults for any missing or invalid field.
 
     Args:
         training_config: Optional dict from the ``/start`` request body.
+        task_spec: Optional task spec dict; overrides task params such as
+            ``n_reach_steps`` and ``effort_weight`` when present.
 
     Returns:
         A _TrainingCfg with all fields populated.
     """
     cfg = _TrainingCfg()
-    if training_config is None:
+    if training_config is None and task_spec is None:
         return cfg
 
-    def _get(key: str, default, cast=None):
-        val = training_config.get(key, default)
-        if val is None:
-            return default
+    if training_config is not None:
+        def _get(key: str, default, cast=None):
+            val = training_config.get(key, default)
+            if val is None:
+                return default
+            try:
+                return cast(val) if cast is not None else val
+            except (TypeError, ValueError):
+                return default
+
+        cfg.n_batches = _get("n_batches", cfg.n_batches, int)
+        cfg.batch_size = _get("batch_size", cfg.batch_size, int)
+        cfg.learning_rate = _get("learning_rate", cfg.learning_rate, float)
+        cfg.grad_clip = _get("grad_clip", cfg.grad_clip, float)
+        cfg.hidden_dim = _get("hidden_dim", cfg.hidden_dim, int)
+        cfg.network_type = _get("network_type", cfg.network_type, str)
+        cfg.n_reach_steps = _get("n_reach_steps", cfg.n_reach_steps, int)
+        cfg.effort_weight = _get("effort_weight", cfg.effort_weight, float)
+        cfg.snapshot_interval = _get("snapshot_interval", cfg.snapshot_interval, int)
+
+    if task_spec is not None:
+        task_params = task_spec.get("params", {})
+        for key, cast in [("n_reach_steps", int), ("effort_weight", float)]:
+            if key in task_params:
+                try:
+                    setattr(cfg, key, cast(task_params[key]))
+                except (TypeError, ValueError):
+                    pass
+
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Spec-driven optimizer and loss-weight helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_optimizer_from_spec(
+    training_spec: Optional[Dict[str, Any]],
+    cfg: "_TrainingCfg",
+):
+    """Build an optax optimizer from a training spec dict.
+
+    Args:
+        training_spec: Optional spec dict with an ``optimizer`` sub-dict.
+        cfg: Parsed training config (provides fallback learning rate and
+            grad-clip).
+
+    Returns:
+        An ``optax.GradientTransformation``.
+    """
+    import optax  # imported here so the module loads without JAX
+
+    clip = optax.clip_by_global_norm(cfg.grad_clip)
+    if training_spec is None:
+        return optax.chain(clip, optax.adamw(cfg.learning_rate, weight_decay=1e-6))
+
+    opt_spec = training_spec.get("optimizer", {})
+    opt_type = str(opt_spec.get("type", "adamw")).lower()
+    params = opt_spec.get("params", {})
+
+    def _p(key, default):
+        v = params.get(key, default)
         try:
-            return cast(val) if cast is not None else val
+            return float(v)
         except (TypeError, ValueError):
             return default
 
-    cfg.n_batches = _get("n_batches", cfg.n_batches, int)
-    cfg.batch_size = _get("batch_size", cfg.batch_size, int)
-    cfg.learning_rate = _get("learning_rate", cfg.learning_rate, float)
-    cfg.grad_clip = _get("grad_clip", cfg.grad_clip, float)
-    cfg.hidden_dim = _get("hidden_dim", cfg.hidden_dim, int)
-    cfg.network_type = _get("network_type", cfg.network_type, str)
-    cfg.n_reach_steps = _get("n_reach_steps", cfg.n_reach_steps, int)
-    cfg.effort_weight = _get("effort_weight", cfg.effort_weight, float)
-    cfg.snapshot_interval = _get("snapshot_interval", cfg.snapshot_interval, int)
-    return cfg
+    lr = _p("learning_rate", cfg.learning_rate)
+
+    if opt_type == "adam":
+        inner = optax.adam(lr, b1=_p("b1", 0.9), b2=_p("b2", 0.999))
+    elif opt_type == "sgd":
+        inner = optax.sgd(lr, momentum=_p("momentum", 0.0))
+    elif opt_type == "rmsprop":
+        inner = optax.rmsprop(lr, decay=_p("decay", 0.9))
+    else:  # adamw default
+        inner = optax.adamw(
+            lr,
+            b1=_p("b1", 0.9),
+            b2=_p("b2", 0.999),
+            weight_decay=_p("weight_decay", 1e-6),
+        )
+
+    return optax.chain(clip, inner)
+
+
+def _extract_effort_weight_from_spec(
+    training_spec: Optional[Dict[str, Any]], default: float
+) -> float:
+    """Extract effort loss weight from a training spec.
+
+    Args:
+        training_spec: Optional spec dict; reads
+            ``loss.children.effort.weight`` when present.
+        default: Value to return when the key is absent or invalid.
+
+    Returns:
+        The effort weight as a float.
+    """
+    if training_spec is None:
+        return default
+    try:
+        return float(training_spec["loss"]["children"]["effort"]["weight"])
+    except (KeyError, TypeError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +246,7 @@ def _extract_training_cfg(training_config: Optional[Dict[str, Any]]) -> _Trainin
 # ---------------------------------------------------------------------------
 
 
-def _run_training_real(job: _Job, cfg: _TrainingCfg) -> None:
+def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     """Real JAX training loop using AnalyticalMusculoskeletalPlant + GRU controller.
 
     Runs in a background thread. Streams training_progress, training_log,
@@ -256,13 +353,19 @@ def _run_training_real(job: _Job, cfg: _TrainingCfg) -> None:
     )
 
     # ------------------------------------------------------------------
-    # Optimizer
+    # Apply spec overrides BEFORE JIT (cfg mutations must precede any
+    # jit-compiled functions that close over cfg values).
     # ------------------------------------------------------------------
 
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(cfg.grad_clip),
-        optax.adamw(cfg.learning_rate, weight_decay=1e-6),
+    cfg.effort_weight = _extract_effort_weight_from_spec(
+        job.training_spec, cfg.effort_weight
     )
+    optimizer = _build_optimizer_from_spec(job.training_spec, cfg)
+
+    # ------------------------------------------------------------------
+    # Optimizer state
+    # ------------------------------------------------------------------
+
     opt_state = optimizer.init(eqx.filter(controller, eqx.is_array))
 
     # ------------------------------------------------------------------
@@ -542,6 +645,39 @@ def _run_training_real(job: _Job, cfg: _TrainingCfg) -> None:
                 _emit(job, _make_trajectory_event(job, batch + 1, loss_val))
 
     job.status = WorkerStatus.COMPLETED
+
+    # Serialize the trained controller to disk before emitting the terminal event.
+    try:
+        import os as _os
+        import tempfile as _tmpfile
+
+        _ckpt_dir = _tmpfile.mkdtemp(prefix="feedbax_ckpt_")
+        _ckpt_path = _os.path.join(_ckpt_dir, f"{job.job_id}.eqx")
+        ready_controller = jax.block_until_ready(controller)
+        eqx.tree_serialise_leaves(_ckpt_path, ready_controller)
+        job.checkpoint_path = _ckpt_path
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": job.total_batches,
+                "level": "info",
+                "message": "Checkpoint saved",
+            },
+        )
+    except Exception as _exc:
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": job.total_batches,
+                "level": "warning",
+                "message": f"Failed to save checkpoint: {_exc}",
+            },
+        )
+
     _emit(
         job,
         {
@@ -632,7 +768,7 @@ def _run_training(job: _Job) -> None:
     ``_TrainingCfg`` are used for real training.
     """
     try:
-        cfg = _extract_training_cfg(job.training_config)
+        cfg = _extract_training_cfg(job.training_config, job.task_spec)
         _run_training_real(job, cfg)
     except Exception as exc:
         # Real training raised an unexpected exception — fall back to stub
@@ -712,6 +848,8 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     def start(body: dict):
         total_batches = int(body.get("total_batches", 100))
         training_config: Optional[Dict[str, Any]] = body.get("training_config", None)
+        training_spec: Optional[Dict[str, Any]] = body.get("training_spec", None)
+        task_spec: Optional[Dict[str, Any]] = body.get("task_spec", None)
         snapshot_interval = int(body.get("snapshot_interval", 100))
 
         job_id = str(uuid.uuid4())
@@ -724,6 +862,8 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             event_queue=event_queue,
             stop_event=stop_event,
             training_config=training_config,
+            training_spec=training_spec,
+            task_spec=task_spec,
             status=WorkerStatus.RUNNING,
             snapshot_interval=snapshot_interval,
         )
@@ -825,8 +965,23 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         return {
             "batch": job.batch,
             "loss": job.last_loss,
-            # Phase 6 uses real JAX training; weight serialisation is a future step.
-            "weights_available": False,
+            "weights_available": job.checkpoint_path is not None,
         }
+
+    @app.get("/checkpoint/download", dependencies=[_auth_dep])
+    def checkpoint_download():
+        """Download the serialized checkpoint file for the current job."""
+        import os
+
+        job = _state.get("current")
+        if job is None or job.checkpoint_path is None:
+            raise HTTPException(status_code=404, detail="No checkpoint available")
+        if not os.path.exists(job.checkpoint_path):
+            raise HTTPException(status_code=410, detail="Checkpoint file gone")
+        return FileResponse(
+            job.checkpoint_path,
+            media_type="application/octet-stream",
+            filename=f"feedbax_checkpoint_{job.job_id}.eqx",
+        )
 
     return app

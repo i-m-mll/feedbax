@@ -39,6 +39,7 @@ class LaunchRequest(BaseModel):
     worker_port: int = 8765
     auth_token: Optional[str] = None
     ts_auth_key: Optional[str] = None
+    feedbax_install_cmd: Optional[str] = None
 
 
 class LaunchResponse(BaseModel):
@@ -100,6 +101,10 @@ async def launch_instance(payload: LaunchRequest, background_tasks: BackgroundTa
         worker_port=payload.worker_port,
         auth_token=payload.auth_token,
         ts_auth_key=payload.ts_auth_key,
+        feedbax_install_cmd=(
+            payload.feedbax_install_cmd
+            or "pip install 'git+https://github.com/mlll-io/feedbax.git@develop'"
+        ),
     )
 
     short_id = uuid.uuid4().hex[:6]

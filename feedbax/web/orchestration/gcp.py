@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from feedbax.web.orchestration.startup_script import STARTUP_SCRIPT
+from feedbax.web.orchestration.startup_script import make_startup_script
 
 
 class InstanceStatus(str, Enum):
@@ -58,6 +58,9 @@ class InstanceConfig:
     worker_port: int = 8765
     auth_token: Optional[str] = None
     ts_auth_key: Optional[str] = None
+    feedbax_install_cmd: str = (
+        "pip install 'git+https://github.com/mlll-io/feedbax.git@develop'"
+    )
 
 
 @dataclass
@@ -177,7 +180,7 @@ async def create_instance(config: InstanceConfig, instance_name: str) -> Instanc
     Raises:
         RuntimeError: If ``gcloud`` fails.
     """
-    metadata_parts = [f"startup-script={STARTUP_SCRIPT}"]
+    metadata_parts = [f"startup-script={make_startup_script(config.feedbax_install_cmd)}"]
     if config.ts_auth_key:
         metadata_parts.append(f"TS_AUTH_KEY={config.ts_auth_key}")
     metadata_parts.append(f"WORKER_PORT={config.worker_port}")
