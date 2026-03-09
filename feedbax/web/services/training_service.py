@@ -143,6 +143,8 @@ class TrainingService:
         self,
         total_batches: int,
         training_config: Optional[dict] = None,
+        training_spec: Optional[dict] = None,
+        task_spec: Optional[dict] = None,
     ) -> str:
         """Start a training job on the worker.
 
@@ -152,6 +154,10 @@ class TrainingService:
                 ``training_config`` key in the ``/start`` request body.
                 When present, the worker runs real JAX training; when ``None``
                 it falls back to the synthetic stub.
+            training_spec: Optional spec dict with optimizer/loss settings;
+                forwarded to the worker for spec-driven configuration.
+            task_spec: Optional task spec dict with task parameters;
+                forwarded to the worker.
 
         Returns:
             The job ID assigned by the worker.
@@ -161,6 +167,8 @@ class TrainingService:
             base_url,
             total_batches,
             training_config=training_config,
+            training_spec=training_spec,
+            task_spec=task_spec,
             auth_token=self._auth_token,
         )
         self._current_job_id = job_id
@@ -246,6 +254,25 @@ class TrainingService:
             return data
         except Exception:
             return {"batch": 0, "loss": self._last_loss, "weights_available": False}
+
+    async def download_checkpoint(self, job_id: str, dest_path: str) -> None:
+        """Download the serialized checkpoint from the worker to a local file.
+
+        Args:
+            job_id: The job ID whose checkpoint to download.
+            dest_path: Local filesystem path to write the checkpoint file.
+
+        Raises:
+            ValueError: If *job_id* does not match the current job.
+            RuntimeError: If no worker is configured.
+        """
+        if self._current_job_id != job_id:
+            raise ValueError(f"Unknown job {job_id!r}")
+        if self._base_url is None:
+            raise RuntimeError("No worker configured")
+        await worker_client.download_checkpoint(
+            self._base_url, dest_path, auth_token=self._auth_token
+        )
 
     def last_loss(self, job_id: str) -> Optional[float]:
         """Return the last recorded loss for the given job.

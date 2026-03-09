@@ -66,6 +66,8 @@ async def start_job(
     base_url: str,
     total_batches: int,
     training_config: Optional[dict] = None,
+    training_spec: Optional[dict] = None,
+    task_spec: Optional[dict] = None,
     auth_token: Optional[str] = None,
 ) -> str:
     """POST /start and return the assigned job_id.
@@ -76,6 +78,10 @@ async def start_job(
         training_config: Optional dict forwarded to the worker as the
             ``training_config`` key. When ``None``, the worker uses default
             training configuration values; real JAX training is always attempted.
+        training_spec: Optional spec dict with optimizer type/params and loss
+            weights; forwarded to the worker for spec-driven optimizer construction.
+        task_spec: Optional task spec dict with task parameters such as
+            ``n_reach_steps`` and ``effort_weight``; forwarded to the worker.
         auth_token: Optional shared secret.
 
     Returns:
@@ -84,6 +90,10 @@ async def start_job(
     body: dict = {"total_batches": total_batches}
     if training_config is not None:
         body["training_config"] = training_config
+    if training_spec is not None:
+        body["training_spec"] = training_spec
+    if task_spec is not None:
+        body["task_spec"] = task_spec
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url}/start",
@@ -148,6 +158,33 @@ async def get_checkpoint(base_url: str, auth_token: Optional[str] = None) -> dic
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def download_checkpoint(
+    base_url: str,
+    dest_path: str,
+    auth_token: Optional[str] = None,
+) -> None:
+    """Stream GET /checkpoint/download and write to *dest_path*.
+
+    Args:
+        base_url: Worker base URL.
+        dest_path: Local filesystem path to write the checkpoint bytes to.
+        auth_token: Optional shared secret.
+
+    Raises:
+        httpx.HTTPStatusError: If the worker returns a non-2xx status.
+    """
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream(
+            "GET",
+            f"{base_url}/checkpoint/download",
+            headers=_auth_headers(auth_token),
+        ) as resp:
+            resp.raise_for_status()
+            with open(dest_path, "wb") as f:
+                async for chunk in resp.aiter_bytes():
+                    f.write(chunk)
 
 
 async def stream_events(
