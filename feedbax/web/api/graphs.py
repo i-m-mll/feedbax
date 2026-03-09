@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Optional
 
@@ -21,7 +21,8 @@ class GraphUpdateRequest(BaseModel):
 
 
 @router.get('')
-async def list_graphs():
+async def list_graphs(response: Response):
+    response.headers['Cache-Control'] = 'no-store'
     return {'graphs': service.list_graphs()}
 
 
@@ -32,7 +33,8 @@ async def create_graph(payload: GraphCreateRequest):
 
 
 @router.get('/{graph_id}')
-async def get_graph(graph_id: str):
+async def get_graph(graph_id: str, response: Response):
+    response.headers['Cache-Control'] = 'no-store'
     try:
         record = service.get_graph(graph_id)
     except FileNotFoundError as exc:
@@ -41,6 +43,7 @@ async def get_graph(graph_id: str):
         'graph': record.project.graph,
         'ui_state': record.project.ui_state,
         'demo_training_data': record.project.demo_training_data,
+        'metadata': record.project.metadata,
     }
 
 
