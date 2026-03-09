@@ -7,7 +7,9 @@ import type {
   TaskSpec,
   TrainingConfig,
   LossValidationResult,
+  TrainingProgress,
 } from '@/types/training';
+import type { TrajectorySnapshot } from '@/stores/trainingStore';
 import type { TrajectoryDataset, TrajectoryMetadata, TrajectoryData } from '@/types/trajectory';
 import type {
   StatisticsResponse,
@@ -43,8 +45,13 @@ export async function fetchGraphs() {
   return request<{ graphs: { id: string; metadata: { name: string; description?: string; created_at: string; updated_at: string; version: string } }[] }>('/api/graphs');
 }
 
+export interface DemoTrainingData {
+  lossHistory: TrainingProgress[];
+  latestTrajectory: TrajectorySnapshot | null;
+}
+
 export async function fetchGraph(graphId: string) {
-  return request<{ graph: GraphSpec; ui_state: GraphUIState | null }>(`/api/graphs/${graphId}`);
+  return request<{ graph: GraphSpec; ui_state: GraphUIState | null; demo_training_data: DemoTrainingData | null }>(`/api/graphs/${graphId}`);
 }
 
 export async function createGraph(graph: GraphSpec, uiState: GraphUIState | null) {

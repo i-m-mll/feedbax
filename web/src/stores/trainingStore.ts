@@ -139,6 +139,8 @@ interface TrainingStoreState {
     instanceName: string | null,
     workerUrl: string | null
   ) => void;
+  // Demo data seeding
+  seedDemoData: (data: { lossHistory: TrainingProgress[]; latestTrajectory: TrajectorySnapshot | null }) => void;
 }
 
 export const useTrainingStore = create<TrainingStoreState>((set) => ({
@@ -245,6 +247,11 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
       orchestrationInstanceName: instanceName,
       orchestrationWorkerUrl: workerUrl,
     }),
+  // Demo data seeding — only seeds if the store is currently empty
+  seedDemoData: (data) => set((state) => {
+    if (state.lossHistory.length > 0 || state.latestTrajectory !== null) return {};
+    return { lossHistory: data.lossHistory, latestTrajectory: data.latestTrajectory };
+  }),
 }));
 
 // Helper functions for loss term manipulation
