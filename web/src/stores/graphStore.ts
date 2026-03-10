@@ -391,6 +391,7 @@ function migrateGraphSpec(graph: GraphSpec): GraphSpec {
       let nextType = spec.type;
       if (nextType === 'SimpleStagedNetwork') nextType = 'Network';
       if (nextType === 'FeedbackChannel') nextType = 'Channel';
+      if (nextType === 'PenzaiSubgraph') nextType = 'PenzaiAdapter';
       const nextParams = { ...spec.params };
       if (nextType === 'Network') {
         if ('output_size' in nextParams && !('out_size' in nextParams)) {

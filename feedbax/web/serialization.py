@@ -118,6 +118,8 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
             next_type = "Network"
         if next_type == "FeedbackChannel":
             next_type = "Channel"
+        if next_type == "PenzaiSubgraph":
+            next_type = "PenzaiAdapter"
         params = dict(node_spec.params)
         if next_type == "Network" and "output_size" in params and "out_size" not in params:
             params["out_size"] = params.get("output_size")
