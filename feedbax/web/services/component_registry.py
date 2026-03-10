@@ -738,6 +738,10 @@ class ComponentRegistry:
                         name='dt', type='float',
                         default=0.01, min=0.001, required=True,
                     ),
+                    ParamSchema(
+                        name='initial_activation', type='float',
+                        default=0.0, min=0.0, required=False,
+                    ),
                 ],
                 input_ports=['excitation'],
                 output_ports=['force', 'activation'],
@@ -764,9 +768,10 @@ class ComponentRegistry:
                     ParamSchema(name='max_isometric_force', type='float', default=500.0, min=0.0, required=False),
                     ParamSchema(name='optimal_muscle_length', type='float', default=0.1, min=0.001, required=False),
                     ParamSchema(name='tendon_slack_length', type='float', default=0.2, min=0.001, required=False),
+                    ParamSchema(name='initial_activation', type='float', default=0.001, min=0.0, required=False),
                 ],
                 input_ports=['excitation', 'musculotendon_length', 'musculotendon_velocity'],
-                output_ports=['activation', 'force'],
+                output_ports=['force', 'activation', 'fiber_length', 'fiber_velocity'],
                 icon='Dumbbell',
                 port_types=PortTypeSpec(
                     inputs={
@@ -775,8 +780,10 @@ class ComponentRegistry:
                         'musculotendon_velocity': PortType(dtype='vector'),
                     },
                     outputs={
-                        'activation': PortType(dtype='vector'),
                         'force': PortType(dtype='vector'),
+                        'activation': PortType(dtype='vector'),
+                        'fiber_length': PortType(dtype='vector'),
+                        'fiber_velocity': PortType(dtype='vector'),
                     },
                 ),
             )
