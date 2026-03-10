@@ -60,7 +60,7 @@ const CONTEXT_SUGGESTED_CATEGORIES: Record<string, string[]> = {
 const CONTEXT_EXCLUSIVE_FILTER = new Set(['penzai', 'acausal', 'muscle', 'network']);
 
 /** Blank subgraph type containers — shown at top under Structure with a purple "Type" badge. */
-const SUBGRAPH_TYPES = new Set(['Subgraph', 'PenzaiSubgraph', 'AcausalSystem']);
+const SUBGRAPH_TYPES = new Set(['Subgraph', 'AcausalSystem']);
 
 const iconMap = {
   CircuitBoard,
@@ -282,7 +282,7 @@ function CategorySection({
 
 function ComponentCard({ component }: { component: ComponentDefinition }) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
-  // Blank subgraph type containers (Subgraph, PenzaiSubgraph, AcausalSystem) get purple "Type" badge.
+  // Blank subgraph type containers (Subgraph, AcausalSystem) get purple "Type" badge.
   const isSubgraphType = SUBGRAPH_TYPES.has(component.name);
   // Components with a template_graph are CDE presets: use violet accent to match old styling.
   const isCdeTemplate = Boolean(component.template_graph);

@@ -112,9 +112,9 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
-                name='PenzaiSubgraph',
+                name='PenzaiAdapter',
                 category='Structure',
-                description='Penzai model wrapper for feedbax Graphs.',
+                description='Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.',
                 param_schema=[
                     ParamSchema(
                         name='builder_name',
@@ -129,7 +129,7 @@ class ComponentRegistry:
                 input_ports=['input'],
                 output_ports=['output'],
                 icon='Hexagon',
-                is_composite=True,
+                is_composite=False,
                 port_types=PortTypeSpec(
                     inputs={'input': PortType(dtype='any')},
                     outputs={'output': PortType(dtype='any')},

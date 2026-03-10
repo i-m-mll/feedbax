@@ -22,9 +22,9 @@ export const componentLibrary: ComponentDefinition[] = [
     is_composite: true,
   },
   {
-    name: 'PenzaiSubgraph',
+    name: 'PenzaiAdapter',
     category: 'Structure',
-    description: 'Penzai model wrapper for feedbax Graphs.',
+    description: 'Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.',
     param_schema: [
       { name: 'builder_name', type: 'enum', options: [], default: '', required: true },
       { name: 'input_port', type: 'str', default: 'input', required: false },
@@ -34,7 +34,7 @@ export const componentLibrary: ComponentDefinition[] = [
     output_ports: ['output'],
     icon: 'Hexagon',
     default_params: { builder_name: '', input_port: 'input', output_port: 'output' },
-    is_composite: true,
+    is_composite: false,
   },
 
   // --- Neural Networks ---
