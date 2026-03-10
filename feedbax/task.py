@@ -41,7 +41,6 @@ import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]
 from equinox import AbstractVar, Module, field
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
-import feedbax.plot.trajectories as plot
 from feedbax._mapping import WhereDict
 from feedbax._tree import is_type, tree_call, tree_call_with_keys
 from feedbax.graph import Component, Graph, init_state_from_component
@@ -1196,6 +1195,7 @@ class SimpleReaches(AbstractTask):
     def validation_plots(
         self, states, trial_specs: Optional[TaskTrialSpec] = None
     ) -> dict[str, go.Figure]:
+        import feedbax.plot.trajectories as plot
         return dict(
             effector_trajectories=plot.effector_trajectories(
                 states,
@@ -1417,6 +1417,7 @@ class DelayedReaches(AbstractTask):
     def validation_plots(
         self, states, trial_specs: Optional[TaskTrialSpec] = None
     ) -> dict[str, go.Figure]:
+        import feedbax.plot.trajectories as plot
         return dict(
             effector_trajectories=plot.effector_trajectories(
                 states,
