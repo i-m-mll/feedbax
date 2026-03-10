@@ -68,6 +68,7 @@ async def start_job(
     training_config: Optional[dict] = None,
     training_spec: Optional[dict] = None,
     task_spec: Optional[dict] = None,
+    graph_spec: Optional[dict] = None,
     auth_token: Optional[str] = None,
 ) -> str:
     """POST /start and return the assigned job_id.
@@ -94,6 +95,8 @@ async def start_job(
         body["training_spec"] = training_spec
     if task_spec is not None:
         body["task_spec"] = task_spec
+    if graph_spec is not None:
+        body["graph_spec"] = graph_spec
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url}/start",
