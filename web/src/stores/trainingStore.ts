@@ -250,7 +250,10 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   // Demo data seeding — only seeds if the store is currently empty
   seedDemoData: (data) => set((state) => {
     if (state.lossHistory.length > 0 || state.latestTrajectory !== null) return {};
-    return { lossHistory: data.lossHistory, latestTrajectory: data.latestTrajectory };
+    return {
+      lossHistory: data.lossHistory ?? [],
+      latestTrajectory: data.latestTrajectory ?? null,
+    };
   }),
 }));
 
