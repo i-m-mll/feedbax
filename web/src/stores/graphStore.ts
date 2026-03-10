@@ -32,6 +32,7 @@ const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
 const DEFAULT_COMPOSITE_TYPES = new Set([
+  'Network',
   'Subgraph', 'PenzaiSubgraph',
   'Arm6MuscleRigidTendon', 'PointMass8MuscleRelu', 'AcausalSystem',
 ]);
@@ -495,21 +496,307 @@ function createPenzaiSubgraph(
   return createEmptySubgraph(label);
 }
 
-function createMuscleGroupSubgraph(
-  label: string,
-  _nodeSpec: ComponentSpec
+function createNetworkSubgraph(
+  nodeId: string,
+  nodeSpec: ComponentSpec,
 ): { graph: GraphSpec; uiState: GraphUIState } {
-  // Muscle groups start as empty subgraphs to be populated
-  return createEmptySubgraph(label);
+  const now = new Date().toISOString();
+  const params = nodeSpec.params ?? {};
+
+  // Map outer hidden_type param to internal GRU/LSTM node type
+  const hiddenTypeRaw = (params.hidden_type as string) ?? 'GRUCell';
+  const cellType = hiddenTypeRaw === 'LSTMCell' ? 'LSTM' : 'GRU';
+
+  const hiddenSize = typeof params.hidden_size === 'number' ? params.hidden_size : 100;
+  const inputSize = typeof params.input_size === 'number' ? params.input_size : 6;
+  const outSize = typeof params.out_size === 'number' ? params.out_size : 2;
+  // Map outer out_nonlinearity to activation param on the Linear readout node
+  const readoutActivation = (params.out_nonlinearity as string) ?? 'tanh';
+
+  const cellInputPorts = cellType === 'LSTM' ? ['input', 'hidden', 'cell'] : ['input', 'hidden'];
+  const cellOutputPorts = cellType === 'LSTM' ? ['output', 'hidden', 'cell'] : ['output', 'hidden'];
+
+  const graph: GraphSpec = {
+    nodes: {
+      cell: {
+        type: cellType,
+        params: {
+          input_size: inputSize,
+          hidden_size: hiddenSize,
+        },
+        input_ports: cellInputPorts,
+        output_ports: cellOutputPorts,
+      },
+      readout: {
+        type: 'Linear',
+        params: {
+          input_size: hiddenSize,
+          output_size: outSize,
+          use_bias: true,
+          activation: readoutActivation,
+        },
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [
+      {
+        source_node: 'cell',
+        source_port: 'output',
+        target_node: 'readout',
+        target_port: 'input',
+      },
+    ],
+    input_ports: ['input', 'feedback'],
+    output_ports: ['output', 'hidden'],
+    input_bindings: {
+      input: ['cell', 'input'],
+      feedback: ['cell', 'hidden'],
+    },
+    output_bindings: {
+      output: ['readout', 'output'],
+      hidden: ['cell', 'output'],
+    },
+    taps: [],
+    subgraphs: {},
+    metadata: {
+      name: `${nodeId} internals`,
+      description: 'Recurrent cell and output projection.',
+      created_at: now,
+      updated_at: now,
+      version: '1.0.0',
+    },
+  };
+
+  const baseUiState: GraphUIState = {
+    viewport: DEFAULT_VIEWPORT,
+    node_states: {
+      cell: { position: { x: 200, y: 200 }, collapsed: false, selected: false },
+      readout: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
+    },
+  };
+
+  return {
+    graph,
+    uiState: {
+      ...baseUiState,
+      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
+    },
+  };
+}
+
+function createArm6MuscleSubgraph(
+  nodeId: string,
+  _nodeSpec: ComponentSpec,
+): { graph: GraphSpec; uiState: GraphUIState } {
+  const now = new Date().toISOString();
+
+  // Arm6MuscleRigidTendon internal architecture (causal ODE, rigid tendon assumption):
+  //   excitation → activation_dynamics (FirstOrderFilter, 6-channel)
+  //                ↓
+  //   angles/angular_velocities → geometry (MomentArmProjection) → musculotendon_lengths/velocities
+  //                                                                  ↓
+  //                               activation + lengths/velocities → hill_muscles (RigidTendonHillMuscleThelen)
+  //                                                                  ↓
+  //                               forces → torque_map (MomentArmProjection) → torques
+  //
+  // For clarity, MomentArmProjection handles both the forward kinematics (angles → MT lengths)
+  // and the inverse (forces → torques) via its input/output ports.
+
+  const graph: GraphSpec = {
+    nodes: {
+      activation_dynamics: {
+        type: 'FirstOrderFilter',
+        params: {
+          tau_rise: 0.015,
+          tau_decay: 0.05,
+          dt: 0.01,
+          init_value: 0.0,
+        },
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+      geometry: {
+        type: 'MomentArmProjection',
+        params: {
+          n_muscles: 6,
+          n_joints: 2,
+        },
+        input_ports: ['forces', 'angles', 'angular_velocities'],
+        output_ports: ['torques', 'musculotendon_lengths', 'musculotendon_velocities'],
+      },
+      hill_muscles: {
+        type: 'RigidTendonHillMuscleThelen',
+        params: {
+          n_muscles: 6,
+          dt: 0.01,
+          tau_activation: 0.015,
+          tau_deactivation: 0.05,
+          max_isometric_force: 500.0,
+          optimal_muscle_length: 0.1,
+          tendon_slack_length: 0.2,
+        },
+        input_ports: ['excitation', 'musculotendon_length', 'musculotendon_velocity'],
+        output_ports: ['activation', 'force'],
+      },
+    },
+    wires: [
+      // Activation dynamics → hill muscles
+      {
+        source_node: 'activation_dynamics',
+        source_port: 'output',
+        target_node: 'hill_muscles',
+        target_port: 'excitation',
+      },
+      // Geometry → hill muscles (kinematics)
+      {
+        source_node: 'geometry',
+        source_port: 'musculotendon_lengths',
+        target_node: 'hill_muscles',
+        target_port: 'musculotendon_length',
+      },
+      {
+        source_node: 'geometry',
+        source_port: 'musculotendon_velocities',
+        target_node: 'hill_muscles',
+        target_port: 'musculotendon_velocity',
+      },
+      // Hill muscles → torque projection
+      {
+        source_node: 'hill_muscles',
+        source_port: 'force',
+        target_node: 'geometry',
+        target_port: 'forces',
+      },
+    ],
+    input_ports: ['excitation', 'angles', 'angular_velocities'],
+    output_ports: ['torques', 'forces', 'activations'],
+    input_bindings: {
+      excitation: ['activation_dynamics', 'input'],
+      angles: ['geometry', 'angles'],
+      angular_velocities: ['geometry', 'angular_velocities'],
+    },
+    output_bindings: {
+      torques: ['geometry', 'torques'],
+      forces: ['hill_muscles', 'force'],
+      activations: ['hill_muscles', 'activation'],
+    },
+    taps: [],
+    subgraphs: {},
+    metadata: {
+      name: `${nodeId} internals`,
+      description: '6-muscle rigid-tendon arm: activation dynamics → Hill force → moment arm projection.',
+      created_at: now,
+      updated_at: now,
+      version: '1.0.0',
+    },
+  };
+
+  const baseUiState: GraphUIState = {
+    viewport: DEFAULT_VIEWPORT,
+    node_states: {
+      activation_dynamics: { position: { x: 120, y: 200 }, collapsed: false, selected: false },
+      geometry: { position: { x: 360, y: 340 }, collapsed: false, selected: false },
+      hill_muscles: { position: { x: 600, y: 200 }, collapsed: false, selected: false },
+    },
+  };
+
+  return {
+    graph,
+    uiState: {
+      ...baseUiState,
+      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
+    },
+  };
+}
+
+function createPointMass8MuscleSubgraph(
+  nodeId: string,
+  _nodeSpec: ComponentSpec,
+): { graph: GraphSpec; uiState: GraphUIState } {
+  const now = new Date().toISOString();
+
+  // PointMass8MuscleRelu internal architecture (causal):
+  //   excitation (8) → relu_muscles (ReluMuscle, 8-channel) → forces (8)
+  //   forces (8) → force_projection (RadialForceProjection) → force_2d (2)
+
+  const graph: GraphSpec = {
+    nodes: {
+      relu_muscles: {
+        type: 'ReluMuscle',
+        params: {
+          max_isometric_force: 500.0,
+          tau_activation: 0.015,
+          tau_deactivation: 0.05,
+          min_activation: 0.0,
+          dt: 0.01,
+        },
+        input_ports: ['excitation'],
+        output_ports: ['activation', 'force'],
+      },
+      force_projection: {
+        type: 'RadialForceProjection',
+        params: {
+          n_muscles: 8,
+        },
+        input_ports: ['forces'],
+        output_ports: ['force_2d'],
+      },
+    },
+    wires: [
+      {
+        source_node: 'relu_muscles',
+        source_port: 'force',
+        target_node: 'force_projection',
+        target_port: 'forces',
+      },
+    ],
+    input_ports: ['excitation'],
+    output_ports: ['force_2d', 'forces', 'activations'],
+    input_bindings: {
+      excitation: ['relu_muscles', 'excitation'],
+    },
+    output_bindings: {
+      force_2d: ['force_projection', 'force_2d'],
+      forces: ['relu_muscles', 'force'],
+      activations: ['relu_muscles', 'activation'],
+    },
+    taps: [],
+    subgraphs: {},
+    metadata: {
+      name: `${nodeId} internals`,
+      description: '8 radially-arranged ReLU muscles projecting to 2D net force.',
+      created_at: now,
+      updated_at: now,
+      version: '1.0.0',
+    },
+  };
+
+  const baseUiState: GraphUIState = {
+    viewport: DEFAULT_VIEWPORT,
+    node_states: {
+      relu_muscles: { position: { x: 200, y: 200 }, collapsed: false, selected: false },
+      force_projection: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
+    },
+  };
+
+  return {
+    graph,
+    uiState: {
+      ...baseUiState,
+      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
+    },
+  };
 }
 
 const SUBGRAPH_FACTORIES: Record<
   string,
   (label: string, nodeSpec: ComponentSpec) => { graph: GraphSpec; uiState: GraphUIState }
 > = {
+  Network: createNetworkSubgraph,
   PenzaiSubgraph: createPenzaiSubgraph,
-  Arm6MuscleRigidTendon: createMuscleGroupSubgraph,
-  PointMass8MuscleRelu: createMuscleGroupSubgraph,
+  Arm6MuscleRigidTendon: createArm6MuscleSubgraph,
+  PointMass8MuscleRelu: createPointMass8MuscleSubgraph,
   AcausalSystem: (label) => createEmptySubgraph(label),
 };
 
