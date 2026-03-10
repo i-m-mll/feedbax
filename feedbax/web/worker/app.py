@@ -246,10 +246,9 @@ def _extract_effort_weight_from_spec(
 def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Extract model-construction parameters from a graph spec dict.
 
-    Reads from the Network node's internal subgraph when available (the
-    subgraph is the authoritative source per the graph-as-model principle).
-    Falls back to outer Network node params for backwards compatibility with
-    graphs that pre-date the real composite subgraph.
+    Reads from the Network node's internal subgraph (the authoritative source
+    per the graph-as-model principle). Raises ValueError if the subgraph is
+    absent — incomplete model state is an error, not a condition to work around.
 
     Also extracts ``input_size`` from the outer Network node params (the
     subgraph cell's input_size is an internal wiring detail; the outer
@@ -368,74 +367,63 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     # else: keep the default (_ARM_OBS_DIM = 17)
 
     # ------------------------------------------------------------------
-    # Prefer reading hidden/output architecture from the Network node's
-    # internal subgraph.  The subgraph is the authoritative source of truth;
-    # outer params are a legacy fallback for graphs without a subgraph yet.
+    # Authoritative source: reading hidden/output architecture from the
+    # Network node's internal subgraph. The subgraph IS the model; outer
+    # params are UI defaults only and are ignored if the subgraph exists.
     # ------------------------------------------------------------------
     subgraphs = graph_spec.get("subgraphs") or {}
     network_subgraph = subgraphs.get(network_node_id)
 
-    if network_subgraph is not None:
-        sub_nodes = network_subgraph.get("nodes", {})
-        # Find the hidden cell node (GRU or LSTM)
-        cell_node = next(
-            (n for n in sub_nodes.values() if n.get("type") in ("GRU", "LSTM")),
-            None,
+    if network_subgraph is None:
+        raise ValueError(
+            f"Network node {network_node_id!r} has no subgraph. "
+            "Open it in Studio to generate the internal architecture, then save again."
         )
-        # Find the readout/output projection node (Linear)
+
+    sub_nodes = network_subgraph.get("nodes", {})
+    # Find the hidden cell node (GRU or LSTM)
+    cell_node = next(
+        (n for n in sub_nodes.values() if n.get("type") in ("GRU", "LSTM")),
+        None,
+    )
+    # Find the readout/output projection node (Linear)
+    # Prefer output_bindings["output"] but fall back to scanning for Linear
+    readout_node_name = None
+    output_bindings = network_subgraph.get("output_bindings", {})
+    if "output" in output_bindings:
+        readout_node_name = output_bindings["output"][0]
+
+    readout_node = sub_nodes.get(readout_node_name)
+    if readout_node is None:
         readout_node = next(
             (n for n in sub_nodes.values() if n.get("type") == "Linear"),
             None,
         )
 
-        if cell_node is not None:
-            result["hidden_type"] = CELL_MAP.get(
-                cell_node.get("type", "GRU"), eqx.nn.GRUCell
-            )
-            cell_params = cell_node.get("params", {})
-            try:
-                result["hidden_size"] = int(
-                    cell_params.get("hidden_size", defaults["hidden_size"])
-                )
-            except (TypeError, ValueError):
-                pass
-
-        if readout_node is not None:
-            readout_params = readout_node.get("params", {})
-            try:
-                result["out_size"] = int(
-                    readout_params.get("output_size", defaults["out_size"])
-                )
-            except (TypeError, ValueError):
-                pass
-            nonlin_key = readout_params.get("activation", "identity")
-            result["out_nonlinearity"] = NONLINEARITY_MAP.get(
-                nonlin_key, lambda x: x
-            )
-
-        return result
-
-    # Fallback: read hidden/output architecture from outer Network node params
-    # (legacy / no-subgraph case).
-    hidden_type_key = outer_params.get("hidden_type", "GRUCell")
-    result["hidden_type"] = CELL_MAP.get(hidden_type_key, eqx.nn.GRUCell)
-
-    try:
-        result["hidden_size"] = int(
-            outer_params.get("hidden_size", defaults["hidden_size"])
+    if cell_node is not None:
+        result["hidden_type"] = CELL_MAP.get(
+            cell_node.get("type", "GRU"), eqx.nn.GRUCell
         )
-    except (TypeError, ValueError):
-        pass
+        cell_params = cell_node.get("params", {})
+        try:
+            result["hidden_size"] = int(
+                cell_params.get("hidden_size", defaults["hidden_size"])
+            )
+        except (TypeError, ValueError):
+            pass
 
-    try:
-        result["out_size"] = int(
-            outer_params.get("out_size", defaults["out_size"])
+    if readout_node is not None:
+        readout_params = readout_node.get("params", {})
+        try:
+            result["out_size"] = int(
+                readout_params.get("output_size", defaults["out_size"])
+            )
+        except (TypeError, ValueError):
+            pass
+        nonlin_key = readout_params.get("activation", "identity")
+        result["out_nonlinearity"] = NONLINEARITY_MAP.get(
+            nonlin_key, lambda x: x
         )
-    except (TypeError, ValueError):
-        pass
-
-    nonlin_key = outer_params.get("out_nonlinearity", "sigmoid")
-    result["out_nonlinearity"] = NONLINEARITY_MAP.get(nonlin_key, jax.nn.sigmoid)
 
     return result
 

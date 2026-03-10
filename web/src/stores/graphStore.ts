@@ -497,7 +497,7 @@ function createNetworkSubgraph(
 
   // Map outer hidden_type param to internal GRU/LSTM node type
   const hiddenTypeRaw = (params.hidden_type as string) ?? 'GRUCell';
-  const cellType = hiddenTypeRaw === 'LSTMCell' ? 'LSTM' : 'GRU';
+  const cellType = (hiddenTypeRaw === 'LSTMCell' || hiddenTypeRaw === 'LSTM') ? 'LSTM' : 'GRU';
 
   const hiddenSize = typeof params.hidden_size === 'number' ? params.hidden_size : 100;
   const inputSize = typeof params.input_size === 'number' ? params.input_size : 6;
