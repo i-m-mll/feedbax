@@ -30,6 +30,16 @@
 
 **The graph is the model.** What is rendered in the Studio canvas is the literal model that is built and trained. No node type is decorative, templated, or a placeholder for something constructed elsewhere. The worker builds exactly what the graph spec describes — node types, params, and topology — without hardcoding or inferring any architectural choices. Any deviation from this is a bug, not a known limitation.
 
+Corollaries that must be respected without exception:
+
+- **No background construction.** Nothing in the build pipeline may construct architecture that the canvas does not describe. If a composite node has a subgraph, that subgraph is the source of truth — the outer/stale params stored on the node itself are not authoritative and must not be used to construct anything.
+- **Absence of a subgraph is an error, not a condition to work around.** If a composite node has not had its subgraph populated (e.g., the user has never opened it in Studio), that is an incomplete model state. Raise a clear error rather than falling back to outer params or synthesising a default subgraph.
+- **"Just for now" workarounds are bugs.** Temporary shims, display-only nodes that shadow real architectural choices, and fallback paths that substitute stale values silently are all bugs regardless of how they are labelled in the code.
+
+## Backward Compatibility
+
+**Backward compatibility is not a concern.** There is a single developer. When the architecture improves, old saved graphs are expected to be re-created from Studio. We do not maintain legacy code paths, fallback logic, or compatibility shims for older graph formats. When something is wrong, raise a clear error rather than silently substituting a stale value.
+
 ## Active Feature Context
 
 - `feature/differentiable-mjx`: CDE hidden-state stability experiments (v6→v9b), AnalyticalMusculoskeletalPlant, DiffraxBackend. Latest: hybrid fixed-decay + Anti-NF gate (v9b).
