@@ -246,20 +246,27 @@ def _extract_effort_weight_from_spec(
 def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Extract model-construction parameters from a graph spec dict.
 
+    Reads from the Network node's internal subgraph when available (the
+    subgraph is the authoritative source per the graph-as-model principle).
+    Falls back to outer Network node params for backwards compatibility with
+    graphs that pre-date the real composite subgraph.
+
     Returns a dict with keys:
         hidden_type: equinox cell class (default eqx.nn.GRUCell)
+        hidden_size: hidden state dimension (default 128)
         out_size: output dimension (default 6)
         out_nonlinearity: activation callable (default jax.nn.sigmoid)
-
-    Must be called from within _run_training_real where equinox and jax are imported.
     """
     import equinox as eqx
     import jax
 
     CELL_MAP = {
+        "GRU": eqx.nn.GRUCell,
+        "LSTM": eqx.nn.LSTMCell,
+        # Legacy outer-param values (kept for backwards compat)
         "GRUCell": eqx.nn.GRUCell,
         "LSTMCell": eqx.nn.LSTMCell,
-        "SimpleRNNCell": eqx.nn.GRUCell,  # fallback
+        "SimpleRNNCell": eqx.nn.GRUCell,
     }
     NONLINEARITY_MAP = {
         "sigmoid": jax.nn.sigmoid,
@@ -271,6 +278,7 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
 
     defaults = {
         "hidden_type": eqx.nn.GRUCell,
+        "hidden_size": 128,
         "out_size": 6,
         "out_nonlinearity": jax.nn.sigmoid,
     }
@@ -279,29 +287,86 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         return defaults
 
     nodes = graph_spec.get("nodes", {})
-    network_node = next(
-        (n for n in nodes.values() if n.get("type") == "Network"),
+    network_node_id = next(
+        (nid for nid, n in nodes.items() if n.get("type") == "Network"),
         None,
     )
-    if network_node is None:
+    if network_node_id is None:
         return defaults
 
+    # Prefer reading from the Network node's internal subgraph.
+    # The subgraph is the authoritative source of truth; outer params are
+    # treated as a legacy fallback for graphs without a subgraph yet.
+    subgraphs = graph_spec.get("subgraphs") or {}
+    network_subgraph = subgraphs.get(network_node_id)
+
+    if network_subgraph is not None:
+        sub_nodes = network_subgraph.get("nodes", {})
+        # Find the hidden cell node (GRU or LSTM)
+        cell_node = next(
+            (n for n in sub_nodes.values() if n.get("type") in ("GRU", "LSTM")),
+            None,
+        )
+        # Find the readout/output projection node (Linear)
+        readout_node = next(
+            (n for n in sub_nodes.values() if n.get("type") == "Linear"),
+            None,
+        )
+
+        result = dict(defaults)
+
+        if cell_node is not None:
+            result["hidden_type"] = CELL_MAP.get(
+                cell_node.get("type", "GRU"), eqx.nn.GRUCell
+            )
+            cell_params = cell_node.get("params", {})
+            try:
+                result["hidden_size"] = int(
+                    cell_params.get("hidden_size", defaults["hidden_size"])
+                )
+            except (TypeError, ValueError):
+                pass
+
+        if readout_node is not None:
+            readout_params = readout_node.get("params", {})
+            try:
+                result["out_size"] = int(
+                    readout_params.get("output_size", defaults["out_size"])
+                )
+            except (TypeError, ValueError):
+                pass
+            nonlin_key = readout_params.get("activation", "identity")
+            result["out_nonlinearity"] = NONLINEARITY_MAP.get(
+                nonlin_key, lambda x: x
+            )
+
+        return result
+
+    # Fallback: read from outer Network node params (legacy / no-subgraph case).
+    network_node = nodes[network_node_id]
     params = network_node.get("params", {})
 
     hidden_type_key = params.get("hidden_type", "GRUCell")
     hidden_type = CELL_MAP.get(hidden_type_key, eqx.nn.GRUCell)
 
-    out_size = params.get("out_size", defaults["out_size"])
+    hidden_size = defaults["hidden_size"]
     try:
-        out_size = int(out_size)
+        hidden_size = int(params.get("hidden_size", defaults["hidden_size"]))
     except (TypeError, ValueError):
-        out_size = defaults["out_size"]
+        pass
+
+    out_size = defaults["out_size"]
+    try:
+        out_size = int(params.get("out_size", defaults["out_size"]))
+    except (TypeError, ValueError):
+        pass
 
     nonlin_key = params.get("out_nonlinearity", "sigmoid")
     out_nonlinearity = NONLINEARITY_MAP.get(nonlin_key, jax.nn.sigmoid)
 
     return {
         "hidden_type": hidden_type,
+        "hidden_size": hidden_size,
         "out_size": out_size,
         "out_nonlinearity": out_nonlinearity,
     }
@@ -411,9 +476,10 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
 
     # -- Bug: 172c883 — read network architecture from graph spec
     graph_params = _extract_graph_params(job.graph_spec)
+    hidden_size = graph_params["hidden_size"]
     controller = SimpleStagedNetwork(
         input_size=OBS_DIM,
-        hidden_size=cfg.hidden_dim,
+        hidden_size=hidden_size,
         out_size=graph_params["out_size"],
         hidden_type=graph_params["hidden_type"],
         out_nonlinearity=graph_params["out_nonlinearity"],
@@ -471,7 +537,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             phys, init_act, target_pos_traj[0], target_vel_traj[0], init_phase,
         )
         # Controller hidden state: initialize to zeros
-        init_hidden = jnp.zeros(cfg.hidden_dim)
+        init_hidden = jnp.zeros(hidden_size)
 
         scan_keys = jr.split(episode_key, N_STEPS)
 
