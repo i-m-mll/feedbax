@@ -637,41 +637,34 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # ------------------------------------------------------------------
 
     # Bug: cb13bdc — observation layout differs between plant types.
-    if _is_pointmass:
-        def _extract_obs(
-            physics_state: PhysicsState,
-            action,
-            target_pos,
-            target_vel,
-            phase,
-        ):
+    def _extract_obs(
+        physics_state: PhysicsState,
+        action_or_activation,
+        target_pos,
+        target_vel,
+        phase,
+    ):
+        """Extract observation vector, dispatcher for PointMass vs articulated."""
+        sk = physics_state.plant.skeleton
+        effector = physics_state.effector
+        if _is_pointmass:
             # PointMass skeleton state is CartesianState with pos(2), vel(2).
             # No joint angles or muscle activations.
-            sk = physics_state.plant.skeleton
-            effector = physics_state.effector
             return jnp.concatenate([
                 sk.pos,       # config pos (2)
                 sk.vel,       # config vel (2)
-                action,       # last action / 2D force (2)
+                action_or_activation,  # last action / 2D force (2)
                 effector.pos, # effector pos (2)
                 target_pos,   # (2)
                 target_vel,   # (2)
                 phase,        # (1)
             ])
-    else:
-        def _extract_obs(
-            physics_state: PhysicsState,
-            muscle_activations,
-            target_pos,
-            target_vel,
-            phase,
-        ):
-            sk = physics_state.plant.skeleton
-            effector = physics_state.effector
+        else:
+            # Articulated plant: skeleton has angle, d_angle, etc.
             return jnp.concatenate([
                 sk.angle,
                 sk.d_angle,
-                muscle_activations,
+                action_or_activation,  # muscle_activations
                 effector.pos,
                 target_pos,
                 target_vel,
@@ -695,8 +688,8 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         scan_keys = jr.split(episode_key, N_STEPS)
 
         def _step(carry, inputs):
-            t_idx, step_key = inputs
-            phys_s, act, hidden, obs_prev = carry
+            t_idx, _step_key = inputs
+            phys_s, act, hidden, _obs_prev = carry
 
             phase = jnp.array([t_idx / N_STEPS])
             obs = _extract_obs(
