@@ -398,6 +398,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     "tau_deactivation": component.tau_deactivation,
                     "min_activation": component.min_activation,
                     "dt": component.dt,
+                    "initial_activation": float(component._initial_state),
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -415,6 +416,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     "tau_activation": component.tau_activation,
                     "tau_deactivation": component.tau_deactivation,
                     "dt": component.dt,
+                    "initial_activation": float(component._initial_state),
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -857,6 +859,7 @@ def _build_relu_muscle(params: Mapping[str, Any]) -> ReluMuscle:
         tau_deactivation=float(params.get("tau_deactivation", 0.05)),
         min_activation=float(params.get("min_activation", 0.0)),
         dt=float(params.get("dt", 0.01)),
+        initial_activation=float(params.get("initial_activation", 0.0)),
     )
 
 
@@ -870,6 +873,7 @@ def _build_rigid_tendon_hill_muscle_thelen(params: Mapping[str, Any]) -> RigidTe
         tau_activation=float(params.get("tau_activation", 0.015)),
         tau_deactivation=float(params.get("tau_deactivation", 0.05)),
         dt=float(params.get("dt", 0.01)),
+        initial_activation=float(params.get("initial_activation", 0.001)),
     )
 
 

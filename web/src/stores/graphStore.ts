@@ -636,7 +636,7 @@ function createArm6MuscleSubgraph(
           tendon_slack_length: 0.2,
         },
         input_ports: ['excitation', 'musculotendon_length', 'musculotendon_velocity'],
-        output_ports: ['activation', 'force'],
+        output_ports: ['force', 'activation', 'fiber_length', 'fiber_velocity'],
       },
     },
     wires: [
