@@ -294,14 +294,18 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         "AcausalSystem",
     })
 
+    # Observation dimension constants by plant family.
+    _ARM_OBS_DIM = 17       # joint_angles(2) + joint_vels(2) + activations(6)
+                            # + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1)
+    _POINTMASS_OBS_DIM = 13  # pos(2) + vel(2) + action(2) + effector(2)
+                              # + target_pos(2) + target_vel(2) + phase(1)
+
     defaults = {
         "hidden_type": eqx.nn.GRUCell,
         "hidden_size": 128,
         "out_size": 6,
         "out_nonlinearity": jax.nn.sigmoid,
-        # obs: joint_angles(2) + joint_vels(2) + activations(6)
-        #      + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1) = 17
-        "input_size": 17,
+        "input_size": _ARM_OBS_DIM,
         "dt": 0.01,
         # Bug: cb13bdc — plant_type dispatches mechanics construction.
         "plant_type": "TwoLinkArm",
@@ -348,12 +352,20 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     # ------------------------------------------------------------------
     network_node = nodes[network_node_id]
     outer_params = network_node.get("params", {})
-    try:
-        result["input_size"] = int(
-            outer_params.get("input_size", defaults["input_size"])
-        )
-    except (TypeError, ValueError):
-        pass
+
+    # Bug: cb13bdc — when input_size is not explicitly set in the graph spec,
+    # infer the correct observation dimension from the plant type.  PointMass
+    # produces 13-dim observations vs 17-dim for the arm.
+    _POINTMASS_PLANT_TYPES = {"PointMass", "PointMass8MuscleRelu"}
+    explicit_input_size = outer_params.get("input_size")
+    if explicit_input_size is not None:
+        try:
+            result["input_size"] = int(explicit_input_size)
+        except (TypeError, ValueError):
+            pass
+    elif result["plant_type"] in _POINTMASS_PLANT_TYPES:
+        result["input_size"] = _POINTMASS_OBS_DIM
+    # else: keep the default (_ARM_OBS_DIM = 17)
 
     # ------------------------------------------------------------------
     # Prefer reading hidden/output architecture from the Network node's
@@ -511,12 +523,12 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     preset_key, ctrl_key, rng_key = jr.split(rng_key, 3)
 
     _ARM_TYPES = {"TwoLinkArm", "Arm6MuscleRigidTendon"}
-    _POINTMASS_TYPES = {"PointMass"}
-    # TODO(cb13bdc): PointMass8MuscleRelu needs its own dispatch path — it uses
-    # the PointMass8MuscleRelu Component (8 muscles, ReluMuscle actuators) rather
-    # than DirectForceInput.  For now it falls through to the unknown-type
-    # fallback (arm).  Adding it requires wiring the PointMass8MuscleRelu
-    # component into the DiffraxBackend-based rollout, which is a larger change.
+    _POINTMASS_TYPES = {"PointMass", "PointMass8MuscleRelu"}
+    # TODO(cb13bdc): PointMass8MuscleRelu should use 8 ReluMuscle actuators
+    # rather than DirectForceInput. For now it is routed to the PointMass plant
+    # with N_MUSCLES=8, which gives the correct observation dimension and plant
+    # geometry but uses direct force input instead of muscle-actuated dynamics.
+    # Full ReluMuscle wiring requires a new muscle config + DiffraxBackend path.
 
     if plant_type in _ARM_TYPES:
         # 6-muscle, 2-joint analytical musculoskeletal plant (original path).
@@ -553,8 +565,10 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         )
 
     elif plant_type in _POINTMASS_TYPES:
-        # Direct-force point mass: 2D force input, no muscles/joints.
-        N_MUSCLES = 2  # action dim = 2D force
+        # Direct-force point mass. PointMass8MuscleRelu uses N_MUSCLES=8
+        # (placeholder until ReluMuscle actuators are wired); plain PointMass
+        # uses 2D force input.
+        N_MUSCLES = 8 if plant_type == "PointMass8MuscleRelu" else 2
         N_JOINTS = 0
         _is_pointmass = True
 
