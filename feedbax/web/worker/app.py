@@ -263,6 +263,7 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         out_nonlinearity: activation callable (default jax.nn.sigmoid)
         input_size: network input dimension (default 17)
         dt: control timestep in seconds (default 0.01)
+        plant_type: mechanics node type string (default "TwoLinkArm")
     """
     import equinox as eqx
     import jax
@@ -302,6 +303,8 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         #      + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1) = 17
         "input_size": 17,
         "dt": 0.01,
+        # Bug: cb13bdc — plant_type dispatches mechanics construction.
+        "plant_type": "TwoLinkArm",
     }
 
     if graph_spec is None:
@@ -328,6 +331,11 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
             result["dt"] = float(mech_params.get("dt", defaults["dt"]))
         except (TypeError, ValueError):
             pass
+        # Bug: cb13bdc — extract the mechanics node type so the worker can
+        # dispatch on it instead of always building AnalyticalMusculoskeletalPlant.
+        mech_node_type = mechanics_node.get("type")
+        if mech_node_type is not None:
+            result["plant_type"] = mech_node_type
 
     if network_node_id is None:
         return result
@@ -426,7 +434,10 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
 
 
 def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
-    """Real JAX training loop using AnalyticalMusculoskeletalPlant + GRU controller.
+    """Real JAX training loop dispatching on the graph spec's mechanics node type.
+
+    Supports TwoLinkArm/Arm6MuscleRigidTendon (AnalyticalMusculoskeletalPlant)
+    and PointMass (DirectForceInput(PointMass)).
 
     Runs in a background thread. Streams training_progress, training_log,
     training_trajectory, and terminal (training_complete / training_error)
@@ -454,6 +465,8 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
         from feedbax.mechanics.model_builder import ChainConfig
         from feedbax.mechanics.muscle_config import default_6muscle_2link_topology
+        from feedbax.mechanics.plant import DirectForceInput
+        from feedbax.mechanics.skeleton.pointmass import PointMass
         from feedbax.nn import SimpleStagedNetwork
 
     except ImportError as exc:
@@ -484,46 +497,108 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # Bug: cb13bdc — CONTROL_DT read from mechanics node dt param.
     CONTROL_DT = graph_params["dt"]
     N_STEPS = cfg.n_reach_steps  # control steps per episode
-    N_MUSCLES = 6
-    N_JOINTS = 2
     # Bug: cb13bdc — OBS_DIM read from Network node input_size param.
     OBS_DIM = graph_params["input_size"]
 
+    # Bug: cb13bdc — dispatch plant construction on mechanics node type.
+    plant_type = graph_params["plant_type"]
+
     # ------------------------------------------------------------------
-    # Build plant (single canonical body preset at default parameters)
+    # Build plant — dispatch on mechanics node type
     # ------------------------------------------------------------------
 
     rng_key = jr.PRNGKey(0)
     preset_key, ctrl_key, rng_key = jr.split(rng_key, 3)
 
-    bounds = default_2link_bounds()
-    # Use the midpoint of the bounds to get a typical body.
-    preset = BodyPreset(
-        segment_lengths=0.5 * (bounds.segment_lengths_min + bounds.segment_lengths_max),
-        segment_masses=0.5 * (bounds.segment_masses_min + bounds.segment_masses_max),
-        joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
-        joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
-        muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
-        muscle_optimal_fiber_length=0.5 * (
-            bounds.muscle_optimal_fiber_length_min
-            + bounds.muscle_optimal_fiber_length_max
-        ),
-        muscle_tendon_slack_length=0.5 * (
-            bounds.muscle_tendon_slack_length_min
-            + bounds.muscle_tendon_slack_length_max
-        ),
-        muscle_moment_arm_magnitudes=0.5 * (
-            bounds.muscle_moment_arm_magnitudes_min
-            + bounds.muscle_moment_arm_magnitudes_max
-        ),
-    )
+    _ARM_TYPES = {"TwoLinkArm", "Arm6MuscleRigidTendon"}
+    _POINTMASS_TYPES = {"PointMass"}
+    # TODO(cb13bdc): PointMass8MuscleRelu needs its own dispatch path — it uses
+    # the PointMass8MuscleRelu Component (8 muscles, ReluMuscle actuators) rather
+    # than DirectForceInput.  For now it falls through to the unknown-type
+    # fallback (arm).  Adding it requires wiring the PointMass8MuscleRelu
+    # component into the DiffraxBackend-based rollout, which is a larger change.
 
-    topology = default_6muscle_2link_topology()
-    chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
+    if plant_type in _ARM_TYPES:
+        # 6-muscle, 2-joint analytical musculoskeletal plant (original path).
+        N_MUSCLES = 6
+        N_JOINTS = 2
+        _is_pointmass = False
 
-    plant = AnalyticalMusculoskeletalPlant.from_body_preset(
-        preset, chain_config, clip_states=True,
-    )
+        bounds = default_2link_bounds()
+        preset = BodyPreset(
+            segment_lengths=0.5 * (bounds.segment_lengths_min + bounds.segment_lengths_max),
+            segment_masses=0.5 * (bounds.segment_masses_min + bounds.segment_masses_max),
+            joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
+            joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
+            muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
+            muscle_optimal_fiber_length=0.5 * (
+                bounds.muscle_optimal_fiber_length_min
+                + bounds.muscle_optimal_fiber_length_max
+            ),
+            muscle_tendon_slack_length=0.5 * (
+                bounds.muscle_tendon_slack_length_min
+                + bounds.muscle_tendon_slack_length_max
+            ),
+            muscle_moment_arm_magnitudes=0.5 * (
+                bounds.muscle_moment_arm_magnitudes_min
+                + bounds.muscle_moment_arm_magnitudes_max
+            ),
+        )
+
+        topology = default_6muscle_2link_topology()
+        chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
+
+        plant = AnalyticalMusculoskeletalPlant.from_body_preset(
+            preset, chain_config, clip_states=True,
+        )
+
+    elif plant_type in _POINTMASS_TYPES:
+        # Direct-force point mass: 2D force input, no muscles/joints.
+        N_MUSCLES = 2  # action dim = 2D force
+        N_JOINTS = 0
+        _is_pointmass = True
+
+        plant = DirectForceInput(PointMass(mass=1.0))
+
+    else:
+        # Bug: cb13bdc — unknown type: warn and fall back to arm.
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+        _log.warning(
+            "Unknown plant_type %r in graph spec; falling back to "
+            "AnalyticalMusculoskeletalPlant (TwoLinkArm).", plant_type,
+        )
+        N_MUSCLES = 6
+        N_JOINTS = 2
+        _is_pointmass = False
+
+        bounds = default_2link_bounds()
+        preset = BodyPreset(
+            segment_lengths=0.5 * (bounds.segment_lengths_min + bounds.segment_lengths_max),
+            segment_masses=0.5 * (bounds.segment_masses_min + bounds.segment_masses_max),
+            joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
+            joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
+            muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
+            muscle_optimal_fiber_length=0.5 * (
+                bounds.muscle_optimal_fiber_length_min
+                + bounds.muscle_optimal_fiber_length_max
+            ),
+            muscle_tendon_slack_length=0.5 * (
+                bounds.muscle_tendon_slack_length_min
+                + bounds.muscle_tendon_slack_length_max
+            ),
+            muscle_moment_arm_magnitudes=0.5 * (
+                bounds.muscle_moment_arm_magnitudes_min
+                + bounds.muscle_moment_arm_magnitudes_max
+            ),
+        )
+
+        topology = default_6muscle_2link_topology()
+        chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
+
+        plant = AnalyticalMusculoskeletalPlant.from_body_preset(
+            preset, chain_config, clip_states=True,
+        )
 
     backend = DiffraxBackend(control_dt=CONTROL_DT)
 
@@ -561,24 +636,40 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # Observation helper
     # ------------------------------------------------------------------
 
+    # Bug: cb13bdc — observation layout differs between plant types.
     def _extract_obs(
         physics_state: PhysicsState,
-        muscle_activations,
+        action_or_activation,
         target_pos,
         target_vel,
         phase,
     ):
+        """Extract observation vector, dispatcher for PointMass vs articulated."""
         sk = physics_state.plant.skeleton
         effector = physics_state.effector
-        return jnp.concatenate([
-            sk.angle,
-            sk.d_angle,
-            muscle_activations,
-            effector.pos,
-            target_pos,
-            target_vel,
-            phase,
-        ])
+        if _is_pointmass:
+            # PointMass skeleton state is CartesianState with pos(2), vel(2).
+            # No joint angles or muscle activations.
+            return jnp.concatenate([
+                sk.pos,       # config pos (2)
+                sk.vel,       # config vel (2)
+                action_or_activation,  # last action / 2D force (2)
+                effector.pos, # effector pos (2)
+                target_pos,   # (2)
+                target_vel,   # (2)
+                phase,        # (1)
+            ])
+        else:
+            # Articulated plant: skeleton has angle, d_angle, etc.
+            return jnp.concatenate([
+                sk.angle,
+                sk.d_angle,
+                action_or_activation,  # muscle_activations
+                effector.pos,
+                target_pos,
+                target_vel,
+                phase,
+            ])
 
     # ------------------------------------------------------------------
     # Single-episode rollout through Diffrax (differentiable)
@@ -597,8 +688,8 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         scan_keys = jr.split(episode_key, N_STEPS)
 
         def _step(carry, inputs):
-            t_idx, step_key = inputs
-            phys_s, act, hidden, obs_prev = carry
+            t_idx, _step_key = inputs
+            phys_s, act, hidden, _obs_prev = carry
 
             phase = jnp.array([t_idx / N_STEPS])
             obs = _extract_obs(
