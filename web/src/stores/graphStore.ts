@@ -538,12 +538,18 @@ function createNetworkSubgraph(
         target_node: 'readout',
         target_port: 'input',
       },
+      {
+        source_node: 'cell',
+        source_port: 'output',
+        target_node: 'cell',
+        target_port: 'hidden',
+      },
     ],
     input_ports: ['input', 'feedback'],
     output_ports: ['output', 'hidden'],
     input_bindings: {
       input: ['cell', 'input'],
-      feedback: ['cell', 'hidden'],
+      feedback: ['cell', 'input'],
     },
     output_bindings: {
       output: ['readout', 'output'],
@@ -1296,6 +1302,7 @@ interface GraphStoreState {
   currentGraphLabel: string;
   _compositeTypes: Set<string>;
   _componentRegistry: Map<string, ComponentDefinition>;
+  _isRegistryLoaded: boolean;
   currentContext: string;
   isDirty: boolean;
   lastSavedAt: string | null;
@@ -1354,6 +1361,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   currentGraphLabel: initial.graph.metadata?.name ?? 'Model',
   _compositeTypes: new Set(DEFAULT_COMPOSITE_TYPES),
   _componentRegistry: new Map<string, ComponentDefinition>(),
+  _isRegistryLoaded: false,
   currentContext: 'top-level',
   isDirty: false,
   lastSavedAt: null,
@@ -1612,14 +1620,29 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const cachedGraph = state.graph.subgraphs?.[nodeId];
       const cachedUi = state.uiState.subgraph_states?.[nodeId];
       const componentDef = get()._componentRegistry.get(nodeSpec.type);
-      const nextLayerBase = cachedGraph
-        ? { graph: cachedGraph, uiState: cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-        : (SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec)
+
+      // Bug d5e8b8f: Only derive ports for freshly-created subgraphs.
+      // Cached subgraphs already have user-customized bindings/ports.
+      let derivedNext: GraphSpec;
+      let nextUiState: GraphUIState;
+      if (cachedGraph) {
+        derivedNext = cachedGraph;
+        nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
+      } else {
+        // Bug 5e8895e: If registry hasn't loaded yet and no factory exists,
+        // defer rather than creating an empty subgraph that would mask the template.
+        if (!get()._isRegistryLoaded && get()._compositeTypes.has(nodeSpec.type) && !SUBGRAPH_FACTORIES[nodeSpec.type]) {
+          console.warn(`enterSubgraph: component registry not yet loaded for type "${nodeSpec.type}", deferring`);
+          return state;
+        }
+        const freshLayer = SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec)
             ?? (componentDef?.template_graph
                 ? { graph: componentDef.template_graph, uiState: componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-                : createEmptySubgraph(nodeId)));
-      const derivedNext = deriveSubgraphPorts(nextLayerBase.graph);
-      const normalized = normalizeUiState(derivedNext, nextLayerBase.uiState, state.edgeStyle);
+                : createEmptySubgraph(nodeId));
+        derivedNext = deriveSubgraphPorts(freshLayer.graph);
+        nextUiState = freshLayer.uiState;
+      }
+      const normalized = normalizeUiState(derivedNext, nextUiState, state.edgeStyle);
       const parentGraph: GraphSpec = {
         ...state.graph,
         subgraphs: {
@@ -2848,6 +2871,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set({ _compositeTypes: types });
   },
   setComponentRegistry: (components) => {
-    set({ _componentRegistry: new Map(components.map((c) => [c.name, c])) });
+    set({
+      _componentRegistry: new Map(components.map((c) => [c.name, c])),
+      _isRegistryLoaded: true,
+    });
   },
 }));
