@@ -26,6 +26,10 @@
 - **Docs**: `docs/WEB_UI_SPEC.md` (87 KB comprehensive spec), `docs/COLLIMATOR_COMPARISON.md`
 - **Design specs**: `feedbax_merge_spec.md`, `SPEC_EAGER_MODELS.md`
 
+## Core Principle
+
+**The graph is the model.** What is rendered in the Studio canvas is the literal model that is built and trained. No node type is decorative, templated, or a placeholder for something constructed elsewhere. The worker builds exactly what the graph spec describes — node types, params, and topology — without hardcoding or inferring any architectural choices. Any deviation from this is a bug, not a known limitation.
+
 ## Active Feature Context
 
 - `feature/differentiable-mjx`: CDE hidden-state stability experiments (v6→v9b), AnalyticalMusculoskeletalPlant, DiffraxBackend. Latest: hybrid fixed-decay + Anti-NF gate (v9b).
