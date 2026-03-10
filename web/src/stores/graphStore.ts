@@ -32,7 +32,7 @@ const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
 const DEFAULT_COMPOSITE_TYPES = new Set([
-  'Network', 'Subgraph', 'PenzaiSubgraph',
+  'Subgraph', 'PenzaiSubgraph',
   'Arm6MuscleRigidTendon', 'PointMass8MuscleRelu', 'AcausalSystem',
 ]);
 const DEFAULT_NODE_WIDTH = 220;
@@ -446,108 +446,6 @@ function migrateGraphSpec(graph: GraphSpec): GraphSpec {
   };
 }
 
-function createNetworkSubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
-  const graph: GraphSpec = {
-    nodes: {
-      merge: {
-        type: 'Sum',
-        params: {},
-        input_ports: ['a', 'b'],
-        output_ports: ['output'],
-      },
-      encoder: {
-        type: 'MLP',
-        params: {
-          input_size: 6,
-          output_size: 64,
-          hidden_sizes: [64],
-          activation: 'relu',
-        },
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
-      core: {
-        type: 'GRU',
-        params: {
-          input_size: 64,
-          hidden_size: 64,
-          output_size: 64,
-          num_layers: 1,
-        },
-        input_ports: ['input'],
-        output_ports: ['output', 'hidden'],
-      },
-      decoder: {
-        type: 'MLP',
-        params: {
-          input_size: 64,
-          output_size: 2,
-          hidden_sizes: [64],
-          activation: 'tanh',
-        },
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
-    },
-    wires: [
-      {
-        source_node: 'merge',
-        source_port: 'output',
-        target_node: 'encoder',
-        target_port: 'input',
-      },
-      {
-        source_node: 'encoder',
-        source_port: 'output',
-        target_node: 'core',
-        target_port: 'input',
-      },
-      {
-        source_node: 'core',
-        source_port: 'output',
-        target_node: 'decoder',
-        target_port: 'input',
-      },
-    ],
-    input_ports: ['input', 'feedback'],
-    output_ports: ['output', 'hidden'],
-    input_bindings: {
-      input: ['merge', 'a'],
-      feedback: ['merge', 'b'],
-    },
-    output_bindings: {
-      output: ['decoder', 'output'],
-      hidden: ['core', 'hidden'],
-    },
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${label} Graph`,
-      description: 'Internal staged network graph.',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      version: '1.0.0',
-    },
-  };
-
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {
-      merge: { position: { x: 140, y: 220 }, collapsed: false, selected: false },
-      encoder: { position: { x: 360, y: 220 }, collapsed: false, selected: false },
-      core: { position: { x: 620, y: 220 }, collapsed: false, selected: false },
-      decoder: { position: { x: 880, y: 220 }, collapsed: false, selected: false },
-    },
-  };
-
-  const uiState: GraphUIState = {
-    ...baseUiState,
-    edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-  };
-
-  return { graph, uiState };
-}
-
 function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphUIState } {
   const now = new Date().toISOString();
   const graph: GraphSpec = {
@@ -609,7 +507,6 @@ const SUBGRAPH_FACTORIES: Record<
   string,
   (label: string, nodeSpec: ComponentSpec) => { graph: GraphSpec; uiState: GraphUIState }
 > = {
-  Network: (label) => createNetworkSubgraph(label),
   PenzaiSubgraph: createPenzaiSubgraph,
   Arm6MuscleRigidTendon: createMuscleGroupSubgraph,
   PointMass8MuscleRelu: createMuscleGroupSubgraph,

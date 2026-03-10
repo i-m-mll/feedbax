@@ -63,6 +63,17 @@ function buildTrainingConfig(
   learning_rate: number
 ): TrainingConfig {
   const { hidden_dim, network_type } = extractNetworkParams(graph);
+
+  // Read n_reach_steps from the task node (SimpleReaches n_steps param).
+  // Bug: dc1adbc — read from graph instead of hardcoding
+  const taskNode = Object.values(graph.nodes).find(
+    (node) => node.type === 'SimpleReaches'
+  );
+  const n_reach_steps =
+    typeof taskNode?.params?.n_steps === 'number'
+      ? taskNode.params.n_steps
+      : 80;
+
   return {
     n_batches,
     batch_size,
@@ -70,7 +81,7 @@ function buildTrainingConfig(
     grad_clip: 1.0,
     hidden_dim,
     network_type,
-    n_reach_steps: 80,
+    n_reach_steps,
     effort_weight: 2.5,
   };
 }
