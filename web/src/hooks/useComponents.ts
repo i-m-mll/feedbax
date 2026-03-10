@@ -12,6 +12,7 @@ export function useComponents() {
     retry: 1,
   });
   const setCompositeTypes = useGraphStore((s) => s.setCompositeTypes);
+  const setComponentRegistry = useGraphStore((s) => s.setComponentRegistry);
 
   useEffect(() => {
     if (query.data) {
@@ -21,8 +22,9 @@ export function useComponents() {
       if (composites.size > 0) {
         setCompositeTypes(composites);
       }
+      setComponentRegistry(query.data);
     }
-  }, [query.data, setCompositeTypes]);
+  }, [query.data, setCompositeTypes, setComponentRegistry]);
 
   return {
     components: query.data ?? componentLibrary,

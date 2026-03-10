@@ -251,11 +251,18 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     Falls back to outer Network node params for backwards compatibility with
     graphs that pre-date the real composite subgraph.
 
+    Also extracts ``input_size`` from the outer Network node params (the
+    subgraph cell's input_size is an internal wiring detail; the outer
+    Network param is the canonical interface dimension), and ``dt`` from the
+    first mechanics/plant node found in the top-level graph.
+
     Returns a dict with keys:
         hidden_type: equinox cell class (default eqx.nn.GRUCell)
         hidden_size: hidden state dimension (default 128)
         out_size: output dimension (default 6)
         out_nonlinearity: activation callable (default jax.nn.sigmoid)
+        input_size: network input dimension (default 17)
+        dt: control timestep in seconds (default 0.01)
     """
     import equinox as eqx
     import jax
@@ -275,12 +282,26 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         "softmax": jax.nn.softmax,
         "identity": lambda x: x,
     }
+    # Node types that carry a ``dt`` param representing the mechanics timestep.
+    # Bug: cb13bdc — mechanics dt should come from the graph spec, not be hardcoded.
+    _MECHANICS_NODE_TYPES = frozenset({
+        "TwoLinkArm",
+        "PointMass",
+        "Mechanics",
+        "Arm6MuscleRigidTendon",
+        "PointMass8MuscleRelu",
+        "AcausalSystem",
+    })
 
     defaults = {
         "hidden_type": eqx.nn.GRUCell,
         "hidden_size": 128,
         "out_size": 6,
         "out_nonlinearity": jax.nn.sigmoid,
+        # obs: joint_angles(2) + joint_vels(2) + activations(6)
+        #      + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1) = 17
+        "input_size": 17,
+        "dt": 0.01,
     }
 
     if graph_spec is None:
@@ -291,12 +312,46 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         (nid for nid, n in nodes.items() if n.get("type") == "Network"),
         None,
     )
-    if network_node_id is None:
-        return defaults
 
-    # Prefer reading from the Network node's internal subgraph.
-    # The subgraph is the authoritative source of truth; outer params are
-    # treated as a legacy fallback for graphs without a subgraph yet.
+    # ------------------------------------------------------------------
+    # Extract dt from the first mechanics node in the top-level graph.
+    # Bug: cb13bdc — read dt from graph spec instead of hardcoding.
+    # ------------------------------------------------------------------
+    result = dict(defaults)
+    mechanics_node = next(
+        (n for n in nodes.values() if n.get("type") in _MECHANICS_NODE_TYPES),
+        None,
+    )
+    if mechanics_node is not None:
+        mech_params = mechanics_node.get("params", {})
+        try:
+            result["dt"] = float(mech_params.get("dt", defaults["dt"]))
+        except (TypeError, ValueError):
+            pass
+
+    if network_node_id is None:
+        return result
+
+    # ------------------------------------------------------------------
+    # Extract input_size from outer Network node params.
+    # The outer param is the canonical interface dimension; the subgraph
+    # cell's input_size is an internal wiring detail.
+    # Bug: cb13bdc — read input_size from graph spec instead of hardcoding.
+    # ------------------------------------------------------------------
+    network_node = nodes[network_node_id]
+    outer_params = network_node.get("params", {})
+    try:
+        result["input_size"] = int(
+            outer_params.get("input_size", defaults["input_size"])
+        )
+    except (TypeError, ValueError):
+        pass
+
+    # ------------------------------------------------------------------
+    # Prefer reading hidden/output architecture from the Network node's
+    # internal subgraph.  The subgraph is the authoritative source of truth;
+    # outer params are a legacy fallback for graphs without a subgraph yet.
+    # ------------------------------------------------------------------
     subgraphs = graph_spec.get("subgraphs") or {}
     network_subgraph = subgraphs.get(network_node_id)
 
@@ -312,8 +367,6 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
             (n for n in sub_nodes.values() if n.get("type") == "Linear"),
             None,
         )
-
-        result = dict(defaults)
 
         if cell_node is not None:
             result["hidden_type"] = CELL_MAP.get(
@@ -342,34 +395,29 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
 
         return result
 
-    # Fallback: read from outer Network node params (legacy / no-subgraph case).
-    network_node = nodes[network_node_id]
-    params = network_node.get("params", {})
+    # Fallback: read hidden/output architecture from outer Network node params
+    # (legacy / no-subgraph case).
+    hidden_type_key = outer_params.get("hidden_type", "GRUCell")
+    result["hidden_type"] = CELL_MAP.get(hidden_type_key, eqx.nn.GRUCell)
 
-    hidden_type_key = params.get("hidden_type", "GRUCell")
-    hidden_type = CELL_MAP.get(hidden_type_key, eqx.nn.GRUCell)
-
-    hidden_size = defaults["hidden_size"]
     try:
-        hidden_size = int(params.get("hidden_size", defaults["hidden_size"]))
+        result["hidden_size"] = int(
+            outer_params.get("hidden_size", defaults["hidden_size"])
+        )
     except (TypeError, ValueError):
         pass
 
-    out_size = defaults["out_size"]
     try:
-        out_size = int(params.get("out_size", defaults["out_size"]))
+        result["out_size"] = int(
+            outer_params.get("out_size", defaults["out_size"])
+        )
     except (TypeError, ValueError):
         pass
 
-    nonlin_key = params.get("out_nonlinearity", "sigmoid")
-    out_nonlinearity = NONLINEARITY_MAP.get(nonlin_key, jax.nn.sigmoid)
+    nonlin_key = outer_params.get("out_nonlinearity", "sigmoid")
+    result["out_nonlinearity"] = NONLINEARITY_MAP.get(nonlin_key, jax.nn.sigmoid)
 
-    return {
-        "hidden_type": hidden_type,
-        "hidden_size": hidden_size,
-        "out_size": out_size,
-        "out_nonlinearity": out_nonlinearity,
-    }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -421,16 +469,25 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         return
 
     # ------------------------------------------------------------------
+    # Extract architecture and physics params from the graph spec.
+    # Bug: cb13bdc — these values must come from the graph spec, not be
+    # hardcoded. _extract_graph_params falls back to sensible defaults when
+    # the graph spec is absent or incomplete.
+    # ------------------------------------------------------------------
+
+    graph_params = _extract_graph_params(job.graph_spec)
+
+    # ------------------------------------------------------------------
     # Constants
     # ------------------------------------------------------------------
 
-    CONTROL_DT = 0.01           # 100 Hz
+    # Bug: cb13bdc — CONTROL_DT read from mechanics node dt param.
+    CONTROL_DT = graph_params["dt"]
     N_STEPS = cfg.n_reach_steps  # control steps per episode
     N_MUSCLES = 6
     N_JOINTS = 2
-    # obs: joint_angles(2) + joint_vels(2) + activations(6)
-    #      + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1) = 17
-    OBS_DIM = 17
+    # Bug: cb13bdc — OBS_DIM read from Network node input_size param.
+    OBS_DIM = graph_params["input_size"]
 
     # ------------------------------------------------------------------
     # Build plant (single canonical body preset at default parameters)
@@ -474,8 +531,6 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # Build GRU controller (SimpleStagedNetwork with GRUCell hidden layer)
     # ------------------------------------------------------------------
 
-    # -- Bug: 172c883 — read network architecture from graph spec
-    graph_params = _extract_graph_params(job.graph_spec)
     hidden_size = graph_params["hidden_size"]
     controller = SimpleStagedNetwork(
         input_size=OBS_DIM,

@@ -54,7 +54,6 @@ from feedbax.penzai_component import (
     PENZAI_AVAILABLE,
     PenzaiSubgraph,
     build_penzai_subgraph,
-    get_penzai_builder,
 )
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
@@ -119,6 +118,8 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
             next_type = "Network"
         if next_type == "FeedbackChannel":
             next_type = "Channel"
+        if next_type == "PenzaiSubgraph":
+            next_type = "PenzaiAdapter"
         params = dict(node_spec.params)
         if next_type == "Network" and "output_size" in params and "out_size" not in params:
             params["out_size"] = params.get("output_size")
@@ -529,11 +530,11 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, PenzaiSubgraph):
-            # For PenzaiSubgraph, we store the builder_name if it was created
+            # For PenzaiAdapter, we store the builder_name if it was created
             # from a registered builder. Otherwise, we note it as unserializable.
             # Note: The actual pz_model weights are not serialized here.
             nodes[name] = ComponentSpec(
-                type="PenzaiSubgraph",
+                type="PenzaiAdapter",
                 params={
                     "input_port": component.input_ports[0] if component.input_ports else "input",
                     "output_port": component.output_ports[0] if component.output_ports else "output",
@@ -604,7 +605,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
 
 def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
-    hidden_type = _HIDDEN_TYPES.get(str(params.get("hidden_type", "GRUCell")), eqx.nn.GRUCell)
+    hidden_type = _HIDDEN_TYPES.get(str(params.get("hidden_type", "GRUCell"))) or eqx.nn.GRUCell
     hidden_nonlinearity = _resolve_nonlinearity(str(params.get("hidden_nonlinearity", "tanh")))
     out_nonlinearity = _resolve_nonlinearity(str(params.get("out_nonlinearity", "tanh")))
     encoding_size = int(params.get("encoding_size", 0) or 0)
@@ -943,15 +944,15 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
         if node_spec.type in {"SimpleReaches", "DelayedReaches", "Stabilization"}:
             nodes[node_name] = _build_task_component(node_spec.type, params)
             continue
-        if node_spec.type == "PenzaiSubgraph":
+        if node_spec.type == "PenzaiAdapter":
             builder_name = str(params.get("builder_name", ""))
             if not builder_name:
                 raise ValueError(
-                    f"PenzaiSubgraph node '{node_name}' requires 'builder_name' parameter"
+                    f"PenzaiAdapter node '{node_name}' requires 'builder_name' parameter"
                 )
             if not PENZAI_AVAILABLE:
                 raise ImportError(
-                    "penzai is required to instantiate PenzaiSubgraph. "
+                    "penzai is required to instantiate PenzaiAdapter. "
                     "Install with: pip install penzai"
                 )
             # Build the PenzaiSubgraph using the registered builder
