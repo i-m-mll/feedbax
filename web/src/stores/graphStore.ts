@@ -531,6 +531,10 @@ function createNetworkSubgraph(
         output_ports: ['output'],
       },
     },
+    // Note: recurrent hidden state is managed internally by SimpleStagedNetwork
+    // (via JAX scan), not as a graph-level wire. A self-loop here would require
+    // GRU.initial_outputs() which is not yet implemented — deferred until the
+    // graph engine supports explicit cycle initialization.
     wires: [
       {
         source_node: 'cell',
@@ -542,8 +546,11 @@ function createNetworkSubgraph(
     input_ports: ['input', 'feedback'],
     output_ports: ['output', 'hidden'],
     input_bindings: {
+      // Only `input` is bound to the cell's input port. `feedback` is left as
+      // an unbound subgraph input port — the concatenation of input + feedback
+      // is an implicit Python-side operation (inside SimpleStagedNetwork) that
+      // cannot be represented in the graph topology without a Concat node.
       input: ['cell', 'input'],
-      feedback: ['cell', 'hidden'],
     },
     output_bindings: {
       output: ['readout', 'output'],
@@ -1296,6 +1303,7 @@ interface GraphStoreState {
   currentGraphLabel: string;
   _compositeTypes: Set<string>;
   _componentRegistry: Map<string, ComponentDefinition>;
+  _isRegistryLoaded: boolean;
   currentContext: string;
   isDirty: boolean;
   lastSavedAt: string | null;
@@ -1354,6 +1362,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   currentGraphLabel: initial.graph.metadata?.name ?? 'Model',
   _compositeTypes: new Set(DEFAULT_COMPOSITE_TYPES),
   _componentRegistry: new Map<string, ComponentDefinition>(),
+  _isRegistryLoaded: false,
   currentContext: 'top-level',
   isDirty: false,
   lastSavedAt: null,
@@ -1612,14 +1621,29 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const cachedGraph = state.graph.subgraphs?.[nodeId];
       const cachedUi = state.uiState.subgraph_states?.[nodeId];
       const componentDef = get()._componentRegistry.get(nodeSpec.type);
-      const nextLayerBase = cachedGraph
-        ? { graph: cachedGraph, uiState: cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-        : (SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec)
+
+      // Bug d5e8b8f: Only derive ports for freshly-created subgraphs.
+      // Cached subgraphs already have user-customized bindings/ports.
+      let derivedNext: GraphSpec;
+      let nextUiState: GraphUIState;
+      if (cachedGraph) {
+        derivedNext = cachedGraph;
+        nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
+      } else {
+        // Bug 5e8895e: If registry hasn't loaded yet and no factory exists,
+        // defer rather than creating an empty subgraph that would mask the template.
+        if (!get()._isRegistryLoaded && get()._compositeTypes.has(nodeSpec.type) && !SUBGRAPH_FACTORIES[nodeSpec.type]) {
+          console.warn(`enterSubgraph: component registry not yet loaded for type "${nodeSpec.type}", deferring`);
+          return state;
+        }
+        const freshLayer = SUBGRAPH_FACTORIES[nodeSpec.type]?.(nodeId, nodeSpec)
             ?? (componentDef?.template_graph
                 ? { graph: componentDef.template_graph, uiState: componentDef.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} } }
-                : createEmptySubgraph(nodeId)));
-      const derivedNext = deriveSubgraphPorts(nextLayerBase.graph);
-      const normalized = normalizeUiState(derivedNext, nextLayerBase.uiState, state.edgeStyle);
+                : createEmptySubgraph(nodeId));
+        derivedNext = deriveSubgraphPorts(freshLayer.graph);
+        nextUiState = freshLayer.uiState;
+      }
+      const normalized = normalizeUiState(derivedNext, nextUiState, state.edgeStyle);
       const parentGraph: GraphSpec = {
         ...state.graph,
         subgraphs: {
@@ -2848,6 +2872,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set({ _compositeTypes: types });
   },
   setComponentRegistry: (components) => {
-    set({ _componentRegistry: new Map(components.map((c) => [c.name, c])) });
+    set({
+      _componentRegistry: new Map(components.map((c) => [c.name, c])),
+      _isRegistryLoaded: true,
+    });
   },
 }));
