@@ -41,7 +41,7 @@ class ComponentRegistry:
             ComponentMeta(
                 name='Network',
                 category='Neural Networks',
-                description='Composite recurrent network template.',
+                description='Recurrent network. Enter to inspect and modify the internal architecture.',
                 param_schema=[
                     ParamSchema(name='input_size', type='int', default=6, min=1, required=True),
                     ParamSchema(name='hidden_size', type='int', default=100, min=1, required=True),
@@ -63,7 +63,7 @@ class ComponentRegistry:
                     ParamSchema(
                         name='out_nonlinearity',
                         type='enum',
-                        options=['tanh', 'relu', 'identity'],
+                        options=['tanh', 'relu', 'sigmoid', 'identity'],
                         default='tanh',
                         required=False,
                     ),
@@ -358,6 +358,13 @@ class ComponentRegistry:
                     ParamSchema(name='input_size', type='int', default=1, min=1, required=True),
                     ParamSchema(name='output_size', type='int', default=1, min=1, required=True),
                     ParamSchema(name='use_bias', type='bool', default=True, required=False),
+                    ParamSchema(
+                        name='activation',
+                        type='enum',
+                        options=['identity', 'tanh', 'relu', 'sigmoid'],
+                        default='identity',
+                        required=False,
+                    ),
                 ],
                 input_ports=['input'],
                 output_ports=['output'],
@@ -416,12 +423,7 @@ class ComponentRegistry:
             ComponentMeta(
                 name='GRUOracle',
                 category='Neural Networks',
-                description=(
-                    'GRU-based oracle/policy network that maps observations to '
-                    'muscle excitations. Feedback port accepts previous observation '
-                    'for interface compatibility but the GRU ignores it (uses its '
-                    'hidden state instead).'
-                ),
+                description='GRU-based oracle/policy network that maps observations to muscle excitations.',
                 param_schema=[
                     ParamSchema(
                         name='hidden_size', type='int',
@@ -436,13 +438,12 @@ class ComponentRegistry:
                         default=6, min=1, required=True,
                     ),
                 ],
-                input_ports=['input', 'feedback'],
+                input_ports=['input'],
                 output_ports=['output', 'hidden'],
                 icon='BrainCircuit',
                 port_types=PortTypeSpec(
                     inputs={
                         'input': PortType(dtype='vector'),
-                        'feedback': PortType(dtype='vector'),
                     },
                     outputs={
                         'output': PortType(dtype='vector'),
@@ -522,6 +523,49 @@ class ComponentRegistry:
                         'effector': PortType(dtype='state'),
                         'state': PortType(dtype='state'),
                     },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='MomentArmProjection',
+                category='Mechanics',
+                description='Projects muscle forces to joint torques via moment arm matrix (R^T @ forces). Also computes musculotendon lengths and velocities from joint kinematics.',
+                param_schema=[
+                    ParamSchema(name='n_muscles', type='int', default=6, min=1, required=True),
+                    ParamSchema(name='n_joints', type='int', default=2, min=1, required=True),
+                ],
+                input_ports=['forces', 'angles', 'angular_velocities'],
+                output_ports=['torques', 'musculotendon_lengths', 'musculotendon_velocities'],
+                icon='Ruler',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'forces': PortType(dtype='vector'),
+                        'angles': PortType(dtype='vector'),
+                        'angular_velocities': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'torques': PortType(dtype='vector'),
+                        'musculotendon_lengths': PortType(dtype='vector'),
+                        'musculotendon_velocities': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
+                name='RadialForceProjection',
+                category='Mechanics',
+                description='Projects radially-arranged muscle forces to a 2D net force vector. Muscles are arranged in evenly-spaced antagonist pairs.',
+                param_schema=[
+                    ParamSchema(name='n_muscles', type='int', default=8, min=2, required=True),
+                ],
+                input_ports=['forces'],
+                output_ports=['force_2d'],
+                icon='Compass',
+                port_types=PortTypeSpec(
+                    inputs={'forces': PortType(dtype='vector')},
+                    outputs={'force_2d': PortType(dtype='vector')},
                 ),
             )
         )
@@ -711,48 +755,28 @@ class ComponentRegistry:
             ComponentMeta(
                 name='RigidTendonHillMuscleThelen',
                 category='Muscles',
-                description='Thelen 2003 rigid tendon Hill muscle.',
+                description='Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.',
                 param_schema=[
-                    ParamSchema(
-                        name='max_isometric_force', type='float',
-                        default=500.0, min=0.0, required=True,
-                    ),
-                    ParamSchema(
-                        name='optimal_muscle_length', type='float',
-                        default=0.1, min=0.001, required=True,
-                    ),
-                    ParamSchema(
-                        name='tendon_slack_length', type='float',
-                        default=0.1, min=0.0, required=True,
-                    ),
-                    ParamSchema(
-                        name='vmax_factor', type='float',
-                        default=10.0, min=1.0, required=False,
-                    ),
-                    ParamSchema(
-                        name='dt', type='float',
-                        default=0.01, min=0.001, required=True,
-                    ),
+                    ParamSchema(name='n_muscles', type='int', default=6, min=1, required=True),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
+                    ParamSchema(name='tau_activation', type='float', default=0.015, min=0.001, required=False),
+                    ParamSchema(name='tau_deactivation', type='float', default=0.05, min=0.001, required=False),
+                    ParamSchema(name='max_isometric_force', type='float', default=500.0, min=0.0, required=False),
+                    ParamSchema(name='optimal_muscle_length', type='float', default=0.1, min=0.001, required=False),
+                    ParamSchema(name='tendon_slack_length', type='float', default=0.2, min=0.001, required=False),
                 ],
-                input_ports=[
-                    'excitation', 'musculotendon_length',
-                    'musculotendon_velocity',
-                ],
-                output_ports=[
-                    'force', 'activation', 'fiber_length', 'fiber_velocity',
-                ],
-                icon='Zap',
+                input_ports=['excitation', 'musculotendon_length', 'musculotendon_velocity'],
+                output_ports=['activation', 'force'],
+                icon='Dumbbell',
                 port_types=PortTypeSpec(
                     inputs={
-                        'excitation': PortType(dtype='scalar'),
-                        'musculotendon_length': PortType(dtype='scalar'),
-                        'musculotendon_velocity': PortType(dtype='scalar'),
+                        'excitation': PortType(dtype='vector'),
+                        'musculotendon_length': PortType(dtype='vector'),
+                        'musculotendon_velocity': PortType(dtype='vector'),
                     },
                     outputs={
-                        'force': PortType(dtype='scalar'),
-                        'activation': PortType(dtype='scalar'),
-                        'fiber_length': PortType(dtype='scalar'),
-                        'fiber_velocity': PortType(dtype='scalar'),
+                        'activation': PortType(dtype='vector'),
+                        'force': PortType(dtype='vector'),
                     },
                 ),
             )
