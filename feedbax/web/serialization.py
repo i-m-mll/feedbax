@@ -54,7 +54,6 @@ from feedbax.penzai_component import (
     PENZAI_AVAILABLE,
     PenzaiSubgraph,
     build_penzai_subgraph,
-    get_penzai_builder,
 )
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
@@ -604,7 +603,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
 
 def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
-    hidden_type = _HIDDEN_TYPES.get(str(params.get("hidden_type", "GRUCell")), eqx.nn.GRUCell)
+    hidden_type = _HIDDEN_TYPES.get(str(params.get("hidden_type", "GRUCell"))) or eqx.nn.GRUCell
     hidden_nonlinearity = _resolve_nonlinearity(str(params.get("hidden_nonlinearity", "tanh")))
     out_nonlinearity = _resolve_nonlinearity(str(params.get("out_nonlinearity", "tanh")))
     encoding_size = int(params.get("encoding_size", 0) or 0)
