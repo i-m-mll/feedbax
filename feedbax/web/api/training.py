@@ -88,6 +88,7 @@ async def start_training(payload: TrainingRequest):
         training_config=training_config,
         training_spec=payload.training_spec.model_dump(),
         task_spec=payload.task_spec.model_dump(),
+        graph_spec=payload.graph_spec,
     )
     return {'job_id': job_id}
 

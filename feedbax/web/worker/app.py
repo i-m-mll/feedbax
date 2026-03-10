@@ -48,6 +48,8 @@ class _Job:
     # Spec dicts forwarded from the API layer.
     training_spec: Optional[Dict[str, Any]] = None
     task_spec: Optional[Dict[str, Any]] = None
+    # Graph spec dict forwarded from the API layer for network param extraction.
+    graph_spec: Optional[Dict[str, Any]] = None
     # Path to the serialized checkpoint file after training completes.
     checkpoint_path: Optional[str] = None
     batch: int = 0
@@ -241,6 +243,70 @@ def _extract_effort_weight_from_spec(
         return default
 
 
+def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract model-construction parameters from a graph spec dict.
+
+    Returns a dict with keys:
+        hidden_type: equinox cell class (default eqx.nn.GRUCell)
+        out_size: output dimension (default 6)
+        out_nonlinearity: activation callable (default jax.nn.sigmoid)
+
+    Must be called from within _run_training_real where equinox and jax are imported.
+    """
+    import equinox as eqx
+    import jax
+
+    CELL_MAP = {
+        "GRUCell": eqx.nn.GRUCell,
+        "LSTMCell": eqx.nn.LSTMCell,
+        "SimpleRNNCell": eqx.nn.GRUCell,  # fallback
+    }
+    NONLINEARITY_MAP = {
+        "sigmoid": jax.nn.sigmoid,
+        "relu": jax.nn.relu,
+        "tanh": jax.nn.tanh,
+        "softmax": jax.nn.softmax,
+        "identity": lambda x: x,
+    }
+
+    defaults = {
+        "hidden_type": eqx.nn.GRUCell,
+        "out_size": 6,
+        "out_nonlinearity": jax.nn.sigmoid,
+    }
+
+    if graph_spec is None:
+        return defaults
+
+    nodes = graph_spec.get("nodes", {})
+    network_node = next(
+        (n for n in nodes.values() if n.get("type") == "Network"),
+        None,
+    )
+    if network_node is None:
+        return defaults
+
+    params = network_node.get("params", {})
+
+    hidden_type_key = params.get("hidden_type", "GRUCell")
+    hidden_type = CELL_MAP.get(hidden_type_key, eqx.nn.GRUCell)
+
+    out_size = params.get("out_size", defaults["out_size"])
+    try:
+        out_size = int(out_size)
+    except (TypeError, ValueError):
+        out_size = defaults["out_size"]
+
+    nonlin_key = params.get("out_nonlinearity", "sigmoid")
+    out_nonlinearity = NONLINEARITY_MAP.get(nonlin_key, jax.nn.sigmoid)
+
+    return {
+        "hidden_type": hidden_type,
+        "out_size": out_size,
+        "out_nonlinearity": out_nonlinearity,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Real JAX training backend
 # ---------------------------------------------------------------------------
@@ -343,12 +409,14 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # Build GRU controller (SimpleStagedNetwork with GRUCell hidden layer)
     # ------------------------------------------------------------------
 
+    # -- Bug: 172c883 — read network architecture from graph spec
+    graph_params = _extract_graph_params(job.graph_spec)
     controller = SimpleStagedNetwork(
         input_size=OBS_DIM,
         hidden_size=cfg.hidden_dim,
-        out_size=N_MUSCLES,
-        hidden_type=eqx.nn.GRUCell,
-        out_nonlinearity=jax.nn.sigmoid,
+        out_size=graph_params["out_size"],
+        hidden_type=graph_params["hidden_type"],
+        out_nonlinearity=graph_params["out_nonlinearity"],
         key=ctrl_key,
     )
 
@@ -850,6 +918,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         training_config: Optional[Dict[str, Any]] = body.get("training_config", None)
         training_spec: Optional[Dict[str, Any]] = body.get("training_spec", None)
         task_spec: Optional[Dict[str, Any]] = body.get("task_spec", None)
+        graph_spec: Optional[Dict[str, Any]] = body.get("graph_spec", None)
         snapshot_interval = int(body.get("snapshot_interval", 100))
 
         job_id = str(uuid.uuid4())
@@ -864,6 +933,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             training_config=training_config,
             training_spec=training_spec,
             task_spec=task_spec,
+            graph_spec=graph_spec,
             status=WorkerStatus.RUNNING,
             snapshot_interval=snapshot_interval,
         )
