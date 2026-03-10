@@ -75,7 +75,28 @@ export function Header() {
         node_states: {},
       }, data.metadata?.name ?? undefined);
       if (data.demo_training_data) {
-        useTrainingStore.getState().seedDemoData(data.demo_training_data);
+        const demo = data.demo_training_data;
+        const totalBatches = demo.loss_history.length;
+        const lossHistory = demo.loss_history.map((entry) => ({
+          batch: entry.batch,
+          total_batches: totalBatches,
+          loss: entry.loss,
+          loss_terms: {},
+          grad_norm: 0,
+          step_time_ms: 0,
+          metrics: {},
+          status: 'completed',
+        }));
+        const traj = demo.latest_trajectory;
+        const latestTrajectory = traj
+          ? {
+              batch: totalBatches - 1,
+              effector: traj.effector_pos,
+              target: traj.target_pos,
+              t: traj.effector_pos.map((_, i) => (i / traj.effector_pos.length) * 0.8),
+            }
+          : null;
+        useTrainingStore.getState().seedDemoData({ lossHistory, latestTrajectory });
       }
       localStorage.setItem('feedbax:lastProjectId', id);
     } catch (error) {

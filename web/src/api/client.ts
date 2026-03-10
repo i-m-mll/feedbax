@@ -46,8 +46,12 @@ export async function fetchGraphs() {
 }
 
 export interface DemoTrainingData {
-  lossHistory: TrainingProgress[];
-  latestTrajectory: TrajectorySnapshot | null;
+  loss_history: { batch: number; loss: number }[];
+  latest_trajectory: {
+    effector_pos: [number, number][];
+    target_pos: [number, number];
+    start_pos: [number, number];
+  } | null;
 }
 
 export async function fetchGraph(graphId: string) {
