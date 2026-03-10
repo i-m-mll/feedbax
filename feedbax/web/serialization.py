@@ -50,6 +50,7 @@ from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
+from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.nn import SimpleStagedNetwork
 from feedbax.noise import Normal
 from feedbax.penzai_component import (
@@ -430,6 +431,9 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     plant_type = "PointMass"
                 else:
                     plant_type = type(skeleton).__name__
+            elif isinstance(component.plant, AnalyticalMusculoskeletalPlant):
+                # Bug: 1005721 — AnalyticalMusculoskeletalPlant serialization type mapping
+                plant_type = "Arm6MuscleRigidTendon"
             params = {
                 "dt": component.dt,
             }
@@ -954,6 +958,18 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             raise NotImplementedError(
                 f"RadialForceProjection node '{node_name}' has no Python builder yet. "
                 "It is a display-only abstraction used in composite subgraph templates."
+            )
+        if node_spec.type == "Arm6MuscleRigidTendon":
+            # Bug: 1005721 — AnalyticalMusculoskeletalPlant deserialization.
+            # This plant type is used in the worker for musculoskeletal dynamics,
+            # but cannot be fully instantiated from spec alone (requires body
+            # presets, muscle topology, etc.). The studio uses this for display
+            # and worker dispatch, not for local graph instantiation.
+            raise NotImplementedError(
+                f"Arm6MuscleRigidTendon node '{node_name}' requires musculoskeletal "
+                "plant data (body presets, muscle topology) not stored in GraphSpec. "
+                "This node type is supported in the training worker but not in "
+                "local graph instantiation. For testing, use TwoLinkArm instead."
             )
         if node_spec.type in {"TwoLinkArm", "PointMass"}:
             next_params = dict(params)
