@@ -529,11 +529,11 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, PenzaiSubgraph):
-            # For PenzaiSubgraph, we store the builder_name if it was created
+            # For PenzaiAdapter, we store the builder_name if it was created
             # from a registered builder. Otherwise, we note it as unserializable.
             # Note: The actual pz_model weights are not serialized here.
             nodes[name] = ComponentSpec(
-                type="PenzaiSubgraph",
+                type="PenzaiAdapter",
                 params={
                     "input_port": component.input_ports[0] if component.input_ports else "input",
                     "output_port": component.output_ports[0] if component.output_ports else "output",
@@ -943,15 +943,15 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
         if node_spec.type in {"SimpleReaches", "DelayedReaches", "Stabilization"}:
             nodes[node_name] = _build_task_component(node_spec.type, params)
             continue
-        if node_spec.type == "PenzaiSubgraph":
+        if node_spec.type == "PenzaiAdapter":
             builder_name = str(params.get("builder_name", ""))
             if not builder_name:
                 raise ValueError(
-                    f"PenzaiSubgraph node '{node_name}' requires 'builder_name' parameter"
+                    f"PenzaiAdapter node '{node_name}' requires 'builder_name' parameter"
                 )
             if not PENZAI_AVAILABLE:
                 raise ImportError(
-                    "penzai is required to instantiate PenzaiSubgraph. "
+                    "penzai is required to instantiate PenzaiAdapter. "
                     "Install with: pip install penzai"
                 )
             # Build the PenzaiSubgraph using the registered builder
