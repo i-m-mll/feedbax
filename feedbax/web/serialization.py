@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
@@ -59,17 +60,26 @@ from feedbax.penzai_component import (
     build_penzai_subgraph,
 )
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.web.models.graph import (
+    ComponentSpec,
+    GraphMetadata,
+    GraphSpec,
+    WireSpec,
+)
 
 
 _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
     "GRUCell": eqx.nn.GRUCell,
     "LSTMCell": eqx.nn.LSTMCell,
     "Linear": eqx.nn.Linear,
+    "GRU": eqx.nn.GRUCell,
+    "LSTM": eqx.nn.LSTMCell,
 }
 _NONLINEARITIES: dict[str, Callable[[jax.Array], jax.Array]] = {
     "tanh": jnp.tanh,
     "relu": jax.nn.relu,
+    "sigmoid": jax.nn.sigmoid,
+    "softmax": jax.nn.softmax,
     "identity": lambda x: x,
 }
 
@@ -77,7 +87,9 @@ _NONLINEARITIES: dict[str, Callable[[jax.Array], jax.Array]] = {
 def _resolve_nonlinearity(name: str | None) -> Callable[[jax.Array], jax.Array]:
     if not name:
         return _NONLINEARITIES["identity"]
-    return _NONLINEARITIES.get(name, _NONLINEARITIES["identity"])
+    if name not in _NONLINEARITIES:
+        raise ValueError(f"Unknown nonlinearity: {name!r}. Valid options: {list(_NONLINEARITIES)}")
+    return _NONLINEARITIES[name]
 
 
 def _nonlinearity_name(fn: Callable[[jax.Array], jax.Array]) -> str:
@@ -209,13 +221,71 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, SimpleStagedNetwork):
+            hidden_type_name = type(component.hidden).__name__
+            cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
+            out_nonlinearity = _nonlinearity_name(component.out_nonlinearity)
+            now = datetime.now().isoformat()
+
+            # Standard Network subgraph: cell node + readout node
+            sub_nodes = {
+                "cell": ComponentSpec(
+                    type=cell_type,
+                    params={
+                        "input_size": component.input_size,
+                        "hidden_size": component.hidden_size,
+                    },
+                    input_ports=["input", "hidden", "cell"]
+                    if cell_type == "LSTM"
+                    else ["input", "hidden"],
+                    output_ports=["output", "hidden", "cell"]
+                    if cell_type == "LSTM"
+                    else ["output", "hidden"],
+                ),
+                "readout": ComponentSpec(
+                    type="Linear",
+                    params={
+                        "input_size": component.hidden_size,
+                        "output_size": component.out_size,
+                        "use_bias": True,
+                        "activation": out_nonlinearity,
+                    },
+                    input_ports=["input"],
+                    output_ports=["output"],
+                ),
+            }
+            subgraphs[name] = GraphSpec(
+                nodes=sub_nodes,
+                wires=[
+                    WireSpec(
+                        source_node="cell",
+                        source_port="output",
+                        target_node="readout",
+                        target_port="input",
+                    )
+                ],
+                input_ports=["input", "feedback"],
+                output_ports=["output", "hidden"],
+                input_bindings={"input": ("cell", "input")},
+                output_bindings={
+                    "output": ("readout", "output"),
+                    "hidden": ("cell", "output"),
+                },
+                metadata=GraphMetadata(
+                    name=f"{name} internals",
+                    description="Auto-generated Network subgraph",
+                    created_at=now,
+                    updated_at=now,
+                    version="1.0.0",
+                ),
+            )
+
             params = {
                 "input_size": component.input_size,
                 "hidden_size": component.hidden_size,
                 "out_size": component.out_size,
-                "hidden_type": type(component.hidden).__name__,
+                "hidden_type": hidden_type_name,
                 "hidden_nonlinearity": _nonlinearity_name(component.hidden_nonlinearity),
-                "out_nonlinearity": _nonlinearity_name(component.out_nonlinearity),
+                "out_nonlinearity": out_nonlinearity,
                 "hidden_noise_std": component.hidden_noise_std or 0.0,
                 "encoding_size": component.encoding_size or 0,
             }
@@ -873,6 +943,49 @@ def _build_rigid_tendon_hill_muscle_thelen(params: Mapping[str, Any]) -> RigidTe
     )
 
 
+def _params_from_network_subgraph(subgraph: GraphSpec, outer_params: dict) -> dict:
+    cell_node_name = next(
+        (name for name, node in subgraph.nodes.items() if node.type in ("GRU", "LSTM")),
+        None,
+    )
+    if cell_node_name is None:
+        raise ValueError(
+            "Network subgraph is malformed: missing cell node. "
+            "Re-open the Network node in Studio to regenerate it."
+        )
+    cell_node = subgraph.nodes[cell_node_name]
+
+    # Use output_bindings["output"] if present to find readout node
+    readout_node_name = None
+    if subgraph.output_bindings and "output" in subgraph.output_bindings:
+        readout_node_name = subgraph.output_bindings["output"][0]
+
+    if readout_node_name is None or readout_node_name not in subgraph.nodes:
+        # Fallback to scanning for Linear node
+        readout_node_name = next(
+            (name for name, node in subgraph.nodes.items() if node.type == "Linear"),
+            None,
+        )
+
+    if readout_node_name is None:
+        raise ValueError(
+            "Network subgraph is malformed: missing readout node. "
+            "Re-open the Network node in Studio to regenerate it."
+        )
+    readout_node = subgraph.nodes[readout_node_name]
+
+    params = dict(outer_params)
+    params.update(
+        {
+            "hidden_type": cell_node.type,
+            "hidden_size": cell_node.params.get("hidden_size"),
+            "out_size": readout_node.params.get("output_size"),
+            "out_nonlinearity": readout_node.params.get("activation"),
+        }
+    )
+    return params
+
+
 def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
     spec = _migrate_spec(spec)
@@ -888,7 +1001,14 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], component_registry)
             continue
         if node_spec.type == "Network":
-            nodes[node_name] = _build_network(params)
+            subgraph = (spec.subgraphs or {}).get(node_name)
+            if subgraph is None:
+                raise ValueError(
+                    f"Network node {node_name!r} has no subgraph. "
+                    "Open it in Studio to generate the internal architecture, then save again."
+                )
+            build_params = _params_from_network_subgraph(subgraph, params)
+            nodes[node_name] = _build_network(build_params)
             continue
         if node_spec.type == "Gain":
             nodes[node_name] = _build_gain(params)
