@@ -531,6 +531,10 @@ function createNetworkSubgraph(
         output_ports: ['output'],
       },
     },
+    // Note: recurrent hidden state is managed internally by SimpleStagedNetwork
+    // (via JAX scan), not as a graph-level wire. A self-loop here would require
+    // GRU.initial_outputs() which is not yet implemented — deferred until the
+    // graph engine supports explicit cycle initialization.
     wires: [
       {
         source_node: 'cell',
@@ -538,18 +542,15 @@ function createNetworkSubgraph(
         target_node: 'readout',
         target_port: 'input',
       },
-      {
-        source_node: 'cell',
-        source_port: 'output',
-        target_node: 'cell',
-        target_port: 'hidden',
-      },
     ],
     input_ports: ['input', 'feedback'],
     output_ports: ['output', 'hidden'],
     input_bindings: {
+      // Only `input` is bound to the cell's input port. `feedback` is left as
+      // an unbound subgraph input port — the concatenation of input + feedback
+      // is an implicit Python-side operation (inside SimpleStagedNetwork) that
+      // cannot be represented in the graph topology without a Concat node.
       input: ['cell', 'input'],
-      feedback: ['cell', 'input'],
     },
     output_bindings: {
       output: ['readout', 'output'],
