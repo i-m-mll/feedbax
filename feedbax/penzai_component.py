@@ -422,6 +422,7 @@ class PenzaiSubgraph(Component):
     input_mapping: InputMapping
     output_mapping: OutputMapping
     state_manager: PenzaiStateManager
+    builder_name: str | None  # Bug: bc551f7 — stored for serialization round-trip
 
     # Override ClassVars from Component with instance fields
     # These are dynamically set based on the input/output mappings
@@ -434,6 +435,7 @@ class PenzaiSubgraph(Component):
         input_mapping: InputMapping,
         output_mapping: OutputMapping,
         state_manager: PenzaiStateManager | None = None,
+        builder_name: str | None = None,
     ):
         """Initialize PenzaiSubgraph.
 
@@ -443,6 +445,9 @@ class PenzaiSubgraph(Component):
             output_mapping: How to map layer output to feedbax outputs.
             state_manager: Optional state manager. If None, one is created
                 by scanning the model for StateVariables.
+            builder_name: Name of the registered builder used to create this
+                component. Stored for serialization round-tripping via
+                graph_to_spec / spec_to_graph.
         """
         self.pz_model = pz_model
         self.input_mapping = input_mapping
@@ -451,6 +456,7 @@ class PenzaiSubgraph(Component):
             state_manager if state_manager is not None
             else PenzaiStateManager.from_model(pz_model)
         )
+        self.builder_name = builder_name
         self.input_ports = tuple(spec.port_name for spec in input_mapping.port_specs)
         self.output_ports = tuple(spec.port_name for spec in output_mapping.port_specs)
 
@@ -704,7 +710,15 @@ def build_penzai_subgraph(
     merged_params = {**default_params, **(params or {})}
     pz_model = builder_fn(merged_params)
 
-    return PenzaiSubgraph.from_layer(pz_model, input_port, output_port)
+    # Construct directly (not via from_layer) so builder_name is set during
+    # __init__ rather than via post-construction mutation.  Bug: bc551f7
+    _require_penzai()
+    return PenzaiSubgraph(
+        pz_model=pz_model,
+        input_mapping=InputMapping.single(input_port),
+        output_mapping=OutputMapping.single(output_port),
+        builder_name=builder_name,
+    )
 
 
 # =============================================================================

@@ -28,6 +28,8 @@ from feedbax.components import (
     Damper,
 )
 from feedbax.filters import FirstOrderFilter
+from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
+from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.graph import Component, Graph, Wire
 from feedbax.intervene.intervene import (
     AddNoise,
@@ -386,6 +388,38 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             )
             continue
 
+        if isinstance(component, ReluMuscle):
+            nodes[name] = ComponentSpec(
+                type="ReluMuscle",
+                params={
+                    "max_isometric_force": component.max_isometric_force,
+                    "tau_activation": component.tau_activation,
+                    "tau_deactivation": component.tau_deactivation,
+                    "min_activation": component.min_activation,
+                    "dt": component.dt,
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, RigidTendonHillMuscleThelen):
+            nodes[name] = ComponentSpec(
+                type="RigidTendonHillMuscleThelen",
+                params={
+                    "max_isometric_force": component.max_isometric_force,
+                    "optimal_muscle_length": component.optimal_muscle_length,
+                    "tendon_slack_length": component.tendon_slack_length,
+                    "vmax_factor": component.vmax_factor,
+                    "min_activation": component.min_activation,
+                    "tau_activation": component.tau_activation,
+                    "tau_deactivation": component.tau_deactivation,
+                    "dt": component.dt,
+                },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
         if isinstance(component, Mechanics):
             plant_type = "Unknown"
             if isinstance(component.plant, DirectForceInput):
@@ -530,15 +564,16 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, PenzaiSubgraph):
-            # For PenzaiAdapter, we store the builder_name if it was created
-            # from a registered builder. Otherwise, we note it as unserializable.
-            # Note: The actual pz_model weights are not serialized here.
+            # Persist builder_name for round-tripping through spec_to_graph.
+            # Legacy objects without builder_name get "__unknown__" so deserialization
+            # produces a clear error rather than a crash.  Bug: bc551f7
+            builder_name = getattr(component, "builder_name", None) or "__unknown__"
             nodes[name] = ComponentSpec(
                 type="PenzaiAdapter",
                 params={
+                    "builder_name": builder_name,
                     "input_port": component.input_ports[0] if component.input_ports else "input",
                     "output_port": component.output_ports[0] if component.output_ports else "output",
-                    # builder_name would need to be stored on the component for round-tripping
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -811,6 +846,29 @@ def _build_damper(params: Mapping[str, Any]) -> Damper:
     return Damper(damping=float(params.get("damping", 1.0)))
 
 
+def _build_relu_muscle(params: Mapping[str, Any]) -> ReluMuscle:
+    return ReluMuscle(
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        tau_activation=float(params.get("tau_activation", 0.015)),
+        tau_deactivation=float(params.get("tau_deactivation", 0.05)),
+        min_activation=float(params.get("min_activation", 0.0)),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_rigid_tendon_hill_muscle_thelen(params: Mapping[str, Any]) -> RigidTendonHillMuscleThelen:
+    return RigidTendonHillMuscleThelen(
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
+        tendon_slack_length=float(params.get("tendon_slack_length", 0.1)),
+        vmax_factor=float(params.get("vmax_factor", 10.0)),
+        min_activation=float(params.get("min_activation", 0.001)),
+        tau_activation=float(params.get("tau_activation", 0.015)),
+        tau_deactivation=float(params.get("tau_deactivation", 0.05)),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
 def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
     spec = _migrate_spec(spec)
@@ -876,6 +934,27 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
         if node_spec.type == "Damper":
             nodes[node_name] = _build_damper(params)
             continue
+        if node_spec.type == "ReluMuscle":
+            nodes[node_name] = _build_relu_muscle(params)
+            continue
+        if node_spec.type == "RigidTendonHillMuscleThelen":
+            nodes[node_name] = _build_rigid_tendon_hill_muscle_thelen(params)
+            continue
+        if node_spec.type == "MomentArmProjection":
+            # Bug: 1005721 — MomentArmProjection is a display-only node type
+            # used in composite template graphs. No Python Component class
+            # exists yet; raise a clear error instead of the generic
+            # "Unsupported component type" crash.
+            raise NotImplementedError(
+                f"MomentArmProjection node '{node_name}' has no Python builder yet. "
+                "It is a display-only abstraction used in composite subgraph templates."
+            )
+        if node_spec.type == "RadialForceProjection":
+            # Bug: 1005721 — same as MomentArmProjection above.
+            raise NotImplementedError(
+                f"RadialForceProjection node '{node_name}' has no Python builder yet. "
+                "It is a display-only abstraction used in composite subgraph templates."
+            )
         if node_spec.type in {"TwoLinkArm", "PointMass"}:
             next_params = dict(params)
             next_params["plant_type"] = node_spec.type
