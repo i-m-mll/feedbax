@@ -482,7 +482,9 @@ def perform_all_analyses(
         analyses, data, custom_dependencies, requested_outputs=requested_outputs, **kwargs
     )
 
-    # When requested_outputs is set, filter analyses to match what was computed
+    # When requested_outputs is set, filter analyses to match what was computed.
+    # compute_dependency_results already restricted its internal analyses_list,
+    # but we need the same restriction here for the figure-generation loop.
     if requested_outputs is not None:
         analyses = {k: v for k, v in analyses.items() if k in requested_outputs}
 

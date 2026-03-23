@@ -532,10 +532,11 @@ def compute_dependency_results(
     if custom_dependencies is None:
         custom_dependencies = {}
 
-    # When requested_outputs is given, filter analyses to only the requested keys
+    # Validate requested_outputs early, but do NOT filter analyses yet —
+    # we need the full graph to resolve transitive dependencies.
     if requested_outputs is not None:
-        analyses = {k: v for k, v in analyses.items() if k in requested_outputs}
-        if not analyses:
+        matched = {k for k in analyses if k in requested_outputs}
+        if not matched:
             logger.warning(
                 f"None of the requested outputs {requested_outputs} matched any "
                 "analysis keys; nothing to compute."
@@ -563,11 +564,23 @@ def compute_dependency_results(
     # Track which nodes are leaf analyses to avoid redundant dependency reconstruction
     leaf_node_ids = {analysis.md5_str for analysis in analyses_list}
 
-    # When requested_outputs is given, restrict execution to ancestor subgraph
+    # When requested_outputs is given, restrict to only the requested analyses
+    # and their transitive dependencies.  The full graph was built above so that
+    # _collect_ancestors can walk all edges; now we prune.
     # Bug: 3bc89ab -- demand-driven analysis execution
     if requested_outputs is not None:
-        required_nodes = _collect_ancestors(graph, leaf_node_ids)
+        # Determine node IDs for only the *requested* analyses (subset of leaves)
+        requested_node_ids = {
+            v.md5_str for k, v in analyses.items() if k in requested_outputs
+        }
+        required_nodes = _collect_ancestors(graph, requested_node_ids)
         comp_order = [nid for nid in comp_order if nid in required_nodes]
+
+        # Also restrict leaf tracking to the requested subset
+        leaf_node_ids = requested_node_ids
+        # Filter analyses_list to match so final assembly is consistent
+        analyses_list = [v for k, v in analyses.items() if k in requested_outputs]
+
         logger.info(
             f"Demand-driven mode: executing {len(comp_order)}/{len(dep_instances)} "
             f"nodes for {len(requested_outputs)} requested outputs."

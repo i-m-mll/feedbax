@@ -60,23 +60,10 @@ class FigureListResponse(BaseModel):
     offset: int
 
 
-class FigureDetail(BaseModel):
+class FigureDetail(FigureInfo):
     """Full metadata for a single figure, including available files on disk."""
 
-    hash: str
-    evaluation_hash: str
-    identifier: str
-    figure_type: str
-    saved_formats: list[str]
-    created_at: datetime
-    modified_at: datetime
-    expt_name: Optional[str] = None
-    pert__type: Optional[str] = None
-    pert__std: Optional[float] = None
-    model_hashes: Optional[list[str]] = None
     available_files: list[str]
-
-    model_config = {"from_attributes": True}
 
 
 class EvaluationFigureSummary(BaseModel):
@@ -200,7 +187,9 @@ async def list_figures(
         if figure_type is not None:
             query = query.filter(FigureRecord.figure_type == figure_type)
         if identifier is not None:
-            query = query.filter(FigureRecord.identifier.ilike(f"%{identifier}%"))
+            # Escape SQL LIKE wildcards to prevent injection of % and _
+            escaped = identifier.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            query = query.filter(FigureRecord.identifier.ilike(f"%{escaped}%", escape="\\"))
         if pert_type is not None:
             query = query.filter(FigureRecord.pert__type == pert_type)
         if pert_std is not None:
@@ -281,8 +270,18 @@ async def get_figure_file(
                 status_code=404, detail=f"Figure '{figure_hash}' not found",
             )
 
-        # Normalise the requested format.
+        # Normalise the requested format and validate against allow-list
+        # to prevent path traversal via crafted format strings.
         fmt = format.strip(".").lower()
+
+        if fmt not in _CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported format '{fmt}'. "
+                    f"Allowed formats: {sorted(_CONTENT_TYPES)}"
+                ),
+            )
 
         saved = set(fig_rec.saved_formats) if fig_rec.saved_formats else set()
         if fmt not in saved:
