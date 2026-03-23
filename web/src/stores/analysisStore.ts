@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import type { Node, Edge, OnNodesChange, OnEdgesChange, Connection } from '@xyflow/react';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
+import dagre from '@dagrejs/dagre';
 import type {
   AnalysisNodeSpec,
   AnalysisWire,
@@ -41,65 +42,92 @@ export interface AnalysisEdgeData extends Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Layout helpers — simple left-to-right positioning
+// Layout helpers — dagre-based left-to-right DAG positioning
 // ---------------------------------------------------------------------------
 
-const NODE_X_SPACING = 280;
-const NODE_Y_SPACING = 120;
-const DATA_SOURCE_X = 40;
-const FIRST_ANALYSIS_X = DATA_SOURCE_X + NODE_X_SPACING;
+/** Default node dimensions for dagre layout. */
+const NODE_WIDTH = 200;
+const NODE_HEIGHT = 80;
+const TRANSFORM_NODE_WIDTH = 160;
+const TRANSFORM_NODE_HEIGHT = 50;
+const DATA_SOURCE_NODE_WIDTH = 180;
+const DATA_SOURCE_NODE_HEIGHT = 120;
 
+/**
+ * Use dagre to compute left-to-right DAG layout for analysis nodes.
+ * Includes data source, analysis nodes, and any transform nodes.
+ */
 function layoutNodes(
   specs: Record<string, AnalysisNodeSpec>,
+  wires: AnalysisWire[],
   dataSourceId: string,
-  dataSourceOutputs: string[]
+  dataSourceOutputs: string[],
+  transformNodes: Array<{ id: string; transform: TransformSpec }> = [],
 ): Node[] {
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 120, marginx: 40, marginy: 40 });
+
+  // Add data source node
+  g.setNode(dataSourceId, { width: DATA_SOURCE_NODE_WIDTH, height: DATA_SOURCE_NODE_HEIGHT });
+
+  // Add analysis nodes
+  for (const [id, spec] of Object.entries(specs)) {
+    g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+  }
+
+  // Add transform nodes
+  for (const tn of transformNodes) {
+    g.setNode(tn.id, { width: TRANSFORM_NODE_WIDTH, height: TRANSFORM_NODE_HEIGHT });
+  }
+
+  // Add edges from wires
+  for (const wire of wires) {
+    g.setEdge(wire.sourceId, wire.targetId);
+  }
+
+  dagre.layout(g);
+
   const nodes: Node[] = [];
 
-  // Data source node always on the left
+  // Data source node
+  const dsNode = g.node(dataSourceId);
   nodes.push({
     id: dataSourceId,
     type: 'dataSource',
-    position: { x: DATA_SOURCE_X, y: 160 },
+    position: { x: dsNode.x - DATA_SOURCE_NODE_WIDTH / 2, y: dsNode.y - DATA_SOURCE_NODE_HEIGHT / 2 },
     data: {
       label: 'AnalysisInputData',
       outputs: dataSourceOutputs,
     } satisfies DataSourceNodeData,
   });
 
-  // Layout analysis nodes in columns by dependency depth
-  const nodeIds = Object.keys(specs);
-  let col = 0;
-  const placed = new Set<string>();
-  const remaining = new Set(nodeIds);
+  // Analysis nodes
+  for (const [id, spec] of Object.entries(specs)) {
+    const n = g.node(id);
+    nodes.push({
+      id,
+      type: spec.role === 'dependency' ? 'analysisDep' : 'analysis',
+      position: { x: n.x - NODE_WIDTH / 2, y: n.y - NODE_HEIGHT / 2 },
+      data: {
+        spec,
+        label: spec.label,
+      } satisfies AnalysisNodeData,
+    });
+  }
 
-  // Simple topological layering
-  while (remaining.size > 0) {
-    const batch: string[] = [];
-    for (const id of remaining) {
-      batch.push(id);
-    }
-    // For now, place all remaining in one column (TODO: proper topo sort with wires)
-    let row = 0;
-    for (const id of batch) {
-      const spec = specs[id];
-      nodes.push({
-        id,
-        type: spec.role === 'dependency' ? 'analysisDep' : 'analysis',
-        position: {
-          x: FIRST_ANALYSIS_X + col * NODE_X_SPACING,
-          y: 40 + row * NODE_Y_SPACING,
-        },
-        data: {
-          spec,
-          label: spec.label,
-        } satisfies AnalysisNodeData,
-      });
-      placed.add(id);
-      remaining.delete(id);
-      row++;
-    }
-    col++;
+  // Transform nodes
+  for (const tn of transformNodes) {
+    const n = g.node(tn.id);
+    nodes.push({
+      id: tn.id,
+      type: 'transform',
+      position: { x: n.x - TRANSFORM_NODE_WIDTH / 2, y: n.y - TRANSFORM_NODE_HEIGHT / 2 },
+      data: {
+        transform: tn.transform,
+        label: tn.transform.label,
+      } satisfies TransformNodeData,
+    });
   }
 
   return nodes;
@@ -188,8 +216,36 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   loadGraph: (spec) => {
-    const nodes = layoutNodes(spec.nodes, spec.dataSourceId, DATA_SOURCE_OUTPUTS);
-    const edges = buildEdges(spec.wires);
+    // Collect any existing transform specs from wires for layout
+    const transformNodes: Array<{ id: string; transform: TransformSpec }> = [];
+    const expandedWires: AnalysisWire[] = [];
+    for (const wire of spec.wires) {
+      if (wire.transform) {
+        const tId = wire.transform.id;
+        transformNodes.push({ id: tId, transform: wire.transform });
+        // Split wire: source -> transform, transform -> target
+        expandedWires.push({
+          ...wire,
+          id: `${wire.id}__to_transform`,
+          targetId: tId,
+          targetPort: 'in',
+          transform: undefined,
+        });
+        expandedWires.push({
+          id: `${wire.id}__from_transform`,
+          sourceId: tId,
+          sourcePort: 'out',
+          targetId: wire.targetId,
+          targetPort: wire.targetPort,
+          implicit: wire.implicit,
+        });
+      } else {
+        expandedWires.push(wire);
+      }
+    }
+
+    const nodes = layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes);
+    const edges = buildEdges(expandedWires);
     set({ graphSpec: spec, nodes, edges });
   },
 
@@ -286,32 +342,128 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   addTransformToEdge: (edgeId, transformType) => {
+    const state = get();
+    const originalEdge = state.edges.find((e) => e.id === edgeId);
+    if (!originalEdge) return;
+
+    const transformId = `transform_${edgeId}`;
     const transform: TransformSpec = {
-      id: `transform_${edgeId}`,
+      id: transformId,
       type: transformType,
       label: transformType,
       params: {},
     };
 
-    set((state) => ({
-      edges: state.edges.map((e) => {
-        if (e.id !== edgeId) return e;
-        return {
-          ...e,
-          data: { ...e.data, transform } satisfies AnalysisEdgeData,
-        };
-      }),
-    }));
+    // Position the transform node midway between source and target nodes
+    const sourceNode = state.nodes.find((n) => n.id === originalEdge.source);
+    const targetNode = state.nodes.find((n) => n.id === originalEdge.target);
+    const midX = sourceNode && targetNode
+      ? (sourceNode.position.x + targetNode.position.x) / 2
+      : (sourceNode?.position.x ?? 0) + 140;
+    const midY = sourceNode && targetNode
+      ? (sourceNode.position.y + targetNode.position.y) / 2
+      : sourceNode?.position.y ?? 0;
+
+    const transformNode: Node = {
+      id: transformId,
+      type: 'transform',
+      position: { x: midX, y: midY },
+      data: {
+        transform,
+        label: transform.label,
+      } satisfies TransformNodeData,
+    };
+
+    // Replace original edge with two edges: source->transform, transform->target
+    const edgeToTransform: Edge = {
+      id: `${edgeId}__to_transform`,
+      source: originalEdge.source,
+      sourceHandle: originalEdge.sourceHandle,
+      target: transformId,
+      targetHandle: 'in',
+      type: originalEdge.type,
+      data: { implicit: (originalEdge.data as AnalysisEdgeData)?.implicit ?? false } satisfies AnalysisEdgeData,
+    };
+
+    const edgeFromTransform: Edge = {
+      id: `${edgeId}__from_transform`,
+      source: transformId,
+      sourceHandle: 'out',
+      target: originalEdge.target,
+      targetHandle: originalEdge.targetHandle,
+      type: originalEdge.type,
+      data: { implicit: (originalEdge.data as AnalysisEdgeData)?.implicit ?? false } satisfies AnalysisEdgeData,
+    };
+
+    // Also update the graphSpec wire to record the transform
+    const updatedWires = state.graphSpec?.wires.map((w) => {
+      if (w.id !== edgeId) return w;
+      return { ...w, transform };
+    });
+
+    set({
+      nodes: [...state.nodes, transformNode],
+      edges: [
+        ...state.edges.filter((e) => e.id !== edgeId),
+        edgeToTransform,
+        edgeFromTransform,
+      ],
+      graphSpec: state.graphSpec
+        ? { ...state.graphSpec, wires: updatedWires ?? state.graphSpec.wires }
+        : null,
+    });
   },
 
   removeTransformFromEdge: (edgeId) => {
-    set((state) => ({
-      edges: state.edges.map((e) => {
-        if (e.id !== edgeId) return e;
-        const data = { ...e.data } as AnalysisEdgeData;
-        delete data.transform;
-        return { ...e, data };
-      }),
-    }));
+    const state = get();
+    const transformId = `transform_${edgeId}`;
+
+    // Find the two split edges
+    const toEdge = state.edges.find((e) => e.id === `${edgeId}__to_transform`);
+    const fromEdge = state.edges.find((e) => e.id === `${edgeId}__from_transform`);
+
+    if (!toEdge || !fromEdge) {
+      // Fallback: just remove transform metadata from the edge data
+      set({
+        edges: state.edges.map((e) => {
+          if (e.id !== edgeId) return e;
+          const data = { ...e.data } as AnalysisEdgeData;
+          delete data.transform;
+          return { ...e, data };
+        }),
+      });
+      return;
+    }
+
+    // Reconstruct the original edge
+    const restoredEdge: Edge = {
+      id: edgeId,
+      source: toEdge.source,
+      sourceHandle: toEdge.sourceHandle,
+      target: fromEdge.target,
+      targetHandle: fromEdge.targetHandle,
+      type: toEdge.type,
+      data: { implicit: (toEdge.data as AnalysisEdgeData)?.implicit ?? false } satisfies AnalysisEdgeData,
+    };
+
+    // Update graphSpec wire to remove transform
+    const updatedWires = state.graphSpec?.wires.map((w) => {
+      if (w.id !== edgeId) return w;
+      const { transform: _, ...rest } = w;
+      return rest;
+    });
+
+    set({
+      nodes: state.nodes.filter((n) => n.id !== transformId),
+      edges: [
+        ...state.edges.filter((e) =>
+          e.id !== `${edgeId}__to_transform` && e.id !== `${edgeId}__from_transform`
+        ),
+        restoredEdge,
+      ],
+      graphSpec: state.graphSpec
+        ? { ...state.graphSpec, wires: updatedWires ?? state.graphSpec.wires }
+        : null,
+    });
   },
 }));

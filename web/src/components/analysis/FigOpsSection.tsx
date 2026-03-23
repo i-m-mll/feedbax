@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { FigOpSpec, FinalOpSpec, AnalysisNodeMeta } from '@/types/analysis';
 import { GripVertical, ChevronDown, ChevronRight, Settings2, Layers, Combine } from 'lucide-react';
 import clsx from 'clsx';
@@ -23,7 +23,23 @@ function FigOpIcon({ name }: { name: string }) {
 }
 
 /** Renders a single fig op item in the ordered list. */
-function FigOpItem({ op, index }: { op: FigOpSpec; index: number }) {
+function FigOpItem({
+  op,
+  index,
+  isDragging,
+  isDragOver,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+}: {
+  op: FigOpSpec;
+  index: number;
+  isDragging: boolean;
+  isDragOver: boolean;
+  onDragStart: (index: number) => void;
+  onDragOver: (index: number) => void;
+  onDragEnd: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   const paramEntries = Object.entries(op.params).filter(
@@ -31,7 +47,23 @@ function FigOpItem({ op, index }: { op: FigOpSpec; index: number }) {
   );
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white">
+    <div
+      className={clsx(
+        'rounded-lg border bg-white transition-all duration-150',
+        isDragging ? 'border-brand-300 opacity-50 scale-95' : 'border-slate-200',
+        isDragOver && !isDragging ? 'border-brand-400 shadow-sm' : '',
+      )}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        onDragStart(index);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        onDragOver(index);
+      }}
+      onDragEnd={onDragEnd}
+    >
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
@@ -100,10 +132,46 @@ function FinalOpItem({ op }: { op: FinalOpSpec }) {
 }
 
 /** Section showing fig ops and final ops for an analysis node in the properties panel. */
-export function FigOpsSection({ meta }: { meta: AnalysisNodeMeta }) {
-  const figOps = meta.fig_ops;
+export function FigOpsSection({
+  meta,
+  onReorderFigOps,
+}: {
+  meta: AnalysisNodeMeta;
+  onReorderFigOps?: (reordered: FigOpSpec[]) => void;
+}) {
+  const [orderedOps, setOrderedOps] = useState<FigOpSpec[]>(meta.fig_ops);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  // Sync with incoming meta when it changes
+  const prevOpsRef = useRef(meta.fig_ops);
+  if (prevOpsRef.current !== meta.fig_ops) {
+    prevOpsRef.current = meta.fig_ops;
+    setOrderedOps(meta.fig_ops);
+  }
+
+  const handleDragStart = useCallback((index: number) => {
+    setDragIndex(index);
+  }, []);
+
+  const handleDragOver = useCallback((index: number) => {
+    setDragOverIndex(index);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    if (dragIndex !== null && dragOverIndex !== null && dragIndex !== dragOverIndex) {
+      const reordered = [...orderedOps];
+      const [moved] = reordered.splice(dragIndex, 1);
+      reordered.splice(dragOverIndex, 0, moved);
+      setOrderedOps(reordered);
+      onReorderFigOps?.(reordered);
+    }
+    setDragIndex(null);
+    setDragOverIndex(null);
+  }, [dragIndex, dragOverIndex, orderedOps, onReorderFigOps]);
+
   const finalOps = meta.final_ops_by_type;
-  const hasFigOps = figOps.length > 0;
+  const hasFigOps = orderedOps.length > 0;
   const hasFinalOps = Object.values(finalOps).some((ops) => ops.length > 0);
 
   if (!hasFigOps && !hasFinalOps) {
@@ -116,8 +184,17 @@ export function FigOpsSection({ meta }: { meta: AnalysisNodeMeta }) {
         <div className="border-t border-slate-100 pt-4 space-y-2">
           <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Fig Ops Pipeline</div>
           <div className="space-y-1.5">
-            {figOps.map((op, index) => (
-              <FigOpItem key={`${op.name}-${index}`} op={op} index={index} />
+            {orderedOps.map((op, index) => (
+              <FigOpItem
+                key={`${op.name}-${index}`}
+                op={op}
+                index={index}
+                isDragging={dragIndex === index}
+                isDragOver={dragOverIndex === index}
+                onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
+                onDragEnd={handleDragEnd}
+              />
             ))}
           </div>
         </div>

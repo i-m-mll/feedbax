@@ -112,7 +112,7 @@ export function PropertiesPanel() {
   const nodeTaps = taps.filter((tap) => tap.position.afterNode === selectedNode.id);
 
   // Check for analysis-specific metadata on the node spec
-  const analysisMeta = nodeSpec?.params?._analysis_meta as AnalysisNodeMeta | undefined;
+  const analysisMeta = nodeSpec?.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
 
   const commitRename = () => {
     if (nameValue.trim() && nameValue.trim() !== selectedNode.id) {

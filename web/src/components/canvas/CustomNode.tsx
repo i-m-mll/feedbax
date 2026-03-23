@@ -107,7 +107,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   }, []);
 
   // Check for analysis metadata indicating this node produces figures
-  const analysisMeta = spec.params?._analysis_meta as AnalysisNodeMeta | undefined;
+  const analysisMeta = spec.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
   const hasFigureOutput = analysisMeta?.has_make_figs ?? false;
   // Position the figure pin below the last output port
   const figPinOffset = HEADER_HEIGHT + BODY_PADDING + (outputCount > 0 ? outputCount * ROW_HEIGHT : ROW_HEIGHT) + 8;

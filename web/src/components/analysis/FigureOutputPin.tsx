@@ -4,7 +4,14 @@ import { useDemandStore } from '@/stores/demandStore';
 import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
 import type { FigureRequestStatus } from '@/types/analysis';
 import clsx from 'clsx';
-import { Image, RefreshCw, Play, X } from 'lucide-react';
+import { Image, RefreshCw, Play, X, Loader2 } from 'lucide-react';
+
+type PlotlyModule = typeof import('plotly.js-dist-min');
+
+/** Dynamically import Plotly to avoid bundling it unless needed. */
+async function getPlotly(): Promise<PlotlyModule> {
+  return import('plotly.js-dist-min');
+}
 
 const STATUS_COLORS: Record<FigureRequestStatus, string> = {
   idle: 'bg-slate-300',
@@ -26,6 +33,101 @@ interface FigureOutputPinProps {
   topOffset: number;
   /** Whether the node is reversed (ports swapped left/right). */
   reversed?: boolean;
+}
+
+/** Modal that renders Plotly JSON as an interactive chart instead of raw JSON. */
+function FigurePreviewModal({
+  data,
+  loading,
+  onClose,
+}: {
+  data: unknown;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const plotRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!data || !plotRef.current) return;
+    if (typeof data !== 'object') return;
+
+    const plotData = data as { data?: unknown[]; layout?: Record<string, unknown> };
+    if (!plotData.data) return;
+
+    let cancelled = false;
+    getPlotly().then((Plotly) => {
+      if (cancelled || !plotRef.current) return;
+      Plotly.newPlot(
+        plotRef.current,
+        plotData.data as import('plotly.js-dist-min').Data[],
+        {
+          ...((plotData.layout ?? {}) as Partial<import('plotly.js-dist-min').Layout>),
+          autosize: true,
+          margin: { t: 30, r: 20, b: 40, l: 50 },
+        },
+        { responsive: true, displayModeBar: true },
+      );
+    });
+
+    return () => {
+      cancelled = true;
+      if (plotRef.current) {
+        getPlotly().then((Plotly) => {
+          if (plotRef.current) Plotly.purge(plotRef.current);
+        });
+      }
+    };
+  }, [data]);
+
+  const isPlotly = data && typeof data === 'object' && 'data' in (data as Record<string, unknown>);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-4xl max-h-[80vh] w-full mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+          <div className="text-sm font-medium text-slate-700">Figure Preview</div>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="overflow-auto max-h-[calc(80vh-52px)]">
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-sm text-slate-400">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              Loading figure...
+            </div>
+          ) : isPlotly ? (
+            <div ref={plotRef} className="w-full" style={{ minHeight: 400 }} />
+          ) : data ? (
+            <pre className="p-4 text-xs font-mono text-slate-600 whitespace-pre-wrap break-words">
+              {JSON.stringify(data, null, 2)}
+            </pre>
+          ) : (
+            <div className="flex items-center justify-center py-12 text-sm text-slate-400">
+              Failed to load figure data.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPinProps) {
@@ -253,42 +355,13 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
         </div>
       )}
 
-      {/* Figure preview modal */}
+      {/* Figure preview modal with Plotly rendering */}
       {showPreview && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-          onClick={() => setShowPreview(false)}
-        >
-          <div
-            className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-4xl max-h-[80vh] w-full mx-4 overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-              <div className="text-sm font-medium text-slate-700">Figure Preview</div>
-              <button
-                onClick={() => setShowPreview(false)}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-4 overflow-auto max-h-[calc(80vh-52px)]">
-              {previewLoading ? (
-                <div className="flex items-center justify-center py-12 text-sm text-slate-400">
-                  Loading figure...
-                </div>
-              ) : previewData ? (
-                <pre className="text-xs font-mono text-slate-600 whitespace-pre-wrap break-words">
-                  {JSON.stringify(previewData, null, 2)}
-                </pre>
-              ) : (
-                <div className="flex items-center justify-center py-12 text-sm text-slate-400">
-                  Failed to load figure data.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <FigurePreviewModal
+          data={previewData}
+          loading={previewLoading}
+          onClose={() => setShowPreview(false)}
+        />
       )}
     </>
   );
