@@ -1,5 +1,6 @@
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { GraphNodeData } from '@/types/graph';
+import type { AnalysisNodeMeta } from '@/types/analysis';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -7,6 +8,7 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
+import { FigureOutputPin } from '@/components/analysis/FigureOutputPin';
 
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
@@ -103,6 +105,12 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
   }, []);
+
+  // Check for analysis metadata indicating this node produces figures
+  const analysisMeta = spec.params?._analysis_meta as AnalysisNodeMeta | undefined;
+  const hasFigureOutput = analysisMeta?.has_make_figs ?? false;
+  // Position the figure pin below the last output port
+  const figPinOffset = HEADER_HEIGHT + BODY_PADDING + (outputCount > 0 ? outputCount * ROW_HEIGHT : ROW_HEIGHT) + 8;
   return (
     <div
       className={clsx(
@@ -319,6 +327,15 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Figure output pin for analysis nodes */}
+      {hasFigureOutput && !collapsedEffective && (
+        <FigureOutputPin
+          nodeId={label}
+          topOffset={figPinOffset}
+          reversed={reversed}
+        />
       )}
 
       {/* Port context menu */}
