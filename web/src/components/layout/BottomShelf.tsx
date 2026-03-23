@@ -102,7 +102,7 @@ export function BottomShelf({
       {!bottomCollapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
-          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' ? 'overflow-hidden' : 'overflow-y-auto'}
+          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' ? 'overflow-hidden' : 'overflow-y-auto'}
         >
           {activeContent}
         </div>
