@@ -326,7 +326,33 @@ def setup_eval_for_module(
     #     for std in hps.train.pert.std
     # }))
 
-    # Add evaluation record to the database
+    # Construct common inputs needed by transforms and analyses
+    # Note: We construct trial_specs for all task variants here
+    #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
+    #! baked into the model's `Iterator`. Here, only the task will be modified.
+    task_variants_dict = namespace_to_dict(hps.task.variants)
+    task_variants = LDict.of("task_variant")(
+        {
+            variant_key: eqx.tree_at(
+                lambda task: [getattr(task, name) for name in variant_params.keys()],
+                task_base,
+                [value for value in variant_params.values()],
+            )
+            for variant_key, variant_params in task_variants_dict.items()
+        }
+    )
+
+    # Extract perturbation config from training hyperparameters
+    pert_config = None
+    if hasattr(hps, "train") and hasattr(hps.train, "pert"):
+        pert_config = namespace_to_dict(hps.train.pert)
+
+    # Extract SISU params if present
+    sisu = None
+    if hasattr(hps, "sisu"):
+        sisu = namespace_to_dict(hps.sisu)
+
+    # Add evaluation record to the database, including setup metadata
     eval_info = add_evaluation(
         db_session,
         expt_name=module_key,
@@ -335,21 +361,9 @@ def setup_eval_for_module(
         #! TODO: Could exclude train parameters, since
         eval_parameters=namespace_to_dict(flatten_hps(hps)),
         version_info=version_info,
-    )
-
-    # Construct common inputs needed by transforms and analyses
-    # Note: We construct trial_specs for all task variants here
-    #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
-    #! baked into the model's `Iterator`. Here, only the task will be modified.
-    task_variants = LDict.of("task_variant")(
-        {
-            variant_key: eqx.tree_at(
-                lambda task: [getattr(task, name) for name in variant_params.keys()],
-                task_base,
-                [value for value in variant_params.values()],
-            )
-            for variant_key, variant_params in namespace_to_dict(hps.task.variants).items()
-        }
+        perturbation_config=pert_config,
+        task_variants=task_variants_dict,
+        sisu_params=sisu,
     )
 
     trial_specs = jt.map(get_validation_trial_specs, task_variants, is_leaf=is_module)
