@@ -478,10 +478,44 @@ def _run_preflight_memory_estimation(
             logger.warning(f"Failed to estimate memory usage for {log_name}: {e}")
 
 
+def _collect_ancestors(
+    graph: dict[str, Set[str]],
+    target_node_ids: Set[str],
+) -> Set[str]:
+    """Collect all ancestor node_ids for the given targets by following graph edges.
+
+    In the dependency graph, ``graph[node]`` is the set of nodes that ``node``
+    depends on (i.e. its parents/ancestors).  This function recursively collects
+    all transitive ancestors so that the caller can restrict execution to the
+    minimal subgraph needed to produce ``target_node_ids``.
+
+    Args:
+        graph: Adjacency list mapping node_id -> set of dependency node_ids.
+        target_node_ids: The leaf nodes whose ancestors we want.
+
+    Returns:
+        The union of ``target_node_ids`` and all of their transitive ancestors.
+    """
+    ancestors: Set[str] = set()
+    stack = list(target_node_ids)
+
+    while stack:
+        node = stack.pop()
+        if node in ancestors:
+            continue
+        ancestors.add(node)
+        for dep in graph.get(node, set()):
+            if dep not in ancestors:
+                stack.append(dep)
+
+    return ancestors
+
+
 def compute_dependency_results(
     analyses: dict[str, AbstractAnalysis],
     data: AnalysisInputData,
     custom_dependencies: Optional[Dict[str, AbstractAnalysis]] = None,
+    requested_outputs: Optional[Set[str]] = None,
     **kwargs,
 ) -> list[dict[str, PyTree[Any]]]:
     """Compute all dependencies in correct order.
@@ -490,10 +524,24 @@ def compute_dependency_results(
         analyses: Analysis instances to process (sequence or dict)
         data: Input data for analysis
         custom_dependencies: Optional dict of custom dependency instances (from DEPENDENCIES)
+        requested_outputs: If provided, only compute the analyses whose keys
+            appear in this set (plus their transitive dependencies).  When
+            ``None``, all analyses are computed as before.
         **kwargs: Additional baseline dependencies
     """
     if custom_dependencies is None:
         custom_dependencies = {}
+
+    # When requested_outputs is given, filter analyses to only the requested keys
+    if requested_outputs is not None:
+        analyses = {k: v for k, v in analyses.items() if k in requested_outputs}
+        if not analyses:
+            logger.warning(
+                f"None of the requested outputs {requested_outputs} matched any "
+                "analysis keys; nothing to compute."
+            )
+            return []
+
     analyses_list = list(analyses.values())
     dependency_lookup = custom_dependencies | analyses
 
@@ -514,6 +562,17 @@ def compute_dependency_results(
 
     # Track which nodes are leaf analyses to avoid redundant dependency reconstruction
     leaf_node_ids = {analysis.md5_str for analysis in analyses_list}
+
+    # When requested_outputs is given, restrict execution to ancestor subgraph
+    # Bug: 3bc89ab -- demand-driven analysis execution
+    if requested_outputs is not None:
+        required_nodes = _collect_ancestors(graph, leaf_node_ids)
+        comp_order = [nid for nid in comp_order if nid in required_nodes]
+        logger.info(
+            f"Demand-driven mode: executing {len(comp_order)}/{len(dep_instances)} "
+            f"nodes for {len(requested_outputs)} requested outputs."
+        )
+
     leaf_dependencies = {}  # Cache reconstructed dependencies for leaf analyses
 
     baseline_kwargs = kwargs.copy()
