@@ -45,6 +45,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const compositeTypes = useGraphStore((state) => state._compositeTypes);
   const isComposite =
     compositeTypes.has(spec.type) || hasSubgraph;
+  const isTaskNode = useGraphStore((state) => {
+    const def = state._componentRegistry.get(spec.type);
+    return def?.category === 'Tasks';
+  });
   const inputCount = spec.input_ports.length;
   const outputCount = spec.output_ports.length;
   const totalPorts = inputCount + outputCount;
@@ -163,8 +167,18 @@ export function CustomNode({ id, data, selected }: NodeProps) {
         {/* Left slot: name (normal) or type string (reversed) */}
         {reversed ? (
           !collapsedEffective && (
-            <div className="text-[11px] text-slate-500 shrink-0 truncate max-w-[110px]" title={spec.type}>
-              {spec.type}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                {spec.type}
+              </div>
+              {isTaskNode && (
+                <span
+                  className="text-[9px] uppercase tracking-wider text-slate-400 border border-slate-300 rounded-full px-1.5 py-0 leading-[16px] whitespace-nowrap"
+                  title="Base task configuration. Evaluation-specific modifications (perturbations, altered targets) are configured in the Analysis tab."
+                >
+                  Base Task
+                </span>
+              )}
             </div>
           )
         ) : (
@@ -206,8 +220,18 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             </>
           ) : (
             !collapsedEffective && (
-              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
-                {spec.type}
+              <div className="flex items-center gap-1.5">
+                <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                  {spec.type}
+                </div>
+                {isTaskNode && (
+                  <span
+                    className="text-[9px] uppercase tracking-wider text-slate-400 border border-slate-300 rounded-full px-1.5 py-0 leading-[16px] whitespace-nowrap"
+                    title="Base task configuration. Evaluation-specific modifications (perturbations, altered targets) are configured in the Analysis tab."
+                  >
+                    Base Task
+                  </span>
+                )}
               </div>
             )
           )}

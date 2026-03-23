@@ -6,6 +6,7 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
+import { RunSelector } from '@/components/panels/RunSelector';
 
 const tabs = [
   { id: 'training', label: 'Training' },
@@ -93,6 +94,9 @@ export function BottomShelf({
           {fadeState.right && (
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
+        </div>
+        <div className="shrink-0 border-l border-slate-100 pl-3">
+          <RunSelector activeTab={activeTab} />
         </div>
       </div>
       {!bottomCollapsed && (
