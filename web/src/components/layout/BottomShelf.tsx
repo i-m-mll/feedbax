@@ -6,6 +6,8 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
+import { RunSelector } from '@/components/panels/RunSelector';
+import { FigureGalleryPanel } from '@/components/panels/FigureGalleryPanel';
 
 const tabs = [
   { id: 'training', label: 'Training' },
@@ -13,6 +15,7 @@ const tabs = [
   { id: 'analysis', label: 'Analysis' },
   { id: 'trajectories', label: 'Trajectories' },
   { id: 'statistics', label: 'Statistics' },
+  { id: 'figures', label: 'Figures' },
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
@@ -34,7 +37,8 @@ export function BottomShelf({
     if (activeTab === 'console') return <ConsolePanel />;
     if (activeTab === 'analysis') return <AnalysisPanel />;
     if (activeTab === 'trajectories') return <TrajectoryPanel />;
-    return <StatisticsPanel />;
+    if (activeTab === 'statistics') return <StatisticsPanel />;
+    return <FigureGalleryPanel />;
   }, [activeTab]);
 
   const updateFades = useCallback(() => {
@@ -94,11 +98,14 @@ export function BottomShelf({
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
         </div>
+        <div className="shrink-0 border-l border-slate-100 pl-3">
+          <RunSelector activeTab={activeTab} />
+        </div>
       </div>
       {!bottomCollapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
-          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' ? 'overflow-hidden' : 'overflow-y-auto'}
+          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'}
         >
           {activeContent}
         </div>

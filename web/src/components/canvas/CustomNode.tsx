@@ -1,5 +1,6 @@
 import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { GraphNodeData } from '@/types/graph';
+import type { AnalysisNodeMeta } from '@/types/analysis';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -7,6 +8,7 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
+import { FigureOutputPin } from '@/components/analysis/FigureOutputPin';
 
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
@@ -45,6 +47,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const compositeTypes = useGraphStore((state) => state._compositeTypes);
   const isComposite =
     compositeTypes.has(spec.type) || hasSubgraph;
+  const isTaskNode = useGraphStore((state) => {
+    const def = state._componentRegistry.get(spec.type);
+    return def?.category === 'Tasks';
+  });
   const inputCount = spec.input_ports.length;
   const outputCount = spec.output_ports.length;
   const totalPorts = inputCount + outputCount;
@@ -99,6 +105,12 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
   }, []);
+
+  // Check for analysis metadata indicating this node produces figures
+  const analysisMeta = spec.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
+  const hasFigureOutput = analysisMeta?.has_make_figs ?? false;
+  // Position the figure pin below the last output port
+  const figPinOffset = HEADER_HEIGHT + BODY_PADDING + (outputCount > 0 ? outputCount * ROW_HEIGHT : ROW_HEIGHT) + 8;
   return (
     <div
       className={clsx(
@@ -163,8 +175,18 @@ export function CustomNode({ id, data, selected }: NodeProps) {
         {/* Left slot: name (normal) or type string (reversed) */}
         {reversed ? (
           !collapsedEffective && (
-            <div className="text-[11px] text-slate-500 shrink-0 truncate max-w-[110px]" title={spec.type}>
-              {spec.type}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                {spec.type}
+              </div>
+              {isTaskNode && (
+                <span
+                  className="text-[9px] uppercase tracking-wider text-slate-400 border border-slate-300 rounded-full px-1.5 py-0 leading-[16px] whitespace-nowrap"
+                  title="Base task configuration. Evaluation-specific modifications (perturbations, altered targets) are configured in the Analysis tab."
+                >
+                  Base Task
+                </span>
+              )}
             </div>
           )
         ) : (
@@ -206,8 +228,18 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             </>
           ) : (
             !collapsedEffective && (
-              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
-                {spec.type}
+              <div className="flex items-center gap-1.5">
+                <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                  {spec.type}
+                </div>
+                {isTaskNode && (
+                  <span
+                    className="text-[9px] uppercase tracking-wider text-slate-400 border border-slate-300 rounded-full px-1.5 py-0 leading-[16px] whitespace-nowrap"
+                    title="Base task configuration. Evaluation-specific modifications (perturbations, altered targets) are configured in the Analysis tab."
+                  >
+                    Base Task
+                  </span>
+                )}
               </div>
             )
           )}
@@ -295,6 +327,15 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Figure output pin for analysis nodes */}
+      {hasFigureOutput && !collapsedEffective && (
+        <FigureOutputPin
+          nodeId={label}
+          topOffset={figPinOffset}
+          reversed={reversed}
+        />
       )}
 
       {/* Port context menu */}

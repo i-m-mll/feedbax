@@ -326,7 +326,33 @@ def setup_eval_for_module(
     #     for std in hps.train.pert.std
     # }))
 
-    # Add evaluation record to the database
+    # Construct common inputs needed by transforms and analyses
+    # Note: We construct trial_specs for all task variants here
+    #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
+    #! baked into the model's `Iterator`. Here, only the task will be modified.
+    task_variants_dict = namespace_to_dict(hps.task.variants)
+    task_variants = LDict.of("task_variant")(
+        {
+            variant_key: eqx.tree_at(
+                lambda task: [getattr(task, name) for name in variant_params.keys()],
+                task_base,
+                [value for value in variant_params.values()],
+            )
+            for variant_key, variant_params in task_variants_dict.items()
+        }
+    )
+
+    # Extract perturbation config from training hyperparameters
+    pert_config = None
+    if hasattr(hps, "train") and hasattr(hps.train, "pert"):
+        pert_config = namespace_to_dict(hps.train.pert)
+
+    # Extract SISU params if present
+    sisu = None
+    if hasattr(hps, "sisu"):
+        sisu = namespace_to_dict(hps.sisu)
+
+    # Add evaluation record to the database, including setup metadata
     eval_info = add_evaluation(
         db_session,
         expt_name=module_key,
@@ -335,21 +361,9 @@ def setup_eval_for_module(
         #! TODO: Could exclude train parameters, since
         eval_parameters=namespace_to_dict(flatten_hps(hps)),
         version_info=version_info,
-    )
-
-    # Construct common inputs needed by transforms and analyses
-    # Note: We construct trial_specs for all task variants here
-    #! Note that modifying `n_steps` may not work here yet, because of the way that `n_steps` is
-    #! baked into the model's `Iterator`. Here, only the task will be modified.
-    task_variants = LDict.of("task_variant")(
-        {
-            variant_key: eqx.tree_at(
-                lambda task: [getattr(task, name) for name in variant_params.keys()],
-                task_base,
-                [value for value in variant_params.values()],
-            )
-            for variant_key, variant_params in namespace_to_dict(hps.task.variants).items()
-        }
+        perturbation_config=pert_config,
+        task_variants=task_variants_dict,
+        sisu_params=sisu,
     )
 
     trial_specs = jt.map(get_validation_trial_specs, task_variants, is_leaf=is_module)
@@ -445,6 +459,7 @@ def perform_all_analyses(
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: List[str] = ["html"],
     custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
+    requested_outputs: Optional[set[str]] = None,
     **kwargs,
 ) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
     """Given a list or dict of instances of `AbstractAnalysis`, perform all analyses and save any figures."""
@@ -464,8 +479,14 @@ def perform_all_analyses(
     # Phase 1: Compute all analysis nodes (dependencies + leaves)
     logger.info("Computing results for analyses and their dependencies")
     all_dependency_results = compute_dependency_results(
-        analyses, data, custom_dependencies, **kwargs
+        analyses, data, custom_dependencies, requested_outputs=requested_outputs, **kwargs
     )
+
+    # When requested_outputs is set, filter analyses to match what was computed.
+    # compute_dependency_results already restricted its internal analyses_list,
+    # but we need the same restriction here for the figure-generation loop.
+    if requested_outputs is not None:
+        analyses = {k: v for k, v in analyses.items() if k in requested_outputs}
 
     # Phase 2: Keep results & generate figures for leaf analyses only
     def finish_analysis(analysis_key: str, analysis: AbstractAnalysis, inputs: dict):
@@ -560,6 +581,208 @@ def check_records_for_analysis(
     return True
 
 
+def run_evaluation(
+    analysis_module: ModuleType,
+    data: AnalysisInputData,
+    common_inputs: dict,
+    transforms: AnalysisModuleTransformSpec,
+    eval_info: EvaluationRecord,
+    *,
+    no_pickle: bool = False,
+    states_pkl_dir: Path | None = None,
+    memory_warn_gb: float = 24.0,
+    key,
+) -> AnalysisInputData:
+    """Run the evaluation phase: compute states for all task/model combinations.
+
+    This is the expensive step that evaluates models on tasks to produce state
+    trajectories.  The result is an ``AnalysisInputData`` with ``states``
+    populated.  It can be cached and reused across multiple analysis runs.
+
+    Args:
+        analysis_module: The loaded analysis module (must expose ``eval_fn``).
+        data: ``AnalysisInputData`` with ``states=None`` (pre-evaluation).
+        common_inputs: Shared inputs (hps, colors, replicate_info, etc.).
+        transforms: Validated transforms spec (``post_eval`` applied here).
+        eval_info: Database evaluation record (used for pickle hash).
+        no_pickle: If ``True``, skip pickle load/save.
+        states_pkl_dir: Directory for state pickle cache.  Defaults to
+            ``PATHS.cache / "states"``.
+        memory_warn_gb: Warn if estimated state memory exceeds this threshold.
+        key: JAX PRNG key for stochastic evaluation.
+
+    Returns:
+        ``AnalysisInputData`` with ``states`` populated (and post-eval
+        transforms applied).
+    """
+    if states_pkl_dir is None:
+        states_pkl_dir = PATHS.cache / STATES_CACHE_SUBDIR
+    states_pkl_dir.mkdir(parents=True, exist_ok=True)
+
+    def evaluate_all_states(all_tasks, all_models, all_hps):
+        return jt.map(
+            lambda task, models, hps: jt.map(
+                lambda model: analysis_module.eval_fn(key, hps, model, task),
+                models,
+                is_leaf=is_module,
+            ),
+            all_tasks,
+            all_models,
+            all_hps,
+            is_leaf=is_module,
+        )
+
+    def _compute_states_and_log_memory_estimate():
+        states_shapes = eqx.filter_eval_shape(
+            evaluate_all_states, data.tasks, data.models, data.hps
+        )
+        logger.info(
+            f"Evaluated states PyTree structure: {tree_level_labels(states_shapes, is_leaf=is_module)}"
+        )
+
+        memory_estimate_gb = jtree.struct_bytes(states_shapes) / 1e9
+        logger.info(f"{memory_estimate_gb:.2f} GB of memory estimated to store all states.")
+
+        if memory_estimate_gb > memory_warn_gb:
+            logger.warning(
+                f"Estimated memory usage ({memory_estimate_gb:.2f} GB) exceeds the warning threshold "
+                f"({memory_warn_gb:.2f} GB). Consider reducing the number of evaluations or model sizes. "
+                f"State shapes PyTree written to {PATHS.logs / 'states_shapes.txt'}."
+            )
+
+            with open(PATHS.logs / "states_shapes.txt", "w") as f:
+                f.write(eqx.tree_pformat(states_shapes))
+
+            print("\n")
+            while True:
+                proceed = (
+                    Prompt.ask("Proceed with the evaluation and analysis? (y/n): ").strip().lower()
+                )
+
+                if proceed == "y":
+                    print("\n")
+                    break
+                elif proceed == "n":
+                    logger.info("Evaluation cancelled by user.")
+                    sys.exit()
+                else:
+                    print("Invalid input; please enter 'y' or 'n'.")
+
+        computed_states = evaluate_all_states(data.tasks, data.models, data.hps)
+        logger.info("All states evaluated.")
+        return computed_states
+
+    # Create a filename based on the evaluation hash
+    states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"
+
+    loaded_from_pickle = False
+    if not no_pickle and states_pickle_path.exists():
+        logger.info(f"Loading states from {states_pickle_path}...")
+        try:
+            with open(states_pickle_path, "rb") as f:
+                states = pickle.load(f)
+            logger.debug(
+                "Loaded pickled states with PyTree structure: "
+                f"{tree_level_labels(states, is_leaf=is_module)}"
+            )
+            loaded_from_pickle = True
+        except Exception as e:
+            logger.error(f"Failed to load pickled states: {e}")
+            logger.info("Computing states from scratch instead...")
+            states = _compute_states_and_log_memory_estimate()
+    else:
+        if no_pickle and states_pickle_path.exists():
+            logger.info(f"Ignoring pickle file at {states_pickle_path} due to --no-pickle flag.")
+        states = _compute_states_and_log_memory_estimate()
+
+    # Save states if we didn't use --no-pickle and we didn't successfully load from pickle
+    if not no_pickle and not loaded_from_pickle:
+        with open(states_pickle_path, "wb") as f:
+            pickle.dump(states, f)
+        logger.info(f"Saved evaluated states to {states_pickle_path}")
+
+    # Apply post-eval transformations if present
+    if transforms.post_eval is not None:
+        if isinstance(transforms.post_eval, dict):
+            if "models" in transforms.post_eval and transforms.post_eval["models"] is not None:
+                func = wrap_to_accept_var_kwargs(transforms.post_eval["models"])
+                data = eqx.tree_at(
+                    lambda data: data.models,
+                    data,
+                    func(data.models, common_inputs),
+                    is_leaf=is_none,
+                )
+            if "tasks" in transforms.post_eval and transforms.post_eval["tasks"] is not None:
+                func = wrap_to_accept_var_kwargs(transforms.post_eval["tasks"])
+                data = eqx.tree_at(
+                    lambda data: data.tasks,
+                    data,
+                    func(data.tasks, common_inputs),
+                    is_leaf=is_none,
+                )
+            if "states" in transforms.post_eval and transforms.post_eval["states"] is not None:
+                func = wrap_to_accept_var_kwargs(transforms.post_eval["states"])
+                states = func(states, common_inputs)
+        else:
+            func = wrap_to_accept_var_kwargs(transforms.post_eval)
+            transformed_models, transformed_tasks, transformed_states = func(
+                (data.models, data.tasks, states), common_inputs
+            )
+            data = eqx.tree_at(lambda data: data.models, data, transformed_models, is_leaf=is_none)
+            data = eqx.tree_at(lambda data: data.tasks, data, transformed_tasks, is_leaf=is_none)
+            states = transformed_states
+
+    data = eqx.tree_at(lambda data: data.states, data, states, is_leaf=is_none)
+
+    return data
+
+
+def run_analyses(
+    db_session: Session,
+    analysis_module: ModuleType,
+    data: AnalysisInputData,
+    common_inputs: dict,
+    model_info: ModelRecord,
+    eval_info: EvaluationRecord,
+    *,
+    fig_dump_path: Optional[Path] = None,
+    fig_dump_formats: list[str] = ["html", "webp", "svg"],
+    requested_outputs: Optional[set[str]] = None,
+) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
+    """Run the analysis phase on already-evaluated data.
+
+    This is the cheap(er) step that computes analysis results and generates
+    figures from the state trajectories produced by :func:`run_evaluation`.
+
+    Args:
+        db_session: Active SQLAlchemy session for saving figure records.
+        analysis_module: The loaded analysis module (must expose ``ANALYSES``).
+        data: ``AnalysisInputData`` with ``states`` populated.
+        common_inputs: Shared inputs (hps, colors, replicate_info, etc.).
+        model_info: Database model record.
+        eval_info: Database evaluation record.
+        fig_dump_path: Directory for dumping figures.
+        fig_dump_formats: Format list for figure dumps.
+        requested_outputs: If provided, only run analyses whose keys appear in
+            this set (plus their transitive dependencies).
+
+    Returns:
+        Tuple of ``(all_analyses, all_results, all_figs)``.
+    """
+    return perform_all_analyses(
+        db_session,
+        analysis_module.ANALYSES,
+        data,
+        model_info,
+        eval_info,
+        fig_dump_path=fig_dump_path,
+        fig_dump_formats=fig_dump_formats,
+        custom_dependencies=getattr(analysis_module, "DEPENDENCIES", {}),
+        requested_outputs=requested_outputs,
+        **common_inputs,
+    )
+
+
 def run_analysis_module(
     module_key: str,
     module_config: dict,
@@ -570,13 +793,27 @@ def run_analysis_module(
     states_pkl_dir: Path | None = PATHS.cache / "states",
     eval_only: bool = False,
     memory_warn_gb: float = 24.0,
+    requested_outputs: Optional[set[str]] = None,
     key,
 ):
     """Run a single analysis module using provided hyperparameters.
 
-    - `module_key` is the analysis module key (e.g., 'part2.plant_perts').
-    - `module_config` is the resolved config returned by config.load_config(...).
-    - `fig_dump_dir`, if provided, is passed to analysis.save_figs(..., dump_path=...).
+    This is a convenience wrapper that calls :func:`run_evaluation` followed by
+    :func:`run_analyses`.  For finer control (e.g. caching evaluation results
+    across multiple analysis runs), call those functions directly.
+
+    Args:
+        module_key: Analysis module key (e.g., ``'part2.plant_perts'``).
+        module_config: Resolved config returned by ``config.load_config(...)``.
+        fig_dump_dir: If provided, passed to ``analysis.save_figs(..., dump_path=...)``.
+        fig_dump_formats: Format list for figure dumps.
+        no_pickle: Skip pickle load/save for state cache.
+        states_pkl_dir: Directory for state pickle cache.
+        eval_only: If ``True``, return after evaluation without running analyses.
+        memory_warn_gb: Warn if estimated state memory exceeds this threshold.
+        requested_outputs: If provided, only run analyses whose keys appear in
+            this set (plus their transitive dependencies).
+        key: JAX PRNG key for stochastic evaluation.
     """
     version_info = log_version_info(
         jax,
@@ -622,147 +859,34 @@ def run_analysis_module(
         version_info,
     )
 
-    def evaluate_all_states(all_tasks, all_models, all_hps):
-        return jt.map(  # Map over the task-base model subtree pairs generated by `schedule_intervenor` for each base task
-            lambda task, models, hps: jt.map(
-                lambda model: analysis_module.eval_fn(key, hps, model, task),
-                models,
-                is_leaf=is_module,
-            ),
-            all_tasks,
-            all_models,
-            all_hps,
-            is_leaf=is_module,
-        )
-
-    # Helper function to compute states from scratch
-    def _compute_states_and_log_memory_estimate():
-        states_shapes = eqx.filter_eval_shape(
-            evaluate_all_states, data.tasks, data.models, data.hps
-        )
-        logger.info(
-            f"Evaluated states PyTree structure: {tree_level_labels(states_shapes, is_leaf=is_module)}"
-        )
-
-        memory_estimate_gb = jtree.struct_bytes(states_shapes) / 1e9
-        logger.info(f"{memory_estimate_gb:.2f} GB of memory estimated to store all states.")
-
-        if memory_estimate_gb > memory_warn_gb:
-            logger.warning(
-                f"Estimated memory usage ({memory_estimate_gb:.2f} GB) exceeds the warning threshold "
-                f"({memory_warn_gb:.2f} GB). Consider reducing the number of evaluations or model sizes. "
-                f"State shapes PyTree written to {PATHS.logs / 'states_shapes.txt'}."
-            )
-
-            with open(PATHS.logs / "states_shapes.txt", "w") as f:
-                f.write(eqx.tree_pformat(states_shapes))
-
-            print("\n")
-            while True:
-                proceed = (
-                    Prompt.ask("Proceed with the evaluation and analysis? (y/n): ").strip().lower()
-                )
-
-                if proceed == "y":
-                    print("\n")
-                    break
-                elif proceed == "n":
-                    logger.info("Evaluation cancelled by user.")
-                    sys.exit()
-                else:
-                    print("Invalid input; please enter 'y' or 'n'.")
-
-        computed_states = evaluate_all_states(data.tasks, data.models, data.hps)
-        logger.info("All states evaluated.")
-        return computed_states
-
-    # Create a filename based on the evaluation hash
-    states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"
-
-    loaded_from_pickle = False
-    # If --no-pickle is set, we won't try to load from or save to pickle
-    if not no_pickle and states_pickle_path.exists():
-        # Try to load from pickle
-        logger.info(f"Loading states from {states_pickle_path}...")
-        try:
-            with open(states_pickle_path, "rb") as f:
-                states = pickle.load(f)
-            logger.debug(
-                "Loaded pickled states with PyTree structure: "
-                f"{tree_level_labels(states, is_leaf=is_module)}"
-            )
-            loaded_from_pickle = True
-        except Exception as e:
-            logger.error(f"Failed to load pickled states: {e}")
-            logger.info("Computing states from scratch instead...")
-            states = _compute_states_and_log_memory_estimate()
-    else:
-        if no_pickle and states_pickle_path.exists():
-            logger.info(f"Ignoring pickle file at {states_pickle_path} due to --no-pickle flag.")
-
-        # Compute from scratch
-        states = _compute_states_and_log_memory_estimate()
-
-    # Save states if we didn't use --no-pickle and we didn't successfully load from pickle
-    if not no_pickle and not loaded_from_pickle:
-        # def _test(tree):
-        #     return jt.map(lambda x: x, tree)
-
-        with open(states_pickle_path, "wb") as f:
-            pickle.dump(states, f)
-        logger.info(f"Saved evaluated states to {states_pickle_path}")
-
-    # Apply post-eval transformations if present
-    if transforms.post_eval is not None:
-        if isinstance(transforms.post_eval, dict):
-            # Granular transforms - apply to models, tasks, and/or states separately
-            if "models" in transforms.post_eval and transforms.post_eval["models"] is not None:
-                func = wrap_to_accept_var_kwargs(transforms.post_eval["models"])
-                data = eqx.tree_at(
-                    lambda data: data.models,
-                    data,
-                    func(data.models, common_inputs),
-                    is_leaf=is_none,
-                )
-            if "tasks" in transforms.post_eval and transforms.post_eval["tasks"] is not None:
-                func = wrap_to_accept_var_kwargs(transforms.post_eval["tasks"])
-                data = eqx.tree_at(
-                    lambda data: data.tasks,
-                    data,
-                    func(data.tasks, common_inputs),
-                    is_leaf=is_none,
-                )
-            if "states" in transforms.post_eval and transforms.post_eval["states"] is not None:
-                func = wrap_to_accept_var_kwargs(transforms.post_eval["states"])
-                states = func(states, common_inputs)
-        else:
-            func = wrap_to_accept_var_kwargs(transforms.post_eval)
-            # Combined function - pass models, tasks, states as tuple
-            transformed_models, transformed_tasks, transformed_states = func(
-                (data.models, data.tasks, states), common_inputs
-            )
-            data = eqx.tree_at(lambda data: data.models, data, transformed_models, is_leaf=is_none)
-            data = eqx.tree_at(lambda data: data.tasks, data, transformed_tasks, is_leaf=is_none)
-            states = transformed_states
-
-    data = eqx.tree_at(lambda data: data.states, data, states, is_leaf=is_none)
+    # Phase 1: Evaluation — compute state trajectories
+    data = run_evaluation(
+        analysis_module,
+        data,
+        common_inputs,
+        transforms,
+        eval_info,
+        no_pickle=no_pickle,
+        states_pkl_dir=states_pkl_dir,
+        memory_warn_gb=memory_warn_gb,
+        key=key,
+    )
 
     if eval_only:
         logger.info("Eval-only requested; skipping analyses and returning.")
         return data, common_inputs, None, None, None
 
-    # jax.profiler.stop_trace()
-
-    all_analyses, all_results, all_figs = perform_all_analyses(
+    # Phase 2: Analysis — compute results and generate figures
+    all_analyses, all_results, all_figs = run_analyses(
         db_session,
-        analysis_module.ANALYSES,
+        analysis_module,
         data,
+        common_inputs,
         model_info,
         eval_info,
         fig_dump_path=Path(fig_dump_dir),
         fig_dump_formats=fig_dump_formats,
-        custom_dependencies=getattr(analysis_module, "DEPENDENCIES", {}),
-        **common_inputs,
+        requested_outputs=requested_outputs,
     )
 
     db_session.close()

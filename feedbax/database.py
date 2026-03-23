@@ -178,6 +178,22 @@ class EvaluationRecord(RecordBase):
     archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     version_info_eval: Mapped[Optional[dict[str, str]]]
 
+    # Evaluation setup metadata — stores the configuration used to set up the
+    # evaluation so it can be queried and reproduced without re-running
+    # setup_eval_tasks_and_models().
+    perturbation_config: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    task_variants: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    sisu_params: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+    eval_setup_params: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True, default=None
+    )
+
     @hybrid_property
     def figure_dir(self):
         return PATHS.figures / self.hash
@@ -680,6 +696,81 @@ def get_model_record(
     return get_record(session, ModelRecord, explain_on_miss=explain_on_miss, **filters)
 
 
+def query_evaluations_by_setup(
+    session: Session,
+    perturbation_type: Optional[str] = None,
+    perturbation_config: Optional[Dict[str, Any]] = None,
+    task_variant_key: Optional[str] = None,
+    sisu_params: Optional[Dict[str, Any]] = None,
+    expt_name: Optional[str] = None,
+    include_archived: bool = False,
+) -> list[EvaluationRecord]:
+    """Find evaluations by their setup parameters.
+
+    Filters EvaluationRecord rows by JSON field contents. All provided
+    filters are combined with AND logic.
+
+    Args:
+        session: Database session.
+        perturbation_type: Match evaluations whose perturbation_config
+            contains this perturbation type (checked via the ``"type"``
+            key inside the JSON column).
+        perturbation_config: Match evaluations whose perturbation_config
+            is a superset of this dict (all key-value pairs must match).
+        task_variant_key: Match evaluations whose task_variants dict
+            contains this key.
+        sisu_params: Match evaluations whose sisu_params is a superset
+            of this dict.
+        expt_name: Filter by experiment name (exact match on column).
+        include_archived: If True, also return archived evaluations.
+
+    Returns:
+        List of matching EvaluationRecord instances.
+    """
+    query = session.query(EvaluationRecord)
+
+    if not include_archived:
+        query = query.filter(EvaluationRecord.archived == False)  # noqa: E712
+
+    if expt_name is not None:
+        query = query.filter(EvaluationRecord.expt_name == expt_name)
+
+    records = query.all()
+
+    # Apply JSON-based filters in Python — SQLite's JSON support is limited,
+    # so Python-side filtering is the most portable approach.
+    def _matches(record: EvaluationRecord) -> bool:
+        if perturbation_type is not None:
+            cfg = record.perturbation_config
+            if not isinstance(cfg, dict) or cfg.get("type") != perturbation_type:
+                return False
+
+        if perturbation_config is not None:
+            cfg = record.perturbation_config
+            if not isinstance(cfg, dict):
+                return False
+            for k, v in perturbation_config.items():
+                if cfg.get(k) != v:
+                    return False
+
+        if task_variant_key is not None:
+            tv = record.task_variants
+            if not isinstance(tv, dict) or task_variant_key not in tv:
+                return False
+
+        if sisu_params is not None:
+            sp = record.sisu_params
+            if not isinstance(sp, dict):
+                return False
+            for k, v in sisu_params.items():
+                if sp.get(k) != v:
+                    return False
+
+        return True
+
+    return [r for r in records if _matches(r)]
+
+
 def get_model_class(record_type: str | type[BaseT]) -> type[BaseT]:
     """Convert table name to model class if needed."""
     if isinstance(record_type, str):
@@ -1021,25 +1112,34 @@ def generate_eval_hash(
     model_hashes: Optional[Sequence[str]],
     eval_params: Dict[str, Any],
     expt_name: Optional[str] = None,
+    eval_setup_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Generate a hash for a notebook evaluation based on model hash and parameters.
 
     Args:
-        model_hash: Hash of the model being evaluated. None for training notebooks.
-        eval_params: Parameters used for evaluation
+        model_hashes: Hashes of the models being evaluated. None for training notebooks.
+        eval_params: Parameters used for evaluation.
+        expt_name: Name identifying the analysis/experiment.
+        eval_setup_metadata: Optional dict of evaluation setup metadata
+            (perturbation config, task variants, SISU params, etc.) to
+            incorporate into the hash. Different evaluation setups produce
+            different hashes.
     """
     if model_hashes is None:
         model_str = "None"
     else:
         model_str = "".join(model_hashes)
 
-    eval_str = "_".join(
-        [
-            model_str,
-            f"{expt_name or 'None'}",
-            f"{json.dumps(eval_params, sort_keys=True)}",
-        ]
-    )
+    components = [
+        model_str,
+        f"{expt_name or 'None'}",
+        f"{json.dumps(eval_params, sort_keys=True)}",
+    ]
+
+    if eval_setup_metadata:
+        components.append(json.dumps(eval_setup_metadata, sort_keys=True))
+
+    eval_str = "_".join(components)
     return get_md5_hexdigest(eval_str)
 
 
@@ -1049,6 +1149,10 @@ def add_evaluation(
     eval_parameters: Dict[str, Any],
     expt_name: Optional[str] = None,
     version_info: Optional[dict[str, str]] = None,
+    perturbation_config: Optional[Dict[str, Any]] = None,
+    task_variants: Optional[Dict[str, Any]] = None,
+    sisu_params: Optional[Dict[str, Any]] = None,
+    eval_setup_params: Optional[Dict[str, Any]] = None,
     commit: bool = True,
 ) -> EvaluationRecord:
     """Create new notebook evaluation record.
@@ -1059,6 +1163,12 @@ def add_evaluation(
         eval_parameters: Parameters used for evaluation
         expt_name: Name identifying the analysis/experiment
         version_info: Optional version information
+        perturbation_config: Perturbation type and parameters (amplitudes,
+            where applied, etc.)
+        task_variants: Task variant definitions used in evaluation
+        sisu_params: SISU values evaluated (if applicable)
+        eval_setup_params: Catch-all for any additional
+            setup_eval_tasks_and_models parameters
         commit: If True, commit immediately. If False, caller must commit.
 
     Returns:
@@ -1071,11 +1181,23 @@ def add_evaluation(
     else:
         model_hashes = [model.hash for model in jt.leaves(models, is_leaf=is_type(ModelRecord))]
 
+    # Build setup metadata dict for hashing (only non-None entries)
+    eval_setup_metadata = {}
+    if perturbation_config is not None:
+        eval_setup_metadata["perturbation_config"] = perturbation_config
+    if task_variants is not None:
+        eval_setup_metadata["task_variants"] = task_variants
+    if sisu_params is not None:
+        eval_setup_metadata["sisu_params"] = sisu_params
+    if eval_setup_params is not None:
+        eval_setup_metadata["eval_setup_params"] = eval_setup_params
+
     # Generate hash from model_id (if any) and parameters
     eval_hash = generate_eval_hash(
         model_hashes=model_hashes,
         eval_params=eval_parameters,
         expt_name=expt_name,
+        eval_setup_metadata=eval_setup_metadata or None,
     )
 
     # Migrate the evaluations table so it has all the necessary columns
@@ -1096,13 +1218,22 @@ def add_evaluation(
     existing_record = get_record(session, EvaluationRecord, hash=eval_hash)
     if existing_record is not None:
         existing_record.modified_at = datetime.utcnow()
-        logger.info(f"Updating timestamp of existing evaluation record with hash {eval_hash}")
+        # Update setup metadata on existing records
+        existing_record.perturbation_config = perturbation_config
+        existing_record.task_variants = task_variants
+        existing_record.sisu_params = sisu_params
+        existing_record.eval_setup_params = eval_setup_params
+        logger.info(f"Updating existing evaluation record with hash {eval_hash}")
         eval_record = existing_record
     else:
         eval_record = EvaluationRecord(
             hash=eval_hash,
             model_hashes=model_hashes,  # Can be None
             version_info_eval=version_info,
+            perturbation_config=perturbation_config,
+            task_variants=task_variants,
+            sisu_params=sisu_params,
+            eval_setup_params=eval_setup_params,
             **eval_parameters,
         )
         session.add(eval_record)

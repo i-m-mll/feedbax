@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import { useComponents } from '@/hooks/useComponents';
 import type { ParamSchema, ParamValue, TapSpec } from '@/types/graph';
+import type { AnalysisNodeMeta } from '@/types/analysis';
+import { FigOpsSection, DependencyPortsSection } from '@/components/analysis/FigOpsSection';
 import clsx from 'clsx';
 
 export function PropertiesPanel() {
@@ -108,6 +110,9 @@ export function PropertiesPanel() {
     ? components.find((item) => item.name === nodeSpec.type)
     : undefined;
   const nodeTaps = taps.filter((tap) => tap.position.afterNode === selectedNode.id);
+
+  // Check for analysis-specific metadata on the node spec
+  const analysisMeta = nodeSpec?.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
 
   const commitRename = () => {
     if (nameValue.trim() && nameValue.trim() !== selectedNode.id) {
@@ -222,6 +227,26 @@ export function PropertiesPanel() {
           </div>
         )}
       </div>
+
+      {/* Analysis-specific sections */}
+      {analysisMeta && (
+        <>
+          <div className="border-t border-slate-100 pt-4">
+            <div className="text-xs uppercase tracking-[0.3em] text-slate-400 mb-2">
+              Analysis
+            </div>
+            <div className="text-sm text-slate-600">{analysisMeta.analysis_class}</div>
+            {analysisMeta.has_make_figs && (
+              <div className="mt-1 text-xs text-emerald-600">Produces figures</div>
+            )}
+          </div>
+          <FigOpsSection meta={analysisMeta} />
+          <DependencyPortsSection
+            ports={analysisMeta.dependency_ports}
+            nodeId={selectedNode.id}
+          />
+        </>
+      )}
     </div>
   );
 }
