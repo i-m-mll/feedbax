@@ -891,9 +891,15 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
     ) -> T:
+        # Partition into arrays that have the ensemble (batch) dimension
+        # and everything else.  StateIndex.init leaves may be arrays without
+        # a batch dimension; those must NOT be vmapped.
+        def _is_batched_array(x):
+            return eqx.is_array(x) and x.ndim >= 1 and x.shape[0] == n_replicates
+
         models_arrays, models_other = eqx.partition(
             models,
-            eqx.is_array,
+            _is_batched_array,
         )
 
         def evaluate_single(model_arrays, model_other, key):
