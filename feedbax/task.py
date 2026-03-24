@@ -126,32 +126,56 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
 def _extract_timeseries_params(
     params: PyTree,
     defaults: PyTree,
+    n_steps: Optional[int] = None,
 ) -> Optional[PyTree]:
     """Extract time-varying leaves from intervention params.
 
     Returns a params-like PyTree where TimeSeriesParam leaves are unwrapped
     to their inner arrays (shape ``(T, ...)``) and time-invariant leaves are
-    replaced with None.  Returns ``None`` if there are no TimeSeriesParam
-    leaves at all.
+    broadcast to ``(T, ...)`` so the whole PyTree is indexable by step.
+    Returns ``None`` if there are no TimeSeriesParam leaves at all.
 
     Args:
         params: The intervention params PyTree (may contain TimeSeriesParam).
         defaults: The default params from State (used as structure reference).
+        n_steps: Number of timesteps for broadcasting non-time-varying leaves.
+            Inferred from the first TimeSeriesParam if not provided.
     """
     has_timeseries = False
+    inferred_n_steps = None
+
+    # First pass: find n_steps from the first TimeSeriesParam leaf.
+    def _find_n(p):
+        nonlocal inferred_n_steps
+        if isinstance(p, TimeSeriesParam) and inferred_n_steps is None:
+            inferred_n_steps = p.value.shape[0]
+
+    jt.map(lambda p: _find_n(p), params, is_leaf=is_type(TimeSeriesParam))
+
+    if inferred_n_steps is None:
+        return None  # no TimeSeriesParam leaves
+
+    T = n_steps if n_steps is not None else inferred_n_steps
 
     def _extract(p, d):
         nonlocal has_timeseries
         if isinstance(p, TimeSeriesParam):
             has_timeseries = True
             return p.value
-        return None
+        # Broadcast scalar/static params to (T, ...) so the whole PyTree
+        # can be indexed by step in lax.scan.
+        if isinstance(p, (jnp.ndarray, np.ndarray)):
+            return jnp.broadcast_to(p, (T, *p.shape))
+        # For Python scalars, convert then broadcast.
+        arr = jnp.asarray(p)
+        return jnp.broadcast_to(arr, (T,) + arr.shape)
 
     result = jt.map(
         _extract, params, defaults,
         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
     )
-    return result if has_timeseries else None
+    has_timeseries = True  # We already checked inferred_n_steps is not None
+    return result
 
 
 def _merge_intervene_inputs(
