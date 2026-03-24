@@ -517,22 +517,18 @@ class AbstractTask(Module):
             is_leaf=is_type(TimeSeriesParam),
         )
 
-        timeseries, other = eqx.partition(
+        # Process each parameter: unwrap TimeSeriesParam to its signal array,
+        # broadcast scalar/static params to (T, ...) shape.
+        def _process_param(x):
+            if isinstance(x, TimeSeriesParam):
+                return x()  # unwrap to signal array
+            return jnp.broadcast_to(jnp.asarray(x), (self.n_steps - 1, *jnp.asarray(x).shape))
+
+        return jt.map(
+            _process_param,
             intervenor_params,
-            is_type(TimeSeriesParam),
             is_leaf=is_type(TimeSeriesParam),
         )
-
-        # Unwrap the `TimeSeriesParam` instances.
-        timeseries_arrays = tree_call(timeseries, is_leaf=is_type(TimeSeriesParam))
-
-        # Broadcast the non-timeseries arrays.
-        other_broadcasted = jt.map(
-            lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
-            jt.map(jnp.array, other),
-        )
-
-        return eqx.combine(timeseries_arrays, other_broadcasted)
 
     @abstractmethod
     def get_validation_trials(
