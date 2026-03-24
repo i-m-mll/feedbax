@@ -517,16 +517,14 @@ class AbstractTask(Module):
             is_leaf=is_type(TimeSeriesParam),
         )
 
-        # Unwrap TimeSeriesParam wrappers to their inner values.
-        # Non-TimeSeriesParam leaves pass through unchanged — they are
-        # per-trial scalars/arrays that get merged into the initial State
-        # by _apply_inits.
-        def _unwrap(x):
-            if isinstance(x, TimeSeriesParam):
-                return x.value
-            return x
-
-        return jt.map(_unwrap, intervenor_params, is_leaf=is_type(TimeSeriesParam))
+        # Preserve TimeSeriesParam wrappers so that downstream consumers
+        # (_apply_inits and TaskComponent) can distinguish time-varying
+        # params from time-invariant ones.  Time-invariant leaves pass
+        # through unchanged and get merged into the initial State by
+        # _apply_inits; TimeSeriesParam leaves are skipped by _apply_inits
+        # and unwrapped + indexed per-step by TaskComponent or the
+        # training loop.
+        return intervenor_params
 
     @abstractmethod
     def get_validation_trials(
