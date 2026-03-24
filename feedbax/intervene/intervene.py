@@ -39,6 +39,18 @@ class InterventionParams(eqx.Module):
     active: bool = True
 
 
+def _strong_typed(params: InterventionParams) -> InterventionParams:
+    """Convert params to strong-typed JAX arrays for StateIndex storage.
+
+    State.set() enforces exact dtype/weak-type matching between old and new
+    values.  Trial-specific params from JAX random functions are strong-typed.
+    To ensure compatibility, the StateIndex initial values must also be
+    strong-typed.  This converts Python scalars (which jnp.asarray maps to
+    weak types) to explicit strong-typed JAX arrays.
+    """
+    return jt.map(lambda x: jnp.asarray(x, dtype=jnp.result_type(x)), params)
+
+
 class CurlFieldParams(InterventionParams):
     amplitude: float = 1.0
 
@@ -78,7 +90,7 @@ class CurlField(Component):
         if params is None:
             params = CurlFieldParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -114,7 +126,7 @@ class FixedField(Component):
         if params is None:
             params = FixedFieldParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -154,7 +166,7 @@ class AddNoise(Component):
             params = AddNoiseParams(active=False)
         self.noise_func = noise_func
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -190,7 +202,7 @@ class NetworkClamp(Component):
         if params is None:
             params = NetworkIntervenorParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -231,7 +243,7 @@ class NetworkConstantInput(Component):
         if params is None:
             params = NetworkIntervenorParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -272,7 +284,7 @@ class ConstantInput(Component):
         if params is None:
             params = ConstantInputParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):

@@ -124,34 +124,17 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
 
 
 def _cast_to_state_type(value, state_value):
-    """Cast a trial-specific value to match the State's stored type.
+    """Cast a trial-specific value to match the State's stored dtype.
 
-    State.set() validates via jax.eval_shape, which is sensitive to JAX
-    weak-type status.  State.__init__ converts initial values via
-    ``jnp.asarray``, so Python ``float`` -> weak f32, Python ``bool`` ->
-    bool.  Trial-specific values from ``jr.uniform`` etc. are strong f32.
-    We must match exact dtype AND weak-type status.
-
-    The safest route: convert to Python scalar and let State.set()'s
-    ``jnp.asarray`` re-create the exact same type as the original.
+    Intervenor StateIndex initial values are stored as strong-typed JAX
+    arrays (via ``_strong_typed`` in ``intervene.py``), so trial params
+    just need to match dtype.  Works inside vmap/JIT.
     """
     if not hasattr(state_value, 'dtype'):
         return value
-
-    sv_dtype = state_value.dtype
-
-    if sv_dtype == jnp.bool_:
-        return bool(value)
-
-    if getattr(state_value, 'weak_type', False):
-        if jnp.issubdtype(sv_dtype, jnp.floating):
-            return float(value)
-        if jnp.issubdtype(sv_dtype, jnp.integer):
-            return int(value)
-
     arr = jnp.asarray(value)
-    if arr.dtype != sv_dtype:
-        arr = arr.astype(sv_dtype)
+    if arr.dtype != state_value.dtype:
+        arr = arr.astype(state_value.dtype)
     return arr
 
 
