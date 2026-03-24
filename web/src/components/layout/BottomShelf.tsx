@@ -12,7 +12,7 @@ import { BottomSidebar } from '@/components/layout/BottomSidebar';
 /** Tab definitions with optional separator-before flag. */
 const tabs = [
   { id: 'training', label: 'Training', separator: false },
-  // Run selector is rendered inline (not a tab) — see below
+  // Run selector is rendered inline after Training — see below
   { id: 'analysis', label: 'Analysis', separator: true },
   { id: 'statistics', label: 'Statistics', separator: false },
   { id: 'figures', label: 'Figures', separator: false },
@@ -81,12 +81,6 @@ export function BottomShelf({
                 {tab.separator && (
                   <div className="shrink-0 w-px h-5 bg-slate-200" />
                 )}
-                {/* Inline run selector after Training tab */}
-                {tab.id === 'analysis' && (
-                  <div className="shrink-0">
-                    <TrainingRunSelector activeTab={activeTab} />
-                  </div>
-                )}
                 <button
                   onClick={() => {
                     if (bottomCollapsed) toggleBottom(availableHeight);
@@ -101,6 +95,12 @@ export function BottomShelf({
                 >
                   {tab.label}
                 </button>
+                {/* Inline run selector grouped with Training tab (no separator between) */}
+                {tab.id === 'training' && (
+                  <div className="shrink-0">
+                    <TrainingRunSelector activeTab={activeTab} />
+                  </div>
+                )}
               </React.Fragment>
             ))}
           </div>

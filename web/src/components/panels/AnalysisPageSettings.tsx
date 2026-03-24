@@ -1,14 +1,15 @@
 /**
  * AnalysisPageSettings — right sidebar content when no analysis node is selected.
  *
- * Shows page-level settings: name, eval run selector, and eval parametrization
- * fields (perturbation type, amplitudes, SISU values, task variants).
+ * Shows eval run selector, eval parametrization fields (perturbation type,
+ * amplitudes, SISU values, task variants), eval run name, and a prominent
+ * "Run Evaluation" button.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { EvalRunSelector } from '@/components/panels/RunSelector';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Play } from 'lucide-react';
 
 const PERTURBATION_TYPES = [
   'curl_field',
@@ -34,10 +35,25 @@ function formatNumberList(nums: unknown): string {
   return nums.join(', ');
 }
 
+/** Auto-generate an eval run name from the current parametrization. */
+function generateEvalRunName(evalParams: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const pertType = evalParams.perturbation_type as string | undefined;
+  if (pertType) parts.push(pertType);
+  const amps = evalParams.perturbation_amplitudes;
+  if (Array.isArray(amps) && amps.length > 0) {
+    parts.push(`amp=[${amps.join(',')}]`);
+  }
+  const sisu = evalParams.sisu_values;
+  if (Array.isArray(sisu) && sisu.length > 0) {
+    parts.push(`sisu=[${sisu.join(',')}]`);
+  }
+  return parts.length > 0 ? parts.join(' ') : 'Evaluation';
+}
+
 export function AnalysisPageSettings() {
   const activePageId = useAnalysisStore((s) => s.activePageId);
   const pages = useAnalysisStore((s) => s.pages);
-  const renamePage = useAnalysisStore((s) => s.renamePage);
   const evalParams = useAnalysisStore((s) => s.evalParams);
   const setEvalParams = useAnalysisStore((s) => s.setEvalParams);
   const evalRunId = useAnalysisStore((s) => s.evalRunId);
@@ -49,14 +65,10 @@ export function AnalysisPageSettings() {
   const [newVariantKey, setNewVariantKey] = useState('');
   const [newVariantValue, setNewVariantValue] = useState('');
 
-  const handleNameChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (activePageId) {
-        renamePage(activePageId, e.target.value);
-      }
-    },
-    [activePageId, renamePage],
-  );
+  // Local state for eval run name (user-overridable)
+  const [evalRunNameOverride, setEvalRunNameOverride] = useState<string | null>(null);
+  const autoName = useMemo(() => generateEvalRunName(evalParams), [evalParams]);
+  const evalRunName = evalRunNameOverride ?? autoName;
 
   const handlePerturbationTypeChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -101,6 +113,11 @@ export function AnalysisPageSettings() {
     [evalParams, setEvalParams],
   );
 
+  const handleRunEvaluation = useCallback(() => {
+    // TODO: wire up to actual eval run creation API
+    console.log('Run evaluation:', { name: evalRunName, params: evalParams });
+  }, [evalRunName, evalParams]);
+
   if (!activePage) {
     return (
       <div className="p-4 text-xs text-slate-400 italic">
@@ -112,43 +129,22 @@ export function AnalysisPageSettings() {
   const taskVariants = (evalParams.task_variants as Record<string, string>) ?? {};
 
   return (
-    <div className="p-4 space-y-4">
-      {/* Header */}
-      <div className="text-xs uppercase tracking-[0.3em] text-emerald-600">
-        Page Settings
-      </div>
-
-      {/* Page name */}
-      <div>
-        <label className="text-[10px] uppercase tracking-[0.2em] text-slate-400 block mb-1">
-          Name
-        </label>
-        <input
-          type="text"
-          value={activePage.name}
-          onChange={handleNameChange}
-          className="w-full text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-emerald-300 focus:ring-1 focus:ring-emerald-200"
-        />
-      </div>
-
-      {/* Eval run selector — per-page */}
-      <div className="border-t border-slate-100 pt-3 space-y-1.5">
-        <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+    <div className="p-4 space-y-4 flex flex-col h-full">
+      {/* Eval run selector — section header */}
+      <div className="space-y-1.5">
+        <div className="text-xs uppercase tracking-[0.2em] font-semibold text-emerald-600">
           Evaluation Run
         </div>
         <EvalRunSelector
           selectedEvalRunId={evalRunId}
           onSelectEvalRun={setEvalRunId}
         />
-        <div className="text-[10px] text-slate-400 leading-relaxed">
-          Select which evaluation run to use for analyses on this page.
-        </div>
       </div>
 
-      {/* Eval Parametrization */}
+      {/* Parameters */}
       <div className="border-t border-slate-100 pt-3">
         <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-3">
-          Eval Parametrization
+          Parameters
         </div>
 
         {/* Perturbation type */}
@@ -256,6 +252,32 @@ export function AnalysisPageSettings() {
           </div>
         </div>
       </div>
+
+      {/* Eval run name */}
+      <div className="border-t border-slate-100 pt-3">
+        <label className="text-xs text-slate-500 block mb-1">
+          Run name
+        </label>
+        <input
+          type="text"
+          value={evalRunName}
+          onChange={(e) => setEvalRunNameOverride(e.target.value || null)}
+          placeholder={autoName}
+          className="w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-emerald-300"
+        />
+      </div>
+
+      {/* Spacer to push the button to the bottom */}
+      <div className="flex-1" />
+
+      {/* Run Evaluation button */}
+      <button
+        onClick={handleRunEvaluation}
+        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+      >
+        <Play className="w-4 h-4" />
+        Run Evaluation
+      </button>
     </div>
   );
 }

@@ -60,6 +60,7 @@ export function AnalysisPanel() {
     removePage,
     renamePage,
     switchPage,
+    evalRunId,
   } = useAnalysisStore();
 
   // Load analysis classes on mount
@@ -112,10 +113,18 @@ export function AnalysisPanel() {
       {/* Main content area: canvas + right sidebar */}
       <div className="flex flex-1 min-h-0">
         {/* DAG canvas — fills available space */}
-        <div className="flex-1 min-w-0">
+        <div className="relative flex-1 min-w-0">
           <ReactFlowProvider>
             <AnalysisCanvas />
           </ReactFlowProvider>
+          {/* Dim overlay when no eval run is selected */}
+          {!evalRunId && (
+            <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-10 pointer-events-none">
+              <div className="text-sm text-slate-400 text-center px-8">
+                Select or create an evaluation run to begin
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right sidebar — node properties or page settings */}
