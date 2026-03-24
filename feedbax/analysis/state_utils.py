@@ -9,7 +9,7 @@ import jax.random as jr
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 from equinox import filter_vmap as vmap
-from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene import is_intervenor
 from feedbax.task import AbstractTask
 from jax import lax
 from jax_cookbook import MaskedArray, is_module, is_type
@@ -76,7 +76,7 @@ def _get_eval_ensemble(models, task: AbstractTask):
     def eval_ensemble(key):
         return task.eval_ensemble(
             models,
-            n_replicates=jtree.infer_batch_size(models, exclude=is_type(AbstractIntervenor)),
+            n_replicates=jtree.infer_batch_size(models, exclude=is_intervenor),
             # Each member of the model ensemble will be evaluated on the same trials
             ensemble_random_trials=False,
             key=key,
@@ -154,8 +154,8 @@ def get_best_replicate(tree, *, replicate_info, axis: int = 1, keep_axis: bool =
 
 
 get_best_model_replicate = jtree.filter_wrap(
-    lambda x: not is_type(AbstractIntervenor)(x),
-    is_leaf=is_type(AbstractIntervenor),
+    lambda x: not is_intervenor(x),
+    is_leaf=is_intervenor,
 )(partial(get_best_replicate, axis=0, keep_axis=True))
 get_best_model_replicate.__doc__ = """Variant of `get_best_replicate` that filters out intervenors from the tree.
     

@@ -13,10 +13,12 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { AnalysisCanvas } from '@/components/analysis/AnalysisCanvas';
 import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useDemandStore } from '@/stores/demandStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
+import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
 import type { AnalysisNodeData } from '@/stores/analysisStore';
 import type { AnalysisParamValue, AnalysisParamObject } from '@/types/analysis';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Play, Loader2, Image, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,7 @@ export function AnalysisPanel() {
     removePage,
     renamePage,
     switchPage,
+    evalRunId,
   } = useAnalysisStore();
 
   // Load analysis classes on mount
@@ -112,10 +115,18 @@ export function AnalysisPanel() {
       {/* Main content area: canvas + right sidebar */}
       <div className="flex flex-1 min-h-0">
         {/* DAG canvas — fills available space */}
-        <div className="flex-1 min-w-0">
+        <div className="relative flex-1 min-w-0">
           <ReactFlowProvider>
             <AnalysisCanvas />
           </ReactFlowProvider>
+          {/* Dim overlay when no eval run is selected */}
+          {!evalRunId && (
+            <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center z-10 pointer-events-none">
+              <div className="text-sm text-slate-400 text-center px-8">
+                Select or create an evaluation run to begin
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right sidebar — node properties or page settings */}
@@ -282,6 +293,11 @@ function AnalysisPageTabBar({
 // Node detail panel (extracted from old inline JSX)
 // ---------------------------------------------------------------------------
 
+/** Check if a node has figure/figures output ports. */
+function hasFigureOutputPort(outputPorts: string[]): boolean {
+  return outputPorts.some((p) => p === 'figure' || p === 'figures');
+}
+
 function NodeDetailPanel({
   selectedData,
   selectedNodeId,
@@ -289,39 +305,160 @@ function NodeDetailPanel({
   selectedData: AnalysisNodeData;
   selectedNodeId: string | null;
 }) {
+  const spec = selectedData.spec;
+  const canGenerate = spec.role !== 'dependency' && hasFigureOutputPort(spec.outputPorts);
+  const evalRunId = useAnalysisStore((s) => s.evalRunId);
+  const nodeId = selectedNodeId ?? '';
+
+  // Demand store
+  const status = useDemandStore((s) => s.requests[nodeId]?.status ?? 'idle');
+  const figureHash = useDemandStore((s) => s.requests[nodeId]?.figureHash);
+  const requestGeneration = useDemandStore((s) => s.requestGeneration);
+  const setResult = useDemandStore((s) => s.setResult);
+  const setError = useDemandStore((s) => s.setError);
+
+  // Local state for toast and figure preview
+  const [showToast, setShowToast] = useState(false);
+  const [previewData, setPreviewData] = useState<unknown>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const plotRef = useRef<HTMLDivElement>(null);
+
+  // Poll for figure status when running
+  useEffect(() => {
+    if (status !== 'running' || !nodeId) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+
+    const requestId = useDemandStore.getState().requests[nodeId]?.figureHash;
+    if (!requestId) return;
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const result = await getFigureStatus(requestId);
+        if (result.status === 'complete' && result.figure_hashes?.length) {
+          setResult(nodeId, result.figure_hashes[0]);
+        } else if (result.status === 'error') {
+          setError(nodeId, result.error ?? 'Generation failed');
+        }
+      } catch {
+        // Keep polling on transient errors
+      }
+    }, 2000);
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [status, nodeId, setResult, setError]);
+
+  // Load figure data when ready
+  useEffect(() => {
+    if (status === 'ready' && figureHash) {
+      setPreviewLoading(true);
+      getFigureData(figureHash)
+        .then((data) => setPreviewData(data))
+        .catch(() => setPreviewData(null))
+        .finally(() => setPreviewLoading(false));
+    } else {
+      setPreviewData(null);
+    }
+  }, [status, figureHash]);
+
+  // Render Plotly figure when preview data is available
+  useEffect(() => {
+    if (!previewData || !plotRef.current) return;
+    if (typeof previewData !== 'object') return;
+
+    const plotData = previewData as { data?: unknown[]; layout?: Record<string, unknown> };
+    if (!plotData.data) return;
+
+    let cancelled = false;
+    import('plotly.js-dist-min').then((Plotly) => {
+      if (cancelled || !plotRef.current) return;
+      Plotly.newPlot(
+        plotRef.current,
+        plotData.data as import('plotly.js-dist-min').Data[],
+        {
+          ...((plotData.layout ?? {}) as Partial<import('plotly.js-dist-min').Layout>),
+          autosize: true,
+          margin: { t: 20, r: 10, b: 30, l: 40 },
+        },
+        { responsive: true, displayModeBar: false },
+      );
+    });
+
+    return () => {
+      cancelled = true;
+      if (plotRef.current) {
+        import('plotly.js-dist-min').then((Plotly) => {
+          if (plotRef.current) Plotly.purge(plotRef.current);
+        });
+      }
+    };
+  }, [previewData]);
+
+  const handleGenerate = useCallback(async () => {
+    if (!nodeId) return;
+    if (!evalRunId) {
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
+      return;
+    }
+
+    requestGeneration(nodeId);
+    try {
+      const response = await generateFigure(nodeId, { evalRunId });
+      useDemandStore.setState((s) => ({
+        requests: {
+          ...s.requests,
+          [nodeId]: { ...s.requests[nodeId], figureHash: response.request_id },
+        },
+      }));
+    } catch (err) {
+      setError(nodeId, err instanceof Error ? err.message : 'Request failed');
+    }
+  }, [nodeId, evalRunId, requestGeneration, setError]);
+
   return (
     <div className="p-4">
       <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
-        {selectedData.spec.role === 'dependency' ? 'Dependency' : 'Analysis'}
+        {spec.role === 'dependency' ? 'Dependency' : 'Analysis'}
       </div>
       <div className="mt-1 text-base font-semibold text-slate-800">
-        {selectedData.spec.label}
+        {spec.label}
       </div>
-      <div className="mt-0.5 text-xs text-slate-500">{selectedData.spec.type}</div>
+      <div className="mt-0.5 text-xs text-slate-500">{spec.type}</div>
 
       {/* Category badge */}
       <div className="mt-3">
         <span
           className={clsx(
             'inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide',
-            selectedData.spec.role === 'dependency'
+            spec.role === 'dependency'
               ? 'bg-slate-100 text-slate-500'
               : 'bg-emerald-50 text-emerald-600 border border-emerald-100',
           )}
         >
-          {selectedData.spec.category}
+          {spec.category}
         </span>
       </div>
 
       {/* Ports */}
       <div className="mt-4 space-y-3">
-        {selectedData.spec.inputPorts.length > 0 && (
+        {spec.inputPorts.length > 0 && (
           <div>
             <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-1">
               Inputs
             </div>
             <div className="space-y-0.5">
-              {selectedData.spec.inputPorts.map((port) => (
+              {spec.inputPorts.map((port) => (
                 <div key={port} className="text-xs text-slate-600 pl-2 border-l-2 border-emerald-200">
                   {port}
                 </div>
@@ -329,13 +466,13 @@ function NodeDetailPanel({
             </div>
           </div>
         )}
-        {selectedData.spec.outputPorts.length > 0 && (
+        {spec.outputPorts.length > 0 && (
           <div>
             <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-1">
               Outputs
             </div>
             <div className="space-y-0.5">
-              {selectedData.spec.outputPorts.map((port) => (
+              {spec.outputPorts.map((port) => (
                 <div key={port} className="text-xs text-slate-600 pl-2 border-l-2 border-slate-200">
                   {port}
                 </div>
@@ -346,13 +483,13 @@ function NodeDetailPanel({
       </div>
 
       {/* Parameters — editable inputs */}
-      {Object.keys(selectedData.spec.params).length > 0 && (
+      {Object.keys(spec.params).length > 0 && (
         <div className="mt-4">
           <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-2">
             Parameters
           </div>
           <div className="space-y-2">
-            {Object.entries(selectedData.spec.params).map(([key, value]) => (
+            {Object.entries(spec.params).map(([key, value]) => (
               <ParamField
                 key={key}
                 nodeId={selectedNodeId!}
@@ -360,6 +497,71 @@ function NodeDetailPanel({
                 value={value}
               />
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Generate button for figure-producing nodes */}
+      {canGenerate && (
+        <div className="mt-4">
+          {showToast && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-700">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              Select or create an evaluation run first
+            </div>
+          )}
+          <button
+            onClick={handleGenerate}
+            disabled={status === 'running'}
+            className={clsx(
+              'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
+              status === 'running'
+                ? 'bg-blue-50 text-blue-500 cursor-wait'
+                : status === 'ready'
+                  ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 hover:bg-emerald-100'
+                  : status === 'error'
+                    ? 'bg-red-50 text-red-500 hover:bg-red-100'
+                    : 'bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm'
+            )}
+            title={
+              !evalRunId ? 'Select or create an evaluation run first'
+                : status === 'running' ? 'Generating...'
+                  : status === 'ready' ? 'Re-generate figure'
+                    : status === 'error' ? 'Retry generation'
+                      : 'Generate figure'
+            }
+          >
+            {status === 'running' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : status === 'ready' ? (
+              <Image className="w-3.5 h-3.5" />
+            ) : (
+              <Play className="w-3.5 h-3.5" />
+            )}
+            <span>
+              {status === 'running' ? 'Generating...'
+                : status === 'ready' ? 'Re-generate'
+                  : status === 'error' ? 'Retry'
+                    : 'Generate Figure'}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* Inline figure preview */}
+      {status === 'ready' && previewData && (
+        <div className="mt-3">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-1.5">
+            Figure Preview
+          </div>
+          <div className="w-full bg-white rounded-lg border border-slate-200 overflow-hidden">
+            {previewLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+              </div>
+            ) : (
+              <div ref={plotRef} className="w-full" style={{ minHeight: 180 }} />
+            )}
           </div>
         </div>
       )}

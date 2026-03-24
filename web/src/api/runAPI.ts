@@ -153,3 +153,52 @@ export async function createTrainingRun(name: string): Promise<TrainingRun> {
   };
   return Promise.resolve(run);
 }
+
+/** Create a new evaluation run.
+ *
+ * Attempts to POST to the backend; falls back to a client-side stub if
+ * the endpoint is not available.
+ */
+export async function createEvalRun(
+  trainingRunId: string,
+  name: string,
+  evalParams: Record<string, unknown>,
+): Promise<EvalRun> {
+  try {
+    const response = await fetch('/api/runs/evaluation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        training_run_id: trainingRunId,
+        name,
+        eval_params: evalParams,
+      }),
+    });
+    if (response.ok) {
+      const wire = (await response.json()) as EvalRunWire;
+      return evalRunFromWire(wire);
+    }
+  } catch {
+    // Fall through to stub
+  }
+
+  // Stub fallback — generate a client-side ID
+  return {
+    id: `ev-${Date.now()}`,
+    trainingRunId,
+    name,
+    createdAt: new Date().toISOString(),
+    status: 'running',
+    description: summarizeEvalParams(evalParams),
+  };
+}
+
+/** Build a short human-readable summary from eval params. */
+function summarizeEvalParams(params: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (params.perturbation_type) parts.push(String(params.perturbation_type));
+  if (Array.isArray(params.perturbation_amplitudes) && params.perturbation_amplitudes.length > 0) {
+    parts.push(`amp=[${params.perturbation_amplitudes.join(',')}]`);
+  }
+  return parts.join(', ') || 'Custom evaluation';
+}
