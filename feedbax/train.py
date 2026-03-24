@@ -859,11 +859,7 @@ class TaskTrainer(eqx.Module):
                             return c
                         if p is None:
                             return c
-                        # Convert trial-specific values to the same Python
-                        # types as the State's stored values so that
-                        # State.set()'s jnp.asarray produces matching
-                        # weak-type / dtype.
-                        return _cast_to_state_type(p, c)
+                        return p
 
                     merged = jt.map(
                         _merge_leaf,

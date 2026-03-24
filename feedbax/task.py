@@ -807,14 +807,14 @@ class AbstractTask(Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = indices[label]
                     current = init_state.get(idx)
-                    # Merge only time-invariant leaves into State,
-                    # casting to match State dtypes/weak-types.
+                    # Merge only time-invariant leaves into State.
+                    # _safe_state_set bypasses strict type validation.
                     def _merge_leaf(p, c):
                         if isinstance(p, TimeSeriesParam):
                             return c
                         if p is None:
                             return c
-                        return _cast_to_state_type(p, c)
+                        return p
 
                     merged = jt.map(
                         _merge_leaf,
