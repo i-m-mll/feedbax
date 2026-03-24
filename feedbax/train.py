@@ -821,7 +821,16 @@ class TaskTrainer(eqx.Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = intervention_indices[label]
                     current = state.get(idx)
-                    state = state.set(idx, eqx.combine(params, current))
+                    # Merge trial-specific params into the default state.
+                    # Some params may be time-series (T, ...) while the default
+                    # state has scalar shapes. Use replace_fn to handle both:
+                    # non-None params override; None falls back to current.
+                    merged = jt.map(
+                        lambda p, c: p if p is not None else c,
+                        params, current,
+                        is_leaf=lambda x: x is None,
+                    )
+                    state = state.set(idx, merged)
 
             return model.state_consistency_update(state)
 
