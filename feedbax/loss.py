@@ -82,15 +82,15 @@ class TermTree[T](Mapping[str, "TermTree"]):
     def tree_flatten(self):
         """Flatten for PyTree; only include numeric/JAX parts dynamically."""
         # dynamic leaves (these are mapped by vmap/jit):
-        children = (self.children, self.value, self.weight)
+        children = (self.children, self.value)
         # static metadata (these are carried in aux data, not mapped):
-        aux = (self.label, self.names, self.leaf_fn, self.originator)
+        aux = (self.label, self.names, self.weight, self.leaf_fn, self.originator)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        label, names, leaf_fn, originator = aux_data
-        kids, value, weight = children
+        label, names, weight, leaf_fn, originator = aux_data
+        kids, value = children
         return cls(
             label=label,
             names=names,
