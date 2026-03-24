@@ -1292,9 +1292,13 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional
 
         losses = loss_func(states, trial_specs, model)
 
-        total = losses.total
         if loss_reduction_fn is not None:
-            total = loss_reduction_fn(total)
+            # Compute per-trial total (no mean reduction) for custom aggregation.
+            # aggregate(leaf_fn=identity) gives shape (batch,) per-trial totals.
+            per_trial_total = losses.aggregate(leaf_fn=lambda x: x)
+            total = loss_reduction_fn(per_trial_total)
+        else:
+            total = losses.total  # default: mean over trials
         return total, (losses, states)
 
     return wrapper
