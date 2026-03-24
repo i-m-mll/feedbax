@@ -12,6 +12,7 @@
 import { useCallback } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { AnalysisNodeData } from '@/stores/analysisStore';
+import { useAnalysisStore } from '@/stores/analysisStore';
 import { useDemandStore } from '@/stores/demandStore';
 import { generateFigure } from '@/api/figureAPI';
 import { Play, Loader2, Image } from 'lucide-react';
@@ -39,6 +40,10 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
   const spec = nodeData.spec;
   const isDep = spec.role === 'dependency';
   const canGenerate = !isDep && hasFigureOutputPort(spec.outputPorts);
+
+  // Eval run state — Generate is disabled without an eval run
+  const evalRunId = useAnalysisStore((s) => s.evalRunId);
+  const generateDisabled = canGenerate && !evalRunId;
 
   // Demand store for figure generation
   const status = useDemandStore((s) => s.requests[id]?.status ?? 'idle');
@@ -208,23 +213,27 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              if (status !== 'running') handleGenerate();
+              if (status !== 'running' && !generateDisabled) handleGenerate();
             }}
+            disabled={generateDisabled}
             className={clsx(
               'flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-medium transition-colors w-full justify-center',
-              status === 'running'
-                ? 'bg-blue-50 text-blue-500 cursor-wait'
-                : status === 'ready'
-                  ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                  : status === 'error'
-                    ? 'bg-red-50 text-red-500 hover:bg-red-100'
-                    : 'bg-slate-50 text-slate-600 hover:bg-emerald-50 hover:text-emerald-600'
+              generateDisabled
+                ? 'bg-slate-50 text-slate-300 cursor-not-allowed'
+                : status === 'running'
+                  ? 'bg-blue-50 text-blue-500 cursor-wait'
+                  : status === 'ready'
+                    ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                    : status === 'error'
+                      ? 'bg-red-50 text-red-500 hover:bg-red-100'
+                      : 'bg-slate-50 text-slate-600 hover:bg-emerald-50 hover:text-emerald-600'
             )}
             title={
-              status === 'running' ? 'Generating...'
-                : status === 'ready' ? 'Re-generate figure'
-                  : status === 'error' ? 'Retry generation'
-                    : 'Generate figure'
+              generateDisabled ? 'Select an eval run first'
+                : status === 'running' ? 'Generating...'
+                  : status === 'ready' ? 'Re-generate figure'
+                    : status === 'error' ? 'Retry generation'
+                      : 'Generate figure'
             }
           >
             {status === 'running' ? (
