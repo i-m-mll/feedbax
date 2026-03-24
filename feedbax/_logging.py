@@ -13,7 +13,7 @@ from rich.highlighter import ReprHighlighter
 from rich.logging import RichHandler
 from rich.text import Text
 
-from feedbax._experiments.config import LOGGING, PATHS
+from feedbax.config import LOGGING, PATHS
 from feedbax.types import TreeNamespace
 
 SESSION_START_BANNER = "―" * 20 + " NEW SESSION STARTED " + "―" * 20

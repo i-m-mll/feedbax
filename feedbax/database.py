@@ -68,7 +68,7 @@ from feedbax.hyperparams import (
     load_hps,
     take_train_histories_hps,
 )
-from feedbax._experiments.misc import (
+from feedbax.misc import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
 )

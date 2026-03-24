@@ -11,10 +11,9 @@ import jax_cookbook.tree as jtree
 from jax_cookbook import anyf, is_type, where_attr_strs_to_func
 from jaxtyping import ArrayLike, PyTree
 
-# Still in _experiments for now
-from feedbax._experiments.config import STRINGS, load_config
-from feedbax._experiments.constants import get_iterations_to_save_model_parameters
-from feedbax._experiments.misc import copy_delattr
+from feedbax.config import STRINGS, load_config
+from feedbax.constants import get_iterations_to_save_model_parameters
+from feedbax.misc import copy_delattr
 from feedbax.tree_utils import tree_level_labels
 from feedbax.types import (
     LDict,
