@@ -15,6 +15,7 @@ import type {
   AnalysisGraphSpec,
   AnalysisClassDef,
   TransformSpec,
+  StateFieldPath,
 } from '@/types/analysis';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,9 @@ export interface TransformNodeData extends Record<string, unknown> {
 export interface AnalysisEdgeData extends Record<string, unknown> {
   implicit: boolean;
   transform?: TransformSpec;
+  /** Specific state field path this wire carries (e.g. "states.net.hidden").
+   *  Undefined means the full top-level object. */
+  fieldPath?: StateFieldPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,7 +54,7 @@ const NODE_WIDTH = 200;
 const NODE_HEIGHT = 80;
 const TRANSFORM_NODE_WIDTH = 160;
 const TRANSFORM_NODE_HEIGHT = 50;
-const DATA_SOURCE_NODE_WIDTH = 180;
+const DATA_SOURCE_NODE_WIDTH = 200;
 const DATA_SOURCE_NODE_HEIGHT = 120;
 
 /**
@@ -137,13 +141,14 @@ function buildEdges(wires: AnalysisWire[]): Edge[] {
   return wires.map((wire) => ({
     id: wire.id,
     source: wire.sourceId,
-    sourceHandle: wire.sourcePort,
+    sourceHandle: wire.fieldPath ?? wire.sourcePort,
     target: wire.targetId,
     targetHandle: wire.targetPort,
     type: wire.implicit ? 'analysisImplicit' : 'analysisExplicit',
     data: {
       implicit: wire.implicit,
       transform: wire.transform,
+      fieldPath: wire.fieldPath,
     } satisfies AnalysisEdgeData,
   }));
 }
@@ -299,13 +304,24 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   connectNodes: (connection) => {
     if (!connection.source || !connection.target) return;
     const wireId = genWireId();
+    const handleId = connection.sourceHandle ?? 'out';
+    const isDataSource = connection.source === DATA_SOURCE_ID;
+
+    // Extract field path from the handle ID. DataSourceNode handles use
+    // full dot-paths (e.g. "states.net.hidden"). A handle with dots is a
+    // sub-field; the root segment becomes the sourcePort for compat.
+    const isSubField = isDataSource && handleId.includes('.');
+    const sourcePort = isSubField ? handleId.split('.')[0] : handleId;
+    const fieldPath: StateFieldPath | undefined = isDataSource ? handleId : undefined;
+
     const wire: AnalysisWire = {
       id: wireId,
       sourceId: connection.source,
-      sourcePort: connection.sourceHandle ?? 'out',
+      sourcePort,
       targetId: connection.target,
       targetPort: connection.targetHandle ?? 'in',
-      implicit: connection.source === DATA_SOURCE_ID,
+      implicit: isDataSource,
+      fieldPath,
     };
     const edge: Edge = {
       id: wireId,
@@ -314,7 +330,10 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       target: connection.target,
       targetHandle: connection.targetHandle,
       type: wire.implicit ? 'analysisImplicit' : 'analysisExplicit',
-      data: { implicit: wire.implicit } satisfies AnalysisEdgeData,
+      data: {
+        implicit: wire.implicit,
+        fieldPath: wire.fieldPath,
+      } satisfies AnalysisEdgeData,
     };
 
     set((state) => ({
