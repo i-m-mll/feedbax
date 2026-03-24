@@ -46,6 +46,14 @@ Corollaries that must be respected without exception:
 
 **No-volatility**: Everything the user sees in Studio must survive save/load/refresh cycles. If a UI element displays state, that state must be persisted. There are no exceptions — if it's visible, it's saved.
 
+## Development
+
+### Running Studio
+Studio requires two processes:
+- Frontend: `cd web && npm run dev` (Vite, default port 3008)
+- Backend: `uv run uvicorn feedbax.web.app:app --port 8000` (FastAPI)
+Both must be running for full functionality.
+
 ## Active Feature Context
 
 - `feature/differentiable-mjx`: CDE hidden-state stability experiments (v6→v9b), AnalyticalMusculoskeletalPlant, DiffraxBackend. Latest: hybrid fixed-decay + Anti-NF gate (v9b).
