@@ -276,8 +276,12 @@ class TaskTrainer(eqx.Module):
         model_parameters = get_model_parameters(model, where_train_spec)
 
         if ensembled:
-            # Infer the number of replicates from shape of trainable arrays
-            n_replicates = tree_infer_batch_size(model)
+            # Infer the number of replicates from shape of trainable arrays.
+            # Exclude StateIndex nodes — their init arrays (e.g. disturbance
+            # field params) may not carry the ensemble dimension.
+            from equinox.nn import StateIndex
+            from jax_cookbook import is_type
+            n_replicates = tree_infer_batch_size(model, exclude=is_type(StateIndex))
             init_opt_state = eqx.filter_vmap(self.optimizer.init)
         else:
             # Unlikely to be used for anything, due to ensembled operations being in
