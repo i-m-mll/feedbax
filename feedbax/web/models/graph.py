@@ -155,6 +155,18 @@ class GraphUIState(BaseModel):
     tap_states: Optional[Dict[str, TapUIState]] = None
 
 
+class AnalysisPageSpec(BaseModel):
+    """Specification for a single analysis page within a project."""
+
+    id: str
+    name: str
+    graph_spec: Dict[str, Any] = Field(default_factory=dict)
+    eval_params: Dict[str, Any] = Field(default_factory=dict)
+    viewport: Dict[str, float] = Field(
+        default_factory=lambda: {"x": 0, "y": 0, "zoom": 1}
+    )
+
+
 class GraphProject(BaseModel):
     """A complete graph project with metadata and UI state."""
 
@@ -162,6 +174,7 @@ class GraphProject(BaseModel):
     graph: GraphSpec
     ui_state: Optional[GraphUIState] = None
     demo_training_data: Optional[Any] = None
+    analysis_pages: Optional[List[AnalysisPageSpec]] = None
 
 
 class ValidationError(BaseModel):

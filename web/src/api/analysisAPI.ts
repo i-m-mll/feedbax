@@ -8,9 +8,47 @@
 
 import type {
   AnalysisGraphSpec,
+  AnalysisPageSpec,
   AnalysisPackage,
   AnalysisClassDef,
+  AnalysisSnapshot,
 } from '@/types/analysis';
+import { updateGraph } from '@/api/client';
+
+// ---------------------------------------------------------------------------
+// Wire format conversion — backend uses snake_case, frontend uses camelCase
+// ---------------------------------------------------------------------------
+
+/** Backend wire format for an analysis page. */
+interface AnalysisPageWire {
+  id: string;
+  name: string;
+  graph_spec: Record<string, unknown>;
+  eval_params: Record<string, unknown>;
+  viewport: { x: number; y: number; zoom: number };
+}
+
+/** Convert a backend wire-format page to the frontend camelCase type. */
+function pageFromWire(wire: AnalysisPageWire): AnalysisPageSpec {
+  return {
+    id: wire.id,
+    name: wire.name,
+    graphSpec: wire.graph_spec as unknown as AnalysisGraphSpec,
+    evalParams: wire.eval_params,
+    viewport: wire.viewport,
+  };
+}
+
+/** Convert a frontend camelCase page to the backend wire format. */
+function pageToWire(page: AnalysisPageSpec): AnalysisPageWire {
+  return {
+    id: page.id,
+    name: page.name,
+    graph_spec: page.graphSpec as unknown as Record<string, unknown>,
+    eval_params: page.evalParams,
+    viewport: page.viewport,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Stub data — used when the backend is not available
@@ -162,6 +200,8 @@ export async function fetchAnalysisClasses(): Promise<AnalysisClassDef[]> {
 /**
  * Fetch the current analysis graph for a project/graph.
  * Returns null if no analysis graph exists yet.
+ *
+ * @deprecated Use fetchAnalysisPages instead for multi-page support.
  */
 export async function fetchAnalysisGraph(
   graphId: string
@@ -171,6 +211,8 @@ export async function fetchAnalysisGraph(
 
 /**
  * Save the analysis graph for a project/graph.
+ *
+ * @deprecated Use saveAnalysisPages instead for multi-page support.
  */
 export async function saveAnalysisGraph(
   graphId: string,
@@ -183,6 +225,48 @@ export async function saveAnalysisGraph(
       body: JSON.stringify(spec),
     });
     return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetch analysis pages for a project from the graph endpoint.
+ * Returns null if no analysis pages exist yet.
+ */
+export async function fetchAnalysisPages(
+  graphId: string
+): Promise<AnalysisSnapshot | null> {
+  try {
+    const response = await fetch(`/api/graphs/${graphId}`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const wirePages = data.analysis_pages as AnalysisPageWire[] | null;
+    if (!wirePages || wirePages.length === 0) return null;
+    const pages = wirePages.map(pageFromWire);
+    return {
+      pages,
+      activePageId: pages[0].id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save analysis pages for a project via the graph update endpoint.
+ * Sends only the analysis_pages field (graph/ui_state are omitted).
+ */
+export async function saveAnalysisPages(
+  graphId: string,
+  snapshot: AnalysisSnapshot,
+): Promise<boolean> {
+  try {
+    const wirePages = snapshot.pages.map(pageToWire);
+    await updateGraph(graphId, null, null, wirePages);
+    return true;
   } catch {
     return false;
   }

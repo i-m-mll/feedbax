@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Optional
 
-from feedbax.web.models.graph import GraphSpec, GraphUIState
+from feedbax.web.models.graph import AnalysisPageSpec, GraphSpec, GraphUIState
 from feedbax.web.services.graph_service import GraphService
 
 router = APIRouter()
@@ -18,6 +18,7 @@ class GraphCreateRequest(BaseModel):
 class GraphUpdateRequest(BaseModel):
     graph: Optional[GraphSpec] = None
     ui_state: Optional[GraphUIState] = None
+    analysis_pages: Optional[list[AnalysisPageSpec]] = None
 
 
 @router.get('')
@@ -44,13 +45,16 @@ async def get_graph(graph_id: str, response: Response):
         'ui_state': record.project.ui_state,
         'demo_training_data': record.project.demo_training_data,
         'metadata': record.project.metadata,
+        'analysis_pages': record.project.analysis_pages,
     }
 
 
 @router.put('/{graph_id}')
 async def update_graph(graph_id: str, payload: GraphUpdateRequest):
     try:
-        service.update_graph(graph_id, payload.graph, payload.ui_state)
+        service.update_graph(
+            graph_id, payload.graph, payload.ui_state, payload.analysis_pages
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
     return {'success': True}
@@ -60,7 +64,9 @@ async def update_graph(graph_id: str, payload: GraphUpdateRequest):
 async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
     """sendBeacon endpoint for pagehide saves; returns 204 No Content."""
     try:
-        service.update_graph(graph_id, payload.graph, payload.ui_state)
+        service.update_graph(
+            graph_id, payload.graph, payload.ui_state, payload.analysis_pages
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
     return Response(status_code=204)

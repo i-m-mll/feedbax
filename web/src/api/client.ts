@@ -1,5 +1,7 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+// Note: analysis_pages in the API uses snake_case wire format (graph_spec, eval_params).
+// See analysisAPI.ts for the conversion to camelCase AnalysisPageSpec.
 import type {
   LossTermSpec,
   ProbeInfo,
@@ -60,6 +62,13 @@ export async function fetchGraph(graphId: string) {
     ui_state: GraphUIState | null;
     demo_training_data: DemoTrainingData | null;
     metadata: { name: string; description?: string; created_at?: string; updated_at?: string } | null;
+    analysis_pages: Array<{
+      id: string;
+      name: string;
+      graph_spec: Record<string, unknown>;
+      eval_params: Record<string, unknown>;
+      viewport: { x: number; y: number; zoom: number };
+    }> | null;
   }>(`/api/graphs/${graphId}`);
 }
 
@@ -70,10 +79,19 @@ export async function createGraph(graph: GraphSpec, uiState: GraphUIState | null
   });
 }
 
-export async function updateGraph(graphId: string, graph: GraphSpec, uiState: GraphUIState | null) {
+export async function updateGraph(
+  graphId: string,
+  graph: GraphSpec | null,
+  uiState: GraphUIState | null,
+  analysisPages?: unknown[] | null,
+) {
+  const payload: Record<string, unknown> = {};
+  if (graph !== null && graph !== undefined) payload.graph = graph;
+  if (uiState !== null && uiState !== undefined) payload.ui_state = uiState;
+  if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
   return request<{ success: boolean }>(`/api/graphs/${graphId}`, {
     method: 'PUT',
-    body: JSON.stringify({ graph, ui_state: uiState }),
+    body: JSON.stringify(payload),
   });
 }
 

@@ -15,6 +15,10 @@ import type {
   AnalysisGraphSpec,
   AnalysisClassDef,
   TransformSpec,
+  AnalysisViewport,
+  EvalParametrization,
+  AnalysisPageSpec,
+  AnalysisSnapshot,
 } from '@/types/analysis';
 
 // ---------------------------------------------------------------------------
@@ -149,11 +153,29 @@ function buildEdges(wires: AnalysisWire[]): Edge[] {
 }
 
 // ---------------------------------------------------------------------------
-// Store
+// Helpers
+// ---------------------------------------------------------------------------
+
+const DATA_SOURCE_ID = '__data_source__';
+const DEFAULT_VIEWPORT: AnalysisViewport = { x: 0, y: 0, zoom: 1 };
+
+function makeBlankGraphSpec(): AnalysisGraphSpec {
+  return { nodes: {}, wires: [], dataSourceId: DATA_SOURCE_ID };
+}
+
+function generatePageId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `page-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Store interface
 // ---------------------------------------------------------------------------
 
 interface AnalysisStoreState {
-  // Graph spec
+  // Graph spec (active page's graph loaded into React Flow)
   graphSpec: AnalysisGraphSpec | null;
 
   // React Flow state
@@ -169,7 +191,13 @@ interface AnalysisStoreState {
   // Available analysis classes (from palette)
   analysisClasses: AnalysisClassDef[];
 
-  // Actions
+  // Multi-page state
+  pages: AnalysisPageSpec[];
+  activePageId: string | null;
+  viewport: AnalysisViewport;
+  evalParams: EvalParametrization;
+
+  // Actions — existing
   setAnalysisClasses: (classes: AnalysisClassDef[]) => void;
   loadGraph: (spec: AnalysisGraphSpec) => void;
   setSelectedNode: (id: string | null) => void;
@@ -180,9 +208,19 @@ interface AnalysisStoreState {
   updateNodeParams: (id: string, params: Record<string, unknown>) => void;
   addTransformToEdge: (edgeId: string, transformType: string) => void;
   removeTransformFromEdge: (edgeId: string) => void;
+
+  // Actions — multi-page
+  addPage: (name: string) => void;
+  removePage: (id: string) => void;
+  renamePage: (id: string, name: string) => void;
+  switchPage: (id: string) => void;
+  setViewport: (viewport: AnalysisViewport) => void;
+  setEvalParams: (params: EvalParametrization) => void;
+  captureSnapshot: () => AnalysisSnapshot;
+  restoreSnapshot: (snapshot: AnalysisSnapshot) => void;
+  resetAnalysis: () => void;
 }
 
-const DATA_SOURCE_ID = '__data_source__';
 const DATA_SOURCE_OUTPUTS = ['states', 'inputs', 'outputs', 'targets', 'metadata'];
 
 let nextNodeId = 1;
@@ -195,6 +233,36 @@ function genWireId(): string {
   return `wire_${nextWireId++}`;
 }
 
+/**
+ * Capture the active page's current state as an AnalysisPageSpec.
+ * Returns null if there is no active page.
+ */
+function captureActivePage(state: AnalysisStoreState): AnalysisPageSpec | null {
+  if (!state.activePageId) return null;
+  return {
+    id: state.activePageId,
+    name: state.pages.find((p) => p.id === state.activePageId)?.name ?? 'Untitled',
+    graphSpec: state.graphSpec ?? makeBlankGraphSpec(),
+    evalParams: { ...state.evalParams },
+    viewport: { ...state.viewport },
+  };
+}
+
+/**
+ * Merge the captured active page back into the pages array.
+ */
+function mergeActivePageIntoPages(
+  pages: AnalysisPageSpec[],
+  activePage: AnalysisPageSpec | null,
+): AnalysisPageSpec[] {
+  if (!activePage) return pages;
+  const exists = pages.some((p) => p.id === activePage.id);
+  if (exists) {
+    return pages.map((p) => (p.id === activePage.id ? activePage : p));
+  }
+  return [...pages, activePage];
+}
+
 export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   graphSpec: null,
   nodes: [],
@@ -202,6 +270,10 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   selectedNodeId: null,
   selectedTransformId: null,
   analysisClasses: [],
+  pages: [],
+  activePageId: null,
+  viewport: { ...DEFAULT_VIEWPORT },
+  evalParams: {},
 
   onNodesChange: (changes) => {
     set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
@@ -464,6 +536,277 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       graphSpec: state.graphSpec
         ? { ...state.graphSpec, wires: updatedWires ?? state.graphSpec.wires }
         : null,
+    });
+  },
+
+  // -----------------------------------------------------------------------
+  // Multi-page actions
+  // -----------------------------------------------------------------------
+
+  addPage: (name) => {
+    const state = get();
+    const newId = generatePageId();
+    const blankSpec = makeBlankGraphSpec();
+
+    // Capture current active page before switching
+    const activePage = captureActivePage(state);
+    const updatedPages = mergeActivePageIntoPages(state.pages, activePage);
+
+    // Create the new page spec
+    const newPage: AnalysisPageSpec = {
+      id: newId,
+      name,
+      graphSpec: blankSpec,
+      evalParams: {},
+      viewport: { ...DEFAULT_VIEWPORT },
+    };
+
+    // Load the blank graph into React Flow
+    set({
+      pages: [...updatedPages, newPage],
+      activePageId: newId,
+      graphSpec: blankSpec,
+      nodes: layoutNodes(blankSpec.nodes, [], blankSpec.dataSourceId, DATA_SOURCE_OUTPUTS),
+      edges: [],
+      viewport: { ...DEFAULT_VIEWPORT },
+      evalParams: {},
+      selectedNodeId: null,
+      selectedTransformId: null,
+    });
+  },
+
+  removePage: (id) => {
+    const state = get();
+    if (state.pages.length <= 1 && state.activePageId === id) {
+      // Last page — reset to empty state
+      set({
+        pages: [],
+        activePageId: null,
+        graphSpec: null,
+        nodes: [],
+        edges: [],
+        viewport: { ...DEFAULT_VIEWPORT },
+        evalParams: {},
+        selectedNodeId: null,
+        selectedTransformId: null,
+      });
+      return;
+    }
+
+    const filteredPages = state.pages.filter((p) => p.id !== id);
+
+    if (state.activePageId === id) {
+      // Switch to adjacent page
+      const idx = state.pages.findIndex((p) => p.id === id);
+      const nextIdx = idx > 0 ? idx - 1 : 0;
+      const target = filteredPages[nextIdx];
+
+      if (target) {
+        // Load target page into React Flow
+        const spec = target.graphSpec;
+        const transformNodes: Array<{ id: string; transform: TransformSpec }> = [];
+        const expandedWires: AnalysisWire[] = [];
+        for (const wire of spec.wires) {
+          if (wire.transform) {
+            const tId = wire.transform.id;
+            transformNodes.push({ id: tId, transform: wire.transform });
+            expandedWires.push({
+              ...wire,
+              id: `${wire.id}__to_transform`,
+              targetId: tId,
+              targetPort: 'in',
+              transform: undefined,
+            });
+            expandedWires.push({
+              id: `${wire.id}__from_transform`,
+              sourceId: tId,
+              sourcePort: 'out',
+              targetId: wire.targetId,
+              targetPort: wire.targetPort,
+              implicit: wire.implicit,
+            });
+          } else {
+            expandedWires.push(wire);
+          }
+        }
+        set({
+          pages: filteredPages,
+          activePageId: target.id,
+          graphSpec: spec,
+          nodes: layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes),
+          edges: buildEdges(expandedWires),
+          viewport: { ...target.viewport },
+          evalParams: { ...target.evalParams },
+          selectedNodeId: null,
+          selectedTransformId: null,
+        });
+      } else {
+        set({
+          pages: filteredPages,
+          activePageId: null,
+          graphSpec: null,
+          nodes: [],
+          edges: [],
+          viewport: { ...DEFAULT_VIEWPORT },
+          evalParams: {},
+          selectedNodeId: null,
+          selectedTransformId: null,
+        });
+      }
+    } else {
+      set({ pages: filteredPages });
+    }
+  },
+
+  renamePage: (id, name) => {
+    set((state) => ({
+      pages: state.pages.map((p) => (p.id === id ? { ...p, name } : p)),
+    }));
+  },
+
+  switchPage: (id) => {
+    const state = get();
+    if (id === state.activePageId) return;
+
+    const target = state.pages.find((p) => p.id === id);
+    if (!target) return;
+
+    // Capture current active page state
+    const activePage = captureActivePage(state);
+    const updatedPages = mergeActivePageIntoPages(state.pages, activePage);
+
+    // Load target page into React Flow
+    const spec = target.graphSpec;
+    const transformNodes: Array<{ id: string; transform: TransformSpec }> = [];
+    const expandedWires: AnalysisWire[] = [];
+    for (const wire of spec.wires) {
+      if (wire.transform) {
+        const tId = wire.transform.id;
+        transformNodes.push({ id: tId, transform: wire.transform });
+        expandedWires.push({
+          ...wire,
+          id: `${wire.id}__to_transform`,
+          targetId: tId,
+          targetPort: 'in',
+          transform: undefined,
+        });
+        expandedWires.push({
+          id: `${wire.id}__from_transform`,
+          sourceId: tId,
+          sourcePort: 'out',
+          targetId: wire.targetId,
+          targetPort: wire.targetPort,
+          implicit: wire.implicit,
+        });
+      } else {
+        expandedWires.push(wire);
+      }
+    }
+
+    set({
+      pages: updatedPages,
+      activePageId: id,
+      graphSpec: spec,
+      nodes: layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes),
+      edges: buildEdges(expandedWires),
+      viewport: { ...target.viewport },
+      evalParams: { ...target.evalParams },
+      selectedNodeId: null,
+      selectedTransformId: null,
+    });
+  },
+
+  setViewport: (viewport) => {
+    set({ viewport });
+  },
+
+  setEvalParams: (params) => {
+    set({ evalParams: params });
+  },
+
+  captureSnapshot: () => {
+    const state = get();
+    // Merge current active page state into pages
+    const activePage = captureActivePage(state);
+    const pages = mergeActivePageIntoPages(state.pages, activePage);
+    return {
+      pages,
+      activePageId: state.activePageId,
+    };
+  },
+
+  restoreSnapshot: (snapshot) => {
+    const { pages, activePageId } = snapshot;
+
+    if (!activePageId || pages.length === 0) {
+      set({
+        pages,
+        activePageId: null,
+        graphSpec: null,
+        nodes: [],
+        edges: [],
+        viewport: { ...DEFAULT_VIEWPORT },
+        evalParams: {},
+        selectedNodeId: null,
+        selectedTransformId: null,
+      });
+      return;
+    }
+
+    const activePage = pages.find((p) => p.id === activePageId) ?? pages[0];
+    const spec = activePage.graphSpec;
+
+    // Expand wires for transform nodes
+    const transformNodes: Array<{ id: string; transform: TransformSpec }> = [];
+    const expandedWires: AnalysisWire[] = [];
+    for (const wire of spec.wires) {
+      if (wire.transform) {
+        const tId = wire.transform.id;
+        transformNodes.push({ id: tId, transform: wire.transform });
+        expandedWires.push({
+          ...wire,
+          id: `${wire.id}__to_transform`,
+          targetId: tId,
+          targetPort: 'in',
+          transform: undefined,
+        });
+        expandedWires.push({
+          id: `${wire.id}__from_transform`,
+          sourceId: tId,
+          sourcePort: 'out',
+          targetId: wire.targetId,
+          targetPort: wire.targetPort,
+          implicit: wire.implicit,
+        });
+      } else {
+        expandedWires.push(wire);
+      }
+    }
+
+    set({
+      pages,
+      activePageId: activePage.id,
+      graphSpec: spec,
+      nodes: layoutNodes(spec.nodes, expandedWires, spec.dataSourceId, DATA_SOURCE_OUTPUTS, transformNodes),
+      edges: buildEdges(expandedWires),
+      viewport: { ...activePage.viewport },
+      evalParams: { ...activePage.evalParams },
+      selectedNodeId: null,
+      selectedTransformId: null,
+    });
+  },
+
+  resetAnalysis: () => {
+    set({
+      pages: [],
+      activePageId: null,
+      graphSpec: null,
+      nodes: [],
+      edges: [],
+      viewport: { ...DEFAULT_VIEWPORT },
+      evalParams: {},
+      selectedNodeId: null,
+      selectedTransformId: null,
     });
   },
 }));

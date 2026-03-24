@@ -3,8 +3,10 @@ import { useGraphStore, createInitialGraph, createBlankGraph, type GraphSnapshot
 import { useTrainingStore, defaultTrainingSpec, defaultTaskSpec } from '@/stores/trainingStore';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { useStatisticsStore } from '@/stores/statisticsStore';
+import { useAnalysisStore } from '@/stores/analysisStore';
 import type { TrainingSpec, TaskSpec, LossValidationError } from '@/types/training';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
+import type { AnalysisSnapshot } from '@/types/analysis';
 
 export interface TrainingSnapshot {
   trainingSpec: TrainingSpec;
@@ -19,6 +21,7 @@ export interface OpenTab {
   label: string;
   graphSnapshot: GraphSnapshot;
   trainingSnapshot: TrainingSnapshot;
+  analysisSnapshot: AnalysisSnapshot | null;
 }
 
 function captureGraphSnapshot(): GraphSnapshot {
@@ -139,11 +142,27 @@ function resetStatisticsStoreForTabSwitch() {
   });
 }
 
+function captureAnalysisSnapshot(): AnalysisSnapshot {
+  return useAnalysisStore.getState().captureSnapshot();
+}
+
+function restoreAnalysisSnapshot(snapshot: AnalysisSnapshot | null) {
+  if (snapshot) {
+    useAnalysisStore.getState().restoreSnapshot(snapshot);
+  } else {
+    useAnalysisStore.getState().resetAnalysis();
+  }
+}
+
+function makeInitialAnalysisSnapshot(): AnalysisSnapshot {
+  return { pages: [], activePageId: null };
+}
+
 interface ProjectsStoreState {
   tabs: OpenTab[];
   activeTabId: string;
   openNewTab: (name: string) => void;
-  openProjectInTab: (graphId: string, graph: GraphSpec, uiState: GraphUIState, projectName?: string) => void;
+  openProjectInTab: (graphId: string, graph: GraphSpec, uiState: GraphUIState, projectName?: string, analysisSnapshot?: AnalysisSnapshot | null) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   updateActiveTabLabel: (label: string) => void;
@@ -157,6 +176,7 @@ function buildInitialTab(): OpenTab {
     label: graphSnapshot.currentGraphLabel || 'Model',
     graphSnapshot,
     trainingSnapshot: captureTrainingSnapshot(),
+    analysisSnapshot: captureAnalysisSnapshot(),
   };
 }
 
@@ -177,6 +197,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
               label: useGraphStore.getState().currentGraphLabel || 'Model',
               graphSnapshot: captureGraphSnapshot(),
               trainingSnapshot: captureTrainingSnapshot(),
+              analysisSnapshot: captureAnalysisSnapshot(),
             }
           : tab
       );
@@ -184,11 +205,13 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       // Create a blank snapshot for the new tab
       const newGraphSnapshot = makeBlankGraphSnapshot(name);
       const newTrainingSnapshot = makeInitialTrainingSnapshot();
+      const newAnalysisSnapshot = makeInitialAnalysisSnapshot();
       const newTab: OpenTab = {
         tabId: generateTabId(),
         label: name,
         graphSnapshot: newGraphSnapshot,
         trainingSnapshot: newTrainingSnapshot,
+        analysisSnapshot: newAnalysisSnapshot,
       };
 
       // Restore the new tab's state into stores
@@ -200,13 +223,14 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         lossValidationErrors: newTrainingSnapshot.lossValidationErrors,
         highlightedProbeSelector: newTrainingSnapshot.highlightedProbeSelector,
       });
+      restoreAnalysisSnapshot(newAnalysisSnapshot);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
       set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
     },
 
-    openProjectInTab: (graphId, graph, uiState, projectName) => {
+    openProjectInTab: (graphId, graph, uiState, projectName, analysisSnapshot) => {
       const { tabs, activeTabId } = get();
       const updatedTabs = tabs.map((tab) =>
         tab.tabId === activeTabId
@@ -215,6 +239,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
               label: useGraphStore.getState().currentGraphLabel || 'Model',
               graphSnapshot: captureGraphSnapshot(),
               trainingSnapshot: captureTrainingSnapshot(),
+              analysisSnapshot: captureAnalysisSnapshot(),
             }
           : tab
       );
@@ -236,11 +261,13 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         pendingStateMerge: null,
       };
       const trainingSnapshot = makeInitialTrainingSnapshot();
+      const restoredAnalysis = analysisSnapshot ?? makeInitialAnalysisSnapshot();
       const newTab: OpenTab = {
         tabId: generateTabId(),
         label: graphSnapshot.currentGraphLabel,
         graphSnapshot,
         trainingSnapshot,
+        analysisSnapshot: restoredAnalysis,
       };
 
       // Restore the new project into stores
@@ -252,6 +279,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         lossValidationErrors: trainingSnapshot.lossValidationErrors,
         highlightedProbeSelector: trainingSnapshot.highlightedProbeSelector,
       });
+      restoreAnalysisSnapshot(restoredAnalysis);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
@@ -272,6 +300,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
               label: useGraphStore.getState().currentGraphLabel || 'Model',
               graphSnapshot: captureGraphSnapshot(),
               trainingSnapshot: captureTrainingSnapshot(),
+              analysisSnapshot: captureAnalysisSnapshot(),
             }
           : tab
       );
@@ -285,6 +314,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         lossValidationErrors: target.trainingSnapshot.lossValidationErrors,
         highlightedProbeSelector: target.trainingSnapshot.highlightedProbeSelector,
       });
+      restoreAnalysisSnapshot(target.analysisSnapshot);
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
@@ -314,6 +344,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
           lossValidationErrors: nextTab.trainingSnapshot.lossValidationErrors,
           highlightedProbeSelector: nextTab.trainingSnapshot.highlightedProbeSelector,
         });
+        restoreAnalysisSnapshot(nextTab.analysisSnapshot);
         resetTrajectoryStoreForTabSwitch();
         resetStatisticsStoreForTabSwitch();
 

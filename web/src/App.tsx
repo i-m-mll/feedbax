@@ -7,6 +7,7 @@ import { BottomShelf } from '@/components/layout/BottomShelf';
 import { Divider } from '@/components/layout/Divider';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
 import { useGraphStore } from '@/stores/graphStore';
+import { useAnalysisStore } from '@/stores/analysisStore';
 import { updateGraph } from '@/api/client';
 import {
   useLayoutStore,
@@ -18,6 +19,19 @@ import {
 } from '@/stores/layoutStore';
 
 const AUTO_SAVE_DELAY_MS = 800;
+
+/** Convert analysis snapshot into the snake_case wire format the backend expects. */
+function getAnalysisPagesForSave(): Array<Record<string, unknown>> | null {
+  const snapshot = useAnalysisStore.getState().captureSnapshot();
+  if (snapshot.pages.length === 0) return null;
+  return snapshot.pages.map((page) => ({
+    id: page.id,
+    name: page.name,
+    graph_spec: page.graphSpec,
+    eval_params: page.evalParams,
+    viewport: page.viewport,
+  }));
+}
 
 export default function App() {
   useAppShortcuts();
@@ -41,8 +55,9 @@ export default function App() {
       if (savingRef.current) return;
       savingRef.current = true;
       const { graph, uiState, markSaved } = useGraphStore.getState();
+      const analysisPages = getAnalysisPagesForSave();
       try {
-        await updateGraph(graphId, graph, uiState);
+        await updateGraph(graphId, graph, uiState, analysisPages);
         markSaved(graphId);
       } catch (e) {
         toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
@@ -71,13 +86,19 @@ export default function App() {
       // Saving the current (subgraph) view to the top-level ID would corrupt the project.
       const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
       const rootUiState = graphStack.length > 0 ? graphStack[0].uiState : uiState;
+      const analysisPages = getAnalysisPagesForSave();
       // Cancel pending debounce timer
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
       }
+      const beaconPayload: Record<string, unknown> = {
+        graph: rootGraph,
+        ui_state: rootUiState,
+      };
+      if (analysisPages) beaconPayload.analysis_pages = analysisPages;
       const body = new Blob(
-        [JSON.stringify({ graph: rootGraph, ui_state: rootUiState })],
+        [JSON.stringify(beaconPayload)],
         { type: 'application/json' }
       );
       const sent = navigator.sendBeacon(`/api/graphs/${gid}/beacon`, body);
@@ -86,7 +107,7 @@ export default function App() {
         fetch(`/api/graphs/${gid}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ graph: rootGraph, ui_state: rootUiState }),
+          body: JSON.stringify(beaconPayload),
           keepalive: true,
         }).catch(() => {});
       }

@@ -13,6 +13,7 @@ import { useGraphStore } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
+import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
 
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -70,10 +71,22 @@ export function Header() {
   const handleOpen = async (id: string) => {
     try {
       const data = await fetchGraph(id);
+      // Build analysis snapshot from persisted pages (convert snake_case wire format)
+      let analysisSnapshot: AnalysisSnapshot | null = null;
+      if (data.analysis_pages && data.analysis_pages.length > 0) {
+        const pages = data.analysis_pages.map((wp) => ({
+          id: wp.id,
+          name: wp.name,
+          graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
+          evalParams: wp.eval_params as Record<string, unknown>,
+          viewport: wp.viewport,
+        }));
+        analysisSnapshot = { pages, activePageId: pages[0].id };
+      }
       openProjectInTab(id, data.graph, data.ui_state ?? {
         viewport: { x: 0, y: 0, zoom: 1 },
         node_states: {},
-      }, data.metadata?.name ?? undefined);
+      }, data.metadata?.name ?? undefined, analysisSnapshot);
       if (data.demo_training_data) {
         const demo = data.demo_training_data;
         const totalBatches = demo.loss_history.length;

@@ -110,6 +110,48 @@ export interface AnalysisNodeMeta {
   analysis_class: string;
 }
 
+// ---------------------------------------------------------------------------
+// Multi-page analysis persistence types
+// ---------------------------------------------------------------------------
+
+/** Viewport state for an analysis canvas page. */
+export interface AnalysisViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/** Extensible evaluation parametrization for an analysis page. */
+export interface EvalParametrization {
+  [key: string]: unknown;
+}
+
+/** Persisted specification for a single analysis page (tab within analysis). */
+export interface AnalysisPageSpec {
+  /** Unique page ID. */
+  id: string;
+  /** User-facing page name. */
+  name: string;
+  /** The analysis DAG graph for this page. */
+  graphSpec: AnalysisGraphSpec;
+  /** Evaluation parameters for this page. */
+  evalParams: EvalParametrization;
+  /** Viewport position/zoom for this page. */
+  viewport: AnalysisViewport;
+}
+
+/** Snapshot of all analysis state — used by projectsStore for tab switching. */
+export interface AnalysisSnapshot {
+  /** All analysis pages. */
+  pages: AnalysisPageSpec[];
+  /** Which page is currently active (loaded into React Flow). */
+  activePageId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Figure request types
+// ---------------------------------------------------------------------------
+
 /** Status of a demand-driven figure generation request. */
 export type FigureRequestStatus = 'idle' | 'running' | 'ready' | 'error';
 
