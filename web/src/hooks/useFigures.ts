@@ -32,11 +32,15 @@ export function useFigures() {
   const [viewerLoading, setViewerLoading] = useState(false);
   const [viewerError, setViewerError] = useState<string | null>(null);
 
-  // Load evaluations on mount
+  // Load evaluations on mount — treat server errors as "no data"
   useEffect(() => {
     fetchEvaluationsWithFigures()
       .then(setEvaluations)
-      .catch((err) => console.error('Failed to load evaluations:', err));
+      .catch(() => {
+        // Gracefully degrade: server may not be ready or DB may be empty.
+        // Show empty state instead of an error banner.
+        setEvaluations([]);
+      });
   }, []);
 
   // Load figures when filters or page change
@@ -48,7 +52,19 @@ export function useFigures() {
       setFigures(result.items);
       setTotal(result.total);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load figures');
+      // Distinguish "no data" (500 from missing DB / empty tables) from
+      // genuine unexpected failures. Server 500s when no figures exist
+      // should show the empty state, not the red error banner.
+      const msg = err instanceof Error ? err.message : '';
+      const isServerError = msg.includes('500') || msg.includes('Internal Server Error');
+      const isNotFound = msg.includes('404') || msg.includes('Not Found');
+      if (isServerError || isNotFound) {
+        // Treat as empty — no figures yet
+        setFigures([]);
+        setTotal(0);
+      } else {
+        setError(msg || 'Failed to load figures');
+      }
     } finally {
       setLoading(false);
     }

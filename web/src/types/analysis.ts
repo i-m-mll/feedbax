@@ -283,6 +283,8 @@ export interface FigureRequest {
   nodeId: string;
   status: FigureRequestStatus;
   figureHash?: string;
+  /** All figure hashes produced by this generation request. */
+  figureHashes?: string[];
   error?: string;
   requestedAt?: number;
   completedAt?: number;

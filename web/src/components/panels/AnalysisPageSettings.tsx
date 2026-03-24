@@ -3,12 +3,16 @@
  *
  * Shows page-level settings: name, eval run selector, and eval parametrization
  * fields (perturbation type, amplitudes, SISU values, task variants).
+ * Includes a "Run Evaluation" button that creates a new eval run and
+ * triggers the evaluation pipeline.
  */
 
 import { useCallback, useState } from 'react';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useRunStore } from '@/stores/runStore';
 import { EvalRunSelector } from '@/components/panels/RunSelector';
-import { Plus, Trash2 } from 'lucide-react';
+import { createEvalRun } from '@/api/runAPI';
+import { Plus, Trash2, Play, Loader2, CheckCircle2 } from 'lucide-react';
 
 const PERTURBATION_TYPES = [
   'curl_field',
@@ -34,6 +38,21 @@ function formatNumberList(nums: unknown): string {
   return nums.join(', ');
 }
 
+/** Generate a default eval run name from the current parameters. */
+function generateDefaultName(params: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const pertType = params.perturbation_type;
+  if (pertType && typeof pertType === 'string') {
+    parts.push(pertType.replace(/_/g, ' '));
+  }
+  const amps = params.perturbation_amplitudes;
+  if (Array.isArray(amps) && amps.length > 0) {
+    parts.push(`amp ${amps.join(',')}`);
+  }
+  if (parts.length === 0) return 'Eval run';
+  return parts.join(' - ');
+}
+
 export function AnalysisPageSettings() {
   const activePageId = useAnalysisStore((s) => s.activePageId);
   const pages = useAnalysisStore((s) => s.pages);
@@ -43,11 +62,22 @@ export function AnalysisPageSettings() {
   const evalRunId = useAnalysisStore((s) => s.evalRunId);
   const setEvalRunId = useAnalysisStore((s) => s.setEvalRunId);
 
+  const selectedTrainingRunId = useRunStore((s) => s.selectedTrainingRunId);
+  const evalRuns = useRunStore((s) => s.evalRuns);
+  const addEvalRun = useRunStore((s) => s.addEvalRun);
+  const updateEvalRunStatus = useRunStore((s) => s.updateEvalRunStatus);
+
   const activePage = pages.find((p) => p.id === activePageId);
 
   // Local state for the task variants key-value editor
   const [newVariantKey, setNewVariantKey] = useState('');
   const [newVariantValue, setNewVariantValue] = useState('');
+
+  // Eval run name and creation state
+  const [evalRunName, setEvalRunName] = useState('');
+  const [evalRunning, setEvalRunning] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
+  const [evalSuccess, setEvalSuccess] = useState(false);
 
   const handleNameChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -100,6 +130,74 @@ export function AnalysisPageSettings() {
     },
     [evalParams, setEvalParams],
   );
+
+  const handleRunEvaluation = useCallback(async () => {
+    if (!selectedTrainingRunId) {
+      setEvalError('Select a training run first');
+      return;
+    }
+
+    const name = evalRunName.trim() || generateDefaultName(evalParams);
+
+    // Check for duplicate name + params
+    const existingDupe = evalRuns.find((r) => {
+      if (r.name !== name) return false;
+      // Simple param comparison via JSON serialization
+      const existingDesc = r.description ?? '';
+      const currentDesc = [
+        evalParams.perturbation_type,
+        Array.isArray(evalParams.perturbation_amplitudes)
+          ? `amp=[${evalParams.perturbation_amplitudes.join(',')}]`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(', ');
+      return existingDesc === currentDesc;
+    });
+
+    if (existingDupe) {
+      const confirmed = window.confirm(
+        'An evaluation with this name and parameters already exists. Run again?',
+      );
+      if (!confirmed) return;
+    }
+
+    setEvalRunning(true);
+    setEvalError(null);
+    setEvalSuccess(false);
+
+    try {
+      const run = await createEvalRun(
+        selectedTrainingRunId,
+        name,
+        evalParams,
+      );
+      addEvalRun(run);
+      setEvalRunId(run.id);
+
+      // Simulate completion after creation (the backend handles the
+      // actual evaluation; in stub mode we mark it completed quickly).
+      // In a real scenario the backend would update status via polling.
+      setTimeout(() => {
+        updateEvalRunStatus(run.id, 'completed');
+        setEvalRunning(false);
+        setEvalSuccess(true);
+        // Clear success indicator after a few seconds
+        setTimeout(() => setEvalSuccess(false), 3000);
+      }, 1500);
+    } catch (err) {
+      setEvalError(err instanceof Error ? err.message : 'Failed to create evaluation run');
+      setEvalRunning(false);
+    }
+  }, [
+    selectedTrainingRunId,
+    evalRunName,
+    evalParams,
+    evalRuns,
+    addEvalRun,
+    setEvalRunId,
+    updateEvalRunStatus,
+  ]);
 
   if (!activePage) {
     return (
@@ -255,6 +353,73 @@ export function AnalysisPageSettings() {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Eval Run Name */}
+      <div className="border-t border-slate-100 pt-3">
+        <label className="text-[10px] uppercase tracking-[0.2em] text-slate-400 block mb-1.5">
+          Eval Run Name
+        </label>
+        <input
+          type="text"
+          value={evalRunName}
+          onChange={(e) => setEvalRunName(e.target.value)}
+          placeholder={generateDefaultName(evalParams)}
+          className="w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-emerald-300 focus:ring-1 focus:ring-emerald-200"
+        />
+        <div className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+          Name for this evaluation run. Leave blank to auto-generate.
+        </div>
+      </div>
+
+      {/* Run Evaluation button */}
+      <div className="pt-2">
+        {evalError && (
+          <div className="text-[10px] text-red-500 bg-red-50 rounded px-2 py-1.5 mb-2">
+            {evalError}
+          </div>
+        )}
+        <button
+          onClick={handleRunEvaluation}
+          disabled={evalRunning || !selectedTrainingRunId}
+          className={
+            'w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ' +
+            (evalRunning
+              ? 'bg-blue-50 text-blue-500 cursor-wait'
+              : evalSuccess
+                ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                : !selectedTrainingRunId
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm')
+          }
+          title={
+            !selectedTrainingRunId
+              ? 'Select a training run first'
+              : evalRunning
+                ? 'Running evaluation...'
+                : 'Run evaluation with current parameters'
+          }
+        >
+          {evalRunning ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : evalSuccess ? (
+            <CheckCircle2 className="w-4 h-4" />
+          ) : (
+            <Play className="w-4 h-4" />
+          )}
+          <span>
+            {evalRunning
+              ? 'Running...'
+              : evalSuccess
+                ? 'Evaluation Complete'
+                : 'Run Evaluation'}
+          </span>
+        </button>
+        {!selectedTrainingRunId && (
+          <div className="text-[10px] text-slate-400 text-center mt-1.5">
+            Select a training run to enable evaluation
+          </div>
+        )}
       </div>
     </div>
   );

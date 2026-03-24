@@ -37,6 +37,7 @@ class GenerateRequest(BaseModel):
 
     node_id: str
     force_rerun: bool = False
+    eval_run_id: Optional[str] = None
 
 
 class GenerateResponse(BaseModel):
@@ -153,7 +154,18 @@ async def generate_figure(payload: GenerateRequest) -> GenerateResponse:
     The computation runs in a background thread; this endpoint returns
     immediately with a ``request_id`` that can be polled via
     ``GET /status/{request_id}``.
+
+    If ``eval_run_id`` is provided, it identifies which evaluation run
+    to use for the analysis.  The eval_run_id is logged but currently
+    the analysis pipeline discovers data by module_key; future work
+    will route through the eval run explicitly.
     """
+    if payload.eval_run_id:
+        logger.info(
+            "Generate request for node_id=%s with eval_run_id=%s",
+            payload.node_id,
+            payload.eval_run_id,
+        )
     request_id = await job_tracker.create_job(payload.node_id)
     asyncio.create_task(
         _run_analysis_background(request_id, payload.node_id, payload.force_rerun),

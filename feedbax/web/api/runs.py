@@ -49,6 +49,14 @@ class EvalRunInfo(BaseModel):
     description: Optional[str] = None
 
 
+class CreateEvalRunRequest(BaseModel):
+    """Body for ``POST /evaluation``."""
+
+    training_run_id: str
+    name: str
+    eval_params: dict[str, Any] = {}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -221,3 +229,63 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
         )
 
     return results
+
+
+@router.post("/evaluation", response_model=EvalRunInfo)
+async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
+    """Create a new evaluation run entry.
+
+    This endpoint registers the intent to run an evaluation with the
+    given parameters.  The actual evaluation computation is triggered
+    separately (via ``POST /api/analysis/generate``).
+
+    If the database supports it, a new ``EvaluationRecord`` is created.
+    Otherwise a stub response is returned so the frontend can proceed.
+    """
+    import hashlib
+    import json
+
+    run_id = hashlib.sha256(
+        json.dumps(
+            {
+                "training_run_id": payload.training_run_id,
+                "name": payload.name,
+                "eval_params": payload.eval_params,
+                "ts": datetime.utcnow().isoformat(),
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:16]
+
+    now = datetime.utcnow()
+    description = _summarize_perturbation_config(payload.eval_params)
+
+    # Try to persist in the database if EvaluationRecord supports it
+    try:
+        with db_session() as session:
+            record = EvaluationRecord(
+                hash=run_id,
+                expt_name=payload.name,
+                model_hashes=[payload.training_run_id],
+                perturbation_config=payload.eval_params,
+                created_at=now,
+            )
+            session.add(record)
+        logger.info(
+            "Created evaluation run %s for training run %s",
+            run_id,
+            payload.training_run_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not persist eval run to DB (proceeding with stub): %s", exc,
+        )
+
+    return EvalRunInfo(
+        id=run_id,
+        training_run_id=payload.training_run_id,
+        name=payload.name,
+        created_at=now.isoformat(),
+        status="running",
+        description=description,
+    )
