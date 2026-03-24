@@ -1276,6 +1276,10 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
                 key=key,
                 n_steps=n_steps,
             )
+            # State history includes the initial state (n_steps + 1 entries).
+            # Strip the initial state so the history length matches the
+            # target/input time-series length (n_steps).
+            state_history = jt.map(lambda x: x[1:] if x is not None else x, state_history)
             return state_history
 
         states: StateT = eqx.filter_vmap(_run_trial)(trial_specs, init_states, keys)
