@@ -98,7 +98,7 @@ export function BottomShelf({
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
         </div>
-        <div className="shrink-0 border-l border-slate-100 pl-3">
+        <div className="shrink-0 border-l border-slate-100 pl-3 pr-10">
           <RunSelector activeTab={activeTab} />
         </div>
       </div>

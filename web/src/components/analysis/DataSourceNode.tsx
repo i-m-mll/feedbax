@@ -38,11 +38,8 @@ export function DataSourceNode({ data, selected }: NodeProps) {
       style={{ width: WIDTH, height: totalHeight }}
     >
       {/* Header */}
-      <div className="px-3 py-2 flex items-center gap-2 border-b border-slate-100/80 rounded-t-lg">
-        <Database className="w-3.5 h-3.5 text-slate-400" />
-        <div className="text-xs font-medium text-slate-500 truncate">
-          {nodeData.label}
-        </div>
+      <div className="px-3 py-2 flex items-center justify-center border-b border-slate-100/80 rounded-t-lg">
+        <Database className="w-4 h-4 text-slate-400" />
       </div>
 
       {/* Output ports */}
