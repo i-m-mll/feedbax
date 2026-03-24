@@ -458,13 +458,10 @@ class AbstractTask(Module):
             key_intervene,
             batch_info,
         )
-        # Use replace= to set the intervene field without shape validation.
-        # The processed params have time-broadcast shapes (T, ...) which differ
-        # from the original scalar/empty dict structure.
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
             trial_spec,
-            replace=intervenor_params,
+            replace=intervenor_params,  # replace= needed: intervene starts as {}
         )
 
         trial_spec = self._attach_input_dependencies(trial_spec)
@@ -520,18 +517,16 @@ class AbstractTask(Module):
             is_leaf=is_type(TimeSeriesParam),
         )
 
-        # Process each parameter: unwrap TimeSeriesParam to its signal array,
-        # broadcast scalar/static params to (T, ...) shape.
-        def _process_param(x):
+        # Unwrap TimeSeriesParam wrappers to their inner values.
+        # Non-TimeSeriesParam leaves pass through unchanged — they are
+        # per-trial scalars/arrays that get merged into the initial State
+        # by _apply_inits.
+        def _unwrap(x):
             if isinstance(x, TimeSeriesParam):
-                return x.value  # unwrap to signal array
-            return jnp.broadcast_to(jnp.asarray(x), (self.n_steps - 1, *jnp.asarray(x).shape))
+                return x.value
+            return x
 
-        return jt.map(
-            _process_param,
-            intervenor_params,
-            is_leaf=is_type(TimeSeriesParam),
-        )
+        return jt.map(_unwrap, intervenor_params, is_leaf=is_type(TimeSeriesParam))
 
     @abstractmethod
     def get_validation_trials(
