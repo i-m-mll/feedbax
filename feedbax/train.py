@@ -43,8 +43,17 @@ from feedbax.misc import (
     exponential_smoothing,
     is_none,
 )
+from feedbax.intervene.schedule import TimeSeriesParam
 from feedbax.state import StateT
-from feedbax.task import AbstractTask, TaskTrialSpec, _infer_n_steps, _prepare_inputs, _set_state_by_path, _where_key_to_path
+from feedbax.task import (
+    AbstractTask,
+    TaskTrialSpec,
+    _extract_timeseries_params,
+    _infer_n_steps,
+    _prepare_inputs,
+    _set_state_by_path,
+    _where_key_to_path,
+)
 
 LOSS_FMT = ".2e"
 
@@ -821,14 +830,16 @@ class TaskTrainer(eqx.Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = intervention_indices[label]
                     current = state.get(idx)
-                    # Merge trial-specific params into the default state.
-                    # Some params may be time-series (T, ...) while the default
-                    # state has scalar shapes. Use replace_fn to handle both:
-                    # non-None params override; None falls back to current.
+                    # Merge only time-invariant params into the initial State.
+                    # TimeSeriesParam leaves are skipped here — they are
+                    # handled per-step via params_override input ports on the
+                    # intervenor components.
                     merged = jt.map(
-                        lambda p, c: p if p is not None else c,
+                        lambda p, c: c if isinstance(p, TimeSeriesParam) else (
+                            p if p is not None else c
+                        ),
                         params, current,
-                        is_leaf=lambda x: x is None,
+                        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )
                     state = state.set(idx, merged)
 
@@ -1158,6 +1169,31 @@ class SimpleTrainer(eqx.Module):
         return model
 
 
+def _extract_intervene_inputs(
+    intervene: Mapping,
+    model: Component,
+) -> dict[str, PyTree]:
+    """Extract time-varying params from trial_spec.intervene as model inputs.
+
+    For each intervenor label with TimeSeriesParam leaves, produces a
+    params-like PyTree keyed by ``f"intervene:{label}"`` where
+    TimeSeriesParam leaves are unwrapped to their arrays (shape ``(T, ...)``)
+    and time-invariant leaves are ``None``.
+    """
+    indices = model.intervention_state_indices()
+    result = {}
+    for label, params in intervene.items():
+        if label not in indices:
+            continue
+        idx = indices[label]
+        # The default params are stored as the StateIndex initial value.
+        default_params = idx.init
+        tv_params = _extract_timeseries_params(params, default_params)
+        if tv_params is not None:
+            result[f"intervene:{label}"] = tv_params
+    return result
+
+
 def grad_wrap_abstract_loss(loss_func: AbstractLoss):
     """Wraps a task loss function taking state to a `grad`-able one taking a model.
 
@@ -1201,6 +1237,15 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
                 n_steps = timeline.n_steps
             else:
                 n_steps = _infer_n_steps(inputs)
+            # Extract time-varying intervention params and add as model inputs.
+            # These are routed to intervenor params_override ports via input
+            # bindings added by intervention_compat graph surgery.
+            if trial_spec.intervene:
+                intervene_inputs = _extract_intervene_inputs(
+                    trial_spec.intervene, model,
+                )
+                if intervene_inputs:
+                    inputs = {**inputs, **intervene_inputs}
             _, _, state_history = run_component(
                 model,
                 inputs,

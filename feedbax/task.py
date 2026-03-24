@@ -123,6 +123,53 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
     return _set_component(model, parts, state)
 
 
+def _extract_timeseries_params(
+    params: PyTree,
+    defaults: PyTree,
+) -> Optional[PyTree]:
+    """Extract time-varying leaves from intervention params.
+
+    Returns a params-like PyTree where TimeSeriesParam leaves are unwrapped
+    to their inner arrays (shape ``(T, ...)``) and time-invariant leaves are
+    replaced with None.  Returns ``None`` if there are no TimeSeriesParam
+    leaves at all.
+
+    Args:
+        params: The intervention params PyTree (may contain TimeSeriesParam).
+        defaults: The default params from State (used as structure reference).
+    """
+    has_timeseries = False
+
+    def _extract(p, d):
+        nonlocal has_timeseries
+        if isinstance(p, TimeSeriesParam):
+            has_timeseries = True
+            return p.value
+        return None
+
+    result = jt.map(
+        _extract, params, defaults,
+        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
+    )
+    return result if has_timeseries else None
+
+
+def _merge_intervene_inputs(
+    inputs: dict[str, PyTree],
+    intervene_inputs: dict[str, PyTree],
+) -> dict[str, PyTree]:
+    """Merge time-varying intervention params into model inputs.
+
+    Adds entries keyed by ``f"intervene:{label}"`` for each intervenor label
+    that has time-varying params.  These keys match the input bindings added
+    by ``intervention_compat.add_plant_intervention``.
+    """
+    merged = dict(inputs)
+    for label, tv_params in intervene_inputs.items():
+        merged[f"intervene:{label}"] = tv_params
+    return merged
+
+
 def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
     if isinstance(model, Graph):
         if isinstance(inputs, Mapping):
@@ -685,7 +732,10 @@ class AbstractTask(Module):
                 path = _where_key_to_path(where_substate)
                 init_state = _set_state_by_path(model, init_state, path, init_substate)
 
-            # Apply intervention params
+            # Apply intervention params: merge time-invariant params into
+            # State; collect time-varying (TimeSeriesParam) params to pass
+            # as per-step model inputs.
+            intervene_inputs = {}
             if trial_spec.intervene:
                 indices = model.intervention_state_indices()
                 for label, params in trial_spec.intervene.items():
@@ -693,11 +743,26 @@ class AbstractTask(Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = indices[label]
                     current = init_state.get(idx)
-                    init_state = init_state.set(idx, eqx.combine(params, current))
+                    # Merge only time-invariant leaves into State
+                    merged = jt.map(
+                        lambda p, c: c if isinstance(p, TimeSeriesParam) else (
+                            p if p is not None else c
+                        ),
+                        params, current,
+                        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
+                    )
+                    init_state = init_state.set(idx, merged)
+                    # Collect time-varying params for per-step input
+                    tv_params = _extract_timeseries_params(params, current)
+                    if tv_params is not None:
+                        intervene_inputs[label] = tv_params
 
             init_state = model.state_consistency_update(init_state)
 
             inputs = _prepare_inputs(model, trial_spec.inputs)
+            # Merge time-varying intervention inputs into model inputs
+            if intervene_inputs:
+                inputs = _merge_intervene_inputs(inputs, intervene_inputs)
             n_steps = _infer_n_steps(inputs, trial_spec.timeline)
             outputs, final_state, state_history = run_component(
                 model,
