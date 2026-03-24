@@ -109,12 +109,18 @@ def filter_spec_leaves(
     tree: PyTree[Any, "T"],
     leaf_func: Callable,
 ) -> PyTree[bool, "T"]:
-    """Returns a filter specification for tree leaves matching `leaf_func`."""
+    """Returns a filter specification for tree leaves matching `leaf_func`.
+
+    If ``leaf_func`` selects a non-leaf subtree (e.g. a Module), all array
+    leaves within that subtree are set to ``True``.
+    """
     filter_spec = jt.map(lambda _: False, tree)
     filter_spec = eqx.tree_at(
         leaf_func,
         filter_spec,
-        replace_fn=lambda x: True,
+        # If the selected node is a subtree (not a single leaf), expand True
+        # to all leaves within it so that eqx.partition sees them individually.
+        replace_fn=lambda x: jt.map(lambda _: True, x) if hasattr(x, '__dict__') else True,
     )
     return filter_spec
 
