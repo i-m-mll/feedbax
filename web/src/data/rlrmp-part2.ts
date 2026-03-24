@@ -22,6 +22,7 @@ import type {
   AnalysisGraphSpec,
   AnalysisPageSpec,
   AnalysisSnapshot,
+  AnalysisParamValue,
   EvalParametrization,
   AnalysisViewport,
   TransformSpec,
@@ -69,7 +70,7 @@ function makeNode(
     category,
     inputPorts: opts.inputPorts ?? ['input'],
     outputPorts: opts.outputPorts ?? ['output'],
-    params: (opts.params ?? {}) as Record<string, number | string | boolean | null>,
+    params: (opts.params ?? {}) as Record<string, AnalysisParamValue>,
     role: opts.role ?? 'analysis',
   };
 }

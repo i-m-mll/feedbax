@@ -146,12 +146,13 @@ function validatePage(page: AnalysisPageSpec, expectedName: string, checks: {
 }
 
 // Page 1: plant_perts
+// Profiles receives the full state tree (fieldPath: 'states'), not states.net.hidden
 validatePage(snapshot.pages[0], 'plant_perts', {
   minNodes: 7,
   minWires: 7,
   nodeTypes: ['GetBestReplicate', 'AlignedVars', 'ApplyFns', 'Violins', 'EffectorTrajectories', 'Profiles'],
   hasEvalParams: ['perturbation_type', 'perturbation_amplitudes'],
-  fieldPaths: ['states', 'states.net.hidden'],
+  fieldPaths: ['states'],
 });
 
 // Page 2: feedback_perts
@@ -173,12 +174,14 @@ validatePage(snapshot.pages[2], 'freq_response', {
 });
 
 // Page 4: unit_prefs
+// UnitPreferences extracts features internally via feature_fn — no separate
+// DataSource wires for feature fields (states.efferent.output, task targets).
 validatePage(snapshot.pages[3], 'unit_prefs', {
   minNodes: 4,
   minWires: 4,
   nodeTypes: ['GetBestReplicate', 'SegmentEpochs', 'UnitPreferences'],
   hasEvalParams: ['perturbation_type', 'perturbation_amplitudes'],
-  fieldPaths: ['states', 'task.validation_trials.targets', 'states.efferent.output'],
+  fieldPaths: ['states'],
 });
 
 // ---------------------------------------------------------------------------

@@ -264,7 +264,8 @@ function buildPlantPertsPage(): AnalysisPageSpec {
       implicit: false,
     },
 
-    // DataSource (states.net.hidden) → Profiles
+    // DataSource (full states) → Profiles
+    // Profiles extracts its own variables (pos, vel, command, force) from the full state tree
     {
       id: wireId(P, wireIdx++),
       sourceId: DATA_SOURCE_ID,
@@ -272,7 +273,7 @@ function buildPlantPertsPage(): AnalysisPageSpec {
       targetId: nodeId(P, 'profiles'),
       targetPort: 'vars',
       implicit: true,
-      fieldPath: 'states.net.hidden',
+      fieldPath: 'states',
     },
   ];
 
@@ -315,17 +316,18 @@ function buildFeedbackPertsPage(): AnalysisPageSpec {
   const P = 'feedback_perts';
 
   const nodes: Record<string, AnalysisNodeSpec> = {
-    // Computation: AlignedVars with impulse direction alignment
+    // Computation: AlignedVars with default alignment (reach directions)
+    // Part 1 feedback_perts uses default AlignedVars — no custom directions_fn
     [nodeId(P, 'aligned_vars')]: {
       id: nodeId(P, 'aligned_vars'),
       type: 'AlignedVars',
-      label: 'AlignedVars (impulse dirs)',
+      label: 'AlignedVars',
       category: 'Computation',
       inputPorts: ['data'],
       outputPorts: ['aligned_vars'],
       params: {
         varset: ['pos', 'vel', 'command', 'force'],
-        directions_fn: 'impulse_directions',
+        directions_fn: 'reach_directions',
         align_epoch: null,
       },
       role: 'dependency',
@@ -628,27 +630,9 @@ function buildUnitPrefsPage(): AnalysisPageSpec {
       implicit: false,
     },
 
-    // DataSource → UnitPreferences (goal positions): task targets
-    {
-      id: wireId(P, wireIdx++),
-      sourceId: DATA_SOURCE_ID,
-      sourcePort: 'task',
-      targetId: nodeId(P, 'unit_prefs_goals'),
-      targetPort: 'data',
-      implicit: true,
-      fieldPath: 'task.validation_trials.targets',
-    },
-
-    // DataSource → UnitPreferences (control forces): efferent output
-    {
-      id: wireId(P, wireIdx++),
-      sourceId: DATA_SOURCE_ID,
-      sourcePort: 'states',
-      targetId: nodeId(P, 'unit_prefs_forces'),
-      targetPort: 'data',
-      implicit: true,
-      fieldPath: 'states.efferent.output',
-    },
+    // Note: UnitPreferences extracts its feature internally via feature_fn param.
+    // The feature_field param documents which field is accessed (e.g. states.efferent.output),
+    // but the data flows through the single pipeline: DataSource → GetBestReplicate → SegmentEpochs → UnitPreferences.
   ];
 
   const evalParams: EvalParametrization = {

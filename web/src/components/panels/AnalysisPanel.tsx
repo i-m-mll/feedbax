@@ -15,7 +15,7 @@ import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
 import type { AnalysisNodeData } from '@/stores/analysisStore';
-import type { AnalysisParamValue } from '@/types/analysis';
+import type { AnalysisParamValue, AnalysisParamObject } from '@/types/analysis';
 import { Plus, X } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -393,7 +393,7 @@ function ParamField({
 }: {
   nodeId: string;
   paramKey: string;
-  value: unknown;
+  value: AnalysisParamValue;
 }) {
   const updateNodeParams = useAnalysisStore((s) => s.updateNodeParams);
 
@@ -483,6 +483,18 @@ function ParamField({
     );
   }
 
+  // Object — editable JSON textarea
+  if (typeof value === 'object' && value !== null) {
+    return (
+      <ObjectParamField
+        nodeId={nodeId}
+        paramKey={paramKey}
+        value={value as Record<string, unknown>}
+        commitValue={commitValue}
+      />
+    );
+  }
+
   // String / null / undefined / fallback — text input
   return (
     <div className="space-y-0.5">
@@ -496,6 +508,61 @@ function ParamField({
         }}
         className={INPUT_CLASS}
       />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Object parameter field — editable JSON for structured params
+// ---------------------------------------------------------------------------
+
+const TEXTAREA_CLASS =
+  'w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 font-mono leading-relaxed resize-y focus:outline-none focus:border-emerald-300 focus:ring-1 focus:ring-emerald-200';
+
+function ObjectParamField({
+  nodeId,
+  paramKey,
+  value,
+  commitValue,
+}: {
+  nodeId: string;
+  paramKey: string;
+  value: Record<string, unknown>;
+  commitValue: (v: AnalysisParamValue) => void;
+}) {
+  const [jsonStr, setJsonStr] = useState(() => JSON.stringify(value, null, 2));
+  const [error, setError] = useState<string | null>(null);
+
+  const handleBlur = useCallback(() => {
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        setError('Must be a JSON object');
+        return;
+      }
+      setError(null);
+      commitValue(parsed as AnalysisParamObject);
+    } catch {
+      setError('Invalid JSON');
+    }
+  }, [jsonStr, commitValue]);
+
+  return (
+    <div className="space-y-0.5">
+      <label className="text-xs text-slate-500">{paramKey}</label>
+      <textarea
+        value={jsonStr}
+        onChange={(e) => {
+          setJsonStr(e.target.value);
+          setError(null);
+        }}
+        onBlur={handleBlur}
+        rows={Math.min(Math.max(jsonStr.split('\n').length, 2), 12)}
+        className={clsx(TEXTAREA_CLASS, error && 'border-red-300 focus:border-red-400 focus:ring-red-200')}
+      />
+      {error && (
+        <div className="text-[10px] text-red-500">{error}</div>
+      )}
     </div>
   );
 }

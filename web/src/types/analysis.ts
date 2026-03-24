@@ -3,8 +3,11 @@
 /** A scalar parameter value on an analysis or transform node. */
 export type AnalysisParamScalar = number | string | boolean | null;
 
-/** A parameter value — scalar or array of scalars. */
-export type AnalysisParamValue = AnalysisParamScalar | AnalysisParamScalar[];
+/** A structured parameter value — nested key-value pairs. */
+export type AnalysisParamObject = { [key: string]: AnalysisParamValue };
+
+/** A parameter value — scalar, array of scalars, or structured object. */
+export type AnalysisParamValue = AnalysisParamScalar | AnalysisParamScalar[] | AnalysisParamObject;
 
 /** Configuration for a transform (prep op) applied on an edge. */
 export interface TransformSpec {
