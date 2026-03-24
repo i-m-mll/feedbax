@@ -467,7 +467,14 @@ class Graph(Component):
 
         init_cycle_values = self._get_initial_cycle_values(state, cycle_init)
 
-        step_inputs_seq = jt.map(lambda x: x, inputs)
+        # Broadcast scalar input leaves to (n_steps, ...) so they can be
+        # indexed by step.  Non-scalar leaves pass through as-is.
+        def _broadcast_scalar(x):
+            if hasattr(x, 'ndim') and x.ndim == 0:
+                return jnp.broadcast_to(x, (n_steps,))
+            return x
+
+        step_inputs_seq = jt.map(_broadcast_scalar, inputs)
 
         def _step_inputs_at(i):
             return jt.map(lambda x: x[i], step_inputs_seq)
