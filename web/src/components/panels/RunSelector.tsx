@@ -92,7 +92,7 @@ export function TrainingRunSelector({ activeTab }: TrainingRunSelectorProps) {
         )}
         title={selectedTraining ? `Training: ${selectedTraining.name}` : 'Select training run'}
       >
-        <span className="text-[10px] uppercase tracking-wider text-slate-400 mr-0.5">Train</span>
+        <span className="text-[10px] uppercase tracking-wider text-slate-400 mr-0.5">Run</span>
         <span className="max-w-[100px] truncate">
           {selectedTraining?.name ?? 'None'}
         </span>
