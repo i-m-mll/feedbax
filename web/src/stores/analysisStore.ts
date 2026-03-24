@@ -12,6 +12,7 @@ import dagre from '@dagrejs/dagre';
 import { useGraphStore } from '@/stores/graphStore';
 import type {
   AnalysisNodeSpec,
+  AnalysisParamValue,
   AnalysisWire,
   AnalysisGraphSpec,
   AnalysisClassDef,
@@ -220,7 +221,7 @@ interface AnalysisStoreState {
   addAnalysisNode: (classDef: AnalysisClassDef, position: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
   connectNodes: (connection: Connection) => void;
-  updateNodeParams: (id: string, params: Record<string, unknown>) => void;
+  updateNodeParams: (id: string, params: Record<string, AnalysisParamValue>) => void;
   addTransformToEdge: (edgeId: string, transformType: string) => void;
   removeTransformFromEdge: (edgeId: string) => void;
 
@@ -437,8 +438,9 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   updateNodeParams: (id, params) => {
-    set((state) => ({
-      nodes: state.nodes.map((n) => {
+    set((state) => {
+      // Update React Flow nodes
+      const nodes = state.nodes.map((n) => {
         if (n.id !== id) return n;
         const data = n.data as AnalysisNodeData;
         return {
@@ -448,8 +450,23 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
             spec: { ...data.spec, params: { ...data.spec.params, ...params } },
           },
         };
-      }),
-    }));
+      });
+
+      // Also update graphSpec so changes persist across page switches/snapshots
+      let graphSpec = state.graphSpec;
+      if (graphSpec && graphSpec.nodes[id]) {
+        const updatedSpec: AnalysisNodeSpec = {
+          ...graphSpec.nodes[id],
+          params: { ...graphSpec.nodes[id].params, ...params },
+        };
+        graphSpec = {
+          ...graphSpec,
+          nodes: { ...graphSpec.nodes, [id]: updatedSpec },
+        };
+      }
+
+      return { nodes, graphSpec };
+    });
     markProjectDirty();
   },
 
