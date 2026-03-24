@@ -394,9 +394,6 @@ class TaskTrainer(eqx.Module):
             # Delete old checkpoints if checkpointing is on.
             delete_contents(self.chkpt_dir)
 
-        # Store loss_reduction_fn for use in _train_step
-        self._loss_reduction_fn = loss_reduction_fn
-
         model_update_funcs_flat = jtu.tree_leaves(
             self.model_update_funcs,
             is_leaf=lambda x: isinstance(x, Callable),
@@ -467,6 +464,7 @@ class TaskTrainer(eqx.Module):
                 None,
                 None,
                 key_in_axis,
+                None,  # loss_reduction_fn
             )
             out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0, 0)
 
@@ -515,6 +513,7 @@ class TaskTrainer(eqx.Module):
                     where_train_spec,
                     model_update_funcs_flat,
                     key_compile,
+                    loss_reduction_fn,
                 )
 
             logger.info(f"Training step compiled in {timer.time:.2f} seconds.")
@@ -603,6 +602,7 @@ class TaskTrainer(eqx.Module):
                     where_train_spec,
                     update_funcs_i,
                     key_train,
+                    loss_reduction_fn,
                 )
 
                 update_pbar.subdescription(
@@ -801,6 +801,7 @@ class TaskTrainer(eqx.Module):
         where_train_spec,  #! can't do AbstractModel[StateT[bool]]
         update_funcs,
         key: PRNGKeyArray,
+        loss_reduction_fn: Optional[Callable] = None,
     ):
         """Executes a single training step of the model.
 
@@ -881,7 +882,7 @@ class TaskTrainer(eqx.Module):
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
-            grad_wrap_abstract_loss(loss_func, loss_reduction_fn=self._loss_reduction_fn), has_aux=True
+            grad_wrap_abstract_loss(loss_func, loss_reduction_fn=loss_reduction_fn), has_aux=True
         )(
             diff_model,
             static_model,
