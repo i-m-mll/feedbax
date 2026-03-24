@@ -175,10 +175,24 @@ def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
         if isinstance(inputs, Mapping):
             if set(model.input_ports).issubset(inputs.keys()):
                 return inputs
-            if len(model.input_ports) == 1:
-                return {model.input_ports[0]: inputs}
-        elif len(model.input_ports) == 1:
-            return {model.input_ports[0]: inputs}
+            # If all required (non-optional) ports are present, return as-is.
+            # Optional ports (e.g., "intervene:*") may be absent.
+            required_ports = {
+                p for p in model.input_ports if not p.startswith("intervene:")
+            }
+            if required_ports.issubset(inputs.keys()):
+                return inputs
+            if len(required_ports) == 1:
+                port = next(iter(required_ports))
+                return {port: inputs}
+        else:
+            # Non-mapping inputs: wrap in a dict for the first required port.
+            required_ports = {
+                p for p in model.input_ports if not p.startswith("intervene:")
+            }
+            if len(required_ports) == 1:
+                port = next(iter(required_ports))
+                return {port: inputs}
     return inputs
 
 

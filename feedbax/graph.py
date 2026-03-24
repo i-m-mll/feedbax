@@ -347,7 +347,8 @@ class Graph(Component):
         port_values: dict[tuple[str, str], PyTree] = {}
 
         for ext_port, (node_name, node_port) in self.input_bindings.items():
-            port_values[(node_name, node_port)] = inputs[ext_port]
+            if ext_port in inputs:
+                port_values[(node_name, node_port)] = inputs[ext_port]
 
         for node_name, node_key in zip(self._execution_order, keys):
             node = self.nodes[node_name]
@@ -482,7 +483,8 @@ class Graph(Component):
             port_values = dict(prev_cycle_values)
 
             for ext_port, (node_name, node_port) in self.input_bindings.items():
-                port_values[(node_name, node_port)] = step_inputs[ext_port]
+                if ext_port in step_inputs:
+                    port_values[(node_name, node_port)] = step_inputs[ext_port]
 
             port_values, state = self._execute_step(port_values, state, key=step_key)
 
