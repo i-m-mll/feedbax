@@ -68,7 +68,9 @@ export async function fetchGraph(graphId: string) {
       graph_spec: Record<string, unknown>;
       eval_params: Record<string, unknown>;
       viewport: { x: number; y: number; zoom: number };
+      eval_run_id: string | null;
     }> | null;
+    active_analysis_page_id: string | null;
   }>(`/api/graphs/${graphId}`);
 }
 
@@ -84,11 +86,13 @@ export async function updateGraph(
   graph: GraphSpec | null,
   uiState: GraphUIState | null,
   analysisPages?: unknown[] | null,
+  activeAnalysisPageId?: string | null,
 ) {
   const payload: Record<string, unknown> = {};
   if (graph !== null && graph !== undefined) payload.graph = graph;
   if (uiState !== null && uiState !== undefined) payload.ui_state = uiState;
   if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
+  if (activeAnalysisPageId !== undefined) payload.active_analysis_page_id = activeAnalysisPageId;
   return request<{ success: boolean }>(`/api/graphs/${graphId}`, {
     method: 'PUT',
     body: JSON.stringify(payload),

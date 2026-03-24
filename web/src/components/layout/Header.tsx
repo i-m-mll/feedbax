@@ -82,9 +82,14 @@ export function Header() {
           graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
           evalParams: wp.eval_params as Record<string, unknown>,
           viewport: wp.viewport,
-          evalRunId: (wp as Record<string, unknown>).eval_run_id as string | null ?? null,
+          evalRunId: wp.eval_run_id ?? null,
         }));
-        analysisSnapshot = { pages, activePageId: pages[0].id };
+        // Restore the persisted active page, falling back to the first page
+        const restoredActiveId = data.active_analysis_page_id;
+        const activePageId = restoredActiveId && pages.some((p) => p.id === restoredActiveId)
+          ? restoredActiveId
+          : pages[0].id;
+        analysisSnapshot = { pages, activePageId };
       }
       openProjectInTab(id, data.graph, data.ui_state ?? {
         viewport: { x: 0, y: 0, zoom: 1 },

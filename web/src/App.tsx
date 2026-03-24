@@ -21,16 +21,23 @@ import {
 const AUTO_SAVE_DELAY_MS = 800;
 
 /** Convert analysis snapshot into the snake_case wire format the backend expects. */
-function getAnalysisPagesForSave(): Array<Record<string, unknown>> | null {
+function getAnalysisForSave(): {
+  pages: Array<Record<string, unknown>>;
+  activePageId: string | null;
+} | null {
   const snapshot = useAnalysisStore.getState().captureSnapshot();
   if (snapshot.pages.length === 0) return null;
-  return snapshot.pages.map((page) => ({
-    id: page.id,
-    name: page.name,
-    graph_spec: page.graphSpec,
-    eval_params: page.evalParams,
-    viewport: page.viewport,
-  }));
+  return {
+    pages: snapshot.pages.map((page) => ({
+      id: page.id,
+      name: page.name,
+      graph_spec: page.graphSpec,
+      eval_params: page.evalParams,
+      viewport: page.viewport,
+      eval_run_id: page.evalRunId,
+    })),
+    activePageId: snapshot.activePageId,
+  };
 }
 
 export default function App() {
@@ -55,9 +62,9 @@ export default function App() {
       if (savingRef.current) return;
       savingRef.current = true;
       const { graph, uiState, markSaved } = useGraphStore.getState();
-      const analysisPages = getAnalysisPagesForSave();
+      const analysis = getAnalysisForSave();
       try {
-        await updateGraph(graphId, graph, uiState, analysisPages);
+        await updateGraph(graphId, graph, uiState, analysis?.pages ?? null, analysis?.activePageId);
         markSaved(graphId);
       } catch (e) {
         toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
@@ -86,7 +93,7 @@ export default function App() {
       // Saving the current (subgraph) view to the top-level ID would corrupt the project.
       const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
       const rootUiState = graphStack.length > 0 ? graphStack[0].uiState : uiState;
-      const analysisPages = getAnalysisPagesForSave();
+      const analysis = getAnalysisForSave();
       // Cancel pending debounce timer
       if (timerRef.current) {
         clearTimeout(timerRef.current);
@@ -96,7 +103,10 @@ export default function App() {
         graph: rootGraph,
         ui_state: rootUiState,
       };
-      if (analysisPages) beaconPayload.analysis_pages = analysisPages;
+      if (analysis) {
+        beaconPayload.analysis_pages = analysis.pages;
+        beaconPayload.active_analysis_page_id = analysis.activePageId;
+      }
       const body = new Blob(
         [JSON.stringify(beaconPayload)],
         { type: 'application/json' }

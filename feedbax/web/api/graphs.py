@@ -19,6 +19,7 @@ class GraphUpdateRequest(BaseModel):
     graph: Optional[GraphSpec] = None
     ui_state: Optional[GraphUIState] = None
     analysis_pages: Optional[list[AnalysisPageSpec]] = None
+    active_analysis_page_id: Optional[str] = None
 
 
 @router.get('')
@@ -46,6 +47,7 @@ async def get_graph(graph_id: str, response: Response):
         'demo_training_data': record.project.demo_training_data,
         'metadata': record.project.metadata,
         'analysis_pages': record.project.analysis_pages,
+        'active_analysis_page_id': record.project.active_analysis_page_id,
     }
 
 
@@ -53,7 +55,8 @@ async def get_graph(graph_id: str, response: Response):
 async def update_graph(graph_id: str, payload: GraphUpdateRequest):
     try:
         service.update_graph(
-            graph_id, payload.graph, payload.ui_state, payload.analysis_pages
+            graph_id, payload.graph, payload.ui_state, payload.analysis_pages,
+            payload.active_analysis_page_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
@@ -65,7 +68,8 @@ async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
     """sendBeacon endpoint for pagehide saves; returns 204 No Content."""
     try:
         service.update_graph(
-            graph_id, payload.graph, payload.ui_state, payload.analysis_pages
+            graph_id, payload.graph, payload.ui_state, payload.analysis_pages,
+            payload.active_analysis_page_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc

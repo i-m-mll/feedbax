@@ -43,9 +43,11 @@ export function AnalysisPanel() {
     fetchAnalysisClasses().then(setAnalysisClasses).catch(() => {});
   }, [analysisClasses.length, setAnalysisClasses]);
 
-  // Auto-create a first page when no pages exist yet
+  // Auto-create a first page when no pages exist yet.
+  // Read from store inside the effect to avoid Strict Mode double-invocation
+  // creating duplicate pages (the closure-captured `pages` is stale on re-run).
   useEffect(() => {
-    if (pages.length === 0) {
+    if (useAnalysisStore.getState().pages.length === 0) {
       addPage('Page 1');
     }
   }, [pages.length, addPage]);
