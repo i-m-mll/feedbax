@@ -8,6 +8,7 @@
 
 import type { AnalysisSnapshot } from '@/types/analysis';
 import { createRlrmpPart1Analysis, RLRMP_PART1_TEMPLATE } from '@/data/rlrmp-part1';
+import { createRlrmpPart2Project, RLRMP_PART2_META } from '@/data/rlrmp-part2';
 
 /** Metadata for a project template. */
 export interface ProjectTemplate {
@@ -28,5 +29,9 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     ...RLRMP_PART1_TEMPLATE,
     createAnalysis: createRlrmpPart1Analysis,
+  },
+  {
+    ...RLRMP_PART2_META,
+    createAnalysis: createRlrmpPart2Project,
   },
 ];
