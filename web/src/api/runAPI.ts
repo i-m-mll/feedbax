@@ -1,9 +1,58 @@
+/**
+ * API client for training and evaluation run discovery.
+ *
+ * Calls the backend endpoints and falls back to stub data when the
+ * backend is unavailable (offline / demo mode).
+ */
+
 import type { TrainingRun, EvalRun } from '@/types/runs';
 
-/**
- * Stub training runs for UI development.
- * Replace with real API calls when the backend endpoints exist.
- */
+// ---------------------------------------------------------------------------
+// Wire format -- backend uses snake_case, frontend uses camelCase
+// ---------------------------------------------------------------------------
+
+interface TrainingRunWire {
+  id: string;
+  name: string;
+  created_at: string;
+  status: string;
+  hyperparams: Record<string, string | number>;
+}
+
+interface EvalRunWire {
+  id: string;
+  training_run_id: string;
+  name: string;
+  created_at: string;
+  status: string;
+  description?: string | null;
+}
+
+function trainingRunFromWire(wire: TrainingRunWire): TrainingRun {
+  return {
+    id: wire.id,
+    name: wire.name,
+    createdAt: wire.created_at,
+    status: wire.status as TrainingRun['status'],
+    hyperparams: wire.hyperparams,
+  };
+}
+
+function evalRunFromWire(wire: EvalRunWire): EvalRun {
+  return {
+    id: wire.id,
+    trainingRunId: wire.training_run_id,
+    name: wire.name,
+    createdAt: wire.created_at,
+    status: wire.status as EvalRun['status'],
+    description: wire.description ?? undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stub data -- fallback when the backend is not available
+// ---------------------------------------------------------------------------
+
 const STUB_TRAINING_RUNS: TrainingRun[] = [
   {
     id: 'tr-001',
@@ -60,21 +109,41 @@ const STUB_EVAL_RUNS: Record<string, EvalRun[]> = {
   ],
 };
 
-/** Fetch all training runs for the current project. */
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+async function tryFetch<T>(path: string): Promise<T | null> {
+  try {
+    const response = await fetch(path, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** Fetch all training runs. Falls back to stub data on error. */
 export async function fetchTrainingRuns(): Promise<TrainingRun[]> {
-  // TODO: Replace with real API call: request<TrainingRun[]>('/api/runs/training')
-  return Promise.resolve(STUB_TRAINING_RUNS);
+  const wire = await tryFetch<TrainingRunWire[]>('/api/runs/training');
+  if (wire !== null) return wire.map(trainingRunFromWire);
+  return STUB_TRAINING_RUNS;
 }
 
-/** Fetch evaluation runs for a specific training run. */
+/** Fetch evaluation runs for a training run. Falls back to stub data on error. */
 export async function fetchEvalRuns(trainingRunId: string): Promise<EvalRun[]> {
-  // TODO: Replace with real API call: request<EvalRun[]>(`/api/runs/training/${trainingRunId}/evals`)
-  return Promise.resolve(STUB_EVAL_RUNS[trainingRunId] ?? []);
+  const wire = await tryFetch<EvalRunWire[]>(
+    `/api/runs/training/${encodeURIComponent(trainingRunId)}/evals`,
+  );
+  if (wire !== null) return wire.map(evalRunFromWire);
+  return STUB_EVAL_RUNS[trainingRunId] ?? [];
 }
 
-/** Create a new training run (stub). */
+/** Create a new training run (stub -- no backend endpoint yet). */
 export async function createTrainingRun(name: string): Promise<TrainingRun> {
-  // TODO: Replace with real API call
+  // TODO: Replace with real API call when backend supports it
   const run: TrainingRun = {
     id: `tr-${Date.now()}`,
     name,
