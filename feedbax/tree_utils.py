@@ -19,14 +19,13 @@ import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objects as go
-from feedbax.intervene import AbstractIntervenor
+from feedbax.intervene import is_intervenor
 from jax_cookbook import anyf, hash_callable, is_module, is_none, is_type
 from jax_cookbook._func import falsef
 from jaxtyping import Array, ArrayLike, PyTree, PyTreeDef
 
-# Config still in _experiments for now
-from feedbax._experiments.config import STRINGS
-from feedbax._experiments.misc import deep_merge
+from feedbax.config import STRINGS
+from feedbax.misc import deep_merge
 from feedbax.types import LDict, LDictConstructor, TreeNamespace, _Wrapped
 
 T = TypeVar("T")
@@ -595,9 +594,9 @@ def take_replicate(i, tree: PyTree[Array, "T"]) -> PyTree[Array, "T"]:
     intervenors, other = eqx.partition(
         tree,
         jt.map(
-            lambda x: isinstance(x, AbstractIntervenor),
+            is_intervenor,
             tree,
-            is_leaf=is_type(AbstractIntervenor),
+            is_leaf=is_intervenor,
         ),
     )
     return eqx.combine(intervenors, jtree.take(other, i))

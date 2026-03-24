@@ -10,7 +10,7 @@ from jaxtyping import PyTree
 from ruamel.yaml import YAML
 
 from feedbax.config.yaml import _YamlLiteral, get_yaml_loader
-from feedbax._experiments.misc import deep_merge
+from feedbax.misc import deep_merge
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
 
