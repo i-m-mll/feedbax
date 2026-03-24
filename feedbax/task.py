@@ -452,16 +452,20 @@ class AbstractTask(Module):
         with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
             trial_spec = self.get_train_trial(key, batch_info)
 
+        intervenor_params = self._get_intervenor_params(
+            self.intervention_specs.training,
+            trial_spec,
+            key_intervene,
+            batch_info,
+        )
+        # Replace intervene field directly — eqx.tree_at rejects shape changes,
+        # and the processed params have time-broadcast shapes (T, ...) vs the
+        # original scalars or empty dict.
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
             trial_spec,
-            self._get_intervenor_params(
-                self.intervention_specs.training,
-                trial_spec,
-                key_intervene,
-                batch_info,
-            ),
-            is_leaf=is_none,
+            intervenor_params,
+            is_leaf=lambda x: x is trial_spec.intervene,
         )
 
         trial_spec = self._attach_input_dependencies(trial_spec)
