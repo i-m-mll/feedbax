@@ -406,11 +406,15 @@ class TaskTrainer(eqx.Module):
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
 
         if ensembled:
-            # We only vmap over axis 0 of the *array* components of the model.
-            flat_model_arr_spec = jt.map(
-                lambda x: eqx.if_array(0),
-                flat_model,
-            )
+            # We only vmap over axis 0 of the *array* components of the model,
+            # but only if they actually carry the ensemble dimension. Arrays
+            # without it (e.g. StateIndex.init for shared intervenor params)
+            # should be broadcast (in_axis=None).
+            def _ensemble_in_axis(x):
+                if eqx.is_array(x) and x.ndim > 0 and x.shape[0] == n_replicates:
+                    return 0
+                return None
+            flat_model_arr_spec = jt.map(_ensemble_in_axis, flat_model)
 
             if ensemble_random_trials:
                 key_in_axis = 0
