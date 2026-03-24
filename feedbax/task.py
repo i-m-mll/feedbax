@@ -458,14 +458,13 @@ class AbstractTask(Module):
             key_intervene,
             batch_info,
         )
-        # Replace intervene field directly — eqx.tree_at rejects shape changes,
-        # and the processed params have time-broadcast shapes (T, ...) vs the
-        # original scalars or empty dict.
+        # Use replace= to set the intervene field without shape validation.
+        # The processed params have time-broadcast shapes (T, ...) which differ
+        # from the original scalar/empty dict structure.
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
             trial_spec,
-            intervenor_params,
-            is_leaf=lambda x: x is trial_spec.intervene,
+            replace=intervenor_params,
         )
 
         trial_spec = self._attach_input_dependencies(trial_spec)
