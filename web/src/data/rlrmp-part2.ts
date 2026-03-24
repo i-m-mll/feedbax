@@ -111,6 +111,7 @@ function makePage(
     evalParams,
     viewport: { ...DEFAULT_VIEWPORT },
     evalRunId: null,
+    expandedFieldPaths: [],
   };
 }
 

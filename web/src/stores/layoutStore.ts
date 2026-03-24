@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 interface LayoutStoreState {
   topCollapsed: boolean;
@@ -60,94 +61,112 @@ const clampRightWidth = (width: number) =>
 const clampBottomSidebarWidth = (width: number) =>
   Math.max(MIN_BOTTOM_SIDEBAR_WIDTH, Math.min(MAX_BOTTOM_SIDEBAR_WIDTH, width));
 
-export const useLayoutStore = create<LayoutStoreState>((set) => ({
-  topCollapsed: false,
-  bottomCollapsed: false,
-  bottomHeight: DEFAULT_BOTTOM_HEIGHT,
-  initialized: false,
-  resizeMode: false,
-  leftSidebarWidth: DEFAULT_LEFT_WIDTH,
-  rightSidebarWidth: DEFAULT_RIGHT_WIDTH,
-  leftSidebarVisible: true,
-  rightSidebarVisible: true,
-  bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
-  bottomSidebarCollapsed: false,
-  toggleTop: (availableHeight) => {
-    if (availableHeight <= 0) return;
-    set((state) => {
-      if (state.topCollapsed) {
+export const useLayoutStore = create<LayoutStoreState>()(
+  persist(
+    (set) => ({
+      topCollapsed: false,
+      bottomCollapsed: false,
+      bottomHeight: DEFAULT_BOTTOM_HEIGHT,
+      initialized: false,
+      resizeMode: false,
+      leftSidebarWidth: DEFAULT_LEFT_WIDTH,
+      rightSidebarWidth: DEFAULT_RIGHT_WIDTH,
+      leftSidebarVisible: true,
+      rightSidebarVisible: true,
+      bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
+      bottomSidebarCollapsed: false,
+      toggleTop: (availableHeight) => {
+        if (availableHeight <= 0) return;
+        set((state) => {
+          if (state.topCollapsed) {
+            const target = clampBottomHeight(
+              Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
+              availableHeight
+            );
+            return {
+              topCollapsed: false,
+              bottomCollapsed: false,
+              bottomHeight: target,
+            };
+          }
+          const expandedBottom = clampBottomHeight(
+            availableHeight - TOP_COLLAPSED_HEIGHT,
+            availableHeight
+          );
+          return {
+            topCollapsed: true,
+            bottomCollapsed: false,
+            bottomHeight: expandedBottom,
+          };
+        });
+      },
+      toggleBottom: (availableHeight) => {
+        if (availableHeight <= 0) return;
+        set((state) => {
+          if (state.bottomCollapsed) {
+            const target = clampBottomHeight(
+              Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
+              availableHeight
+            );
+            return {
+              topCollapsed: false,
+              bottomCollapsed: false,
+              bottomHeight: target,
+            };
+          }
+          return {
+            topCollapsed: false,
+            bottomCollapsed: true,
+            bottomHeight: BOTTOM_COLLAPSED_HEIGHT,
+          };
+        });
+      },
+      setBottomHeight: (height, availableHeight) => {
+        const clamped = clampBottomHeight(height, availableHeight);
+        set({ bottomHeight: clamped, initialized: true });
+      },
+      initializeBottomHeight: (availableHeight) => {
         const target = clampBottomHeight(
           Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
           availableHeight
         );
-        return {
-          topCollapsed: false,
-          bottomCollapsed: false,
-          bottomHeight: target,
-        };
-      }
-      const expandedBottom = clampBottomHeight(
-        availableHeight - TOP_COLLAPSED_HEIGHT,
-        availableHeight
-      );
-      return {
-        topCollapsed: true,
-        bottomCollapsed: false,
-        bottomHeight: expandedBottom,
-      };
-    });
-  },
-  toggleBottom: (availableHeight) => {
-    if (availableHeight <= 0) return;
-    set((state) => {
-      if (state.bottomCollapsed) {
-        const target = clampBottomHeight(
-          Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
-          availableHeight
-        );
-        return {
-          topCollapsed: false,
-          bottomCollapsed: false,
-          bottomHeight: target,
-        };
-      }
-      return {
-        topCollapsed: false,
-        bottomCollapsed: true,
-        bottomHeight: BOTTOM_COLLAPSED_HEIGHT,
-      };
-    });
-  },
-  setBottomHeight: (height, availableHeight) => {
-    const clamped = clampBottomHeight(height, availableHeight);
-    set({ bottomHeight: clamped, initialized: true });
-  },
-  initializeBottomHeight: (availableHeight) => {
-    const target = clampBottomHeight(
-      Math.round(availableHeight * DEFAULT_SPLIT_RATIO),
-      availableHeight
-    );
-    set((state) => (state.initialized ? state : { bottomHeight: target, initialized: true }));
-  },
-  toggleResizeMode: () => {
-    set((state) => ({ resizeMode: !state.resizeMode }));
-  },
-  setLeftSidebarWidth: (width) => {
-    set({ leftSidebarWidth: clampLeftWidth(width) });
-  },
-  setRightSidebarWidth: (width) => {
-    set({ rightSidebarWidth: clampRightWidth(width) });
-  },
-  toggleLeftSidebar: () => {
-    set((state) => ({ leftSidebarVisible: !state.leftSidebarVisible }));
-  },
-  toggleRightSidebar: () => {
-    set((state) => ({ rightSidebarVisible: !state.rightSidebarVisible }));
-  },
-  setBottomSidebarWidth: (width) => {
-    set({ bottomSidebarWidth: clampBottomSidebarWidth(width) });
-  },
-  toggleBottomSidebar: () => {
-    set((state) => ({ bottomSidebarCollapsed: !state.bottomSidebarCollapsed }));
-  },
-}));
+        set((state) => (state.initialized ? state : { bottomHeight: target, initialized: true }));
+      },
+      toggleResizeMode: () => {
+        set((state) => ({ resizeMode: !state.resizeMode }));
+      },
+      setLeftSidebarWidth: (width) => {
+        set({ leftSidebarWidth: clampLeftWidth(width) });
+      },
+      setRightSidebarWidth: (width) => {
+        set({ rightSidebarWidth: clampRightWidth(width) });
+      },
+      toggleLeftSidebar: () => {
+        set((state) => ({ leftSidebarVisible: !state.leftSidebarVisible }));
+      },
+      toggleRightSidebar: () => {
+        set((state) => ({ rightSidebarVisible: !state.rightSidebarVisible }));
+      },
+      setBottomSidebarWidth: (width) => {
+        set({ bottomSidebarWidth: clampBottomSidebarWidth(width) });
+      },
+      toggleBottomSidebar: () => {
+        set((state) => ({ bottomSidebarCollapsed: !state.bottomSidebarCollapsed }));
+      },
+    }),
+    {
+      name: 'feedbax-studio-layout',
+      partialize: (state) => ({
+        topCollapsed: state.topCollapsed,
+        bottomCollapsed: state.bottomCollapsed,
+        bottomHeight: state.bottomHeight,
+        leftSidebarWidth: state.leftSidebarWidth,
+        rightSidebarWidth: state.rightSidebarWidth,
+        leftSidebarVisible: state.leftSidebarVisible,
+        rightSidebarVisible: state.rightSidebarVisible,
+        bottomSidebarWidth: state.bottomSidebarWidth,
+        bottomSidebarCollapsed: state.bottomSidebarCollapsed,
+      }),
+    },
+  )
+);

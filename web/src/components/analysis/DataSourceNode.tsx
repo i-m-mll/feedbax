@@ -10,11 +10,12 @@
  * node sends the full subtree; connecting to a leaf sends that specific field.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { DataSourceNodeData } from '@/stores/analysisStore';
+import { useAnalysisStore } from '@/stores/analysisStore';
 import { STATE_FIELD_TREE } from '@/types/analysis';
-import { StateFieldTree, useFieldTreeExpansion, FIELD_ROW_HEIGHT } from './StateFieldTree';
+import { StateFieldTree, countVisibleRows, FIELD_ROW_HEIGHT } from './StateFieldTree';
 import { Database } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -24,7 +25,10 @@ const BODY_PADDING = 8;
 
 export function DataSourceNode({ id, data, selected }: NodeProps) {
   const nodeData = data as DataSourceNodeData;
-  const { expandedPaths, toggleExpand, visibleCount } = useFieldTreeExpansion(STATE_FIELD_TREE);
+  const expandedFieldPaths = useAnalysisStore((s) => s.expandedFieldPaths);
+  const toggleFieldExpansion = useAnalysisStore((s) => s.toggleFieldExpansion);
+  const expandedPaths = useMemo(() => new Set(expandedFieldPaths), [expandedFieldPaths]);
+  const visibleCount = countVisibleRows(STATE_FIELD_TREE, expandedPaths);
 
   const bodyHeight = BODY_PADDING * 2 + visibleCount * FIELD_ROW_HEIGHT;
   const totalHeight = HEADER_HEIGHT + bodyHeight;
@@ -58,7 +62,7 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
         <StateFieldTree
           nodes={STATE_FIELD_TREE}
           expandedPaths={expandedPaths}
-          onToggle={toggleExpand}
+          onToggle={toggleFieldExpansion}
           bodyPadding={BODY_PADDING}
         />
       </div>

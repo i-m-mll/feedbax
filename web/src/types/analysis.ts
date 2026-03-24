@@ -256,6 +256,8 @@ export interface AnalysisPageSpec {
   viewport: AnalysisViewport;
   /** Selected eval run ID for this page (null = none selected). */
   evalRunId: string | null;
+  /** Expanded field paths in the DataSourceNode tree for this page. */
+  expandedFieldPaths: string[];
 }
 
 /** Snapshot of all analysis state — used by projectsStore for tab switching. */

@@ -35,6 +35,7 @@ function getAnalysisForSave(): {
       eval_params: page.evalParams,
       viewport: page.viewport,
       eval_run_id: page.evalRunId,
+      expanded_field_paths: page.expandedFieldPaths ?? [],
     })),
     activePageId: snapshot.activePageId,
   };

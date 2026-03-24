@@ -76,13 +76,14 @@ export function Header() {
       // Build analysis snapshot from persisted pages (convert snake_case wire format)
       let analysisSnapshot: AnalysisSnapshot | null = null;
       if (data.analysis_pages && data.analysis_pages.length > 0) {
-        const pages = data.analysis_pages.map((wp) => ({
+        const pages = data.analysis_pages.map((wp: any) => ({
           id: wp.id,
           name: wp.name,
           graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
           evalParams: wp.eval_params as Record<string, unknown>,
           viewport: wp.viewport,
           evalRunId: wp.eval_run_id ?? null,
+          expandedFieldPaths: (wp.expanded_field_paths as string[]) ?? [],
         }));
         // Restore the persisted active page, falling back to the first page
         const restoredActiveId = data.active_analysis_page_id;
@@ -487,11 +488,12 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
     <div className="relative">
       <button
         ref={triggerRef}
-        className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-slate-500 text-xs font-medium"
         title="New from template"
         onClick={toggleOpen}
       >
         <BookTemplate className="w-4 h-4" />
+        <span className="hidden sm:inline">Templates</span>
       </button>
       {open && (
         <div
