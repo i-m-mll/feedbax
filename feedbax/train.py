@@ -468,7 +468,12 @@ class TaskTrainer(eqx.Module):
                 None,  # loss_reduction_fn
                 None,  # pre_step_fn
             )
-            out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0, 0)
+            # Use eqx.if_array(0) for losses and grads rather than plain 0, so that
+            # non-array leaves in the output pytrees (e.g., TermTree.weight stored as
+            # a Python float) are NOT stacked by vmap. Plain 0 would cause vmap to
+            # broadcast Python float weights to shape (n_replicates,), breaking the
+            # shape invariant expected by loss_update_func and history storage.
+            out_axes = (eqx.if_array(0), trial_specs_out_axis, flat_model_arr_spec, eqx.if_array(0), eqx.if_array(0))
 
             train_step = eqx.filter_vmap(
                 self._train_step,
@@ -656,29 +661,6 @@ class TaskTrainer(eqx.Module):
 
                     loss_func = loss_update_func(loss_func, losses_for_update, grads_for_update)
 
-                    # Re-align history.loss treedef after loss_func weight update.
-                    # TermTree embeds `weight` in aux_data (PyTree static metadata),
-                    # so changing a weight changes the treedef. The next call to
-                    # tree_set(history.loss, losses, ...) would fail with a
-                    # "Mismatch custom node data" ValueError because `losses` is
-                    # built from the updated loss_func (new treedef) while
-                    # history.loss was pre-allocated with the original treedef.
-                    #
-                    # Fix: extract the array leaves from the current history.loss,
-                    # then re-unflatten them under the new treedef from a fresh
-                    # skeleton. The number and shapes of leaves are identical; only
-                    # the static weight metadata differs.
-                    _hist_batch_dims = (idx_end - idx_start, n_replicates) if ensembled else (idx_end - idx_start,)
-                    _new_loss_skeleton = loss_func.skeleton(_hist_batch_dims)
-                    _old_leaves, _ = jtu.tree_flatten(history.loss)
-                    _, _new_treedef = jtu.tree_flatten(_new_loss_skeleton)
-                    _new_loss_history = jtu.tree_unflatten(_new_treedef, _old_leaves)
-                    history = eqx.tree_at(
-                        lambda h: h.loss,
-                        history,
-                        _new_loss_history,
-                    )
-
                 # tensorboard losses on every iteration
                 if ensembled:
                     losses_mean = losses.map(jnp.mean)
@@ -745,8 +727,11 @@ class TaskTrainer(eqx.Module):
                     )
 
                     if ensembled:
-                        losses_validation_mean = jt.map(
-                            lambda x: jnp.mean(x, axis=-1), losses_validation
+                        # Use TermTree.map instead of jt.map so that only `value`
+                        # arrays are mapped, leaving non-array leaves (e.g. weight
+                        # stored as Python float) untouched.
+                        losses_validation_mean = losses_validation.map(
+                            lambda x: jnp.mean(x, axis=-1)
                         )
                         # Only log a validation plot for the first replicate.
                         states_plot = tree_take(states, 0)

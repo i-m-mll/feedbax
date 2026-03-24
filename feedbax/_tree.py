@@ -274,7 +274,14 @@ def tree_set(
         A PyTree with the same structure as `tree`, where the array leaves of `items` have been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
     """
     arrays = eqx.filter(tree, eqx.is_array)
-    vals_update, other_update = eqx.partition(values, jt.map(lambda x: x is not None, arrays))
+    # Use is_leaf=lambda x: x is None so that None values (produced by eqx.filter
+    # for non-array leaves) are treated as leaves (→ False) rather than as empty
+    # containers, allowing pytree structures with non-array leaves to match.
+    vals_update, other_update = eqx.partition(
+        values,
+        jt.map(lambda x: x is not None, arrays, is_leaf=lambda x: x is None),
+        is_leaf=lambda x: x is None,
+    )
     arrays_update = jt.map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
     return eqx.combine(arrays_update, other_update)
 
