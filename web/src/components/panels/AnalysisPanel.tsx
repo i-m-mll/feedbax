@@ -15,8 +15,33 @@ import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
 import type { AnalysisNodeData } from '@/stores/analysisStore';
+import type { AnalysisParamValue, AnalysisParamObject } from '@/types/analysis';
 import { Plus, X } from 'lucide-react';
 import clsx from 'clsx';
+
+// ---------------------------------------------------------------------------
+// Helpers for param value parsing/formatting
+// ---------------------------------------------------------------------------
+
+/** Parse a comma-separated string into an array of numbers, ignoring invalid entries. */
+function parseNumberList(raw: string): number[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map(Number)
+    .filter((n) => !isNaN(n));
+}
+
+/** Format an array as a comma-separated string. */
+function formatArrayValue(arr: unknown[]): string {
+  return arr.join(', ');
+}
+
+/** Infer the element type of an array to decide whether to parse as numbers. */
+function isNumberArray(arr: unknown[]): boolean {
+  return arr.length > 0 && arr.every((v) => typeof v === 'number');
+}
 
 /** Height of the page sub-tab bar in pixels. */
 const PAGE_TAB_BAR_HEIGHT = 32;
@@ -320,7 +345,7 @@ function NodeDetailPanel({
         )}
       </div>
 
-      {/* Parameters */}
+      {/* Parameters — editable inputs */}
       {Object.keys(selectedData.spec.params).length > 0 && (
         <div className="mt-4">
           <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-2">
@@ -328,12 +353,12 @@ function NodeDetailPanel({
           </div>
           <div className="space-y-2">
             {Object.entries(selectedData.spec.params).map(([key, value]) => (
-              <div key={key} className="flex items-center justify-between gap-2">
-                <span className="text-xs text-slate-500">{key}</span>
-                <span className="text-xs text-slate-700 font-medium bg-slate-50 rounded px-1.5 py-0.5">
-                  {String(value)}
-                </span>
-              </div>
+              <ParamField
+                key={key}
+                nodeId={selectedNodeId!}
+                paramKey={key}
+                value={value}
+              />
             ))}
           </div>
         </div>
@@ -350,6 +375,194 @@ function NodeDetailPanel({
       >
         Remove
       </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Editable parameter field — renders the appropriate input for each param type
+// ---------------------------------------------------------------------------
+
+const INPUT_CLASS =
+  'w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1 min-h-[28px] focus:outline-none focus:border-emerald-300 focus:ring-1 focus:ring-emerald-200';
+
+function ParamField({
+  nodeId,
+  paramKey,
+  value,
+}: {
+  nodeId: string;
+  paramKey: string;
+  value: AnalysisParamValue;
+}) {
+  const updateNodeParams = useAnalysisStore((s) => s.updateNodeParams);
+
+  const commitValue = useCallback(
+    (newValue: AnalysisParamValue) => {
+      updateNodeParams(nodeId, { [paramKey]: newValue });
+    },
+    [nodeId, paramKey, updateNodeParams],
+  );
+
+  // Boolean — toggle switch
+  if (typeof value === 'boolean') {
+    return (
+      <div className="flex items-center justify-between gap-2 min-h-[28px]">
+        <span className="text-xs text-slate-500">{paramKey}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={value}
+          onClick={() => commitValue(!value)}
+          className={clsx(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            value ? 'bg-emerald-500' : 'bg-slate-200',
+          )}
+        >
+          <span
+            className={clsx(
+              'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+              value ? 'translate-x-4' : 'translate-x-0',
+            )}
+          />
+        </button>
+      </div>
+    );
+  }
+
+  // Number — number input
+  if (typeof value === 'number') {
+    return (
+      <div className="space-y-0.5">
+        <label className="text-xs text-slate-500">{paramKey}</label>
+        <input
+          type="number"
+          defaultValue={value}
+          onBlur={(e) => {
+            const parsed = Number(e.target.value);
+            if (!isNaN(parsed)) commitValue(parsed);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          className={INPUT_CLASS}
+          step="any"
+        />
+      </div>
+    );
+  }
+
+  // Array — comma-separated input
+  if (Array.isArray(value)) {
+    const isNums = isNumberArray(value);
+    return (
+      <div className="space-y-0.5">
+        <label className="text-xs text-slate-500">{paramKey}</label>
+        <input
+          type="text"
+          defaultValue={formatArrayValue(value)}
+          onBlur={(e) => {
+            if (isNums) {
+              commitValue(parseNumberList(e.target.value));
+            } else {
+              commitValue(
+                e.target.value
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0),
+              );
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          placeholder={isNums ? '0.1, 0.5, 1.0' : 'a, b, c'}
+          className={INPUT_CLASS}
+        />
+      </div>
+    );
+  }
+
+  // Object — editable JSON textarea
+  if (typeof value === 'object' && value !== null) {
+    return (
+      <ObjectParamField
+        nodeId={nodeId}
+        paramKey={paramKey}
+        value={value as Record<string, unknown>}
+        commitValue={commitValue}
+      />
+    );
+  }
+
+  // String / null / undefined / fallback — text input
+  return (
+    <div className="space-y-0.5">
+      <label className="text-xs text-slate-500">{paramKey}</label>
+      <input
+        type="text"
+        defaultValue={value == null ? '' : String(value)}
+        onBlur={(e) => commitValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        className={INPUT_CLASS}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Object parameter field — editable JSON for structured params
+// ---------------------------------------------------------------------------
+
+const TEXTAREA_CLASS =
+  'w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 font-mono leading-relaxed resize-y focus:outline-none focus:border-emerald-300 focus:ring-1 focus:ring-emerald-200';
+
+function ObjectParamField({
+  nodeId,
+  paramKey,
+  value,
+  commitValue,
+}: {
+  nodeId: string;
+  paramKey: string;
+  value: Record<string, unknown>;
+  commitValue: (v: AnalysisParamValue) => void;
+}) {
+  const [jsonStr, setJsonStr] = useState(() => JSON.stringify(value, null, 2));
+  const [error, setError] = useState<string | null>(null);
+
+  const handleBlur = useCallback(() => {
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        setError('Must be a JSON object');
+        return;
+      }
+      setError(null);
+      commitValue(parsed as AnalysisParamObject);
+    } catch {
+      setError('Invalid JSON');
+    }
+  }, [jsonStr, commitValue]);
+
+  return (
+    <div className="space-y-0.5">
+      <label className="text-xs text-slate-500">{paramKey}</label>
+      <textarea
+        value={jsonStr}
+        onChange={(e) => {
+          setJsonStr(e.target.value);
+          setError(null);
+        }}
+        onBlur={handleBlur}
+        rows={Math.min(Math.max(jsonStr.split('\n').length, 2), 12)}
+        className={clsx(TEXTAREA_CLASS, error && 'border-red-300 focus:border-red-400 focus:ring-red-200')}
+      />
+      {error && (
+        <div className="text-[10px] text-red-500">{error}</div>
+      )}
     </div>
   );
 }
