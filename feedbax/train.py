@@ -206,6 +206,7 @@ class TaskTrainer(eqx.Module):
         loss_update_func: Optional[Callable[[AbstractLoss, TermTree, PyTree], AbstractLoss]] = None,
         loss_update_iterations: bool | Int[Array, "_"] = True,
         loss_reduction_fn: Optional[Callable[[Array], Array]] = None,
+        pre_step_fn: Optional[Callable] = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -465,6 +466,7 @@ class TaskTrainer(eqx.Module):
                 None,
                 key_in_axis,
                 None,  # loss_reduction_fn
+                None,  # pre_step_fn
             )
             out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0, 0)
 
@@ -514,6 +516,7 @@ class TaskTrainer(eqx.Module):
                     model_update_funcs_flat,
                     key_compile,
                     loss_reduction_fn,
+                    pre_step_fn,
                 )
 
             logger.info(f"Training step compiled in {timer.time:.2f} seconds.")
@@ -603,6 +606,7 @@ class TaskTrainer(eqx.Module):
                     update_funcs_i,
                     key_train,
                     loss_reduction_fn,
+                    pre_step_fn,
                 )
 
                 update_pbar.subdescription(
@@ -802,6 +806,7 @@ class TaskTrainer(eqx.Module):
         update_funcs,
         key: PRNGKeyArray,
         loss_reduction_fn: Optional[Callable] = None,
+        pre_step_fn: Optional[Callable] = None,
     ):
         """Executes a single training step of the model.
 
@@ -836,6 +841,12 @@ class TaskTrainer(eqx.Module):
         )(keys_trials)
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
+
+        # Pre-step hook: modify trial_specs before the forward pass.
+        # Used for adversarial perturbation training (APT) where the
+        # perturbation is optimized to maximize loss before each step.
+        if pre_step_fn is not None:
+            trial_specs = pre_step_fn(task, model, trial_specs, loss_func, keys_model)
 
         def _make_state(_):
             return init_state_from_component(model)
