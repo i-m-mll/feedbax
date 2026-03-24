@@ -1,7 +1,10 @@
 /** Types for the analysis DAG system and figure generation. */
 
-/** A parameter value on an analysis or transform node. */
-export type AnalysisParamValue = number | string | boolean | null;
+/** A scalar parameter value on an analysis or transform node. */
+export type AnalysisParamScalar = number | string | boolean | null;
+
+/** A parameter value — scalar or array of scalars. */
+export type AnalysisParamValue = AnalysisParamScalar | AnalysisParamScalar[];
 
 /** Configuration for a transform (prep op) applied on an edge. */
 export interface TransformSpec {
@@ -35,6 +38,116 @@ export interface AnalysisNodeSpec {
   role: 'analysis' | 'dependency';
 }
 
+// ---------------------------------------------------------------------------
+// State field path types — hierarchical selection into state/model/task data
+// ---------------------------------------------------------------------------
+
+/**
+ * Dot-separated path into the state tree.
+ * Examples: "states", "states.net.hidden", "model.step.net.readout.weight"
+ */
+export type StateFieldPath = string;
+
+/** A node in the state field hierarchy. */
+export interface StateFieldNode {
+  /** Display label for this level (e.g. "hidden", "effector"). */
+  label: string;
+  /** Full dot-separated path from root (used as handle ID). */
+  path: StateFieldPath;
+  /** Child fields; absent for leaf nodes. */
+  children?: StateFieldNode[];
+}
+
+/** Complete state field tree exposed by the DataSourceNode. */
+export const STATE_FIELD_TREE: StateFieldNode[] = [
+  {
+    label: 'states',
+    path: 'states',
+    children: [
+      {
+        label: 'net',
+        path: 'states.net',
+        children: [
+          { label: 'hidden', path: 'states.net.hidden' },
+          { label: 'input', path: 'states.net.input' },
+          { label: 'output', path: 'states.net.output' },
+        ],
+      },
+      {
+        label: 'mechanics',
+        path: 'states.mechanics',
+        children: [
+          {
+            label: 'effector',
+            path: 'states.mechanics.effector',
+            children: [
+              { label: 'pos', path: 'states.mechanics.effector.pos' },
+              { label: 'vel', path: 'states.mechanics.effector.vel' },
+            ],
+          },
+        ],
+      },
+      {
+        label: 'efferent',
+        path: 'states.efferent',
+        children: [
+          { label: 'output', path: 'states.efferent.output' },
+        ],
+      },
+      {
+        label: 'feedback',
+        path: 'states.feedback',
+        children: [
+          { label: 'noise', path: 'states.feedback.noise' },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'model',
+    path: 'model',
+    children: [
+      {
+        label: 'step',
+        path: 'model.step',
+        children: [
+          {
+            label: 'net',
+            path: 'model.step.net',
+            children: [
+              { label: 'hidden', path: 'model.step.net.hidden' },
+              {
+                label: 'readout',
+                path: 'model.step.net.readout',
+                children: [
+                  { label: 'weight', path: 'model.step.net.readout.weight' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'task',
+    path: 'task',
+    children: [
+      {
+        label: 'validation_trials',
+        path: 'task.validation_trials',
+        children: [
+          { label: 'targets', path: 'task.validation_trials.targets' },
+        ],
+      },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Wire types
+// ---------------------------------------------------------------------------
+
 /** A wire in the analysis DAG. */
 export interface AnalysisWire {
   id: string;
@@ -46,6 +159,9 @@ export interface AnalysisWire {
   implicit: boolean;
   /** Transform applied on this edge, if any. */
   transform?: TransformSpec;
+  /** Specific state field path selected for this wire, if any.
+   *  Undefined means the full top-level object flows through. */
+  fieldPath?: StateFieldPath;
 }
 
 /** The complete analysis graph specification. */
@@ -109,6 +225,50 @@ export interface AnalysisNodeMeta {
   /** Analysis class name. */
   analysis_class: string;
 }
+
+// ---------------------------------------------------------------------------
+// Multi-page analysis persistence types
+// ---------------------------------------------------------------------------
+
+/** Viewport state for an analysis canvas page. */
+export interface AnalysisViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/** Extensible evaluation parametrization for an analysis page. */
+export interface EvalParametrization {
+  [key: string]: unknown;
+}
+
+/** Persisted specification for a single analysis page (tab within analysis). */
+export interface AnalysisPageSpec {
+  /** Unique page ID. */
+  id: string;
+  /** User-facing page name. */
+  name: string;
+  /** The analysis DAG graph for this page. */
+  graphSpec: AnalysisGraphSpec;
+  /** Evaluation parameters for this page. */
+  evalParams: EvalParametrization;
+  /** Viewport position/zoom for this page. */
+  viewport: AnalysisViewport;
+  /** Selected eval run ID for this page (null = none selected). */
+  evalRunId: string | null;
+}
+
+/** Snapshot of all analysis state — used by projectsStore for tab switching. */
+export interface AnalysisSnapshot {
+  /** All analysis pages. */
+  pages: AnalysisPageSpec[];
+  /** Which page is currently active (loaded into React Flow). */
+  activePageId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Figure request types
+// ---------------------------------------------------------------------------
 
 /** Status of a demand-driven figure generation request. */
 export type FigureRequestStatus = 'idle' | 'running' | 'ready' | 'error';

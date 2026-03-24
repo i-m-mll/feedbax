@@ -165,13 +165,6 @@ export function AnalysisCanvas() {
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#bbf7d0" />
         <Controls />
 
-        {/* Label */}
-        <Panel position="top-left" className="nodrag">
-          <div className="flex items-center gap-2 rounded-full border border-emerald-200/60 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">
-            <span className="text-emerald-600 font-medium">Analysis DAG</span>
-          </div>
-        </Panel>
-
         {/* Empty state */}
         {!hasNodes && (
           <Panel position="top-center" className="nodrag">

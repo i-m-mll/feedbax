@@ -10,6 +10,8 @@ interface LayoutStoreState {
   rightSidebarWidth: number;
   leftSidebarVisible: boolean;
   rightSidebarVisible: boolean;
+  bottomSidebarWidth: number;
+  bottomSidebarCollapsed: boolean;
   toggleTop: (availableHeight: number) => void;
   toggleBottom: (availableHeight: number) => void;
   setBottomHeight: (height: number, availableHeight: number) => void;
@@ -19,6 +21,8 @@ interface LayoutStoreState {
   setRightSidebarWidth: (width: number) => void;
   toggleLeftSidebar: () => void;
   toggleRightSidebar: () => void;
+  setBottomSidebarWidth: (width: number) => void;
+  toggleBottomSidebar: () => void;
 }
 
 const DEFAULT_BOTTOM_HEIGHT = 320;
@@ -37,6 +41,9 @@ export const MIN_RIGHT_WIDTH = 240;
 export const MAX_RIGHT_WIDTH = 500;
 export const DEFAULT_LEFT_WIDTH = 256;
 export const DEFAULT_RIGHT_WIDTH = 320;
+export const MIN_BOTTOM_SIDEBAR_WIDTH = 200;
+export const MAX_BOTTOM_SIDEBAR_WIDTH = 400;
+export const DEFAULT_BOTTOM_SIDEBAR_WIDTH = 256;
 
 const clampBottomHeight = (height: number, availableHeight: number) => {
   const maxBottom = Math.max(availableHeight - MIN_TOP_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
@@ -50,6 +57,9 @@ const clampLeftWidth = (width: number) =>
 const clampRightWidth = (width: number) =>
   Math.max(MIN_RIGHT_WIDTH, Math.min(MAX_RIGHT_WIDTH, width));
 
+const clampBottomSidebarWidth = (width: number) =>
+  Math.max(MIN_BOTTOM_SIDEBAR_WIDTH, Math.min(MAX_BOTTOM_SIDEBAR_WIDTH, width));
+
 export const useLayoutStore = create<LayoutStoreState>((set) => ({
   topCollapsed: false,
   bottomCollapsed: false,
@@ -60,6 +70,8 @@ export const useLayoutStore = create<LayoutStoreState>((set) => ({
   rightSidebarWidth: DEFAULT_RIGHT_WIDTH,
   leftSidebarVisible: true,
   rightSidebarVisible: true,
+  bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
+  bottomSidebarCollapsed: false,
   toggleTop: (availableHeight) => {
     if (availableHeight <= 0) return;
     set((state) => {
@@ -131,5 +143,11 @@ export const useLayoutStore = create<LayoutStoreState>((set) => ({
   },
   toggleRightSidebar: () => {
     set((state) => ({ rightSidebarVisible: !state.rightSidebarVisible }));
+  },
+  setBottomSidebarWidth: (width) => {
+    set({ bottomSidebarWidth: clampBottomSidebarWidth(width) });
+  },
+  toggleBottomSidebar: () => {
+    set((state) => ({ bottomSidebarCollapsed: !state.bottomSidebarCollapsed }));
   },
 }));
