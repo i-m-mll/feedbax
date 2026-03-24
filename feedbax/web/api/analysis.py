@@ -86,6 +86,15 @@ def _run_analysis_sync(node_id: str, force_rerun: bool) -> list[str]:
     states_pkl_dir = PATHS.cache / "states"
     states_pkl_dir.mkdir(parents=True, exist_ok=True)
 
+    # Snapshot existing figure hashes so we can identify which ones are new.
+    with db_session(autocommit=False) as session:
+        pre_hashes = {
+            r.hash
+            for r in session.query(FigureRecord.hash)
+            .filter(FigureRecord.archived == False)  # noqa: E712
+            .all()
+        }
+
     data, common_inputs, all_analyses, all_results, all_figs = run_analysis_module(
         module_key=module_key,
         module_config=module_config,
@@ -95,18 +104,17 @@ def _run_analysis_sync(node_id: str, force_rerun: bool) -> list[str]:
         key=key,
     )
 
-    # Collect figure hashes that were saved during this run by querying the
-    # database for figures belonging to the evaluation.
-    figure_hashes: list[str] = []
+    # Collect only the figure hashes that were created during this run by
+    # diffing against the pre-run snapshot.  This avoids the previous
+    # approach of grabbing the 100 most recent figures globally, which
+    # could return figures from unrelated evaluations.
     with db_session(autocommit=False) as session:
-        records = (
+        post_records = (
             session.query(FigureRecord.hash)
             .filter(FigureRecord.archived == False)  # noqa: E712
-            .order_by(FigureRecord.created_at.desc())
-            .limit(100)
             .all()
         )
-        figure_hashes = [r.hash for r in records]
+        figure_hashes = [r.hash for r in post_records if r.hash not in pre_hashes]
 
     return figure_hashes
 

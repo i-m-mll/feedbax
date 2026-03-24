@@ -106,38 +106,56 @@ async def list_training_runs() -> list[TrainingRunInfo]:
 
     All records returned from the database are post-training, so the
     status is always ``completed``.
+
+    Uses a window function to select one representative record per
+    (expt_name, hash) group in a single query, avoiding N+1 per-row
+    lookups.
     """
-    from sqlalchemy import func
+    from sqlalchemy import func, over
 
     with db_session(autocommit=False) as session:
-        rows = (
-            session.query(
-                ModelRecord.hash,
-                ModelRecord.expt_name,
-                func.min(ModelRecord.created_at).label("earliest"),
+        # Use ROW_NUMBER to pick one representative record per group while
+        # also computing the earliest created_at.  This collapses the
+        # previous two-query pattern (grouped aggregation + per-row fetch)
+        # into a single pass.
+        row_num = (
+            func.row_number()
+            .over(
+                partition_by=(ModelRecord.expt_name, ModelRecord.hash),
+                order_by=ModelRecord.created_at.asc(),
             )
+            .label("rn")
+        )
+        earliest = (
+            func.min(ModelRecord.created_at)
+            .over(partition_by=(ModelRecord.expt_name, ModelRecord.hash))
+            .label("earliest")
+        )
+
+        subq = (
+            session.query(ModelRecord, row_num, earliest)
             .filter(ModelRecord.is_path_defunct == False)  # noqa: E712
-            .group_by(ModelRecord.expt_name, ModelRecord.hash)
-            .order_by(func.min(ModelRecord.created_at).desc())
+            .subquery()
+        )
+
+        from sqlalchemy.orm import aliased
+
+        RecordAlias = aliased(ModelRecord, subq)
+
+        rows = (
+            session.query(RecordAlias, subq.c.earliest)
+            .filter(subq.c.rn == 1)
+            .order_by(subq.c.earliest.desc())
             .all()
         )
 
-        # Build result list; fetch full record for hyperparams
         results: list[TrainingRunInfo] = []
-        for row in rows:
-            record = (
-                session.query(ModelRecord)
-                .filter(ModelRecord.hash == row.hash)
-                .first()
-            )
-            if record is None:
-                continue
-
+        for record, earliest_ts in rows:
             results.append(
                 TrainingRunInfo(
                     id=record.hash,
                     name=record.expt_name or record.hash[:12],
-                    created_at=row.earliest.isoformat() if row.earliest else "",
+                    created_at=earliest_ts.isoformat() if earliest_ts else "",
                     status="completed",
                     hyperparams=_extract_hyperparams(record),
                 )
@@ -167,13 +185,15 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
             )
 
         # EvaluationRecord.model_hashes is a JSON column containing a list
-        # of model hash strings.  SQLite stores JSON as text, so we use a
-        # LIKE match to find evaluations that reference this model hash.
+        # of model hash strings.  SQLite stores JSON as text, so we search
+        # for the JSON-quoted hash to avoid substring false positives (e.g.
+        # hash "abc" matching "abcdef123").
+        quoted_hash = f'"{training_run_id}"'
         evals = (
             session.query(EvaluationRecord)
             .filter(EvaluationRecord.archived == False)  # noqa: E712
             .filter(
-                EvaluationRecord.model_hashes.cast(str).contains(training_run_id)
+                EvaluationRecord.model_hashes.cast(str).contains(quoted_hash)
             )
             .order_by(EvaluationRecord.created_at.desc())
             .all()

@@ -47,17 +47,42 @@ class AnalysisJobTracker:
 
     All public methods are coroutines guarded by an ``asyncio.Lock`` so
     that concurrent endpoint handlers do not race on the internal dict.
+
+    Completed and errored jobs are evicted when the tracker exceeds
+    ``_MAX_JOBS`` entries, keeping the dict bounded.
     """
+
+    _MAX_JOBS = 1000
 
     def __init__(self) -> None:
         self._jobs: dict[str, JobEntry] = {}
         self._lock = asyncio.Lock()
+
+    def _evict_completed(self) -> None:
+        """Remove oldest completed/errored jobs until under the limit.
+
+        Must be called while ``self._lock`` is held.
+        """
+        if len(self._jobs) <= self._MAX_JOBS:
+            return
+        # Collect completed/errored entries (insertion-order = oldest first)
+        evictable = [
+            rid
+            for rid, entry in self._jobs.items()
+            if entry.status in (JobStatus.COMPLETE, JobStatus.ERROR)
+        ]
+        n_to_evict = len(self._jobs) - self._MAX_JOBS
+        for rid in evictable[:n_to_evict]:
+            del self._jobs[rid]
+        if n_to_evict > 0:
+            logger.info("Evicted %d completed/errored jobs", min(n_to_evict, len(evictable)))
 
     async def create_job(self, node_id: str) -> str:
         """Create a new pending job and return its ``request_id``."""
         request_id = str(uuid.uuid4())
         entry = JobEntry(request_id=request_id, node_id=node_id)
         async with self._lock:
+            self._evict_completed()
             self._jobs[request_id] = entry
         logger.info("Created analysis job %s for node_id=%s", request_id, node_id)
         return request_id
