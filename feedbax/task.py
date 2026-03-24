@@ -841,6 +841,10 @@ class AbstractTask(Module):
                 key=key_run,
                 n_steps=n_steps,
             )
+            # Strip prepended initial state so history length matches targets.
+            state_history = jt.map(
+                lambda x: x[1:] if x is not None else x, state_history,
+            )
             return state_history
 
         return eqx.filter_vmap(eval_single)(trial_specs, keys)
