@@ -4,6 +4,10 @@ import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 
 export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+  },
   plugins: [
     react(),
     VitePWA({

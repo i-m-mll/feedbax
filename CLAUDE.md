@@ -40,6 +40,12 @@ Corollaries that must be respected without exception:
 
 **Backward compatibility is not a concern.** There is a single developer. When the architecture improves, old saved graphs are expected to be re-created from Studio. We do not maintain legacy code paths, fallback logic, or compatibility shims for older graph formats. When something is wrong, raise a clear error rather than silently substituting a stale value.
 
+## UI Conventions
+
+**No-jitter**: Interactive/editable page elements must not change geometry (size, position, spacing) when interacted with, except as explicitly intended (e.g. expand/collapse). Hover states, focus rings, edit mode transitions must preserve element dimensions.
+
+**No-volatility**: Everything the user sees in Studio must survive save/load/refresh cycles. If a UI element displays state, that state must be persisted. There are no exceptions — if it's visible, it's saved.
+
 ## Active Feature Context
 
 - `feature/differentiable-mjx`: CDE hidden-state stability experiments (v6→v9b), AnalyticalMusculoskeletalPlant, DiffraxBackend. Latest: hybrid fixed-decay + Anti-NF gate (v9b).

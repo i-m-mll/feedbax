@@ -920,22 +920,25 @@ function normalizeUiState(
   const base: GraphUIState = uiState ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
   const node_states = { ...base.node_states };
 
+  // Merge loaded state OVER defaults: for each node in the graph, create a
+  // default entry first, then spread any loaded state on top so that saved
+  // values (e.g. reversed: true) are never overwritten by defaults.
   let offset = 0;
   for (const nodeId of Object.keys(graph.nodes)) {
-    if (!node_states[nodeId]) {
-      node_states[nodeId] = {
-        position: { x: DEFAULT_POSITION.x + offset, y: DEFAULT_POSITION.y + offset },
-        collapsed: false,
-        selected: false,
-        reversed: false,
-      };
-      offset += 60;
+    const defaults = {
+      position: { x: DEFAULT_POSITION.x + offset, y: DEFAULT_POSITION.y + offset },
+      collapsed: false,
+      selected: false,
+      reversed: false,
+    };
+    const loaded = node_states[nodeId];
+    if (loaded) {
+      // Spread defaults under loaded state so any saved field wins,
+      // while missing fields (e.g. reversed absent from older saves) get defaults.
+      node_states[nodeId] = { ...defaults, ...loaded };
     } else {
-      // Explicitly ensure reversed is always defined (not undefined from older saves)
-      node_states[nodeId] = {
-        ...node_states[nodeId],
-        reversed: node_states[nodeId].reversed ?? false,
-      };
+      node_states[nodeId] = defaults;
+      offset += 60;
     }
   }
 
@@ -1315,6 +1318,7 @@ interface GraphStoreState {
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
   markSaved: (graphId: string) => void;
+  markDirty: () => void;
   resetGraph: () => void;
   undo: () => void;
   redo: () => void;
@@ -1420,6 +1424,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       isDirty: false,
       lastSavedAt: new Date().toISOString(),
     });
+  },
+  markDirty: () => {
+    set({ isDirty: true });
   },
   resetGraph: () => {
     const fresh = createInitialGraph();

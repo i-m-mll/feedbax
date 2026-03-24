@@ -5,14 +5,17 @@ import {
   Plus,
   Download,
   X,
+  BookTemplate,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
-import { useGraphStore } from '@/stores/graphStore';
+import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
+import { PROJECT_TEMPLATES } from '@/data/project-templates';
+import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
 
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -70,10 +73,28 @@ export function Header() {
   const handleOpen = async (id: string) => {
     try {
       const data = await fetchGraph(id);
+      // Build analysis snapshot from persisted pages (convert snake_case wire format)
+      let analysisSnapshot: AnalysisSnapshot | null = null;
+      if (data.analysis_pages && data.analysis_pages.length > 0) {
+        const pages = data.analysis_pages.map((wp) => ({
+          id: wp.id,
+          name: wp.name,
+          graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
+          evalParams: wp.eval_params as Record<string, unknown>,
+          viewport: wp.viewport,
+          evalRunId: wp.eval_run_id ?? null,
+        }));
+        // Restore the persisted active page, falling back to the first page
+        const restoredActiveId = data.active_analysis_page_id;
+        const activePageId = restoredActiveId && pages.some((p) => p.id === restoredActiveId)
+          ? restoredActiveId
+          : pages[0].id;
+        analysisSnapshot = { pages, activePageId };
+      }
       openProjectInTab(id, data.graph, data.ui_state ?? {
         viewport: { x: 0, y: 0, zoom: 1 },
         node_states: {},
-      }, data.metadata?.name ?? undefined);
+      }, data.metadata?.name ?? undefined, analysisSnapshot);
       if (data.demo_training_data) {
         const demo = data.demo_training_data;
         const totalBatches = demo.loss_history.length;
@@ -280,6 +301,7 @@ export function Header() {
           <Download className="w-4 h-4" />
         </button>
         <OpenProjectDropdown onOpen={handleOpen} onBeforeOpen={() => setSettingsOpen(false)} />
+        <TemplateProjectsDropdown onBeforeOpen={() => setSettingsOpen(false)} />
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="Settings"
@@ -378,6 +400,128 @@ function OpenProjectDropdown({ onOpen, onBeforeOpen }: OpenProjectDropdownProps)
             {!graphsQuery.isLoading && (graphsQuery.data?.graphs?.length ?? 0) === 0 && (
               <div className="text-xs text-slate-400 px-2 py-2">No saved projects yet.</div>
             )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Template Projects Dropdown — creates projects from pre-built templates
+// ---------------------------------------------------------------------------
+
+interface TemplateProjectsDropdownProps {
+  onBeforeOpen?: () => void;
+}
+
+function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProps) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const handlerRef = useRef<((event: PointerEvent) => void) | null>(null);
+  const { openProjectInTab } = useProjectsStore();
+
+  const handlePointerDown = useCallback((event: PointerEvent) => {
+    const target = event.target as Node | null;
+    if (!target) return;
+    if (
+      dropdownRef.current &&
+      !dropdownRef.current.contains(target) &&
+      !triggerRef.current?.contains(target)
+    ) {
+      if (handlerRef.current) {
+        document.removeEventListener('pointerdown', handlerRef.current);
+        handlerRef.current = null;
+      }
+      setOpen(false);
+    }
+  }, []);
+
+  const toggleOpen = () => {
+    if (!open) {
+      onBeforeOpen?.();
+      handlerRef.current = handlePointerDown;
+      document.addEventListener('pointerdown', handlePointerDown);
+    } else {
+      if (handlerRef.current) {
+        document.removeEventListener('pointerdown', handlerRef.current);
+        handlerRef.current = null;
+      }
+    }
+    setOpen((prev) => !prev);
+  };
+
+  const handleLoadTemplate = useCallback(
+    (templateIdx: number) => {
+      const template = PROJECT_TEMPLATES[templateIdx];
+      if (!template) return;
+
+      // Create a blank model graph for the template project
+      const blankGraph = createBlankGraph();
+      blankGraph.metadata!.name = template.name;
+
+      const analysisSnapshot = template.createAnalysis();
+
+      // Open in a new tab with the template's analysis pages
+      openProjectInTab(
+        '', // No persisted graphId
+        blankGraph,
+        { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} },
+        template.name,
+        analysisSnapshot,
+      );
+
+      if (handlerRef.current) {
+        document.removeEventListener('pointerdown', handlerRef.current);
+        handlerRef.current = null;
+      }
+      setOpen(false);
+    },
+    [openProjectInTab],
+  );
+
+  if (PROJECT_TEMPLATES.length === 0) return null;
+
+  return (
+    <div className="relative">
+      <button
+        ref={triggerRef}
+        className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500"
+        title="New from template"
+        onClick={toggleOpen}
+      >
+        <BookTemplate className="w-4 h-4" />
+      </button>
+      {open && (
+        <div
+          ref={dropdownRef}
+          className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-2"
+        >
+          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 px-2 pb-1">
+            Template Projects
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {PROJECT_TEMPLATES.map((template, idx) => (
+              <button
+                key={template.id}
+                onClick={() => handleLoadTemplate(idx)}
+                className="w-full text-left text-sm px-2 py-2 rounded-lg hover:bg-slate-50"
+              >
+                <div className="font-medium text-slate-700">{template.name}</div>
+                <div className="text-xs text-slate-400 mt-0.5">{template.description}</div>
+                <div className="flex gap-1 mt-1 flex-wrap">
+                  {template.pageNames.map((pn) => (
+                    <span
+                      key={pn}
+                      className="inline-block rounded-full bg-emerald-50 text-emerald-600 text-[10px] px-1.5 py-0.5"
+                    >
+                      {pn}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       )}

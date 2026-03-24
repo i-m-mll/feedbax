@@ -1,31 +1,39 @@
 /**
  * DataSourceNode — the implicit data source on the left edge of the analysis DAG.
  *
- * Represents AnalysisInputData: the states, inputs, outputs, targets, and
- * metadata that flow into analysis nodes. Styled as a muted, rounded rectangle
- * with output handles only, visually distinct from full analysis nodes.
+ * Renders the hierarchical state field tree (states, model, task) with
+ * expand/collapse controls. Each tree node is a connectable React Flow Handle,
+ * allowing users to wire specific sub-fields (e.g. "states.net.hidden") to
+ * analysis nodes. The node auto-resizes when branches are expanded/collapsed.
+ *
+ * Top-level items are always visible with chevrons. Connecting to a branch
+ * node sends the full subtree; connecting to a leaf sends that specific field.
  */
 
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { useEffect } from 'react';
+import { useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import type { DataSourceNodeData } from '@/stores/analysisStore';
+import { STATE_FIELD_TREE } from '@/types/analysis';
+import { StateFieldTree, useFieldTreeExpansion, FIELD_ROW_HEIGHT } from './StateFieldTree';
 import { Database } from 'lucide-react';
 import clsx from 'clsx';
 
-const WIDTH = 180;
+const WIDTH = 200;
 const HEADER_HEIGHT = 36;
-const ROW_HEIGHT = 24;
 const BODY_PADDING = 8;
-const HANDLE_OFFSET = -6;
-const LABEL_OFFSET = 18;
 
-export function DataSourceNode({ data, selected }: NodeProps) {
+export function DataSourceNode({ id, data, selected }: NodeProps) {
   const nodeData = data as DataSourceNodeData;
-  const outputs = nodeData.outputs ?? [];
-  const rowCount = Math.max(1, outputs.length);
-  const bodyHeight = BODY_PADDING * 2 + rowCount * ROW_HEIGHT;
+  const { expandedPaths, toggleExpand, visibleCount } = useFieldTreeExpansion(STATE_FIELD_TREE);
+
+  const bodyHeight = BODY_PADDING * 2 + visibleCount * FIELD_ROW_HEIGHT;
   const totalHeight = HEADER_HEIGHT + bodyHeight;
 
-  const rowCenter = (index: number) => BODY_PADDING + ROW_HEIGHT * (index + 0.5);
+  // Notify React Flow that handles changed when expansion state changes
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, visibleCount, updateNodeInternals]);
 
   return (
     <div
@@ -33,52 +41,26 @@ export function DataSourceNode({ data, selected }: NodeProps) {
         'relative rounded-lg border bg-slate-50/80 backdrop-blur shadow-soft transition-all duration-150',
         selected
           ? 'border-brand-500 ring-1 ring-brand-500/40'
-          : 'border-slate-200/80'
+          : 'border-slate-200/80',
       )}
       style={{ width: WIDTH, height: totalHeight }}
     >
       {/* Header */}
-      <div className="px-3 py-2 flex items-center gap-2 border-b border-slate-100/80 rounded-t-lg">
-        <Database className="w-3.5 h-3.5 text-slate-400" />
-        <div className="text-xs font-medium text-slate-500 truncate">
-          {nodeData.label}
-        </div>
+      <div className="px-3 py-2 flex items-center justify-center border-b border-slate-100/80 rounded-t-lg">
+        <Database className="w-4 h-4 text-slate-400" />
       </div>
 
-      {/* Output ports */}
+      {/* Hierarchical field tree */}
       <div
         className="relative text-[11px] text-slate-400"
         style={{ height: bodyHeight, padding: BODY_PADDING }}
       >
-        {outputs.map((port, index) => (
-          <Handle
-            key={`handle-out-${port}`}
-            type="source"
-            position={Position.Right}
-            id={port}
-            style={{
-              top: rowCenter(index),
-              right: HANDLE_OFFSET,
-              transform: 'translateY(-50%)',
-              width: '7px',
-              height: '7px',
-            }}
-            className="border border-white shadow-soft bg-slate-300"
-          />
-        ))}
-        {outputs.map((port, index) => (
-          <div
-            key={`label-${port}`}
-            className="absolute flex items-center justify-end text-slate-400"
-            style={{
-              top: rowCenter(index),
-              right: LABEL_OFFSET,
-              transform: 'translateY(-50%)',
-            }}
-          >
-            {port}
-          </div>
-        ))}
+        <StateFieldTree
+          nodes={STATE_FIELD_TREE}
+          expandedPaths={expandedPaths}
+          onToggle={toggleExpand}
+          bodyPadding={BODY_PADDING}
+        />
       </div>
     </div>
   );

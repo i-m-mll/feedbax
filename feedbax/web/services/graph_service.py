@@ -8,6 +8,7 @@ import uuid
 
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.web.models.graph import (
+    AnalysisPageSpec,
     GraphProject,
     GraphSpec,
     GraphUIState,
@@ -63,6 +64,8 @@ class GraphService:
         graph_id: str,
         graph: Optional[GraphSpec],
         ui_state: Optional[GraphUIState],
+        analysis_pages: Optional[List[AnalysisPageSpec]] = None,
+        active_analysis_page_id: Optional[str] = None,
     ) -> GraphRecord:
         record = self.get_graph(graph_id)
         project = record.project
@@ -70,6 +73,10 @@ class GraphService:
             project.graph = graph
         if ui_state is not None:
             project.ui_state = ui_state
+        if analysis_pages is not None:
+            project.analysis_pages = analysis_pages
+        if active_analysis_page_id is not None:
+            project.active_analysis_page_id = active_analysis_page_id
         updated_at = datetime.now(timezone.utc).isoformat()
         project.metadata.updated_at = updated_at
         if project.graph.metadata is not None:

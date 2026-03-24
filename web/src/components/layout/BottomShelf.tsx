@@ -6,8 +6,9 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
-import { RunSelector } from '@/components/panels/RunSelector';
+import { TrainingRunSelector } from '@/components/panels/RunSelector';
 import { FigureGalleryPanel } from '@/components/panels/FigureGalleryPanel';
+import { BottomSidebar } from '@/components/layout/BottomSidebar';
 
 const tabs = [
   { id: 'training', label: 'Training' },
@@ -68,9 +69,15 @@ export function BottomShelf({
       style={{ height }}
     >
       <div
-        className="flex items-center px-4 gap-4"
+        className="flex items-center px-4 gap-3"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
+        {/* Training run selector — global, left of tabs */}
+        <div className="shrink-0">
+          <TrainingRunSelector activeTab={activeTab} />
+        </div>
+        <div className="shrink-0 w-px h-5 bg-slate-200" />
+        {/* Tab pills */}
         <div className="relative flex-1 min-w-0">
           <div ref={tabsRef} className="flex items-center gap-2 overflow-x-auto pr-6">
             {tabs.map((tab) => (
@@ -98,16 +105,19 @@ export function BottomShelf({
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
         </div>
-        <div className="shrink-0 border-l border-slate-100 pl-3">
-          <RunSelector activeTab={activeTab} />
-        </div>
       </div>
       {!bottomCollapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
-          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'}
+          className={clsx(
+            'flex',
+            activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'
+          )}
         >
-          {activeContent}
+          {activeTab === 'analysis' && <BottomSidebar />}
+          <div className="flex-1 min-w-0 h-full">
+            {activeContent}
+          </div>
         </div>
       )}
     </section>
