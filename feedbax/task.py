@@ -1798,7 +1798,18 @@ class TaskComponent(Component):
         if self.mode == "open_loop":
             inputs = jt.map(lambda x: x[step], self.trial_spec.inputs)
             if self.trial_spec.intervene:
-                intervene = jt.map(lambda x: x[step], self.trial_spec.intervene)
+                # Unwrap TimeSeriesParam leaves (index by step) and pass
+                # through time-invariant leaves as-is.
+                def _index_or_passthrough(x):
+                    if isinstance(x, TimeSeriesParam):
+                        return x.value[step]
+                    return x
+
+                intervene = jt.map(
+                    _index_or_passthrough,
+                    self.trial_spec.intervene,
+                    is_leaf=is_type(TimeSeriesParam),
+                )
             else:
                 intervene = {}
             outputs = {
