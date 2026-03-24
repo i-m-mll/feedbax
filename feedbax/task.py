@@ -123,6 +123,29 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
     return _set_component(model, parts, state)
 
 
+def _cast_to_state_type(value, state_value):
+    """Cast a trial-specific value to match the State's stored type.
+
+    State.set() validates via jax.eval_shape, which is sensitive to JAX
+    weak-type status.  Python scalars (float, int, bool) produce weak types
+    when passed through jnp.asarray, while JAX-produced arrays are strong.
+    To match, we convert the new value to the same Python type as the
+    original State value.
+    """
+    if isinstance(state_value, bool):
+        return bool(value)
+    if isinstance(state_value, float):
+        return float(value)
+    if isinstance(state_value, int):
+        return int(value)
+    if hasattr(state_value, 'dtype'):
+        arr = jnp.asarray(value)
+        if arr.dtype != state_value.dtype:
+            arr = arr.astype(state_value.dtype)
+        return arr
+    return value
+
+
 def _extract_timeseries_params(
     params: PyTree,
     defaults: PyTree,
@@ -782,16 +805,13 @@ class AbstractTask(Module):
                     idx = indices[label]
                     current = init_state.get(idx)
                     # Merge only time-invariant leaves into State,
-                    # casting to match State dtypes.
+                    # casting to match State dtypes/weak-types.
                     def _merge_leaf(p, c):
                         if isinstance(p, TimeSeriesParam):
                             return c
                         if p is None:
                             return c
-                        val = jnp.asarray(p)
-                        if hasattr(c, 'dtype') and val.dtype != c.dtype:
-                            val = val.astype(c.dtype)
-                        return val
+                        return _cast_to_state_type(p, c)
 
                     merged = jt.map(
                         _merge_leaf,

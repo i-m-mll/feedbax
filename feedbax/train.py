@@ -61,6 +61,31 @@ LOSS_FMT = ".2e"
 logger = logging.getLogger(__name__)
 
 
+def _cast_to_state_type(value, state_value):
+    """Cast a trial-specific value to match the State's stored type.
+
+    State.set() validates via jax.eval_shape, which is sensitive to JAX
+    weak-type status.  Python scalars (float, int, bool) produce weak types
+    when passed through jnp.asarray, while JAX-produced arrays are strong.
+    To match, we convert the new value to the same Python type as the
+    original State value, so that State.set()'s internal jnp.asarray call
+    produces an identical ShapeDtypeStruct.
+    """
+    if isinstance(state_value, bool):
+        return bool(value)
+    if isinstance(state_value, float):
+        return float(value)
+    if isinstance(state_value, int):
+        return int(value)
+    # For JAX arrays, cast to match dtype
+    if hasattr(state_value, 'dtype'):
+        arr = jnp.asarray(value)
+        if arr.dtype != state_value.dtype:
+            arr = arr.astype(state_value.dtype)
+        return arr
+    return value
+
+
 WhereFunc: TypeAlias = Callable[[Component], Any]
 
 
@@ -839,11 +864,11 @@ class TaskTrainer(eqx.Module):
                             return c
                         if p is None:
                             return c
-                        # Cast trial-specific value to match State dtype
-                        val = jnp.asarray(p)
-                        if hasattr(c, 'dtype') and val.dtype != c.dtype:
-                            val = val.astype(c.dtype)
-                        return val
+                        # Convert trial-specific values to the same Python
+                        # types as the State's stored values so that
+                        # State.set()'s jnp.asarray produces matching
+                        # weak-type / dtype.
+                        return _cast_to_state_type(p, c)
 
                     merged = jt.map(
                         _merge_leaf,
