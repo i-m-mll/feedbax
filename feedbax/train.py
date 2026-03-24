@@ -65,25 +65,36 @@ def _cast_to_state_type(value, state_value):
     """Cast a trial-specific value to match the State's stored type.
 
     State.set() validates via jax.eval_shape, which is sensitive to JAX
-    weak-type status.  Python scalars (float, int, bool) produce weak types
-    when passed through jnp.asarray, while JAX-produced arrays are strong.
-    To match, we convert the new value to the same Python type as the
-    original State value, so that State.set()'s internal jnp.asarray call
-    produces an identical ShapeDtypeStruct.
+    weak-type status.  State.__init__ converts initial values via
+    ``jnp.asarray``, so Python ``float`` -> weak f32, Python ``bool`` ->
+    bool.  Trial-specific values from ``jr.uniform`` etc. are strong f32.
+    We must match exact dtype AND weak-type status.
+
+    The safest route: convert to Python scalar and let State.set()'s
+    ``jnp.asarray`` re-create the exact same type as the original.
     """
-    if isinstance(state_value, bool):
+    if not hasattr(state_value, 'dtype'):
+        return value
+
+    sv_dtype = state_value.dtype
+
+    # For bool State values, convert to Python bool
+    if sv_dtype == jnp.bool_:
         return bool(value)
-    if isinstance(state_value, float):
-        return float(value)
-    if isinstance(state_value, int):
-        return int(value)
-    # For JAX arrays, cast to match dtype
-    if hasattr(state_value, 'dtype'):
-        arr = jnp.asarray(value)
-        if arr.dtype != state_value.dtype:
-            arr = arr.astype(state_value.dtype)
-        return arr
-    return value
+
+    # For weak-type State values (originally Python scalars),
+    # convert back to Python scalar so jnp.asarray produces weak type.
+    if getattr(state_value, 'weak_type', False):
+        if jnp.issubdtype(sv_dtype, jnp.floating):
+            return float(value)
+        if jnp.issubdtype(sv_dtype, jnp.integer):
+            return int(value)
+
+    # For strong-typed JAX arrays, match dtype
+    arr = jnp.asarray(value)
+    if arr.dtype != sv_dtype:
+        arr = arr.astype(sv_dtype)
+    return arr
 
 
 WhereFunc: TypeAlias = Callable[[Component], Any]
