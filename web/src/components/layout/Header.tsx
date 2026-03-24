@@ -5,11 +5,11 @@ import {
   Plus,
   Download,
   X,
-  BookTemplate,
+  BookOpen,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
-import { fetchGraph, exportGraph } from '@/api/client';
+import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useTrainingStore } from '@/stores/trainingStore';
@@ -454,24 +454,64 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
   };
 
   const handleLoadTemplate = useCallback(
-    (templateIdx: number) => {
+    async (templateIdx: number) => {
       const template = PROJECT_TEMPLATES[templateIdx];
       if (!template) return;
 
-      // Create a blank model graph for the template project
-      const blankGraph = createBlankGraph();
-      blankGraph.metadata!.name = template.name;
+      // Use the template's model graph if available, otherwise create blank
+      let modelGraph: ReturnType<typeof createBlankGraph>;
+      let uiState: any;
+
+      if (template.createModelGraph) {
+        const result = template.createModelGraph();
+        modelGraph = result.graph;
+        uiState = result.uiState;
+      } else {
+        modelGraph = createBlankGraph();
+        modelGraph.metadata!.name = template.name;
+        uiState = { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} };
+      }
 
       const analysisSnapshot = template.createAnalysis();
 
-      // Open in a new tab with the template's analysis pages
-      openProjectInTab(
-        '', // No persisted graphId
-        blankGraph,
-        { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} },
-        template.name,
-        analysisSnapshot,
-      );
+      try {
+        // Persist to backend immediately so this is a real project, not ephemeral
+        const response = await createGraph(modelGraph, uiState);
+        const graphId = response.id;
+
+        // Save analysis pages to the backend
+        const analysisPages = analysisSnapshot.pages.map((page) => ({
+          id: page.id,
+          name: page.name,
+          graph_spec: page.graphSpec,
+          eval_params: page.evalParams,
+          viewport: page.viewport,
+          eval_run_id: page.evalRunId ?? null,
+          expanded_field_paths: page.expandedFieldPaths ?? [],
+        }));
+        await updateGraph(graphId, null, null, analysisPages, analysisSnapshot.activePageId);
+
+        // Open in a new tab with the persisted graphId
+        openProjectInTab(
+          graphId,
+          modelGraph,
+          uiState,
+          template.name,
+          analysisSnapshot,
+        );
+
+        localStorage.setItem('feedbax:lastProjectId', graphId);
+      } catch (err) {
+        console.error('Failed to save example project to backend:', err);
+        // Fall back to ephemeral tab if save fails
+        openProjectInTab(
+          '',
+          modelGraph,
+          uiState,
+          template.name,
+          analysisSnapshot,
+        );
+      }
 
       if (handlerRef.current) {
         document.removeEventListener('pointerdown', handlerRef.current);
@@ -489,11 +529,11 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
       <button
         ref={triggerRef}
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-slate-500 text-xs font-medium"
-        title="New from template"
+        title="Load example project"
         onClick={toggleOpen}
       >
-        <BookTemplate className="w-4 h-4" />
-        <span className="hidden sm:inline">Templates</span>
+        <BookOpen className="w-4 h-4" />
+        <span className="hidden sm:inline">Examples</span>
       </button>
       {open && (
         <div
@@ -501,7 +541,7 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-2"
         >
           <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 px-2 pb-1">
-            Template Projects
+            Example Projects
           </div>
           <div className="max-h-64 overflow-y-auto">
             {PROJECT_TEMPLATES.map((template, idx) => (

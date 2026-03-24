@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
 import { TrainingPanel } from '@/components/panels/TrainingPanel';
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
-import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
 import { TrainingRunSelector } from '@/components/panels/RunSelector';
 import { FigureGalleryPanel } from '@/components/panels/FigureGalleryPanel';
 import { BottomSidebar } from '@/components/layout/BottomSidebar';
 
+/** Tab definitions with optional separator-before flag. */
 const tabs = [
-  { id: 'training', label: 'Training' },
-  { id: 'console', label: 'Console' },
-  { id: 'analysis', label: 'Analysis' },
-  { id: 'trajectories', label: 'Trajectories' },
-  { id: 'statistics', label: 'Statistics' },
-  { id: 'figures', label: 'Figures' },
+  { id: 'training', label: 'Training', separator: false },
+  // Run selector is rendered inline (not a tab) — see below
+  { id: 'analysis', label: 'Analysis', separator: true },
+  { id: 'statistics', label: 'Statistics', separator: false },
+  { id: 'figures', label: 'Figures', separator: false },
+  { id: 'console', label: 'Console', separator: true },
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
@@ -37,9 +37,9 @@ export function BottomShelf({
     if (activeTab === 'training') return <TrainingPanel />;
     if (activeTab === 'console') return <ConsolePanel />;
     if (activeTab === 'analysis') return <AnalysisPanel />;
-    if (activeTab === 'trajectories') return <TrajectoryPanel />;
     if (activeTab === 'statistics') return <StatisticsPanel />;
-    return <FigureGalleryPanel />;
+    if (activeTab === 'figures') return <FigureGalleryPanel />;
+    return <TrainingPanel />;
   }, [activeTab]);
 
   const updateFades = useCallback(() => {
@@ -72,30 +72,36 @@ export function BottomShelf({
         className="flex items-center px-4 gap-3"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
-        {/* Training run selector — global, left of tabs */}
-        <div className="shrink-0">
-          <TrainingRunSelector activeTab={activeTab} />
-        </div>
-        <div className="shrink-0 w-px h-5 bg-slate-200" />
-        {/* Tab pills */}
+        {/* Tab pills with inline run selector */}
         <div className="relative flex-1 min-w-0">
           <div ref={tabsRef} className="flex items-center gap-2 overflow-x-auto pr-6">
             {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => {
-                  if (bottomCollapsed) toggleBottom(availableHeight);
-                  setActiveTab(tab.id);
-                }}
-                className={clsx(
-                  'text-xs font-semibold uppercase tracking-[0.2em] px-3 py-1.5 rounded-full border whitespace-nowrap',
-                  activeTab === tab.id
-                    ? 'border-brand-500 text-brand-600 bg-brand-500/10'
-                    : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+              <React.Fragment key={tab.id}>
+                {/* Separator before this tab if flagged */}
+                {tab.separator && (
+                  <div className="shrink-0 w-px h-5 bg-slate-200" />
                 )}
-              >
-                {tab.label}
-              </button>
+                {/* Inline run selector after Training tab */}
+                {tab.id === 'analysis' && (
+                  <div className="shrink-0">
+                    <TrainingRunSelector activeTab={activeTab} />
+                  </div>
+                )}
+                <button
+                  onClick={() => {
+                    if (bottomCollapsed) toggleBottom(availableHeight);
+                    setActiveTab(tab.id);
+                  }}
+                  className={clsx(
+                    'text-xs font-semibold uppercase tracking-[0.2em] px-3 py-1.5 rounded-full border whitespace-nowrap',
+                    activeTab === tab.id
+                      ? 'border-brand-500 text-brand-600 bg-brand-500/10'
+                      : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                  )}
+                >
+                  {tab.label}
+                </button>
+              </React.Fragment>
             ))}
           </div>
           {fadeState.left && (
@@ -111,7 +117,7 @@ export function BottomShelf({
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
           className={clsx(
             'flex',
-            activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'
+            activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'
           )}
         >
           {activeTab === 'analysis' && <BottomSidebar />}
