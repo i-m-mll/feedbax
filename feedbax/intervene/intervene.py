@@ -17,6 +17,23 @@ from feedbax.graph import Component
 from feedbax.noise import Normal
 
 
+def _merge_params_override(
+    base_params: "InterventionParams",
+    override: "InterventionParams",
+) -> "InterventionParams":
+    """Merge override params into base, keeping base values where override has None.
+
+    Override leaves take precedence. This allows per-step time-varying params
+    to override the default State-stored params.
+    """
+    return jt.map(
+        lambda o, b: o if o is not None else b,
+        override,
+        base_params,
+        is_leaf=lambda x: x is None,
+    )
+
+
 class InterventionParams(eqx.Module):
     scale: float = 1.0
     active: bool = True
@@ -50,7 +67,7 @@ class CopyParams(InterventionParams):
 class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
 
-    input_ports = ("effector", "force")
+    input_ports = ("effector", "force", "params_override")
     output_ports = ("force",)
 
     params_index: StateIndex
@@ -66,6 +83,8 @@ class CurlField(Component):
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: CurlFieldParams = state.get(self.params_index)
+        if "params_override" in inputs:
+            params = _merge_params_override(params, inputs["params_override"])
         effector = inputs["effector"]
         force = inputs["force"]
 
@@ -84,7 +103,7 @@ class CurlField(Component):
 class FixedField(Component):
     """Adds a fixed force vector to a force signal."""
 
-    input_ports = ("force",)
+    input_ports = ("force", "params_override")
     output_ports = ("force",)
 
     params_index: StateIndex
@@ -100,6 +119,8 @@ class FixedField(Component):
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: FixedFieldParams = state.get(self.params_index)
+        if "params_override" in inputs:
+            params = _merge_params_override(params, inputs["params_override"])
         force = inputs["force"]
 
         def apply_field():
