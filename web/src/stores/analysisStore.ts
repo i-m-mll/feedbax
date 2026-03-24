@@ -209,6 +209,8 @@ interface AnalysisStoreState {
   evalParams: EvalParametrization;
   /** Per-page eval run selection for the active page. */
   evalRunId: string | null;
+  /** Expanded field paths in the DataSourceNode tree for the active page. */
+  expandedFieldPaths: string[];
 
   // Actions — existing
   setAnalysisClasses: (classes: AnalysisClassDef[]) => void;
@@ -230,6 +232,8 @@ interface AnalysisStoreState {
   setViewport: (viewport: AnalysisViewport) => void;
   setEvalParams: (params: EvalParametrization) => void;
   setEvalRunId: (id: string | null) => void;
+  setExpandedFieldPaths: (paths: string[]) => void;
+  toggleFieldExpansion: (path: string) => void;
   captureSnapshot: () => AnalysisSnapshot;
   restoreSnapshot: (snapshot: AnalysisSnapshot) => void;
   resetAnalysis: () => void;
@@ -260,6 +264,7 @@ function captureActivePage(state: AnalysisStoreState): AnalysisPageSpec | null {
     evalParams: { ...state.evalParams },
     viewport: { ...state.viewport },
     evalRunId: state.evalRunId,
+    expandedFieldPaths: [...state.expandedFieldPaths],
   };
 }
 
@@ -290,6 +295,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   viewport: { ...DEFAULT_VIEWPORT },
   evalParams: {},
   evalRunId: null,
+  expandedFieldPaths: [],
 
   onNodesChange: (changes) => {
     set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
@@ -597,6 +603,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       evalParams: {},
       viewport: { ...DEFAULT_VIEWPORT },
       evalRunId: null,
+      expandedFieldPaths: [],
     };
 
     // Load the blank graph into React Flow
@@ -609,6 +616,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       viewport: { ...DEFAULT_VIEWPORT },
       evalParams: {},
       evalRunId: null,
+      expandedFieldPaths: [],
       selectedNodeId: null,
       selectedTransformId: null,
     });
@@ -628,6 +636,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         viewport: { ...DEFAULT_VIEWPORT },
         evalParams: {},
         evalRunId: null,
+        expandedFieldPaths: [],
         selectedNodeId: null,
         selectedTransformId: null,
       });
@@ -680,6 +689,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           viewport: { ...target.viewport },
           evalParams: { ...target.evalParams },
           evalRunId: target.evalRunId ?? null,
+          expandedFieldPaths: target.expandedFieldPaths ? [...target.expandedFieldPaths] : [],
           selectedNodeId: null,
           selectedTransformId: null,
         });
@@ -693,6 +703,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           viewport: { ...DEFAULT_VIEWPORT },
           evalParams: {},
           evalRunId: null,
+          expandedFieldPaths: [],
           selectedNodeId: null,
           selectedTransformId: null,
         });
@@ -758,6 +769,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       viewport: { ...target.viewport },
       evalParams: { ...target.evalParams },
       evalRunId: target.evalRunId ?? null,
+      expandedFieldPaths: target.expandedFieldPaths ? [...target.expandedFieldPaths] : [],
       selectedNodeId: null,
       selectedTransformId: null,
     });
@@ -776,6 +788,24 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
 
   setEvalRunId: (id) => {
     set({ evalRunId: id });
+    markProjectDirty();
+  },
+
+  setExpandedFieldPaths: (paths) => {
+    set({ expandedFieldPaths: paths });
+    markProjectDirty();
+  },
+
+  toggleFieldExpansion: (path) => {
+    set((state) => {
+      const current = new Set(state.expandedFieldPaths);
+      if (current.has(path)) {
+        current.delete(path);
+      } else {
+        current.add(path);
+      }
+      return { expandedFieldPaths: [...current] };
+    });
     markProjectDirty();
   },
 
@@ -803,6 +833,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         viewport: { ...DEFAULT_VIEWPORT },
         evalParams: {},
         evalRunId: null,
+        expandedFieldPaths: [],
         selectedNodeId: null,
         selectedTransformId: null,
       });
@@ -848,6 +879,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       viewport: { ...activePage.viewport },
       evalParams: { ...activePage.evalParams },
       evalRunId: activePage.evalRunId ?? null,
+      expandedFieldPaths: activePage.expandedFieldPaths ? [...activePage.expandedFieldPaths] : [],
       selectedNodeId: null,
       selectedTransformId: null,
     });
@@ -863,6 +895,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       viewport: { ...DEFAULT_VIEWPORT },
       evalParams: {},
       evalRunId: null,
+      expandedFieldPaths: [],
       selectedNodeId: null,
       selectedTransformId: null,
     });

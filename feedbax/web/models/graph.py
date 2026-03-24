@@ -166,6 +166,7 @@ class AnalysisPageSpec(BaseModel):
         default_factory=lambda: {"x": 0, "y": 0, "zoom": 1}
     )
     eval_run_id: Optional[str] = None
+    expanded_field_paths: List[str] = Field(default_factory=list)
 
 
 class GraphProject(BaseModel):

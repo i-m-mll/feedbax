@@ -293,6 +293,7 @@ function buildPlantPertsPage(): AnalysisPageSpec {
     evalParams,
     viewport: { x: 0, y: 0, zoom: 1 },
     evalRunId: null,
+    expandedFieldPaths: [],
   };
 }
 
@@ -433,6 +434,7 @@ function buildFeedbackPertsPage(): AnalysisPageSpec {
     evalParams,
     viewport: { x: 0, y: 0, zoom: 1 },
     evalRunId: null,
+    expandedFieldPaths: [],
   };
 }
 
@@ -502,6 +504,7 @@ function buildFreqResponsePage(): AnalysisPageSpec {
     evalParams,
     viewport: { x: 0, y: 0, zoom: 1 },
     evalRunId: null,
+    expandedFieldPaths: [],
   };
 }
 
@@ -664,6 +667,7 @@ function buildUnitPrefsPage(): AnalysisPageSpec {
     evalParams,
     viewport: { x: 0, y: 0, zoom: 1 },
     evalRunId: null,
+    expandedFieldPaths: [],
   };
 }
 

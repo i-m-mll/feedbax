@@ -27,6 +27,7 @@ interface AnalysisPageWire {
   eval_params: Record<string, unknown>;
   viewport: { x: number; y: number; zoom: number };
   eval_run_id: string | null;
+  expanded_field_paths?: string[];
 }
 
 /** Convert a backend wire-format page to the frontend camelCase type. */
@@ -38,6 +39,7 @@ function pageFromWire(wire: AnalysisPageWire): AnalysisPageSpec {
     evalParams: wire.eval_params,
     viewport: wire.viewport,
     evalRunId: wire.eval_run_id ?? null,
+    expandedFieldPaths: wire.expanded_field_paths ?? [],
   };
 }
 
@@ -50,6 +52,7 @@ function pageToWire(page: AnalysisPageSpec): AnalysisPageWire {
     eval_params: page.evalParams,
     viewport: page.viewport,
     eval_run_id: page.evalRunId,
+    expanded_field_paths: page.expandedFieldPaths ?? [],
   };
 }
 
