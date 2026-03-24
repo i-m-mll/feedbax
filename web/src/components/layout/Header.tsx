@@ -80,6 +80,7 @@ export function Header() {
           graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
           evalParams: wp.eval_params as Record<string, unknown>,
           viewport: wp.viewport,
+          evalRunId: (wp as Record<string, unknown>).eval_run_id as string | null ?? null,
         }));
         analysisSnapshot = { pages, activePageId: pages[0].id };
       }

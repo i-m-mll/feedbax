@@ -1,12 +1,13 @@
 /**
  * AnalysisPageSettings — right sidebar content when no analysis node is selected.
  *
- * Shows page-level settings: name, and eval parametrization fields
- * (perturbation type, amplitudes, SISU values, task variants).
+ * Shows page-level settings: name, eval run selector, and eval parametrization
+ * fields (perturbation type, amplitudes, SISU values, task variants).
  */
 
 import { useCallback, useState } from 'react';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { EvalRunSelector } from '@/components/panels/RunSelector';
 import { Plus, Trash2 } from 'lucide-react';
 
 const PERTURBATION_TYPES = [
@@ -34,8 +35,13 @@ function formatNumberList(nums: unknown): string {
 }
 
 export function AnalysisPageSettings() {
-  const { activePageId, pages, renamePage, evalParams, setEvalParams } =
-    useAnalysisStore();
+  const activePageId = useAnalysisStore((s) => s.activePageId);
+  const pages = useAnalysisStore((s) => s.pages);
+  const renamePage = useAnalysisStore((s) => s.renamePage);
+  const evalParams = useAnalysisStore((s) => s.evalParams);
+  const setEvalParams = useAnalysisStore((s) => s.setEvalParams);
+  const evalRunId = useAnalysisStore((s) => s.evalRunId);
+  const setEvalRunId = useAnalysisStore((s) => s.setEvalRunId);
 
   const activePage = pages.find((p) => p.id === activePageId);
 
@@ -125,6 +131,20 @@ export function AnalysisPageSettings() {
         />
       </div>
 
+      {/* Eval run selector — per-page */}
+      <div className="border-t border-slate-100 pt-3 space-y-1.5">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+          Evaluation Run
+        </div>
+        <EvalRunSelector
+          selectedEvalRunId={evalRunId}
+          onSelectEvalRun={setEvalRunId}
+        />
+        <div className="text-[10px] text-slate-400 leading-relaxed">
+          Select which evaluation run to use for analyses on this page.
+        </div>
+      </div>
+
       {/* Eval Parametrization */}
       <div className="border-t border-slate-100 pt-3">
         <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-3">
@@ -156,6 +176,7 @@ export function AnalysisPageSettings() {
             Perturbation amplitudes
           </label>
           <input
+            key={`amplitudes-${activePageId}`}
             type="text"
             placeholder="0.1, 0.5, 1.0"
             defaultValue={formatNumberList(evalParams.perturbation_amplitudes)}
@@ -170,6 +191,7 @@ export function AnalysisPageSettings() {
             SISU values
           </label>
           <input
+            key={`sisu-${activePageId}`}
             type="text"
             placeholder="0.0, 0.5, 1.0"
             defaultValue={formatNumberList(evalParams.sisu_values)}

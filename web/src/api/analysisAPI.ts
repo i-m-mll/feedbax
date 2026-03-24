@@ -26,6 +26,7 @@ interface AnalysisPageWire {
   graph_spec: Record<string, unknown>;
   eval_params: Record<string, unknown>;
   viewport: { x: number; y: number; zoom: number };
+  eval_run_id: string | null;
 }
 
 /** Convert a backend wire-format page to the frontend camelCase type. */
@@ -36,6 +37,7 @@ function pageFromWire(wire: AnalysisPageWire): AnalysisPageSpec {
     graphSpec: wire.graph_spec as unknown as AnalysisGraphSpec,
     evalParams: wire.eval_params,
     viewport: wire.viewport,
+    evalRunId: wire.eval_run_id ?? null,
   };
 }
 
@@ -47,6 +49,7 @@ function pageToWire(page: AnalysisPageSpec): AnalysisPageWire {
     graph_spec: page.graphSpec as unknown as Record<string, unknown>,
     eval_params: page.evalParams,
     viewport: page.viewport,
+    eval_run_id: page.evalRunId,
   };
 }
 

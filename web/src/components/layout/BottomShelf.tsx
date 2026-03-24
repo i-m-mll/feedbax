@@ -6,7 +6,7 @@ import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { TrajectoryPanel } from '@/components/panels/TrajectoryPanel';
 import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
-import { RunSelector } from '@/components/panels/RunSelector';
+import { TrainingRunSelector } from '@/components/panels/RunSelector';
 import { FigureGalleryPanel } from '@/components/panels/FigureGalleryPanel';
 import { BottomSidebar } from '@/components/layout/BottomSidebar';
 
@@ -69,9 +69,15 @@ export function BottomShelf({
       style={{ height }}
     >
       <div
-        className="flex items-center px-4 gap-4"
+        className="flex items-center px-4 gap-3"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
+        {/* Training run selector — global, left of tabs */}
+        <div className="shrink-0">
+          <TrainingRunSelector activeTab={activeTab} />
+        </div>
+        <div className="shrink-0 w-px h-5 bg-slate-200" />
+        {/* Tab pills */}
         <div className="relative flex-1 min-w-0">
           <div ref={tabsRef} className="flex items-center gap-2 overflow-x-auto pr-6">
             {tabs.map((tab) => (
@@ -98,9 +104,6 @@ export function BottomShelf({
           {fadeState.right && (
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
-        </div>
-        <div className="shrink-0 border-l border-slate-100 pl-3 pr-10">
-          <RunSelector activeTab={activeTab} />
         </div>
       </div>
       {!bottomCollapsed && (

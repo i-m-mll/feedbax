@@ -207,6 +207,8 @@ interface AnalysisStoreState {
   activePageId: string | null;
   viewport: AnalysisViewport;
   evalParams: EvalParametrization;
+  /** Per-page eval run selection for the active page. */
+  evalRunId: string | null;
 
   // Actions — existing
   setAnalysisClasses: (classes: AnalysisClassDef[]) => void;
@@ -227,6 +229,7 @@ interface AnalysisStoreState {
   switchPage: (id: string) => void;
   setViewport: (viewport: AnalysisViewport) => void;
   setEvalParams: (params: EvalParametrization) => void;
+  setEvalRunId: (id: string | null) => void;
   captureSnapshot: () => AnalysisSnapshot;
   restoreSnapshot: (snapshot: AnalysisSnapshot) => void;
   resetAnalysis: () => void;
@@ -256,6 +259,7 @@ function captureActivePage(state: AnalysisStoreState): AnalysisPageSpec | null {
     graphSpec: state.graphSpec ?? makeBlankGraphSpec(),
     evalParams: { ...state.evalParams },
     viewport: { ...state.viewport },
+    evalRunId: state.evalRunId,
   };
 }
 
@@ -285,6 +289,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   activePageId: null,
   viewport: { ...DEFAULT_VIEWPORT },
   evalParams: {},
+  evalRunId: null,
 
   onNodesChange: (changes) => {
     set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
@@ -591,6 +596,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       graphSpec: blankSpec,
       evalParams: {},
       viewport: { ...DEFAULT_VIEWPORT },
+      evalRunId: null,
     };
 
     // Load the blank graph into React Flow
@@ -602,6 +608,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       edges: [],
       viewport: { ...DEFAULT_VIEWPORT },
       evalParams: {},
+      evalRunId: null,
       selectedNodeId: null,
       selectedTransformId: null,
     });
@@ -620,6 +627,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         edges: [],
         viewport: { ...DEFAULT_VIEWPORT },
         evalParams: {},
+        evalRunId: null,
         selectedNodeId: null,
         selectedTransformId: null,
       });
@@ -671,6 +679,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           edges: buildEdges(expandedWires),
           viewport: { ...target.viewport },
           evalParams: { ...target.evalParams },
+          evalRunId: target.evalRunId ?? null,
           selectedNodeId: null,
           selectedTransformId: null,
         });
@@ -683,6 +692,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           edges: [],
           viewport: { ...DEFAULT_VIEWPORT },
           evalParams: {},
+          evalRunId: null,
           selectedNodeId: null,
           selectedTransformId: null,
         });
@@ -747,6 +757,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       edges: buildEdges(expandedWires),
       viewport: { ...target.viewport },
       evalParams: { ...target.evalParams },
+      evalRunId: target.evalRunId ?? null,
       selectedNodeId: null,
       selectedTransformId: null,
     });
@@ -760,6 +771,11 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
 
   setEvalParams: (params) => {
     set({ evalParams: params });
+    markProjectDirty();
+  },
+
+  setEvalRunId: (id) => {
+    set({ evalRunId: id });
     markProjectDirty();
   },
 
@@ -786,6 +802,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         edges: [],
         viewport: { ...DEFAULT_VIEWPORT },
         evalParams: {},
+        evalRunId: null,
         selectedNodeId: null,
         selectedTransformId: null,
       });
@@ -830,6 +847,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       edges: buildEdges(expandedWires),
       viewport: { ...activePage.viewport },
       evalParams: { ...activePage.evalParams },
+      evalRunId: activePage.evalRunId ?? null,
       selectedNodeId: null,
       selectedTransformId: null,
     });
@@ -844,6 +862,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       edges: [],
       viewport: { ...DEFAULT_VIEWPORT },
       evalParams: {},
+      evalRunId: null,
       selectedNodeId: null,
       selectedTransformId: null,
     });

@@ -251,6 +251,8 @@ export interface AnalysisPageSpec {
   evalParams: EvalParametrization;
   /** Viewport position/zoom for this page. */
   viewport: AnalysisViewport;
+  /** Selected eval run ID for this page (null = none selected). */
+  evalRunId: string | null;
 }
 
 /** Snapshot of all analysis state — used by projectsStore for tab switching. */
