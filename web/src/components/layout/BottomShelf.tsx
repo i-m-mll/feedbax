@@ -8,6 +8,7 @@ import { StatisticsPanel } from '@/components/panels/StatisticsPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
 import { RunSelector } from '@/components/panels/RunSelector';
 import { FigureGalleryPanel } from '@/components/panels/FigureGalleryPanel';
+import { BottomSidebar } from '@/components/layout/BottomSidebar';
 
 const tabs = [
   { id: 'training', label: 'Training' },
@@ -105,9 +106,15 @@ export function BottomShelf({
       {!bottomCollapsed && (
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
-          className={activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'}
+          className={clsx(
+            'flex',
+            activeTab === 'trajectories' || activeTab === 'statistics' || activeTab === 'console' || activeTab === 'analysis' || activeTab === 'figures' ? 'overflow-hidden' : 'overflow-y-auto'
+          )}
         >
-          {activeContent}
+          {activeTab === 'analysis' && <BottomSidebar />}
+          <div className="flex-1 min-w-0 h-full">
+            {activeContent}
+          </div>
         </div>
       )}
     </section>
