@@ -124,18 +124,14 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
 
 
 def _cast_to_state_type(value, state_value):
-    """Cast a trial-specific value to match the State's stored dtype.
+    """Cast a trial-specific value to match the State's stored dtype and type.
 
     Intervenor StateIndex initial values are stored as strong-typed JAX
-    arrays (via ``_strong_typed`` in ``intervene.py``), so trial params
-    just need to match dtype.  Works inside vmap/JIT.
+    arrays.  Uses explicit ``dtype=`` to produce strong-typed arrays.
     """
     if not hasattr(state_value, 'dtype'):
         return value
-    arr = jnp.asarray(value)
-    if arr.dtype != state_value.dtype:
-        arr = arr.astype(state_value.dtype)
-    return arr
+    return jnp.asarray(value, dtype=state_value.dtype)
 
 
 def _extract_timeseries_params(

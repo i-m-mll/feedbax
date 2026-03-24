@@ -62,18 +62,17 @@ logger = logging.getLogger(__name__)
 
 
 def _cast_to_state_type(value, state_value):
-    """Cast a trial-specific value to match the State's stored dtype.
+    """Cast a trial-specific value to match the State's stored dtype and type.
 
     Intervenor StateIndex initial values are stored as strong-typed JAX
-    arrays (via ``_strong_typed`` in ``intervene.py``), so trial params
-    just need to match dtype.  Works inside vmap/JIT.
+    arrays.  Trial params may be Python scalars (weak) or JAX arrays
+    (strong).  We use ``jnp.asarray(value, dtype=...)`` with an explicit
+    dtype to produce a strong-typed array matching the State.
     """
     if not hasattr(state_value, 'dtype'):
         return value
-    arr = jnp.asarray(value)
-    if arr.dtype != state_value.dtype:
-        arr = arr.astype(state_value.dtype)
-    return arr
+    # Explicit dtype= produces strong-typed arrays even from Python scalars.
+    return jnp.asarray(value, dtype=state_value.dtype)
 
 
 WhereFunc: TypeAlias = Callable[[Component], Any]
