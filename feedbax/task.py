@@ -123,6 +123,21 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
     return _set_component(model, parts, state)
 
 
+def _safe_state_set(state, idx, new_value):
+    """Set a StateIndex value, tolerating dtype/weak-type mismatches.
+
+    See ``feedbax.train._safe_state_set`` for rationale.
+    """
+    from equinox.nn._stateful import State as _State, _Sentinel
+    new_value_converted = jt.map(jnp.asarray, new_value)
+    state_dict = state._state.copy()
+    state_dict[idx.marker] = new_value_converted
+    new_self = object.__new__(_State)
+    new_self._state = state_dict
+    state._state = _Sentinel()
+    return new_self
+
+
 def _cast_to_state_type(value, state_value):
     """Cast a trial-specific value to match the State's stored dtype and type.
 
@@ -806,7 +821,7 @@ class AbstractTask(Module):
                         params, current,
                         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )
-                    init_state = init_state.set(idx, merged)
+                    init_state = _safe_state_set(init_state, idx, merged)
                     # Collect time-varying params for per-step input
                     tv_params = _extract_timeseries_params(params, current)
                     if tv_params is not None:

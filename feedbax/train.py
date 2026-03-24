@@ -61,18 +61,24 @@ LOSS_FMT = ".2e"
 logger = logging.getLogger(__name__)
 
 
-def _cast_to_state_type(value, state_value):
-    """Cast a trial-specific value to match the State's stored dtype and type.
+def _safe_state_set(state, idx, new_value):
+    """Set a StateIndex value, tolerating dtype/weak-type mismatches.
 
-    Intervenor StateIndex initial values are stored as strong-typed JAX
-    arrays.  Trial params may be Python scalars (weak) or JAX arrays
-    (strong).  We use ``jnp.asarray(value, dtype=...)`` with an explicit
-    dtype to produce a strong-typed array matching the State.
+    Equinox State.set() validates exact dtype/weak-type matching via
+    jax.eval_shape.  Trial-specific params from JAX random functions may
+    have different types (strong f32) than the Python-scalar defaults
+    stored in State (weak f32).  We rebuild the State dict directly,
+    bypassing the strict validation.
     """
-    if not hasattr(state_value, 'dtype'):
-        return value
-    # Explicit dtype= produces strong-typed arrays even from Python scalars.
-    return jnp.asarray(value, dtype=state_value.dtype)
+    from equinox.nn._stateful import State as _State, _Sentinel
+    new_value_converted = jtu.tree_map(jnp.asarray, new_value)
+    state_dict = state._state.copy()
+    state_dict[idx.marker] = new_value_converted
+    new_self = object.__new__(_State)
+    new_self._state = state_dict
+    # Invalidate old state (same as State.set does)
+    state._state = _Sentinel()
+    return new_self
 
 
 WhereFunc: TypeAlias = Callable[[Component], Any]
@@ -864,7 +870,7 @@ class TaskTrainer(eqx.Module):
                         params, current,
                         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )
-                    state = state.set(idx, merged)
+                    state = _safe_state_set(state, idx, merged)
 
             return model.state_consistency_update(state)
 

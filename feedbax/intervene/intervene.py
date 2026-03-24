@@ -45,10 +45,14 @@ def _strong_typed(params: InterventionParams) -> InterventionParams:
     State.set() enforces exact dtype/weak-type matching between old and new
     values.  Trial-specific params from JAX random functions are strong-typed.
     To ensure compatibility, the StateIndex initial values must also be
-    strong-typed.  This converts Python scalars (which jnp.asarray maps to
-    weak types) to explicit strong-typed JAX arrays.
+    strong-typed.  Only converts existing JAX arrays; Python scalars are left
+    as-is so that eqx.filter_vmap treats them as static in ensembles.
     """
-    return jt.map(lambda x: jnp.asarray(x, dtype=jnp.result_type(x)), params)
+    def _convert(x):
+        if isinstance(x, jnp.ndarray):
+            return jnp.asarray(x, dtype=jnp.result_type(x))
+        return x
+    return jt.map(_convert, params)
 
 
 class CurlFieldParams(InterventionParams):
