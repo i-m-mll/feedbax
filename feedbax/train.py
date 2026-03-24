@@ -205,6 +205,7 @@ class TaskTrainer(eqx.Module):
         verbose_progress: bool = True,
         loss_update_func: Optional[Callable[[AbstractLoss, TermTree, PyTree], AbstractLoss]] = None,
         loss_update_iterations: bool | Int[Array, "_"] = True,
+        loss_reduction_fn: Optional[Callable[[Array], Array]] = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -392,6 +393,9 @@ class TaskTrainer(eqx.Module):
         elif self.checkpointing:
             # Delete old checkpoints if checkpointing is on.
             delete_contents(self.chkpt_dir)
+
+        # Store loss_reduction_fn for use in _train_step
+        self._loss_reduction_fn = loss_reduction_fn
 
         model_update_funcs_flat = jtu.tree_leaves(
             self.model_update_funcs,
@@ -877,7 +881,7 @@ class TaskTrainer(eqx.Module):
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
-            grad_wrap_abstract_loss(loss_func), has_aux=True
+            grad_wrap_abstract_loss(loss_func, loss_reduction_fn=self._loss_reduction_fn), has_aux=True
         )(
             diff_model,
             static_model,
@@ -1219,7 +1223,7 @@ def _extract_intervene_inputs(
     return result
 
 
-def grad_wrap_abstract_loss(loss_func: AbstractLoss):
+def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional[Callable] = None):
     """Wraps a task loss function taking state to a `grad`-able one taking a model.
 
     It is convenient to first define the loss function in terms of a
@@ -1288,7 +1292,10 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
 
         losses = loss_func(states, trial_specs, model)
 
-        return losses.total, (losses, states)
+        total = losses.total
+        if loss_reduction_fn is not None:
+            total = loss_reduction_fn(total)
+        return total, (losses, states)
 
     return wrapper
 
