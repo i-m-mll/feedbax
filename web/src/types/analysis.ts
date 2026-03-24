@@ -1,7 +1,10 @@
 /** Types for the analysis DAG system and figure generation. */
 
-/** A parameter value on an analysis or transform node. */
-export type AnalysisParamValue = number | string | boolean | null;
+/** A scalar parameter value on an analysis or transform node. */
+export type AnalysisParamScalar = number | string | boolean | null;
+
+/** A parameter value — scalar or array of scalars. */
+export type AnalysisParamValue = AnalysisParamScalar | AnalysisParamScalar[];
 
 /** Configuration for a transform (prep op) applied on an edge. */
 export interface TransformSpec {
