@@ -19,6 +19,8 @@ interface RunStoreState {
   selectTrainingRun: (id: string | null) => Promise<void>;
   selectEvalRun: (id: string | null) => void;
   addTrainingRun: (run: TrainingRun) => void;
+  addEvalRun: (run: EvalRun) => void;
+  updateEvalRunStatus: (id: string, status: EvalRun['status']) => void;
 }
 
 export const useRunStore = create<RunStoreState>((set, get) => ({
@@ -64,6 +66,21 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
   addTrainingRun: (run) => {
     set((state) => ({
       trainingRuns: [run, ...state.trainingRuns],
+    }));
+  },
+
+  addEvalRun: (run) => {
+    set((state) => ({
+      evalRuns: [run, ...state.evalRuns],
+      selectedEvalRunId: run.id,
+    }));
+  },
+
+  updateEvalRunStatus: (id, status) => {
+    set((state) => ({
+      evalRuns: state.evalRuns.map((r) =>
+        r.id === id ? { ...r, status } : r,
+      ),
     }));
   },
 }));

@@ -18,3 +18,10 @@ export interface EvalRun {
   /** Brief description of what this evaluation tested. */
   description?: string;
 }
+
+/** Parameters for creating a new evaluation run. */
+export interface CreateEvalRunParams {
+  trainingRunId: string;
+  name: string;
+  evalParams: Record<string, unknown>;
+}

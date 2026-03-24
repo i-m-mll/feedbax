@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
+import { useAnalysisStore } from '@/stores/analysisStore';
 import { useDemandStore } from '@/stores/demandStore';
 import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
 import type { FigureRequestStatus } from '@/types/analysis';
 import clsx from 'clsx';
-import { Image, RefreshCw, Play, X, Loader2 } from 'lucide-react';
+import { Image, RefreshCw, Play, X, Loader2, AlertCircle } from 'lucide-react';
 
 type PlotlyModule = typeof import('plotly.js-dist-min');
 
@@ -139,8 +140,12 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
   const setError = useDemandStore((s) => s.setError);
   const clearRequest = useDemandStore((s) => s.clearRequest);
 
+  // Eval run from analysis store
+  const evalRunId = useAnalysisStore((s) => s.evalRunId);
+
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [showNoEvalToast, setShowNoEvalToast] = useState(false);
   const [previewData, setPreviewData] = useState<unknown>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -194,9 +199,15 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
 
   const handleGenerate = useCallback(
     async (forceRerun = false) => {
+      if (!evalRunId) {
+        setShowNoEvalToast(true);
+        setTimeout(() => setShowNoEvalToast(false), 3000);
+        return;
+      }
+
       requestGeneration(nodeId);
       try {
-        const response = await generateFigure(nodeId, { forceRerun });
+        const response = await generateFigure(nodeId, { forceRerun, evalRunId });
         // Store request_id temporarily as figureHash for polling
         useDemandStore.setState((s) => ({
           requests: {
@@ -208,7 +219,7 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
         setError(nodeId, err instanceof Error ? err.message : 'Request failed');
       }
     },
-    [nodeId, requestGeneration, setError]
+    [nodeId, evalRunId, requestGeneration, setError]
   );
 
   const handleClick = useCallback(
@@ -352,6 +363,16 @@ export function FigureOutputPin({ nodeId, topOffset, reversed }: FigureOutputPin
             <X className="w-4 h-4" />
             Clear
           </button>
+        </div>
+      )}
+
+      {/* Toast: no eval run selected */}
+      {showNoEvalToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50">
+          <div className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-50 border border-amber-200 shadow-lg text-xs text-amber-700">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            Select or create an evaluation run first
+          </div>
         </div>
       )}
 

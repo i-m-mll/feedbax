@@ -9,13 +9,13 @@
  * Dependency nodes (role === 'dependency') are rendered smaller and muted.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { AnalysisNodeData } from '@/stores/analysisStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useDemandStore } from '@/stores/demandStore';
-import { generateFigure } from '@/api/figureAPI';
-import { Play, Loader2, Image } from 'lucide-react';
+import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
+import { Play, Loader2, Image, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 // Layout constants — aligned with CustomNode for consistency
@@ -47,13 +47,74 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
 
   // Demand store for figure generation
   const status = useDemandStore((s) => s.requests[id]?.status ?? 'idle');
+  const figureHash = useDemandStore((s) => s.requests[id]?.figureHash);
   const requestGeneration = useDemandStore((s) => s.requestGeneration);
+  const setResult = useDemandStore((s) => s.setResult);
   const setError = useDemandStore((s) => s.setError);
 
+  // Inline figure preview state
+  const [showToast, setShowToast] = useState(false);
+  const [previewData, setPreviewData] = useState<unknown>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Poll for figure status when running
+  useEffect(() => {
+    if (status !== 'running') {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+
+    const requestId = useDemandStore.getState().requests[id]?.figureHash;
+    if (!requestId) return;
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const result = await getFigureStatus(requestId);
+        if (result.status === 'complete' && result.figure_hashes?.length) {
+          setResult(id, result.figure_hashes[0]);
+        } else if (result.status === 'error') {
+          setError(id, result.error ?? 'Generation failed');
+        }
+      } catch {
+        // Keep polling on transient errors
+      }
+    }, 2000);
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [status, id, setResult, setError]);
+
+  // Auto-load preview data when figure is ready
+  useEffect(() => {
+    if (status === 'ready' && figureHash) {
+      setPreviewLoading(true);
+      getFigureData(figureHash)
+        .then((data) => setPreviewData(data))
+        .catch(() => setPreviewData(null))
+        .finally(() => setPreviewLoading(false));
+    } else {
+      setPreviewData(null);
+    }
+  }, [status, figureHash]);
+
   const handleGenerate = useCallback(async () => {
+    if (!evalRunId) {
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
+      return;
+    }
+
     requestGeneration(id);
     try {
-      const response = await generateFigure(id);
+      const response = await generateFigure(id, { evalRunId });
       useDemandStore.setState((s) => ({
         requests: {
           ...s.requests,
@@ -63,17 +124,20 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
     } catch (err) {
       setError(id, err instanceof Error ? err.message : 'Request failed');
     }
-  }, [id, requestGeneration, setError]);
+  }, [id, evalRunId, requestGeneration, setError]);
 
   const width = isDep ? WIDTH_DEP : WIDTH_FULL;
   const headerHeight = isDep ? HEADER_HEIGHT_DEP : HEADER_HEIGHT_FULL;
   const rowHeight = isDep ? ROW_HEIGHT_DEP : ROW_HEIGHT_FULL;
 
+  const hasPreview = status === 'ready' && previewData != null;
+  const PREVIEW_HEIGHT = hasPreview ? 120 : 0;
+
   const inputCount = spec.inputPorts.length;
   const outputCount = spec.outputPorts.length;
   const rowCount = Math.max(1, inputCount, outputCount);
   const bodyHeight = BODY_PADDING * 2 + rowCount * rowHeight;
-  const totalHeight = headerHeight + bodyHeight + (canGenerate ? GENERATE_BTN_HEIGHT : 0);
+  const totalHeight = headerHeight + bodyHeight + (canGenerate ? GENERATE_BTN_HEIGHT : 0) + PREVIEW_HEIGHT;
 
   const rowCenter = (index: number) => BODY_PADDING + rowHeight * (index + 0.5);
 
@@ -229,7 +293,7 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
                       : 'bg-slate-50 text-slate-600 hover:bg-emerald-50 hover:text-emerald-600'
             )}
             title={
-              generateDisabled ? 'Select an eval run first'
+              generateDisabled ? 'Select or create an evaluation run first'
                 : status === 'running' ? 'Generating...'
                   : status === 'ready' ? 'Re-generate figure'
                     : status === 'error' ? 'Retry generation'
@@ -250,6 +314,35 @@ export function AnalysisNode({ id, data, selected }: NodeProps) {
                     : 'Generate'}
             </span>
           </button>
+        </div>
+      )}
+
+      {/* Inline figure preview thumbnail */}
+      {hasPreview && (
+        <div className="px-2 pb-1.5">
+          <div className="w-full bg-slate-50 rounded-lg border border-slate-200 overflow-hidden"
+               style={{ height: PREVIEW_HEIGHT }}>
+            {previewLoading ? (
+              <div className="flex items-center justify-center h-full">
+                <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-full text-[10px] text-emerald-600">
+                <Image className="w-4 h-4 mr-1" />
+                Figure ready — click View
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Toast: no eval run selected */}
+      {showToast && (
+        <div className="absolute -top-10 left-1/2 -translate-x-1/2 z-50 whitespace-nowrap">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 shadow-lg text-[11px] text-amber-700">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            Select or create an eval run first
+          </div>
         </div>
       )}
     </div>

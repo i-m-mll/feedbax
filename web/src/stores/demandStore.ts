@@ -14,6 +14,9 @@ interface DemandState {
   /** Mark a request as complete with figure hash(es). */
   setResult: (nodeId: string, figureHash: string) => void;
 
+  /** Mark a request as complete with multiple figure hashes. */
+  setResults: (nodeId: string, figureHashes: string[]) => void;
+
   /** Mark a request as failed. */
   setError: (nodeId: string, error: string) => void;
 
@@ -64,6 +67,21 @@ export const useDemandStore = create<DemandState>((set, get) => ({
           nodeId,
           status: 'ready',
           figureHash,
+          completedAt: Date.now(),
+          error: undefined,
+        },
+      },
+    })),
+
+  setResults: (nodeId, figureHashes) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          ...state.requests[nodeId],
+          nodeId,
+          status: 'ready',
+          figureHash: figureHashes[0],
           completedAt: Date.now(),
           error: undefined,
         },

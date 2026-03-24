@@ -28,14 +28,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 /** Trigger demand-driven figure generation for an analysis node. */
 export async function generateFigure(
   nodeId: string,
-  options?: { forceRerun?: boolean }
+  options?: { forceRerun?: boolean; evalRunId?: string | null }
 ): Promise<GenerateFigureResponse> {
+  const body: Record<string, unknown> = {
+    node_id: nodeId,
+    force_rerun: options?.forceRerun ?? false,
+  };
+  if (options?.evalRunId) {
+    body.eval_run_id = options.evalRunId;
+  }
   return request<GenerateFigureResponse>('/api/analysis/generate', {
     method: 'POST',
-    body: JSON.stringify({
-      node_id: nodeId,
-      force_rerun: options?.forceRerun ?? false,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
