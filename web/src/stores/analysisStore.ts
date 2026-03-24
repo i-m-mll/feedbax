@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import type { Node, Edge, OnNodesChange, OnEdgesChange, Connection } from '@xyflow/react';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
+import { useGraphStore } from '@/stores/graphStore';
 import type {
   AnalysisNodeSpec,
   AnalysisWire,
@@ -21,6 +22,11 @@ import type {
   AnalysisSnapshot,
   StateFieldPath,
 } from '@/types/analysis';
+
+/** Signal the graph store that persisted state changed, triggering auto-save. */
+function markProjectDirty() {
+  useGraphStore.getState().markDirty();
+}
 
 // ---------------------------------------------------------------------------
 // React Flow data interfaces for analysis nodes/edges
@@ -363,6 +369,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           }
         : null,
     }));
+    markProjectDirty();
   },
 
   removeNode: (id) => {
@@ -371,6 +378,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       edges: state.edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
     }));
+    markProjectDirty();
   },
 
   connectNodes: (connection) => {
@@ -414,6 +422,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         ? { ...state.graphSpec, wires: [...state.graphSpec.wires, wire] }
         : null,
     }));
+    markProjectDirty();
   },
 
   updateNodeParams: (id, params) => {
@@ -430,6 +439,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         };
       }),
     }));
+    markProjectDirty();
   },
 
   addTransformToEdge: (edgeId, transformType) => {
@@ -503,6 +513,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         ? { ...state.graphSpec, wires: updatedWires ?? state.graphSpec.wires }
         : null,
     });
+    markProjectDirty();
   },
 
   removeTransformFromEdge: (edgeId) => {
@@ -523,6 +534,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           return { ...e, data };
         }),
       });
+      markProjectDirty();
       return;
     }
 
@@ -556,6 +568,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         ? { ...state.graphSpec, wires: updatedWires ?? state.graphSpec.wires }
         : null,
     });
+    markProjectDirty();
   },
 
   // -----------------------------------------------------------------------
@@ -592,6 +605,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       selectedNodeId: null,
       selectedTransformId: null,
     });
+    markProjectDirty();
   },
 
   removePage: (id) => {
@@ -609,6 +623,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         selectedNodeId: null,
         selectedTransformId: null,
       });
+      markProjectDirty();
       return;
     }
 
@@ -675,12 +690,14 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
     } else {
       set({ pages: filteredPages });
     }
+    markProjectDirty();
   },
 
   renamePage: (id, name) => {
     set((state) => ({
       pages: state.pages.map((p) => (p.id === id ? { ...p, name } : p)),
     }));
+    markProjectDirty();
   },
 
   switchPage: (id) => {
@@ -733,14 +750,17 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       selectedNodeId: null,
       selectedTransformId: null,
     });
+    markProjectDirty();
   },
 
   setViewport: (viewport) => {
     set({ viewport });
+    markProjectDirty();
   },
 
   setEvalParams: (params) => {
     set({ evalParams: params });
+    markProjectDirty();
   },
 
   captureSnapshot: () => {

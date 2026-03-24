@@ -1318,6 +1318,7 @@ interface GraphStoreState {
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
   markSaved: (graphId: string) => void;
+  markDirty: () => void;
   resetGraph: () => void;
   undo: () => void;
   redo: () => void;
@@ -1423,6 +1424,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       isDirty: false,
       lastSavedAt: new Date().toISOString(),
     });
+  },
+  markDirty: () => {
+    set({ isDirty: true });
   },
   resetGraph: () => {
     const fresh = createInitialGraph();
