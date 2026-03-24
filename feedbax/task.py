@@ -521,7 +521,7 @@ class AbstractTask(Module):
         # broadcast scalar/static params to (T, ...) shape.
         def _process_param(x):
             if isinstance(x, TimeSeriesParam):
-                return x()  # unwrap to signal array
+                return x.value  # unwrap to signal array
             return jnp.broadcast_to(jnp.asarray(x), (self.n_steps - 1, *jnp.asarray(x).shape))
 
         return jt.map(
