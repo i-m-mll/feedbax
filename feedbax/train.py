@@ -833,11 +833,20 @@ class TaskTrainer(eqx.Module):
                     # Merge only time-invariant params into the initial State.
                     # TimeSeriesParam leaves are skipped here — they are
                     # handled per-step via params_override input ports on the
-                    # intervenor components.
+                    # intervenor components.  Cast to match State dtypes.
+                    def _merge_leaf(p, c):
+                        if isinstance(p, TimeSeriesParam):
+                            return c
+                        if p is None:
+                            return c
+                        # Cast trial-specific value to match State dtype
+                        val = jnp.asarray(p)
+                        if hasattr(c, 'dtype') and val.dtype != c.dtype:
+                            val = val.astype(c.dtype)
+                        return val
+
                     merged = jt.map(
-                        lambda p, c: c if isinstance(p, TimeSeriesParam) else (
-                            p if p is not None else c
-                        ),
+                        _merge_leaf,
                         params, current,
                         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )

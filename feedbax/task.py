@@ -781,11 +781,20 @@ class AbstractTask(Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = indices[label]
                     current = init_state.get(idx)
-                    # Merge only time-invariant leaves into State
+                    # Merge only time-invariant leaves into State,
+                    # casting to match State dtypes.
+                    def _merge_leaf(p, c):
+                        if isinstance(p, TimeSeriesParam):
+                            return c
+                        if p is None:
+                            return c
+                        val = jnp.asarray(p)
+                        if hasattr(c, 'dtype') and val.dtype != c.dtype:
+                            val = val.astype(c.dtype)
+                        return val
+
                     merged = jt.map(
-                        lambda p, c: c if isinstance(p, TimeSeriesParam) else (
-                            p if p is not None else c
-                        ),
+                        _merge_leaf,
                         params, current,
                         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )
