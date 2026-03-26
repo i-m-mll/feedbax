@@ -336,6 +336,8 @@ class SimpleStagedNetwork(Component):
     encoding_size: Optional[int] = None
     encoder: Optional[Module] = None
     population_structure: Optional[PopulationStructure] = None
+    sisu_gating: str = field(default="additive", static=True)
+    sisu_alpha: Optional[Array] = None  # shape (hidden_size,) when multiplicative
 
     state_index: StateIndex
     _initial_state: NetworkState = field(static=True)
@@ -354,6 +356,7 @@ class SimpleStagedNetwork(Component):
         out_nonlinearity: Callable[[Float], Float] = identity_func,
         hidden_noise_std: Optional[float] = None,
         population_structure: Optional[PopulationStructure] = None,
+        sisu_gating: str = "additive",
         *,
         key: PRNGKeyArray,
     ):
@@ -400,6 +403,11 @@ class SimpleStagedNetwork(Component):
             population_structure: Optional population structure defining which hidden units
                 receive inputs and/or contribute to readout. If provided, input and readout
                 weights will be masked to enforce the specified connectivity pattern.
+            sisu_gating: How to incorporate the SISU signal. ``"additive"`` (default)
+                concatenates SISU with the input vector. ``"multiplicative"`` removes SISU
+                from the input and instead applies post-hidden gain modulation:
+                ``h * (1 + alpha * sisu)``, where ``alpha`` is a learned per-unit vector
+                initialized to zeros.
             key: Random key for initialising the network.
         """
         key1, key2, key3 = jr.split(key, 3)
@@ -407,19 +415,24 @@ class SimpleStagedNetwork(Component):
         self.input_size = input_size
         self.population_structure = population_structure
 
+        # When using multiplicative SISU gating, the SISU channel is stripped
+        # from the input before entering the layers, so layer dimensions use
+        # one fewer input channel.
+        layer_input_size = input_size - 1 if sisu_gating == "multiplicative" else input_size
+
         # Create encoder layer (potentially masked if population_structure is provided)
         if encoding_size is not None:
             if population_structure is not None:
                 # Create mask for encoder: only input-receiving units get non-zero columns
-                encoder_mask = jnp.zeros((encoding_size, input_size))
+                encoder_mask = jnp.zeros((encoding_size, layer_input_size))
                 # For simplicity, allow all encoder units to receive all inputs
                 # The masking will happen at the encoder->hidden connection instead
-                encoder_mask = jnp.ones((encoding_size, input_size))
+                encoder_mask = jnp.ones((encoding_size, layer_input_size))
                 self.encoder = MaskedLinear(
-                    input_size, encoding_size, encoder_mask, use_bias=use_bias, key=key2
+                    layer_input_size, encoding_size, encoder_mask, use_bias=use_bias, key=key2
                 )
             else:
-                self.encoder = encoder_type(input_size, encoding_size, key=key2)
+                self.encoder = encoder_type(layer_input_size, encoding_size, key=key2)
             self.encoding_size = encoding_size
 
             # Create hidden layer - if we have population structure, we need to mask
@@ -458,24 +471,23 @@ class SimpleStagedNetwork(Component):
         else:
             # No encoder - input goes directly to hidden layer
             if population_structure is not None:
-                hidden = hidden_type(input_size, hidden_size, use_bias=use_bias, key=key1)
+                hidden = hidden_type(layer_input_size, hidden_size, use_bias=use_bias, key=key1)
 
                 # Mask the input->hidden weights
                 if hasattr(hidden, "weight_ih"):
-                    # For GRUCell, weight_ih is (3*hidden_size, input_size) for reset, update, candidate
                     weight_ih_shape = hidden.weight_ih.shape
 
                     # Create mask: only input-receiving units get non-zero rows
                     if weight_ih_shape[0] == 3 * hidden_size:
                         # GRUCell case: replicate mask 3 times (for reset, update, candidate)
-                        hidden_input_mask = jnp.zeros((hidden_size, input_size))
+                        hidden_input_mask = jnp.zeros((hidden_size, layer_input_size))
                         hidden_input_mask = hidden_input_mask.at[
                             population_structure.input_indices, :
                         ].set(1.0)
                         hidden_input_mask = jnp.tile(hidden_input_mask, (3, 1))
                     else:
                         # Simple RNN case
-                        hidden_input_mask = jnp.zeros((hidden_size, input_size))
+                        hidden_input_mask = jnp.zeros((hidden_size, layer_input_size))
                         hidden_input_mask = hidden_input_mask.at[
                             population_structure.input_indices, :
                         ].set(1.0)
@@ -485,11 +497,18 @@ class SimpleStagedNetwork(Component):
 
                 self.hidden = hidden
             else:
-                self.hidden = hidden_type(input_size, hidden_size, use_bias=use_bias, key=key1)
+                self.hidden = hidden_type(layer_input_size, hidden_size, use_bias=use_bias, key=key1)
 
         self.hidden_size = hidden_size
         self.hidden_nonlinearity = hidden_nonlinearity
         self.hidden_noise_std = hidden_noise_std
+
+        # Multiplicative SISU gating: learn per-unit gain modulation alpha
+        self.sisu_gating = sisu_gating
+        if sisu_gating == "multiplicative":
+            self.sisu_alpha = jnp.zeros(hidden_size)
+        else:
+            self.sisu_alpha = None
 
         # Create readout layer (potentially masked if population_structure is provided)
         if out_size is not None:
@@ -525,7 +544,7 @@ class SimpleStagedNetwork(Component):
             self.out_size = hidden_size
 
         init_state = NetworkState(
-            input=jnp.zeros(self.input_size),
+            input=jnp.zeros(layer_input_size),
             hidden=jnp.zeros(self.hidden_size),
             output=jnp.zeros(self.out_size) if self.out_size is not None else None,
             encoding=jnp.zeros(self.encoding_size) if self.encoding_size is not None else None,
@@ -567,6 +586,15 @@ class SimpleStagedNetwork(Component):
 
         x = jnp.concatenate([flat_input, flat_feedback], axis=-1)
 
+        # Multiplicative SISU gating: extract SISU from input, apply as
+        # post-hidden gain modulation instead of passing through the network.
+        # SISU is the last element of flat_input (appended by task.add_input).
+        sisu_value = None
+        if self.sisu_gating == "multiplicative" and self.sisu_alpha is not None:
+            sisu_value = flat_input[-1]  # scalar SISU signal
+            # Remove SISU from the concatenated input
+            x = jnp.concatenate([flat_input[:-1], flat_feedback], axis=-1)
+
         encoding = None
         if self.encoder is not None:
             encoding = self.encoder(x)
@@ -582,6 +610,10 @@ class SimpleStagedNetwork(Component):
         hidden = self.hidden_nonlinearity(hidden)
         if self.hidden_noise_std is not None:
             hidden = self._add_hidden_noise(None, hidden, key=key)
+
+        # Apply multiplicative SISU gain modulation: h * (1 + alpha * sisu)
+        if sisu_value is not None:
+            hidden = hidden * (1.0 + self.sisu_alpha * sisu_value)
 
         if self.readout is not None:
             output = self.readout(hidden)  # type: ignore
@@ -601,8 +633,11 @@ class SimpleStagedNetwork(Component):
     def init(self):
         output = jnp.zeros(self.out_size) if self.out_size is not None else None
         encoding = jnp.zeros(self.encoding_size) if self.encoding_size is not None else None
+        layer_input_size = (
+            self.input_size - 1 if self.sisu_gating == "multiplicative" else self.input_size
+        )
         return NetworkState(
-            input=jnp.zeros(self.input_size),
+            input=jnp.zeros(layer_input_size),
             hidden=jnp.zeros(self.hidden_size),
             output=output,
             encoding=encoding,
