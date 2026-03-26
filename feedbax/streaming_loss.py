@@ -176,27 +176,65 @@ def _make_target_state_closure(
     else:
         raise ValueError(f"Invalid target spec type: {type(task_target_spec)}")
 
-    target_value = target_spec.value  # (features,) or scalar for single trial
+    target_value = target_spec.value  # (features,), (T, features), or scalar
 
     # --- precompute time weights as a (T,) vector ---
-    # T = n_steps because state_history[:, 1:] has n_steps entries (the initial
-    # state is excluded, matching TargetStateLoss.term's `[:, 1:]`).
+    #
+    # The scan runs ``n_steps`` iterations (0 .. n_steps-1).  In
+    # full-trajectory mode, ``TargetStateLoss.term`` slices the state
+    # history with ``[:, 1:]``, discarding the first scan output (which is
+    # the state immediately after the initial step).  The resulting ``T-1``
+    # entries carry the loss weights.  In streaming mode, the scan still
+    # produces ``n_steps`` states, so we need ``n_steps`` weights with a
+    # leading zero to mirror the ``[:, 1:]`` exclusion.
+    #
+    # Mask/discount callables (``get_epoch_weights``, ``make_mid_period_ramp``,
+    # etc.) return ``(n_steps - 1,)`` arrays.  We compute these at that
+    # natural length, then prepend a zero to align with the scan index.
     T = n_steps
+    T_loss = T - 1  # number of timesteps the full-trajectory loss covers
 
     time_mask = target_spec.time_mask
     if time_mask is None:
-        time_mask = target_spec.get_time_mask(T)
+        time_mask = target_spec.get_time_mask(T_loss)
 
     masks = [x for x in [time_mask, target_spec.discount] if x is not None]
 
-    # Evaluate masks for a single trial.  _combine_weights expects (N, T)
-    # shapes; we fake N=1 and squeeze afterward.
     if masks:
-        time_weights = _compute_single_trial_weights(
-            masks, trial_specs, T,
-        )  # (T,)
+        time_weights_inner = _compute_single_trial_weights(
+            masks, trial_specs, T_loss,
+        )  # (T_loss,)
     else:
-        time_weights = jnp.ones((T,), dtype=jnp.float32)
+        time_weights_inner = jnp.ones((T_loss,), dtype=jnp.float32)
+
+    # Prepend a zero weight for scan step 0 (excluded by full-trajectory
+    # ``[:, 1:]``), giving a ``(T,)`` vector aligned with the scan index.
+    time_weights = jnp.concatenate(
+        [jnp.zeros((1,), dtype=jnp.float32), time_weights_inner],
+    )  # (T,)
+
+    # --- align time-varying targets with the scan index ---
+    #
+    # Tasks broadcast the target to ``(T_loss, features)`` for
+    # full-trajectory evaluation.  Prepend a dummy entry so that
+    # ``target_value[t]`` at scan step ``t`` matches full-trajectory
+    # index ``t - 1`` for ``t >= 1``.  The entry at ``t = 0`` is
+    # zero-weighted.
+    if (
+        isinstance(target_value, Array)
+        and target_value.ndim >= 2
+        and target_value.shape[0] == T_loss
+    ):
+        target_value = jnp.concatenate(
+            [target_value[:1], target_value], axis=0,
+        )  # (T, features)
+
+    # After possible padding, a (T, features) target is indexed per step.
+    target_is_time_varying = (
+        isinstance(target_value, Array)
+        and target_value.ndim >= 2
+        and target_value.shape[0] == T
+    )
 
     where_fn = loss.where
     norm_fn = loss.norm
@@ -204,7 +242,8 @@ def _make_target_state_closure(
 
     def _step(state_view, t):
         state_component = where_fn(state_view)  # (features,) — single trial
-        error = norm_fn(state_component - target_value)  # scalar
+        tv = target_value[t] if target_is_time_varying else target_value
+        error = norm_fn(state_component - tv)  # scalar
         weight_t = time_weights[t]
         return w * error * weight_t
 
@@ -242,9 +281,13 @@ def _compute_single_trial_weights(
         wi = jnp.asarray(wi, dtype=dtype)
         if wi.ndim == 0:
             wi = jnp.full((T,), wi, dtype=dtype)
+        elif wi.shape == (T - 1,):
+            # Common off-by-one: masks computed from epoch_bounds may have T-1
+            # elements (timeline n_steps includes init state). Pad with last value.
+            wi = jnp.concatenate([wi, wi[-1:]])
         elif wi.shape != (T,):
             raise ValueError(
-                f"Mask/discount must be scalar or shape ({T},), got {wi.shape}"
+                f"Mask/discount must be scalar or shape ({T},) or ({T-1},), got {wi.shape}"
             )
         w = w * wi
 
