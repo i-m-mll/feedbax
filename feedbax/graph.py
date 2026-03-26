@@ -185,6 +185,7 @@ class Graph(Component):
 
     state_view_fn: Optional[callable] = field(default=None, static=True)
     state_consistency_fn: Optional[callable] = field(default=None, static=True)
+    checkpoint: bool = eqx.field(default=False, static=True)
 
     def __post_init__(self):
         self._validate_graph()
@@ -347,7 +348,8 @@ class Graph(Component):
         port_values: dict[tuple[str, str], PyTree] = {}
 
         for ext_port, (node_name, node_port) in self.input_bindings.items():
-            port_values[(node_name, node_port)] = inputs[ext_port]
+            if ext_port in inputs:
+                port_values[(node_name, node_port)] = inputs[ext_port]
 
         for node_name, node_key in zip(self._execution_order, keys):
             node = self.nodes[node_name]
@@ -466,7 +468,14 @@ class Graph(Component):
 
         init_cycle_values = self._get_initial_cycle_values(state, cycle_init)
 
-        step_inputs_seq = jt.map(lambda x: x, inputs)
+        # Broadcast scalar input leaves to (n_steps, ...) so they can be
+        # indexed by step.  Non-scalar leaves pass through as-is.
+        def _broadcast_scalar(x):
+            if hasattr(x, 'ndim') and x.ndim == 0:
+                return jnp.broadcast_to(x, (n_steps,))
+            return x
+
+        step_inputs_seq = jt.map(_broadcast_scalar, inputs)
 
         def _step_inputs_at(i):
             return jt.map(lambda x: x[i], step_inputs_seq)
@@ -482,7 +491,8 @@ class Graph(Component):
             port_values = dict(prev_cycle_values)
 
             for ext_port, (node_name, node_port) in self.input_bindings.items():
-                port_values[(node_name, node_port)] = step_inputs[ext_port]
+                if ext_port in step_inputs:
+                    port_values[(node_name, node_port)] = step_inputs[ext_port]
 
             port_values, state = self._execute_step(port_values, state, key=step_key)
 
@@ -503,6 +513,9 @@ class Graph(Component):
                 return (state, new_cycle_values), (outputs, state_view)
 
             return (state, new_cycle_values), outputs
+
+        if self.checkpoint:
+            step = jax.checkpoint(step)
 
         if save_history:
             (final_state, _), (outputs_seq, state_history) = lax.scan(

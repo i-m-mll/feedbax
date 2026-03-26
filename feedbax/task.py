@@ -123,15 +123,126 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
     return _set_component(model, parts, state)
 
 
+def _safe_state_set(state, idx, new_value):
+    """Set a StateIndex value, tolerating dtype/weak-type mismatches.
+
+    See ``feedbax.train._safe_state_set`` for rationale.
+    """
+    from equinox.nn._stateful import State as _State, _Sentinel
+    new_value_converted = jt.map(jnp.asarray, new_value)
+    state_dict = state._state.copy()
+    state_dict[idx.marker] = new_value_converted
+    new_self = object.__new__(_State)
+    new_self._state = state_dict
+    state._state = _Sentinel()
+    return new_self
+
+
+def _cast_to_state_type(value, state_value):
+    """Cast a trial-specific value to match the State's stored dtype and type.
+
+    Intervenor StateIndex initial values are stored as strong-typed JAX
+    arrays.  Uses explicit ``dtype=`` to produce strong-typed arrays.
+    """
+    if not hasattr(state_value, 'dtype'):
+        return value
+    return jnp.asarray(value, dtype=state_value.dtype)
+
+
+def _extract_timeseries_params(
+    params: PyTree,
+    defaults: PyTree,
+    n_steps: Optional[int] = None,
+) -> Optional[PyTree]:
+    """Extract time-varying leaves from intervention params.
+
+    Returns a params-like PyTree where TimeSeriesParam leaves are unwrapped
+    to their inner arrays (shape ``(T, ...)``) and time-invariant leaves are
+    broadcast to ``(T, ...)`` so the whole PyTree is indexable by step.
+    Returns ``None`` if there are no TimeSeriesParam leaves at all.
+
+    Args:
+        params: The intervention params PyTree (may contain TimeSeriesParam).
+        defaults: The default params from State (used as structure reference).
+        n_steps: Number of timesteps for broadcasting non-time-varying leaves.
+            Inferred from the first TimeSeriesParam if not provided.
+    """
+    has_timeseries = False
+    inferred_n_steps = None
+
+    # First pass: find n_steps from the first TimeSeriesParam leaf.
+    def _find_n(p):
+        nonlocal inferred_n_steps
+        if isinstance(p, TimeSeriesParam) and inferred_n_steps is None:
+            inferred_n_steps = p.value.shape[0]
+
+    jt.map(lambda p: _find_n(p), params, is_leaf=is_type(TimeSeriesParam))
+
+    if inferred_n_steps is None:
+        return None  # no TimeSeriesParam leaves
+
+    T = n_steps if n_steps is not None else inferred_n_steps
+
+    def _extract(p, d):
+        nonlocal has_timeseries
+        if isinstance(p, TimeSeriesParam):
+            has_timeseries = True
+            return p.value
+        # Broadcast scalar/static params to (T, ...) so the whole PyTree
+        # can be indexed by step in lax.scan.
+        if isinstance(p, (jnp.ndarray, np.ndarray)):
+            return jnp.broadcast_to(p, (T, *p.shape))
+        # For Python scalars, convert then broadcast.
+        arr = jnp.asarray(p)
+        return jnp.broadcast_to(arr, (T,) + arr.shape)
+
+    result = jt.map(
+        _extract, params, defaults,
+        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
+    )
+    has_timeseries = True  # We already checked inferred_n_steps is not None
+    return result
+
+
+def _merge_intervene_inputs(
+    inputs: dict[str, PyTree],
+    intervene_inputs: dict[str, PyTree],
+) -> dict[str, PyTree]:
+    """Merge time-varying intervention params into model inputs.
+
+    Adds entries keyed by ``f"intervene:{label}"`` for each intervenor label
+    that has time-varying params.  These keys match the input bindings added
+    by ``intervention_compat.add_plant_intervention``.
+    """
+    merged = dict(inputs)
+    for label, tv_params in intervene_inputs.items():
+        merged[f"intervene:{label}"] = tv_params
+    return merged
+
+
 def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
     if isinstance(model, Graph):
         if isinstance(inputs, Mapping):
             if set(model.input_ports).issubset(inputs.keys()):
                 return inputs
-            if len(model.input_ports) == 1:
-                return {model.input_ports[0]: inputs}
-        elif len(model.input_ports) == 1:
-            return {model.input_ports[0]: inputs}
+            # If all required (non-optional) ports are present, return as-is.
+            # Optional ports (e.g., "intervene:*") may be absent.
+            required_ports = {
+                p for p in model.input_ports if not p.startswith("intervene:")
+            }
+            if required_ports.issubset(inputs.keys()):
+                return inputs
+            if len(required_ports) == 1:
+                port = next(iter(required_ports))
+                return {port: inputs}
+        else:
+            # Non-mapping inputs: wrap in a dict for the first required port.
+            required_ports = {
+                p for p in model.input_ports if not p.startswith("intervene:")
+            }
+            if len(required_ports) == 1:
+                port = next(iter(required_ports))
+                return {port: inputs}
     return inputs
 
 
@@ -452,16 +563,16 @@ class AbstractTask(Module):
         with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
             trial_spec = self.get_train_trial(key, batch_info)
 
+        intervenor_params = self._get_intervenor_params(
+            self.intervention_specs.training,
+            trial_spec,
+            key_intervene,
+            batch_info,
+        )
         trial_spec = eqx.tree_at(
             lambda x: x.intervene,
             trial_spec,
-            self._get_intervenor_params(
-                self.intervention_specs.training,
-                trial_spec,
-                key_intervene,
-                batch_info,
-            ),
-            is_leaf=is_none,
+            replace=intervenor_params,  # replace= needed: intervene starts as {}
         )
 
         trial_spec = self._attach_input_dependencies(trial_spec)
@@ -517,22 +628,14 @@ class AbstractTask(Module):
             is_leaf=is_type(TimeSeriesParam),
         )
 
-        timeseries, other = eqx.partition(
-            intervenor_params,
-            is_type(TimeSeriesParam),
-            is_leaf=is_type(TimeSeriesParam),
-        )
-
-        # Unwrap the `TimeSeriesParam` instances.
-        timeseries_arrays = tree_call(timeseries, is_leaf=is_type(TimeSeriesParam))
-
-        # Broadcast the non-timeseries arrays.
-        other_broadcasted = jt.map(
-            lambda x: jnp.broadcast_to(x, (self.n_steps - 1, *x.shape)),
-            jt.map(jnp.array, other),
-        )
-
-        return eqx.combine(timeseries_arrays, other_broadcasted)
+        # Preserve TimeSeriesParam wrappers so that downstream consumers
+        # (_apply_inits and TaskComponent) can distinguish time-varying
+        # params from time-invariant ones.  Time-invariant leaves pass
+        # through unchanged and get merged into the initial State by
+        # _apply_inits; TimeSeriesParam leaves are skipped by _apply_inits
+        # and unwrapped + indexed per-step by TaskComponent or the
+        # training loop.
+        return intervenor_params
 
     @abstractmethod
     def get_validation_trials(
@@ -693,7 +796,10 @@ class AbstractTask(Module):
                 path = _where_key_to_path(where_substate)
                 init_state = _set_state_by_path(model, init_state, path, init_substate)
 
-            # Apply intervention params
+            # Apply intervention params: merge time-invariant params into
+            # State; collect time-varying (TimeSeriesParam) params to pass
+            # as per-step model inputs.
+            intervene_inputs = {}
             if trial_spec.intervene:
                 indices = model.intervention_state_indices()
                 for label, params in trial_spec.intervene.items():
@@ -701,11 +807,32 @@ class AbstractTask(Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = indices[label]
                     current = init_state.get(idx)
-                    init_state = init_state.set(idx, eqx.combine(params, current))
+                    # Merge only time-invariant leaves into State.
+                    # _safe_state_set bypasses strict type validation.
+                    def _merge_leaf(p, c):
+                        if isinstance(p, TimeSeriesParam):
+                            return c
+                        if p is None:
+                            return c
+                        return p
+
+                    merged = jt.map(
+                        _merge_leaf,
+                        params, current,
+                        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
+                    )
+                    init_state = _safe_state_set(init_state, idx, merged)
+                    # Collect time-varying params for per-step input
+                    tv_params = _extract_timeseries_params(params, current)
+                    if tv_params is not None:
+                        intervene_inputs[label] = tv_params
 
             init_state = model.state_consistency_update(init_state)
 
             inputs = _prepare_inputs(model, trial_spec.inputs)
+            # Merge time-varying intervention inputs into model inputs
+            if intervene_inputs:
+                inputs = _merge_intervene_inputs(inputs, intervene_inputs)
             n_steps = _infer_n_steps(inputs, trial_spec.timeline)
             outputs, final_state, state_history = run_component(
                 model,
@@ -713,6 +840,10 @@ class AbstractTask(Module):
                 init_state,
                 key=key_run,
                 n_steps=n_steps,
+            )
+            # Strip prepended initial state so history length matches targets.
+            state_history = jt.map(
+                lambda x: x[1:] if x is not None else x, state_history,
             )
             return state_history
 
@@ -764,9 +895,15 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
     ) -> T:
+        # Partition into arrays that have the ensemble (batch) dimension
+        # and everything else.  StateIndex.init leaves may be arrays without
+        # a batch dimension; those must NOT be vmapped.
+        def _is_batched_array(x):
+            return eqx.is_array(x) and x.ndim >= 1 and x.shape[0] == n_replicates
+
         models_arrays, models_other = eqx.partition(
             models,
-            eqx.is_array,
+            _is_batched_array,
         )
 
         def evaluate_single(model_arrays, model_other, key):
@@ -1741,7 +1878,18 @@ class TaskComponent(Component):
         if self.mode == "open_loop":
             inputs = jt.map(lambda x: x[step], self.trial_spec.inputs)
             if self.trial_spec.intervene:
-                intervene = jt.map(lambda x: x[step], self.trial_spec.intervene)
+                # Unwrap TimeSeriesParam leaves (index by step) and pass
+                # through time-invariant leaves as-is.
+                def _index_or_passthrough(x):
+                    if isinstance(x, TimeSeriesParam):
+                        return x.value[step]
+                    return x
+
+                intervene = jt.map(
+                    _index_or_passthrough,
+                    self.trial_spec.intervene,
+                    is_leaf=is_type(TimeSeriesParam),
+                )
             else:
                 intervene = {}
             outputs = {

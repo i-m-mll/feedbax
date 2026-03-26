@@ -17,9 +17,42 @@ from feedbax.graph import Component
 from feedbax.noise import Normal
 
 
+def _merge_params_override(
+    base_params: "InterventionParams",
+    override: "InterventionParams",
+) -> "InterventionParams":
+    """Merge override params into base, keeping base values where override has None.
+
+    Override leaves take precedence. This allows per-step time-varying params
+    to override the default State-stored params.
+    """
+    return jt.map(
+        lambda o, b: o if o is not None else b,
+        override,
+        base_params,
+        is_leaf=lambda x: x is None,
+    )
+
+
 class InterventionParams(eqx.Module):
     scale: float = 1.0
     active: bool = True
+
+
+def _strong_typed(params: InterventionParams) -> InterventionParams:
+    """Convert params to strong-typed JAX arrays for StateIndex storage.
+
+    State.set() enforces exact dtype/weak-type matching between old and new
+    values.  Trial-specific params from JAX random functions are strong-typed.
+    To ensure compatibility, the StateIndex initial values must also be
+    strong-typed.  Only converts existing JAX arrays; Python scalars are left
+    as-is so that eqx.filter_vmap treats them as static in ensembles.
+    """
+    def _convert(x):
+        if isinstance(x, jnp.ndarray):
+            return jnp.asarray(x, dtype=jnp.result_type(x))
+        return x
+    return jt.map(_convert, params)
 
 
 class CurlFieldParams(InterventionParams):
@@ -50,7 +83,7 @@ class CopyParams(InterventionParams):
 class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
 
-    input_ports = ("effector", "force")
+    input_ports = ("effector", "force", "params_override")
     output_ports = ("force",)
 
     params_index: StateIndex
@@ -61,11 +94,13 @@ class CurlField(Component):
         if params is None:
             params = CurlFieldParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: CurlFieldParams = state.get(self.params_index)
+        if "params_override" in inputs:
+            params = _merge_params_override(params, inputs["params_override"])
         effector = inputs["effector"]
         force = inputs["force"]
 
@@ -84,7 +119,7 @@ class CurlField(Component):
 class FixedField(Component):
     """Adds a fixed force vector to a force signal."""
 
-    input_ports = ("force",)
+    input_ports = ("force", "params_override")
     output_ports = ("force",)
 
     params_index: StateIndex
@@ -95,11 +130,13 @@ class FixedField(Component):
         if params is None:
             params = FixedFieldParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: FixedFieldParams = state.get(self.params_index)
+        if "params_override" in inputs:
+            params = _merge_params_override(params, inputs["params_override"])
         force = inputs["force"]
 
         def apply_field():
@@ -133,7 +170,7 @@ class AddNoise(Component):
             params = AddNoiseParams(active=False)
         self.noise_func = noise_func
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -169,7 +206,7 @@ class NetworkClamp(Component):
         if params is None:
             params = NetworkIntervenorParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -210,7 +247,7 @@ class NetworkConstantInput(Component):
         if params is None:
             params = NetworkIntervenorParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -251,7 +288,7 @@ class ConstantInput(Component):
         if params is None:
             params = ConstantInputParams(active=False)
         self._initial_state = params
-        self.params_index = StateIndex(params)
+        self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):

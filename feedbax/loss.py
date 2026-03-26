@@ -82,15 +82,21 @@ class TermTree[T](Mapping[str, "TermTree"]):
     def tree_flatten(self):
         """Flatten for PyTree; only include numeric/JAX parts dynamically."""
         # dynamic leaves (these are mapped by vmap/jit):
-        children = (self.children, self.value)
+        # weight is included here (not in aux) so that changing the weight value
+        # does NOT change the treedef. This allows loss_update_func to update
+        # weights without breaking tree_set(history.loss, new_losses, idx).
+        # weight is kept as-is (no jnp.asarray) so that Python float weights
+        # stay as Python non-array leaves, avoiding traced-bool issues in
+        # filter_jit's partition(out, is_array) output processing.
+        children = (self.children, self.value, self.weight)
         # static metadata (these are carried in aux data, not mapped):
-        aux = (self.label, self.names, self.weight, self.leaf_fn, self.originator)
+        aux = (self.label, self.names, self.leaf_fn, self.originator)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        label, names, weight, leaf_fn, originator = aux_data
-        kids, value = children
+        label, names, leaf_fn, originator = aux_data
+        kids, value, weight = children
         return cls(
             label=label,
             names=names,

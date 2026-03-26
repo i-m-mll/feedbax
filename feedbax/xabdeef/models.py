@@ -48,6 +48,7 @@ def point_mass_nn(
     tau_rise: float = 0.0,
     tau_decay: float = 0.0,
     population_structure: Optional[PopulationStructure] = None,
+    sisu_gating: str = "additive",
     *,
     key: PRNGKeyArray,
 ):
@@ -74,6 +75,9 @@ def point_mass_nn(
         velocity_damping: Decays the velocity of the point mass.
         tau_rise: The time constant for the rise of the first-order actuation filter.
         tau_decay: The time constant for the decay of the first-order actuation filter.
+        sisu_gating: How SISU is incorporated. ``"additive"`` (default) concatenates
+            SISU with the input. ``"multiplicative"`` strips SISU from the input and
+            applies it as post-hidden gain modulation.
         key: The random key to use for initializing the model.
     """
     key1, key2 = jr.split(key)
@@ -104,6 +108,7 @@ def point_mass_nn(
         hidden_type=hidden_type,
         out_nonlinearity=out_nonlinearity,
         population_structure=population_structure,
+        sisu_gating=sisu_gating,
         key=key1,
     )
     body = SimpleFeedback(

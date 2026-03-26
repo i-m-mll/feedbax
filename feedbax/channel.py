@@ -132,13 +132,14 @@ class Channel(Component):
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":
         """Return a similar Channel with a changed input structure."""
-        new_initial_state = self._initial_state_value(input_proto)
-        new_state_index = StateIndex(new_initial_state)
-        return dataclasses.replace(
-            self,
+        # Reconstruct via __init__ which computes state_index and
+        # _initial_state from the other args.
+        return Channel(
+            delay=self.delay,
+            noise_func=self.noise_func,
+            add_noise=self.add_noise,
             input_proto=input_proto,
-            state_index=new_state_index,
-            _initial_state=new_initial_state,
+            init_value=self.init_value,
         )
 
 

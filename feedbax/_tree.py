@@ -109,12 +109,18 @@ def filter_spec_leaves(
     tree: PyTree[Any, "T"],
     leaf_func: Callable,
 ) -> PyTree[bool, "T"]:
-    """Returns a filter specification for tree leaves matching `leaf_func`."""
+    """Returns a filter specification for tree leaves matching `leaf_func`.
+
+    If ``leaf_func`` selects a non-leaf subtree (e.g. a Module), all array
+    leaves within that subtree are set to ``True``.
+    """
     filter_spec = jt.map(lambda _: False, tree)
     filter_spec = eqx.tree_at(
         leaf_func,
         filter_spec,
-        replace_fn=lambda x: True,
+        # If the selected node is a subtree (not a single leaf), expand True
+        # to all leaves within it so that eqx.partition sees them individually.
+        replace_fn=lambda x: jt.map(lambda _: True, x) if hasattr(x, '__dict__') else True,
     )
     return filter_spec
 
@@ -268,7 +274,14 @@ def tree_set(
         A PyTree with the same structure as `tree`, where the array leaves of `items` have been inserted as the `idx`-th elements of the corresponding array leaves of `tree`.
     """
     arrays = eqx.filter(tree, eqx.is_array)
-    vals_update, other_update = eqx.partition(values, jt.map(lambda x: x is not None, arrays))
+    # Use is_leaf=lambda x: x is None so that None values (produced by eqx.filter
+    # for non-array leaves) are treated as leaves (→ False) rather than as empty
+    # containers, allowing pytree structures with non-array leaves to match.
+    vals_update, other_update = eqx.partition(
+        values,
+        jt.map(lambda x: x is not None, arrays, is_leaf=lambda x: x is None),
+        is_leaf=lambda x: x is None,
+    )
     arrays_update = jt.map(lambda xs, x: xs.at[idx].set(x), arrays, vals_update)
     return eqx.combine(arrays_update, other_update)
 

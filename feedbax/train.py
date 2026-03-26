@@ -43,13 +43,42 @@ from feedbax.misc import (
     exponential_smoothing,
     is_none,
 )
+from feedbax.intervene.schedule import TimeSeriesParam
 from feedbax.state import StateT
-from feedbax.task import AbstractTask, TaskTrialSpec, _infer_n_steps, _prepare_inputs, _set_state_by_path, _where_key_to_path
+from feedbax.task import (
+    AbstractTask,
+    TaskTrialSpec,
+    _extract_timeseries_params,
+    _infer_n_steps,
+    _prepare_inputs,
+    _set_state_by_path,
+    _where_key_to_path,
+)
 
 LOSS_FMT = ".2e"
 
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_state_set(state, idx, new_value):
+    """Set a StateIndex value, tolerating dtype/weak-type mismatches.
+
+    Equinox State.set() validates exact dtype/weak-type matching via
+    jax.eval_shape.  Trial-specific params from JAX random functions may
+    have different types (strong f32) than the Python-scalar defaults
+    stored in State (weak f32).  We rebuild the State dict directly,
+    bypassing the strict validation.
+    """
+    from equinox.nn._stateful import State as _State, _Sentinel
+    new_value_converted = jtu.tree_map(jnp.asarray, new_value)
+    state_dict = state._state.copy()
+    state_dict[idx.marker] = new_value_converted
+    new_self = object.__new__(_State)
+    new_self._state = state_dict
+    # Invalidate old state (same as State.set does)
+    state._state = _Sentinel()
+    return new_self
 
 
 WhereFunc: TypeAlias = Callable[[Component], Any]
@@ -176,6 +205,8 @@ class TaskTrainer(eqx.Module):
         verbose_progress: bool = True,
         loss_update_func: Optional[Callable[[AbstractLoss, TermTree, PyTree], AbstractLoss]] = None,
         loss_update_iterations: bool | Int[Array, "_"] = True,
+        loss_reduction_fn: Optional[Callable[[Array], Array]] = None,
+        pre_step_fn: Optional[Callable] = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -276,8 +307,12 @@ class TaskTrainer(eqx.Module):
         model_parameters = get_model_parameters(model, where_train_spec)
 
         if ensembled:
-            # Infer the number of replicates from shape of trainable arrays
-            n_replicates = tree_infer_batch_size(model)
+            # Infer the number of replicates from shape of trainable arrays.
+            # Exclude StateIndex nodes — their init arrays (e.g. disturbance
+            # field params) may not carry the ensemble dimension.
+            from equinox.nn import StateIndex
+            from jax_cookbook import is_type
+            n_replicates = tree_infer_batch_size(model, exclude=is_type(StateIndex))
             init_opt_state = eqx.filter_vmap(self.optimizer.init)
         else:
             # Unlikely to be used for anything, due to ensembled operations being in
@@ -402,11 +437,15 @@ class TaskTrainer(eqx.Module):
         flat_opt_state, treedef_opt_state = jtu.tree_flatten(opt_state)
 
         if ensembled:
-            # We only vmap over axis 0 of the *array* components of the model.
-            flat_model_arr_spec = jt.map(
-                lambda x: eqx.if_array(0),
-                flat_model,
-            )
+            # We only vmap over axis 0 of the *array* components of the model,
+            # but only if they actually carry the ensemble dimension. Arrays
+            # without it (e.g. StateIndex.init for shared intervenor params)
+            # should be broadcast (in_axis=None).
+            def _ensemble_in_axis(x):
+                if eqx.is_array(x) and x.ndim > 0 and x.shape[0] == n_replicates:
+                    return 0
+                return None
+            flat_model_arr_spec = jt.map(_ensemble_in_axis, flat_model)
 
             if ensemble_random_trials:
                 key_in_axis = 0
@@ -426,8 +465,15 @@ class TaskTrainer(eqx.Module):
                 None,
                 None,
                 key_in_axis,
+                None,  # loss_reduction_fn
+                None,  # pre_step_fn
             )
-            out_axes = (0, trial_specs_out_axis, flat_model_arr_spec, 0, 0)
+            # Use eqx.if_array(0) for losses and grads rather than plain 0, so that
+            # non-array leaves in the output pytrees (e.g., TermTree.weight stored as
+            # a Python float) are NOT stacked by vmap. Plain 0 would cause vmap to
+            # broadcast Python float weights to shape (n_replicates,), breaking the
+            # shape invariant expected by loss_update_func and history storage.
+            out_axes = (eqx.if_array(0), trial_specs_out_axis, flat_model_arr_spec, eqx.if_array(0), eqx.if_array(0))
 
             train_step = eqx.filter_vmap(
                 self._train_step,
@@ -474,6 +520,8 @@ class TaskTrainer(eqx.Module):
                     where_train_spec,
                     model_update_funcs_flat,
                     key_compile,
+                    loss_reduction_fn,
+                    pre_step_fn,
                 )
 
             logger.info(f"Training step compiled in {timer.time:.2f} seconds.")
@@ -562,6 +610,8 @@ class TaskTrainer(eqx.Module):
                     where_train_spec,
                     update_funcs_i,
                     key_train,
+                    loss_reduction_fn,
+                    pre_step_fn,
                 )
 
                 update_pbar.subdescription(
@@ -677,8 +727,11 @@ class TaskTrainer(eqx.Module):
                     )
 
                     if ensembled:
-                        losses_validation_mean = jt.map(
-                            lambda x: jnp.mean(x, axis=-1), losses_validation
+                        # Use TermTree.map instead of jt.map so that only `value`
+                        # arrays are mapped, leaving non-array leaves (e.g. weight
+                        # stored as Python float) untouched.
+                        losses_validation_mean = losses_validation.map(
+                            lambda x: jnp.mean(x, axis=-1)
                         )
                         # Only log a validation plot for the first replicate.
                         states_plot = tree_take(states, 0)
@@ -760,6 +813,8 @@ class TaskTrainer(eqx.Module):
         where_train_spec,  #! can't do AbstractModel[StateT[bool]]
         update_funcs,
         key: PRNGKeyArray,
+        loss_reduction_fn: Optional[Callable] = None,
+        pre_step_fn: Optional[Callable] = None,
     ):
         """Executes a single training step of the model.
 
@@ -795,6 +850,12 @@ class TaskTrainer(eqx.Module):
 
         model = jtu.tree_unflatten(treedef_model, flat_model)
 
+        # Pre-step hook: modify trial_specs before the forward pass.
+        # Used for adversarial perturbation training (APT) where the
+        # perturbation is optimized to maximize loss before each step.
+        if pre_step_fn is not None:
+            trial_specs = pre_step_fn(task, model, trial_specs, loss_func, keys_model)
+
         def _make_state(_):
             return init_state_from_component(model)
 
@@ -813,7 +874,23 @@ class TaskTrainer(eqx.Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = intervention_indices[label]
                     current = state.get(idx)
-                    state = state.set(idx, eqx.combine(params, current))
+                    # Merge only time-invariant params into the initial State.
+                    # TimeSeriesParam leaves are skipped here — they are
+                    # handled per-step via params_override input ports on the
+                    # intervenor components.  Cast to match State dtypes.
+                    def _merge_leaf(p, c):
+                        if isinstance(p, TimeSeriesParam):
+                            return c
+                        if p is None:
+                            return c
+                        return p
+
+                    merged = jt.map(
+                        _merge_leaf,
+                        params, current,
+                        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
+                    )
+                    state = _safe_state_set(state, idx, merged)
 
             return model.state_consistency_update(state)
 
@@ -824,7 +901,7 @@ class TaskTrainer(eqx.Module):
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
-            grad_wrap_abstract_loss(loss_func), has_aux=True
+            grad_wrap_abstract_loss(loss_func, loss_reduction_fn=loss_reduction_fn), has_aux=True
         )(
             diff_model,
             static_model,
@@ -1141,7 +1218,32 @@ class SimpleTrainer(eqx.Module):
         return model
 
 
-def grad_wrap_abstract_loss(loss_func: AbstractLoss):
+def _extract_intervene_inputs(
+    intervene: Mapping,
+    model: Component,
+) -> dict[str, PyTree]:
+    """Extract time-varying params from trial_spec.intervene as model inputs.
+
+    For each intervenor label with TimeSeriesParam leaves, produces a
+    params-like PyTree keyed by ``f"intervene:{label}"`` where
+    TimeSeriesParam leaves are unwrapped to their arrays (shape ``(T, ...)``)
+    and time-invariant leaves are ``None``.
+    """
+    indices = model.intervention_state_indices()
+    result = {}
+    for label, params in intervene.items():
+        if label not in indices:
+            continue
+        idx = indices[label]
+        # The default params are stored as the StateIndex initial value.
+        default_params = idx.init
+        tv_params = _extract_timeseries_params(params, default_params)
+        if tv_params is not None:
+            result[f"intervene:{label}"] = tv_params
+    return result
+
+
+def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional[Callable] = None):
     """Wraps a task loss function taking state to a `grad`-able one taking a model.
 
     It is convenient to first define the loss function in terms of a
@@ -1184,6 +1286,15 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
                 n_steps = timeline.n_steps
             else:
                 n_steps = _infer_n_steps(inputs)
+            # Extract time-varying intervention params and add as model inputs.
+            # These are routed to intervenor params_override ports via input
+            # bindings added by intervention_compat graph surgery.
+            if trial_spec.intervene:
+                intervene_inputs = _extract_intervene_inputs(
+                    trial_spec.intervene, model,
+                )
+                if intervene_inputs:
+                    inputs = {**inputs, **intervene_inputs}
             _, _, state_history = run_component(
                 model,
                 inputs,
@@ -1191,13 +1302,24 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss):
                 key=key,
                 n_steps=n_steps,
             )
+            # State history includes the initial state (n_steps + 1 entries).
+            # Strip the initial state so the history length matches the
+            # target/input time-series length (n_steps).
+            state_history = jt.map(lambda x: x[1:] if x is not None else x, state_history)
             return state_history
 
         states: StateT = eqx.filter_vmap(_run_trial)(trial_specs, init_states, keys)
 
         losses = loss_func(states, trial_specs, model)
 
-        return losses.total, (losses, states)
+        if loss_reduction_fn is not None:
+            # Compute per-trial total (no mean reduction) for custom aggregation.
+            # aggregate(leaf_fn=identity) gives shape (batch,) per-trial totals.
+            per_trial_total = losses.aggregate(leaf_fn=lambda x: x)
+            total = loss_reduction_fn(per_trial_total)
+        else:
+            total = losses.total  # default: mean over trials
+        return total, (losses, states)
 
     return wrapper
 

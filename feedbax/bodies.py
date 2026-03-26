@@ -223,8 +223,11 @@ class SimpleFeedback(Graph):
             wires.append(Wire("efferent", "output", "force_filter", "input"))
             wires.append(Wire("force_filter", "output", "mechanics", "force"))
 
-        # Cycle: mechanics output feeds feedback input
-        wires.append(Wire("mechanics", "effector", "feedback", "mechanics"))
+        # Cycle: mechanics state feeds back to feedback channel.
+        # Use the "state" output (full MechanicsState) so that
+        # feedback channel spec.where() can navigate the full structure
+        # (e.g. state.plant.skeleton.pos).
+        wires.append(Wire("mechanics", "state", "feedback", "mechanics"))
 
         def _state_view(node_states):
             force_filter_state = node_states.get(
