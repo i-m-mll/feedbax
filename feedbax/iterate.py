@@ -122,22 +122,14 @@ def run_component(
     accumulated scalar loss instead of state history.
     """
     if isinstance(component, Graph) and component._needs_iteration:
-        if streaming_loss_fn is not None:
-            # TODO: Streaming loss for Graph components requires changes in
-            # graph.py to thread the loss accumulator through its internal
-            # iteration.  For now, only the iterate_component path supports it.
-            raise NotImplementedError(
-                "Streaming loss is not yet supported for Graph components "
-                "that handle their own iteration. Use iterate_component "
-                "directly or restructure the model as an acyclic component."
-            )
         return component(
             inputs,
             init_state,
             key=key,
             n_steps=n_steps,
-            return_state_history=True,
+            return_state_history=streaming_loss_fn is None,
             state_filter=state_filter,
+            streaming_loss_fn=streaming_loss_fn,
         )
     if n_steps is None:
         raise ValueError("n_steps is required for acyclic components")
