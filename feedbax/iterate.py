@@ -27,6 +27,7 @@ def iterate_component(
     n_steps: int,
     key: PRNGKeyArray,
     state_filter: PyTree[bool] = True,
+    checkpoint: bool = False,
 ) -> tuple[PyTree, State, PyTree | None]:
     """Iterate an acyclic component over multiple timesteps."""
     keys = jr.split(key, n_steps)
@@ -53,6 +54,9 @@ def iterate_component(
         return new_state, outputs
 
     step_inputs = jax.vmap(lambda i: jt.map(lambda x: x[i], inputs))(jnp.arange(n_steps))
+
+    if checkpoint:
+        step = jax.checkpoint(step)
 
     if save_history:
         final_state, (outputs, state_history) = lax.scan(
@@ -91,6 +95,7 @@ def run_component(
         )
     if n_steps is None:
         raise ValueError("n_steps is required for acyclic components")
+    checkpoint = getattr(component, 'checkpoint', False)
     return iterate_component(
         component,
         inputs,
@@ -98,4 +103,5 @@ def run_component(
         n_steps,
         key,
         state_filter=state_filter,
+        checkpoint=checkpoint,
     )

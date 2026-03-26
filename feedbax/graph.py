@@ -185,6 +185,7 @@ class Graph(Component):
 
     state_view_fn: Optional[callable] = field(default=None, static=True)
     state_consistency_fn: Optional[callable] = field(default=None, static=True)
+    checkpoint: bool = eqx.field(default=False, static=True)
 
     def __post_init__(self):
         self._validate_graph()
@@ -512,6 +513,9 @@ class Graph(Component):
                 return (state, new_cycle_values), (outputs, state_view)
 
             return (state, new_cycle_values), outputs
+
+        if self.checkpoint:
+            step = jax.checkpoint(step)
 
         if save_history:
             (final_state, _), (outputs_seq, state_history) = lax.scan(
