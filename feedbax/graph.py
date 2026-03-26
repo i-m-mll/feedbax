@@ -10,6 +10,7 @@ from abc import abstractmethod
 import dataclasses
 from functools import cached_property
 from operator import attrgetter
+from collections.abc import Callable
 from typing import ClassVar, Optional
 
 import equinox as eqx
@@ -315,6 +316,7 @@ class Graph(Component):
         return_state_history: bool = False,
         state_filter: PyTree[bool] = True,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        streaming_loss_fn: Optional[Callable] = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if self._needs_iteration:
             return self._call_with_iteration(
@@ -325,6 +327,7 @@ class Graph(Component):
                 return_state_history=return_state_history,
                 state_filter=state_filter,
                 cycle_init=cycle_init,
+                streaming_loss_fn=streaming_loss_fn,
             )
         outputs, state = self._call_single_step(inputs, state, key=key)
         if return_state_history:
@@ -456,6 +459,7 @@ class Graph(Component):
         return_state_history: bool = False,
         state_filter: PyTree[bool] = True,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        streaming_loss_fn: Optional[Callable] = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if n_steps is None:
             if not inputs:
@@ -484,6 +488,45 @@ class Graph(Component):
 
         save_history = return_state_history and state_filter is not False
 
+        # --- streaming-loss path: accumulate scalar, skip history ---
+        if streaming_loss_fn is not None:
+            def step_streaming(carry, args):
+                state, prev_cycle_values, loss_accum = carry
+                (step_inputs, step_key), t = args
+
+                port_values = dict(prev_cycle_values)
+                for ext_port, (node_name, node_port) in self.input_bindings.items():
+                    if ext_port in step_inputs:
+                        port_values[(node_name, node_port)] = step_inputs[ext_port]
+
+                port_values, state = self._execute_step(port_values, state, key=step_key)
+
+                new_cycle_values = {}
+                for wire in self._cycle_wires:
+                    source_key = (wire.source_node, wire.source_port)
+                    target_key = (wire.target_node, wire.target_port)
+                    new_cycle_values[target_key] = port_values[source_key]
+
+                outputs = {
+                    ext_port: port_values[(node_name, node_port)]
+                    for ext_port, (node_name, node_port) in self.output_bindings.items()
+                }
+
+                state_view = self.state_view(state)
+                step_loss = streaming_loss_fn(state_view, t)
+                return (state, new_cycle_values, loss_accum + step_loss), outputs
+
+            if self.checkpoint:
+                step_streaming = jax.checkpoint(step_streaming)
+
+            (final_state, _, total_loss), outputs_seq = lax.scan(
+                step_streaming,
+                (state, init_cycle_values, jnp.float32(0.0)),
+                ((step_inputs_seq, keys), jnp.arange(n_steps)),
+            )
+            return outputs_seq, final_state, total_loss
+
+        # --- standard paths ---
         def step(carry, args):
             state, prev_cycle_values = carry
             step_inputs, step_key = args
