@@ -331,5 +331,26 @@ class Mechanics(Component):
         state = state.set(self.state_index, new_state)
         return {"effector": effector, "state": new_state}, state
 
+    def initial_outputs(self, state_value: MechanicsState | None) -> dict[str, PyTree]:
+        """Return outputs inferred from current mechanics state.
+
+        Overrides the base ``Component.initial_outputs`` to handle the
+        ``"state"`` output port, which is the full ``MechanicsState`` and
+        therefore cannot be derived from a state attribute lookup by name.
+
+        Args:
+            state_value: Current ``MechanicsState``, or ``None``.
+
+        Returns:
+            Dict with ``"effector"`` and ``"state"`` entries if
+            ``state_value`` is not ``None``, otherwise an empty dict.
+        """
+        if state_value is None:
+            return {}
+        return {
+            "effector": state_value.effector,
+            "state": state_value,
+        }
+
     def state_view(self, state: State) -> MechanicsState:
         return state.get(self.state_index)
