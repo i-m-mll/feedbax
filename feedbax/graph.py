@@ -377,6 +377,73 @@ class Graph(Component):
 
         return outputs, state
 
+    def step(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        cycle_port_values: Optional[dict[tuple[str, str], PyTree]] = None,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree]]:
+        """Advance the graph by one timestep.
+
+        Public single-step API that, unlike ``_call_single_step``, threads
+        cycle-wire values across calls so callers can drive a cyclic graph
+        one step at a time without reinventing the cycle-wiring logic.
+
+        For acyclic graphs (``_needs_iteration == False``), ``step`` reduces
+        to ``_call_single_step`` and the returned ``cycle_port_values`` is
+        an empty dict. For cyclic graphs, the caller should pass the
+        ``cycle_port_values`` returned from the previous call as the
+        ``cycle_port_values`` argument of the next call. On the first call,
+        pass ``None`` to use defaults derived from ``state`` (mirrors the
+        behaviour of ``Graph.__call__(n_steps=...)``).
+
+        Args:
+            inputs: External (non-cycle) input port values, keyed by external
+                input port name (matches ``input_bindings`` keys).
+            state: Current ``equinox.nn.State``.
+            cycle_port_values: Cycle-wire port values from the previous step,
+                keyed by ``(target_node, target_port)`` tuples. ``None`` on
+                the first step uses defaults derived from ``state``.
+            key: PRNGKey for any noise in the step.
+
+        Returns:
+            ``(outputs, new_state, cycle_port_values)`` where:
+              * ``outputs`` is the dict of external output port values.
+              * ``new_state`` is the updated ``equinox.nn.State``.
+              * ``cycle_port_values`` is the dict of cycle-wire port values
+                to pass into the next ``step`` call. Empty for graphs
+                without cycles.
+        """
+        if not self._needs_iteration:
+            outputs, new_state = self._call_single_step(inputs, state, key=key)
+            return outputs, new_state, {}
+
+        if cycle_port_values is None:
+            cycle_port_values = self._get_initial_cycle_values(state)
+
+        port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
+
+        for ext_port, (node_name, node_port) in self.input_bindings.items():
+            if ext_port in inputs:
+                port_values[(node_name, node_port)] = inputs[ext_port]
+
+        port_values, new_state = self._execute_step(port_values, state, key=key)
+
+        new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
+        for wire in self._cycle_wires:
+            source_key = (wire.source_node, wire.source_port)
+            target_key = (wire.target_node, wire.target_port)
+            new_cycle_port_values[target_key] = port_values[source_key]
+
+        outputs = {
+            ext_port: port_values[(node_name, node_port)]
+            for ext_port, (node_name, node_port) in self.output_bindings.items()
+        }
+
+        return outputs, new_state, new_cycle_port_values
+
     def _execute_step(
         self,
         port_values: dict[tuple[str, str], PyTree],
@@ -407,6 +474,35 @@ class Graph(Component):
                     port_values[(wire.target_node, wire.target_port)] = value
 
         return port_values, state
+
+    def initial_cycle_port_values(
+        self,
+        state: State,
+        cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+    ) -> dict[tuple[str, str], PyTree]:
+        """Return the cycle-wire port-value dict to seed the first ``step`` call.
+
+        Equivalent to ``cycle_init`` augmented with values derived from
+        ``state`` (via each cycle source node's ``initial_outputs``). For
+        graphs without cycles, returns an empty dict.
+
+        Args:
+            state: Current ``equinox.nn.State`` to derive defaults from.
+            cycle_init: Optional explicit overrides keyed by
+                ``(target_node, target_port)``. Takes precedence over
+                state-derived defaults.
+
+        Returns:
+            Dict keyed by ``(target_node, target_port)`` suitable as the
+            ``cycle_port_values`` argument to ``step``.
+
+        Raises:
+            ValueError: If a cycle-wire target has neither a ``cycle_init``
+                override nor a state-derivable default.
+        """
+        if not self._needs_iteration:
+            return {}
+        return self._get_initial_cycle_values(state, cycle_init)
 
     def _get_initial_cycle_values(
         self,
@@ -494,23 +590,12 @@ class Graph(Component):
                 state, prev_cycle_values, loss_accum = carry
                 (step_inputs, step_key), t = args
 
-                port_values = dict(prev_cycle_values)
-                for ext_port, (node_name, node_port) in self.input_bindings.items():
-                    if ext_port in step_inputs:
-                        port_values[(node_name, node_port)] = step_inputs[ext_port]
-
-                port_values, state = self._execute_step(port_values, state, key=step_key)
-
-                new_cycle_values = {}
-                for wire in self._cycle_wires:
-                    source_key = (wire.source_node, wire.source_port)
-                    target_key = (wire.target_node, wire.target_port)
-                    new_cycle_values[target_key] = port_values[source_key]
-
-                outputs = {
-                    ext_port: port_values[(node_name, node_port)]
-                    for ext_port, (node_name, node_port) in self.output_bindings.items()
-                }
+                outputs, state, new_cycle_values = self.step(
+                    step_inputs,
+                    state,
+                    prev_cycle_values,
+                    key=step_key,
+                )
 
                 state_view = self.state_view(state)
                 step_loss = streaming_loss_fn(state_view, t)
@@ -527,28 +612,16 @@ class Graph(Component):
             return outputs_seq, final_state, total_loss
 
         # --- standard paths ---
-        def step(carry, args):
+        def step_body(carry, args):
             state, prev_cycle_values = carry
             step_inputs, step_key = args
 
-            port_values = dict(prev_cycle_values)
-
-            for ext_port, (node_name, node_port) in self.input_bindings.items():
-                if ext_port in step_inputs:
-                    port_values[(node_name, node_port)] = step_inputs[ext_port]
-
-            port_values, state = self._execute_step(port_values, state, key=step_key)
-
-            new_cycle_values = {}
-            for wire in self._cycle_wires:
-                source_key = (wire.source_node, wire.source_port)
-                target_key = (wire.target_node, wire.target_port)
-                new_cycle_values[target_key] = port_values[source_key]
-
-            outputs = {
-                ext_port: port_values[(node_name, node_port)]
-                for ext_port, (node_name, node_port) in self.output_bindings.items()
-            }
+            outputs, state, new_cycle_values = self.step(
+                step_inputs,
+                state,
+                prev_cycle_values,
+                key=step_key,
+            )
 
             if save_history:
                 state_view = self.state_view(state)
@@ -558,11 +631,11 @@ class Graph(Component):
             return (state, new_cycle_values), outputs
 
         if self.checkpoint:
-            step = jax.checkpoint(step)
+            step_body = jax.checkpoint(step_body)
 
         if save_history:
             (final_state, _), (outputs_seq, state_history) = lax.scan(
-                step,
+                step_body,
                 (state, init_cycle_values),
                 (step_inputs_seq, keys),
             )
@@ -579,7 +652,7 @@ class Graph(Component):
             return outputs_seq, final_state, state_history
 
         (final_state, _), outputs_seq = lax.scan(
-            step,
+            step_body,
             (state, init_cycle_values),
             (step_inputs_seq, keys),
         )

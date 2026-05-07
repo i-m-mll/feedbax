@@ -67,3 +67,190 @@ def test_iterate_component_state_history():
 
     assert history is not None
     assert (history == jnp.array([0, 1, 2])).all()
+
+
+# =============================================================================
+# Public Graph.step API tests
+# Bug: 0ec8492 — public single-step API that threads cycle wires across calls.
+# =============================================================================
+
+
+class _Scaler(Component):
+    """Scales its input by a fixed factor: out = factor * in."""
+
+    input_ports = ("x",)
+    output_ports = ("y",)
+
+    factor: jnp.ndarray
+
+    def __init__(self, factor):
+        self.factor = jnp.asarray(factor)
+
+    def __call__(self, inputs, state, *, key):
+        return {"y": self.factor * inputs["x"]}, state
+
+
+class _AddOne(Component):
+    """Stateless add-one: out = in + 1."""
+
+    input_ports = ("x",)
+    output_ports = ("y",)
+
+    def __call__(self, inputs, state, *, key):
+        return {"y": inputs["x"] + 1.0}, state
+
+
+def _make_cyclic_graph():
+    """Build a 2-component cyclic graph.
+
+    ``a``: y = factor * x
+    ``b``: y = x + 1
+
+    Wires:
+      external "input" -> a.x
+      a.y -> b.x
+      b.y -> a.x   (back-edge: forms cycle, will be detected)
+
+    External output: b.y.
+    """
+    a = _Scaler(0.5)
+    b = _AddOne()
+    graph = Graph(
+        nodes={"a": a, "b": b},
+        wires=(
+            Wire("a", "y", "b", "x"),
+            Wire("b", "y", "a", "x"),  # back-edge -> cycle
+        ),
+        input_ports=("input",),
+        output_ports=("out",),
+        input_bindings={"input": ("a", "x")},
+        output_bindings={"out": ("b", "y")},
+    )
+    return graph
+
+
+def test_graph_step_acyclic_returns_empty_cycle_values():
+    """For an acyclic graph, ``step`` returns an empty cycle dict and works without one."""
+    a = _Scaler(2.0)
+    graph = Graph(
+        nodes={"a": a},
+        wires=(),
+        input_ports=("input",),
+        output_ports=("out",),
+        input_bindings={"input": ("a", "x")},
+        output_bindings={"out": ("a", "y")},
+    )
+
+    state = init_state_from_component(graph)
+    outputs, _, cycle = graph.step(
+        {"input": jnp.array(3.0)},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+    assert cycle == {}
+    assert outputs["out"] == jnp.array(6.0)
+
+    # And explicitly None should also work.
+    outputs, _, cycle = graph.step(
+        {"input": jnp.array(3.0)},
+        state,
+        None,
+        key=jax.random.PRNGKey(0),
+    )
+    assert cycle == {}
+    assert outputs["out"] == jnp.array(6.0)
+
+
+def test_graph_step_cyclic_threads_cycle_values():
+    """Smoke: chain three ``step`` calls on a cyclic graph; cycle values propagate.
+
+    The back-edge target is ``a.x`` (cycle wire b.y -> a.x). Because external
+    "input" also binds to ``a.x``, the explicit input wins on any step that
+    provides one. We chain calls and verify the contract: ``cycle_port_values``
+    returned is keyed by ``("a", "x")`` and equals ``b.y`` from the
+    just-completed step.
+    """
+    graph = _make_cyclic_graph()
+    assert graph._needs_iteration  # sanity: cycle detected
+
+    state = init_state_from_component(graph)
+
+    # First step: seed cycle explicitly (the toy components are stateless and
+    # don't expose initial_outputs, so None would raise — see
+    # _get_initial_cycle_values).
+    seed_cycle = {("a", "x"): jnp.array(0.0)}
+
+    # Step 1: input = 4, a.y = 0.5*4 = 2, b.y = 2 + 1 = 3
+    out1, state, cyc1 = graph.step(
+        {"input": jnp.array(4.0)},
+        state,
+        seed_cycle,
+        key=jax.random.PRNGKey(0),
+    )
+    assert out1["out"] == jnp.array(3.0)
+    assert ("a", "x") in cyc1
+    # cycle stores the source value (b.y) of the back-edge.
+    assert cyc1[("a", "x")] == jnp.array(3.0)
+
+    # Step 2: pass cycle from step 1; input dominates a.x again.
+    out2, state, cyc2 = graph.step(
+        {"input": jnp.array(2.0)},
+        state,
+        cyc1,
+        key=jax.random.PRNGKey(1),
+    )
+    # a.y = 0.5*2 = 1, b.y = 2
+    assert out2["out"] == jnp.array(2.0)
+    assert cyc2[("a", "x")] == jnp.array(2.0)
+
+    # Step 3: omit external input -> cycle value (b.y = 2.0) drives a.x.
+    # a.y = 0.5*2 = 1, b.y = 2
+    out3, _, cyc3 = graph.step(
+        {},
+        state,
+        cyc2,
+        key=jax.random.PRNGKey(2),
+    )
+    assert out3["out"] == jnp.array(2.0)
+    assert cyc3[("a", "x")] == jnp.array(2.0)
+
+
+def test_graph_step_equivalent_to_call_with_iteration():
+    """Manual loop of ``step`` calls matches ``Graph.__call__(n_steps=N)``."""
+    graph = _make_cyclic_graph()
+    n_steps = 5
+
+    # Use varying inputs so each timestep is distinguishable.
+    inputs_seq = jnp.arange(1.0, 1.0 + n_steps, dtype=jnp.float32)
+    base_key = jax.random.PRNGKey(42)
+    keys = jax.random.split(base_key, n_steps)
+    seed_cycle = {("a", "x"): jnp.array(0.0, dtype=jnp.float32)}
+
+    # Reference: __call__ with n_steps. Match its key-splitting convention
+    # (it does jax.random.split(key, n_steps) internally).
+    state_ref = init_state_from_component(graph)
+    outputs_ref, _ = graph(
+        {"input": inputs_seq},
+        state_ref,
+        key=base_key,
+        n_steps=n_steps,
+        cycle_init=seed_cycle,
+    )
+
+    # Manual loop using step.
+    state_manual = init_state_from_component(graph)
+    cycle = seed_cycle
+    out_history = []
+    for t in range(n_steps):
+        out_t, state_manual, cycle = graph.step(
+            {"input": inputs_seq[t]},
+            state_manual,
+            cycle,
+            key=keys[t],
+        )
+        out_history.append(out_t["out"])
+    out_manual = jnp.stack(out_history, axis=0)
+
+    assert jnp.allclose(outputs_ref["out"], out_manual, atol=1e-7), (
+        outputs_ref["out"], out_manual
+    )
