@@ -475,6 +475,35 @@ class Graph(Component):
 
         return port_values, state
 
+    def initial_cycle_port_values(
+        self,
+        state: State,
+        cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+    ) -> dict[tuple[str, str], PyTree]:
+        """Return the cycle-wire port-value dict to seed the first ``step`` call.
+
+        Equivalent to ``cycle_init`` augmented with values derived from
+        ``state`` (via each cycle source node's ``initial_outputs``). For
+        graphs without cycles, returns an empty dict.
+
+        Args:
+            state: Current ``equinox.nn.State`` to derive defaults from.
+            cycle_init: Optional explicit overrides keyed by
+                ``(target_node, target_port)``. Takes precedence over
+                state-derived defaults.
+
+        Returns:
+            Dict keyed by ``(target_node, target_port)`` suitable as the
+            ``cycle_port_values`` argument to ``step``.
+
+        Raises:
+            ValueError: If a cycle-wire target has neither a ``cycle_init``
+                override nor a state-derivable default.
+        """
+        if not self._needs_iteration:
+            return {}
+        return self._get_initial_cycle_values(state, cycle_init)
+
     def _get_initial_cycle_values(
         self,
         state: State,
