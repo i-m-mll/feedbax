@@ -8,6 +8,7 @@ from abc import abstractmethod, abstractproperty
 import logging
 from typing import Generic, Optional, TypeVar
 
+import equinox as eqx
 from equinox import Module
 import jax
 import jax.numpy as jnp
@@ -17,6 +18,46 @@ from feedbax.state import StateBounds, StateT
 
 
 logger = logging.getLogger(__name__)
+
+
+class LinearSystem(Module):
+    """Continuous-time linear (or LTV-around-a-point) state-space matrices.
+
+    A lightweight container for the linearised dynamics of a plant about a
+    nominal operating point. Produced by ``AbstractSkeleton.linearize`` and
+    ``Mechanics.linearize_with_force_filter``.
+
+    Attributes:
+        A: Continuous-time state-evolution matrix, shape ``(n, n)``.
+        B: Continuous-time control matrix, shape ``(n, m_u)``.
+        B_w: Continuous-time disturbance matrix, shape ``(n, m_w)``. May be
+            ``None`` if no canonical disturbance channel is defined at this
+            level.
+        state_indices: Mapping from subspace name (``"pos"``, ``"vel"``,
+            ``"force"``, ...) to ``(start, stop)`` index tuple. Optional
+            slot indices help downstream tools interpret the augmented state.
+        dt: Discretisation time step (seconds), if applicable. ``None`` at
+            the skeleton layer (intrinsic time scale undefined); typically
+            populated by ``Mechanics.linearize_with_force_filter``.
+    """
+
+    A: Float[Array, "n n"]
+    B: Float[Array, "n m_u"]
+    B_w: Optional[Float[Array, "n m_w"]] = None
+    state_indices: dict[str, tuple[int, int]] = eqx.field(default_factory=dict)
+    dt: Optional[float] = None
+
+    @property
+    def n(self) -> int:
+        return int(self.A.shape[0])
+
+    @property
+    def m_u(self) -> int:
+        return int(self.B.shape[1])
+
+    @property
+    def m_w(self) -> Optional[int]:
+        return None if self.B_w is None else int(self.B_w.shape[1])
 
 
 # StateT = TypeVar("StateT", Module, Array)

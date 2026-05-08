@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
-from feedbax.dynamics import LTISystem
+from feedbax.dynamics import LinearSystem, LTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
 from feedbax.state import CartesianState
 
@@ -147,3 +147,40 @@ class PointMass(AbstractSkeleton[CartesianState]):
     def input_size(self) -> int:
         """Number of control variables."""
         return self.B.shape[1]
+
+    def linearize(self, state: Optional[CartesianState] = None) -> LinearSystem:
+        """Continuous-time ``(A, B, B_w)`` for the point mass.
+
+        The point mass is exactly linear, so ``state`` is ignored. The
+        returned matrices describe the bare-skeleton state
+        ``[pos(N_DIM), vel(N_DIM)]``; ``Mechanics.linearize_with_force_filter``
+        augments them with a first-order force filter row when one is used.
+
+        The disturbance channel ``B_w`` matches the convention used by
+        ``feedbax.intervene.FixedField`` / ``CurlField``: an additive force
+        on the velocity row, identical in structure to ``B``. This is
+        consistent with the ``rlrmp.analysis.hinf_riccati.linearize_pointmass``
+        derivation.
+
+        Args:
+            state: Ignored. Present for protocol compatibility.
+
+        Returns:
+            ``LinearSystem`` with shapes ``A: (2*N_DIM, 2*N_DIM)``,
+            ``B: (2*N_DIM, N_DIM)``, ``B_w: (2*N_DIM, N_DIM)``,
+            ``state_indices = {"pos": (0, N_DIM), "vel": (N_DIM, 2*N_DIM)}``.
+        """
+        del state  # unused — system is exactly linear
+        # B is also the disturbance channel for the force-domain disturbance
+        # (matches FixedField / CurlField, which inject directly into the
+        # force input).
+        return LinearSystem(
+            A=self.A,
+            B=self.B,
+            B_w=self.B,
+            state_indices={
+                "pos": (0, N_DIM),
+                "vel": (N_DIM, 2 * N_DIM),
+            },
+            dt=None,
+        )

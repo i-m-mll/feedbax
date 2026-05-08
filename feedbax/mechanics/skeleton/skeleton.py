@@ -12,7 +12,7 @@ from equinox import Module
 from jax import Array
 from jaxtyping import PRNGKeyArray, Scalar
 
-from feedbax.dynamics import AbstractDynamicalSystem
+from feedbax.dynamics import AbstractDynamicalSystem, LinearSystem
 from feedbax.state import CartesianState
 
 
@@ -73,4 +73,42 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
     ) -> StateT:
         """Update the state of the skeleton given a force on the end effector."""
         ...
+
+    def linearize(self, state: StateT) -> LinearSystem:
+        """Continuous-time ``(A, B, B_w)`` matrices for the skeleton about ``state``.
+
+        Returns the bare-skeleton linearisation: the state vector for the
+        returned ``LinearSystem`` is the skeleton configuration only, with
+        no force-filter augmentation. ``Mechanics.linearize_with_force_filter``
+        composes the result with a first-order force filter when one is in use.
+
+        For exactly-linear skeletons (e.g. ``PointMass``) this returns the
+        exact closed-form matrices and ``state`` is ignored. For nonlinear
+        skeletons (``TwoLinkArm``, ``MJXSkeleton``), an autodiff-based
+        Jacobian linearisation about ``state`` would be the natural extension
+        but is not implemented in this base class.
+
+        Subclasses that cannot meaningfully linearise (e.g. MJX-backed
+        skeletons whose dynamics are opaque) should raise
+        ``NotImplementedError`` rather than provide a misleading
+        approximation.
+
+        Args:
+            state: The nominal skeleton state about which to linearise.
+                Ignored by exactly-linear skeletons.
+
+        Returns:
+            A ``LinearSystem`` with continuous-time ``A``, ``B``, and
+            (optionally) ``B_w`` matrices, plus ``state_indices`` slots,
+            and ``dt=None``.
+
+        Raises:
+            NotImplementedError: If the subclass has not provided an
+                implementation.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__}.linearize is not implemented. "
+            f"Override on the subclass to provide a closed-form or "
+            f"autodiff-based linearisation."
+        )
 
