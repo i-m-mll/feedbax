@@ -7,6 +7,8 @@ from feedbax.intervene.intervene import (
     CopyParams,
     CurlField,
     CurlFieldParams,
+    DynamicsMatrixPerturb,
+    DynamicsMatrixPerturbParams,
     FixedField,
     FixedFieldParams,
     InterventionParams,

@@ -64,6 +64,25 @@ class FixedFieldParams(InterventionParams):
     field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0]))
 
 
+class DynamicsMatrixPerturbParams(InterventionParams):
+    """Parameters for ``DynamicsMatrixPerturb``.
+
+    The perturbation acts on the **velocity row** of the skeleton dynamics:
+    ``dot v += delta_A @ [pos, vel]``. This is the natural force-channel
+    embedding of a model-class ``ΔA`` perturbation, matching the disturbance
+    structure used by ``feedbax.intervene.FixedField`` / ``CurlField``
+    (see ``rlrmp.analysis.hinf_riccati.linearize_pointmass``'s ``Bw_c``).
+
+    Attributes:
+        delta_A: ``(n_dim, 2 * n_dim)`` matrix mapping ``[pos, vel]`` to the
+            velocity row's added derivative. Defaults to a 2D zero matrix.
+    """
+
+    delta_A: Array = field(
+        default_factory=lambda: jnp.zeros((2, 4))
+    )
+
+
 class AddNoiseParams(InterventionParams):
     ...
 
@@ -143,6 +162,73 @@ class FixedField(Component):
             return force + params.scale * params.amplitude * params.field
 
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
+        return {"force": new_force}, state
+
+    def intervention_state_indices(self):
+        return {self.label: self.params_index}
+
+
+class DynamicsMatrixPerturb(Component):
+    """Adds a state-feedback dynamics-matrix perturbation as a force.
+
+    Implements the force-channel embedding of a model-class ``ΔA``
+    perturbation: at each timestep, contributes an additional force
+    ``f = mass * (delta_A @ [pos, vel])`` so that the velocity-row
+    derivative becomes ``dot v += delta_A @ [pos, vel]`` (since the
+    pointmass control matrix is ``B = [0; I/mass]``). This is the
+    minimal lift that puts a ``ΔA`` perturbation in the same disturbance
+    channel as ``FixedField`` / ``CurlField``, without modifying the
+    feedbax dynamics scan body.
+
+    Inserts at the same hook point as ``CurlField`` (between the
+    force-filter or efferent and ``Mechanics``), reading the current
+    effector state and writing to the force port. Bug: c723082 (rlrmp).
+
+    Attributes:
+        mass: Effector mass, used to convert the desired ``dx/dt``
+            perturbation into a force. Should match the plant's mass
+            (typically ``1.0``).
+        label: Component label for parameter scheduling.
+    """
+
+    input_ports = ("effector", "force", "params_override")
+    output_ports = ("force",)
+
+    params_index: StateIndex
+    _initial_state: DynamicsMatrixPerturbParams = field(static=True)
+    label: str = field(default="dynamics_matrix_perturb", static=True)
+    mass: float = field(default=1.0, static=True)
+
+    def __init__(
+        self,
+        params: Optional[DynamicsMatrixPerturbParams] = None,
+        label: str = "dynamics_matrix_perturb",
+        mass: float = 1.0,
+    ):
+        if params is None:
+            params = DynamicsMatrixPerturbParams(active=False)
+        self._initial_state = params
+        self.params_index = StateIndex(_strong_typed(params))
+        self.label = label
+        self.mass = mass
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        params: DynamicsMatrixPerturbParams = state.get(self.params_index)
+        if "params_override" in inputs:
+            params = _merge_params_override(params, inputs["params_override"])
+        effector = inputs["effector"]
+        force = inputs["force"]
+
+        def apply_perturbation():
+            # Concatenate [pos, vel] to form the kinematic state vector.
+            x = jnp.concatenate([effector.pos, effector.vel], axis=-1)
+            # f = mass * (delta_A @ x); dividing by mass via plant's B
+            # converts this back into a velocity-row perturbation
+            # dot v += delta_A @ x.
+            df = self.mass * (params.delta_A @ x)
+            return force + params.scale * df
+
+        new_force = jax.lax.cond(params.active, apply_perturbation, lambda: force)
         return {"force": new_force}, state
 
     def intervention_state_indices(self):
