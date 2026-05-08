@@ -1073,6 +1073,86 @@ class StateDerivativeLoss(AbstractLoss):
         return ft.reduce(jnp.add, leaves)
 
 
+class OutputJerkLoss(AbstractLoss):
+    """Penalise the squared discrete second-difference of a state variable along time.
+
+    Computes ``mean(||x_{t+1} - 2 x_t + x_{t-1}||²)`` over the time axis (default
+    ``axis=1``, matching feedbax's ``(trial, time, ...)`` rollout layout). When
+    applied to a velocity trajectory (the default), the discrete second
+    difference is the discrete jerk (third derivative of position) up to a
+    constant ``dt`` factor — hence the class name.
+
+    The selected substate may be a single ``Array`` or a ``PyTree`` of arrays —
+    each leaf is second-differenced and squared-summed over its
+    non-time/non-trial axes, then the contributions are summed across leaves.
+
+    This term mirrors :class:`StateDerivativeLoss` but uses a cross-timestep
+    order of 2 (needs ``t-1, t, t+1``) rather than 1 (needs only ``t-1, t``).
+    Most commonly used as an output-jerk regulariser (Shahbazi, Codol, Michaels
+    & Gribble 2025, Eq. 1) at large weight (e.g. ``1e5``) to suppress
+    high-frequency motor commands.
+
+    Attributes:
+        label: Name for the loss term.
+        where: Function ``state -> Array | PyTree[Array]`` selecting the
+            substate to penalise. Default selects the effector velocity, so
+            second-differencing yields jerk. Supplying a position-substate
+            instead would yield acceleration penalty, not jerk.
+        time_axis: Axis along which to take the second difference. Defaults to
+            ``1`` (feedbax convention: trial=0, time=1, features...).
+        norm: Function applied to the time-second-differenced state to produce a
+            scalar-per-(trial,time) loss density before time/trial averaging.
+            Default: squared L2 norm over feature axes.
+
+    Note:
+        This class declares a cross-timestep order of 2 (``order = 2``). It is
+        invariant to the recurrent cell type and vmap-friendly for the same
+        reason as :class:`StateDerivativeLoss` — it operates structurally on
+        the rollout PyTree rather than knowing about cell internals.
+
+    Bug: 7e1d257
+    """
+
+    label: str = "output_jerk"
+    where: Callable = lambda state: state.mechanics.effector.vel
+    time_axis: int = 1
+    norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
+    # Cross-timestep order: how many neighbouring timesteps are needed. Used by
+    # streaming-loss machinery (feedbax d67e303) to size the rolling buffer.
+    order: int = eqx.field(default=2, static=True)
+
+    def term(
+        self,
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
+    ) -> Array:
+        assert states is not None, "OutputJerkLoss requires states"
+
+        substate = self.where(states)
+
+        def _per_leaf(arr: Array) -> Array:
+            # Second-difference along the time axis (n=2 ⇒ length-2 contraction
+            # of the time axis), then squared-norm over the remaining trailing
+            # feature axes, then mean over time. The trial axis is preserved
+            # so TermTree.leaf's default jnp.mean reduces it cleanly even
+            # under ensemble vmap.
+            d2 = jnp.diff(arr, n=2, axis=self.time_axis)
+            d2_norm = self.norm(d2)  # reduces trailing feature axes
+            return jnp.mean(d2_norm, axis=self.time_axis)
+
+        # `where` may return either an Array or a PyTree[Array]. Sum leaf
+        # contributions so the overall term remains a scalar density per trial.
+        per_leaf = jt.map(_per_leaf, substate)
+        leaves = jt.leaves(per_leaf)
+        if not leaves:
+            raise ValueError(
+                f"OutputJerkLoss('{self.label}'): `where` returned no array "
+                f"leaves to penalise."
+            )
+        return ft.reduce(jnp.add, leaves)
+
+
 class EffectorStraightPathLoss(AbstractLoss):
     """Penalizes non-straight paths followed by the effector between initial
     and final position.
