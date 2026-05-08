@@ -25,6 +25,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.dynamics import LinearSystem
 from feedbax.graph import Component
 from feedbax.mechanics.backend import PhysicsBackend, PhysicsState
 from feedbax.mechanics.plant import AbstractPlant, PlantState
@@ -354,3 +355,82 @@ class Mechanics(Component):
 
     def state_view(self, state: State) -> MechanicsState:
         return state.get(self.state_index)
+
+    def linearize_with_force_filter(
+        self,
+        skeleton_state: PyTree | None = None,
+        *,
+        tau: Optional[float] = None,
+    ) -> LinearSystem:
+        """Continuous-time linearisation augmented with a force-filter LPF.
+
+        Composes the bare-skeleton linearisation
+        (``self.plant.skeleton.linearize(skeleton_state)``) with a first-order
+        force-filter LPF row block:
+
+        - Without filter (``tau=None``): returns the skeleton's linearisation
+          unchanged, with ``dt=self.dt``.
+        - With filter (``tau > 0``): augments the state vector to
+          ``[skeleton_state, F]``. The skeleton's ``B`` becomes the
+          ``F`` -> ``state`` block, the new ``B`` is the control input
+          ``u`` -> ``F`` (rate ``1/tau``), and ``B_w`` (the disturbance
+          channel) is taken from the skeleton's ``B_w`` (i.e. the
+          disturbance bypasses the filter, entering as additive force on
+          the velocity row, matching ``FixedField`` / ``CurlField``).
+
+        This mirrors the construction in
+        ``rlrmp.analysis.hinf_riccati.linearize_pointmass``.
+
+        Args:
+            skeleton_state: Nominal skeleton state at which to linearise.
+                Ignored by exactly-linear skeletons.
+            tau: Force-filter time constant. ``None`` (or ``0.0``) skips
+                augmentation.
+
+        Returns:
+            ``LinearSystem`` with the augmented matrices and ``dt=self.dt``.
+        """
+        sys = self.plant.skeleton.linearize(skeleton_state)
+        A_s, B_s = sys.A, sys.B
+        Bw_s = sys.B_w  # may be None
+        n_s = A_s.shape[0]
+        m_u = B_s.shape[1]
+
+        if tau is None or tau == 0.0:
+            return LinearSystem(
+                A=A_s,
+                B=B_s,
+                B_w=Bw_s,
+                state_indices=dict(sys.state_indices),
+                dt=float(self.dt),
+            )
+
+        # Augment state with F (force-filter output): x_aug = [x_s, F]
+        I_u = jnp.eye(m_u, dtype=A_s.dtype)
+        Z_u = jnp.zeros((m_u, m_u), dtype=A_s.dtype)
+        Z_su = jnp.zeros((n_s, m_u), dtype=A_s.dtype)
+        Z_us = jnp.zeros((m_u, n_s), dtype=A_s.dtype)
+
+        # A_aug = [[A_s, B_s], [0, -I/tau]]
+        A_aug = jnp.block([[A_s, B_s], [Z_us, -(1.0 / tau) * I_u]])
+        # B_aug = [[0_su], [I/tau]]  (control u → force-filter input)
+        B_aug = jnp.concatenate([Z_su, (1.0 / tau) * I_u], axis=0)
+        # B_w_aug: disturbance bypasses the filter (additive force on
+        # the velocity row, identical to skeleton's B_w with zero force-row).
+        if Bw_s is not None:
+            m_w = Bw_s.shape[1]
+            Z_uw = jnp.zeros((m_u, m_w), dtype=A_s.dtype)
+            Bw_aug = jnp.concatenate([Bw_s, Z_uw], axis=0)
+        else:
+            Bw_aug = None
+
+        new_indices = dict(sys.state_indices)
+        new_indices["force"] = (n_s, n_s + m_u)
+
+        return LinearSystem(
+            A=A_aug,
+            B=B_aug,
+            B_w=Bw_aug,
+            state_indices=new_indices,
+            dt=float(self.dt),
+        )
