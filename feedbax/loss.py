@@ -1000,6 +1000,79 @@ class ModelLoss(AbstractLoss):
         return self.loss_fn(model)
 
 
+class StateDerivativeLoss(AbstractLoss):
+    """Penalize the squared first-difference of a state variable along time.
+
+    Computes ``mean(||x_t - x_{t-1}||²)`` over the time axis (default ``axis=1``,
+    matching feedbax's ``(trial, time, ...)`` rollout layout). The selected
+    substate may be a single ``Array`` or a ``PyTree`` of arrays — each leaf is
+    differenced and squared-summed over its non-time/non-trial axes, then the
+    contributions are summed across leaves.
+
+    This is most commonly used as a hidden-state smoothness regulariser
+    (Shahbazi, Codol, Michaels & Gribble 2025, Eq. 1) at modest weight (e.g.
+    ``1e-3``) to suppress trial-to-trial variability in recurrent dynamics.
+
+    Attributes:
+        label: Name for the loss term.
+        where: Function ``state -> Array | PyTree[Array]`` selecting the
+            substate to penalise. The selected leaves must have the time axis
+            at ``time_axis`` and may have arbitrary feature axes after.
+        time_axis: Axis along which to take the first difference. Defaults to
+            ``1`` (feedbax convention: trial=0, time=1, features...).
+        norm: Function applied to the time-differenced state to produce a
+            scalar-per-(trial,time) loss density before time/trial averaging.
+            Default: squared L2 norm over feature axes.
+
+    Note:
+        The class is invariant to the recurrent cell type (GRU, vanilla RNN,
+        leaky RNN, ...) because it operates structurally on the rollout PyTree
+        rather than knowing about the cell internals. It is also vmap-friendly:
+        when used inside an ensemble vmap (``ensembled=True`` in the trainer)
+        the time axis remains at ``time_axis`` in each replicate's view, so no
+        special-case handling is needed.
+
+    Bug: efc4d68
+    """
+
+    label: str = "state_derivative"
+    where: Callable = lambda state: state.net.hidden
+    time_axis: int = 1
+    norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
+
+    def term(
+        self,
+        states: Optional[PyTree],
+        trial_specs: Optional["TaskTrialSpec"],
+        model: Optional[AbstractModel],
+    ) -> Array:
+        assert states is not None, "StateDerivativeLoss requires states"
+
+        substate = self.where(states)
+
+        def _per_leaf(arr: Array) -> Array:
+            # First-difference along the time axis, then squared-norm over the
+            # remaining trailing feature axes, then mean over time. Result has
+            # the trial axis preserved (so TermTree.leaf's default jnp.mean
+            # reduces it cleanly even under ensemble vmap).
+            d = jnp.diff(arr, axis=self.time_axis)
+            d_norm = self.norm(d)  # reduces trailing feature axes
+            return jnp.mean(d_norm, axis=self.time_axis)
+
+        # `where` may return either an Array or a PyTree[Array]. Sum leaf
+        # contributions so the overall term remains a scalar density per trial.
+        per_leaf = jt.map(_per_leaf, substate)
+        leaves = jt.leaves(per_leaf)
+        if not leaves:
+            raise ValueError(
+                f"StateDerivativeLoss('{self.label}'): `where` returned no array "
+                f"leaves to penalise."
+            )
+        # Stack and sum leaf contributions along a new leading axis. This keeps
+        # the per-trial trailing structure intact for downstream reduction.
+        return ft.reduce(jnp.add, leaves)
+
+
 class EffectorStraightPathLoss(AbstractLoss):
     """Penalizes non-straight paths followed by the effector between initial
     and final position.
