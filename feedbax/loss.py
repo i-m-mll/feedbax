@@ -1153,6 +1153,268 @@ class OutputJerkLoss(AbstractLoss):
         return ft.reduce(jnp.add, leaves)
 
 
+class EpochMaskedLoss(AbstractLoss):
+    """Compositional time-mask wrapper that restricts a base loss to specified epochs.
+
+    Wraps an existing :class:`AbstractLoss` so its per-(trial, time) contribution
+    is multiplied by a per-trial mask of shape ``(n_trials, n_steps)`` *before*
+    the time-axis aggregation. Outside the mask, the contribution is exactly
+    zero. The mask is constructed from ``trial_specs.timeline.epoch_bounds``
+    and the configured ``epoch_indices`` — the mask is true at timestep ``t``
+    iff ``t`` falls within one of the listed epochs.
+
+    For example, to penalise pre-go controller output on a `DelayedReaches`
+    task with ``epoch_names=("hold", "target_on", "movement")``, wrap a
+    ``TargetStateLoss`` selecting the controller output with
+    ``epoch_indices=(0, 1)`` — the mask is then 1 during the hold and
+    target_on epochs and 0 once the go cue arrives.
+
+    Supported base losses: :class:`TargetStateLoss`,
+    :class:`StateDerivativeLoss` (``order=1``), :class:`OutputJerkLoss`
+    (``order=2``). For cross-timestep base losses the mask is aligned to the
+    differenced time axis: order ``k`` consumes ``k`` timesteps so a length-T
+    mask becomes length ``T - k`` after differencing. We follow the
+    "right-edge" convention: the mask sample at index ``i`` of the differenced
+    array gates the contribution involving timesteps ``[i, i+1, …, i+k]``,
+    which is mask-of-length-T sliced as ``mask[k:]``. This is the convention
+    that makes "include this timestep's *outgoing* transition iff this
+    timestep is in the masked set" come out cleanly.
+
+    Attributes:
+        base_loss: The wrapped per-step or cross-timestep loss term.
+        epoch_indices: Tuple of epoch indices (into ``epoch_names``) to
+            INCLUDE — the loss only contributes inside these epochs.
+        label: Name for this loss term. Defaults to
+            ``f"{base_loss.label}_epoch_masked"``.
+
+    Bug: efc4d68 (rlrmp consumer)
+    """
+
+    label: str = ""
+    base_loss: AbstractLoss = eqx.field(default=None)
+    # Static so it doesn't end up as a traced PyTree leaf and so we can use it
+    # as a Python tuple at trace-time. Tuples of small ints are JIT-stable.
+    epoch_indices: tuple[int, ...] = eqx.field(default=(), static=True)
+
+    def __check_init__(self):
+        if self.base_loss is None:
+            raise ValueError("EpochMaskedLoss requires a base_loss")
+        if not self.label:
+            # Equinox modules are immutable; resolve a sensible default via
+            # eqx.tree_at-style assignment isn't possible here, so we fall
+            # back to relying on the default-string via __post_init__-like
+            # logic. Users are encouraged to pass an explicit label.
+            object.__setattr__(self, "label", f"{self.base_loss.label}_epoch_masked")
+
+    # ----------------------------------------------------------------------
+    # Mask construction
+    # ----------------------------------------------------------------------
+
+    def _build_mask(self, trial_specs: "TaskTrialSpec", T: int) -> Array:
+        """Build a per-trial time mask of shape ``(N, T)`` from epoch bounds.
+
+        ``epoch_bounds`` is shape ``(N, E+1)`` (batched) or ``(E+1,)`` (per-trial).
+        For each listed epoch index ``k``, the mask is 1 in
+        ``[bounds[..., k], bounds[..., k+1])``.
+        """
+        timeline = trial_specs.timeline
+        if timeline.epoch_bounds is None:
+            raise ValueError(
+                f"EpochMaskedLoss('{self.label}') requires "
+                "trial_specs.timeline.epoch_bounds to be present."
+            )
+        bounds = timeline.epoch_bounds  # (N, E+1) or (E+1,)
+        # Promote to (N, E+1) for uniform handling. The state arrays the base
+        # loss reads will have a leading trial dim of size N, so we always
+        # construct an (N, T) mask. If `bounds` is unbatched we broadcast.
+        if bounds.ndim == 1:
+            bounds = bounds[None, :]  # (1, E+1)
+        # t-axis indices.
+        t = jnp.arange(T, dtype=bounds.dtype)  # (T,)
+        # Accumulate boolean OR over the listed epochs.
+        mask = jnp.zeros((bounds.shape[0], T), dtype=jnp.bool_)
+        for k in self.epoch_indices:
+            s = bounds[:, k:k + 1]            # (N, 1)
+            e = bounds[:, k + 1:k + 2]        # (N, 1)
+            mask = mask | ((t[None, :] >= s) & (t[None, :] < e))
+        return mask  # (N, T) bool
+
+    # ----------------------------------------------------------------------
+    # Dispatch
+    # ----------------------------------------------------------------------
+
+    @jax.named_scope("fbx.EpochMaskedLoss")
+    def __call__(
+        self,
+        states: PyTree,
+        trial_specs: "TaskTrialSpec",
+        model: AbstractModel,
+    ) -> TermTree["AbstractLoss"]:
+        # Support nested wrapping: unwrap to the innermost concrete loss.
+        # (Composing two EpochMaskedLoss layers is not a typical use case, but
+        # this guards against confusing failures.)
+        base = self.base_loss
+
+        if isinstance(base, TargetStateLoss):
+            value = self._call_target_state(base, states, trial_specs, model)
+        elif isinstance(base, StateDerivativeLoss):
+            value = self._call_cross_timestep(
+                base, states, trial_specs, order=1
+            )
+        elif isinstance(base, OutputJerkLoss):
+            value = self._call_cross_timestep(
+                base, states, trial_specs, order=2
+            )
+        else:
+            raise NotImplementedError(
+                f"EpochMaskedLoss does not yet support wrapping "
+                f"{type(base).__name__}. Supported base losses: "
+                "TargetStateLoss, StateDerivativeLoss, OutputJerkLoss."
+            )
+
+        return TermTree.leaf(self.label, value, originator=self)
+
+    def skeleton(self, batch_dims: tuple[int, ...]) -> TermTree:
+        return TermTree.leaf(self.label, jnp.empty(batch_dims))
+
+    # --- per-step base losses -------------------------------------------------
+
+    def _call_target_state(
+        self,
+        base: "TargetStateLoss",
+        states: PyTree,
+        trial_specs: "TaskTrialSpec",
+        model: AbstractModel,
+    ) -> Array:
+        """Reuse `TargetStateLoss.term` machinery, but inject our epoch mask
+        into the list of weight selectors used by `reduce_over_time_with_weights`.
+        """
+        assert states is not None
+        assert trial_specs is not None
+
+        state = base.where(states)[:, 1:]  # mirror TargetStateLoss slicing
+
+        # Resolve target spec (mirrors TargetStateLoss.term).
+        task_target_spec = trial_specs.targets.get(base.key, None)
+        if task_target_spec is None:
+            if base.spec is None:
+                raise ValueError(
+                    "TargetSpec must be provided on construction of "
+                    "TargetStateLoss, or as part of the trial specifications"
+                )
+            target_spec = base.spec
+        elif isinstance(task_target_spec, TargetSpec):
+            target_spec = eqx.combine(base.spec, task_target_spec)
+        elif isinstance(task_target_spec, Mapping):
+            target_spec = eqx.combine(base.spec, task_target_spec[base.label])
+        else:
+            raise ValueError("Invalid target spec encountered")
+
+        loss_over_time = base.norm(state - target_spec.value)
+        T = loss_over_time.shape[-1]  # = (n_steps - 1) due to [:, 1:] slice
+
+        # Build the per-trial epoch mask and apply it directly to the density.
+        # Using the existing `reduce_over_time_with_weights` path for the mask
+        # is awkward because (a) `_per_trial_weights` only accepts
+        # scalar/(T,) selectors or per-trial callables, not pre-built (N, T)
+        # arrays, and (b) the empty-selectors fallback inspects leaf
+        # `.shape[0]` which fails on scalar targets. Multiplying the (N, T)
+        # mask into the density up-front sidesteps both issues and remains
+        # numerically equivalent because all subsequent reductions are linear.
+        # epoch_bounds is in absolute n_steps; the [:, 1:] slice drops t=0
+        # so T = n_steps - 1.
+        n_steps = T + 1
+        epoch_mask = self._build_mask(trial_specs, n_steps)  # (N, n_steps)
+        epoch_mask_inner = epoch_mask[:, 1:].astype(loss_over_time.dtype)  # (N, T)
+
+        m_view_shape = [1] * loss_over_time.ndim
+        m_view_shape[0] = epoch_mask_inner.shape[0]
+        m_view_shape[-1] = epoch_mask_inner.shape[1]
+        loss_over_time = loss_over_time * epoch_mask_inner.reshape(m_view_shape)
+
+        time_mask = target_spec.time_mask
+        if time_mask is None:
+            time_mask = target_spec.get_time_mask(T)
+
+        masks = [x for x in [time_mask, target_spec.discount] if x is not None]
+
+        if masks:
+            return reduce_over_time_with_weights(
+                label=self.label,
+                arr=loss_over_time,
+                trial_specs=trial_specs,
+                time_axis=-1,
+                trial_axis=0,
+                trial_axis_specs=0,
+                masks=masks,
+            )
+        # No remaining masks/discounts: do the trivial sum over time, keeping
+        # the trial axis. This avoids the empty-selector fallback in
+        # `_combine_weights` which dereferences `leaves[0].shape[0]` and is
+        # unsafe in general.
+        return jnp.sum(loss_over_time, axis=-1)
+
+    # --- cross-timestep base losses ------------------------------------------
+
+    def _call_cross_timestep(
+        self,
+        base: AbstractLoss,
+        states: PyTree,
+        trial_specs: "TaskTrialSpec",
+        *,
+        order: int,
+    ) -> Array:
+        """Apply per-trial mask to a cross-timestep loss of given `order`.
+
+        Computes ``mean( m_t * ||Δ^order x||² )`` over time, where the mask
+        ``m`` has length ``T - order`` (right-edge alignment).
+        """
+        assert states is not None
+        assert trial_specs is not None
+
+        substate = base.where(states)
+        time_axis = base.time_axis
+
+        leaves = jt.leaves(substate)
+        if not leaves:
+            raise ValueError(
+                f"EpochMaskedLoss('{self.label}'): wrapped {type(base).__name__} "
+                "selected no array leaves to penalise."
+            )
+        T_full = leaves[0].shape[time_axis]
+        epoch_mask = self._build_mask(trial_specs, T_full)  # (N, T_full)
+        # Right-edge alignment: drop the first `order` mask entries so the
+        # remaining mask of length `T_full - order` aligns with the differenced
+        # array (which has length `T_full - order` along the time axis).
+        # See class docstring for the convention.
+        mask_aligned = epoch_mask[:, order:].astype(leaves[0].dtype)  # (N, T_full - order)
+
+        def _per_leaf(arr: Array) -> Array:
+            d = jnp.diff(arr, n=order, axis=time_axis)  # (N, T_full-order, ...)
+            d_norm = base.norm(d)                       # (N, T_full-order)
+            # Broadcast mask to match d_norm, masking trailing axes if any.
+            # d_norm should have time at `time_axis` after `norm` reduces
+            # the trailing feature axes.
+            # We need to multiply (N, T_full-order) by mask_aligned along
+            # the appropriate axes. After `norm`, `time_axis` is preserved.
+            # Build a broadcast view of the mask.
+            mask_view_shape = [1] * d_norm.ndim
+            # Trial axis 0 (per feedbax convention).
+            mask_view_shape[0] = mask_aligned.shape[0]
+            # Time axis at base.time_axis (after norm collapses trailing dims,
+            # time_axis index in d_norm is the same as in arr because we only
+            # reduce trailing feature axes).
+            t_ax = time_axis if time_axis >= 0 else d_norm.ndim + time_axis
+            mask_view_shape[t_ax] = mask_aligned.shape[1]
+            m = mask_aligned.reshape(mask_view_shape)
+            masked = d_norm * m
+            return jnp.mean(masked, axis=time_axis)
+
+        per_leaf = jt.map(_per_leaf, substate)
+        leaves_out = jt.leaves(per_leaf)
+        return ft.reduce(jnp.add, leaves_out)
+
+
 class EffectorStraightPathLoss(AbstractLoss):
     """Penalizes non-straight paths followed by the effector between initial
     and final position.
