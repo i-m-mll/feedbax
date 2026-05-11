@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def discover_experiment_packages(
     registry: Optional[ExperimentRegistry] = None,
-    entry_point_group: str = "feedbax_experiments.packages",
+    entry_point_group: str = "feedbax.plugins",
 ) -> ExperimentRegistry:
     """Discover and register experiment packages using entry points.
 

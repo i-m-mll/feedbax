@@ -27,7 +27,6 @@ from rich.prompt import Prompt
 from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
-import feedbax_experiments
 from feedbax.analysis._dependencies import compute_dependency_results
 from feedbax.analysis.analysis import (
     AbstractAnalysis,
@@ -820,7 +819,7 @@ def run_analysis_module(
         eqx,
         optax,
         plotly,
-        git_modules=(feedbax, feedbax_experiments),
+        git_modules=(feedbax,),
     )
 
     if fig_dump_dir is None:

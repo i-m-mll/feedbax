@@ -80,7 +80,6 @@ mjx = [
 ]
 
 [project.scripts]
-# Entry points from feedbax_experiments
 feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
 feedbax-train = "feedbax.bin.train:main"
