@@ -78,7 +78,7 @@ Filter builder layout is controlled by CSS variables defined near the top of `as
 
 CLI launcher at `bin/dashboard.py`:
 ```bash
-python -m feedbax_experiments.bin.dashboard --db-name main --port 8050
+python -m feedbax.bin.dashboard --db-name main --port 8050
 ```
 
 ## Key Design Decisions
