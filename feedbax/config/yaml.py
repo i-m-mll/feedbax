@@ -39,12 +39,12 @@ def _represent_undefined(representer, data):
 def _yaml_include_constructor(loader, node):
     """YAML constructor to include contents of other YAML files.
 
-    When calling `yaml.load(...)` with this constructor registered,
-    wrap the file object in a FileStreamWrapper so that we have access
-    to the path of the including file via `loader.stream.path`. This allows
-    include paths to be specific relative to the including file.
+    Include paths are resolved relative to the including file, using
+    `node.start_mark.name` to identify the including file's path.
     """
     include_path = Path(loader.construct_scalar(node))
+
+    including_file = getattr(node.start_mark, "name", "<unknown>")
 
     if not include_path.is_absolute():
         try:
@@ -61,7 +61,7 @@ def _yaml_include_constructor(loader, node):
             return yaml.load(f) or {}
     except FileNotFoundError as e:
         raise FileNotFoundError(
-            f"Included file '{include_path}' not found (from {getattr(loader.stream, 'path', '<unknown>')})."
+            f"Included file '{include_path}' not found (from {including_file})."
         ) from e
 
 
