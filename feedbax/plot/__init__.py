@@ -4,7 +4,7 @@ from .colors import (
     adjust_color_brightness,
     sample_colorscale_unique,
 )
-from .io import save_figure_with_spec
+from .io import save_figure, save_figure_with_spec
 from .misc import AxesLabels
 from .plotly import loss_history
 from .profiles import profiles

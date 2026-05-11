@@ -64,6 +64,97 @@ cd web && pnpm dev
 
 Then open http://localhost:5173 in your browser.
 
+## Building application packages on feedbax
+
+Feedbax is a library.  Domain-specific research projects (e.g., **rlrmp**) are
+*application packages* that depend on feedbax and extend it with their own
+models, tasks, analyses, and training pipelines.
+
+### Editable install (required)
+
+Application packages must be installed as editable installs — not published to
+PyPI.  `feedbax.plot.save_figure` resolves output directories relative to the
+package's git repository root by walking up from `package.__file__` until it
+finds a `.git` directory.  If the package is pip-installed into site-packages
+rather than checked out locally, that walk fails and figures would be written
+to the wrong place.  Install with:
+
+```bash
+uv pip install -e /path/to/your-package
+```
+
+### Registration via entry points
+
+Application packages register themselves with the feedbax plugin system via a
+`[project.entry-points."feedbax.plugins"]` section in `pyproject.toml` and a
+registration function that calls `register_package_from_module_info`.
+
+**`pyproject.toml`:**
+
+```toml
+[project.entry-points."feedbax.plugins"]
+rlrmp = "rlrmp:register_experiment_package"
+```
+
+**`rlrmp/__init__.py`:**
+
+```python
+from feedbax.plugins import EXPERIMENT_REGISTRY
+from feedbax.plugins.discovery import register_package_from_module_info
+
+def register_experiment_package(registry=None):
+    if registry is None:
+        registry = EXPERIMENT_REGISTRY
+    register_package_from_module_info(
+        registry,
+        package_name="rlrmp",
+        package_module_name="rlrmp",
+        parts=["part1", "part2", "part2_5"],
+        analysis_module_root="modules.analysis",
+        training_module_root="modules.training",
+        config_resource_root="config",
+        figure_routing={
+            "spec_dir_template": "results/{experiment}/figures/{topic}",
+            "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+            "spec_format": "json",
+            "render_format": "html",
+            "create_symlink_in_spec_dir": True,
+        },
+    )
+```
+
+### `figure_routing` config schema
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `spec_dir_template` | `str` | Path template for the spec JSON directory, relative to repo root. `{experiment}` and `{topic}` are substituted at save time. |
+| `render_dir_template` | `str` | Path template for the heavy figure render directory (typically gitignored). |
+| `spec_format` | `str` | Always `"json"` for now. |
+| `render_format` | `str` | Figure format: `"html"` (default), `"json"` (Plotly JSON), `"png"`, `"svg"`. |
+| `create_symlink_in_spec_dir` | `bool` | If `True`, creates a relative symlink in the spec dir pointing at the render file. |
+
+### Saving figures
+
+```python
+from feedbax.plot import save_figure
+
+paths = save_figure(
+    fig,           # plotly or matplotlib Figure
+    spec,          # dict: inputs, transform, plot_kwargs, seed
+    package="rlrmp",
+    experiment="part2_5",
+    topic="adversarial_losses",
+)
+# paths["spec_path"]    → results/part2_5/figures/adversarial_losses/spec.json
+# paths["render_path"]  → _artifacts/part2_5/figures/adversarial_losses/figure.html
+# paths["symlink_path"] → results/part2_5/figures/adversarial_losses/figure.html (symlink)
+```
+
+The spec JSON receives automatic augmentation: SHA-256 digests for every input
+artifact, installed package versions, and a UTC timestamp.
+
+> **Full docs** for the integration pattern will be expanded in `bdee8d1` (docs rebuild).
+
 ## Development
 
 I started to develop Feedbax while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.

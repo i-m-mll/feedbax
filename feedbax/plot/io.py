@@ -8,11 +8,107 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Editable-install guard
+# ---------------------------------------------------------------------------
+
+_EDITABLE_INSTALL_CACHE: dict[str, bool] = {}
+_MAX_PARENT_WALK = 8  # levels up from __file__ to look for .git
+
+
+def _check_editable_install(package_module: ModuleType) -> None:
+    """Warn if *package_module* is not in an editable (development) install.
+
+    Walks up to ``_MAX_PARENT_WALK`` parent directories from the module's
+    ``__file__`` looking for a ``.git`` directory.  If none is found, emits a
+    ``WARNING`` — routing-to-package-relative-paths will silently write files
+    into the wrong location (e.g. site-packages).
+
+    Args:
+        package_module: The top-level module of the application package.
+    """
+    module_file = getattr(package_module, "__file__", None)
+    if module_file is None:
+        logger.warning(
+            "Package '%s' has no __file__ attribute; cannot verify editable install. "
+            "Figure routing paths may be incorrect.",
+            package_module.__name__,
+        )
+        return
+
+    pkg_name = package_module.__name__
+    if pkg_name in _EDITABLE_INSTALL_CACHE:
+        if not _EDITABLE_INSTALL_CACHE[pkg_name]:
+            logger.warning(
+                "Package '%s' does not appear to be editable-installed (no .git found "
+                "within %d levels of %s). Figure routing will write relative to that "
+                "directory, which may not be the repo root.",
+                pkg_name,
+                _MAX_PARENT_WALK,
+                module_file,
+            )
+        return
+
+    path = Path(module_file).resolve()
+    found = False
+    for _ in range(_MAX_PARENT_WALK):
+        path = path.parent
+        if (path / ".git").exists():
+            found = True
+            break
+
+    _EDITABLE_INSTALL_CACHE[pkg_name] = found
+
+    if not found:
+        logger.warning(
+            "Package '%s' does not appear to be editable-installed (no .git found "
+            "within %d levels of %s). Figure routing will write relative to that "
+            "directory, which may not be the repo root.",
+            pkg_name,
+            _MAX_PARENT_WALK,
+            module_file,
+        )
+
+
+def _find_repo_root(package_module: ModuleType) -> Path:
+    """Return the repo root for *package_module* by walking parents for ``.git``.
+
+    Args:
+        package_module: The top-level module of the application package.
+
+    Returns:
+        The first parent directory containing ``.git``.
+
+    Raises:
+        ValueError: If no ``.git`` directory is found within ``_MAX_PARENT_WALK``
+            levels, meaning the package does not appear to be editable-installed.
+    """
+    module_file = getattr(package_module, "__file__", None)
+    if module_file is None:
+        raise ValueError(
+            f"Package '{package_module.__name__}' has no __file__ attribute; "
+            "cannot determine repo root for figure routing."
+        )
+
+    path = Path(module_file).resolve()
+    for _ in range(_MAX_PARENT_WALK):
+        path = path.parent
+        if (path / ".git").exists():
+            return path
+
+    raise ValueError(
+        f"No .git directory found within {_MAX_PARENT_WALK} levels of "
+        f"'{module_file}' for package '{package_module.__name__}'. "
+        "Is the package editable-installed in a git checkout?"
+    )
 
 
 def _sha256(path: str | Path) -> str:
@@ -132,6 +228,157 @@ def save_figure_with_spec(
         render_path = _write_figure(fig, dst_dir, name, render_format)
 
     return spec_path, render_path
+
+
+# ---------------------------------------------------------------------------
+# Project-config-driven routing
+# ---------------------------------------------------------------------------
+
+def save_figure(
+    fig: Any,
+    spec: dict[str, Any],
+    *,
+    package: str,
+    experiment: str,
+    topic: str,
+    extra_packages: Optional[list[str]] = None,
+) -> dict[str, Optional[Path]]:
+    """Save a figure using project-defined routing from the package registry.
+
+    Looks up *package* in the ``EXPERIMENT_REGISTRY``, reads its
+    ``figure_routing`` config, resolves the spec and render directories from
+    templates, writes the spec JSON, writes the rendered figure, and
+    optionally creates a relative symlink from the spec directory to the
+    render file.
+
+    The package must be registered with a ``figure_routing`` config (passed to
+    ``register_package_from_module_info``).  An editable-install guard warns if
+    the package's ``__file__`` is not inside a git checkout — in that case the
+    repo-root-relative paths may be wrong.
+
+    Args:
+        fig: A ``plotly.graph_objs.Figure`` or ``matplotlib.figure.Figure``.
+        spec: Reproducibility spec dict (same schema as ``save_figure_with_spec``).
+            ``versions`` and ``timestamp`` are always added/overwritten.
+        package: Name of the registered application package (e.g. ``"rlrmp"``).
+        experiment: Experiment identifier substituted into directory templates
+            (e.g. ``"part2_5"``).
+        topic: Figure topic substituted into directory templates
+            (e.g. ``"adversarial_losses"``).
+        extra_packages: Additional package names to include in
+            ``spec["versions"]``.
+
+    Returns:
+        A dict with keys:
+        - ``"spec_path"`` (:class:`~pathlib.Path`): written spec JSON.
+        - ``"render_path"`` (:class:`~pathlib.Path` or ``None``): written
+          figure render, or ``None`` if ``render_format`` is absent from the
+          routing config.
+        - ``"symlink_path"`` (:class:`~pathlib.Path` or ``None``): symlink in
+          the spec directory pointing at the render file, or ``None`` if
+          ``create_symlink_in_spec_dir`` is ``False`` or not set.
+
+    Raises:
+        ValueError: If *package* is not registered, has no ``figure_routing``
+            config, or the routing config is missing required keys.
+        ValueError: If the package is not editable-installed and no repo root
+            can be found (see :func:`_find_repo_root`).
+    """
+    # Late import to avoid circular dependency (plugins imports registry;
+    # plot should not import plugins at module level).
+    from feedbax.plugins import EXPERIMENT_REGISTRY  # noqa: PLC0415
+
+    # Validate package and routing config
+    figure_routing = EXPERIMENT_REGISTRY.get_figure_routing(package)
+    if figure_routing is None:
+        raise ValueError(
+            f"Package '{package}' is registered but has no figure_routing configured. "
+            "Pass figure_routing={{...}} to register_package_from_module_info."
+        )
+
+    _required_keys = {"spec_dir_template", "render_dir_template"}
+    missing = _required_keys - figure_routing.keys()
+    if missing:
+        raise ValueError(
+            f"Package '{package}' figure_routing config is missing required key(s): "
+            f"{sorted(missing)!r}"
+        )
+
+    # Resolve package module and repo root
+    package_metadata = EXPERIMENT_REGISTRY.get_package_metadata(package)
+    package_module = package_metadata.package_module
+
+    _check_editable_install(package_module)
+    repo_root = _find_repo_root(package_module)
+
+    # Resolve directories from templates
+    spec_dir = repo_root / figure_routing["spec_dir_template"].format(
+        experiment=experiment, topic=topic
+    )
+    render_dir = repo_root / figure_routing["render_dir_template"].format(
+        experiment=experiment, topic=topic
+    )
+
+    render_format: str = figure_routing.get("render_format", "html")
+    create_symlink: bool = figure_routing.get("create_symlink_in_spec_dir", False)
+
+    # Determine figure filename extension
+    ext = _render_extension(render_format)
+    figure_filename = f"figure.{ext}"
+
+    # Write spec + render using the existing helper
+    spec_path, render_path = save_figure_with_spec(
+        fig,
+        spec,
+        render_dir,
+        name="figure",
+        save_render=True,
+        render_format=render_format,
+        extra_packages=extra_packages,
+    )
+
+    # The spec JSON lives in spec_dir, not render_dir; move it there.
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec_dest = spec_dir / "spec.json"
+    if render_path is not None:
+        # spec_path currently lives in render_dir as "figure.json" (from name="figure")
+        # but we actually want the spec separate.  save_figure_with_spec wrote both to
+        # render_dir; move only the spec JSON out.
+        import shutil
+        shutil.move(str(spec_path), str(spec_dest))
+        spec_path = spec_dest
+    else:
+        import shutil
+        shutil.move(str(spec_path), str(spec_dest))
+        spec_path = spec_dest
+
+    # Create relative symlink in spec_dir pointing at the render file
+    symlink_path: Optional[Path] = None
+    if create_symlink and render_path is not None:
+        symlink_path = spec_dir / figure_filename
+        rel_target = os.path.relpath(render_path, spec_dir)
+        if symlink_path.is_symlink() or symlink_path.exists():
+            symlink_path.unlink()
+        symlink_path.symlink_to(rel_target)
+        logger.info("Created symlink %s -> %s", symlink_path, rel_target)
+
+    return {
+        "spec_path": spec_path,
+        "render_path": render_path,
+        "symlink_path": symlink_path,
+    }
+
+
+def _render_extension(render_format: str) -> str:
+    """Return the file extension for a given render format."""
+    _ext_map = {
+        "json": "fig.json",
+        "html": "html",
+        "png": "png",
+        "svg": "svg",
+        "pdf": "pdf",
+    }
+    return _ext_map.get(render_format, render_format)
 
 
 # ---------------------------------------------------------------------------

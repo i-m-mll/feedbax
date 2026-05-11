@@ -5,7 +5,7 @@ import importlib.metadata
 import logging
 from typing import Optional
 
-from .registry import ExperimentRegistry, get_default_registry
+from .registry import ExperimentRegistry, PackageMetadata, get_default_registry
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ def register_package_from_module_info(
     analysis_module_root: str = "modules.analysis",
     training_module_root: str = "modules.training",
     config_resource_root: str = "config",
+    figure_routing: Optional[dict] = None,
 ) -> None:
     """Helper function to register a package from module information.
 
@@ -78,6 +79,22 @@ def register_package_from_module_info(
         analysis_module_root: Subpackage path for analysis modules
         training_module_root: Subpackage path for training modules
         config_resource_root: Subpackage path for config resources
+        figure_routing: Optional routing config dict for figure saving.  When provided,
+            ``feedbax.plot.save_figure`` will use it to resolve spec and render directories
+            relative to the package's repository root.  Schema::
+
+                {
+                    "spec_dir_template": "results/{experiment}/figures/{topic}",
+                    "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+                    "spec_format": "json",
+                    "render_format": "html",
+                    "create_symlink_in_spec_dir": True,
+                }
+
+            The template variables ``{experiment}`` and ``{topic}`` are substituted at
+            save time.  Omit (or pass ``None``) if figure routing is not needed for this
+            package; calling ``feedbax.plot.save_figure`` with such a package will raise
+            a descriptive ``ValueError``.
     """
     try:
         package_module = importlib.import_module(package_module_name)
@@ -88,6 +105,7 @@ def register_package_from_module_info(
             analysis_module_root=analysis_module_root,
             training_module_root=training_module_root,
             config_resource_root=config_resource_root,
+            figure_routing=figure_routing,
         )
     except ImportError as e:
         logger.error(f"Failed to import package module '{package_module_name}': {e}")

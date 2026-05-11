@@ -22,6 +22,7 @@ class PackageMetadata:
         analysis_module_root: str,
         training_module_root: str,
         config_resource_root: str,
+        figure_routing: Optional[dict] = None,
     ):
         self.name = name
         self.package_module = package_module
@@ -29,6 +30,7 @@ class PackageMetadata:
         self.analysis_module_root = analysis_module_root
         self.training_module_root = training_module_root
         self.config_resource_root = config_resource_root
+        self.figure_routing: Optional[dict] = figure_routing
 
 
 class ExperimentRegistry:
@@ -103,6 +105,7 @@ class ExperimentRegistry:
         analysis_module_root: str,
         training_module_root: str,
         config_resource_root: str,
+        figure_routing: Optional[dict] = None,
     ) -> None:
         """Register an experiment package with the registry.
 
@@ -113,6 +116,18 @@ class ExperimentRegistry:
             analysis_module_root: Subpackage path for analysis modules (e.g., "analysis.modules")
             training_module_root: Subpackage path for training modules (e.g., "training.modules")
             config_resource_root: Subpackage path for config resources (e.g., "config")
+            figure_routing: Optional routing config dict for figure saving.  Schema::
+
+                {
+                    "spec_dir_template": "results/{experiment}/figures/{topic}",
+                    "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+                    "spec_format": "json",
+                    "render_format": "html",
+                    "create_symlink_in_spec_dir": True,
+                }
+
+                Template variables ``{experiment}`` and ``{topic}`` are substituted
+                by ``feedbax.plot.save_figure`` at save time.
         """
         metadata = PackageMetadata(
             name=name,
@@ -121,9 +136,21 @@ class ExperimentRegistry:
             analysis_module_root=analysis_module_root,
             training_module_root=training_module_root,
             config_resource_root=config_resource_root,
+            figure_routing=figure_routing,
         )
         self._packages[name] = metadata
         logger.info(f"Registered experiment package '{name}' with parts: {parts}")
+
+    def get_figure_routing(self, package_name: str) -> Optional[dict]:
+        """Return the figure-routing config for *package_name*, or ``None`` if not set.
+
+        Args:
+            package_name: Name of a registered package.
+
+        Raises:
+            ValueError: If *package_name* is not registered.
+        """
+        return self.get_package_metadata(package_name).figure_routing
 
     def get_package_names(self) -> list[str]:
         """Get list of registered package names."""
