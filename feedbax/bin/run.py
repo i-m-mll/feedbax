@@ -3,8 +3,8 @@
 Unified entrypoint.
 
 Usage:
-  run train    [<args>...]     # forwards to feedbax_experiments.scripts.train:main()
-  run analysis [<args>...]     # forwards to feedbax_experiments.scripts.run_analysis:main()
+  run train    [<args>...]     # forwards to feedbax.bin.train:main()
+  run analysis [<args>...]     # forwards to feedbax.bin.analysis:main()
 
 All arguments after the subcommand are passed through unchanged to the target
 script's own argparse logic, so existing flags continue to work.

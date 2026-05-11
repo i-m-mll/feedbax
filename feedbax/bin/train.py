@@ -22,7 +22,6 @@ import optax
 from jax_cookbook import is_type
 from jax_cookbook.progress import piter
 
-import feedbax_experiments
 from feedbax.config import (
     PATHS,
     PRNG_CONFIG,
@@ -124,7 +123,7 @@ def main():
         jax,
         eqx,
         optax,
-        git_modules=(feedbax, feedbax_experiments),
+        git_modules=(feedbax,),
     )
 
     if args.single:
