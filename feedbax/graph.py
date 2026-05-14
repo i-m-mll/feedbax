@@ -188,7 +188,7 @@ class Graph(Component):
     state_consistency_fn: Optional[callable] = field(default=None, static=True)
     checkpoint: bool = eqx.field(default=False, static=True)
 
-    def __post_init__(self):
+    def __check_init__(self):  # Bug: 4e75416 — ensures validation runs even when subclass overrides __init__
         self._validate_graph()
 
     def _validate_graph(self) -> None:
