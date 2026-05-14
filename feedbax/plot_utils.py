@@ -16,7 +16,6 @@ import plotly
 import plotly.graph_objects as go
 import pyexiv2
 import pyperclip as clip
-from IPython.display import HTML, display
 from jax_cookbook import is_type
 
 from feedbax.config import STRINGS
@@ -195,6 +194,7 @@ def toggle_bounds_visibility(fig):
 def plotly_vscode_latex_fix():
     """Fixes LaTeX rendering in Plotly figures in VS Code."""
     if os.environ.get("VSCODE_PID") is not None:
+        from IPython.display import HTML, display  # Bug: 009a4c7 — lazy import; notebook only
         plotly.offline.init_notebook_mode()
         display(
             HTML(
@@ -332,6 +332,7 @@ class PlotlyFigureWidget:
 
     def show(self):
         """Display the widget"""
+        from IPython.display import display  # Bug: 009a4c7 — lazy import; notebook only
         display(self.container)
 
 
