@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import feedbax.plot as fbp
-import ipywidgets as widgets
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
@@ -261,6 +260,7 @@ class PlotlyFigureWidget:
 
     def create_widgets(self):
         """Create and arrange the widgets"""
+        import ipywidgets as widgets  # Bug: 681d14f — lazy import; notebook extra only
         # Create the figure widgets
         if self.bg_fig:
             # Get divs for both figures
