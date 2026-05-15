@@ -48,6 +48,27 @@ Corollaries that must be respected without exception:
 
 ## Development
 
+### Python/JAX Coding Conventions
+
+- Follow PEP 8: 4-space indentation and a 100-character soft line limit.
+- Use type hints for public APIs.
+- Keep imports at the top of files unless a local import is needed for
+  performance, optional dependencies, or typing.
+- Use Google-style docstrings when useful; include shapes and dtypes for JAX
+  arrays when relevant.
+- Use `uv` for package management. Do not run `pip install` directly.
+- Subclass `equinox.Module` for dataclasses-that-are-PyTrees; do not also add
+  `@dataclass`.
+- Treat `Module` instances as immutable. Use `equinox.tree_at` or
+  `eqx.tree_at` for out-of-place updates; avoid direct attribute assignment.
+- Use `eqx.field` for defaults and converters. Rely on `Module`'s default
+  PyTree behavior unless custom flattening is truly needed.
+- Import JAX tree utilities once as `import jax.tree as jt` and use `jt.*`
+  consistently. Do not use deprecated `jax.tree_*` helpers.
+- Use `import jax_cookbook.tree as jtree` for PyTree utilities not in core JAX,
+  and `from jax_cookbook import is_type, is_module, is_none` for common
+  shorthands.
+
 ### Running Studio
 Studio requires two processes:
 - Frontend: `cd web && npm run dev` (Vite, default port 3008)
