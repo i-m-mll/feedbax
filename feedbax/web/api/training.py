@@ -8,10 +8,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
 from feedbax.web.services.graph_service import GraphService
-from feedbax.web.services.loss_service import loss_service, ProbeInfo
+from feedbax.web.services.loss_service import loss_service
 from feedbax.web.services.training_service import training_service
 
 router = APIRouter()
@@ -39,7 +38,7 @@ class WorkerStatusResponse(BaseModel):
     connected: bool
 
 
-@router.post('/worker/connect', response_model=WorkerConnectResponse)
+@router.post("/worker/connect", response_model=WorkerConnectResponse)
 async def connect_worker(payload: WorkerConnectRequest):
     """Configure the Studio backend to use a remote training worker.
 
@@ -51,7 +50,7 @@ async def connect_worker(payload: WorkerConnectRequest):
     return WorkerConnectResponse(ok=True, url=payload.url)
 
 
-@router.get('/worker/status', response_model=WorkerStatusResponse)
+@router.get("/worker/status", response_model=WorkerStatusResponse)
 async def get_worker_status():
     """Return the current worker configuration (local vs remote, URL, health)."""
     mode = training_service.worker_mode()
@@ -78,7 +77,7 @@ class TrainingRequest(BaseModel):
     graph_spec: Optional[dict] = None
 
 
-@router.post('')
+@router.post("")
 async def start_training(payload: TrainingRequest):
     training_config = (
         payload.training_config.model_dump() if payload.training_config is not None else None
@@ -90,30 +89,38 @@ async def start_training(payload: TrainingRequest):
         task_spec=payload.task_spec.model_dump(),
         graph_spec=payload.graph_spec,
     )
-    return {'job_id': job_id}
+    return {"job_id": job_id}
 
 
-@router.get('/{job_id}')
+@router.get("/{job_id}")
 async def get_training_status(job_id: str):
     status = await training_service.get_status()
-    return {'status': status}
+    return {"status": status}
 
 
-@router.delete('/{job_id}')
+@router.delete("/{job_id}")
 async def stop_training(job_id: str):
     await training_service.stop_training()
-    return {'success': True}
+    return {"success": True}
 
 
-@router.get('/{job_id}/checkpoint')
+@router.get("/{job_id}/checkpoint")
 async def get_checkpoint(job_id: str):
     checkpoint = await training_service.latest_checkpoint(job_id)
     if checkpoint is None:
-        raise HTTPException(status_code=404, detail='Job not found')
+        raise HTTPException(status_code=404, detail="Job not found")
     return checkpoint
 
 
-@router.get('/{job_id}/checkpoint/download')
+@router.get("/{job_id}/manifest")
+async def get_training_manifest(job_id: str):
+    manifest = await training_service.latest_manifest(job_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Manifest not found")
+    return manifest
+
+
+@router.get("/{job_id}/checkpoint/download")
 async def download_checkpoint(job_id: str):
     """Download the serialized checkpoint file for a completed training job.
 
@@ -127,7 +134,7 @@ async def download_checkpoint(job_id: str):
         await training_service.download_checkpoint(job_id, dest)
     except ValueError:
         os.unlink(dest)
-        raise HTTPException(status_code=404, detail='Job not found')
+        raise HTTPException(status_code=404, detail="Job not found")
     except RuntimeError as exc:
         os.unlink(dest)
         raise HTTPException(status_code=503, detail=str(exc))
@@ -151,13 +158,13 @@ class ProbeResponse(BaseModel):
     description: Optional[str] = None
 
 
-@router.get('/probes/{graph_id}')
+@router.get("/probes/{graph_id}")
 async def get_available_probes(graph_id: str) -> List[ProbeResponse]:
     """Get all available probes for a graph."""
     try:
         record = graph_service.get_graph(graph_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='Graph not found') from exc
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
 
     probes = loss_service.get_available_probes(record.project.graph)
     return [
@@ -189,22 +196,22 @@ class ValidateLossResponse(BaseModel):
     errors: List[ValidationErrorResponse]
 
 
-@router.post('/loss/validate')
+@router.post("/loss/validate")
 async def validate_loss_spec(payload: ValidateLossRequest) -> ValidateLossResponse:
     """Validate a loss specification against a graph."""
     try:
         record = graph_service.get_graph(payload.graph_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='Graph not found') from exc
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
 
     errors = loss_service.validate_loss_spec(payload.loss_spec, record.project.graph)
     return ValidateLossResponse(
         valid=len(errors) == 0,
         errors=[
             ValidationErrorResponse(
-                path=e['path'],
-                field=e['field'],
-                message=e['message'],
+                path=e["path"],
+                field=e["field"],
+                message=e["message"],
             )
             for e in errors
         ],
@@ -216,17 +223,15 @@ class ResolveSelectorRequest(BaseModel):
     selector: str
 
 
-@router.post('/loss/resolve-selector')
+@router.post("/loss/resolve-selector")
 async def resolve_selector(payload: ResolveSelectorRequest) -> Dict[str, Any]:
     """Resolve a probe selector to its specification."""
     try:
         record = graph_service.get_graph(payload.graph_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='Graph not found') from exc
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
 
-    result = loss_service.resolve_probe_selector(
-        payload.selector, record.project.graph
-    )
+    result = loss_service.resolve_probe_selector(payload.selector, record.project.graph)
     if result is None:
-        raise HTTPException(status_code=404, detail='Selector not found')
+        raise HTTPException(status_code=404, detail="Selector not found")
     return result

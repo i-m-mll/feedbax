@@ -1,4 +1,5 @@
 """Feedbax Studio headless training worker FastAPI app."""
+
 from __future__ import annotations
 
 import asyncio
@@ -52,6 +53,9 @@ class _Job:
     graph_spec: Optional[Dict[str, Any]] = None
     # Path to the serialized checkpoint file after training completes.
     checkpoint_path: Optional[str] = None
+    # Path/payload for the durable manifest emitted after training completes.
+    manifest_path: Optional[str] = None
+    manifest_payload: Optional[Dict[str, Any]] = None
     batch: int = 0
     last_loss: float = 0.0
     snapshot_interval: int = 100
@@ -95,6 +99,55 @@ def _make_trajectory_event(job: _Job, batch: int, loss: float) -> dict:
     }
 
 
+def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
+    """Return compact event history suitable for a durable JSON artifact."""
+    history_types = {"training_progress", "training_log", "training_error", "training_complete"}
+    return [dict(event) for _, event in job.event_buffer if event.get("type") in history_types]
+
+
+def _write_job_manifest(job: _Job) -> None:
+    """Write a durable training-run manifest for a completed worker job."""
+    try:
+        from feedbax.manifest import write_training_run_manifest
+
+        manifest, path = write_training_run_manifest(
+            job_id=job.job_id,
+            total_batches=job.total_batches,
+            training_spec=job.training_spec,
+            task_spec=job.task_spec,
+            graph_spec=job.graph_spec,
+            checkpoint_path=job.checkpoint_path,
+            history_events=_manifest_history_events(job),
+            status=job.status.value,
+            final_loss=job.last_loss,
+        )
+        job.manifest_path = str(path)
+        job.manifest_payload = manifest.model_dump(mode="json", exclude_none=True)
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": job.batch,
+                "level": "info",
+                "message": "Training manifest saved",
+                "manifest_path": job.manifest_path,
+                "manifest_id": manifest.id,
+            },
+        )
+    except Exception as exc:
+        _emit(
+            job,
+            {
+                "type": "training_log",
+                "job_id": job.job_id,
+                "batch": job.batch,
+                "level": "warning",
+                "message": f"Failed to save training manifest: {exc}",
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # Training configuration extraction
 # ---------------------------------------------------------------------------
@@ -136,6 +189,7 @@ def _extract_training_cfg(
         return cfg
 
     if training_config is not None:
+
         def _get(key: str, default, cast=None):
             val = training_config.get(key, default)
             if val is None:
@@ -284,20 +338,22 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     }
     # Node types that carry a ``dt`` param representing the mechanics timestep.
     # Bug: cb13bdc — mechanics dt should come from the graph spec, not be hardcoded.
-    _MECHANICS_NODE_TYPES = frozenset({
-        "TwoLinkArm",
-        "PointMass",
-        "Mechanics",
-        "Arm6MuscleRigidTendon",
-        "PointMass8MuscleRelu",
-        "AcausalSystem",
-    })
+    _MECHANICS_NODE_TYPES = frozenset(
+        {
+            "TwoLinkArm",
+            "PointMass",
+            "Mechanics",
+            "Arm6MuscleRigidTendon",
+            "PointMass8MuscleRelu",
+            "AcausalSystem",
+        }
+    )
 
     # Observation dimension constants by plant family.
-    _ARM_OBS_DIM = 17       # joint_angles(2) + joint_vels(2) + activations(6)
-                            # + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1)
+    _ARM_OBS_DIM = 17  # joint_angles(2) + joint_vels(2) + activations(6)
+    # + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1)
     _POINTMASS_OBS_DIM = 13  # pos(2) + vel(2) + action(2) + effector(2)
-                              # + target_pos(2) + target_vel(2) + phase(1)
+    # + target_pos(2) + target_vel(2) + phase(1)
 
     defaults = {
         "hidden_type": eqx.nn.GRUCell,
@@ -401,29 +457,21 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         )
 
     if cell_node is not None:
-        result["hidden_type"] = CELL_MAP.get(
-            cell_node.get("type", "GRU"), eqx.nn.GRUCell
-        )
+        result["hidden_type"] = CELL_MAP.get(cell_node.get("type", "GRU"), eqx.nn.GRUCell)
         cell_params = cell_node.get("params", {})
         try:
-            result["hidden_size"] = int(
-                cell_params.get("hidden_size", defaults["hidden_size"])
-            )
+            result["hidden_size"] = int(cell_params.get("hidden_size", defaults["hidden_size"]))
         except (TypeError, ValueError):
             pass
 
     if readout_node is not None:
         readout_params = readout_node.get("params", {})
         try:
-            result["out_size"] = int(
-                readout_params.get("output_size", defaults["out_size"])
-            )
+            result["out_size"] = int(readout_params.get("output_size", defaults["out_size"]))
         except (TypeError, ValueError):
             pass
         nonlin_key = readout_params.get("activation", "identity")
-        result["out_nonlinearity"] = NONLINEARITY_MAP.get(
-            nonlin_key, lambda x: x
-        )
+        result["out_nonlinearity"] = NONLINEARITY_MAP.get(nonlin_key, lambda x: x)
 
     return result
 
@@ -531,25 +579,21 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
             joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
             muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
-            muscle_optimal_fiber_length=0.5 * (
-                bounds.muscle_optimal_fiber_length_min
-                + bounds.muscle_optimal_fiber_length_max
-            ),
-            muscle_tendon_slack_length=0.5 * (
-                bounds.muscle_tendon_slack_length_min
-                + bounds.muscle_tendon_slack_length_max
-            ),
-            muscle_moment_arm_magnitudes=0.5 * (
-                bounds.muscle_moment_arm_magnitudes_min
-                + bounds.muscle_moment_arm_magnitudes_max
-            ),
+            muscle_optimal_fiber_length=0.5
+            * (bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max),
+            muscle_tendon_slack_length=0.5
+            * (bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max),
+            muscle_moment_arm_magnitudes=0.5
+            * (bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max),
         )
 
         topology = default_6muscle_2link_topology()
         chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
 
         plant = AnalyticalMusculoskeletalPlant.from_body_preset(
-            preset, chain_config, clip_states=True,
+            preset,
+            chain_config,
+            clip_states=True,
         )
 
     elif plant_type in _POINTMASS_TYPES:
@@ -565,10 +609,12 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     else:
         # Bug: cb13bdc — unknown type: warn and fall back to arm.
         import logging as _logging
+
         _log = _logging.getLogger(__name__)
         _log.warning(
             "Unknown plant_type %r in graph spec; falling back to "
-            "AnalyticalMusculoskeletalPlant (TwoLinkArm).", plant_type,
+            "AnalyticalMusculoskeletalPlant (TwoLinkArm).",
+            plant_type,
         )
         N_MUSCLES = 6
         N_JOINTS = 2
@@ -581,25 +627,21 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
             joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
             muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
-            muscle_optimal_fiber_length=0.5 * (
-                bounds.muscle_optimal_fiber_length_min
-                + bounds.muscle_optimal_fiber_length_max
-            ),
-            muscle_tendon_slack_length=0.5 * (
-                bounds.muscle_tendon_slack_length_min
-                + bounds.muscle_tendon_slack_length_max
-            ),
-            muscle_moment_arm_magnitudes=0.5 * (
-                bounds.muscle_moment_arm_magnitudes_min
-                + bounds.muscle_moment_arm_magnitudes_max
-            ),
+            muscle_optimal_fiber_length=0.5
+            * (bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max),
+            muscle_tendon_slack_length=0.5
+            * (bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max),
+            muscle_moment_arm_magnitudes=0.5
+            * (bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max),
         )
 
         topology = default_6muscle_2link_topology()
         chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
 
         plant = AnalyticalMusculoskeletalPlant.from_body_preset(
-            preset, chain_config, clip_states=True,
+            preset,
+            chain_config,
+            clip_states=True,
         )
 
     backend = DiffraxBackend(control_dt=CONTROL_DT)
@@ -623,9 +665,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # jit-compiled functions that close over cfg values).
     # ------------------------------------------------------------------
 
-    cfg.effort_weight = _extract_effort_weight_from_spec(
-        job.training_spec, cfg.effort_weight
-    )
+    cfg.effort_weight = _extract_effort_weight_from_spec(job.training_spec, cfg.effort_weight)
     optimizer = _build_optimizer_from_spec(job.training_spec, cfg)
 
     # ------------------------------------------------------------------
@@ -652,26 +692,30 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         if _is_pointmass:
             # PointMass skeleton state is CartesianState with pos(2), vel(2).
             # No joint angles or muscle activations.
-            return jnp.concatenate([
-                sk.pos,       # config pos (2)
-                sk.vel,       # config vel (2)
-                action_or_activation,  # last action / 2D force (2)
-                effector.pos, # effector pos (2)
-                target_pos,   # (2)
-                target_vel,   # (2)
-                phase,        # (1)
-            ])
+            return jnp.concatenate(
+                [
+                    sk.pos,  # config pos (2)
+                    sk.vel,  # config vel (2)
+                    action_or_activation,  # last action / 2D force (2)
+                    effector.pos,  # effector pos (2)
+                    target_pos,  # (2)
+                    target_vel,  # (2)
+                    phase,  # (1)
+                ]
+            )
         else:
             # Articulated plant: skeleton has angle, d_angle, etc.
-            return jnp.concatenate([
-                sk.angle,
-                sk.d_angle,
-                action_or_activation,  # muscle_activations
-                effector.pos,
-                target_pos,
-                target_vel,
-                phase,
-            ])
+            return jnp.concatenate(
+                [
+                    sk.angle,
+                    sk.d_angle,
+                    action_or_activation,  # muscle_activations
+                    effector.pos,
+                    target_pos,
+                    target_vel,
+                    phase,
+                ]
+            )
 
     # ------------------------------------------------------------------
     # Single-episode rollout through Diffrax (differentiable)
@@ -682,7 +726,11 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         init_act = jnp.zeros(N_MUSCLES)
         init_phase = jnp.zeros(1)
         init_obs = _extract_obs(
-            phys, init_act, target_pos_traj[0], target_vel_traj[0], init_phase,
+            phys,
+            init_act,
+            target_pos_traj[0],
+            target_vel_traj[0],
+            init_phase,
         )
         # Controller hidden state: initialize to zeros
         init_hidden = jnp.zeros(hidden_size)
@@ -695,8 +743,10 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
 
             phase = jnp.array([t_idx / N_STEPS])
             obs = _extract_obs(
-                phys_s, act,
-                target_pos_traj[t_idx], target_vel_traj[t_idx],
+                phys_s,
+                act,
+                target_pos_traj[t_idx],
+                target_vel_traj[t_idx],
                 phase,
             )
 
@@ -731,7 +781,9 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         init_carry = (phys, init_act, init_hidden, init_obs)
         t_idxs = jnp.arange(N_STEPS)
         _, (eff_traj, act_traj, hidden_traj) = jax.lax.scan(
-            _step, init_carry, (t_idxs, scan_keys),
+            _step,
+            init_carry,
+            (t_idxs, scan_keys),
         )
         return eff_traj, act_traj, hidden_traj
 
@@ -774,11 +826,11 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             time_w = jnp.linspace(0.5, 1.5, N_STEPS)
             tracking = jnp.mean(l1 * time_w)
             # Effort
-            effort = jnp.mean(act_traj ** 2)
+            effort = jnp.mean(act_traj**2)
             # Smoothness (activation jerk)
             d_act = jnp.diff(act_traj, axis=0)
             dd_act = jnp.diff(d_act, axis=0)
-            smoothness = jnp.mean(dd_act ** 2)
+            smoothness = jnp.mean(dd_act**2)
             total = tracking + cfg.effort_weight * effort + 0.001 * smoothness
             return total, (tracking, effort, smoothness)
 
@@ -803,7 +855,10 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     def _train_step(ctrl, opt_st, target_pos_batch, target_vel_batch, step_key):
         batch_keys = jr.split(step_key, cfg.batch_size)
         (loss, terms), grads = eqx.filter_value_and_grad(_loss_fn, has_aux=True)(
-            ctrl, target_pos_batch, target_vel_batch, batch_keys,
+            ctrl,
+            target_pos_batch,
+            target_vel_batch,
+            batch_keys,
         )
         grad_norm = optax.global_norm(grads)
         updates, new_opt_st = optimizer.update(grads, opt_st, ctrl)
@@ -814,7 +869,6 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # Training loop
     # ------------------------------------------------------------------
 
-    t_start = time.perf_counter()
     snapshot_interval = cfg.snapshot_interval
 
     for batch in range(job.total_batches):
@@ -830,8 +884,10 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         step_t0 = time.perf_counter()
         try:
             controller, opt_state, loss_val, loss_terms, grad_norm = _train_step(
-                controller, opt_state,
-                target_pos_batch, target_vel_batch,
+                controller,
+                opt_state,
+                target_pos_batch,
+                target_vel_batch,
                 step_key,
             )
             # Block until JAX computation is complete for accurate timing.
@@ -899,11 +955,15 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
                 # Eval rollout: use a fixed target for visualization
                 eval_key = jr.PRNGKey(batch)
                 tgt_pos_const = jnp.broadcast_to(
-                    jnp.array([0.25, 0.25]), (N_STEPS, 2),
+                    jnp.array([0.25, 0.25]),
+                    (N_STEPS, 2),
                 )
                 tgt_vel_const = jnp.zeros((N_STEPS, 2))
                 eff_traj, _, _ = _rollout(
-                    controller, tgt_pos_const, tgt_vel_const, eval_key,
+                    controller,
+                    tgt_pos_const,
+                    tgt_vel_const,
+                    eval_key,
                 )
                 eff_traj_np = np.array(jax.block_until_ready(eff_traj))
                 t_axis = np.linspace(0.0, N_STEPS * CONTROL_DT, N_STEPS).tolist()
@@ -960,15 +1020,19 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             },
         )
 
-    _emit(
-        job,
-        {
-            "type": "training_complete",
-            "job_id": job.job_id,
-            "batch": job.total_batches,
-            "loss": job.last_loss,
-        },
-    )
+    _write_job_manifest(job)
+
+    complete_event = {
+        "type": "training_complete",
+        "job_id": job.job_id,
+        "batch": job.total_batches,
+        "loss": job.last_loss,
+    }
+    if job.manifest_path is not None:
+        complete_event["manifest_path"] = job.manifest_path
+    if job.manifest_payload is not None:
+        complete_event["manifest_id"] = job.manifest_payload.get("id")
+    _emit(job, complete_event)
 
 
 # ---------------------------------------------------------------------------
@@ -986,12 +1050,14 @@ def _run_training_stub(job: _Job) -> None:
 
         time.sleep(0.05)
 
-        decay = 0.98 ** batch
+        decay = 0.98**batch
         loss = start_loss * decay
         job.last_loss = loss
         job.batch = batch + 1
 
-        noise = lambda: random.uniform(-0.005, 0.005)
+        def noise() -> float:
+            return random.uniform(-0.005, 0.005)
+
         loss_terms = {
             "tracking": max(0.0, 0.70 * loss + noise()),
             "effort": max(0.0, 0.20 * loss + noise()),
@@ -1031,15 +1097,19 @@ def _run_training_stub(job: _Job) -> None:
             _emit(job, _make_trajectory_event(job, batch + 1, loss))
 
     job.status = WorkerStatus.COMPLETED
-    _emit(
-        job,
-        {
-            "type": "training_complete",
-            "job_id": job.job_id,
-            "batch": job.total_batches,
-            "loss": job.last_loss,
-        },
-    )
+    _write_job_manifest(job)
+
+    complete_event = {
+        "type": "training_complete",
+        "job_id": job.job_id,
+        "batch": job.total_batches,
+        "loss": job.last_loss,
+    }
+    if job.manifest_path is not None:
+        complete_event["manifest_path"] = job.manifest_path
+    if job.manifest_payload is not None:
+        complete_event["manifest_id"] = job.manifest_payload.get("id")
+    _emit(job, complete_event)
 
 
 def _run_training(job: _Job) -> None:
@@ -1064,8 +1134,7 @@ def _run_training(job: _Job) -> None:
                     "batch": job.batch,
                     "level": "warning",
                     "message": (
-                        f"Real JAX training failed ({exc}); "
-                        "falling back to synthetic stub."
+                        f"Real JAX training failed ({exc}); falling back to synthetic stub."
                     ),
                 },
             )
@@ -1180,6 +1249,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             "batch": job.batch,
             "total_batches": job.total_batches,
             "last_loss": job.last_loss,
+            "manifest_path": job.manifest_path,
         }
 
     @app.get("/stream", dependencies=[_auth_dep])
@@ -1196,14 +1266,13 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             # No job running; return an empty stream immediately.
             async def _empty():
                 yield "data: {}\n\n"
+
             return StreamingResponse(_empty(), media_type="text/event-stream")
 
         # Collect any buffered events to replay before the live stream.
         replay_events: list[dict] = []
         if from_seq is not None:
-            replay_events = [
-                evt for seq, evt in job.event_buffer if seq >= from_seq
-            ]
+            replay_events = [evt for seq, evt in job.event_buffer if seq >= from_seq]
 
         async def _generate():
             loop = asyncio.get_running_loop()
@@ -1267,5 +1336,13 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             media_type="application/octet-stream",
             filename=f"feedbax_checkpoint_{job.job_id}.eqx",
         )
+
+    @app.get("/manifest", dependencies=[_auth_dep])
+    def manifest():
+        """Return the durable manifest for the current job."""
+        job = _state.get("current")
+        if job is None or job.manifest_payload is None:
+            raise HTTPException(status_code=404, detail="No manifest available")
+        return job.manifest_payload
 
     return app

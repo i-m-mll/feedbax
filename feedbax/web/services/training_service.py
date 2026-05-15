@@ -1,4 +1,5 @@
 """Studio training service — spawns a worker subprocess and relays its SSE stream."""
+
 from __future__ import annotations
 
 import os
@@ -15,15 +16,18 @@ import feedbax.web.worker.client as worker_client
 # Public event type
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TrainingEvent:
     """A single event relayed from the worker SSE stream."""
+
     raw: dict  # parsed JSON from the SSE data: line
 
 
 # ---------------------------------------------------------------------------
 # Port helper
 # ---------------------------------------------------------------------------
+
 
 def _find_free_port() -> int:
     """Bind to port 0 to let the OS assign a free ephemeral port, then release it."""
@@ -35,6 +39,7 @@ def _find_free_port() -> int:
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
+
 
 class TrainingService:
     """Manages the lifecycle of the headless training worker subprocess.
@@ -200,15 +205,11 @@ class TrainingService:
         Returns an idle placeholder if the worker is not running.
         """
         if self._base_url is None or (
-            not self._remote
-            and self._process is not None
-            and self._process.poll() is not None
+            not self._remote and self._process is not None and self._process.poll() is not None
         ):
             return {"status": "idle", "batch": 0, "total_batches": 0, "last_loss": 0.0}
         try:
-            return await worker_client.get_status(
-                self._base_url, auth_token=self._auth_token
-            )
+            return await worker_client.get_status(self._base_url, auth_token=self._auth_token)
         except Exception:
             return {"status": "error", "batch": 0, "total_batches": 0, "last_loss": 0.0}
 
@@ -223,9 +224,7 @@ class TrainingService:
         """
         if self._base_url is None:
             return
-        async for event in worker_client.stream_events(
-            self._base_url, auth_token=self._auth_token
-        ):
+        async for event in worker_client.stream_events(self._base_url, auth_token=self._auth_token):
             # Keep last_loss in sync for synchronous callers.
             if "loss" in event:
                 self._last_loss = float(event["loss"])
@@ -249,13 +248,22 @@ class TrainingService:
         if self._base_url is None:
             return {"batch": 0, "loss": self._last_loss, "weights_available": False}
         try:
-            data = await worker_client.get_checkpoint(
-                self._base_url, auth_token=self._auth_token
-            )
+            data = await worker_client.get_checkpoint(self._base_url, auth_token=self._auth_token)
             data["job_id"] = job_id
             return data
         except Exception:
             return {"batch": 0, "loss": self._last_loss, "weights_available": False}
+
+    async def latest_manifest(self, job_id: str) -> Optional[dict]:
+        """Return the durable training manifest for *job_id* when available."""
+        if self._current_job_id != job_id:
+            return None
+        if self._base_url is None:
+            return None
+        try:
+            return await worker_client.get_manifest(self._base_url, auth_token=self._auth_token)
+        except Exception:
+            return None
 
     async def download_checkpoint(self, job_id: str, dest_path: str) -> None:
         """Download the serialized checkpoint from the worker to a local file.
