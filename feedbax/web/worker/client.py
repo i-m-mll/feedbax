@@ -5,6 +5,7 @@ Used by the Studio backend (TrainingService) to:
 - Start / stop training jobs via POST.
 - Relay the SSE event stream to WebSocket clients.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,9 +49,7 @@ async def wait_for_health(
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                resp = await client.get(
-                    f"{base_url}/health", headers=headers, timeout=2.0
-                )
+                resp = await client.get(f"{base_url}/health", headers=headers, timeout=2.0)
                 if resp.status_code == 200:
                     return
             except (httpx.ConnectError, httpx.TimeoutException):
@@ -163,6 +162,18 @@ async def get_checkpoint(base_url: str, auth_token: Optional[str] = None) -> dic
         return resp.json()
 
 
+async def get_manifest(base_url: str, auth_token: Optional[str] = None) -> dict:
+    """GET /manifest and return the current job's durable manifest."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{base_url}/manifest",
+            headers=_auth_headers(auth_token),
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def download_checkpoint(
     base_url: str,
     dest_path: str,
@@ -223,9 +234,7 @@ async def stream_events(
 
         try:
             async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "GET", url, params=params, headers=headers
-                ) as resp:
+                async with client.stream("GET", url, params=params, headers=headers) as resp:
                     resp.raise_for_status()
                     # Successful connection — reset attempt counter.
                     attempt = 0
@@ -233,7 +242,7 @@ async def stream_events(
                         line = line.strip()
                         if not line.startswith("data:"):
                             continue
-                        payload = line[len("data:"):].strip()
+                        payload = line[len("data:") :].strip()
                         if not payload:
                             continue
                         try:

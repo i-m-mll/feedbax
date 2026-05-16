@@ -40,6 +40,7 @@ dependencies = [
     "optax>=0.2.4",
     "plotly>=6.0.0",
     "polars>=1.24.0",
+    "pydantic>=2.0",
     "seaborn>=0.13.2",
     "tensorboardx>=2.6.2.2",
     "treescope>=0.1.1",
@@ -83,6 +84,7 @@ mjx = [
 feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
 feedbax-train = "feedbax.bin.train:main"
+feedbax-provider = "feedbax.bin.provider:main"
 
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"
