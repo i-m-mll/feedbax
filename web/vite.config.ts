@@ -1,3 +1,5 @@
+/// <reference types="vitest/config" />
+
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
@@ -15,6 +17,7 @@ export default defineConfig({
       workbox: {
         skipWaiting: true,
         navigateFallback: '/index.html',
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
             // Graph state must never be served from cache (Cache-Control: no-store is ignored by NetworkFirst)

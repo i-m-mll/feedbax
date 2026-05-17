@@ -1173,7 +1173,7 @@ function buildStateEdges(graph: GraphSpec, uiState: GraphUIState): Edge<GraphEdg
           primary: count === maxCount,
           strength: count,
         },
-      });
+      } as Edge<GraphEdgeData>);
     }
   }
   return edges;
@@ -2268,7 +2268,6 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       const shouldRecord = changes.some((change) => {
         if (change.type === 'select') return false;
-        if (change.type === 'dimensions' && !(change as { resizing?: boolean }).resizing) return false;
         return true;
       });
       const past = shouldRecord
