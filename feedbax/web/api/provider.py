@@ -17,6 +17,7 @@ from feedbax.provider import (
     registry_snapshot,
     validate_spec,
 )
+from feedbax.execution import ExecutionPlan, ExecutionSpec, prepare_execution_plan
 
 
 router = APIRouter()
@@ -54,3 +55,8 @@ async def validate_provider_spec(
         return validate_spec(kind, payload.spec, graph_spec=payload.graph_spec)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/execution/plan", response_model=ExecutionPlan)
+async def prepare_provider_execution_plan(payload: ExecutionSpec) -> ExecutionPlan:
+    return prepare_execution_plan(payload)

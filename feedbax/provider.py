@@ -25,6 +25,7 @@ from feedbax.manifest import (
     feedbax_version,
     utc_now,
 )
+from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
 
@@ -113,6 +114,9 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AnalysisRunSpec": AnalysisRunSpec,
         "ReportSpec": ReportSpec,
         "ArtifactRef": ArtifactRef,
+        "ExecutionSpec": ExecutionSpec,
+        "ExecutionPlan": ExecutionPlan,
+        "LocalExecutionResult": LocalExecutionResult,
         "GraphSpecManifest": GraphSpecManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
@@ -156,6 +160,17 @@ def provider_manifest() -> ProviderManifest:
             requires_review=True,
             description="Start a local or configured worker training run.",
         ),
+        "prepare_execution_plan": CapabilitySpec(
+            input_schema="ExecutionSpec",
+            output_schema="ExecutionPlan",
+            description="Prepare a deterministic local, SSH, RunPod, or Modal execution plan.",
+        ),
+        "run_local_execution": CapabilitySpec(
+            input_schema="ExecutionSpec",
+            output_schema="LocalExecutionResult",
+            requires_review=True,
+            description="Run an explicitly local execution and emit a durable manifest.",
+        ),
         "list_components": CapabilitySpec(output_schema="ComponentRegistrySnapshot"),
         "list_tasks": CapabilitySpec(output_schema="TaskRegistrySnapshot"),
         "list_losses": CapabilitySpec(output_schema="LossRegistrySnapshot"),
@@ -173,6 +188,8 @@ def provider_manifest() -> ProviderManifest:
             "figure",
             "report",
             "manifest",
+            "execution_plan",
+            "execution_log",
         ],
         schemas=_schemas(),
         entry_points={
