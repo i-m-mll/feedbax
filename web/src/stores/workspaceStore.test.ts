@@ -9,9 +9,10 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { graphNodeEntityId } from '@/features/scenario/entities';
+import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
-import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { StudioObjectiveSpec, StudioWorkspaceSpec } from '@/types/workspace';
 
 const graph: GraphSpec = {
   nodes: {},
@@ -277,6 +278,42 @@ describe('buildWorkspaceSnapshot', () => {
       namespace: 'graph_port',
       target_id: 'effector',
       path: 'position',
+    });
+  });
+
+  it('lowers active scenario objective edits back into the training loss spec', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    const current = getTrainingScenario(useWorkspaceStore.getState().workspace)!
+      .objective_spec as StudioObjectiveSpec;
+    const term = createObjectiveTerm({
+      spec: current,
+      label: 'Endpoint',
+      sourceSelector: {
+        namespace: 'graph_port',
+        compact: 'port:mechanics.effector',
+        target_id: 'mechanics',
+        path: 'effector',
+        metadata: {},
+      },
+    });
+    useWorkspaceStore.getState().updateActiveScenarioObjectiveSpec(addObjectiveTerm(current, term));
+
+    const scenario = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
+    const objectiveSpec = scenario.objective_spec as StudioObjectiveSpec;
+    expect(objectiveSpec.terms.some((item) => item.id === term.id)).toBe(true);
+    expect(scenario.training_spec?.loss.children?.[term.id]).toMatchObject({
+      label: 'Endpoint',
+      selector: 'port:mechanics.effector',
     });
   });
 

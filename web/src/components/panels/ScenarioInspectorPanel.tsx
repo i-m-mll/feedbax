@@ -1,6 +1,13 @@
 import { useMemo } from 'react';
 import clsx from 'clsx';
 import { buildScenarioEntityRegistry, entityKindLabel, getScenarioEntity } from '@/features/scenario/entities';
+import {
+  ensureObjectiveSpec,
+  objectiveTermEnabled,
+  removeObjectiveTerm,
+  setObjectiveTermEnabled,
+  updateObjectiveTerm,
+} from '@/features/scenario/objectives';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
@@ -10,6 +17,7 @@ import {
 } from '@/stores/workspaceStore';
 import type { StudioScenarioEntity, StudioScenarioEntityRegistry } from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
+import { Trash2 } from 'lucide-react';
 
 const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'graph_edge', 'probe']);
 
@@ -142,18 +150,105 @@ function MechanicsInspector({ entity }: { entity: StudioScenarioEntity }) {
 }
 
 function ObjectiveInspector({ entity }: { entity: StudioScenarioEntity }) {
-  const term = entity.metadata.term;
-  const record = term && typeof term === 'object' ? (term as Record<string, unknown>) : {};
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const termId = entity.id.replace(/^objective_term:/, '');
+  const term = objectiveSpec.terms.find((candidate) => candidate.id === termId);
+  if (!term) {
+    return <div className="text-sm text-slate-400">Objective term is no longer available.</div>;
+  }
+
+  const updateTerm = (updates: Parameters<typeof updateObjectiveTerm>[2]) => {
+    updateActiveScenarioObjectiveSpec(updateObjectiveTerm(objectiveSpec, term.id, updates));
+  };
+
   return (
     <section className="space-y-3">
-      <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Objective Term</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Objective Term</div>
+        <button
+          type="button"
+          onClick={() => {
+            if (!confirm('Delete this objective term?')) return;
+            updateActiveScenarioObjectiveSpec(removeObjectiveTerm(objectiveSpec, term.id));
+            selectTopPaneEntity(null);
+          }}
+          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+          title="Delete objective"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+      <label className="block space-y-1 text-xs text-slate-500">
+        <span>Label</span>
+        <input
+          value={term.label}
+          onChange={(event) => updateTerm({ label: event.target.value })}
+          className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+        />
+      </label>
+      <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-3">
+        <label className="block space-y-1 text-xs text-slate-500">
+          <span>Role</span>
+          <select
+            value={term.role}
+            onChange={(event) => updateTerm({ role: event.target.value })}
+            className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+          >
+            <option value="loss">Loss</option>
+            <option value="metric">Metric</option>
+            <option value="constraint">Constraint</option>
+            <option value="reward">Reward</option>
+            <option value="regularizer">Regularizer</option>
+          </select>
+        </label>
+        <label className="block space-y-1 text-xs text-slate-500">
+          <span>Weight</span>
+          <input
+            type="number"
+            min={0}
+            step={0.01}
+            value={term.weight}
+            onChange={(event) => {
+              const weight = Number.parseFloat(event.target.value);
+              if (Number.isFinite(weight)) updateTerm({ weight });
+            }}
+            className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+          />
+        </label>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-slate-600">
+        <input
+          type="checkbox"
+          checked={objectiveTermEnabled(term)}
+          onChange={(event) =>
+            updateActiveScenarioObjectiveSpec(
+              setObjectiveTermEnabled(objectiveSpec, term.id, event.target.checked)
+            )
+          }
+          className="h-4 w-4 rounded border-slate-300"
+        />
+        Enabled
+      </label>
       <div className="space-y-2 text-xs text-slate-600">
-        {['role', 'type_id', 'operator', 'penalty', 'weight', 'units'].map((key) => (
-          <div key={key} className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
-            <div className="font-medium capitalize text-slate-500">{key.replace('_', ' ')}</div>
-            <div className="break-words">{formatValue(record[key])}</div>
-          </div>
-        ))}
+        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
+          <div className="font-medium text-slate-500">Type</div>
+          <div className="break-words">{formatValue(term.type_id)}</div>
+        </div>
+        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
+          <div className="font-medium text-slate-500">Selector</div>
+          <div className="break-words">{term.source_selector?.compact ?? 'None'}</div>
+        </div>
+        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
+          <div className="font-medium text-slate-500">Penalty</div>
+          <div className="break-words">{formatValue(term.penalty)}</div>
+        </div>
       </div>
     </section>
   );

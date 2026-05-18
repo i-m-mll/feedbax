@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { lossSpecFromObjectiveSpec } from '@/features/scenario/objectives';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -540,6 +541,11 @@ function activeTrainScenario(workspace: StudioWorkspaceSpec | null): string | nu
   return trainStage?.scenario_id ?? activeStage?.scenario_id ?? null;
 }
 
+function activeScenarioId(workspace: StudioWorkspaceSpec | null): string | null {
+  if (!workspace) return null;
+  return getActiveStage(workspace)?.scenario_id ?? activeTrainScenario(workspace);
+}
+
 export function getTopPaneState(
   workspace: StudioWorkspaceSpec | null | undefined
 ): StudioTopPaneState {
@@ -724,10 +730,16 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
 
   updateActiveScenarioObjectiveSpec: (objectiveSpec) =>
     set((state) => {
-      const scenarioId = activeTrainScenario(state.workspace);
+      const scenarioId = activeScenarioId(state.workspace);
       if (!state.workspace || !scenarioId) return {};
       const scenario = state.workspace.scenarios[scenarioId];
       if (!scenario) return {};
+      const trainingSpec = scenario.training_spec
+        ? {
+            ...scenario.training_spec,
+            loss: lossSpecFromObjectiveSpec(objectiveSpec),
+          }
+        : scenario.training_spec;
       return {
         workspace: {
           ...state.workspace,
@@ -735,6 +747,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             ...state.workspace.scenarios,
             [scenarioId]: {
               ...scenario,
+              training_spec: trainingSpec,
               objective_spec: objectiveSpec,
               metadata: markDraftMetadata(
                 {

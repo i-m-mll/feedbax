@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import clsx from 'clsx';
-import { GitBranch, ListChecks, Map } from 'lucide-react';
+import { GitBranch, ListChecks, Map as MapIcon, Plus, Trash2 } from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
   buildScenarioEntityRegistry,
@@ -13,6 +13,17 @@ import {
   workspaceProjectionItems,
   type ScenarioProjectionItem,
 } from '@/features/scenario/projections';
+import {
+  addObjectiveTerm,
+  createObjectiveTerm,
+  ensureObjectiveSpec,
+  objectiveTermEnabled,
+  removeObjectiveTerm,
+  setObjectiveTermEnabled,
+  sourceSelectorForEntity,
+  targetSelectorForEntity,
+  updateObjectiveTerm,
+} from '@/features/scenario/objectives';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
@@ -21,6 +32,8 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import type {
+  StudioObjectiveSpec,
+  StudioObjectiveTermSpec,
   StudioScenarioEntity,
   StudioScenarioEntityRegistry,
   StudioTopPaneProjection,
@@ -32,7 +45,7 @@ const PROJECTIONS: Array<{
   icon: typeof GitBranch;
 }> = [
   { id: 'graph', label: 'Graph', icon: GitBranch },
-  { id: 'workspace', label: 'Workspace', icon: Map },
+  { id: 'workspace', label: 'Workspace', icon: MapIcon },
   { id: 'objectives', label: 'Objectives', icon: ListChecks },
 ];
 
@@ -58,9 +71,13 @@ function isSelectedOrRelated(
 function ProjectionTabs({
   active,
   onChange,
+  canAddObjective,
+  onAddObjective,
 }: {
   active: StudioTopPaneProjection;
   onChange: (projection: StudioTopPaneProjection) => void;
+  canAddObjective: boolean;
+  onAddObjective: () => void;
 }) {
   return (
     <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3">
@@ -86,6 +103,15 @@ function ProjectionTabs({
           );
         })}
       </div>
+      <button
+        type="button"
+        disabled={!canAddObjective}
+        onClick={onAddObjective}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Add objective
+      </button>
     </div>
   );
 }
@@ -121,7 +147,7 @@ function EntityList({
   items: ScenarioProjectionItem[];
   selectedId: string | null;
   relatedIds: Set<string>;
-  onSelect: (entityId: string) => void;
+  onSelect: (entityId: string | null) => void;
 }) {
   return (
     <section className="min-h-0">
@@ -169,7 +195,7 @@ function WorkspaceProjection({
 }: {
   registry: StudioScenarioEntityRegistry;
   selectedId: string | null;
-  onSelect: (entityId: string) => void;
+  onSelect: (entityId: string | null) => void;
 }) {
   const items = workspaceProjectionItems(registry);
   const selectedEntity = getScenarioEntity(registry, selectedId);
@@ -326,38 +352,49 @@ function WorkspaceProjection({
 function ObjectivesProjection({
   registry,
   selectedId,
+  objectiveSpec,
   onSelect,
+  onObjectiveSpecChange,
 }: {
   registry: StudioScenarioEntityRegistry;
   selectedId: string | null;
-  onSelect: (entityId: string) => void;
+  objectiveSpec: StudioObjectiveSpec;
+  onSelect: (entityId: string | null) => void;
+  onObjectiveSpecChange: (spec: StudioObjectiveSpec) => void;
 }) {
   const items = objectiveProjectionItems(registry);
   const relatedItems = relatedProjectionItems(registry, selectedId);
   const relatedIds = new Set(relatedItems.map((item) => item.entity_id));
+  const termByEntityId = new Map(
+    objectiveSpec.terms.map((term) => [`objective_term:${term.id}`, term])
+  );
+
+  const updateTerm = (termId: string, updates: Partial<StudioObjectiveTermSpec>) => {
+    onObjectiveSpecChange(updateObjectiveTerm(objectiveSpec, termId, updates));
+  };
 
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-5">
       <div className="mx-auto max-w-5xl overflow-hidden rounded-md border border-slate-200 bg-white">
-        <div className="grid grid-cols-[minmax(0,1.4fr)_7rem_7rem_minmax(0,1fr)] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+        <div className="grid grid-cols-[minmax(0,1.4fr)_7rem_7rem_minmax(0,1fr)_5rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
           <div>Term</div>
           <div>Role</div>
           <div>Weight</div>
           <div>Selector</div>
+          <div>State</div>
         </div>
         {items.map((item) => {
-          const entity = registry.entities[item.entity_id];
-          const term = entity?.metadata.term as Record<string, unknown> | undefined;
-          const source = term?.source_selector as { compact?: string } | undefined;
+          const term = termByEntityId.get(item.entity_id);
+          const source = term?.source_selector;
           const active = item.entity_id === selectedId;
           const related = relatedIds.has(item.entity_id);
+          if (!term) return null;
           return (
-            <button
+            <div
               key={item.entity_id}
-              type="button"
               onClick={() => onSelect(item.entity_id)}
               className={clsx(
-                'grid w-full grid-cols-[minmax(0,1.4fr)_7rem_7rem_minmax(0,1fr)] items-center border-b border-slate-100 px-4 py-3 text-left text-xs last:border-b-0',
+                'grid w-full grid-cols-[minmax(0,1.4fr)_7rem_7rem_minmax(0,1fr)_5rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left text-xs last:border-b-0',
                 active
                   ? 'bg-brand-50 text-slate-900'
                   : related
@@ -366,13 +403,66 @@ function ObjectivesProjection({
               )}
             >
               <div className="min-w-0">
-                <div className="truncate font-medium">{item.label}</div>
+                <input
+                  value={term.label}
+                  onChange={(event) => updateTerm(term.id, { label: event.target.value })}
+                  onClick={(event) => event.stopPropagation()}
+                  className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
+                />
                 {item.summary && <div className="mt-0.5 truncate text-slate-400">{item.summary}</div>}
               </div>
-              <div className="truncate">{String(term?.role ?? 'objective')}</div>
-              <div className="truncate">{String(term?.weight ?? 'n/a')}</div>
+              <select
+                value={term.role}
+                onChange={(event) => updateTerm(term.id, { role: event.target.value })}
+                onClick={(event) => event.stopPropagation()}
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
+              >
+                <option value="loss">Loss</option>
+                <option value="metric">Metric</option>
+                <option value="constraint">Constraint</option>
+                <option value="reward">Reward</option>
+                <option value="regularizer">Regularizer</option>
+              </select>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={term.weight}
+                onChange={(event) => {
+                  const weight = Number.parseFloat(event.target.value);
+                  if (Number.isFinite(weight)) updateTerm(term.id, { weight });
+                }}
+                onClick={(event) => event.stopPropagation()}
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
+              />
               <div className="truncate text-slate-500">{source?.compact ?? 'None'}</div>
-            </button>
+              <div className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={objectiveTermEnabled(term)}
+                  onChange={(event) =>
+                    onObjectiveSpecChange(
+                      setObjectiveTermEnabled(objectiveSpec, term.id, event.target.checked)
+                    )
+                  }
+                  onClick={(event) => event.stopPropagation()}
+                  className="h-4 w-4 rounded border-slate-300"
+                  title="Enabled"
+                />
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onObjectiveSpecChange(removeObjectiveTerm(objectiveSpec, term.id));
+                    if (selectedId === item.entity_id) onSelect(null);
+                  }}
+                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  title="Delete objective"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
           );
         })}
         {items.length === 0 && (
@@ -389,20 +479,52 @@ export function ScenarioProjectionWorkspace() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
   const graph = useGraphStore((state) => state.graph);
   const topPane = getTopPaneState(workspace);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const registry = useMemo(
     () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
     [activeScenario, graph]
   );
   const stageSummary =
     typeof activeStage?.metadata.summary === 'string' ? activeStage.metadata.summary : null;
+  const selectedEntity = getScenarioEntity(registry, topPane.selected_entity_id);
+  const canAddObjective = Boolean(activeScenario && selectedEntity);
+  const addObjectiveFromSelection = () => {
+    if (!activeScenario || !selectedEntity) return;
+    const taskEntity =
+      Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
+    const mechanicsEntity =
+      Object.values(registry.entities).find((entity) => entity.kind === 'mechanics_object') ?? null;
+    const sourceSelector =
+      sourceSelectorForEntity(selectedEntity, registry) ??
+      sourceSelectorForEntity(mechanicsEntity, registry);
+    const targetSelector =
+      targetSelectorForEntity(selectedEntity) ?? targetSelectorForEntity(taskEntity);
+    const term = createObjectiveTerm({
+      spec: objectiveSpec,
+      label: `Objective: ${selectedEntity.label}`,
+      sourceSelector,
+      targetSelector,
+    });
+    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
+    setTopPaneProjection('objectives');
+    selectTopPaneEntity(`objective_term:${term.id}`);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ProjectionTabs active={topPane.active_projection} onChange={setTopPaneProjection} />
+      <ProjectionTabs
+        active={topPane.active_projection}
+        onChange={setTopPaneProjection}
+        canAddObjective={canAddObjective}
+        onAddObjective={addObjectiveFromSelection}
+      />
       <div className="relative min-h-0 flex-1">
         {topPane.active_projection === 'graph' && (
           <div className="absolute inset-0">
@@ -420,7 +542,9 @@ export function ScenarioProjectionWorkspace() {
           <ObjectivesProjection
             registry={registry}
             selectedId={topPane.selected_entity_id}
+            objectiveSpec={objectiveSpec}
             onSelect={selectTopPaneEntity}
+            onObjectiveSpecChange={updateActiveScenarioObjectiveSpec}
           />
         )}
         <ScenarioBadge
