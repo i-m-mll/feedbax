@@ -13,7 +13,8 @@ import {
   Server,
   SlidersHorizontal,
 } from 'lucide-react';
-import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
+import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
+import { useGraphStore } from '@/stores/graphStore';
 import {
   bestTrainingRun,
   evaluationProtocolLabel,
@@ -26,9 +27,16 @@ import {
   type EvaluationRunSummary,
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
+import {
+  stageExecutionSpecWithProtocolPatch,
+  stageExecutionTarget,
+  trainingProtocolSnapshot,
+  trainingSpecWithProtocolPatch,
+  type ExecutionTargetChoice,
+  type TrainingProtocolSnapshot,
+} from '@/utils/stageProtocol';
 
 type RunView = 'all' | 'selected' | 'best';
-type TargetChoice = 'local' | 'managed' | 'manual';
 type SortKey = 'loss' | 'velocityRmse' | 'peakVelocity' | 'holdDrift' | 'progress';
 type SortDirection = 'asc' | 'desc';
 
@@ -41,14 +49,19 @@ export function TrainCollectionPanel() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
+  const updateActiveScenarioTrainingSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioTrainingSpec
+  );
+  const markDirty = useGraphStore((state) => state.markDirty);
   const [view, setView] = useState<RunView>('all');
-  const [target, setTarget] = useState<TargetChoice>('local');
   const [sort, setSort] = useState<SortState>({ key: 'loss', direction: 'asc' });
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(() => new Set());
   const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
 
   const trainStage = getStageByKind(workspace, 'train');
+  const trainScenario = getScenario(workspace, trainStage?.scenario_id);
   const evalStage = getStageByKind(workspace, 'eval');
+  const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const selectedRows = useMemo(
@@ -106,6 +119,33 @@ export function TrainCollectionPanel() {
     setActiveStage(evalStage.id);
   }, [evalStage, rows, selectedRunIds, setActiveStage, trainStage, updateStageDraft]);
 
+  const setTarget = useCallback(
+    (target: ExecutionTargetChoice) => {
+      if (!trainStage) return;
+      updateStageDraft(
+        trainStage.id,
+        {
+          execution_spec: stageExecutionSpecWithProtocolPatch(trainStage, {
+            compute_target: target,
+          }),
+        },
+        'training_compute_target_changed'
+      );
+    },
+    [trainStage, updateStageDraft]
+  );
+
+  const updateProtocol = useCallback(
+    (patch: Partial<TrainingProtocolSnapshot>) => {
+      if (!trainScenario?.training_spec) return;
+      updateActiveScenarioTrainingSpec(
+        trainingSpecWithProtocolPatch(trainScenario.training_spec, patch)
+      );
+      markDirty();
+    },
+    [markDirty, trainScenario, updateActiveScenarioTrainingSpec]
+  );
+
   return (
     <div className="relative h-full overflow-y-auto bg-slate-50/40">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-5 text-sm text-slate-600">
@@ -131,7 +171,11 @@ export function TrainCollectionPanel() {
               )}
             </div>
           </div>
-          <ExecutionTarget value={target} onChange={setTarget} />
+          <TrainingProtocolEditor
+            protocol={protocol}
+            onTargetChange={setTarget}
+            onProtocolChange={updateProtocol}
+          />
         </section>
 
         <RunTable
@@ -161,7 +205,6 @@ export function EvaluateCollectionPanel() {
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
   const [view, setView] = useState<RunView>('all');
-  const [target, setTarget] = useState<TargetChoice>('local');
   const [sort, setSort] = useState<SortState>({ key: 'loss', direction: 'asc' });
   const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
 
@@ -225,6 +268,22 @@ export function EvaluateCollectionPanel() {
     if (analysisStage) setActiveStage(analysisStage.id);
   }, [analysisStage, setActiveStage]);
 
+  const setTarget = useCallback(
+    (target: ExecutionTargetChoice) => {
+      if (!evalStage) return;
+      updateStageDraft(
+        evalStage.id,
+        {
+          execution_spec: stageExecutionSpecWithProtocolPatch(evalStage, {
+            compute_target: target,
+          }),
+        },
+        'evaluation_compute_target_changed'
+      );
+    },
+    [evalStage, updateStageDraft]
+  );
+
   return (
     <div className="relative h-full overflow-y-auto bg-slate-50/40">
       <div className="mx-auto grid max-w-7xl gap-5 px-6 py-5 text-sm text-slate-600 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -255,7 +314,7 @@ export function EvaluateCollectionPanel() {
         </div>
 
         <div className="space-y-3">
-          <ExecutionTarget value={target} onChange={setTarget} />
+          <ExecutionTarget value={stageExecutionTarget(evalStage)} onChange={setTarget} />
           <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
               <SlidersHorizontal className="h-4 w-4 text-slate-400" />
@@ -561,12 +620,14 @@ function EvaluationResult({
 function ExecutionTarget({
   value,
   onChange,
+  embedded = false,
 }: {
-  value: TargetChoice;
-  onChange: (value: TargetChoice) => void;
+  value: ExecutionTargetChoice;
+  onChange: (value: ExecutionTargetChoice) => void;
+  embedded?: boolean;
 }) {
   const targets: Array<{
-    id: TargetChoice;
+    id: ExecutionTargetChoice;
     icon: typeof Cpu;
     title: string;
     detail: string;
@@ -590,8 +651,8 @@ function ExecutionTarget({
       detail: 'Advanced connection details',
     },
   ];
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+  const content = (
+    <>
       <div className="font-semibold text-slate-800">Run target</div>
       <div className="mt-3 space-y-2">
         {targets.map((target) => {
@@ -618,7 +679,117 @@ function ExecutionTarget({
           );
         })}
       </div>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="border-t border-slate-100 pt-3">{content}</div>;
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      {content}
     </section>
+  );
+}
+
+function TrainingProtocolEditor({
+  protocol,
+  onTargetChange,
+  onProtocolChange,
+}: {
+  protocol: TrainingProtocolSnapshot;
+  onTargetChange: (value: ExecutionTargetChoice) => void;
+  onProtocolChange: (patch: Partial<TrainingProtocolSnapshot>) => void;
+}) {
+  const updateNumber = (
+    key: 'learningRate' | 'batchCount' | 'batchSize',
+    rawValue: string
+  ) => {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return;
+    onProtocolChange({ [key]: value });
+  };
+
+  const updateInteger = (key: 'batchCount' | 'batchSize', rawValue: string) => {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return;
+    onProtocolChange({ [key]: Math.max(0, Math.round(value)) });
+  };
+
+  const updateCheckpointInterval = (rawValue: string) => {
+    if (rawValue.trim() === '') {
+      onProtocolChange({ checkpointInterval: null });
+      return;
+    }
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return;
+    onProtocolChange({ checkpointInterval: Math.max(0, Math.round(value)) });
+  };
+
+  return (
+    <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="font-semibold text-slate-800">Training protocol</div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+        <NumberField
+          label="Learning rate"
+          min={0}
+          step={0.0001}
+          value={protocol.learningRate}
+          onChange={(value) => updateNumber('learningRate', value)}
+        />
+        <NumberField
+          label="Batches"
+          min={0}
+          step={1}
+          value={protocol.batchCount}
+          onChange={(value) => updateInteger('batchCount', value)}
+        />
+        <NumberField
+          label="Batch size"
+          min={0}
+          step={1}
+          value={protocol.batchSize}
+          onChange={(value) => updateInteger('batchSize', value)}
+        />
+        <NumberField
+          label="Checkpoint every"
+          min={0}
+          step={1}
+          value={protocol.checkpointInterval ?? ''}
+          onChange={updateCheckpointInterval}
+        />
+      </div>
+      <ExecutionTarget value={protocol.computeTarget} onChange={onTargetChange} embedded />
+    </section>
+  );
+}
+
+function NumberField({
+  label,
+  min,
+  step,
+  value,
+  onChange,
+}: {
+  label: string;
+  min: number;
+  step: number;
+  value: number | string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-xs font-medium text-slate-600">
+      <span>{label}</span>
+      <input
+        type="number"
+        min={min}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-2 text-sm text-slate-700 shadow-sm focus:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-100"
+      />
+    </label>
   );
 }
 
