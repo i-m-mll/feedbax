@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from feedbax.studio_execution import (
+    StudioTrainingLocalRunRequest,
     StudioTrainingExecutionRequest,
     prepare_studio_training_execution,
+    run_studio_training_local_execution,
 )
 from feedbax.web.app import create_app
 from feedbax.web.models.graph import (
@@ -119,3 +123,67 @@ def test_studio_training_plan_endpoint_rejects_missing_training_spec():
 
     assert response.status_code == 422
     assert "training_spec" in response.json()["detail"]
+
+
+def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
+    tmp_path: Path,
+):
+    result = run_studio_training_local_execution(
+        StudioTrainingLocalRunRequest(
+            workspace=_workspace(),
+            job_id="studio-local-run",
+            root=str(tmp_path),
+            issues=["ff19bc8"],
+        )
+    )
+
+    snapshot_dir = Path(result.snapshot_dir)
+    assert (snapshot_dir / "execution-spec.json").exists()
+    assert (snapshot_dir / "workspace-snapshot.json").exists()
+    assert (snapshot_dir / "graph-spec.json").exists()
+    assert (snapshot_dir / "training-spec.json").exists()
+    assert (snapshot_dir / "task-spec.json").exists()
+    assert result.result.status == "completed"
+    assert result.result.return_code == 0
+    assert Path(result.result.manifest_path).exists()
+    assert result.result.manifest_payload["kind"] == "TrainingRunManifest"
+
+    train_stage = next(stage for stage in result.workspace.stages if stage.kind == "train")
+    assert train_stage.status == "completed"
+    assert any(ref.role == "training_run" for ref in train_stage.manifest_refs)
+    assert any(ref.role == "execution_stdout" for ref in train_stage.artifact_refs)
+    assert any(ref.role == "execution_input_snapshot" for ref in train_stage.artifact_refs)
+    training_collection = next(
+        collection for collection in train_stage.output_collections if collection.kind == "training_runs"
+    )
+    assert training_collection.item_refs[0].role == "training_run"
+
+    future_stage = next(
+        stage for stage in result.workspace.stages if stage.id == "stage:future-report-packaging"
+    )
+    assert future_stage.metadata["later_product_surface"]["keep"] is True
+
+
+def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: Path):
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/provider/studio/training/run-local",
+        json={
+            "workspace": _workspace().model_dump(mode="json", exclude_none=True),
+            "job_id": "http-studio-local-run",
+            "root": str(tmp_path),
+            "issues": ["ff19bc8"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["result"]["status"] == "completed"
+    assert payload["result"]["return_code"] == 0
+    assert payload["snapshot_dir"].endswith("inputs")
+    train_stage = next(
+        stage for stage in payload["workspace"]["stages"] if stage["kind"] == "train"
+    )
+    assert train_stage["status"] == "completed"
+    assert any(ref["role"] == "training_run" for ref in train_stage["manifest_refs"])

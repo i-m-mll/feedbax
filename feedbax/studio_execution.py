@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,16 +12,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from feedbax.execution import (
     ArtifactPolicy,
     ExecutionBackend,
+    LocalExecutionResult,
     ExecutionPlan,
     ExecutionSpec,
     LocalBackendConfig,
     RepoSource,
     default_feedbax_sources,
     prepare_execution_plan,
+    run_local_execution,
 )
-from feedbax.manifest import utc_now
+from feedbax.manifest import default_manifest_root, utc_now
 from feedbax.web.models.graph import (
     StudioArtifactRef,
+    StudioCollectionRef,
     StudioManifestRef,
     StudioStageSpec,
     StudioValidationIssue,
@@ -57,6 +62,30 @@ class StudioTrainingExecutionPreparation(StudioExecutionModel):
     scenario_id: str
     execution_spec: ExecutionSpec
     plan: ExecutionPlan
+
+
+class StudioTrainingLocalRunRequest(StudioExecutionModel):
+    """Request to run the active Studio train-stage scenario locally."""
+
+    workspace: StudioWorkspaceSpec
+    stage_id: Optional[str] = None
+    job_id: Optional[str] = None
+    local_cwd: Optional[str] = None
+    root: Optional[str] = None
+    timeout: Optional[float] = None
+    issues: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTrainingLocalRunResult(StudioExecutionModel):
+    """Result from a local Studio train-stage provider execution."""
+
+    workspace: StudioWorkspaceSpec
+    stage_id: str
+    scenario_id: str
+    execution_spec: ExecutionSpec
+    result: LocalExecutionResult
+    snapshot_dir: str
 
 
 class StudioExecutionPreparationError(ValueError):
@@ -179,6 +208,118 @@ def prepare_studio_training_execution(
         scenario_id=stage.scenario_id,
         execution_spec=execution_spec,
         plan=plan,
+    )
+
+
+def run_studio_training_local_execution(
+    request: StudioTrainingLocalRunRequest,
+) -> StudioTrainingLocalRunResult:
+    """Run a Studio train-stage scenario through the local provider boundary."""
+
+    job_id = request.job_id or f"studio-train-{uuid.uuid4().hex[:12]}"
+    root_path = Path(request.root).expanduser() if request.root else default_manifest_root()
+    snapshot_dir = (
+        Path(request.local_cwd).expanduser()
+        if request.local_cwd
+        else root_path / "executions" / job_id / "inputs"
+    )
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    preparation = prepare_studio_training_execution(
+        StudioTrainingExecutionRequest(
+            workspace=request.workspace,
+            stage_id=request.stage_id,
+            backend="local",
+            job_id=job_id,
+            local_cwd=str(snapshot_dir),
+            issues=request.issues,
+            metadata=request.metadata,
+        )
+    )
+    _materialize_local_execution_snapshot(preparation, snapshot_dir)
+
+    result = run_local_execution(
+        preparation.execution_spec,
+        root=root_path,
+        timeout=request.timeout,
+    )
+    workspace = preparation.workspace.model_copy(deep=True)
+    stage = _select_train_stage(workspace, preparation.stage_id)
+    completed_at = utc_now().isoformat()
+    manifest_ref = StudioManifestRef(
+        kind=result.manifest_payload.get("kind", "TrainingRunManifest"),
+        id=str(result.manifest_payload.get("id", f"training-run:{result.job_id}")),
+        role="training_run",
+        uri=result.manifest_path,
+        metadata={
+            "job_id": result.job_id,
+            "status": result.status,
+            "stage_id": stage.id,
+            "scenario_id": preparation.scenario_id,
+            "completed_at": completed_at,
+        },
+    )
+    stage.status = "completed" if result.status == "completed" else "failed"
+    stage.validation = StudioValidationState(
+        valid=result.status == "completed",
+        checked_at=completed_at,
+        errors=(
+            []
+            if result.status == "completed"
+            else [
+                StudioValidationIssue(
+                    type="local_execution_failed",
+                    message=f"Local execution returned code {result.return_code}",
+                    location={"path": "/execution_spec/command"},
+                    severity="error",
+                )
+            ]
+        ),
+        warnings=stage.validation.warnings,
+        metadata={
+            **stage.validation.metadata,
+            "execution_job_id": result.job_id,
+            "execution_status": result.status,
+            "execution_return_code": result.return_code,
+            "snapshot_dir": str(snapshot_dir),
+            "manifest_path": result.manifest_path,
+        },
+    )
+    stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, manifest_ref)
+    stage.artifact_refs = _upsert_many_artifact_refs(
+        stage.artifact_refs,
+        _local_result_artifact_refs(result, snapshot_dir, stage.id, preparation.scenario_id),
+    )
+    stage.output_collections = _upsert_training_manifest_in_outputs(
+        stage.output_collections,
+        manifest_ref,
+        stage.id,
+    )
+    stage.metadata = {
+        **stage.metadata,
+        "last_execution_result": {
+            "job_id": result.job_id,
+            "status": result.status,
+            "return_code": result.return_code,
+            "completed_at": completed_at,
+            "manifest_path": result.manifest_path,
+            "snapshot_dir": str(snapshot_dir),
+        },
+    }
+    workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, manifest_ref)
+    workspace.artifact_refs = _upsert_many_artifact_refs(
+        workspace.artifact_refs,
+        _local_result_artifact_refs(result, snapshot_dir, stage.id, preparation.scenario_id),
+    )
+    _replace_stage(workspace, stage)
+
+    return StudioTrainingLocalRunResult(
+        workspace=workspace,
+        stage_id=stage.id,
+        scenario_id=preparation.scenario_id,
+        execution_spec=preparation.execution_spec,
+        result=result,
+        snapshot_dir=str(snapshot_dir),
     )
 
 
@@ -320,7 +461,11 @@ def _build_execution_spec(
         kind="training",
         job_id=job_id,
         backend=request.backend,
-        command="feedbax-provider validate training training-spec.json --graph graph-spec.json && feedbax-provider validate task task-spec.json",
+        command=(
+            "python -m feedbax.bin.provider validate training training-spec.json "
+            "--graph graph-spec.json && "
+            "python -m feedbax.bin.provider validate task task-spec.json"
+        ),
         repos=repos or [],
         primary_repo=request.primary_repo,
         local=LocalBackendConfig(cwd=request.local_cwd),
@@ -346,6 +491,120 @@ def _build_execution_spec(
     )
 
 
+def _materialize_local_execution_snapshot(
+    preparation: StudioTrainingExecutionPreparation,
+    snapshot_dir: Path,
+) -> None:
+    scenario = preparation.workspace.scenarios[preparation.scenario_id]
+    files = {
+        "execution-spec.json": preparation.execution_spec.model_dump(
+            mode="json", exclude_none=True
+        ),
+        "workspace-snapshot.json": preparation.workspace.model_dump(
+            mode="json", exclude_none=True
+        ),
+        "graph-spec.json": scenario.graph.model_dump(mode="json", exclude_none=True)
+        if scenario.graph is not None
+        else {},
+        "training-spec.json": scenario.training_spec or {},
+        "task-spec.json": scenario.task_spec or {},
+    }
+    for filename, payload in files.items():
+        _write_json(snapshot_dir / filename, payload)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _local_result_artifact_refs(
+    result: LocalExecutionResult,
+    snapshot_dir: Path,
+    stage_id: str,
+    scenario_id: str,
+) -> list[StudioArtifactRef]:
+    metadata = {
+        "job_id": result.job_id,
+        "stage_id": stage_id,
+        "scenario_id": scenario_id,
+        "status": result.status,
+    }
+    run_dir = Path(result.stdout_path).parent
+    refs = [
+        StudioArtifactRef(
+            kind="ExecutionPlan",
+            id=f"execution-plan:{result.job_id}",
+            role="execution_plan",
+            uri=str(run_dir / "execution-plan.json"),
+            media_type="application/json",
+            metadata=metadata,
+        ),
+        StudioArtifactRef(
+            kind="ExecutionLog",
+            id=f"execution-log:{result.job_id}:stdout",
+            role="execution_stdout",
+            uri=result.stdout_path,
+            media_type="text/plain",
+            metadata=metadata,
+        ),
+        StudioArtifactRef(
+            kind="ExecutionLog",
+            id=f"execution-log:{result.job_id}:stderr",
+            role="execution_stderr",
+            uri=result.stderr_path,
+            media_type="text/plain",
+            metadata=metadata,
+        ),
+        StudioArtifactRef(
+            kind="StudioExecutionSnapshot",
+            id=f"studio-execution-snapshot:{result.job_id}",
+            role="execution_input_snapshot",
+            uri=str(snapshot_dir),
+            media_type="application/x-directory",
+            metadata={
+                **metadata,
+                "files": [
+                    "execution-spec.json",
+                    "workspace-snapshot.json",
+                    "graph-spec.json",
+                    "training-spec.json",
+                    "task-spec.json",
+                ],
+            },
+        ),
+    ]
+    return refs
+
+
+def _upsert_training_manifest_in_outputs(
+    collections: list[StudioCollectionRef],
+    manifest_ref: StudioManifestRef,
+    stage_id: str,
+) -> list[StudioCollectionRef]:
+    updated: list[StudioCollectionRef] = []
+    added = False
+    for collection in collections:
+        if collection.kind == "training_runs":
+            collection = collection.model_copy(deep=True)
+            collection.item_refs = _upsert_manifest_ref(collection.item_refs, manifest_ref)
+            added = True
+        updated.append(collection)
+    if not added:
+        updated.append(
+            StudioCollectionRef(
+                id="collection:training-runs",
+                kind="training_runs",
+                label="Training runs",
+                source_stage_id=stage_id,
+                item_refs=[manifest_ref],
+            )
+        )
+    return updated
+
+
 def _replace_stage(workspace: StudioWorkspaceSpec, updated: StudioStageSpec) -> None:
     workspace.stages = [updated if stage.id == updated.id else stage for stage in workspace.stages]
 
@@ -355,6 +614,16 @@ def _upsert_artifact_ref(
     ref: StudioArtifactRef,
 ) -> list[StudioArtifactRef]:
     return [item for item in refs if not (item.kind == ref.kind and item.id == ref.id)] + [ref]
+
+
+def _upsert_many_artifact_refs(
+    refs: list[StudioArtifactRef],
+    new_refs: list[StudioArtifactRef],
+) -> list[StudioArtifactRef]:
+    merged = refs
+    for ref in new_refs:
+        merged = _upsert_artifact_ref(merged, ref)
+    return merged
 
 
 def _upsert_manifest_ref(
