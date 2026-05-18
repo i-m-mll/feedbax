@@ -1,12 +1,14 @@
 import { create } from 'zustand';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
-import type { TaskSpec, TrainingSpec } from '@/types/training';
+import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
 import type {
   AnalysisPageWire,
   StudioCollectionRef,
+  StudioObjectiveSpec,
   StudioPipelineMaterializationResult,
   StudioScenarioSpec,
+  StudioSelectorRef,
   StudioStageKind,
   StudioStageSpec,
   StudioTrainingLocalRunResult,
@@ -17,6 +19,7 @@ import type {
 
 const WORKSPACE_SCHEMA_VERSION = 'feedbax.studio.workspace.v1';
 const SCENARIO_SCHEMA_VERSION = 'feedbax.studio.scenario.v1';
+const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
 
 const DEFAULT_STAGE_IDS = {
   train: 'stage:train',
@@ -47,6 +50,106 @@ function generateId(prefix: string): string {
     return `${prefix}:${crypto.randomUUID()}`;
   }
   return `${prefix}:${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function markDraftMetadata(
+  metadata: Record<string, unknown>,
+  reason: string
+): Record<string, unknown> {
+  const currentVersion =
+    typeof metadata.draft_version === 'number' ? metadata.draft_version : 0;
+  return {
+    ...metadata,
+    dirty: true,
+    draft_version: currentVersion + 1,
+    updated_at: nowIso(),
+    updated_reason: reason,
+  };
+}
+
+function selectorRefFromString(selector: string | undefined): StudioSelectorRef | null {
+  if (!selector) return null;
+  if (selector.startsWith('probe:')) {
+    return {
+      namespace: 'probe',
+      compact: selector,
+      target_id: selector.slice('probe:'.length),
+      path: null,
+      metadata: { source: 'legacy_loss_selector' },
+    };
+  }
+  if (selector.startsWith('port:')) {
+    const portRef = selector.slice('port:'.length);
+    const [nodeId, ...portParts] = portRef.split('.');
+    return {
+      namespace: 'graph_port',
+      compact: selector,
+      target_id: nodeId || null,
+      path: portParts.join('.') || null,
+      metadata: { source: 'legacy_loss_selector' },
+    };
+  }
+  if (selector.startsWith('path:')) {
+    return {
+      namespace: 'state_path',
+      compact: selector,
+      target_id: null,
+      path: selector.slice('path:'.length),
+      metadata: { source: 'legacy_loss_selector' },
+    };
+  }
+  return {
+    namespace: 'custom',
+    compact: selector,
+    target_id: null,
+    path: selector,
+    metadata: { source: 'legacy_loss_selector' },
+  };
+}
+
+export function objectiveSpecFromLossSpec(loss: LossTermSpec): StudioObjectiveSpec {
+  const terms: StudioObjectiveSpec['terms'] = [];
+
+  const visit = (term: LossTermSpec, path: string[]) => {
+    const children = term.children ?? {};
+    const childEntries = Object.entries(children);
+    if (childEntries.length > 0) {
+      childEntries.forEach(([key, child]) => visit(child, [...path, key]));
+      return;
+    }
+
+    const stablePath = path.length > 0 ? path.join('.') : 'root';
+    terms.push({
+      id: `objective:${stablePath}`,
+      type_id: term.type,
+      label: term.label,
+      role: term.type.toLowerCase().includes('regular') ? 'regularizer' : 'loss',
+      source_selector: selectorRefFromString(term.selector),
+      target_selector: null,
+      operator: 'minimize',
+      penalty: term.norm ?? null,
+      temporal_selector: term.time_agg ?? null,
+      weight: term.weight,
+      metadata: {
+        legacy_loss_path: path,
+        legacy_loss_type: term.type,
+      },
+    });
+  };
+
+  visit(loss, []);
+  return {
+    schema_version: OBJECTIVE_SCHEMA_VERSION,
+    terms,
+    legacy_loss_spec: loss,
+    metadata: {
+      lowered_from: 'training_spec.loss',
+    },
+  };
 }
 
 function collection(
@@ -243,16 +346,21 @@ export function buildWorkspaceSnapshot({
 
   const scenarios = { ...withStages.scenarios };
   const existingTrain = scenarios[trainScenarioId];
+  const scenarioTrainingSpec = existingTrain?.training_spec ?? trainingSpec;
+  const scenarioTaskSpec = existingTrain?.task_spec ?? taskSpec;
   scenarios[trainScenarioId] = {
     ...defaultScenario(trainScenarioId, existingTrain?.label ?? 'Training scenario', trainStage.id),
     ...existingTrain,
     graph,
     graph_ui_state: uiState,
-    training_spec: trainingSpec,
-    task_spec: taskSpec,
+    training_spec: scenarioTrainingSpec,
+    task_spec: scenarioTaskSpec,
+    objective_spec:
+      existingTrain?.objective_spec ?? objectiveSpecFromLossSpec(scenarioTrainingSpec.loss),
     metadata: {
       ...(existingTrain?.metadata ?? {}),
-      updated_from: 'active_studio_state',
+      draft_owner: 'studio_workspace',
+      updated_from: existingTrain ? 'workspace_draft' : 'legacy_active_studio_state',
     },
   };
 
@@ -301,6 +409,14 @@ interface WorkspaceStoreState {
   lastTrainingLocalRunResult: StudioTrainingLocalRunResult | null;
   lastPipelineMaterializationResult: StudioPipelineMaterializationResult | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
+  setActiveStage: (stageId: string | null) => void;
+  setActiveStageByKind: (kind: StudioStageKind) => void;
+  updateStageDraft: (stageId: string, patch: Partial<StudioStageSpec>, reason?: string) => void;
+  updateScenarioDraft: (
+    scenarioId: string,
+    patch: Partial<StudioScenarioSpec>,
+    reason?: string
+  ) => void;
   setTrainingExecutionPreparation: (
     preparation: StudioTrainingExecutionPreparation | null
   ) => void;
@@ -310,12 +426,56 @@ interface WorkspaceStoreState {
   ) => void;
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
+  updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
+  updateStageCollections: (
+    stageId: string,
+    collections: {
+      input_collections?: StudioCollectionRef[];
+      output_collections?: StudioCollectionRef[];
+    },
+    reason?: string
+  ) => void;
+}
+
+export function getStageByKind(
+  workspace: StudioWorkspaceSpec | null,
+  kind: StudioStageKind
+): StudioStageSpec | null {
+  return workspace?.stages.find((stage) => stage.kind === kind) ?? null;
+}
+
+export function getActiveStage(workspace: StudioWorkspaceSpec | null): StudioStageSpec | null {
+  if (!workspace) return null;
+  return (
+    workspace.stages.find((stage) => stage.id === workspace.active_stage_id) ??
+    workspace.stages[0] ??
+    null
+  );
+}
+
+export function getScenario(
+  workspace: StudioWorkspaceSpec | null,
+  scenarioId: string | null | undefined
+): StudioScenarioSpec | null {
+  if (!workspace || !scenarioId) return null;
+  return workspace.scenarios[scenarioId] ?? null;
+}
+
+export function getActiveScenario(workspace: StudioWorkspaceSpec | null): StudioScenarioSpec | null {
+  return getScenario(workspace, getActiveStage(workspace)?.scenario_id);
+}
+
+export function getTrainingScenario(
+  workspace: StudioWorkspaceSpec | null
+): StudioScenarioSpec | null {
+  const trainStage = getStageByKind(workspace, 'train');
+  return getScenario(workspace, trainStage?.scenario_id);
 }
 
 function activeTrainScenario(workspace: StudioWorkspaceSpec | null): string | null {
   if (!workspace) return null;
-  const activeStage = workspace.stages.find((stage) => stage.id === workspace.active_stage_id);
-  const trainStage = workspace.stages.find((stage) => stage.kind === 'train');
+  const trainStage = getStageByKind(workspace, 'train');
+  const activeStage = getActiveStage(workspace);
   return trainStage?.scenario_id ?? activeStage?.scenario_id ?? null;
 }
 
@@ -326,6 +486,99 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   lastPipelineMaterializationResult: null,
 
   setWorkspace: (workspace) => set({ workspace }),
+
+  setActiveStage: (stageId) =>
+    set((state) => {
+      if (!state.workspace) return {};
+      const stageExists = state.workspace.stages.some((stage) => stage.id === stageId);
+      const activeStageId = stageId && stageExists ? stageId : null;
+      return {
+        workspace: {
+          ...state.workspace,
+          active_stage_id: activeStageId,
+          ui_state: {
+            ...state.workspace.ui_state,
+            active_stage_id: activeStageId,
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, 'active_stage_changed'),
+        },
+      };
+    }),
+
+  setActiveStageByKind: (kind) =>
+    set((state) => {
+      const stage = getStageByKind(state.workspace, kind);
+      if (!state.workspace || !stage) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          active_stage_id: stage.id,
+          ui_state: {
+            ...state.workspace.ui_state,
+            active_stage_id: stage.id,
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, 'active_stage_changed'),
+        },
+      };
+    }),
+
+  updateStageDraft: (stageId, patch, reason = 'stage_draft_updated') =>
+    set((state) => {
+      if (!state.workspace) return {};
+      let changed = false;
+      const stages = state.workspace.stages.map((stage) => {
+        if (stage.id !== stageId) return stage;
+        changed = true;
+        return {
+          ...stage,
+          ...patch,
+          id: stage.id,
+          metadata: markDraftMetadata(
+            {
+              ...stage.metadata,
+              ...(patch.metadata ?? {}),
+            },
+            reason
+          ),
+        };
+      });
+      if (!changed) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          stages,
+          metadata: markDraftMetadata(state.workspace.metadata, reason),
+        },
+      };
+    }),
+
+  updateScenarioDraft: (scenarioId, patch, reason = 'scenario_draft_updated') =>
+    set((state) => {
+      if (!state.workspace) return {};
+      const scenario = state.workspace.scenarios[scenarioId];
+      if (!scenario) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          scenarios: {
+            ...state.workspace.scenarios,
+            [scenarioId]: {
+              ...scenario,
+              ...patch,
+              id: scenario.id,
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  ...(patch.metadata ?? {}),
+                },
+                reason
+              ),
+            },
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, reason),
+        },
+      };
+    }),
 
   setTrainingExecutionPreparation: (preparation) =>
     set((state) => ({
@@ -359,8 +612,17 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             [scenarioId]: {
               ...scenario,
               training_spec: trainingSpec,
+              objective_spec: objectiveSpecFromLossSpec(trainingSpec.loss),
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  draft_owner: 'studio_workspace',
+                },
+                'training_spec_updated'
+              ),
             },
           },
+          metadata: markDraftMetadata(state.workspace.metadata, 'training_spec_updated'),
         },
       };
     }),
@@ -379,8 +641,68 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             [scenarioId]: {
               ...scenario,
               task_spec: taskSpec,
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  draft_owner: 'studio_workspace',
+                },
+                'task_spec_updated'
+              ),
             },
           },
+          metadata: markDraftMetadata(state.workspace.metadata, 'task_spec_updated'),
+        },
+      };
+    }),
+
+  updateActiveScenarioObjectiveSpec: (objectiveSpec) =>
+    set((state) => {
+      const scenarioId = activeTrainScenario(state.workspace);
+      if (!state.workspace || !scenarioId) return {};
+      const scenario = state.workspace.scenarios[scenarioId];
+      if (!scenario) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          scenarios: {
+            ...state.workspace.scenarios,
+            [scenarioId]: {
+              ...scenario,
+              objective_spec: objectiveSpec,
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  draft_owner: 'studio_workspace',
+                },
+                'objective_spec_updated'
+              ),
+            },
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, 'objective_spec_updated'),
+        },
+      };
+    }),
+
+  updateStageCollections: (stageId, collections, reason = 'stage_collections_updated') =>
+    set((state) => {
+      if (!state.workspace) return {};
+      let changed = false;
+      const stages = state.workspace.stages.map((stage) => {
+        if (stage.id !== stageId) return stage;
+        changed = true;
+        return {
+          ...stage,
+          input_collections: collections.input_collections ?? stage.input_collections,
+          output_collections: collections.output_collections ?? stage.output_collections,
+          metadata: markDraftMetadata(stage.metadata, reason),
+        };
+      });
+      if (!changed) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          stages,
+          metadata: markDraftMetadata(state.workspace.metadata, reason),
         },
       };
     }),

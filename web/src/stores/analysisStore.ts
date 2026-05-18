@@ -10,6 +10,7 @@ import type { Node, Edge, OnNodesChange, OnEdgesChange, Connection } from '@xyfl
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import { useGraphStore } from '@/stores/graphStore';
+import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type {
   AnalysisNodeSpec,
   AnalysisParamValue,
@@ -23,6 +24,7 @@ import type {
   AnalysisSnapshot,
   StateFieldPath,
 } from '@/types/analysis';
+import type { AnalysisPageWire, StudioCollectionRef, StudioManifestRef } from '@/types/workspace';
 
 /** Signal the graph store that persisted state changed, triggering auto-save. */
 function markProjectDirty() {
@@ -180,6 +182,104 @@ function generatePageId(): string {
     return crypto.randomUUID();
   }
   return `page-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+}
+
+const SELECTED_EVALUATION_COLLECTION_ID = 'collection:selected-evaluation-runs';
+
+function manifestRefForEvalRunId(evalRunId: string): StudioManifestRef {
+  return {
+    kind: 'EvaluationRun',
+    id: evalRunId,
+    role: 'evaluation_run',
+    provider: 'feedbax',
+    uri: null,
+    metadata: {
+      selected_from: 'analysis_store',
+      legacy_eval_run_id: evalRunId,
+    },
+  };
+}
+
+function selectedEvalInputCollections(
+  evalRunId: string | null,
+  sourceStageId: string
+): StudioCollectionRef[] {
+  return [
+    {
+      id: SELECTED_EVALUATION_COLLECTION_ID,
+      kind: 'evaluation_runs',
+      label: 'Selected evaluation runs',
+      source_stage_id: sourceStageId,
+      item_refs: evalRunId ? [manifestRefForEvalRunId(evalRunId)] : [],
+      filters: {},
+      facets: {},
+      metadata: {
+        selected_for_stage_kind: 'analysis',
+      },
+    },
+  ];
+}
+
+function analysisPageToWire(page: AnalysisPageSpec): AnalysisPageWire {
+  return {
+    id: page.id,
+    name: page.name,
+    graph_spec: page.graphSpec as unknown as Record<string, unknown>,
+    eval_params: page.evalParams,
+    viewport: page.viewport,
+    eval_run_id: page.evalRunId,
+    expanded_field_paths: page.expandedFieldPaths ?? [],
+  };
+}
+
+function syncAnalysisStageDraft(state: AnalysisStoreState, reason: string) {
+  const workspaceStore = useWorkspaceStore.getState();
+  const workspace = workspaceStore.workspace;
+  const evalStage = getStageByKind(workspace, 'eval');
+  const analysisStage = getStageByKind(workspace, 'analysis');
+  if (!workspace || !evalStage || !analysisStage) return;
+
+  const activePage = captureActivePage(state);
+  const pages = mergeActivePageIntoPages(state.pages, activePage);
+  const inputCollections = selectedEvalInputCollections(state.evalRunId, evalStage.id);
+
+  workspaceStore.updateStageCollections(
+    analysisStage.id,
+    { input_collections: inputCollections },
+    reason
+  );
+  workspaceStore.updateStageDraft(
+    analysisStage.id,
+    {
+      selection_spec: {
+        ...analysisStage.selection_spec,
+        source_collection_id: 'collection:evaluation-runs',
+        eval_run_ids: state.evalRunId ? [state.evalRunId] : [],
+        input_collection_ids: inputCollections.map((collection) => collection.id),
+      },
+    },
+    reason
+  );
+
+  if (!analysisStage.scenario_id) return;
+  workspaceStore.updateScenarioDraft(
+    analysisStage.scenario_id,
+    {
+      analysis_spec: {
+        schema_version: 'feedbax.studio.analysis.v1',
+        pages: pages.map(analysisPageToWire),
+        active_page_id: state.activePageId,
+        input_collections: inputCollections,
+        eval_run_id: state.evalRunId,
+        eval_params: { ...state.evalParams },
+        metadata: {
+          draft_owner: 'analysis_stage',
+          updated_from: 'analysis_store',
+        },
+      },
+    },
+    reason
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -801,11 +901,13 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   setEvalParams: (params) => {
     set({ evalParams: params });
     markProjectDirty();
+    syncAnalysisStageDraft(get(), 'analysis_eval_params_updated');
   },
 
   setEvalRunId: (id) => {
     set({ evalRunId: id });
     markProjectDirty();
+    syncAnalysisStageDraft(get(), 'analysis_input_collection_selected');
   },
 
   setExpandedFieldPaths: (paths) => {

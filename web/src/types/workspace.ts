@@ -1,5 +1,5 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
-import type { TrainingSpec, TaskSpec } from '@/types/training';
+import type { LossTermSpec, TaskSpec, TimeAggregationSpec, TrainingSpec } from '@/types/training';
 
 export type StudioStageKind =
   | 'train'
@@ -65,6 +65,53 @@ export interface StudioCollectionRef {
   metadata: Record<string, unknown>;
 }
 
+export type StudioSelectorNamespace =
+  | 'graph_port'
+  | 'probe'
+  | 'state_path'
+  | 'task_object'
+  | 'biomechanics_object'
+  | 'artifact_field'
+  | 'analysis_output'
+  | 'custom';
+
+export interface StudioSelectorRef {
+  namespace: StudioSelectorNamespace;
+  compact: string;
+  target_id?: string | null;
+  path?: string | null;
+  expected_shape?: unknown[] | null;
+  dtype?: string | null;
+  units?: string | null;
+  frame?: string | null;
+  role?: 'editable' | 'observed' | 'generated' | string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioObjectiveTermSpec {
+  id: string;
+  type_id: string;
+  label: string;
+  role: 'loss' | 'metric' | 'constraint' | 'reward' | 'regularizer' | string;
+  source_selector?: StudioSelectorRef | null;
+  target_selector?: StudioSelectorRef | null;
+  target_value?: unknown;
+  operator?: string | null;
+  penalty?: string | null;
+  temporal_selector?: TimeAggregationSpec | Record<string, unknown> | null;
+  weight: number;
+  units?: string | null;
+  validation?: StudioValidationState | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioObjectiveSpec {
+  schema_version: 'feedbax.studio.objective.v1' | string;
+  terms: StudioObjectiveTermSpec[];
+  legacy_loss_spec?: LossTermSpec | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface AnalysisPageWire {
   id: string;
   name: string;
@@ -85,7 +132,7 @@ export interface StudioScenarioSpec {
   graph_ui_state?: GraphUIState | null;
   training_spec?: TrainingSpec | null;
   task_spec?: TaskSpec | null;
-  objective_spec?: Record<string, unknown> | null;
+  objective_spec?: StudioObjectiveSpec | Record<string, unknown> | null;
   probe_specs: Array<Record<string, unknown>>;
   temporal_spec?: Record<string, unknown> | null;
   biomechanics_spec?: Record<string, unknown> | null;
