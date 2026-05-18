@@ -12,6 +12,7 @@ import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useRunStore } from '@/stores/runStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
@@ -104,6 +105,7 @@ export function Header() {
         analysisSnapshot,
         data.workspace,
       );
+      useRunStore.getState().hydrateFromWorkspace(data.workspace);
       if (data.demo_training_data) {
         const demo = data.demo_training_data;
         const totalBatches = demo.loss_history.length;
@@ -481,7 +483,7 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
       }
 
       const analysisSnapshot = template.createAnalysis();
-      const workspace = buildWorkspaceSnapshot({
+      let workspace = buildWorkspaceSnapshot({
         workspace: null,
         graph: modelGraph,
         uiState,
@@ -490,6 +492,14 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
         analysisSnapshot,
         projectName: template.name,
       });
+      if (template.createWorkspace) {
+        workspace = template.createWorkspace({
+          baseWorkspace: workspace,
+          graph: modelGraph,
+          uiState,
+          analysisSnapshot,
+        });
+      }
 
       try {
         // Persist to backend immediately so this is a real project, not ephemeral
@@ -524,6 +534,7 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           analysisSnapshot,
           workspace,
         );
+        useRunStore.getState().hydrateFromWorkspace(workspace);
 
         localStorage.setItem('feedbax:lastProjectId', graphId);
       } catch (err) {
@@ -537,6 +548,7 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           analysisSnapshot,
           workspace,
         );
+        useRunStore.getState().hydrateFromWorkspace(workspace);
       }
 
       if (handlerRef.current) {

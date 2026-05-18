@@ -8,9 +8,15 @@
 
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
+import type { StudioWorkspaceSpec } from '@/types/workspace';
 import { createRlrmpPart1Analysis, RLRMP_PART1_TEMPLATE } from '@/data/rlrmp-part1';
 import { createRlrmpPart2Project, RLRMP_PART2_META } from '@/data/rlrmp-part2';
 import { createRlrmpModelGraph } from '@/data/rlrmp-model-graph';
+import {
+  createRlrmpMovementRampAnalysis,
+  RLRMP_MOVEMENT_RAMP_TEMPLATE,
+  seedRlrmpMovementRampWorkspace,
+} from '@/data/rlrmp-run-example';
 
 /** Metadata for a project template. */
 export interface ProjectTemplate {
@@ -26,6 +32,13 @@ export interface ProjectTemplate {
   createAnalysis: () => AnalysisSnapshot;
   /** Optional factory for a pre-populated model graph + UI state. */
   createModelGraph?: () => { graph: GraphSpec; uiState: GraphUIState };
+  /** Optional hook for enriching the default Studio workspace snapshot. */
+  createWorkspace?: (args: {
+    baseWorkspace: StudioWorkspaceSpec;
+    graph: GraphSpec;
+    uiState: GraphUIState;
+    analysisSnapshot: AnalysisSnapshot;
+  }) => StudioWorkspaceSpec;
 }
 
 /** All available project templates. */
@@ -39,5 +52,11 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     ...RLRMP_PART2_META,
     createAnalysis: createRlrmpPart2Project,
     createModelGraph: () => createRlrmpModelGraph('rlrmp: Part 2'),
+  },
+  {
+    ...RLRMP_MOVEMENT_RAMP_TEMPLATE,
+    createAnalysis: createRlrmpMovementRampAnalysis,
+    createModelGraph: () => createRlrmpModelGraph('RLRMP movement-ramp runs'),
+    createWorkspace: ({ baseWorkspace }) => seedRlrmpMovementRampWorkspace(baseWorkspace),
   },
 ];
