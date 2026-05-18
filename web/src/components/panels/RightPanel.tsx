@@ -1,4 +1,4 @@
-import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
+import { ScenarioInspectorPanel } from '@/components/panels/ScenarioInspectorPanel';
 import { TreescopePanel } from '@/components/panels/TreescopePanel';
 import { ValidationPanel } from '@/components/panels/ValidationPanel';
 import { useLayoutStore } from '@/stores/layoutStore';
@@ -40,7 +40,7 @@ export function RightPanel() {
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <PropertiesPanel />
+        <ScenarioInspectorPanel />
         <TreescopePanel />
         <ValidationPanel />
       </div>

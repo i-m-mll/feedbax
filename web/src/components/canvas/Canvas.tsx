@@ -12,6 +12,12 @@ import {
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  graphEdgeEntityId,
+  graphNodeEntityId,
+  probeEntityId,
+} from '@/features/scenario/entities';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -57,6 +63,8 @@ export function Canvas() {
   } = useGraphStore();
   const { resizeMode, toggleResizeMode } = useLayoutStore();
   const showMinimap = useSettingsStore((state) => state.showMinimap);
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const { components } = useComponents();
   const reactFlow = useReactFlow();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -202,21 +210,36 @@ export function Canvas() {
           setSelectedNode(null);
           setSelectedTap(null);
           setSelectedEdge(null);
+          selectTopPaneEntity(null);
         }}
         onNodeClick={(_, node) => {
           if (node.type === 'tap') {
-            setSelectedTap(node.id.replace(/^tap:/, ''));
+            const tapId = node.id.replace(/^tap:/, '');
+            setSelectedTap(tapId);
+            selectTopPaneEntity(probeEntityId(tapId));
           } else {
             setSelectedTap(null);
             setSelectedNode(node.id);
             setSelectedEdge(null);
+            selectTopPaneEntity(graphNodeEntityId(node.id));
           }
         }}
         onEdgeClick={(_, edge) => {
           setSelectedEdge(edge.id);
           setSelectedNode(null);
           setSelectedTap(null);
+          selectTopPaneEntity(graphEdgeEntityId(edge.id));
         }}
+        onNodeMouseEnter={(_, node) => {
+          hoverTopPaneEntity(
+            node.type === 'tap'
+              ? probeEntityId(node.id.replace(/^tap:/, ''))
+              : graphNodeEntityId(node.id)
+          );
+        }}
+        onNodeMouseLeave={() => hoverTopPaneEntity(null)}
+        onEdgeMouseEnter={(_, edge) => hoverTopPaneEntity(graphEdgeEntityId(edge.id))}
+        onEdgeMouseLeave={() => hoverTopPaneEntity(null)}
         onEdgeDoubleClick={(_, edge) => {
           if (edge.type === 'state-flow') {
             addTapForEdge(edge.id, 'probe');

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { probeEntityId } from '@/features/scenario/entities';
 import { useComponents } from '@/hooks/useComponents';
 import type { ParamSchema, ParamValue, TapSpec } from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
@@ -16,6 +18,7 @@ export function PropertiesPanel() {
   const updateTap = useGraphStore((state) => state.updateTap);
   const removeTap = useGraphStore((state) => state.removeTap);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const selectedTapId = useGraphStore((state) => state.selectedTapId);
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId);
   const edges = useGraphStore((state) => state.edges);
@@ -218,7 +221,10 @@ export function PropertiesPanel() {
               <button
                 key={tap.id}
                 className="flex w-full items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-left text-xs text-slate-600 hover:border-brand-200 hover:text-slate-800"
-                onClick={() => setSelectedTap(tap.id)}
+                onClick={() => {
+                  setSelectedTap(tap.id);
+                  selectTopPaneEntity(probeEntityId(tap.id));
+                }}
               >
                 <span className="font-medium capitalize">{tap.type}</span>
                 <span className="text-slate-400">{Object.keys(tap.paths ?? {}).length} outputs</span>

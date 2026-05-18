@@ -20,6 +20,16 @@ export type StudioStageStatus =
   | 'failed'
   | 'cancelled';
 
+export type StudioTopPaneProjection = 'graph' | 'workspace' | 'objectives';
+
+export interface StudioTopPaneState {
+  active_projection: StudioTopPaneProjection;
+  selected_entity_id: string | null;
+  hovered_entity_id: string | null;
+  pinned_inspector_entity_id?: string | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface StudioValidationIssue {
   type: string;
   message: string;
@@ -70,6 +80,7 @@ export type StudioSelectorNamespace =
   | 'probe'
   | 'state_path'
   | 'task_object'
+  | 'mechanics_object'
   | 'biomechanics_object'
   | 'artifact_field'
   | 'analysis_output'
@@ -109,6 +120,55 @@ export interface StudioObjectiveSpec {
   schema_version: 'feedbax.studio.objective.v1' | string;
   terms: StudioObjectiveTermSpec[];
   legacy_loss_spec?: LossTermSpec | null;
+  metadata: Record<string, unknown>;
+}
+
+export type StudioScenarioEntityKind =
+  | 'graph_node'
+  | 'graph_port'
+  | 'graph_edge'
+  | 'task_object'
+  | 'mechanics_object'
+  | 'objective_term'
+  | 'probe'
+  | 'metric'
+  | 'temporal_event'
+  | 'temporal_phase'
+  | 'stage_protocol'
+  | 'artifact_overlay';
+
+export type StudioScenarioEntityRelationKind =
+  | 'contains'
+  | 'binds'
+  | 'source'
+  | 'target'
+  | 'references'
+  | 'derived_from';
+
+export interface StudioScenarioEntityRelation {
+  kind: StudioScenarioEntityRelationKind;
+  entity_id: string;
+  label?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioScenarioEntity {
+  id: string;
+  kind: StudioScenarioEntityKind;
+  label: string;
+  summary?: string | null;
+  scenario_id?: string | null;
+  stage_id?: string | null;
+  selector?: StudioSelectorRef | null;
+  relations: StudioScenarioEntityRelation[];
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioScenarioEntityRegistry {
+  scenario_id: string | null;
+  stage_id: string | null;
+  entities: Record<string, StudioScenarioEntity>;
+  root_entity_ids: string[];
   metadata: Record<string, unknown>;
 }
 

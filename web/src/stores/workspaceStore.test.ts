@@ -3,10 +3,12 @@ import {
   buildWorkspaceSnapshot,
   getActiveScenario,
   getActiveStage,
+  getTopPaneState,
   getTrainingScenario,
   objectiveSpecFromLossSpec,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
+import { graphNodeEntityId } from '@/features/scenario/entities';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
@@ -207,6 +209,29 @@ describe('buildWorkspaceSnapshot', () => {
 
     expect(getActiveStage(refreshed)?.kind).toBe('report');
     expect(refreshed.ui_state.active_stage_id).toBe(getActiveStage(refreshed)?.id);
+  });
+
+  it('stores top-pane projection and scenario entity selection in workspace UI state', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setTopPaneProjection('objectives');
+    useWorkspaceStore.getState().selectTopPaneEntity(graphNodeEntityId('task'));
+    useWorkspaceStore.getState().hoverTopPaneEntity(graphNodeEntityId('mechanics'));
+
+    const topPane = getTopPaneState(useWorkspaceStore.getState().workspace);
+    expect(topPane.active_projection).toBe('objectives');
+    expect(topPane.selected_entity_id).toBe(graphNodeEntityId('task'));
+    expect(topPane.hovered_entity_id).toBe(graphNodeEntityId('mechanics'));
+    expect(useWorkspaceStore.getState().workspace?.ui_state.top_pane).toMatchObject(topPane);
   });
 
   it('updates train scenario drafts as the primary task/training/objective owner', () => {
