@@ -8,9 +8,8 @@ import {
   ChevronRight,
   Circle,
   Cpu,
-  Filter,
+  Info,
   PlayCircle,
-  Rows3,
   Server,
   SlidersHorizontal,
 } from 'lucide-react';
@@ -30,6 +29,13 @@ import {
 
 type RunView = 'all' | 'selected' | 'best';
 type TargetChoice = 'local' | 'managed' | 'manual';
+type SortKey = 'loss' | 'velocityRmse' | 'peakVelocity' | 'holdDrift' | 'progress';
+type SortDirection = 'asc' | 'desc';
+
+interface SortState {
+  key: SortKey;
+  direction: SortDirection;
+}
 
 export function TrainCollectionPanel() {
   const workspace = useWorkspaceStore((state) => state.workspace);
@@ -37,174 +43,115 @@ export function TrainCollectionPanel() {
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
   const [view, setView] = useState<RunView>('all');
   const [target, setTarget] = useState<TargetChoice>('local');
+  const [sort, setSort] = useState<SortState>({ key: 'loss', direction: 'asc' });
+  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(() => new Set());
+  const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
 
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
-  const selected = useMemo(
-    () => new Set(selectedIds(evalStage, 'training_run_ids')),
-    [evalStage]
+  const selectedRows = useMemo(
+    () => rows.filter((row) => selectedRunIds.has(row.id)),
+    [rows, selectedRunIds]
   );
-  const filteredRows = useMemo(() => {
-    if (view === 'selected') return rows.filter((row) => selected.has(row.id));
-    if (view === 'best') return bestRow ? [bestRow] : [];
-    return rows;
-  }, [bestRow, rows, selected, view]);
+  const visibleRows = useMemo(() => {
+    const base =
+      view === 'selected'
+        ? selectedRows
+        : view === 'best' && bestRow
+          ? [bestRow]
+          : rows;
+    return sortTrainingRows(base, sort);
+  }, [bestRow, rows, selectedRows, sort, view]);
 
-  const writeSelection = useCallback(
-    (ids: string[]) => {
-      if (!evalStage) return;
-      const sourceCollectionId =
-        trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
-        evalStage.selection_spec.source_collection_id;
-      updateStageDraft(
-        evalStage.id,
-        {
-          selection_spec: {
-            ...evalStage.selection_spec,
-            source_collection_id: sourceCollectionId,
-            candidate_training_run_ids: rows.map((row) => row.id),
-            training_run_ids: ids,
-          },
+  const toggleRow = useCallback((id: string) => {
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelectedRunIds(new Set(rows.map((row) => row.id)));
+  }, [rows]);
+
+  const selectBest = useCallback(() => {
+    setSelectedRunIds(new Set(bestRow ? [bestRow.id] : []));
+  }, [bestRow]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedRunIds(new Set());
+  }, []);
+
+  const useForEvaluation = useCallback(() => {
+    if (!evalStage || selectedRunIds.size === 0) return;
+    const sourceCollectionId =
+      trainStage?.output_collections.find((collection) => collection.item_refs.length > 0)?.id ??
+      evalStage.selection_spec.source_collection_id;
+    updateStageDraft(
+      evalStage.id,
+      {
+        selection_spec: {
+          ...evalStage.selection_spec,
+          source_collection_id: sourceCollectionId,
+          candidate_training_run_ids: rows.map((row) => row.id),
+          training_run_ids: Array.from(selectedRunIds),
         },
-        'evaluation_selection_changed_from_train'
-      );
-    },
-    [evalStage, rows, trainStage, updateStageDraft]
-  );
-
-  const toggleRow = useCallback(
-    (id: string) => {
-      const next = new Set(selected);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      writeSelection(Array.from(next));
-    },
-    [selected, writeSelection]
-  );
-
-  const openEvaluate = useCallback(() => {
-    if (evalStage) setActiveStage(evalStage.id);
-  }, [evalStage, setActiveStage]);
-
-  const selectedCount = selected.size;
-  const completedCount = rows.filter((row) => row.status === 'completed').length;
+      },
+      'evaluation_selection_transferred_from_train'
+    );
+    setActiveStage(evalStage.id);
+  }, [evalStage, rows, selectedRunIds, setActiveStage, trainStage, updateStageDraft]);
 
   return (
-    <div className="h-full overflow-y-auto bg-slate-50/40">
+    <div className="relative h-full overflow-y-auto bg-slate-50/40">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-5 text-sm text-slate-600">
-        <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-base font-semibold text-slate-800">
-                  Movement-ramp batch
-                </div>
-                <div className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">
-                  Imported RLRMP runs are grouped as one batch. Select the rows that should feed
-                  the next step; identifiers and file paths stay in provenance details.
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-semibold text-slate-800">Movement-ramp batch</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {rows.length} imported run{rows.length === 1 ? '' : 's'}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <MetricPill label="Completed" value={`${completedCount}/${rows.length}`} />
-                <MetricPill
-                  label="Best loss"
-                  value={bestRow ? formatMetric(bestRow.finalValidationLoss, 4) : 'Not recorded'}
-                />
-                <MetricPill label="Selected" value={`${selectedCount}`} tone="brand" />
-              </div>
+              {selectedRunIds.size > 0 && (
+                <button
+                  type="button"
+                  disabled={!evalStage}
+                  onClick={useForEvaluation}
+                  className="inline-flex items-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Use selection in Evaluate
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
-            <ReadinessStrip
-              items={[
-                { label: 'Model and task', state: 'ready', detail: 'Loaded in the top pane' },
-                { label: 'Sweep', state: rows.length > 0 ? 'ready' : 'blocked', detail: `${rows.length} variants` },
-                { label: 'Compute target', state: 'draft', detail: targetLabel(target) },
-                {
-                  label: 'Next step',
-                  state: selectedCount > 0 ? 'ready' : 'blocked',
-                  detail: selectedCount > 0 ? `${selectedCount} selected` : 'Select at least one run',
-                },
-              ]}
-            />
           </div>
           <ExecutionTarget value={target} onChange={setTarget} />
         </section>
 
-        <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Rows3 className="h-4 w-4 text-slate-400" />
-              <div className="font-semibold text-slate-800">Run collection</div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <SegmentedFilter value={view} onChange={setView} />
-              <button
-                type="button"
-                className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                onClick={() => writeSelection(rows.map((row) => row.id))}
-              >
-                Select all
-              </button>
-              <button
-                type="button"
-                className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                onClick={() => writeSelection(bestRow ? [bestRow.id] : [])}
-              >
-                Select best
-              </button>
-              <button
-                type="button"
-                className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                onClick={() => writeSelection([])}
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-          {filteredRows.length === 0 ? (
-            <EmptyCollection
-              title="No rows in this view"
-              detail="Change the filter or select runs from the full collection."
-            />
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {filteredRows.map((row) => (
-                <TrainingRunRow
-                  key={row.id}
-                  row={row}
-                  selected={selected.has(row.id)}
-                  isBest={bestRow?.id === row.id}
-                  onToggle={() => toggleRow(row.id)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <div>
-            <div className="font-semibold text-slate-800">Evaluation set</div>
-            <div className="mt-0.5 text-xs text-slate-500">
-              {selectedCount > 0
-                ? `${selectedCount} run${selectedCount === 1 ? '' : 's'} ready to review in the next tab.`
-                : 'Select at least one row to compose the next step.'}
-            </div>
-          </div>
-          <button
-            type="button"
-            disabled={!evalStage || selectedCount === 0}
-            onClick={openEvaluate}
-            className="inline-flex items-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Open selected runs
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
-        </section>
+        <RunTable
+          title="Run collection"
+          rows={visibleRows}
+          allRows={rows}
+          selectedIds={selectedRunIds}
+          view={view}
+          sort={sort}
+          bestRunId={bestRow?.id ?? null}
+          onViewChange={setView}
+          onSortChange={setSort}
+          onToggle={toggleRow}
+          onSelectAll={selectAll}
+          onSelectBest={selectBest}
+          onClear={clearSelection}
+          onOpenDetails={setDetailsRun}
+        />
       </div>
+      {detailsRun && <RunDetailOverlay run={detailsRun} onClose={() => setDetailsRun(null)} />}
     </div>
   );
 }
@@ -215,6 +162,8 @@ export function EvaluateCollectionPanel() {
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
   const [view, setView] = useState<RunView>('all');
   const [target, setTarget] = useState<TargetChoice>('local');
+  const [sort, setSort] = useState<SortState>({ key: 'loss', direction: 'asc' });
+  const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
 
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
@@ -222,15 +171,23 @@ export function EvaluateCollectionPanel() {
   const rows = useMemo(() => trainingInputSummaries(evalStage), [evalStage]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const evaluationRows = useMemo(() => evaluationRunSummaries(evalStage), [evalStage]);
-  const selected = useMemo(
+  const selectedIdsForEval = useMemo(
     () => new Set(selectedIds(evalStage, 'training_run_ids')),
     [evalStage]
   );
-  const filteredRows = useMemo(() => {
-    if (view === 'selected') return rows.filter((row) => selected.has(row.id));
-    if (view === 'best') return bestRow ? [bestRow] : [];
-    return rows;
-  }, [bestRow, rows, selected, view]);
+  const selectedRows = useMemo(
+    () => rows.filter((row) => selectedIdsForEval.has(row.id)),
+    [rows, selectedIdsForEval]
+  );
+  const visibleRows = useMemo(() => {
+    const base =
+      view === 'selected'
+        ? selectedRows
+        : view === 'best' && bestRow
+          ? [bestRow]
+          : rows;
+    return sortTrainingRows(base, sort);
+  }, [bestRow, rows, selectedRows, sort, view]);
 
   const writeSelection = useCallback(
     (ids: string[]) => {
@@ -256,169 +213,203 @@ export function EvaluateCollectionPanel() {
 
   const toggleRow = useCallback(
     (id: string) => {
-      const next = new Set(selected);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      const next = new Set(selectedIdsForEval);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       writeSelection(Array.from(next));
     },
-    [selected, writeSelection]
+    [selectedIdsForEval, writeSelection]
   );
 
   const openAnalyze = useCallback(() => {
     if (analysisStage) setActiveStage(analysisStage.id);
   }, [analysisStage, setActiveStage]);
 
-  const selectedRows = rows.filter((row) => selected.has(row.id));
-  const selectedCount = selected.size;
-  const selectedBestLoss = bestTrainingRun(selectedRows)?.finalValidationLoss ?? null;
-
   return (
-    <div className="h-full overflow-y-auto bg-slate-50/40">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-5 text-sm text-slate-600">
-        <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-base font-semibold text-slate-800">
-                  Movement-ramp validation set
-                </div>
-                <div className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">
-                  Choose the training runs to validate, confirm the protocol, then send the
-                  resulting evaluations to analysis. The run list is the control surface.
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <MetricPill label="Candidates" value={`${rows.length}`} />
-                <MetricPill label="Selected" value={`${selectedCount}`} tone="brand" />
-                <MetricPill label="Best selected loss" value={formatMetric(selectedBestLoss, 4)} />
-              </div>
+    <div className="relative h-full overflow-y-auto bg-slate-50/40">
+      <div className="mx-auto grid max-w-7xl gap-5 px-6 py-5 text-sm text-slate-600 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="space-y-5">
+          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-base font-semibold text-slate-800">Validation set</div>
+            <div className="mt-1 text-xs text-slate-500">
+              Select training runs, then run the validation conditions on the right.
             </div>
-            <ReadinessStrip
-              items={[
-                {
-                  label: 'Run set',
-                  state: selectedCount > 0 ? 'ready' : 'blocked',
-                  detail: selectedCount > 0 ? `${selectedCount} selected` : 'Select runs',
-                },
-                { label: 'Protocol', state: 'ready', detail: '8-direction center-out' },
-                { label: 'Compute target', state: 'draft', detail: targetLabel(target) },
-                {
-                  label: 'Results',
-                  state: evaluationRows.length > 0 ? 'ready' : 'blocked',
-                  detail:
-                    evaluationRows.length > 0
-                      ? `${evaluationRows.length} available`
-                      : 'Run validation first',
-                },
-              ]}
-            />
-          </div>
-          <ExecutionTarget value={target} onChange={setTarget} />
-        </section>
+          </section>
 
-        <section className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
-          <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Filter className="h-4 w-4 text-slate-400" />
-                <div className="font-semibold text-slate-800">Run set</div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <SegmentedFilter value={view} onChange={setView} />
-                <button
-                  type="button"
-                  className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                  onClick={() => writeSelection(rows.map((row) => row.id))}
-                >
-                  Select all
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                  onClick={() => writeSelection(bestRow ? [bestRow.id] : [])}
-                >
-                  Select best
-                </button>
-              </div>
+          <RunTable
+            title="Run set"
+            rows={visibleRows}
+            allRows={rows}
+            selectedIds={selectedIdsForEval}
+            view={view}
+            sort={sort}
+            bestRunId={bestRow?.id ?? null}
+            onViewChange={setView}
+            onSortChange={setSort}
+            onToggle={toggleRow}
+            onSelectAll={() => writeSelection(rows.map((row) => row.id))}
+            onSelectBest={() => writeSelection(bestRow ? [bestRow.id] : [])}
+            onClear={() => writeSelection([])}
+            onOpenDetails={setDetailsRun}
+          />
+        </div>
+
+        <div className="space-y-3">
+          <ExecutionTarget value={target} onChange={setTarget} />
+          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal className="h-4 w-4 text-slate-400" />
+              <div className="font-semibold text-slate-800">Validation conditions</div>
             </div>
-            {filteredRows.length === 0 ? (
-              <EmptyCollection
-                title="No rows in this view"
-                detail="Use the full view to choose which runs should be evaluated."
-              />
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {filteredRows.map((row) => (
-                  <TrainingRunRow
+            <div className="mt-3 space-y-2">
+              <ProtocolRow label="Targets" value="8-direction center-out" />
+              <ProtocolRow label="SISU" value="0.5" />
+              <ProtocolRow label="Perturbation" value="None" />
+            </div>
+            <button
+              type="button"
+              disabled
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                selectedIdsForEval.size === 0
+                  ? 'Select at least one run first.'
+                  : 'Backend execution wiring is pending; the selection is ready.'
+              }
+            >
+              <PlayCircle className="h-3.5 w-3.5" />
+              Run selected
+            </button>
+          </section>
+
+          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-slate-400" />
+              <div className="font-semibold text-slate-800">Results</div>
+            </div>
+            <div className="mt-3 space-y-3">
+              {evaluationRows.length === 0 ? (
+                <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500">
+                  No validation results yet.
+                </div>
+              ) : (
+                evaluationRows.map((row) => (
+                  <EvaluationResult
                     key={row.id}
                     row={row}
-                    selected={selected.has(row.id)}
-                    isBest={bestRow?.id === row.id}
-                    onToggle={() => toggleRow(row.id)}
+                    selectedRun={rows.find((candidate) => candidate.id === row.selectedTrainingRunId)}
+                    onOpenAnalyze={openAnalyze}
                   />
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-3">
-            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4 text-slate-400" />
-                <div className="font-semibold text-slate-800">Protocol</div>
-              </div>
-              <div className="mt-3 space-y-2">
-                <ProtocolRow label="Targets" value="8-direction center-out" />
-                <ProtocolRow label="SISU" value="0.5" />
-                <ProtocolRow label="Perturbation" value="None" />
-              </div>
-              <button
-                type="button"
-                disabled
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  selectedCount === 0
-                    ? 'Select at least one run first.'
-                    : 'Backend execution wiring is pending; the selection is ready.'
-                }
-              >
-                <PlayCircle className="h-3.5 w-3.5" />
-                Run selected
-              </button>
-              <div className="mt-2 text-[11px] leading-4 text-slate-400">
-                Execution wiring is pending; this slice makes the selection and readiness model visible.
-              </div>
-            </section>
-
-            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-slate-400" />
-                <div className="font-semibold text-slate-800">Results</div>
-              </div>
-              <div className="mt-3 space-y-3">
-                {evaluationRows.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500">
-                    No validation results yet.
-                  </div>
-                ) : (
-                  evaluationRows.map((row) => (
-                    <EvaluationResult
-                      key={row.id}
-                      row={row}
-                      selectedRun={rows.find((candidate) => candidate.id === row.selectedTrainingRunId)}
-                      onOpenAnalyze={openAnalyze}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-        </section>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
       </div>
+      {detailsRun && <RunDetailOverlay run={detailsRun} onClose={() => setDetailsRun(null)} />}
     </div>
+  );
+}
+
+function RunTable({
+  title,
+  rows,
+  allRows,
+  selectedIds,
+  view,
+  sort,
+  bestRunId,
+  onViewChange,
+  onSortChange,
+  onToggle,
+  onSelectAll,
+  onSelectBest,
+  onClear,
+  onOpenDetails,
+}: {
+  title: string;
+  rows: TrainingRunSummary[];
+  allRows: TrainingRunSummary[];
+  selectedIds: Set<string>;
+  view: RunView;
+  sort: SortState;
+  bestRunId: string | null;
+  onViewChange: (view: RunView) => void;
+  onSortChange: (sort: SortState) => void;
+  onToggle: (id: string) => void;
+  onSelectAll: () => void;
+  onSelectBest: () => void;
+  onClear: () => void;
+  onOpenDetails: (run: TrainingRunSummary) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="font-semibold text-slate-800">{title}</div>
+          <div className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+            {selectedIds.size} selected
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <SegmentedFilter value={view} onChange={onViewChange} />
+          <button
+            type="button"
+            className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            onClick={onSelectAll}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            onClick={onSelectBest}
+          >
+            Select lowest loss
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            onClick={onClear}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+      <div className="grid grid-cols-[2rem_minmax(13rem,1.45fr)_6rem_6rem_7rem_7rem_7rem_7rem_2.5rem] gap-3 border-b border-slate-100 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+        <div />
+        <div>Run</div>
+        <SortHeader label="Loss" sortKey="loss" sort={sort} onChange={onSortChange} />
+        <SortHeader label="Vel RMSE" sortKey="velocityRmse" sort={sort} onChange={onSortChange} />
+        <SortHeader label="Peak vel" sortKey="peakVelocity" sort={sort} onChange={onSortChange} />
+        <SortHeader label="Hold drift" sortKey="holdDrift" sort={sort} onChange={onSortChange} />
+        <SortHeader label="Progress" sortKey="progress" sort={sort} onChange={onSortChange} />
+        <div>Checkpoint</div>
+        <div />
+      </div>
+      {rows.length === 0 ? (
+        <EmptyCollection
+          title={allRows.length === 0 ? 'No runs yet' : 'No rows in this view'}
+          detail={
+            allRows.length === 0
+              ? 'Runs will appear here after training or import.'
+              : 'Change the filter or select runs from the full collection.'
+          }
+        />
+      ) : (
+        <div className="divide-y divide-slate-100">
+          {rows.map((row) => (
+            <TrainingRunRow
+              key={row.id}
+              row={row}
+              selected={selectedIds.has(row.id)}
+              isBest={bestRunId === row.id}
+              onToggle={() => onToggle(row.id)}
+              onOpenDetails={() => onOpenDetails(row)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -427,82 +418,109 @@ function TrainingRunRow({
   selected,
   isBest,
   onToggle,
+  onOpenDetails,
 }: {
   row: TrainingRunSummary;
   selected: boolean;
   isBest: boolean;
   onToggle: () => void;
+  onOpenDetails: () => void;
 }) {
+  const progress = row.warmupBatches !== null ? `${row.warmupBatches.toLocaleString()}/${row.warmupBatches.toLocaleString()}` : 'Not recorded';
+  const checkpoint = row.checkpointAvailable && row.warmupBatches !== null
+    ? row.warmupBatches.toLocaleString()
+    : row.checkpointAvailable
+      ? 'Available'
+      : 'None';
+
   return (
-    <div className={clsx('px-4 py-3', selected && 'bg-brand-50/40')}>
-      <div className="grid gap-3 lg:grid-cols-[2rem_minmax(12rem,1.35fr)_minmax(12rem,1fr)_8rem_8rem_8rem_7rem] lg:items-center">
-        <button
-          type="button"
-          onClick={onToggle}
-          className={clsx(
-            'flex h-8 w-8 items-center justify-center rounded-md border transition-colors',
-            selected
-              ? 'border-brand-500 bg-brand-500 text-white'
-              : 'border-slate-200 bg-white text-slate-400 hover:border-brand-200 hover:text-brand-500'
-          )}
-          aria-label={selected ? `Remove ${row.label} from set` : `Add ${row.label} to set`}
-        >
-          {selected ? <Check className="h-4 w-4" /> : <Circle className="h-4 w-4" />}
-        </button>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-slate-800">{row.label}</span>
-            {isBest && (
-              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
-                lowest loss
-              </span>
-            )}
-            <StatusPill status={row.status} />
-          </div>
-          <div className="mt-1 text-xs text-slate-500">{runParameterSummary(row)}</div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:contents">
-          <MetricCell label="Val loss" value={formatMetric(row.finalValidationLoss, 4)} />
-          <MetricCell label="Vel RMSE" value={formatMetric(row.velocityRmse, 3)} />
-          <MetricCell
-            label="Peak vel"
-            value={`${formatMetric(row.peakVelocityMean, 3)} +/- ${formatMetric(row.peakVelocitySd, 2)}`}
-          />
-          <MetricCell
-            label="Hold drift"
-            value={`${formatMetric(row.holdDriftMeanMm, 2)} +/- ${formatMetric(row.holdDriftSdMm, 2)} mm`}
-          />
-        </div>
-        <div className="text-xs">
-          {row.checkpointAvailable ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-600">
-              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-              checkpoint
+    <div
+      className={clsx(
+        'grid grid-cols-[2rem_minmax(13rem,1.45fr)_6rem_6rem_7rem_7rem_7rem_7rem_2.5rem] gap-3 px-4 py-3 text-xs',
+        selected && 'bg-brand-50/40'
+      )}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        className={clsx(
+          'flex h-8 w-8 items-center justify-center rounded-md border transition-colors',
+          selected
+            ? 'border-brand-500 bg-brand-500 text-white'
+            : 'border-slate-200 bg-white text-slate-400 hover:border-brand-200 hover:text-brand-500'
+        )}
+        aria-label={selected ? `Deselect ${row.label}` : `Select ${row.label}`}
+      >
+        {selected ? <Check className="h-4 w-4" /> : <Circle className="h-4 w-4" />}
+      </button>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate font-semibold text-slate-800">{row.label}</span>
+          {isBest && (
+            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+              lowest loss
             </span>
-          ) : (
-            <span className="text-slate-400">No checkpoint</span>
           )}
+          <StatusDot status={row.status} />
+        </div>
+        <div className="mt-1 truncate text-slate-500" title={runParameterSummary(row)}>
+          {runParameterSummary(row)}
         </div>
       </div>
-      <details className="mt-2">
-        <summary className="cursor-pointer text-[11px] font-medium text-slate-400 hover:text-slate-600">
-          Provenance
-        </summary>
-        <div className="mt-2 grid gap-2 rounded-md bg-slate-50 p-3 text-[11px] text-slate-500 sm:grid-cols-2">
-          <div className="min-w-0">
-            <span className="font-medium text-slate-600">Source issue:</span>{' '}
-            {row.sourceIssue ?? 'Not recorded'}
+      <MetricValue value={formatMetric(row.finalValidationLoss, 4)} />
+      <MetricValue value={formatMetric(row.velocityRmse, 3)} />
+      <MetricValue value={`${formatMetric(row.peakVelocityMean, 3)} +/- ${formatMetric(row.peakVelocitySd, 2)}`} />
+      <MetricValue value={`${formatMetric(row.holdDriftMeanMm, 2)} +/- ${formatMetric(row.holdDriftSdMm, 2)} mm`} />
+      <MetricValue value={progress} done={row.status === 'completed'} />
+      <div className="flex items-center gap-1 text-slate-600">
+        {row.checkpointAvailable && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+        <span className="truncate" title={checkpoint}>{checkpoint}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onOpenDetails}
+        className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+        aria-label={`Show details for ${row.label}`}
+      >
+        <Info className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function RunDetailOverlay({
+  run,
+  onClose,
+}: {
+  run: TrainingRunSummary;
+  onClose: () => void;
+}) {
+  return (
+    <div className="absolute inset-4 z-20 flex items-start justify-center overflow-y-auto rounded-lg bg-white/80 p-6 backdrop-blur-sm">
+      <section className="w-full max-w-2xl rounded-lg border border-slate-200 bg-white p-5 shadow-lift">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-base font-semibold text-slate-800">{run.label}</div>
+            <div className="mt-1 text-xs text-slate-500">{runParameterSummary(run)}</div>
           </div>
-          <div className="min-w-0 truncate" title={row.provenanceId}>
-            <span className="font-medium text-slate-600">Manifest:</span> {row.provenanceId}
-          </div>
-          {row.uri && (
-            <div className="min-w-0 truncate sm:col-span-2" title={row.uri}>
-              <span className="font-medium text-slate-600">Path:</span> {row.uri}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            Close
+          </button>
         </div>
-      </details>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <DetailField label="Source issue" value={run.sourceIssue ?? 'Not recorded'} />
+          <DetailField label="Manifest" value={run.provenanceId} />
+          <DetailField label="Variant" value={run.variant ?? 'Not recorded'} />
+          <DetailField label="Batch size" value={run.batchSize?.toLocaleString() ?? 'Not recorded'} />
+          <DetailField label="Warmup batches" value={run.warmupBatches?.toLocaleString() ?? 'Not recorded'} />
+          <DetailField label="Replicates" value={run.replicateCount?.toLocaleString() ?? 'Not recorded'} />
+          {run.uri && <DetailField label="Path" value={run.uri} wide />}
+        </div>
+      </section>
     </div>
   );
 }
@@ -520,7 +538,7 @@ function EvaluationResult({
     <div className="rounded-md border border-slate-200 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="font-semibold text-slate-800">{row.label}</div>
-        <StatusPill status={row.status} />
+        <StatusDot status={row.status} />
       </div>
       <div className="mt-2 space-y-1 text-xs text-slate-500">
         <div>{evaluationProtocolLabel(row)}</div>
@@ -536,21 +554,6 @@ function EvaluationResult({
         Analyze result
         <ChevronRight className="h-3.5 w-3.5" />
       </button>
-      <details className="mt-2">
-        <summary className="cursor-pointer text-[11px] font-medium text-slate-400 hover:text-slate-600">
-          Provenance
-        </summary>
-        <div className="mt-2 space-y-1 rounded-md bg-slate-50 p-3 text-[11px] text-slate-500">
-          <div className="truncate" title={row.provenanceId}>
-            <span className="font-medium text-slate-600">Manifest:</span> {row.provenanceId}
-          </div>
-          {row.uri && (
-            <div className="truncate" title={row.uri}>
-              <span className="font-medium text-slate-600">Path:</span> {row.uri}
-            </div>
-          )}
-        </div>
-      </details>
     </div>
   );
 }
@@ -619,32 +622,32 @@ function ExecutionTarget({
   );
 }
 
-function ReadinessStrip({
-  items,
+function SortHeader({
+  label,
+  sortKey,
+  sort,
+  onChange,
 }: {
-  items: Array<{ label: string; state: 'ready' | 'draft' | 'blocked'; detail: string }>;
+  label: string;
+  sortKey: SortKey;
+  sort: SortState;
+  onChange: (sort: SortState) => void;
 }) {
+  const active = sort.key === sortKey;
   return (
-    <div className="mt-4 grid gap-2 md:grid-cols-4">
-      {items.map((item) => (
-        <div key={item.label} className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
-            <span
-              className={clsx(
-                'h-2 w-2 rounded-full',
-                item.state === 'ready' && 'bg-emerald-500',
-                item.state === 'draft' && 'bg-amber-400',
-                item.state === 'blocked' && 'bg-slate-300'
-              )}
-            />
-            {item.label}
-          </div>
-          <div className="mt-1 truncate text-[11px] text-slate-500" title={item.detail}>
-            {item.detail}
-          </div>
-        </div>
-      ))}
-    </div>
+    <button
+      type="button"
+      onClick={() =>
+        onChange({
+          key: sortKey,
+          direction: active && sort.direction === 'asc' ? 'desc' : 'asc',
+        })
+      }
+      className={clsx('text-left hover:text-slate-700', active && 'text-slate-700')}
+    >
+      {label}
+      {active && <span className="ml-1">{sort.direction === 'asc' ? '↑' : '↓'}</span>}
+    </button>
   );
 }
 
@@ -658,7 +661,7 @@ function SegmentedFilter({
   const items: Array<{ id: RunView; label: string }> = [
     { id: 'all', label: 'All' },
     { id: 'selected', label: 'Selected' },
-    { id: 'best', label: 'Best' },
+    { id: 'best', label: 'Lowest loss' },
   ];
   return (
     <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
@@ -681,55 +684,42 @@ function SegmentedFilter({
   );
 }
 
-function MetricPill({
-  label,
+function MetricValue({
   value,
-  tone = 'slate',
+  done = false,
 }: {
-  label: string;
   value: string;
-  tone?: 'slate' | 'brand';
+  done?: boolean;
 }) {
   return (
-    <div
-      className={clsx(
-        'rounded-md border px-3 py-2',
-        tone === 'brand' ? 'border-brand-100 bg-brand-50' : 'border-slate-100 bg-slate-50'
-      )}
-    >
-      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-        {label}
-      </div>
-      <div className="mt-0.5 text-sm font-semibold text-slate-800">{value}</div>
+    <div className={clsx('truncate font-medium text-slate-700', done && 'text-emerald-700')} title={value}>
+      {value}
     </div>
   );
 }
 
-function MetricCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-        {label}
-      </div>
-      <div className="mt-0.5 truncate font-medium text-slate-700" title={value}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function StatusPill({ status }: { status: string }) {
+function StatusDot({ status }: { status: string }) {
   return (
     <span
       className={clsx(
-        'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]',
+        'inline-flex items-center gap-1 text-[11px] font-medium',
         status === 'completed'
-          ? 'bg-emerald-50 text-emerald-700'
+          ? 'text-emerald-700'
           : status === 'failed'
-            ? 'bg-red-50 text-red-700'
-            : 'bg-slate-100 text-slate-500'
+            ? 'text-red-700'
+            : 'text-slate-500'
       )}
     >
+      <span
+        className={clsx(
+          'h-2 w-2 rounded-full',
+          status === 'completed'
+            ? 'bg-emerald-500'
+            : status === 'failed'
+              ? 'bg-red-500'
+              : 'bg-slate-300'
+        )}
+      />
       {status}
     </span>
   );
@@ -744,6 +734,23 @@ function ProtocolRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function DetailField({
+  label,
+  value,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  wide?: boolean;
+}) {
+  return (
+    <div className={clsx('min-w-0 rounded-md bg-slate-50 p-3 text-xs', wide && 'sm:col-span-2')}>
+      <div className="font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</div>
+      <div className="mt-1 break-words text-slate-700">{value}</div>
+    </div>
+  );
+}
+
 function EmptyCollection({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="flex min-h-32 flex-col items-center justify-center px-4 py-8 text-center">
@@ -753,8 +760,25 @@ function EmptyCollection({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function targetLabel(value: TargetChoice): string {
-  if (value === 'managed') return 'Managed worker';
-  if (value === 'manual') return 'Manual endpoint';
-  return 'This machine';
+function sortTrainingRows(rows: TrainingRunSummary[], sort: SortState): TrainingRunSummary[] {
+  return [...rows].sort((a, b) => {
+    const direction = sort.direction === 'asc' ? 1 : -1;
+    return compareMetric(metricValue(a, sort.key), metricValue(b, sort.key)) * direction;
+  });
+}
+
+function metricValue(row: TrainingRunSummary, key: SortKey): number | null {
+  if (key === 'loss') return row.finalValidationLoss;
+  if (key === 'velocityRmse') return row.velocityRmse;
+  if (key === 'peakVelocity') return row.peakVelocityMean;
+  if (key === 'holdDrift') return row.holdDriftMeanMm;
+  if (key === 'progress') return row.status === 'completed' ? row.warmupBatches ?? 1 : 0;
+  return null;
+}
+
+function compareMetric(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a - b;
 }
