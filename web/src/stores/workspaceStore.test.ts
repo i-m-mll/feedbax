@@ -180,6 +180,35 @@ describe('buildWorkspaceSnapshot', () => {
     );
   });
 
+  it('preserves active stage selection through workspace snapshot refreshes', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setActiveStageByKind('report');
+    const selected = useWorkspaceStore.getState().workspace!;
+
+    const refreshed = buildWorkspaceSnapshot({
+      workspace: selected,
+      graph,
+      uiState,
+      trainingSpec: { ...trainingSpec, n_batches: 999 },
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    expect(getActiveStage(refreshed)?.kind).toBe('report');
+    expect(refreshed.ui_state.active_stage_id).toBe(getActiveStage(refreshed)?.id);
+  });
+
   it('updates train scenario drafts as the primary task/training/objective owner', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
