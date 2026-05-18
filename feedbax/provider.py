@@ -27,6 +27,8 @@ from feedbax.manifest import (
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_execution import (
+    StudioPipelineMaterializationRequest,
+    StudioPipelineMaterializationResult,
     StudioTrainingLocalRunRequest,
     StudioTrainingLocalRunResult,
     StudioTrainingExecutionPreparation,
@@ -127,6 +129,8 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
         "StudioTrainingLocalRunRequest": StudioTrainingLocalRunRequest,
         "StudioTrainingLocalRunResult": StudioTrainingLocalRunResult,
+        "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
+        "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
         "GraphSpecManifest": GraphSpecManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
@@ -194,6 +198,15 @@ def provider_manifest() -> ProviderManifest:
             description=(
                 "Run a Studio train-stage scenario through the local provider execution "
                 "boundary and return updated workspace lineage refs."
+            ),
+            transports=["python", "http"],
+        ),
+        "materialize_studio_pipeline": CapabilitySpec(
+            input_schema="StudioPipelineMaterializationRequest",
+            output_schema="StudioPipelineMaterializationResult",
+            description=(
+                "Materialize Studio eval, analysis, and report stages from upstream "
+                "workspace collections and return updated lineage refs."
             ),
             transports=["python", "http"],
         ),

@@ -5,6 +5,7 @@ import type { TaskSpec, TrainingSpec } from '@/types/training';
 import type {
   AnalysisPageWire,
   StudioCollectionRef,
+  StudioPipelineMaterializationResult,
   StudioScenarioSpec,
   StudioStageKind,
   StudioStageSpec,
@@ -298,11 +299,15 @@ interface WorkspaceStoreState {
   workspace: StudioWorkspaceSpec | null;
   lastTrainingExecutionPreparation: StudioTrainingExecutionPreparation | null;
   lastTrainingLocalRunResult: StudioTrainingLocalRunResult | null;
+  lastPipelineMaterializationResult: StudioPipelineMaterializationResult | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
   setTrainingExecutionPreparation: (
     preparation: StudioTrainingExecutionPreparation | null
   ) => void;
   setTrainingLocalRunResult: (result: StudioTrainingLocalRunResult | null) => void;
+  setPipelineMaterializationResult: (
+    result: StudioPipelineMaterializationResult | null
+  ) => void;
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
 }
@@ -318,6 +323,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   workspace: null,
   lastTrainingExecutionPreparation: null,
   lastTrainingLocalRunResult: null,
+  lastPipelineMaterializationResult: null,
 
   setWorkspace: (workspace) => set({ workspace }),
 
@@ -330,6 +336,12 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   setTrainingLocalRunResult: (result) =>
     set((state) => ({
       lastTrainingLocalRunResult: result,
+      workspace: result?.workspace ?? state.workspace,
+    })),
+
+  setPipelineMaterializationResult: (result) =>
+    set((state) => ({
+      lastPipelineMaterializationResult: result,
       workspace: result?.workspace ?? state.workspace,
     })),
 

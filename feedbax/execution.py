@@ -357,6 +357,53 @@ def run_local_execution(
     stdout_path.write_text(proc.stdout, encoding="utf-8")
     stderr_path.write_text(proc.stderr, encoding="utf-8")
     status: ManifestStatus = "completed" if proc.returncode == 0 else "failed"
+    studio_metadata = (
+        spec.metadata.get("studio", {}) if isinstance(spec.metadata.get("studio"), dict) else {}
+    )
+    training_spec = (
+        studio_metadata.get("training_spec")
+        if isinstance(studio_metadata.get("training_spec"), dict)
+        else None
+    )
+    task_spec = (
+        studio_metadata.get("task_spec")
+        if isinstance(studio_metadata.get("task_spec"), dict)
+        else None
+    )
+    graph_spec = (
+        studio_metadata.get("graph_spec")
+        if isinstance(studio_metadata.get("graph_spec"), dict)
+        else None
+    )
+    total_batches = 0
+    if training_spec is not None:
+        try:
+            total_batches = int(training_spec.get("n_batches") or 0)
+        except (TypeError, ValueError):
+            total_batches = 0
+    final_loss: Optional[float] = None
+    training_summary: dict[str, Any] | None = None
+    summary_path = cwd / "artifacts" / "training-summary.json" if cwd is not None else None
+    if summary_path is not None and summary_path.exists():
+        try:
+            training_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary_loss = training_summary.get("final_loss")
+            if isinstance(summary_loss, (int, float)):
+                final_loss = float(summary_loss)
+        except (OSError, json.JSONDecodeError):
+            training_summary = None
+    history_events: list[dict[str, Any]] = [
+        {
+            "type": "execution_result",
+            "backend": "local",
+            "return_code": proc.returncode,
+            "completed_at": utc_now().isoformat(),
+        }
+    ]
+    if training_summary is not None:
+        for event in training_summary.get("history", []):
+            if isinstance(event, dict):
+                history_events.append({"type": "training_progress", **event})
     provenance = Provenance(
         entrypoint=EntrypointRef(
             kind="feedbax-execution",
@@ -373,16 +420,13 @@ def run_local_execution(
     )
     manifest, manifest_path = write_training_run_manifest(
         job_id=job_id,
-        total_batches=0,
+        total_batches=total_batches,
+        training_spec=training_spec,
+        task_spec=task_spec,
+        graph_spec=graph_spec,
         status=status,
-        history_events=[
-            {
-                "type": "execution_result",
-                "backend": "local",
-                "return_code": proc.returncode,
-                "completed_at": utc_now().isoformat(),
-            }
-        ],
+        history_events=history_events,
+        final_loss=final_loss,
         root=root_path,
         provenance=provenance,
     )

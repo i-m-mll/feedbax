@@ -20,10 +20,13 @@ from feedbax.provider import (
 from feedbax.execution import ExecutionPlan, ExecutionSpec, prepare_execution_plan
 from feedbax.studio_execution import (
     StudioExecutionPreparationError,
+    StudioPipelineMaterializationRequest,
+    StudioPipelineMaterializationResult,
     StudioTrainingLocalRunRequest,
     StudioTrainingLocalRunResult,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
+    materialize_studio_pipeline,
     prepare_studio_training_execution,
     run_studio_training_local_execution,
 )
@@ -93,5 +96,18 @@ async def run_studio_training_local(
 ) -> StudioTrainingLocalRunResult:
     try:
         return run_studio_training_local_execution(payload)
+    except StudioExecutionPreparationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/pipeline/materialize",
+    response_model=StudioPipelineMaterializationResult,
+)
+async def materialize_studio_pipeline_stages(
+    payload: StudioPipelineMaterializationRequest,
+) -> StudioPipelineMaterializationResult:
+    try:
+        return materialize_studio_pipeline(payload)
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -274,4 +274,73 @@ describe('buildWorkspaceSnapshot', () => {
         .role
     ).toBe('training_run');
   });
+
+  it('stores pipeline materialization results and downstream stage refs', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const completed = {
+      ...workspace,
+      stages: workspace.stages.map((stage) =>
+        stage.kind === 'report'
+          ? {
+              ...stage,
+              status: 'completed' as const,
+              manifest_refs: [
+                {
+                  kind: 'ReportManifest',
+                  id: 'feedbax-report:studio-pipeline-report',
+                  role: 'report',
+                  provider: 'feedbax',
+                  uri: '/tmp/feedbax_runs/manifests/reports/studio-pipeline-report.json',
+                  metadata: {},
+                },
+              ],
+            }
+          : stage
+      ),
+    };
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setPipelineMaterializationResult({
+      workspace: completed,
+      stage_ids: ['stage:eval', 'stage:analysis', 'stage:report'],
+      manifest_paths: {
+        'stage:eval': '/tmp/eval.json',
+        'stage:analysis': '/tmp/analysis.json',
+        'stage:report': '/tmp/report.json',
+      },
+      artifact_refs: [
+        {
+          kind: 'ReportArtifact',
+          id: 'artifact://sha256/report',
+          role: 'report',
+          provider: 'feedbax',
+          uri: '/tmp/report-product.json',
+          media_type: 'application/json',
+          metadata: {},
+        },
+      ],
+    });
+
+    const state = useWorkspaceStore.getState();
+    expect(state.lastPipelineMaterializationResult?.stage_ids).toEqual([
+      'stage:eval',
+      'stage:analysis',
+      'stage:report',
+    ]);
+    expect(state.workspace?.stages.find((stage) => stage.kind === 'report')?.status).toBe(
+      'completed'
+    );
+    expect(
+      state.workspace?.stages.find((stage) => stage.kind === 'report')?.manifest_refs[0]
+        .role
+    ).toBe('report');
+  });
 });
