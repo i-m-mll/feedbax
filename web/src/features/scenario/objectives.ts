@@ -15,6 +15,33 @@ import type {
 const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
 const VALID_NORMS = new Set<NormFunction>(['squared_l2', 'l2', 'l1', 'huber']);
 
+export const OBJECTIVE_PENALTY_OPTIONS: Array<{ value: NormFunction; label: string }> = [
+  { value: 'squared_l2', label: 'Squared L2' },
+  { value: 'l2', label: 'L2' },
+  { value: 'l1', label: 'L1' },
+  { value: 'huber', label: 'Huber' },
+];
+
+export const OBJECTIVE_TEMPORAL_MODE_OPTIONS: Array<{
+  value: TimeAggregationSpec['mode'];
+  label: string;
+}> = [
+  { value: 'all', label: 'Full trajectory' },
+  { value: 'final', label: 'Final step' },
+  { value: 'range', label: 'Range' },
+  { value: 'segment', label: 'Segment' },
+  { value: 'custom', label: 'Custom steps' },
+];
+
+export const OBJECTIVE_DISCOUNT_OPTIONS: Array<{
+  value: NonNullable<TimeAggregationSpec['discount']>;
+  label: string;
+}> = [
+  { value: 'none', label: 'None' },
+  { value: 'power', label: 'Power' },
+  { value: 'linear', label: 'Linear' },
+];
+
 export function isStudioObjectiveSpec(value: unknown): value is StudioObjectiveSpec {
   return Boolean(value && typeof value === 'object' && Array.isArray((value as StudioObjectiveSpec).terms));
 }
@@ -167,6 +194,85 @@ function normFromPenalty(penalty: string | null | undefined): NormFunction | und
   return penalty && VALID_NORMS.has(penalty as NormFunction) ? (penalty as NormFunction) : undefined;
 }
 
+export function objectiveGraphPortTarget(
+  selector: StudioSelectorRef | null | undefined
+): { nodeId: string; direction: 'input' | 'output'; port: string } | null {
+  if (!selector) return null;
+  if (selector.namespace === 'graph_port' && selector.target_id && selector.path) {
+    return {
+      nodeId: selector.target_id,
+      direction: selector.metadata.direction === 'input' ? 'input' : 'output',
+      port: selector.path,
+    };
+  }
+
+  const nodeId =
+    typeof selector.metadata.graph_port_node_id === 'string'
+      ? selector.metadata.graph_port_node_id
+      : null;
+  const port =
+    typeof selector.metadata.graph_port_name === 'string'
+      ? selector.metadata.graph_port_name
+      : null;
+  const direction = selector.metadata.graph_port_direction === 'input' ? 'input' : 'output';
+  if (!nodeId || !port) return null;
+  return { nodeId, direction, port };
+}
+
+export function objectiveSelectorSubpath(
+  selector: StudioSelectorRef | null | undefined
+): string {
+  return typeof selector?.metadata.subpath === 'string' ? selector.metadata.subpath : '';
+}
+
+function statePathForPortSubpath(
+  portSelector: StudioSelectorRef,
+  subpath: string
+): string {
+  const nodeId = portSelector.target_id ?? 'node';
+  const port = portSelector.path ?? 'output';
+  const normalized = subpath.trim().replace(/^\.|\.$/g, '');
+  if (nodeId === 'mechanics' && port === 'effector') {
+    if (normalized === 'position') return 'states.mechanics.effector.pos';
+    if (normalized === 'velocity') return 'states.mechanics.effector.vel';
+  }
+  if (nodeId === 'network' && port === 'hidden' && (!normalized || normalized === 'hidden')) {
+    return 'states.net.hidden';
+  }
+  return ['states', nodeId, port, normalized].filter(Boolean).join('.');
+}
+
+export function selectorWithSubpath(
+  portSelector: StudioSelectorRef | null | undefined,
+  subpath: string
+): StudioSelectorRef | null {
+  if (!portSelector) return null;
+  const normalized = subpath.trim().replace(/^\.|\.$/g, '');
+  if (!normalized) return portSelector;
+  const nodeId = portSelector.target_id ?? null;
+  const port = portSelector.path ?? null;
+  return {
+    namespace: 'state_path',
+    compact: `path:${statePathForPortSubpath(portSelector, normalized)}`,
+    target_id: nodeId,
+    path: statePathForPortSubpath(portSelector, normalized),
+    role: portSelector.role,
+    expected_shape: portSelector.expected_shape,
+    dtype: portSelector.dtype,
+    units: portSelector.units,
+    frame: portSelector.frame,
+    metadata: {
+      ...portSelector.metadata,
+      source: 'port_substate_selector',
+      subpath: normalized,
+      graph_port_node_id: nodeId,
+      graph_port_name: port,
+      graph_port_direction: portSelector.metadata.direction === 'input' ? 'input' : 'output',
+      graph_port_compact: portSelector.compact,
+    },
+  };
+}
+
 function timeAggregationFromObjective(
   value: StudioObjectiveTermSpec['temporal_selector']
 ): TimeAggregationSpec | undefined {
@@ -209,7 +315,7 @@ function selectorFromGraphEdgeEntity(entity: StudioScenarioEntity): StudioSelect
     target_id: wire.source_node,
     path: wire.source_port,
     role: 'observed',
-    metadata: { inferred_from: entity.id },
+    metadata: { inferred_from: entity.id, direction: 'output' },
   };
 }
 
@@ -236,9 +342,9 @@ export function relatedObjectiveEntityIds(
   term: StudioObjectiveTermSpec
 ): string[] {
   const ids: string[] = [];
-  if (term.source_selector?.namespace === 'graph_port' && term.source_selector.target_id && term.source_selector.path) {
-    const direction = term.source_selector.metadata.direction === 'input' ? 'input' : 'output';
-    ids.push(graphPortEntityId(term.source_selector.target_id, direction, term.source_selector.path));
+  const portTarget = objectiveGraphPortTarget(term.source_selector);
+  if (portTarget) {
+    ids.push(graphPortEntityId(portTarget.nodeId, portTarget.direction, portTarget.port));
   }
   ids.push(objectiveEntityId(term.id));
   return ids;
@@ -256,6 +362,6 @@ export function componentOutputSelector(
     target_id: nodeId,
     path: firstOutput,
     role: 'observed',
-    metadata: {},
+    metadata: { direction: 'output' },
   };
 }

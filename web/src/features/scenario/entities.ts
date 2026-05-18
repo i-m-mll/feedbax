@@ -95,6 +95,18 @@ export function entityKindLabel(kind: StudioScenarioEntityKind): string {
 
 export function selectorToEntityId(selector: StudioSelectorRef | null | undefined): string | null {
   if (!selector) return null;
+  const graphPortNodeId =
+    typeof selector.metadata.graph_port_node_id === 'string'
+      ? selector.metadata.graph_port_node_id
+      : null;
+  const graphPortName =
+    typeof selector.metadata.graph_port_name === 'string'
+      ? selector.metadata.graph_port_name
+      : null;
+  if (graphPortNodeId && graphPortName) {
+    const direction = selector.metadata.graph_port_direction === 'input' ? 'input' : 'output';
+    return graphPortEntityId(graphPortNodeId, direction, graphPortName);
+  }
   if (selector.namespace === 'graph_port' && selector.target_id && selector.path) {
     const direction = selector.metadata.direction === 'input' ? 'input' : 'output';
     return graphPortEntityId(selector.target_id, direction, selector.path);

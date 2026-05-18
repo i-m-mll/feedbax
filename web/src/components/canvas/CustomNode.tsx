@@ -12,6 +12,7 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { graphPortEntityId } from '@/features/scenario/entities';
+import { objectiveGraphPortTarget } from '@/features/scenario/objectives';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
@@ -50,16 +51,9 @@ export function CustomNode({ id, data, selected }: NodeProps) {
     }
     const ports = new Set<string>();
     for (const term of objectiveSpec.terms) {
-      const selector = term?.source_selector;
-      if (
-        selector?.namespace !== 'graph_port' ||
-        selector.target_id !== label ||
-        typeof selector.path !== 'string'
-      ) {
-        continue;
-      }
-      const direction = selector.metadata?.direction === 'input' ? 'input' : 'output';
-      ports.add(`${direction}:${selector.path}`);
+      const portTarget = objectiveGraphPortTarget(term?.source_selector);
+      if (!portTarget || portTarget.nodeId !== label) continue;
+      ports.add(`${portTarget.direction}:${portTarget.port}`);
     }
     return ports;
   }, [label, workspace]);
@@ -127,6 +121,10 @@ export function CustomNode({ id, data, selected }: NodeProps) {
     (event: React.MouseEvent, portName: string, portType: 'input' | 'output') => {
       event.preventDefault();
       event.stopPropagation();
+      setSelectedNode(label);
+      setSelectedTap(null);
+      setSelectedEdge(null);
+      selectTopPaneEntity(graphPortEntityId(label, portType, portName), 'graph_port_selected');
       setContextMenu({
         x: event.clientX,
         y: event.clientY,
@@ -134,7 +132,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
         portType,
       });
     },
-    []
+    [label, selectTopPaneEntity, setSelectedEdge, setSelectedNode, setSelectedTap]
   );
 
   const selectPort = useCallback(
@@ -328,6 +326,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
                   'bg-brand-500 ring-2 ring-brand-200 scale-125'
               )}
+              onContextMenu={(e) => handlePortContextMenu(e, port, 'input')}
             />
           ))}
           {spec.output_ports.map((port, index) => (
@@ -376,6 +375,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 transform: 'translateY(-50%)',
               }}
               title={`Select ${label}.${port}`}
+              onContextMenu={(event) => handlePortContextMenu(event, port, 'input')}
             >
               {objectivePorts.has(`input:${port}`) && (
                 <Crosshair className="w-3 h-3 text-violet-500" />
@@ -404,6 +404,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 transform: 'translateY(-50%)',
               }}
               title={`Select ${label}.${port}`}
+              onContextMenu={(event) => handlePortContextMenu(event, port, 'output')}
             >
               {(highlightedPorts.has(port) || objectivePorts.has(`output:${port}`)) && (
                 <Crosshair

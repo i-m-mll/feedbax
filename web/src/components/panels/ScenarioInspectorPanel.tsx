@@ -7,10 +7,19 @@ import {
   selectorToEntityId,
 } from '@/features/scenario/entities';
 import {
+  addObjectiveTerm,
+  createObjectiveTerm,
   ensureObjectiveSpec,
+  OBJECTIVE_DISCOUNT_OPTIONS,
+  OBJECTIVE_PENALTY_OPTIONS,
+  OBJECTIVE_TEMPORAL_MODE_OPTIONS,
   objectiveTermEnabled,
+  objectiveSelectorSubpath,
   removeObjectiveTerm,
+  selectorWithSubpath,
   setObjectiveTermEnabled,
+  sourceSelectorForEntity,
+  targetSelectorForEntity,
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
 import { useGraphStore } from '@/stores/graphStore';
@@ -20,10 +29,15 @@ import {
   getTopPaneState,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
-import type { StudioScenarioEntity, StudioScenarioEntityRegistry } from '@/types/workspace';
+import type {
+  StudioObjectiveTermSpec,
+  StudioScenarioEntity,
+  StudioScenarioEntityRegistry,
+} from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
-import { Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import type { ParamValue } from '@/types/graph';
+import type { TimeAggregationSpec } from '@/types/training';
 
 const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'graph_edge', 'probe']);
 
@@ -55,6 +69,28 @@ function coerceParamValue(rawValue: string, currentValue: unknown): ParamValue {
   }
   if (currentValue === null) return rawValue;
   return rawValue;
+}
+
+function temporalSelector(term: StudioObjectiveTermSpec): TimeAggregationSpec {
+  const value = term.temporal_selector;
+  if (!value || typeof value !== 'object' || !('mode' in value)) return { mode: 'all' };
+  return value as TimeAggregationSpec;
+}
+
+function updateTemporalSelector(
+  term: StudioObjectiveTermSpec,
+  updates: Partial<TimeAggregationSpec>
+): TimeAggregationSpec {
+  return {
+    ...temporalSelector(term),
+    ...updates,
+  };
+}
+
+function parsedOptionalNumber(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function ParamValueEditor({
@@ -291,9 +327,12 @@ function ObjectiveInspector({
   const selectablePorts = Object.values(registry.entities)
     .filter((candidate) => candidate.kind === 'graph_port' && candidate.selector)
     .sort((a, b) => a.label.localeCompare(b.label));
+  const sourceEntityId = selectorToEntityId(term?.source_selector) ?? '';
+  const selectedSourcePort = sourceEntityId ? registry.entities[sourceEntityId] : null;
   if (!term) {
     return <div className="text-sm text-slate-400">Objective term is no longer available.</div>;
   }
+  const time = temporalSelector(term);
 
   const updateTerm = (updates: Parameters<typeof updateObjectiveTerm>[2]) => {
     updateActiveScenarioObjectiveSpec(updateObjectiveTerm(objectiveSpec, term.id, updates));
@@ -354,6 +393,20 @@ function ObjectiveInspector({
           />
         </label>
       </div>
+      <label className="block space-y-1 text-xs text-slate-500">
+        <span>Penalty</span>
+        <select
+          value={term.penalty ?? 'squared_l2'}
+          onChange={(event) => updateTerm({ penalty: event.target.value })}
+          className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+        >
+          {OBJECTIVE_PENALTY_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <label className="flex items-center gap-2 text-xs text-slate-600">
         <input
           type="checkbox"
@@ -370,7 +423,7 @@ function ObjectiveInspector({
       <label className="block space-y-1 text-xs text-slate-500">
         <span>Source</span>
         <select
-          value={selectorToEntityId(term.source_selector) ?? ''}
+          value={sourceEntityId}
           onChange={(event) => {
             const source = registry.entities[event.target.value];
             updateTerm({
@@ -387,21 +440,203 @@ function ObjectiveInspector({
           ))}
         </select>
       </label>
+      <label className="block space-y-1 text-xs text-slate-500">
+        <span>Substate / index</span>
+        <input
+          value={objectiveSelectorSubpath(term.source_selector)}
+          placeholder="position"
+          disabled={!selectedSourcePort?.selector}
+          onChange={(event) =>
+            updateTerm({
+              source_selector: selectorWithSubpath(
+                selectedSourcePort?.selector,
+                event.target.value
+              ),
+            })
+          }
+          className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800 disabled:bg-slate-50 disabled:text-slate-400"
+        />
+      </label>
+      <div className="space-y-2 border-t border-slate-100 pt-3">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Time</div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block space-y-1 text-xs text-slate-500">
+            <span>Mode</span>
+            <select
+              value={time.mode}
+              onChange={(event) =>
+                updateTerm({
+                  temporal_selector: updateTemporalSelector(term, {
+                    mode: event.target.value as TimeAggregationSpec['mode'],
+                  }),
+                })
+              }
+              className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+            >
+              {OBJECTIVE_TEMPORAL_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block space-y-1 text-xs text-slate-500">
+            <span>Discount</span>
+            <select
+              value={time.discount ?? 'none'}
+              onChange={(event) =>
+                updateTerm({
+                  temporal_selector: updateTemporalSelector(term, {
+                    discount: event.target.value as TimeAggregationSpec['discount'],
+                  }),
+                })
+              }
+              className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+            >
+              {OBJECTIVE_DISCOUNT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {time.discount === 'power' && (
+          <label className="block space-y-1 text-xs text-slate-500">
+            <span>Exponent</span>
+            <input
+              type="number"
+              step={0.1}
+              value={time.discount_exp ?? ''}
+              onChange={(event) =>
+                updateTerm({
+                  temporal_selector: updateTemporalSelector(term, {
+                    discount_exp: parsedOptionalNumber(event.target.value),
+                  }),
+                })
+              }
+              className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+            />
+          </label>
+        )}
+        {time.mode === 'range' && (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block space-y-1 text-xs text-slate-500">
+              <span>Start</span>
+              <input
+                type="number"
+                value={time.start ?? ''}
+                onChange={(event) =>
+                  updateTerm({
+                    temporal_selector: updateTemporalSelector(term, {
+                      start: parsedOptionalNumber(event.target.value),
+                    }),
+                  })
+                }
+                className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+              />
+            </label>
+            <label className="block space-y-1 text-xs text-slate-500">
+              <span>End</span>
+              <input
+                type="number"
+                value={time.end ?? ''}
+                onChange={(event) =>
+                  updateTerm({
+                    temporal_selector: updateTemporalSelector(term, {
+                      end: parsedOptionalNumber(event.target.value),
+                    }),
+                  })
+                }
+                className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+              />
+            </label>
+          </div>
+        )}
+        {time.mode === 'segment' && (
+          <label className="block space-y-1 text-xs text-slate-500">
+            <span>Segment</span>
+            <input
+              value={time.segment_name ?? ''}
+              onChange={(event) =>
+                updateTerm({
+                  temporal_selector: updateTemporalSelector(term, {
+                    segment_name: event.target.value,
+                  }),
+                })
+              }
+              className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+            />
+          </label>
+        )}
+        {time.mode === 'custom' && (
+          <label className="block space-y-1 text-xs text-slate-500">
+            <span>Steps</span>
+            <input
+              value={(time.time_idxs ?? []).join(', ')}
+              onChange={(event) =>
+                updateTerm({
+                  temporal_selector: updateTemporalSelector(term, {
+                    time_idxs: event.target.value
+                      .split(',')
+                      .map((part) => Number.parseInt(part.trim(), 10))
+                      .filter((value) => Number.isFinite(value)),
+                  }),
+                })
+              }
+              className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+            />
+          </label>
+        )}
+      </div>
       <div className="space-y-2 text-xs text-slate-600">
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
           <div className="font-medium text-slate-500">Type</div>
           <div className="break-words">{formatValue(term.type_id)}</div>
-        </div>
-        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
-          <div className="font-medium text-slate-500">Penalty</div>
-          <div className="break-words">{formatValue(term.penalty)}</div>
         </div>
       </div>
     </section>
   );
 }
 
-function PortInspector({ entity }: { entity: StudioScenarioEntity }) {
+function PortInspector({
+  entity,
+  registry,
+}: {
+  entity: StudioScenarioEntity;
+  registry: StudioScenarioEntityRegistry;
+}) {
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
+  const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
+  const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
+  const setSelectedEdge = useGraphStore((state) => state.setSelectedEdge);
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const sourceSelector = sourceSelectorForEntity(entity, registry);
+  const taskEntity =
+    Object.values(registry.entities).find((candidate) => candidate.kind === 'task_object') ?? null;
+  const addObjective = () => {
+    if (!activeScenario || !sourceSelector) return;
+    const term = createObjectiveTerm({
+      spec: objectiveSpec,
+      label: `Objective: ${entity.label}`,
+      sourceSelector,
+      targetSelector: targetSelectorForEntity(taskEntity),
+    });
+    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
+    setSelectedNode(null);
+    setSelectedTap(null);
+    setSelectedEdge(null);
+    setTopPaneProjection('objectives');
+    selectTopPaneEntity(`objective_term:${term.id}`);
+  };
+
   return (
     <section className="space-y-3">
       <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Port Selector</div>
@@ -419,6 +654,15 @@ function PortInspector({ entity }: { entity: StudioScenarioEntity }) {
           <div className="break-words">{formatValue(entity.metadata.direction)}</div>
         </div>
       </div>
+      <button
+        type="button"
+        disabled={!activeScenario || !sourceSelector}
+        onClick={addObjective}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Add objective
+      </button>
     </section>
   );
 }
@@ -441,7 +685,7 @@ function EntityBody({
       {entity.kind === 'objective_term' && (
         <ObjectiveInspector entity={entity} registry={registry} />
       )}
-      {entity.kind === 'graph_port' && <PortInspector entity={entity} />}
+      {entity.kind === 'graph_port' && <PortInspector entity={entity} registry={registry} />}
       <RelationList entity={entity} registry={registry} />
     </div>
   );

@@ -1,8 +1,23 @@
 import { useTrainingStore } from '@/stores/trainingStore';
-import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  getActiveStage,
+  getScenario,
+  getTrainingScenario,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
+import { useGraphStore } from '@/stores/graphStore';
+import { buildScenarioEntityRegistry } from '@/features/scenario/entities';
+import {
+  addObjectiveTerm,
+  createObjectiveTerm,
+  ensureObjectiveSpec,
+  targetSelectorForEntity,
+} from '@/features/scenario/objectives';
 import type { LossTermSpec } from '@/types/training';
+import type { StudioSelectorRef } from '@/types/workspace';
 import { useCallback, useEffect, useRef } from 'react';
-import { Crosshair, Plus } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Crosshair, ListPlus } from 'lucide-react';
 
 interface PortContextMenuProps {
   x: number;
@@ -23,8 +38,24 @@ export function PortContextMenu({
 }: PortContextMenuProps) {
   const addLossTerm = useTrainingStore((state) => state.addLossTerm);
   const trainingStoreSpec = useTrainingStore((state) => state.trainingSpec);
-  const trainingScenario = useWorkspaceStore((state) => getTrainingScenario(state.workspace));
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const trainingScenario = getTrainingScenario(workspace);
   const trainingSpec = trainingScenario?.training_spec ?? trainingStoreSpec;
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
+  const graph = useGraphStore((state) => state.graph);
+  const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
+  const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
+  const setSelectedEdge = useGraphStore((state) => state.setSelectedEdge);
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const registry = buildScenarioEntityRegistry({ scenario: activeScenario, graph });
+  const taskEntity =
+    Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
@@ -89,33 +120,95 @@ export function PortContextMenu({
     onClose();
   }, [nodeName, portName, trainingSpec.loss, addLossTerm, onClose]);
 
-  // Only show for output ports
-  if (portType !== 'output') {
-    return null;
-  }
+  const handleAddObjective = useCallback(() => {
+    if (!activeScenario) return;
+    const sourceSelector: StudioSelectorRef = {
+      namespace: 'graph_port',
+      compact: `port:${nodeName}.${portName}`,
+      target_id: nodeName,
+      path: portName,
+      role: 'observed',
+      metadata: { direction: portType },
+    };
+    const term = createObjectiveTerm({
+      spec: objectiveSpec,
+      label: `Objective: ${nodeName}.${portName}`,
+      sourceSelector,
+      targetSelector: targetSelectorForEntity(taskEntity),
+    });
+    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
+    setSelectedNode(null);
+    setSelectedTap(null);
+    setSelectedEdge(null);
+    setTopPaneProjection('objectives');
+    selectTopPaneEntity(`objective_term:${term.id}`);
+    onClose();
+  }, [
+    activeScenario,
+    nodeName,
+    objectiveSpec,
+    onClose,
+    portName,
+    portType,
+    selectTopPaneEntity,
+    setSelectedEdge,
+    setSelectedNode,
+    setSelectedTap,
+    setTopPaneProjection,
+    taskEntity,
+    updateActiveScenarioObjectiveSpec,
+  ]);
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
-      className="fixed bg-white rounded-lg shadow-lg border border-slate-200 py-1 min-w-40 z-50"
+      className="nodrag nopan fixed z-[1000] min-w-40 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
       style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
     >
       <button
         type="button"
-        onClick={handleAddProbe}
+        disabled={!activeScenario}
+        onClick={(event) => {
+          event.stopPropagation();
+          handleAddObjective();
+        }}
         className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
       >
-        <Crosshair className="w-4 h-4 text-brand-500" />
-        Add probe here
+        <ListPlus className="w-4 h-4 text-brand-500" />
+        Add objective
       </button>
+      {portType === 'output' && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            handleAddProbe();
+          }}
+          className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+        >
+          <Crosshair className="w-4 h-4 text-brand-500" />
+          Add probe here
+        </button>
+      )}
       <div className="border-t border-slate-100 my-1" />
       <button
         type="button"
-        onClick={onClose}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
         className="w-full px-3 py-2 text-left text-sm text-slate-500 hover:bg-slate-50"
       >
         Cancel
       </button>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import { lossSpecFromObjectiveSpec } from '@/features/scenario/objectives';
+import {
+  lossSpecFromObjectiveSpec,
+  selectorWithSubpath,
+} from '@/features/scenario/objectives';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -44,6 +47,15 @@ const DEFAULT_TOP_PANE_STATE: StudioTopPaneState = {
   hovered_entity_id: null,
   pinned_inspector_entity_id: null,
   metadata: {},
+};
+
+const LEGACY_PROBE_SELECTOR_MAP: Record<
+  string,
+  { nodeId: string; port: string; subpath: string }
+> = {
+  effector_pos: { nodeId: 'mechanics', port: 'effector', subpath: 'position' },
+  effector_vel: { nodeId: 'mechanics', port: 'effector', subpath: 'velocity' },
+  network_hidden: { nodeId: 'network', port: 'hidden', subpath: 'hidden' },
 };
 
 function emptyValidation(): StudioValidationState {
@@ -133,10 +145,27 @@ function updateTopPaneState(
 function selectorRefFromString(selector: string | undefined): StudioSelectorRef | null {
   if (!selector) return null;
   if (selector.startsWith('probe:')) {
+    const probeId = selector.slice('probe:'.length);
+    const mappedProbe = LEGACY_PROBE_SELECTOR_MAP[probeId];
+    if (mappedProbe) {
+      const baseSelector: StudioSelectorRef = {
+        namespace: 'graph_port',
+        compact: `port:${mappedProbe.nodeId}.${mappedProbe.port}`,
+        target_id: mappedProbe.nodeId,
+        path: mappedProbe.port,
+        role: 'observed',
+        metadata: {
+          source: 'legacy_loss_selector',
+          legacy_selector: selector,
+          direction: 'output',
+        },
+      };
+      return selectorWithSubpath(baseSelector, mappedProbe.subpath);
+    }
     return {
       namespace: 'probe',
       compact: selector,
-      target_id: selector.slice('probe:'.length),
+      target_id: probeId,
       path: null,
       metadata: { source: 'legacy_loss_selector' },
     };
