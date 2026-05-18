@@ -1,0 +1,89 @@
+import type { TrainingSpec } from '@/types/training';
+import type { StudioScenarioSpec, StudioStageSpec } from '@/types/workspace';
+
+export type ExecutionTargetChoice = 'local' | 'managed' | 'manual';
+
+export interface TrainingProtocolSnapshot {
+  learningRate: number;
+  batchCount: number;
+  batchSize: number;
+  checkpointInterval: number | null;
+  computeTarget: ExecutionTargetChoice;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function protocolRecord(stage: StudioStageSpec | null | undefined): Record<string, unknown> {
+  const executionSpec = stage?.execution_spec;
+  if (!isRecord(executionSpec)) return {};
+  const protocol = executionSpec.protocol;
+  return isRecord(protocol) ? protocol : {};
+}
+
+function computeTarget(value: unknown): ExecutionTargetChoice {
+  return value === 'managed' || value === 'manual' ? value : 'local';
+}
+
+function learningRate(trainingSpec: TrainingSpec | null | undefined): number {
+  const value = trainingSpec?.optimizer.params.learning_rate;
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0.001;
+}
+
+export function trainingProtocolSnapshot(
+  stage: StudioStageSpec | null | undefined,
+  scenario: StudioScenarioSpec | null | undefined
+): TrainingProtocolSnapshot {
+  const protocol = protocolRecord(stage);
+  const trainingSpec = scenario?.training_spec;
+  return {
+    learningRate: learningRate(trainingSpec),
+    batchCount: trainingSpec?.n_batches ?? 0,
+    batchSize: trainingSpec?.batch_size ?? 0,
+    checkpointInterval: trainingSpec?.checkpoint_interval ?? null,
+    computeTarget: computeTarget(protocol.compute_target),
+  };
+}
+
+export function stageExecutionTarget(
+  stage: StudioStageSpec | null | undefined
+): ExecutionTargetChoice {
+  return computeTarget(protocolRecord(stage).compute_target);
+}
+
+export function stageExecutionSpecWithProtocolPatch(
+  stage: StudioStageSpec,
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  const executionSpec = isRecord(stage.execution_spec) ? stage.execution_spec : {};
+  return {
+    ...executionSpec,
+    protocol: {
+      ...protocolRecord(stage),
+      ...patch,
+    },
+  };
+}
+
+export function trainingSpecWithProtocolPatch(
+  trainingSpec: TrainingSpec,
+  patch: Partial<TrainingProtocolSnapshot>
+): TrainingSpec {
+  return {
+    ...trainingSpec,
+    optimizer: {
+      ...trainingSpec.optimizer,
+      params: {
+        ...trainingSpec.optimizer.params,
+        ...(patch.learningRate !== undefined ? { learning_rate: patch.learningRate } : {}),
+      },
+    },
+    n_batches: patch.batchCount ?? trainingSpec.n_batches,
+    batch_size: patch.batchSize ?? trainingSpec.batch_size,
+    checkpoint_interval:
+      patch.checkpointInterval === undefined
+        ? trainingSpec.checkpoint_interval
+        : patch.checkpointInterval ?? undefined,
+  };
+}
