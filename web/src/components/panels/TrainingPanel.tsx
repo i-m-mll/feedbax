@@ -3,14 +3,22 @@ import { TrajectoryViewer } from './TrajectoryViewer';
 import { useTraining, extractNetworkParams } from '@/hooks/useTraining';
 import { useWorkerConfig } from '@/hooks/useWorkerConfig';
 import { useOrchestration } from '@/hooks/useOrchestration';
+import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import { useAnalysisStore } from '@/stores/analysisStore';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
 import { LossTermDetail } from './LossTermDetail';
 import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
-import { fetchProbes, validateLossSpec, downloadCheckpoint } from '@/api/client';
+import {
+  fetchProbes,
+  validateLossSpec,
+  downloadCheckpoint,
+  prepareStudioTrainingExecution,
+  runStudioTrainingLocalExecution,
+} from '@/api/client';
 import clsx from 'clsx';
-import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2 } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2, FileJson, PlayCircle } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -25,7 +33,7 @@ import {
 const LOSS_TERM_COLORS = ['#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
 
 export function TrainingPanel() {
-  const { trainingSpec, setTrainingSpec, progress, status, lossHistory, jobId, latestTrajectory } = useTrainingStore();
+  const { trainingSpec, taskSpec, setTrainingSpec, progress, status, lossHistory, jobId, latestTrajectory, appendLog } = useTrainingStore();
   const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
   const setLossValidationErrors = useTrainingStore((state) => state.setLossValidationErrors);
   const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);
@@ -46,7 +54,21 @@ export function TrainingPanel() {
   } = useOrchestration();
   const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
+  const uiState = useGraphStore((state) => state.uiState);
+  const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
   const inSubgraph = useGraphStore((state) => state.graphStack.length > 0);
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const setWorkspace = useWorkspaceStore((state) => state.setWorkspace);
+  const lastExecutionPreparation = useWorkspaceStore(
+    (state) => state.lastTrainingExecutionPreparation
+  );
+  const lastLocalRunResult = useWorkspaceStore((state) => state.lastTrainingLocalRunResult);
+  const setTrainingExecutionPreparation = useWorkspaceStore(
+    (state) => state.setTrainingExecutionPreparation
+  );
+  const setTrainingLocalRunResult = useWorkspaceStore(
+    (state) => state.setTrainingLocalRunResult
+  );
 
   // Derived network params for the config summary chip row
   const networkParams = useMemo(() => extractNetworkParams(graph), [graph]);
@@ -71,6 +93,10 @@ export function TrainingPanel() {
   const [cloudWorkerPort, setCloudWorkerPort] = useState(8765);
   const [cloudAuthToken, setCloudAuthToken] = useState('');
   const [cloudTsAuthKey, setCloudTsAuthKey] = useState('');
+  const [planPreparing, setPlanPreparing] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [localRunRunning, setLocalRunRunning] = useState(false);
+  const [localRunError, setLocalRunError] = useState<string | null>(null);
 
   // Fetch available probes when graph changes
   useEffect(() => {
@@ -145,6 +171,115 @@ export function TrainingPanel() {
     nodeRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, []);
 
+  const handlePrepareExecutionPlan = useCallback(async () => {
+    if (!graphId || inSubgraph) return;
+    setPlanPreparing(true);
+    setPlanError(null);
+    try {
+      const nextWorkspace = buildWorkspaceSnapshot({
+        workspace,
+        graph,
+        uiState,
+        trainingSpec,
+        taskSpec,
+        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        projectName: currentGraphLabel,
+      });
+      setWorkspace(nextWorkspace);
+      const preparation = await prepareStudioTrainingExecution({
+        workspace: nextWorkspace,
+        backend: 'local',
+        metadata: { graph_id: graphId, source: 'training_panel' },
+      });
+      setTrainingExecutionPreparation(preparation);
+      useGraphStore.getState().markDirty();
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: 'info',
+        message: `Prepared local execution plan ${preparation.plan.job_id}`,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to prepare plan';
+      setPlanError(message);
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: 'error',
+        message,
+        timestamp: Date.now(),
+      });
+    } finally {
+      setPlanPreparing(false);
+    }
+  }, [
+    appendLog,
+    currentGraphLabel,
+    graph,
+    graphId,
+    inSubgraph,
+    progress?.batch,
+    setTrainingExecutionPreparation,
+    setWorkspace,
+    taskSpec,
+    trainingSpec,
+    uiState,
+    workspace,
+  ]);
+
+  const handleRunLocalExecution = useCallback(async () => {
+    if (!graphId || inSubgraph) return;
+    setLocalRunRunning(true);
+    setLocalRunError(null);
+    try {
+      const nextWorkspace = buildWorkspaceSnapshot({
+        workspace,
+        graph,
+        uiState,
+        trainingSpec,
+        taskSpec,
+        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        projectName: currentGraphLabel,
+      });
+      setWorkspace(nextWorkspace);
+      const runResult = await runStudioTrainingLocalExecution({
+        workspace: nextWorkspace,
+        metadata: { graph_id: graphId, source: 'training_panel' },
+      });
+      setTrainingLocalRunResult(runResult);
+      useGraphStore.getState().markDirty();
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: runResult.result.status === 'completed' ? 'info' : 'error',
+        message: `Local execution ${runResult.result.status}: ${runResult.result.job_id}`,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to run local plan';
+      setLocalRunError(message);
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: 'error',
+        message,
+        timestamp: Date.now(),
+      });
+    } finally {
+      setLocalRunRunning(false);
+    }
+  }, [
+    appendLog,
+    currentGraphLabel,
+    graph,
+    graphId,
+    inSubgraph,
+    progress?.batch,
+    setTrainingLocalRunResult,
+    setWorkspace,
+    taskSpec,
+    trainingSpec,
+    uiState,
+    workspace,
+  ]);
+
   const handleAddTerm = useCallback((parentPath: string[]) => {
     setAddModalParentPath(parentPath);
     setShowAddModal(true);
@@ -188,6 +323,9 @@ export function TrainingPanel() {
     if (!selectedPath || selectedPath === ROOT_PATH) return [];
     return selectedPath.split('/');
   }, [selectedPath]);
+  const preparedPlan = lastLocalRunResult?.result.plan ?? lastExecutionPreparation?.plan ?? null;
+  const localRunStatus = lastLocalRunResult?.result.status ?? null;
+  const executionControlsDisabled = !graphId || inSubgraph;
 
   return (
     <div className="p-6 space-y-4 text-sm text-slate-600 overflow-x-hidden">
@@ -654,10 +792,62 @@ export function TrainingPanel() {
         }
       />
 
+      {preparedPlan && (
+        <div className="flex items-start gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          <FileJson className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div className="min-w-0 space-y-0.5">
+            <div className="truncate font-semibold" title={preparedPlan.job_id}>
+              {localRunStatus ? `${preparedPlan.job_id} (${localRunStatus})` : preparedPlan.job_id}
+            </div>
+            <div className="truncate text-[10px] text-emerald-600" title={preparedPlan.run_directory}>
+              {preparedPlan.backend} - {preparedPlan.run_directory}
+            </div>
+          </div>
+        </div>
+      )}
+      {planError && (
+        <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+          {planError}
+        </div>
+      )}
+      {localRunError && (
+        <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+          {localRunError}
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={handlePrepareExecutionPlan}
+        disabled={executionControlsDisabled || planPreparing || localRunRunning}
+      >
+        {planPreparing ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <FileJson className="h-4 w-4" />
+        )}
+        <span>{planPreparing ? 'Preparing plan' : 'Prepare local plan'}</span>
+      </button>
+
+      <button
+        type="button"
+        className="flex w-full items-center justify-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={handleRunLocalExecution}
+        disabled={executionControlsDisabled || planPreparing || localRunRunning}
+      >
+        {localRunRunning ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <PlayCircle className="h-4 w-4" />
+        )}
+        <span>{localRunRunning ? 'Running local plan' : 'Run local plan'}</span>
+      </button>
+
       <button
         className="w-full rounded-full bg-brand-500 text-white py-2 text-sm font-semibold shadow-soft hover:bg-brand-600"
         onClick={status === 'running' ? stop : start}
-        disabled={!graphId || inSubgraph}
+        disabled={executionControlsDisabled}
       >
         {status === 'running' ? 'Stop Training' : 'Start Training'}
       </button>

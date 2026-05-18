@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { useGraphStore } from '@/stores/graphStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type {
   LossTermSpec,
   LossValidationError,
@@ -90,6 +92,16 @@ export const defaultTaskSpec: TaskSpec = {
 const MAX_LOSS_HISTORY = 2000;
 const MAX_CONSOLE_LOGS = 5000;
 
+function persistTrainingSpecDraft(trainingSpec: TrainingSpec) {
+  useWorkspaceStore.getState().updateActiveScenarioTrainingSpec(trainingSpec);
+  useGraphStore.getState().markDirty();
+}
+
+function persistTaskSpecDraft(taskSpec: TaskSpec) {
+  useWorkspaceStore.getState().updateActiveScenarioTaskSpec(taskSpec);
+  useGraphStore.getState().markDirty();
+}
+
 interface TrainingStoreState {
   trainingSpec: TrainingSpec;
   taskSpec: TaskSpec;
@@ -143,7 +155,7 @@ interface TrainingStoreState {
   seedDemoData: (data: { lossHistory: TrainingProgress[]; latestTrajectory: TrajectorySnapshot | null }) => void;
 }
 
-export const useTrainingStore = create<TrainingStoreState>((set) => ({
+export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   trainingSpec: defaultTrainingSpec,
   taskSpec: defaultTaskSpec,
   status: 'idle',
@@ -166,24 +178,27 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   orchestrationInstanceName: null,
   orchestrationWorkerUrl: null,
   // Actions
-  setTrainingSpec: (spec) =>
-    set((state) => ({
-      trainingSpec: {
-        ...state.trainingSpec,
-        ...spec,
-        optimizer: {
-          ...state.trainingSpec.optimizer,
-          ...(spec.optimizer ?? {}),
-        },
+  setTrainingSpec: (spec) => {
+    const state = get();
+    const trainingSpec = {
+      ...state.trainingSpec,
+      ...spec,
+      optimizer: {
+        ...state.trainingSpec.optimizer,
+        ...(spec.optimizer ?? {}),
       },
-    })),
-  setTaskSpec: (spec) =>
-    set((state) => ({
-      taskSpec: {
-        ...state.taskSpec,
-        ...spec,
-      },
-    })),
+    };
+    set({ trainingSpec });
+    persistTrainingSpecDraft(trainingSpec);
+  },
+  setTaskSpec: (spec) => {
+    const taskSpec = {
+      ...get().taskSpec,
+      ...spec,
+    };
+    set({ taskSpec });
+    persistTaskSpecDraft(taskSpec);
+  },
   setStatus: (status) => set({ status }),
   setJobId: (jobId) => set({ jobId }),
   setProgress: (progress) => {
@@ -216,27 +231,33 @@ export const useTrainingStore = create<TrainingStoreState>((set) => ({
   setSelectedLossPath: (path) => set({ selectedLossPath: path }),
   setLossValidationErrors: (errors) => set({ lossValidationErrors: errors }),
   setHighlightedProbeSelector: (selector) => set({ highlightedProbeSelector: selector }),
-  updateLossTerm: (path, updates) =>
-    set((state) => ({
-      trainingSpec: {
-        ...state.trainingSpec,
-        loss: updateLossTermAtPath(state.trainingSpec.loss, path, updates),
-      },
-    })),
-  addLossTerm: (parentPath, key, term) =>
-    set((state) => ({
-      trainingSpec: {
-        ...state.trainingSpec,
-        loss: addLossTermAtPath(state.trainingSpec.loss, parentPath, key, term),
-      },
-    })),
-  removeLossTerm: (path) =>
-    set((state) => ({
-      trainingSpec: {
-        ...state.trainingSpec,
-        loss: removeLossTermAtPath(state.trainingSpec.loss, path),
-      },
-    })),
+  updateLossTerm: (path, updates) => {
+    const state = get();
+    const trainingSpec = {
+      ...state.trainingSpec,
+      loss: updateLossTermAtPath(state.trainingSpec.loss, path, updates),
+    };
+    set({ trainingSpec });
+    persistTrainingSpecDraft(trainingSpec);
+  },
+  addLossTerm: (parentPath, key, term) => {
+    const state = get();
+    const trainingSpec = {
+      ...state.trainingSpec,
+      loss: addLossTermAtPath(state.trainingSpec.loss, parentPath, key, term),
+    };
+    set({ trainingSpec });
+    persistTrainingSpecDraft(trainingSpec);
+  },
+  removeLossTerm: (path) => {
+    const state = get();
+    const trainingSpec = {
+      ...state.trainingSpec,
+      loss: removeLossTermAtPath(state.trainingSpec.loss, path),
+    };
+    set({ trainingSpec });
+    persistTrainingSpecDraft(trainingSpec);
+  },
   // Worker actions
   setWorkerConfig: (mode, url, connected) =>
     set({ workerMode: mode, workerUrl: url, workerConnected: connected }),

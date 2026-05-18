@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
@@ -169,6 +170,150 @@ class AnalysisPageSpec(BaseModel):
     expanded_field_paths: List[str] = Field(default_factory=list)
 
 
+STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.studio.workspace.v1"
+STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
+
+StudioStageKind = Literal[
+    "train",
+    "eval",
+    "analysis",
+    "report",
+    "import",
+    "compare",
+    "export",
+    "protocol",
+]
+StudioStageStatus = Literal[
+    "draft",
+    "invalid",
+    "ready",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
+
+class StudioValidationIssue(BaseModel):
+    """Validation issue attached to durable Studio workspace state."""
+
+    type: str
+    message: str
+    location: Optional[Dict[str, str]] = None
+    severity: Literal["error", "warning", "info"] = "error"
+
+
+class StudioValidationState(BaseModel):
+    """Last known validation state for a scenario, stage, or workspace."""
+
+    valid: Optional[bool] = None
+    checked_at: Optional[str] = None
+    errors: List[StudioValidationIssue] = Field(default_factory=list)
+    warnings: List[StudioValidationIssue] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioManifestRef(BaseModel):
+    """Reference to a manifest produced or consumed by a Studio stage."""
+
+    kind: str
+    id: str
+    role: Optional[str] = None
+    provider: str = "feedbax"
+    uri: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioArtifactRef(BaseModel):
+    """Reference to a non-manifest artifact produced or consumed by Studio."""
+
+    kind: str
+    id: str
+    role: Optional[str] = None
+    provider: str = "feedbax"
+    uri: Optional[str] = None
+    media_type: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioCollectionRef(BaseModel):
+    """Reference to a collection flowing between Studio pipeline stages."""
+
+    id: str
+    kind: str
+    label: Optional[str] = None
+    source_stage_id: Optional[str] = None
+    item_refs: List[StudioManifestRef] = Field(default_factory=list)
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    facets: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioScenarioSpec(BaseModel):
+    """Stage-owned structural scenario draft for model/task/objective state.
+
+    The first implementation intentionally wraps current graph/task/loss state
+    while reserving explicit slots for richer biomechanics, selector,
+    objective, analysis, and report authoring. Later product work should extend
+    these typed fields rather than replacing this workspace boundary.
+    """
+
+    id: str
+    schema_version: str = STUDIO_SCENARIO_SCHEMA_VERSION
+    label: str
+    stage_id: Optional[str] = None
+    parent_scenario_id: Optional[str] = None
+    graph: Optional[GraphSpec] = None
+    graph_ui_state: Optional[GraphUIState] = None
+    training_spec: Optional[Dict[str, Any]] = None
+    task_spec: Optional[Dict[str, Any]] = None
+    objective_spec: Optional[Dict[str, Any]] = None
+    probe_specs: List[Dict[str, Any]] = Field(default_factory=list)
+    temporal_spec: Optional[Dict[str, Any]] = None
+    biomechanics_spec: Optional[Dict[str, Any]] = None
+    analysis_spec: Optional[Dict[str, Any]] = None
+    report_spec: Optional[Dict[str, Any]] = None
+    validation: StudioValidationState = Field(default_factory=StudioValidationState)
+    ui_state: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioStageSpec(BaseModel):
+    """Pipeline stage over scenario drafts, collections, and manifests."""
+
+    id: str
+    kind: StudioStageKind
+    label: str
+    status: StudioStageStatus = "draft"
+    scenario_id: Optional[str] = None
+    input_collections: List[StudioCollectionRef] = Field(default_factory=list)
+    output_collections: List[StudioCollectionRef] = Field(default_factory=list)
+    manifest_refs: List[StudioManifestRef] = Field(default_factory=list)
+    artifact_refs: List[StudioArtifactRef] = Field(default_factory=list)
+    execution_spec: Optional[Dict[str, Any]] = None
+    selection_spec: Dict[str, Any] = Field(default_factory=dict)
+    validation: StudioValidationState = Field(default_factory=StudioValidationState)
+    ui_state: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioWorkspaceSpec(BaseModel):
+    """Durable Studio workspace/pipeline model stored with a project."""
+
+    id: str
+    schema_version: str = STUDIO_WORKSPACE_SCHEMA_VERSION
+    label: str
+    active_stage_id: Optional[str] = None
+    stages: List[StudioStageSpec] = Field(default_factory=list)
+    scenarios: Dict[str, StudioScenarioSpec] = Field(default_factory=dict)
+    collections: List[StudioCollectionRef] = Field(default_factory=list)
+    manifest_refs: List[StudioManifestRef] = Field(default_factory=list)
+    artifact_refs: List[StudioArtifactRef] = Field(default_factory=list)
+    validation: StudioValidationState = Field(default_factory=StudioValidationState)
+    ui_state: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class GraphProject(BaseModel):
     """A complete graph project with metadata and UI state."""
 
@@ -178,6 +323,166 @@ class GraphProject(BaseModel):
     demo_training_data: Optional[Any] = None
     analysis_pages: Optional[List[AnalysisPageSpec]] = None
     active_analysis_page_id: Optional[str] = None
+    workspace: Optional[StudioWorkspaceSpec] = None
+
+
+def build_default_studio_workspace(
+    *,
+    label: str,
+    graph: GraphSpec,
+    ui_state: Optional[GraphUIState] = None,
+    analysis_pages: Optional[List[AnalysisPageSpec]] = None,
+    active_analysis_page_id: Optional[str] = None,
+) -> StudioWorkspaceSpec:
+    """Build the initial durable Studio workspace for a legacy project.
+
+    This is a migration scaffold, not a narrowed MVP-only model. It creates the
+    canonical stage/scenario anchors that later eval, analysis, report, visual
+    objective, cloud execution, and Mandible-ingest work should extend.
+    """
+
+    workspace_id = f"studio-workspace:{uuid.uuid4().hex}"
+    train_stage_id = "stage:train"
+    eval_stage_id = "stage:eval"
+    analysis_stage_id = "stage:analysis"
+    report_stage_id = "stage:report"
+    train_scenario_id = "scenario:train"
+    eval_scenario_id = "scenario:eval"
+    analysis_scenario_id = "scenario:analysis"
+    report_scenario_id = "scenario:report"
+
+    analysis_spec: Optional[Dict[str, Any]] = None
+    if analysis_pages:
+        analysis_spec = {
+            "pages": [page.model_dump() for page in analysis_pages],
+            "active_page_id": active_analysis_page_id,
+        }
+
+    scenarios = {
+        train_scenario_id: StudioScenarioSpec(
+            id=train_scenario_id,
+            label="Training scenario",
+            stage_id=train_stage_id,
+            graph=graph,
+            graph_ui_state=ui_state,
+            metadata={"source": "graph_project_migration"},
+        ),
+        eval_scenario_id: StudioScenarioSpec(
+            id=eval_scenario_id,
+            label="Evaluation scenario",
+            stage_id=eval_stage_id,
+            parent_scenario_id=train_scenario_id,
+            metadata={
+                "source": "graph_project_migration",
+                "inheritance": "training_default",
+            },
+        ),
+        analysis_scenario_id: StudioScenarioSpec(
+            id=analysis_scenario_id,
+            label="Analysis scenario",
+            stage_id=analysis_stage_id,
+            analysis_spec=analysis_spec,
+            metadata={"source": "graph_project_migration"},
+        ),
+        report_scenario_id: StudioScenarioSpec(
+            id=report_scenario_id,
+            label="Report scenario",
+            stage_id=report_stage_id,
+            metadata={"source": "graph_project_migration"},
+        ),
+    }
+
+    stages = [
+        StudioStageSpec(
+            id=train_stage_id,
+            kind="train",
+            label="Train",
+            scenario_id=train_scenario_id,
+            output_collections=[
+                StudioCollectionRef(
+                    id="collection:training-runs",
+                    kind="training_runs",
+                    label="Training runs",
+                    source_stage_id=train_stage_id,
+                )
+            ],
+        ),
+        StudioStageSpec(
+            id=eval_stage_id,
+            kind="eval",
+            label="Evaluate",
+            scenario_id=eval_scenario_id,
+            input_collections=[
+                StudioCollectionRef(
+                    id="collection:training-runs",
+                    kind="training_runs",
+                    label="Training runs",
+                    source_stage_id=train_stage_id,
+                )
+            ],
+            output_collections=[
+                StudioCollectionRef(
+                    id="collection:evaluation-runs",
+                    kind="evaluation_runs",
+                    label="Evaluation runs",
+                    source_stage_id=eval_stage_id,
+                )
+            ],
+        ),
+        StudioStageSpec(
+            id=analysis_stage_id,
+            kind="analysis",
+            label="Analyze",
+            scenario_id=analysis_scenario_id,
+            input_collections=[
+                StudioCollectionRef(
+                    id="collection:evaluation-runs",
+                    kind="evaluation_runs",
+                    label="Evaluation runs",
+                    source_stage_id=eval_stage_id,
+                )
+            ],
+            output_collections=[
+                StudioCollectionRef(
+                    id="collection:analysis-products",
+                    kind="analysis_products",
+                    label="Analysis products",
+                    source_stage_id=analysis_stage_id,
+                )
+            ],
+        ),
+        StudioStageSpec(
+            id=report_stage_id,
+            kind="report",
+            label="Report",
+            scenario_id=report_scenario_id,
+            input_collections=[
+                StudioCollectionRef(
+                    id="collection:analysis-products",
+                    kind="analysis_products",
+                    label="Analysis products",
+                    source_stage_id=analysis_stage_id,
+                )
+            ],
+            output_collections=[
+                StudioCollectionRef(
+                    id="collection:reports",
+                    kind="reports",
+                    label="Reports",
+                    source_stage_id=report_stage_id,
+                )
+            ],
+        ),
+    ]
+
+    return StudioWorkspaceSpec(
+        id=workspace_id,
+        label=label,
+        active_stage_id=train_stage_id,
+        stages=stages,
+        scenarios=scenarios,
+        metadata={"source": "graph_project_migration"},
+    )
 
 
 class ValidationError(BaseModel):

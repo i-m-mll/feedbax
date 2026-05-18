@@ -18,6 +18,15 @@ from feedbax.provider import (
     validate_spec,
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, prepare_execution_plan
+from feedbax.studio_execution import (
+    StudioExecutionPreparationError,
+    StudioTrainingLocalRunRequest,
+    StudioTrainingLocalRunResult,
+    StudioTrainingExecutionPreparation,
+    StudioTrainingExecutionRequest,
+    prepare_studio_training_execution,
+    run_studio_training_local_execution,
+)
 
 
 router = APIRouter()
@@ -60,3 +69,29 @@ async def validate_provider_spec(
 @router.post("/execution/plan", response_model=ExecutionPlan)
 async def prepare_provider_execution_plan(payload: ExecutionSpec) -> ExecutionPlan:
     return prepare_execution_plan(payload)
+
+
+@router.post(
+    "/studio/training/plan",
+    response_model=StudioTrainingExecutionPreparation,
+)
+async def prepare_studio_training_plan(
+    payload: StudioTrainingExecutionRequest,
+) -> StudioTrainingExecutionPreparation:
+    try:
+        return prepare_studio_training_execution(payload)
+    except StudioExecutionPreparationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/training/run-local",
+    response_model=StudioTrainingLocalRunResult,
+)
+async def run_studio_training_local(
+    payload: StudioTrainingLocalRunRequest,
+) -> StudioTrainingLocalRunResult:
+    try:
+        return run_studio_training_local_execution(payload)
+    except StudioExecutionPreparationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -13,6 +13,7 @@ import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client'
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useTrainingStore } from '@/stores/trainingStore';
+import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
 import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
@@ -92,10 +93,17 @@ export function Header() {
           : pages[0].id;
         analysisSnapshot = { pages, activePageId };
       }
-      openProjectInTab(id, data.graph, data.ui_state ?? {
-        viewport: { x: 0, y: 0, zoom: 1 },
-        node_states: {},
-      }, data.metadata?.name ?? undefined, analysisSnapshot);
+      openProjectInTab(
+        id,
+        data.graph,
+        data.ui_state ?? {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          node_states: {},
+        },
+        data.metadata?.name ?? undefined,
+        analysisSnapshot,
+        data.workspace,
+      );
       if (data.demo_training_data) {
         const demo = data.demo_training_data;
         const totalBatches = demo.loss_history.length;
@@ -473,10 +481,19 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
       }
 
       const analysisSnapshot = template.createAnalysis();
+      const workspace = buildWorkspaceSnapshot({
+        workspace: null,
+        graph: modelGraph,
+        uiState,
+        trainingSpec: useTrainingStore.getState().trainingSpec,
+        taskSpec: useTrainingStore.getState().taskSpec,
+        analysisSnapshot,
+        projectName: template.name,
+      });
 
       try {
         // Persist to backend immediately so this is a real project, not ephemeral
-        const response = await createGraph(modelGraph, uiState);
+        const response = await createGraph(modelGraph, uiState, workspace);
         const graphId = response.id;
 
         // Save analysis pages to the backend
@@ -489,7 +506,14 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           eval_run_id: page.evalRunId ?? null,
           expanded_field_paths: page.expandedFieldPaths ?? [],
         }));
-        await updateGraph(graphId, null, null, analysisPages, analysisSnapshot.activePageId);
+        await updateGraph(
+          graphId,
+          null,
+          null,
+          analysisPages,
+          analysisSnapshot.activePageId,
+          workspace,
+        );
 
         // Open in a new tab with the persisted graphId
         openProjectInTab(
@@ -498,6 +522,7 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           uiState,
           template.name,
           analysisSnapshot,
+          workspace,
         );
 
         localStorage.setItem('feedbax:lastProjectId', graphId);
@@ -510,6 +535,7 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           uiState,
           template.name,
           analysisSnapshot,
+          workspace,
         );
       }
 

@@ -3,7 +3,12 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Optional
 
-from feedbax.web.models.graph import AnalysisPageSpec, GraphSpec, GraphUIState
+from feedbax.web.models.graph import (
+    AnalysisPageSpec,
+    GraphSpec,
+    GraphUIState,
+    StudioWorkspaceSpec,
+)
 from feedbax.web.services.graph_service import GraphService
 
 router = APIRouter()
@@ -13,6 +18,7 @@ service = GraphService()
 class GraphCreateRequest(BaseModel):
     graph: GraphSpec
     ui_state: Optional[GraphUIState] = None
+    workspace: Optional[StudioWorkspaceSpec] = None
 
 
 class GraphUpdateRequest(BaseModel):
@@ -20,6 +26,7 @@ class GraphUpdateRequest(BaseModel):
     ui_state: Optional[GraphUIState] = None
     analysis_pages: Optional[list[AnalysisPageSpec]] = None
     active_analysis_page_id: Optional[str] = None
+    workspace: Optional[StudioWorkspaceSpec] = None
 
 
 @router.get('')
@@ -31,6 +38,13 @@ async def list_graphs(response: Response):
 @router.post('')
 async def create_graph(payload: GraphCreateRequest):
     record = service.create_graph(payload.graph, payload.ui_state)
+    if payload.workspace is not None:
+        record = service.update_graph(
+            record.graph_id,
+            None,
+            None,
+            workspace=payload.workspace,
+        )
     return {'id': record.graph_id, 'metadata': record.project.metadata}
 
 
@@ -48,6 +62,7 @@ async def get_graph(graph_id: str, response: Response):
         'metadata': record.project.metadata,
         'analysis_pages': record.project.analysis_pages,
         'active_analysis_page_id': record.project.active_analysis_page_id,
+        'workspace': record.project.workspace,
     }
 
 
@@ -56,7 +71,7 @@ async def update_graph(graph_id: str, payload: GraphUpdateRequest):
     try:
         service.update_graph(
             graph_id, payload.graph, payload.ui_state, payload.analysis_pages,
-            payload.active_analysis_page_id,
+            payload.active_analysis_page_id, payload.workspace,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc
@@ -69,7 +84,7 @@ async def beacon_update_graph(graph_id: str, payload: GraphUpdateRequest):
     try:
         service.update_graph(
             graph_id, payload.graph, payload.ui_state, payload.analysis_pages,
-            payload.active_analysis_page_id,
+            payload.active_analysis_page_id, payload.workspace,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='Graph not found') from exc

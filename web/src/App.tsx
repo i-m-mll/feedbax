@@ -8,6 +8,8 @@ import { Divider } from '@/components/layout/Divider';
 import { useAppShortcuts } from '@/hooks/useShortcuts';
 import { useGraphStore } from '@/stores/graphStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useTrainingStore } from '@/stores/trainingStore';
+import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
 import { updateGraph } from '@/api/client';
 import {
   useLayoutStore,
@@ -64,8 +66,24 @@ export default function App() {
       savingRef.current = true;
       const { graph, uiState, markSaved } = useGraphStore.getState();
       const analysis = getAnalysisForSave();
+      const workspace = buildWorkspaceSnapshot({
+        workspace: useWorkspaceStore.getState().workspace,
+        graph,
+        uiState,
+        trainingSpec: useTrainingStore.getState().trainingSpec,
+        taskSpec: useTrainingStore.getState().taskSpec,
+        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+      });
+      useWorkspaceStore.getState().setWorkspace(workspace);
       try {
-        await updateGraph(graphId, graph, uiState, analysis?.pages ?? null, analysis?.activePageId);
+        await updateGraph(
+          graphId,
+          graph,
+          uiState,
+          analysis?.pages ?? null,
+          analysis?.activePageId,
+          workspace
+        );
         markSaved(graphId);
       } catch (e) {
         toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
@@ -95,6 +113,15 @@ export default function App() {
       const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
       const rootUiState = graphStack.length > 0 ? graphStack[0].uiState : uiState;
       const analysis = getAnalysisForSave();
+      const workspace = buildWorkspaceSnapshot({
+        workspace: useWorkspaceStore.getState().workspace,
+        graph: rootGraph,
+        uiState: rootUiState,
+        trainingSpec: useTrainingStore.getState().trainingSpec,
+        taskSpec: useTrainingStore.getState().taskSpec,
+        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+      });
+      useWorkspaceStore.getState().setWorkspace(workspace);
       // Cancel pending debounce timer
       if (timerRef.current) {
         clearTimeout(timerRef.current);
@@ -108,6 +135,7 @@ export default function App() {
         beaconPayload.analysis_pages = analysis.pages;
         beaconPayload.active_analysis_page_id = analysis.activePageId;
       }
+      beaconPayload.workspace = workspace;
       const body = new Blob(
         [JSON.stringify(beaconPayload)],
         { type: 'application/json' }
