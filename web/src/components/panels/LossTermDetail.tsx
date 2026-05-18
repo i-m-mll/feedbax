@@ -1,4 +1,5 @@
 import { useTrainingStore } from '@/stores/trainingStore';
+import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { LossTermSpec, NormFunction, TimeAggregationSpec } from '@/types/training';
 import { NORM_LABELS } from '@/types/training';
 import { ProbeSelector } from './ProbeSelector';
@@ -13,7 +14,9 @@ interface LossTermDetailProps {
 }
 
 export function LossTermDetail({ path, onClose }: LossTermDetailProps) {
-  const trainingSpec = useTrainingStore((state) => state.trainingSpec);
+  const trainingStoreSpec = useTrainingStore((state) => state.trainingSpec);
+  const trainingScenario = useWorkspaceStore((state) => getTrainingScenario(state.workspace));
+  const trainingSpec = trainingScenario?.training_spec ?? trainingStoreSpec;
   const updateLossTerm = useTrainingStore((state) => state.updateLossTerm);
   const removeLossTerm = useTrainingStore((state) => state.removeLossTerm);
   const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);

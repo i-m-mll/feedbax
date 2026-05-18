@@ -3,7 +3,11 @@ import { TrajectoryViewer } from './TrajectoryViewer';
 import { useTraining, extractNetworkParams } from '@/hooks/useTraining';
 import { useWorkerConfig } from '@/hooks/useWorkerConfig';
 import { useOrchestration } from '@/hooks/useOrchestration';
-import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  buildWorkspaceSnapshot,
+  getTrainingScenario,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
@@ -34,7 +38,19 @@ import {
 const LOSS_TERM_COLORS = ['#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
 
 export function TrainingPanel() {
-  const { trainingSpec, taskSpec, setTrainingSpec, progress, status, lossHistory, jobId, latestTrajectory, appendLog } = useTrainingStore();
+  const trainingStore = useTrainingStore();
+  const trainingScenario = useWorkspaceStore((state) => getTrainingScenario(state.workspace));
+  const trainingSpec = trainingScenario?.training_spec ?? trainingStore.trainingSpec;
+  const taskSpec = trainingScenario?.task_spec ?? trainingStore.taskSpec;
+  const {
+    setTrainingSpec,
+    progress,
+    status,
+    lossHistory,
+    jobId,
+    latestTrajectory,
+    appendLog,
+  } = trainingStore;
   const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
   const setLossValidationErrors = useTrainingStore((state) => state.setLossValidationErrors);
   const lossValidationErrors = useTrainingStore((state) => state.lossValidationErrors);

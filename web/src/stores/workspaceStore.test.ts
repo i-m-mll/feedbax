@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  buildWorkspaceSnapshot,
+  getActiveScenario,
+  getActiveStage,
+  getTrainingScenario,
+  objectiveSpecFromLossSpec,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
@@ -36,6 +43,15 @@ const taskSpec: TaskSpec = {
   params: { target_radius: 0.02 },
 };
 
+beforeEach(() => {
+  useWorkspaceStore.setState({
+    workspace: null,
+    lastTrainingExecutionPreparation: null,
+    lastTrainingLocalRunResult: null,
+    lastPipelineMaterializationResult: null,
+  });
+});
+
 describe('buildWorkspaceSnapshot', () => {
   it('creates train/eval/analysis/report anchors from current Studio state', () => {
     const workspace = buildWorkspaceSnapshot({
@@ -60,10 +76,11 @@ describe('buildWorkspaceSnapshot', () => {
     const scenario = workspace.scenarios[trainStage.scenario_id!];
     expect(scenario.training_spec).toEqual(trainingSpec);
     expect(scenario.task_spec).toEqual(taskSpec);
+    expect(scenario.objective_spec).toEqual(objectiveSpecFromLossSpec(trainingSpec.loss));
     expect(scenario.graph).toEqual(graph);
   });
 
-  it('preserves future product stages and metadata while refreshing active drafts', () => {
+  it('preserves workspace-owned drafts and future metadata while refreshing graph state', () => {
     const existing = buildWorkspaceSnapshot({
       workspace: null,
       graph,
@@ -73,8 +90,23 @@ describe('buildWorkspaceSnapshot', () => {
       analysisSnapshot: null,
       projectName: 'Workspace test',
     });
+    const trainStage = existing.stages.find((stage) => stage.kind === 'train')!;
+    const workspaceOwnedTrainingSpec = { ...trainingSpec, n_batches: 333 };
+    const workspaceOwnedTaskSpec = {
+      ...taskSpec,
+      params: { ...taskSpec.params, target_radius: 0.04 },
+    };
     const withFutureStage: StudioWorkspaceSpec = {
       ...existing,
+      scenarios: {
+        ...existing.scenarios,
+        [trainStage.scenario_id!]: {
+          ...existing.scenarios[trainStage.scenario_id!],
+          training_spec: workspaceOwnedTrainingSpec,
+          task_spec: workspaceOwnedTaskSpec,
+          metadata: { authored_in: 'workspace_store' },
+        },
+      },
       stages: [
         ...existing.stages,
         {
@@ -106,7 +138,7 @@ describe('buildWorkspaceSnapshot', () => {
       graph: { ...graph, output_ports: ['effector'] },
       uiState,
       trainingSpec: { ...trainingSpec, n_batches: 200 },
-      taskSpec,
+      taskSpec: { ...taskSpec, params: { target_radius: 0.01 } },
       analysisSnapshot: null,
       projectName: 'Workspace test',
     });
@@ -116,10 +148,124 @@ describe('buildWorkspaceSnapshot', () => {
     );
     expect(futureStage?.metadata).toEqual({ later: { keep: true } });
 
-    const trainStage = refreshed.stages.find((stage) => stage.kind === 'train')!;
-    const scenario = refreshed.scenarios[trainStage.scenario_id!];
-    expect(scenario.training_spec?.n_batches).toBe(200);
+    const refreshedTrainStage = refreshed.stages.find((stage) => stage.kind === 'train')!;
+    const scenario = refreshed.scenarios[refreshedTrainStage.scenario_id!];
+    expect(scenario.training_spec?.n_batches).toBe(333);
+    expect(scenario.task_spec?.params.target_radius).toBe(0.04);
     expect(scenario.graph?.output_ports).toEqual(['effector']);
+  });
+
+  it('switches active stages and exposes active stage/scenario selectors', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setActiveStageByKind('analysis');
+
+    const state = useWorkspaceStore.getState();
+    expect(getActiveStage(state.workspace)?.kind).toBe('analysis');
+    expect(getActiveScenario(state.workspace)?.id).toBe('scenario:analysis');
+    expect(state.workspace?.metadata.dirty).toBe(true);
+
+    useWorkspaceStore.getState().setActiveStageByKind('train');
+    expect(getTrainingScenario(useWorkspaceStore.getState().workspace)?.id).toBe(
+      'scenario:train'
+    );
+  });
+
+  it('updates train scenario drafts as the primary task/training/objective owner', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().updateActiveScenarioTrainingSpec({
+      ...trainingSpec,
+      loss: {
+        ...trainingSpec.loss,
+        children: {
+          endpoint: {
+            type: 'TargetStateLoss',
+            label: 'Endpoint',
+            weight: 2,
+            selector: 'port:effector.position',
+            norm: 'l2',
+            time_agg: { mode: 'final' },
+          },
+        },
+      },
+      n_batches: 500,
+    });
+    useWorkspaceStore.getState().updateActiveScenarioTaskSpec({
+      ...taskSpec,
+      params: { ...taskSpec.params, n_targets: 16 },
+    });
+
+    const scenario = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
+    expect(scenario.training_spec?.n_batches).toBe(500);
+    expect(scenario.task_spec?.params.n_targets).toBe(16);
+    expect(scenario.metadata.dirty).toBe(true);
+    expect(scenario.objective_spec?.terms).toHaveLength(1);
+    expect(scenario.objective_spec?.terms[0].source_selector).toMatchObject({
+      namespace: 'graph_port',
+      target_id: 'effector',
+      path: 'position',
+    });
+  });
+
+  it('updates stage draft collections without dropping custom stage metadata', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const evalStage = workspace.stages.find((stage) => stage.kind === 'eval')!;
+    const collection = {
+      id: 'collection:selected-training-runs',
+      kind: 'training_runs',
+      label: 'Selected training runs',
+      source_stage_id: 'stage:train',
+      item_refs: [],
+      filters: { status: 'completed' },
+      facets: {},
+      metadata: { user_named: true },
+    };
+
+    useWorkspaceStore.getState().setWorkspace({
+      ...workspace,
+      stages: workspace.stages.map((stage) =>
+        stage.id === evalStage.id
+          ? { ...stage, metadata: { custom: { keep: true } } }
+          : stage
+      ),
+    });
+    useWorkspaceStore
+      .getState()
+      .updateStageCollections(evalStage.id, { input_collections: [collection] });
+
+    const updatedEvalStage = useWorkspaceStore
+      .getState()
+      .workspace?.stages.find((stage) => stage.kind === 'eval');
+    expect(updatedEvalStage?.input_collections).toEqual([collection]);
+    expect(updatedEvalStage?.metadata.custom).toEqual({ keep: true });
+    expect(updatedEvalStage?.metadata.dirty).toBe(true);
   });
 
   it('stores prepared execution plans without dropping workspace state', () => {
