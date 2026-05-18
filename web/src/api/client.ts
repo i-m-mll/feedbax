@@ -1,6 +1,6 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
-import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { StudioTrainingExecutionPreparation, StudioWorkspaceSpec } from '@/types/workspace';
 // Note: analysis_pages in the API uses snake_case wire format (graph_spec, eval_params).
 // See analysisAPI.ts for the conversion to camelCase AnalysisPageSpec.
 import type {
@@ -105,6 +105,21 @@ export async function updateGraph(
   if (workspace !== undefined) payload.workspace = workspace;
   return request<{ success: boolean }>(`/api/graphs/${graphId}`, {
     method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function prepareStudioTrainingExecution(payload: {
+  workspace: StudioWorkspaceSpec;
+  stage_id?: string | null;
+  backend?: 'local' | 'ssh' | 'runpod' | 'modal';
+  job_id?: string | null;
+  local_cwd?: string | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioTrainingExecutionPreparation>('/api/provider/studio/training/plan', {
+    method: 'POST',
     body: JSON.stringify(payload),
   });
 }

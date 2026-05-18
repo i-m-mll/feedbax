@@ -44,6 +44,16 @@ export interface StudioManifestRef {
   metadata: Record<string, unknown>;
 }
 
+export interface StudioArtifactRef {
+  kind: string;
+  id: string;
+  role?: string | null;
+  provider: string;
+  uri?: string | null;
+  media_type?: string | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface StudioCollectionRef {
   id: string;
   kind: string;
@@ -95,6 +105,7 @@ export interface StudioStageSpec {
   input_collections: StudioCollectionRef[];
   output_collections: StudioCollectionRef[];
   manifest_refs: StudioManifestRef[];
+  artifact_refs?: StudioArtifactRef[];
   execution_spec?: Record<string, unknown> | null;
   selection_spec: Record<string, unknown>;
   validation: StudioValidationState;
@@ -111,7 +122,50 @@ export interface StudioWorkspaceSpec {
   scenarios: Record<string, StudioScenarioSpec>;
   collections: StudioCollectionRef[];
   manifest_refs: StudioManifestRef[];
+  artifact_refs?: StudioArtifactRef[];
   validation: StudioValidationState;
   ui_state: Record<string, unknown>;
   metadata: Record<string, unknown>;
+}
+
+export interface ExecutionPlanStep {
+  id: string;
+  title: string;
+  command?: string | null;
+  description: string;
+  critical: boolean;
+  metadata: Record<string, unknown>;
+}
+
+export interface ExecutionArtifactRoute {
+  role: string;
+  source: string;
+  destination?: string | null;
+  tracked: boolean;
+  description: string;
+}
+
+export interface ExecutionPlan {
+  kind: 'ExecutionPlan';
+  schema_version: string;
+  job_id: string;
+  backend: string;
+  command: string;
+  run_directory: string;
+  bootstrap: ExecutionPlanStep[];
+  health_checks: Array<Record<string, unknown>>;
+  launch: ExecutionPlanStep;
+  monitor: ExecutionPlanStep[];
+  artifact_routes: ExecutionArtifactRoute[];
+  cloud_payload: Record<string, unknown>;
+  reproducibility: Record<string, unknown>;
+  warnings: string[];
+}
+
+export interface StudioTrainingExecutionPreparation {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  scenario_id: string;
+  execution_spec: Record<string, unknown>;
+  plan: ExecutionPlan;
 }

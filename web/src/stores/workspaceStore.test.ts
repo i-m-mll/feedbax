@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
+import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
@@ -120,5 +120,74 @@ describe('buildWorkspaceSnapshot', () => {
     const scenario = refreshed.scenarios[trainStage.scenario_id!];
     expect(scenario.training_spec?.n_batches).toBe(200);
     expect(scenario.graph?.output_ports).toEqual(['effector']);
+  });
+
+  it('stores prepared execution plans without dropping workspace state', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const prepared = {
+      ...workspace,
+      stages: workspace.stages.map((stage) =>
+        stage.kind === 'train'
+          ? {
+              ...stage,
+              status: 'ready' as const,
+              artifact_refs: [
+                {
+                  kind: 'ExecutionPlan',
+                  id: 'execution-plan:studio-plan',
+                  role: 'execution_plan',
+                  provider: 'feedbax',
+                  uri: '/tmp/feedbax_runs/studio-plan/execution-plan.json',
+                  media_type: 'application/json',
+                  metadata: {},
+                },
+              ],
+            }
+          : stage
+      ),
+    };
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setTrainingExecutionPreparation({
+      workspace: prepared,
+      stage_id: 'stage:train',
+      scenario_id: 'scenario:train',
+      execution_spec: { job_id: 'studio-plan' },
+      plan: {
+        kind: 'ExecutionPlan',
+        schema_version: 'feedbax.execution.v1',
+        job_id: 'studio-plan',
+        backend: 'local',
+        command: 'feedbax-provider validate training training-spec.json',
+        run_directory: '/tmp/feedbax_runs/studio-plan',
+        bootstrap: [],
+        health_checks: [],
+        launch: {
+          id: 'launch',
+          title: 'Launch execution',
+          command: null,
+          description: '',
+          critical: true,
+          metadata: {},
+        },
+        monitor: [],
+        artifact_routes: [],
+        cloud_payload: {},
+        reproducibility: {},
+        warnings: [],
+      },
+    });
+
+    const state = useWorkspaceStore.getState();
+    expect(state.lastTrainingExecutionPreparation?.plan.job_id).toBe('studio-plan');
+    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
   });
 });

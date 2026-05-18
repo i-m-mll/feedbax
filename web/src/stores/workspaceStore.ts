@@ -8,6 +8,7 @@ import type {
   StudioScenarioSpec,
   StudioStageKind,
   StudioStageSpec,
+  StudioTrainingExecutionPreparation,
   StudioValidationState,
   StudioWorkspaceSpec,
 } from '@/types/workspace';
@@ -80,6 +81,7 @@ function defaultStage(
     input_collections: inputCollections,
     output_collections: outputCollections,
     manifest_refs: [],
+    artifact_refs: [],
     execution_spec: null,
     selection_spec: {},
     validation: emptyValidation(),
@@ -218,6 +220,7 @@ export function buildWorkspaceSnapshot({
       scenarios: {},
       collections: [],
       manifest_refs: [],
+      artifact_refs: [],
       validation: emptyValidation(),
       ui_state: {},
       metadata: { source: 'frontend_workspace_store' },
@@ -292,7 +295,11 @@ export function buildWorkspaceSnapshot({
 
 interface WorkspaceStoreState {
   workspace: StudioWorkspaceSpec | null;
+  lastTrainingExecutionPreparation: StudioTrainingExecutionPreparation | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
+  setTrainingExecutionPreparation: (
+    preparation: StudioTrainingExecutionPreparation | null
+  ) => void;
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
 }
@@ -306,8 +313,15 @@ function activeTrainScenario(workspace: StudioWorkspaceSpec | null): string | nu
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   workspace: null,
+  lastTrainingExecutionPreparation: null,
 
   setWorkspace: (workspace) => set({ workspace }),
+
+  setTrainingExecutionPreparation: (preparation) =>
+    set((state) => ({
+      lastTrainingExecutionPreparation: preparation,
+      workspace: preparation?.workspace ?? state.workspace,
+    })),
 
   updateActiveScenarioTrainingSpec: (trainingSpec) =>
     set((state) => {

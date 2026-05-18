@@ -224,6 +224,18 @@ class StudioManifestRef(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class StudioArtifactRef(BaseModel):
+    """Reference to a non-manifest artifact produced or consumed by Studio."""
+
+    kind: str
+    id: str
+    role: Optional[str] = None
+    provider: str = "feedbax"
+    uri: Optional[str] = None
+    media_type: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class StudioCollectionRef(BaseModel):
     """Reference to a collection flowing between Studio pipeline stages."""
 
@@ -277,6 +289,7 @@ class StudioStageSpec(BaseModel):
     input_collections: List[StudioCollectionRef] = Field(default_factory=list)
     output_collections: List[StudioCollectionRef] = Field(default_factory=list)
     manifest_refs: List[StudioManifestRef] = Field(default_factory=list)
+    artifact_refs: List[StudioArtifactRef] = Field(default_factory=list)
     execution_spec: Optional[Dict[str, Any]] = None
     selection_spec: Dict[str, Any] = Field(default_factory=dict)
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
@@ -295,6 +308,7 @@ class StudioWorkspaceSpec(BaseModel):
     scenarios: Dict[str, StudioScenarioSpec] = Field(default_factory=dict)
     collections: List[StudioCollectionRef] = Field(default_factory=list)
     manifest_refs: List[StudioManifestRef] = Field(default_factory=list)
+    artifact_refs: List[StudioArtifactRef] = Field(default_factory=list)
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
     ui_state: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
