@@ -156,7 +156,11 @@ export function BottomShelf({
             {activeContent}
           </div>
           {mode === 'stage' && activeStage?.kind !== 'train' && activeStage?.kind !== 'eval' && (
-            <StageProvenancePanel stage={activeStage} scenario={activeScenario} />
+            <StageProvenancePanel
+              stage={activeStage}
+              scenario={activeScenario}
+              workspace={workspace}
+            />
           )}
         </div>
       )}

@@ -14,6 +14,12 @@ import {
   type ScenarioProjectionItem,
 } from '@/features/scenario/projections';
 import {
+  artifactOverlaysForWorkspace,
+  scenarioMetricSpecs,
+  type ScenarioArtifactOverlay,
+  type ScenarioMetricSpec,
+} from '@/features/scenario/integration';
+import {
   addObjectiveTerm,
   createObjectiveTerm,
   ensureObjectiveSpec,
@@ -190,10 +196,14 @@ function EntityList({
 
 function WorkspaceProjection({
   registry,
+  metrics,
+  overlays,
   selectedId,
   onSelect,
 }: {
   registry: StudioScenarioEntityRegistry;
+  metrics: ScenarioMetricSpec[];
+  overlays: ScenarioArtifactOverlay[];
   selectedId: string | null;
   onSelect: (entityId: string | null) => void;
 }) {
@@ -234,6 +244,14 @@ function WorkspaceProjection({
         relatedIds
       )
     : false;
+  const overlayColors = ['#0f766e', '#7c3aed', '#ea580c', '#2563eb'];
+  const overlayPaths = overlays.slice(0, 4).map((overlay, index) => ({
+    overlay,
+    color: overlayColors[index % overlayColors.length],
+    path: `M ${125 + index * 12} ${255 - index * 9} C ${190} ${120 + index * 14}, ${
+      300
+    } ${300 - index * 18}, ${374 - index * 10} ${160 + index * 24}`,
+  }));
 
   return (
     <div className="grid h-full min-h-0 bg-slate-50 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -323,6 +341,17 @@ function WorkspaceProjection({
                 </g>
               );
             })}
+          {overlayPaths.map(({ overlay, color, path }) => (
+            <path
+              key={overlay.id}
+              d={path}
+              fill="none"
+              stroke={color}
+              strokeWidth="2.5"
+              strokeOpacity="0.72"
+              strokeDasharray={overlay.source === 'artifact' ? '7 5' : undefined}
+            />
+          ))}
           <circle cx="250" cy="210" r="4" fill="#047857" />
         </svg>
         <div className="absolute left-4 top-4 rounded border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-sm">
@@ -338,6 +367,8 @@ function WorkspaceProjection({
           relatedIds={relatedIds}
           onSelect={onSelect}
         />
+        <MetricTraceList metrics={metrics} />
+        <OverlayTraceList overlays={overlays} />
         {selectedEntity && (
           <div className="border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
             <div className="font-medium text-slate-700">{selectedEntity.label}</div>
@@ -346,6 +377,58 @@ function WorkspaceProjection({
         )}
       </aside>
     </div>
+  );
+}
+
+function MetricTraceList({ metrics }: { metrics: ScenarioMetricSpec[] }) {
+  return (
+    <section className="border-t border-slate-100 px-4 py-3">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+        Metric Specs
+      </div>
+      <div className="mt-2 space-y-2">
+        {metrics.slice(0, 6).map((metric) => (
+          <div key={`${metric.source}:${metric.sourceId}:${metric.id}`} className="text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-medium text-slate-700">{metric.label}</span>
+              <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                {metric.source}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-[11px] text-slate-400">
+              {metric.selector ?? metric.summary ?? metric.sourceId}
+            </div>
+          </div>
+        ))}
+        {metrics.length === 0 && <div className="text-xs text-slate-400">None derived</div>}
+      </div>
+    </section>
+  );
+}
+
+function OverlayTraceList({ overlays }: { overlays: ScenarioArtifactOverlay[] }) {
+  return (
+    <section className="border-t border-slate-100 px-4 py-3">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+        Overlays
+      </div>
+      <div className="mt-2 space-y-2">
+        {overlays.slice(0, 5).map((overlay) => (
+          <div key={overlay.id} className="text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-medium text-slate-700">{overlay.label}</span>
+              <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                {overlay.source}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-[11px] text-slate-400">
+              {overlay.uri ?? overlay.summary ?? overlay.role}
+            </div>
+          </div>
+        ))}
+        {overlays.length === 0 && <div className="text-xs text-slate-400">None available</div>}
+      </div>
+    </section>
   );
 }
 
@@ -487,6 +570,8 @@ export function ScenarioProjectionWorkspace() {
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
+  const overlays = useMemo(() => artifactOverlaysForWorkspace(workspace), [workspace]);
   const registry = useMemo(
     () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
     [activeScenario, graph]
@@ -534,6 +619,8 @@ export function ScenarioProjectionWorkspace() {
         {topPane.active_projection === 'workspace' && (
           <WorkspaceProjection
             registry={registry}
+            metrics={metrics}
+            overlays={overlays}
             selectedId={topPane.selected_entity_id}
             onSelect={selectTopPaneEntity}
           />

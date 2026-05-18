@@ -35,6 +35,10 @@ import {
   type ExecutionTargetChoice,
   type TrainingProtocolSnapshot,
 } from '@/utils/stageProtocol';
+import {
+  scenarioMetricSpecs,
+  type ScenarioMetricSpec,
+} from '@/features/scenario/integration';
 
 type RunView = 'all' | 'selected' | 'best';
 type SortKey = 'loss' | 'velocityRmse' | 'peakVelocity' | 'holdDrift' | 'progress';
@@ -62,6 +66,7 @@ export function TrainCollectionPanel() {
   const trainScenario = getScenario(workspace, trainStage?.scenario_id);
   const evalStage = getStageByKind(workspace, 'eval');
   const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
+  const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const selectedRows = useMemo(
@@ -171,11 +176,14 @@ export function TrainCollectionPanel() {
               )}
             </div>
           </div>
-          <TrainingProtocolEditor
-            protocol={protocol}
-            onTargetChange={setTarget}
-            onProtocolChange={updateProtocol}
-          />
+          <div className="space-y-3">
+            <TrainingProtocolEditor
+              protocol={protocol}
+              onTargetChange={setTarget}
+              onProtocolChange={updateProtocol}
+            />
+            <MetricTracePanel metrics={metrics} />
+          </div>
         </section>
 
         <RunTable
@@ -211,6 +219,7 @@ export function EvaluateCollectionPanel() {
   const trainStage = getStageByKind(workspace, 'train');
   const evalStage = getStageByKind(workspace, 'eval');
   const analysisStage = getStageByKind(workspace, 'analysis');
+  const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const rows = useMemo(() => trainingInputSummaries(evalStage), [evalStage]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const evaluationRows = useMemo(() => evaluationRunSummaries(evalStage), [evalStage]);
@@ -362,6 +371,8 @@ export function EvaluateCollectionPanel() {
               )}
             </div>
           </section>
+
+          <MetricTracePanel metrics={metrics} />
         </div>
       </div>
       {detailsRun && <RunDetailOverlay run={detailsRun} onClose={() => setDetailsRun(null)} />}
@@ -614,6 +625,31 @@ function EvaluationResult({
         <ChevronRight className="h-3.5 w-3.5" />
       </button>
     </div>
+  );
+}
+
+function MetricTracePanel({ metrics }: { metrics: ScenarioMetricSpec[] }) {
+  const visible = metrics.filter((metric) => metric.source !== 'task_default').slice(0, 5);
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="font-semibold text-slate-800">Metric provenance</div>
+      <div className="mt-3 space-y-2">
+        {visible.map((metric) => (
+          <div key={`${metric.source}:${metric.sourceId}:${metric.id}`} className="text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-medium text-slate-700">{metric.label}</span>
+              <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                {metric.source}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-[11px] text-slate-400">
+              {metric.selector ?? metric.summary ?? metric.sourceId}
+            </div>
+          </div>
+        ))}
+        {visible.length === 0 && <div className="text-xs text-slate-400">No metrics derived</div>}
+      </div>
+    </section>
   );
 }
 
