@@ -26,6 +26,10 @@ from feedbax.manifest import (
     utc_now,
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+from feedbax.studio_execution import (
+    StudioTrainingExecutionPreparation,
+    StudioTrainingExecutionRequest,
+)
 from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
 
@@ -117,6 +121,8 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "ExecutionSpec": ExecutionSpec,
         "ExecutionPlan": ExecutionPlan,
         "LocalExecutionResult": LocalExecutionResult,
+        "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
+        "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
         "GraphSpecManifest": GraphSpecManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
@@ -170,6 +176,12 @@ def provider_manifest() -> ProviderManifest:
             output_schema="LocalExecutionResult",
             requires_review=True,
             description="Run an explicitly local execution and emit a durable manifest.",
+        ),
+        "prepare_studio_training_execution": CapabilitySpec(
+            input_schema="StudioTrainingExecutionRequest",
+            output_schema="StudioTrainingExecutionPreparation",
+            description="Lower a Studio train-stage scenario into a provider execution plan.",
+            transports=["python", "http"],
         ),
         "list_components": CapabilitySpec(output_schema="ComponentRegistrySnapshot"),
         "list_tasks": CapabilitySpec(output_schema="TaskRegistrySnapshot"),
@@ -237,6 +249,7 @@ def component_registry_snapshot() -> RegistrySnapshot:
 
 def task_registry_snapshot() -> RegistrySnapshot:
     task_types = [
+        ("feedbax.task.ReachingTask", "ReachingTask", "Current Studio reaching task spec."),
         ("feedbax.task.SimpleReaches", "SimpleReaches", "Built-in reaching task."),
         ("feedbax.task.DelayedReaches", "DelayedReaches", "Built-in delayed reaching task."),
         ("feedbax.task.Stabilization", "Stabilization", "Built-in stabilization task."),
