@@ -21,6 +21,8 @@ const MECHANICS_TYPE_HINTS = [
   'skeleton',
 ];
 
+const TASK_TYPE_HINTS = ['task', 'reach', 'environment', 'trial'];
+
 export function graphNodeEntityId(nodeId: string): string {
   return `graph_node:${nodeId}`;
 }
@@ -150,6 +152,11 @@ function isMechanicsNode(nodeId: string, type: string): boolean {
   return MECHANICS_TYPE_HINTS.some((hint) => normalized.includes(hint));
 }
 
+function isTaskNode(nodeId: string, type: string): boolean {
+  const normalized = `${nodeId} ${type}`.toLowerCase();
+  return TASK_TYPE_HINTS.some((hint) => normalized.includes(hint));
+}
+
 function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSpec) {
   for (const [nodeId, node] of Object.entries(graph.nodes)) {
     const entityId = graphNodeEntityId(nodeId);
@@ -257,8 +264,16 @@ function addProbeEntity(registry: StudioScenarioEntityRegistry, tap: TapSpec) {
   }, true);
 }
 
-function addTaskEntity(registry: StudioScenarioEntityRegistry, scenario: StudioScenarioSpec) {
+function addTaskEntity(
+  registry: StudioScenarioEntityRegistry,
+  scenario: StudioScenarioSpec,
+  graph: GraphSpec | null
+) {
   if (!scenario.task_spec) return;
+  const taskNode = Object.entries(graph?.nodes ?? {}).find(([nodeId, node]) =>
+    isTaskNode(nodeId, node.type)
+  );
+  const relations = taskNode ? [relation('binds', graphNodeEntityId(taskNode[0]), 'graph node')] : [];
   addEntity(registry, {
     id: taskEntityId(scenario.id),
     kind: 'task_object',
@@ -274,8 +289,14 @@ function addTaskEntity(registry: StudioScenarioEntityRegistry, scenario: StudioS
       role: 'editable',
       metadata: {},
     },
-    relations: [],
-    metadata: { task_spec: scenario.task_spec },
+    relations,
+    metadata: {
+      task_spec: scenario.task_spec,
+      graph_node_id: taskNode?.[0] ?? null,
+      binding_state: taskNode ? 'bound' : 'unbound',
+      inheritance_state: scenario.parent_scenario_id ? 'inherited_or_overridden' : 'owned',
+      parent_scenario_id: scenario.parent_scenario_id ?? null,
+    },
   }, true);
 }
 
@@ -307,7 +328,12 @@ function addMechanicsEntities(
         metadata: {},
       },
       relations: [],
-      metadata: { biomechanics_spec: scenario.biomechanics_spec ?? null },
+      metadata: {
+        biomechanics_spec: scenario.biomechanics_spec ?? null,
+        binding_state: 'unbound',
+        inheritance_state: scenario.parent_scenario_id ? 'inherited_or_overridden' : 'owned',
+        parent_scenario_id: scenario.parent_scenario_id ?? null,
+      },
     }, true);
     return;
   }
@@ -332,7 +358,11 @@ function addMechanicsEntities(
       metadata: {
         node_id: nodeId,
         component_type: node.type,
+        params: node.params,
         biomechanics_spec: scenario.biomechanics_spec ?? null,
+        binding_state: 'bound',
+        inheritance_state: scenario.parent_scenario_id ? 'inherited_or_overridden' : 'owned',
+        parent_scenario_id: scenario.parent_scenario_id ?? null,
       },
     }, true);
   }
@@ -388,7 +418,7 @@ export function buildScenarioEntityRegistry({
 
   if (resolvedGraph) addGraphEntities(registry, resolvedGraph);
   if (scenario) {
-    addTaskEntity(registry, scenario);
+    addTaskEntity(registry, scenario, resolvedGraph);
     addMechanicsEntities(registry, scenario, resolvedGraph);
     addObjectiveEntities(
       registry,
