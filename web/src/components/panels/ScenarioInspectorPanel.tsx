@@ -1,6 +1,11 @@
 import { useMemo } from 'react';
 import clsx from 'clsx';
-import { buildScenarioEntityRegistry, entityKindLabel, getScenarioEntity } from '@/features/scenario/entities';
+import {
+  buildScenarioEntityRegistry,
+  entityKindLabel,
+  getScenarioEntity,
+  selectorToEntityId,
+} from '@/features/scenario/entities';
 import {
   ensureObjectiveSpec,
   objectiveTermEnabled,
@@ -266,7 +271,13 @@ function MechanicsInspector({ entity }: { entity: StudioScenarioEntity }) {
   );
 }
 
-function ObjectiveInspector({ entity }: { entity: StudioScenarioEntity }) {
+function ObjectiveInspector({
+  entity,
+  registry,
+}: {
+  entity: StudioScenarioEntity;
+  registry: StudioScenarioEntityRegistry;
+}) {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioObjectiveSpec
@@ -277,6 +288,9 @@ function ObjectiveInspector({ entity }: { entity: StudioScenarioEntity }) {
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const termId = entity.id.replace(/^objective_term:/, '');
   const term = objectiveSpec.terms.find((candidate) => candidate.id === termId);
+  const selectablePorts = Object.values(registry.entities)
+    .filter((candidate) => candidate.kind === 'graph_port' && candidate.selector)
+    .sort((a, b) => a.label.localeCompare(b.label));
   if (!term) {
     return <div className="text-sm text-slate-400">Objective term is no longer available.</div>;
   }
@@ -353,14 +367,30 @@ function ObjectiveInspector({ entity }: { entity: StudioScenarioEntity }) {
         />
         Enabled
       </label>
+      <label className="block space-y-1 text-xs text-slate-500">
+        <span>Source</span>
+        <select
+          value={selectorToEntityId(term.source_selector) ?? ''}
+          onChange={(event) => {
+            const source = registry.entities[event.target.value];
+            updateTerm({
+              source_selector: source?.selector ?? null,
+            });
+          }}
+          className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+        >
+          <option value="">None</option>
+          {selectablePorts.map((port) => (
+            <option key={port.id} value={port.id}>
+              {port.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <div className="space-y-2 text-xs text-slate-600">
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
           <div className="font-medium text-slate-500">Type</div>
           <div className="break-words">{formatValue(term.type_id)}</div>
-        </div>
-        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
-          <div className="font-medium text-slate-500">Selector</div>
-          <div className="break-words">{term.source_selector?.compact ?? 'None'}</div>
         </div>
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
           <div className="font-medium text-slate-500">Penalty</div>
@@ -408,7 +438,9 @@ function EntityBody({
     <div className="space-y-5 p-6">
       {entity.kind === 'task_object' && <TaskInspector entity={entity} />}
       {entity.kind === 'mechanics_object' && <MechanicsInspector entity={entity} />}
-      {entity.kind === 'objective_term' && <ObjectiveInspector entity={entity} />}
+      {entity.kind === 'objective_term' && (
+        <ObjectiveInspector entity={entity} registry={registry} />
+      )}
       {entity.kind === 'graph_port' && <PortInspector entity={entity} />}
       <RelationList entity={entity} registry={registry} />
     </div>

@@ -5,6 +5,13 @@ import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useTrainingStore } from '@/stores/trainingStore';
+import {
+  getActiveStage,
+  getScenario,
+  getTopPaneState,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
+import { graphPortEntityId } from '@/features/scenario/entities';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
@@ -27,7 +34,35 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const toggleNodeReversed = useGraphStore((state) => state.toggleNodeReversed);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const hasSubgraph = useGraphStore((state) => Boolean(state.graph.subgraphs?.[label]));
+  const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
+  const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
+  const setSelectedEdge = useGraphStore((state) => state.setSelectedEdge);
   const highlightedProbeSelector = useTrainingStore((state) => state.highlightedProbeSelector);
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
+  const topPane = getTopPaneState(workspace);
+  const objectivePorts = useMemo(() => {
+    const activeScenario = getScenario(workspace, getActiveStage(workspace)?.scenario_id);
+    const objectiveSpec = activeScenario?.objective_spec;
+    if (!objectiveSpec || typeof objectiveSpec !== 'object' || !Array.isArray(objectiveSpec.terms)) {
+      return new Set<string>();
+    }
+    const ports = new Set<string>();
+    for (const term of objectiveSpec.terms) {
+      const selector = term?.source_selector;
+      if (
+        selector?.namespace !== 'graph_port' ||
+        selector.target_id !== label ||
+        typeof selector.path !== 'string'
+      ) {
+        continue;
+      }
+      const direction = selector.metadata?.direction === 'input' ? 'input' : 'output';
+      ports.add(`${direction}:${selector.path}`);
+    }
+    return ports;
+  }, [label, workspace]);
 
   const reversed = nodeData.reversed ?? false;
 
@@ -100,6 +135,29 @@ export function CustomNode({ id, data, selected }: NodeProps) {
       });
     },
     []
+  );
+
+  const selectPort = useCallback(
+    (
+      event: React.MouseEvent,
+      portName: string,
+      direction: 'input' | 'output'
+    ) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedNode(label);
+      setSelectedTap(null);
+      setSelectedEdge(null);
+      selectTopPaneEntity(graphPortEntityId(label, direction, portName), 'graph_port_selected');
+    },
+    [label, selectTopPaneEntity, setSelectedEdge, setSelectedNode, setSelectedTap]
+  );
+
+  const hoverPort = useCallback(
+    (portName: string, direction: 'input' | 'output') => {
+      hoverTopPaneEntity(graphPortEntityId(label, direction, portName));
+    },
+    [hoverTopPaneEntity, label]
   );
 
   const closeContextMenu = useCallback(() => {
@@ -264,7 +322,12 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 width: '8px',
                 height: '8px',
               }}
-              className="w-2 h-2 z-20 border border-white shadow-soft bg-slate-400"
+              className={clsx(
+                'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
+                objectivePorts.has(`input:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
+                topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
+                  'bg-brand-500 ring-2 ring-brand-200 scale-125'
+              )}
             />
           ))}
           {spec.output_ports.map((port, index) => (
@@ -285,16 +348,26 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               }}
               className={clsx(
                 'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
-                highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125'
+                objectivePorts.has(`output:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
+                highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125',
+                topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
+                  'bg-brand-500 ring-2 ring-brand-200 scale-125'
               )}
               onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
             />
           ))}
           {spec.input_ports.map((port, index) => (
-            <div
+            <button
               key={`label-in-${port}`}
+              type="button"
+              onClick={(event) => selectPort(event, port, 'input')}
+              onMouseEnter={() => hoverPort(port, 'input')}
+              onMouseLeave={() => hoverTopPaneEntity(null)}
               className={clsx(
-                'absolute flex items-center gap-2 text-slate-600',
+                'nodrag nopan absolute flex items-center gap-2 rounded px-1 py-0.5 text-slate-600 hover:bg-brand-50 hover:text-brand-700',
+                objectivePorts.has(`input:${port}`) && 'font-semibold text-violet-700',
+                topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
+                  'bg-brand-50 font-semibold text-brand-700',
                 reversed && 'flex-row-reverse'
               )}
               style={{
@@ -302,29 +375,46 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 [reversed ? 'right' : 'left']: LABEL_OFFSET,
                 transform: 'translateY(-50%)',
               }}
+              title={`Select ${label}.${port}`}
             >
+              {objectivePorts.has(`input:${port}`) && (
+                <Crosshair className="w-3 h-3 text-violet-500" />
+              )}
               <span>{port}</span>
-            </div>
+            </button>
           ))}
           {spec.output_ports.map((port, index) => (
-            <div
+            <button
               key={`label-out-${port}`}
+              type="button"
+              onClick={(event) => selectPort(event, port, 'output')}
+              onMouseEnter={() => hoverPort(port, 'output')}
+              onMouseLeave={() => hoverTopPaneEntity(null)}
               className={clsx(
-                'absolute flex items-center gap-1',
+                'nodrag nopan absolute flex items-center gap-1 rounded px-1 py-0.5 hover:bg-brand-50 hover:text-brand-700',
                 reversed ? 'justify-start' : 'justify-end',
-                highlightedPorts.has(port) ? 'text-amber-600 font-medium' : 'text-slate-600'
+                objectivePorts.has(`output:${port}`) && 'font-semibold text-violet-700',
+                highlightedPorts.has(port) ? 'text-amber-600 font-medium' : 'text-slate-600',
+                topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
+                  'bg-brand-50 font-semibold text-brand-700'
               )}
               style={{
                 top: rowCenterInBody(index),
                 [reversed ? 'left' : 'right']: LABEL_OFFSET,
                 transform: 'translateY(-50%)',
               }}
+              title={`Select ${label}.${port}`}
             >
-              {highlightedPorts.has(port) && (
-                <Crosshair className="w-3 h-3 text-amber-500" />
+              {(highlightedPorts.has(port) || objectivePorts.has(`output:${port}`)) && (
+                <Crosshair
+                  className={clsx(
+                    'w-3 h-3',
+                    highlightedPorts.has(port) ? 'text-amber-500' : 'text-violet-500'
+                  )}
+                />
               )}
               <span>{port}</span>
-            </div>
+            </button>
           ))}
         </div>
       )}

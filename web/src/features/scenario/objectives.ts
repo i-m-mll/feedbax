@@ -200,23 +200,6 @@ function selectorFromGraphPortEntity(entity: StudioScenarioEntity): StudioSelect
   return entity.selector ?? null;
 }
 
-function selectorFromGraphNodeEntity(entity: StudioScenarioEntity): StudioSelectorRef | null {
-  const outputs = Array.isArray(entity.metadata.output_ports)
-    ? (entity.metadata.output_ports as unknown[])
-    : [];
-  const firstOutput = outputs.find((value): value is string => typeof value === 'string');
-  const nodeId = typeof entity.metadata.node_id === 'string' ? entity.metadata.node_id : null;
-  if (!nodeId || !firstOutput) return null;
-  return {
-    namespace: 'graph_port',
-    compact: `port:${nodeId}.${firstOutput}`,
-    target_id: nodeId,
-    path: firstOutput,
-    role: 'observed',
-    metadata: { inferred_from: entity.id },
-  };
-}
-
 function selectorFromGraphEdgeEntity(entity: StudioScenarioEntity): StudioSelectorRef | null {
   const wire = entity.metadata.wire as WireSpec | undefined;
   if (!wire) return null;
@@ -230,28 +213,14 @@ function selectorFromGraphEdgeEntity(entity: StudioScenarioEntity): StudioSelect
   };
 }
 
-function selectorFromMechanicsEntity(
-  entity: StudioScenarioEntity,
-  registry: StudioScenarioEntityRegistry
-): StudioSelectorRef | null {
-  const graphNodeRelation = entity.relations.find((relation) => relation.kind === 'binds');
-  const graphNode = graphNodeRelation ? registry.entities[graphNodeRelation.entity_id] : null;
-  if (graphNode?.kind === 'graph_node') {
-    return selectorFromGraphNodeEntity(graphNode);
-  }
-  return entity.selector ?? null;
-}
-
 export function sourceSelectorForEntity(
   entity: StudioScenarioEntity | null | undefined,
-  registry: StudioScenarioEntityRegistry
+  _registry: StudioScenarioEntityRegistry
 ): StudioSelectorRef | null {
   if (!entity) return null;
   if (entity.kind === 'graph_port') return selectorFromGraphPortEntity(entity);
-  if (entity.kind === 'graph_node') return selectorFromGraphNodeEntity(entity);
   if (entity.kind === 'graph_edge') return selectorFromGraphEdgeEntity(entity);
   if (entity.kind === 'probe') return entity.selector ?? null;
-  if (entity.kind === 'mechanics_object') return selectorFromMechanicsEntity(entity, registry);
   return null;
 }
 
@@ -268,7 +237,8 @@ export function relatedObjectiveEntityIds(
 ): string[] {
   const ids: string[] = [];
   if (term.source_selector?.namespace === 'graph_port' && term.source_selector.target_id && term.source_selector.path) {
-    ids.push(graphPortEntityId(term.source_selector.target_id, 'output', term.source_selector.path));
+    const direction = term.source_selector.metadata.direction === 'input' ? 'input' : 'output';
+    ids.push(graphPortEntityId(term.source_selector.target_id, direction, term.source_selector.path));
   }
   ids.push(objectiveEntityId(term.id));
   return ids;

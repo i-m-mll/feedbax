@@ -288,23 +288,23 @@ export function artifactOverlaysForWorkspace(
   const overlays: ScenarioArtifactOverlay[] = [];
 
   for (const { ref, stage } of allArtifactRefs(workspace)) {
-    const topics = arrayOfStrings(ref.metadata.topics);
-    for (const topic of topics) {
-      if (!/(profile|trajectory|velocity|drift)/i.test(topic)) continue;
-      overlays.push({
-        id: `${ref.id}:${topic}`,
-        label: titleFromId(topic),
-        source: 'artifact',
-        role: ref.role ?? ref.kind,
-        stageId: stage?.id ?? null,
-        artifactId: ref.id,
-        uri: ref.uri?.replace('<topic>', topic) ?? null,
-        mediaType: ref.media_type ?? null,
-        metricIds: MANIFEST_METRIC_KEYS.filter((metric) => topic.includes(metric.split('_')[0])),
-        summary: `${ref.provider} ${ref.kind}`,
-        metadata: { topic, provider: ref.provider },
-      });
-    }
+    const overlay = isRecord(ref.metadata.workspace_overlay)
+      ? ref.metadata.workspace_overlay
+      : null;
+    if (!overlay) continue;
+    overlays.push({
+      id: `${ref.id}:workspace-overlay`,
+      label: stringValue(overlay.label) ?? ref.role ?? ref.kind,
+      source: 'artifact',
+      role: ref.role ?? ref.kind,
+      stageId: stage?.id ?? null,
+      artifactId: ref.id,
+      uri: stringValue(overlay.uri) ?? ref.uri ?? null,
+      mediaType: ref.media_type ?? null,
+      metricIds: arrayOfStrings(overlay.metric_ids),
+      summary: stringValue(overlay.summary),
+      metadata: { ...overlay, provider: ref.provider },
+    });
   }
 
   for (const stage of workspace.stages) {
@@ -313,40 +313,22 @@ export function artifactOverlaysForWorkspace(
     for (const page of analysisPages(scenario)) {
       for (const node of graphNodes(page)) {
         const params = isRecord(node.params) ? node.params : {};
-        const sourceFigure = stringValue(params.source_figure);
-        if (!sourceFigure) continue;
-        if (!/(profile|trajectory|velocity|drift|figure)/i.test(sourceFigure)) continue;
+        const overlay = isRecord(params.workspace_overlay) ? params.workspace_overlay : null;
+        if (!overlay) continue;
         overlays.push({
-          id: `${page.id}:${stringValue(node.id) ?? sourceFigure}`,
-          label: stringValue(node.label) ?? titleFromId(sourceFigure),
+          id: `${page.id}:${stringValue(node.id) ?? stringValue(overlay.uri) ?? 'workspace-overlay'}`,
+          label: stringValue(overlay.label) ?? stringValue(node.label) ?? 'Workspace overlay',
           source: 'analysis',
           role: stringValue(node.type) ?? 'analysis_output',
           stageId: stage.id,
           artifactId: null,
-          uri: sourceFigure,
+          uri: stringValue(overlay.uri),
           mediaType: null,
-          metricIds: arrayOfStrings(params.metrics),
+          metricIds: arrayOfStrings(overlay.metric_ids),
           summary: page.name,
           metadata: { page_id: page.id, node_id: stringValue(node.id) },
         });
       }
-    }
-
-    for (const ref of stage.output_collections.flatMap((collection) => collection.item_refs)) {
-      if (ref.kind !== 'EvaluationRun' && ref.role !== 'evaluation_run') continue;
-      overlays.push({
-        id: `${ref.id}:evaluation-protocol`,
-        label: stringValue(ref.metadata.name) ?? 'Evaluation result',
-        source: 'evaluation',
-        role: ref.role ?? ref.kind,
-        stageId: stage.id,
-        artifactId: null,
-        uri: ref.uri ?? null,
-        mediaType: null,
-        metricIds: [],
-        summary: stringValue(ref.metadata.source_issue),
-        metadata: { manifest_id: ref.id },
-      });
     }
   }
 

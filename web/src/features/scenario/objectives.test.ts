@@ -8,7 +8,7 @@ import {
   sourceSelectorForEntity,
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
-import { graphNodeEntityId } from '@/features/scenario/entities';
+import { graphNodeEntityId, graphPortEntityId, mechanicsEntityId } from '@/features/scenario/entities';
 import type { StudioObjectiveSpec, StudioScenarioEntityRegistry } from '@/types/workspace';
 
 const baseSpec: StudioObjectiveSpec = {
@@ -48,7 +48,7 @@ describe('scenario objective operations', () => {
     expect(removed.terms).toEqual([]);
   });
 
-  it('infers a source selector from graph node entities', () => {
+  it('uses explicit graph port selectors instead of inferring from graph nodes', () => {
     const registry: StudioScenarioEntityRegistry = {
       scenario_id: 'scenario:train',
       stage_id: 'stage:train',
@@ -69,10 +69,52 @@ describe('scenario objective operations', () => {
             output_ports: ['effector', 'state'],
           },
         },
+        [graphPortEntityId('mechanics', 'output', 'effector')]: {
+          id: graphPortEntityId('mechanics', 'output', 'effector'),
+          kind: 'graph_port',
+          label: 'mechanics.effector',
+          summary: 'Output port',
+          scenario_id: 'scenario:train',
+          stage_id: 'stage:train',
+          selector: {
+            namespace: 'graph_port',
+            compact: 'port:mechanics.effector',
+            target_id: 'mechanics',
+            path: 'effector',
+            metadata: { direction: 'output' },
+          },
+          relations: [],
+          metadata: {
+            node_id: 'mechanics',
+            port: 'effector',
+            direction: 'output',
+          },
+        },
+        [mechanicsEntityId('scenario:train', 'mechanics')]: {
+          id: mechanicsEntityId('scenario:train', 'mechanics'),
+          kind: 'mechanics_object',
+          label: 'mechanics',
+          summary: 'TwoLinkArm',
+          scenario_id: 'scenario:train',
+          stage_id: 'stage:train',
+          selector: {
+            namespace: 'mechanics_object',
+            compact: 'mechanics:scenario:train.mechanics',
+            target_id: 'scenario:train:mechanics',
+            path: 'mechanics',
+            metadata: {},
+          },
+          relations: [{ kind: 'binds', entity_id: graphNodeEntityId('mechanics'), label: 'graph node', metadata: {} }],
+          metadata: {
+            node_id: 'mechanics',
+          },
+        },
       },
     };
 
-    expect(sourceSelectorForEntity(registry.entities[graphNodeEntityId('mechanics')], registry)).toMatchObject({
+    expect(sourceSelectorForEntity(registry.entities[graphNodeEntityId('mechanics')], registry)).toBeNull();
+    expect(sourceSelectorForEntity(registry.entities[mechanicsEntityId('scenario:train', 'mechanics')], registry)).toBeNull();
+    expect(sourceSelectorForEntity(registry.entities[graphPortEntityId('mechanics', 'output', 'effector')], registry)).toMatchObject({
       compact: 'port:mechanics.effector',
       namespace: 'graph_port',
     });
