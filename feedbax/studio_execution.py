@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +21,23 @@ from feedbax.execution import (
     prepare_execution_plan,
     run_local_execution,
 )
-from feedbax.manifest import default_manifest_root, utc_now
+from feedbax.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
+    ArtifactRef,
+    EntrypointRef,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    ParentRef,
+    Provenance,
+    ReportManifest,
+    ReportSpec,
+    default_manifest_root,
+    spec_payload,
+    store_json_artifact,
+    utc_now,
+    write_manifest,
+)
 from feedbax.web.models.graph import (
     StudioArtifactRef,
     StudioCollectionRef,
@@ -86,6 +102,31 @@ class StudioTrainingLocalRunResult(StudioExecutionModel):
     execution_spec: ExecutionSpec
     result: LocalExecutionResult
     snapshot_dir: str
+
+
+StudioPipelineMaterializationStage = Literal["eval", "analysis", "report"]
+
+
+class StudioPipelineMaterializationRequest(StudioExecutionModel):
+    """Request to materialize downstream Studio pipeline stages."""
+
+    workspace: StudioWorkspaceSpec
+    stages: list[StudioPipelineMaterializationStage] = Field(
+        default_factory=lambda: ["eval", "analysis", "report"]
+    )
+    job_id: Optional[str] = None
+    root: Optional[str] = None
+    issues: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioPipelineMaterializationResult(StudioExecutionModel):
+    """Result from materializing eval/analysis/report Studio stages."""
+
+    workspace: StudioWorkspaceSpec
+    stage_ids: list[str]
+    manifest_paths: dict[str, str]
+    artifact_refs: list[StudioArtifactRef] = Field(default_factory=list)
 
 
 class StudioExecutionPreparationError(ValueError):
@@ -311,6 +352,10 @@ def run_studio_training_local_execution(
         workspace.artifact_refs,
         _local_result_artifact_refs(result, snapshot_dir, stage.id, preparation.scenario_id),
     )
+    workspace.collections = _upsert_many_collection_refs(
+        workspace.collections,
+        stage.output_collections,
+    )
     _replace_stage(workspace, stage)
 
     return StudioTrainingLocalRunResult(
@@ -320,6 +365,64 @@ def run_studio_training_local_execution(
         execution_spec=preparation.execution_spec,
         result=result,
         snapshot_dir=str(snapshot_dir),
+    )
+
+
+def materialize_studio_pipeline(
+    request: StudioPipelineMaterializationRequest,
+) -> StudioPipelineMaterializationResult:
+    """Materialize the first Studio train -> eval -> analysis -> report path.
+
+    This is the Phase 4 product-path bridge. It consumes the durable collections
+    produced by upstream stages and writes provider manifests for downstream
+    stages without introducing a hidden frontend-only interpretation path.
+    """
+
+    workspace = request.workspace.model_copy(deep=True)
+    root_path = Path(request.root).expanduser() if request.root else default_manifest_root()
+    base_job_id = request.job_id or f"studio-pipeline-{uuid.uuid4().hex[:12]}"
+    executed_stage_ids: list[str] = []
+    manifest_paths: dict[str, str] = {}
+    artifact_refs: list[StudioArtifactRef] = []
+
+    for stage_kind in request.stages:
+        if stage_kind == "eval":
+            manifest_path, stage_artifacts = _materialize_eval_stage(
+                workspace,
+                root_path=root_path,
+                job_id=f"{base_job_id}-eval",
+                issues=request.issues,
+                request_metadata=request.metadata,
+            )
+        elif stage_kind == "analysis":
+            manifest_path, stage_artifacts = _materialize_analysis_stage(
+                workspace,
+                root_path=root_path,
+                job_id=f"{base_job_id}-analysis",
+                issues=request.issues,
+                request_metadata=request.metadata,
+            )
+        elif stage_kind == "report":
+            manifest_path, stage_artifacts = _materialize_report_stage(
+                workspace,
+                root_path=root_path,
+                job_id=f"{base_job_id}-report",
+                issues=request.issues,
+                request_metadata=request.metadata,
+            )
+        else:  # pragma: no cover - Literal keeps this unreachable.
+            raise StudioExecutionPreparationError(f"Unsupported stage kind {stage_kind!r}")
+
+        stage = _select_stage_by_kind(workspace, stage_kind)
+        executed_stage_ids.append(stage.id)
+        manifest_paths[stage.id] = str(manifest_path)
+        artifact_refs.extend(stage_artifacts)
+
+    return StudioPipelineMaterializationResult(
+        workspace=workspace,
+        stage_ids=executed_stage_ids,
+        manifest_paths=manifest_paths,
+        artifact_refs=artifact_refs,
     )
 
 
@@ -452,8 +555,9 @@ def _build_execution_spec(
                 "graph-spec.json",
                 "training-spec.json",
                 "task-spec.json",
+                "artifacts/training-summary.json",
             ],
-            "current_command_role": "validate_stage_snapshot",
+            "current_command_role": "materialize_mvp_training_result",
             "future_command_role": "launch_training_runner",
         },
     }
@@ -462,9 +566,11 @@ def _build_execution_spec(
         job_id=job_id,
         backend=request.backend,
         command=(
-            "python -m feedbax.bin.provider validate training training-spec.json "
-            "--graph graph-spec.json && "
-            "python -m feedbax.bin.provider validate task task-spec.json"
+            "python -m feedbax.bin.studio_pipeline materialize-training "
+            "--graph graph-spec.json "
+            "--training training-spec.json "
+            "--task task-spec.json "
+            "--output artifacts/training-summary.json"
         ),
         repos=repos or [],
         primary_repo=request.primary_repo,
@@ -476,6 +582,7 @@ def _build_execution_spec(
                 "graph-spec.json",
                 "training-spec.json",
                 "task-spec.json",
+                "artifacts/training-summary.json",
             ],
             bulk_paths=["artifacts"],
             metadata={"studio_stage_id": stage.id, "studio_scenario_id": scenario.id},
@@ -576,7 +683,513 @@ def _local_result_artifact_refs(
             },
         ),
     ]
+    training_summary_path = snapshot_dir / "artifacts" / "training-summary.json"
+    if training_summary_path.exists():
+        refs.append(
+            StudioArtifactRef(
+                kind="StudioTrainingResult",
+                id=f"studio-training-result:{result.job_id}",
+                role="training_result",
+                uri=str(training_summary_path),
+                media_type="application/json",
+                metadata=metadata,
+            )
+        )
     return refs
+
+
+def _materialize_eval_stage(
+    workspace: StudioWorkspaceSpec,
+    *,
+    root_path: Path,
+    job_id: str,
+    issues: list[str],
+    request_metadata: dict[str, Any],
+) -> tuple[Path, list[StudioArtifactRef]]:
+    train_stage = _select_stage_by_kind(workspace, "train")
+    eval_stage = _select_stage_by_kind(workspace, "eval")
+    training_collection = _require_output_collection(train_stage, "training_runs")
+    _require_collection_items(training_collection, "training runs", eval_stage.id)
+    eval_stage.input_collections = _upsert_collection_ref(
+        eval_stage.input_collections,
+        training_collection,
+    )
+
+    train_scenario = workspace.scenarios.get(train_stage.scenario_id or "")
+    eval_scenario = workspace.scenarios.get(eval_stage.scenario_id or "")
+    if eval_scenario is not None:
+        eval_scenario.parent_scenario_id = (
+            eval_scenario.parent_scenario_id or train_stage.scenario_id
+        )
+        eval_scenario.metadata = {
+            **eval_scenario.metadata,
+            "inheritance": eval_scenario.metadata.get(
+                "inheritance",
+                "training_default",
+            ),
+            "inherits_from_stage_id": train_stage.id,
+        }
+        if eval_scenario.task_spec is None and train_scenario is not None:
+            eval_scenario.task_spec = train_scenario.task_spec
+        workspace.scenarios[eval_scenario.id] = eval_scenario
+
+    input_refs = _collection_manifest_parents(training_collection)
+    spec = EvaluationRunSpec(
+        evaluation_type="studio_default_eval",
+        training_run_ids=[ref.id for ref in input_refs if ref.kind == "TrainingRunManifest"],
+        inputs=input_refs,
+        params={
+            "stage_id": eval_stage.id,
+            "scenario_id": eval_stage.scenario_id,
+            "selection_spec": eval_stage.selection_spec,
+            "input_collection_id": training_collection.id,
+            "inherited_from_scenario_id": eval_scenario.parent_scenario_id
+            if eval_scenario is not None
+            else train_stage.scenario_id,
+        },
+    )
+    summary = {
+        "kind": "StudioEvaluationSummary",
+        "job_id": job_id,
+        "stage_id": eval_stage.id,
+        "input_training_runs": [ref.id for ref in input_refs],
+        "status": "completed",
+    }
+    artifact = store_json_artifact(
+        summary,
+        root=root_path,
+        role="evaluation_result",
+        logical_name=f"{job_id}-evaluation-summary.json",
+        metadata={"stage_id": eval_stage.id, "job_id": job_id},
+    )
+    manifest = EvaluationRunManifest(
+        id=f"feedbax-evaluation-run:{job_id}",
+        status="completed",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            spec.model_dump(mode="json", exclude_none=True),
+        ),
+        input_training_runs=input_refs,
+        summary_metrics={"input_training_runs": len(input_refs)},
+        provenance=_stage_provenance(
+            stage_kind="eval",
+            issues=issues,
+            parents=input_refs,
+            request_metadata=request_metadata,
+            job_id=job_id,
+        ),
+        artifacts=[artifact],
+        metadata={"studio": _stage_manifest_metadata(workspace, eval_stage, job_id)},
+    )
+    path = write_manifest(manifest, root=root_path)
+    manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "evaluation_run", path, job_id)
+    artifact_refs = [_studio_artifact_ref(artifact, kind="EvaluationResult")]
+    _complete_stage_with_manifest(
+        workspace,
+        eval_stage,
+        manifest_ref=manifest_ref,
+        artifact_refs=artifact_refs,
+        output_collection_kind="evaluation_runs",
+        output_collection_id="collection:evaluation-runs",
+        output_collection_label="Evaluation runs",
+        completed_metadata={
+            "input_collection_id": training_collection.id,
+            "input_manifest_ids": [ref.id for ref in input_refs],
+        },
+    )
+    return path, artifact_refs
+
+
+def _materialize_analysis_stage(
+    workspace: StudioWorkspaceSpec,
+    *,
+    root_path: Path,
+    job_id: str,
+    issues: list[str],
+    request_metadata: dict[str, Any],
+) -> tuple[Path, list[StudioArtifactRef]]:
+    eval_stage = _select_stage_by_kind(workspace, "eval")
+    analysis_stage = _select_stage_by_kind(workspace, "analysis")
+    evaluation_collection = _require_output_collection(eval_stage, "evaluation_runs")
+    _require_collection_items(evaluation_collection, "evaluation runs", analysis_stage.id)
+    analysis_stage.input_collections = _upsert_collection_ref(
+        analysis_stage.input_collections,
+        evaluation_collection,
+    )
+    input_refs = _collection_manifest_parents(evaluation_collection)
+    scenario = workspace.scenarios.get(analysis_stage.scenario_id or "")
+    analysis_spec_payload = scenario.analysis_spec if scenario is not None else None
+    spec = AnalysisRunSpec(
+        analysis_type=str(
+            (analysis_spec_payload or {}).get("analysis_type", "feedbax.analysis.activity")
+        ),
+        inputs=input_refs,
+        params={
+            "stage_id": analysis_stage.id,
+            "scenario_id": analysis_stage.scenario_id,
+            "selection_spec": analysis_stage.selection_spec,
+            "input_collection_id": evaluation_collection.id,
+            "analysis_spec": analysis_spec_payload or {},
+        },
+    )
+    summary = {
+        "kind": "StudioAnalysisSummary",
+        "job_id": job_id,
+        "stage_id": analysis_stage.id,
+        "input_evaluation_runs": [ref.id for ref in input_refs],
+        "analysis_type": spec.analysis_type,
+        "status": "completed",
+    }
+    artifact = store_json_artifact(
+        summary,
+        root=root_path,
+        role="analysis_table",
+        logical_name=f"{job_id}-analysis-summary.json",
+        metadata={"stage_id": analysis_stage.id, "job_id": job_id},
+    )
+    manifest = AnalysisRunManifest(
+        id=f"feedbax-analysis-run:{job_id}",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            spec.model_dump(mode="json", exclude_none=True),
+        ),
+        inputs=input_refs,
+        summary_metrics={"input_evaluation_runs": len(input_refs)},
+        provenance=_stage_provenance(
+            stage_kind="analysis",
+            issues=issues,
+            parents=input_refs,
+            request_metadata=request_metadata,
+            job_id=job_id,
+        ),
+        artifacts=[artifact],
+        metadata={"studio": _stage_manifest_metadata(workspace, analysis_stage, job_id)},
+    )
+    path = write_manifest(manifest, root=root_path)
+    manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "analysis_run", path, job_id)
+    artifact_refs = [_studio_artifact_ref(artifact, kind="AnalysisTable")]
+    _complete_stage_with_manifest(
+        workspace,
+        analysis_stage,
+        manifest_ref=manifest_ref,
+        artifact_refs=artifact_refs,
+        output_collection_kind="analysis_products",
+        output_collection_id="collection:analysis-products",
+        output_collection_label="Analysis products",
+        completed_metadata={
+            "input_collection_id": evaluation_collection.id,
+            "input_manifest_ids": [ref.id for ref in input_refs],
+        },
+    )
+    return path, artifact_refs
+
+
+def _materialize_report_stage(
+    workspace: StudioWorkspaceSpec,
+    *,
+    root_path: Path,
+    job_id: str,
+    issues: list[str],
+    request_metadata: dict[str, Any],
+) -> tuple[Path, list[StudioArtifactRef]]:
+    analysis_stage = _select_stage_by_kind(workspace, "analysis")
+    report_stage = _select_stage_by_kind(workspace, "report")
+    analysis_collection = _require_output_collection(analysis_stage, "analysis_products")
+    _require_collection_items(analysis_collection, "analysis products", report_stage.id)
+    report_stage.input_collections = _upsert_collection_ref(
+        report_stage.input_collections,
+        analysis_collection,
+    )
+    input_refs = _collection_manifest_parents(analysis_collection)
+    scenario = workspace.scenarios.get(report_stage.scenario_id or "")
+    report_spec_payload = scenario.report_spec if scenario is not None else None
+    spec = ReportSpec(
+        report_type=str((report_spec_payload or {}).get("report_type", "studio_report_stub")),
+        inputs=input_refs,
+        params={
+            "stage_id": report_stage.id,
+            "scenario_id": report_stage.scenario_id,
+            "selection_spec": report_stage.selection_spec,
+            "input_collection_id": analysis_collection.id,
+            "report_spec": report_spec_payload or {},
+        },
+        narrative="MVP report stub assembled from selected Studio analysis products.",
+    )
+    report_body = {
+        "kind": "StudioReportProduct",
+        "job_id": job_id,
+        "stage_id": report_stage.id,
+        "input_analysis_products": [ref.id for ref in input_refs],
+        "title": workspace.label,
+        "status": "completed",
+    }
+    artifact = store_json_artifact(
+        report_body,
+        root=root_path,
+        role="report",
+        logical_name=f"{job_id}-report.json",
+        metadata={"stage_id": report_stage.id, "job_id": job_id},
+    )
+    manifest = ReportManifest(
+        id=f"feedbax-report:{job_id}",
+        status="completed",
+        report_spec=spec_payload(
+            "ReportSpec",
+            spec.model_dump(mode="json", exclude_none=True),
+        ),
+        inputs=input_refs,
+        provenance=_stage_provenance(
+            stage_kind="report",
+            issues=issues,
+            parents=input_refs,
+            request_metadata=request_metadata,
+            job_id=job_id,
+        ),
+        artifacts=[artifact],
+        metadata={"studio": _stage_manifest_metadata(workspace, report_stage, job_id)},
+    )
+    path = write_manifest(manifest, root=root_path)
+    manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "report", path, job_id)
+    artifact_refs = [_studio_artifact_ref(artifact, kind="ReportArtifact")]
+    _complete_stage_with_manifest(
+        workspace,
+        report_stage,
+        manifest_ref=manifest_ref,
+        artifact_refs=artifact_refs,
+        output_collection_kind="reports",
+        output_collection_id="collection:reports",
+        output_collection_label="Reports",
+        completed_metadata={
+            "input_collection_id": analysis_collection.id,
+            "input_manifest_ids": [ref.id for ref in input_refs],
+        },
+    )
+    return path, artifact_refs
+
+
+def _select_stage_by_kind(
+    workspace: StudioWorkspaceSpec,
+    kind: str,
+) -> StudioStageSpec:
+    stage = next((item for item in workspace.stages if item.kind == kind), None)
+    if stage is None:
+        raise StudioExecutionPreparationError(f"Workspace has no {kind!r} stage")
+    return stage.model_copy(deep=True)
+
+
+def _require_output_collection(
+    stage: StudioStageSpec,
+    kind: str,
+) -> StudioCollectionRef:
+    collection = next(
+        (item for item in stage.output_collections if item.kind == kind),
+        None,
+    )
+    if collection is None:
+        raise StudioExecutionPreparationError(
+            f"Stage {stage.id!r} has no {kind!r} output collection"
+        )
+    return collection.model_copy(deep=True)
+
+
+def _require_collection_items(
+    collection: StudioCollectionRef,
+    label: str,
+    consumer_stage_id: str,
+) -> None:
+    if not collection.item_refs:
+        raise StudioExecutionPreparationError(
+            f"Cannot materialize stage {consumer_stage_id!r}; no {label} are available"
+        )
+
+
+def _collection_manifest_parents(collection: StudioCollectionRef) -> list[ParentRef]:
+    return [
+        ParentRef(
+            kind=ref.kind,
+            id=ref.id,
+            role=ref.role,
+            uri=ref.uri,
+            metadata={
+                **ref.metadata,
+                "provider": ref.provider,
+                "collection_id": collection.id,
+                "collection_kind": collection.kind,
+            },
+        )
+        for ref in collection.item_refs
+    ]
+
+
+def _stage_provenance(
+    *,
+    stage_kind: str,
+    issues: list[str],
+    parents: list[ParentRef],
+    request_metadata: dict[str, Any],
+    job_id: str,
+) -> Provenance:
+    return Provenance(
+        entrypoint=EntrypointRef(
+            kind="feedbax-studio-pipeline",
+            name=f"materialize_{stage_kind}_stage",
+            metadata={"job_id": job_id},
+        ),
+        issues=list(issues),
+        parents=parents,
+        metadata=request_metadata,
+    )
+
+
+def _stage_manifest_metadata(
+    workspace: StudioWorkspaceSpec,
+    stage: StudioStageSpec,
+    job_id: str,
+) -> dict[str, Any]:
+    return {
+        "workspace_id": workspace.id,
+        "workspace_schema_version": workspace.schema_version,
+        "stage_id": stage.id,
+        "stage_kind": stage.kind,
+        "scenario_id": stage.scenario_id,
+        "job_id": job_id,
+    }
+
+
+def _studio_manifest_ref(
+    kind: str,
+    manifest_id: str,
+    role: str,
+    path: Path,
+    job_id: str,
+) -> StudioManifestRef:
+    return StudioManifestRef(
+        kind=kind,
+        id=manifest_id,
+        role=role,
+        uri=str(path),
+        metadata={"job_id": job_id},
+    )
+
+
+def _studio_artifact_ref(
+    artifact: ArtifactRef,
+    *,
+    kind: str,
+) -> StudioArtifactRef:
+    return StudioArtifactRef(
+        kind=kind,
+        id=artifact.artifact_id or f"artifact:{artifact.logical_name}",
+        role=artifact.role,
+        uri=artifact.uri,
+        media_type=artifact.media_type,
+        metadata={
+            **artifact.metadata,
+            "logical_name": artifact.logical_name,
+            "sha256": artifact.sha256,
+            "storage_backend": artifact.storage_backend,
+        },
+    )
+
+
+def _complete_stage_with_manifest(
+    workspace: StudioWorkspaceSpec,
+    stage: StudioStageSpec,
+    *,
+    manifest_ref: StudioManifestRef,
+    artifact_refs: list[StudioArtifactRef],
+    output_collection_kind: str,
+    output_collection_id: str,
+    output_collection_label: str,
+    completed_metadata: dict[str, Any],
+) -> None:
+    completed_at = utc_now().isoformat()
+    stage.status = "completed"
+    stage.validation = StudioValidationState(
+        valid=True,
+        checked_at=completed_at,
+        metadata={
+            "materialized_by": "feedbax.studio_execution",
+            "manifest_id": manifest_ref.id,
+            **completed_metadata,
+        },
+    )
+    stage.manifest_refs = _upsert_manifest_ref(stage.manifest_refs, manifest_ref)
+    stage.artifact_refs = _upsert_many_artifact_refs(stage.artifact_refs, artifact_refs)
+    stage.output_collections = _upsert_manifest_in_output_collection(
+        stage.output_collections,
+        collection_kind=output_collection_kind,
+        collection_id=output_collection_id,
+        collection_label=output_collection_label,
+        stage_id=stage.id,
+        manifest_ref=manifest_ref,
+    )
+    stage.metadata = {
+        **stage.metadata,
+        "last_materialization": {
+            "manifest_id": manifest_ref.id,
+            "completed_at": completed_at,
+            **completed_metadata,
+        },
+    }
+    workspace.manifest_refs = _upsert_manifest_ref(workspace.manifest_refs, manifest_ref)
+    workspace.artifact_refs = _upsert_many_artifact_refs(
+        workspace.artifact_refs,
+        artifact_refs,
+    )
+    workspace.collections = _upsert_many_collection_refs(
+        workspace.collections,
+        [*stage.input_collections, *stage.output_collections],
+    )
+    _replace_stage(workspace, stage)
+
+
+def _upsert_manifest_in_output_collection(
+    collections: list[StudioCollectionRef],
+    *,
+    collection_kind: str,
+    collection_id: str,
+    collection_label: str,
+    stage_id: str,
+    manifest_ref: StudioManifestRef,
+) -> list[StudioCollectionRef]:
+    updated: list[StudioCollectionRef] = []
+    added = False
+    for collection in collections:
+        if collection.kind == collection_kind:
+            collection = collection.model_copy(deep=True)
+            collection.item_refs = _upsert_manifest_ref(collection.item_refs, manifest_ref)
+            added = True
+        updated.append(collection)
+    if not added:
+        updated.append(
+            StudioCollectionRef(
+                id=collection_id,
+                kind=collection_kind,
+                label=collection_label,
+                source_stage_id=stage_id,
+                item_refs=[manifest_ref],
+            )
+        )
+    return updated
+
+
+def _upsert_collection_ref(
+    collections: list[StudioCollectionRef],
+    ref: StudioCollectionRef,
+) -> list[StudioCollectionRef]:
+    return [item for item in collections if item.id != ref.id] + [ref]
+
+
+def _upsert_many_collection_refs(
+    collections: list[StudioCollectionRef],
+    refs: list[StudioCollectionRef],
+) -> list[StudioCollectionRef]:
+    merged = collections
+    for ref in refs:
+        merged = _upsert_collection_ref(merged, ref)
+    return merged
 
 
 def _upsert_training_manifest_in_outputs(

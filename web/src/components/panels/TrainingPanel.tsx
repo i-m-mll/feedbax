@@ -14,11 +14,12 @@ import {
   fetchProbes,
   validateLossSpec,
   downloadCheckpoint,
+  materializeStudioPipeline,
   prepareStudioTrainingExecution,
   runStudioTrainingLocalExecution,
 } from '@/api/client';
 import clsx from 'clsx';
-import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2, FileJson, PlayCircle } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2, FileJson, PlayCircle, Workflow } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -63,11 +64,17 @@ export function TrainingPanel() {
     (state) => state.lastTrainingExecutionPreparation
   );
   const lastLocalRunResult = useWorkspaceStore((state) => state.lastTrainingLocalRunResult);
+  const lastPipelineMaterializationResult = useWorkspaceStore(
+    (state) => state.lastPipelineMaterializationResult
+  );
   const setTrainingExecutionPreparation = useWorkspaceStore(
     (state) => state.setTrainingExecutionPreparation
   );
   const setTrainingLocalRunResult = useWorkspaceStore(
     (state) => state.setTrainingLocalRunResult
+  );
+  const setPipelineMaterializationResult = useWorkspaceStore(
+    (state) => state.setPipelineMaterializationResult
   );
 
   // Derived network params for the config summary chip row
@@ -97,6 +104,8 @@ export function TrainingPanel() {
   const [planError, setPlanError] = useState<string | null>(null);
   const [localRunRunning, setLocalRunRunning] = useState(false);
   const [localRunError, setLocalRunError] = useState<string | null>(null);
+  const [pipelineMaterializing, setPipelineMaterializing] = useState(false);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
 
   // Fetch available probes when graph changes
   useEffect(() => {
@@ -280,6 +289,61 @@ export function TrainingPanel() {
     workspace,
   ]);
 
+  const handleMaterializePipeline = useCallback(async () => {
+    if (!graphId || inSubgraph) return;
+    setPipelineMaterializing(true);
+    setPipelineError(null);
+    try {
+      const nextWorkspace = buildWorkspaceSnapshot({
+        workspace,
+        graph,
+        uiState,
+        trainingSpec,
+        taskSpec,
+        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        projectName: currentGraphLabel,
+      });
+      setWorkspace(nextWorkspace);
+      const result = await materializeStudioPipeline({
+        workspace: nextWorkspace,
+        stages: ['eval', 'analysis', 'report'],
+        metadata: { graph_id: graphId, source: 'training_panel' },
+      });
+      setPipelineMaterializationResult(result);
+      useGraphStore.getState().markDirty();
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: 'info',
+        message: `Materialized Studio pipeline stages: ${result.stage_ids.join(', ')}`,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to materialize pipeline';
+      setPipelineError(message);
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: 'error',
+        message,
+        timestamp: Date.now(),
+      });
+    } finally {
+      setPipelineMaterializing(false);
+    }
+  }, [
+    appendLog,
+    currentGraphLabel,
+    graph,
+    graphId,
+    inSubgraph,
+    progress?.batch,
+    setPipelineMaterializationResult,
+    setWorkspace,
+    taskSpec,
+    trainingSpec,
+    uiState,
+    workspace,
+  ]);
+
   const handleAddTerm = useCallback((parentPath: string[]) => {
     setAddModalParentPath(parentPath);
     setShowAddModal(true);
@@ -326,6 +390,11 @@ export function TrainingPanel() {
   const preparedPlan = lastLocalRunResult?.result.plan ?? lastExecutionPreparation?.plan ?? null;
   const localRunStatus = lastLocalRunResult?.result.status ?? null;
   const executionControlsDisabled = !graphId || inSubgraph;
+  const trainStage = workspace?.stages.find((stage) => stage.kind === 'train');
+  const hasTrainingCollection =
+    trainStage?.output_collections.some(
+      (collection) => collection.kind === 'training_runs' && collection.item_refs.length > 0
+    ) ?? false;
 
   return (
     <div className="p-6 space-y-4 text-sm text-slate-600 overflow-x-hidden">
@@ -815,6 +884,24 @@ export function TrainingPanel() {
           {localRunError}
         </div>
       )}
+      {lastPipelineMaterializationResult && (
+        <div className="flex items-start gap-2 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-700">
+          <Workflow className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div className="min-w-0 space-y-0.5">
+            <div className="font-semibold">
+              Pipeline materialized
+            </div>
+            <div className="truncate text-[10px] text-sky-600">
+              {lastPipelineMaterializationResult.stage_ids.join(' -> ')}
+            </div>
+          </div>
+        </div>
+      )}
+      {pipelineError && (
+        <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+          {pipelineError}
+        </div>
+      )}
 
       <button
         type="button"
@@ -834,7 +921,7 @@ export function TrainingPanel() {
         type="button"
         className="flex w-full items-center justify-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
         onClick={handleRunLocalExecution}
-        disabled={executionControlsDisabled || planPreparing || localRunRunning}
+        disabled={executionControlsDisabled || planPreparing || localRunRunning || pipelineMaterializing}
       >
         {localRunRunning ? (
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -842,6 +929,26 @@ export function TrainingPanel() {
           <PlayCircle className="h-4 w-4" />
         )}
         <span>{localRunRunning ? 'Running local plan' : 'Run local plan'}</span>
+      </button>
+
+      <button
+        type="button"
+        className="flex w-full items-center justify-center gap-2 rounded-full border border-sky-200 bg-sky-50 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={handleMaterializePipeline}
+        disabled={
+          executionControlsDisabled ||
+          planPreparing ||
+          localRunRunning ||
+          pipelineMaterializing ||
+          !hasTrainingCollection
+        }
+      >
+        {pipelineMaterializing ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Workflow className="h-4 w-4" />
+        )}
+        <span>{pipelineMaterializing ? 'Materializing pipeline' : 'Materialize pipeline'}</span>
       </button>
 
       <button

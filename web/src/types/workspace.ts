@@ -189,3 +189,10 @@ export interface StudioTrainingLocalRunResult {
   result: LocalExecutionResult;
   snapshot_dir: string;
 }
+
+export interface StudioPipelineMaterializationResult {
+  workspace: StudioWorkspaceSpec;
+  stage_ids: string[];
+  manifest_paths: Record<string, string>;
+  artifact_refs: StudioArtifactRef[];
+}

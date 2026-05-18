@@ -1,6 +1,7 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type {
+  StudioPipelineMaterializationResult,
   StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioWorkspaceSpec,
@@ -139,6 +140,20 @@ export async function runStudioTrainingLocalExecution(payload: {
   metadata?: Record<string, unknown>;
 }) {
   return request<StudioTrainingLocalRunResult>('/api/provider/studio/training/run-local', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function materializeStudioPipeline(payload: {
+  workspace: StudioWorkspaceSpec;
+  stages?: Array<'eval' | 'analysis' | 'report'>;
+  job_id?: string | null;
+  root?: string | null;
+  issues?: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  return request<StudioPipelineMaterializationResult>('/api/provider/studio/pipeline/materialize', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
