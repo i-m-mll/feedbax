@@ -1,5 +1,6 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+import type { StudioWorkspaceSpec } from '@/types/workspace';
 // Note: analysis_pages in the API uses snake_case wire format (graph_spec, eval_params).
 // See analysisAPI.ts for the conversion to camelCase AnalysisPageSpec.
 import type {
@@ -71,13 +72,20 @@ export async function fetchGraph(graphId: string) {
       eval_run_id: string | null;
     }> | null;
     active_analysis_page_id: string | null;
+    workspace: StudioWorkspaceSpec | null;
   }>(`/api/graphs/${graphId}`);
 }
 
-export async function createGraph(graph: GraphSpec, uiState: GraphUIState | null) {
+export async function createGraph(
+  graph: GraphSpec,
+  uiState: GraphUIState | null,
+  workspace?: StudioWorkspaceSpec | null,
+) {
+  const payload: Record<string, unknown> = { graph, ui_state: uiState };
+  if (workspace !== undefined) payload.workspace = workspace;
   return request<{ id: string; metadata: { name: string } }>(`/api/graphs`, {
     method: 'POST',
-    body: JSON.stringify({ graph, ui_state: uiState }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -87,12 +95,14 @@ export async function updateGraph(
   uiState: GraphUIState | null,
   analysisPages?: unknown[] | null,
   activeAnalysisPageId?: string | null,
+  workspace?: StudioWorkspaceSpec | null,
 ) {
   const payload: Record<string, unknown> = {};
   if (graph !== null && graph !== undefined) payload.graph = graph;
   if (uiState !== null && uiState !== undefined) payload.ui_state = uiState;
   if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
   if (activeAnalysisPageId !== undefined) payload.active_analysis_page_id = activeAnalysisPageId;
+  if (workspace !== undefined) payload.workspace = workspace;
   return request<{ success: boolean }>(`/api/graphs/${graphId}`, {
     method: 'PUT',
     body: JSON.stringify(payload),

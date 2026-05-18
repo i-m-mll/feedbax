@@ -13,9 +13,11 @@ from feedbax.web.models.graph import (
     GraphSpec,
     GraphUIState,
     GraphMetadata,
+    StudioWorkspaceSpec,
     ValidationError,
     ValidationResult,
     ValidationWarning,
+    build_default_studio_workspace,
 )
 
 
@@ -51,7 +53,17 @@ class GraphService:
         )
         if graph.metadata is None:
             graph.metadata = metadata
-        project = GraphProject(metadata=metadata, graph=graph, ui_state=ui_state)
+        workspace = build_default_studio_workspace(
+            label=metadata.name,
+            graph=graph,
+            ui_state=ui_state,
+        )
+        project = GraphProject(
+            metadata=metadata,
+            graph=graph,
+            ui_state=ui_state,
+            workspace=workspace,
+        )
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
 
@@ -66,6 +78,7 @@ class GraphService:
         ui_state: Optional[GraphUIState],
         analysis_pages: Optional[List[AnalysisPageSpec]] = None,
         active_analysis_page_id: Optional[str] = None,
+        workspace: Optional[StudioWorkspaceSpec] = None,
     ) -> GraphRecord:
         record = self.get_graph(graph_id)
         project = record.project
@@ -77,10 +90,13 @@ class GraphService:
             project.analysis_pages = analysis_pages
         if active_analysis_page_id is not None:
             project.active_analysis_page_id = active_analysis_page_id
+        if workspace is not None:
+            project.workspace = workspace
         updated_at = datetime.now(timezone.utc).isoformat()
         project.metadata.updated_at = updated_at
         if project.graph.metadata is not None:
             project.graph.metadata.updated_at = updated_at
+        self._ensure_workspace(project)
         self._save_project(self._path_for(graph_id), project)
         return GraphRecord(graph_id=graph_id, project=project)
 
@@ -158,11 +174,25 @@ class GraphService:
     def _load_project(self, path: Path) -> GraphProject:
         with open(path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        return GraphProject.model_validate(data)
+        project = GraphProject.model_validate(data)
+        self._ensure_workspace(project)
+        return project
 
     def _save_project(self, path: Path, project: GraphProject) -> None:
+        self._ensure_workspace(project)
         with open(path, 'w', encoding='utf-8') as file:
             json.dump(project.model_dump(), file, indent=2)
+
+    def _ensure_workspace(self, project: GraphProject) -> None:
+        if project.workspace is not None:
+            return
+        project.workspace = build_default_studio_workspace(
+            label=project.metadata.name,
+            graph=project.graph,
+            ui_state=project.ui_state,
+            analysis_pages=project.analysis_pages,
+            active_analysis_page_id=project.active_analysis_page_id,
+        )
 
     def _detect_cycles(self, graph: GraphSpec) -> List[List[str]]:
         adjacency = {node_name: set() for node_name in graph.nodes}

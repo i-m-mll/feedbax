@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import json
+
+from feedbax.web.models.graph import (
+    GraphMetadata,
+    GraphSpec,
+    GraphUIState,
+    StudioStageSpec,
+    StudioWorkspaceSpec,
+)
+from feedbax.web.services.graph_service import GraphService
+
+
+def _graph() -> GraphSpec:
+    return GraphSpec(
+        metadata=GraphMetadata(
+            name="Workspace smoke",
+            created_at="2026-05-17T00:00:00+00:00",
+            updated_at="2026-05-17T00:00:00+00:00",
+        )
+    )
+
+
+def _ui_state() -> GraphUIState:
+    return GraphUIState()
+
+
+def test_create_graph_persists_default_workspace(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+
+    record = service.create_graph(_graph(), _ui_state())
+
+    workspace = record.project.workspace
+    assert workspace is not None
+    assert workspace.schema_version == "feedbax.studio.workspace.v1"
+    assert workspace.active_stage_id == "stage:train"
+    assert [stage.kind for stage in workspace.stages] == [
+        "train",
+        "eval",
+        "analysis",
+        "report",
+    ]
+
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    train_scenario = workspace.scenarios[train_stage.scenario_id]
+    assert train_scenario.graph == record.project.graph
+    assert train_scenario.graph_ui_state == record.project.ui_state
+
+    reloaded = service.get_graph(record.graph_id)
+    assert reloaded.project.workspace == workspace
+
+
+def test_legacy_project_load_materializes_workspace(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    graph_id = "legacy-project"
+    graph = _graph()
+    payload = {
+        "metadata": graph.metadata.model_dump(),
+        "graph": graph.model_dump(),
+        "ui_state": _ui_state().model_dump(),
+        "analysis_pages": [
+            {
+                "id": "analysis-page",
+                "name": "Existing analysis",
+                "graph_spec": {},
+                "eval_params": {"condition": "baseline"},
+                "viewport": {"x": 0, "y": 0, "zoom": 1},
+                "eval_run_id": "eval-1",
+                "expanded_field_paths": ["states.arm"],
+            }
+        ],
+        "active_analysis_page_id": "analysis-page",
+    }
+    (tmp_path / f"{graph_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    record = service.get_graph(graph_id)
+
+    assert record.project.workspace is not None
+    analysis_stage = next(
+        stage for stage in record.project.workspace.stages if stage.kind == "analysis"
+    )
+    analysis_scenario = record.project.workspace.scenarios[analysis_stage.scenario_id]
+    assert analysis_scenario.analysis_spec["active_page_id"] == "analysis-page"
+    assert analysis_scenario.analysis_spec["pages"][0]["eval_run_id"] == "eval-1"
+
+
+def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    record = service.create_graph(_graph(), _ui_state())
+    workspace = record.project.workspace
+    assert workspace is not None
+    workspace.stages.append(
+        StudioStageSpec(
+            id="stage:custom-protocol",
+            kind="protocol",
+            label="Custom protocol",
+            metadata={"future_product_field": {"do_not_drop": True}},
+        )
+    )
+
+    updated = service.update_graph(
+        record.graph_id,
+        None,
+        None,
+        workspace=StudioWorkspaceSpec.model_validate(workspace.model_dump()),
+    )
+
+    custom_stage = next(
+        stage for stage in updated.project.workspace.stages if stage.id == "stage:custom-protocol"
+    )
+    assert custom_stage.metadata["future_product_field"]["do_not_drop"] is True
