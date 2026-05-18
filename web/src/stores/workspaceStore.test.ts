@@ -190,4 +190,88 @@ describe('buildWorkspaceSnapshot', () => {
     expect(state.lastTrainingExecutionPreparation?.plan.job_id).toBe('studio-plan');
     expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe('ready');
   });
+
+  it('stores local execution results and returned workspace refs', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const completed = {
+      ...workspace,
+      stages: workspace.stages.map((stage) =>
+        stage.kind === 'train'
+          ? {
+              ...stage,
+              status: 'completed' as const,
+              manifest_refs: [
+                {
+                  kind: 'TrainingRunManifest',
+                  id: 'feedbax-training-run:studio-run',
+                  role: 'training_run',
+                  provider: 'feedbax',
+                  uri: '/tmp/feedbax_runs/manifests/training_runs/studio-run.json',
+                  metadata: {},
+                },
+              ],
+            }
+          : stage
+      ),
+    };
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setTrainingLocalRunResult({
+      workspace: completed,
+      stage_id: 'stage:train',
+      scenario_id: 'scenario:train',
+      execution_spec: { job_id: 'studio-run' },
+      snapshot_dir: '/tmp/feedbax_runs/executions/studio-run/inputs',
+      result: {
+        job_id: 'studio-run',
+        status: 'completed',
+        return_code: 0,
+        stdout_path: '/tmp/feedbax_runs/executions/studio-run/stdout.log',
+        stderr_path: '/tmp/feedbax_runs/executions/studio-run/stderr.log',
+        manifest_path: '/tmp/feedbax_runs/manifests/training_runs/studio-run.json',
+        manifest_payload: { kind: 'TrainingRunManifest' },
+        plan: {
+          kind: 'ExecutionPlan',
+          schema_version: 'feedbax.execution.v1',
+          job_id: 'studio-run',
+          backend: 'local',
+          command: 'python -m feedbax.bin.provider validate training training-spec.json',
+          run_directory: '/tmp/feedbax_runs/studio-run',
+          bootstrap: [],
+          health_checks: [],
+          launch: {
+            id: 'launch',
+            title: 'Launch execution',
+            command: null,
+            description: '',
+            critical: true,
+            metadata: {},
+          },
+          monitor: [],
+          artifact_routes: [],
+          cloud_payload: {},
+          reproducibility: {},
+          warnings: [],
+        },
+      },
+    });
+
+    const state = useWorkspaceStore.getState();
+    expect(state.lastTrainingLocalRunResult?.result.status).toBe('completed');
+    expect(state.workspace?.stages.find((stage) => stage.kind === 'train')?.status).toBe(
+      'completed'
+    );
+    expect(
+      state.workspace?.stages.find((stage) => stage.kind === 'train')?.manifest_refs[0]
+        .role
+    ).toBe('training_run');
+  });
 });

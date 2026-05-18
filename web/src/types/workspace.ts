@@ -169,3 +169,23 @@ export interface StudioTrainingExecutionPreparation {
   execution_spec: Record<string, unknown>;
   plan: ExecutionPlan;
 }
+
+export interface LocalExecutionResult {
+  job_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  return_code: number;
+  stdout_path: string;
+  stderr_path: string;
+  manifest_path: string;
+  manifest_payload: Record<string, unknown>;
+  plan: ExecutionPlan;
+}
+
+export interface StudioTrainingLocalRunResult {
+  workspace: StudioWorkspaceSpec;
+  stage_id: string;
+  scenario_id: string;
+  execution_spec: Record<string, unknown>;
+  result: LocalExecutionResult;
+  snapshot_dir: string;
+}

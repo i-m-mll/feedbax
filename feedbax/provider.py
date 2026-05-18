@@ -27,6 +27,8 @@ from feedbax.manifest import (
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_execution import (
+    StudioTrainingLocalRunRequest,
+    StudioTrainingLocalRunResult,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
 )
@@ -123,6 +125,8 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "LocalExecutionResult": LocalExecutionResult,
         "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
+        "StudioTrainingLocalRunRequest": StudioTrainingLocalRunRequest,
+        "StudioTrainingLocalRunResult": StudioTrainingLocalRunResult,
         "GraphSpecManifest": GraphSpecManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
@@ -181,6 +185,16 @@ def provider_manifest() -> ProviderManifest:
             input_schema="StudioTrainingExecutionRequest",
             output_schema="StudioTrainingExecutionPreparation",
             description="Lower a Studio train-stage scenario into a provider execution plan.",
+            transports=["python", "http"],
+        ),
+        "run_studio_training_local_execution": CapabilitySpec(
+            input_schema="StudioTrainingLocalRunRequest",
+            output_schema="StudioTrainingLocalRunResult",
+            requires_review=True,
+            description=(
+                "Run a Studio train-stage scenario through the local provider execution "
+                "boundary and return updated workspace lineage refs."
+            ),
             transports=["python", "http"],
         ),
         "list_components": CapabilitySpec(output_schema="ComponentRegistrySnapshot"),

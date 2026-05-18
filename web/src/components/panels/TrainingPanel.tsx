@@ -10,9 +10,15 @@ import { useGraphStore } from '@/stores/graphStore';
 import type { LossTermSpec, TimeAggregationSpec } from '@/types/training';
 import { LossTermDetail } from './LossTermDetail';
 import { AddLossTermModal } from '@/components/modals/AddLossTermModal';
-import { fetchProbes, validateLossSpec, downloadCheckpoint, prepareStudioTrainingExecution } from '@/api/client';
+import {
+  fetchProbes,
+  validateLossSpec,
+  downloadCheckpoint,
+  prepareStudioTrainingExecution,
+  runStudioTrainingLocalExecution,
+} from '@/api/client';
 import clsx from 'clsx';
-import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2, FileJson } from 'lucide-react';
+import { Plus, Trash2, AlertCircle, ChevronDown, ChevronRight, Download, Loader2, FileJson, PlayCircle } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -56,8 +62,12 @@ export function TrainingPanel() {
   const lastExecutionPreparation = useWorkspaceStore(
     (state) => state.lastTrainingExecutionPreparation
   );
+  const lastLocalRunResult = useWorkspaceStore((state) => state.lastTrainingLocalRunResult);
   const setTrainingExecutionPreparation = useWorkspaceStore(
     (state) => state.setTrainingExecutionPreparation
+  );
+  const setTrainingLocalRunResult = useWorkspaceStore(
+    (state) => state.setTrainingLocalRunResult
   );
 
   // Derived network params for the config summary chip row
@@ -85,6 +95,8 @@ export function TrainingPanel() {
   const [cloudTsAuthKey, setCloudTsAuthKey] = useState('');
   const [planPreparing, setPlanPreparing] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [localRunRunning, setLocalRunRunning] = useState(false);
+  const [localRunError, setLocalRunError] = useState<string | null>(null);
 
   // Fetch available probes when graph changes
   useEffect(() => {
@@ -214,6 +226,60 @@ export function TrainingPanel() {
     workspace,
   ]);
 
+  const handleRunLocalExecution = useCallback(async () => {
+    if (!graphId || inSubgraph) return;
+    setLocalRunRunning(true);
+    setLocalRunError(null);
+    try {
+      const nextWorkspace = buildWorkspaceSnapshot({
+        workspace,
+        graph,
+        uiState,
+        trainingSpec,
+        taskSpec,
+        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        projectName: currentGraphLabel,
+      });
+      setWorkspace(nextWorkspace);
+      const runResult = await runStudioTrainingLocalExecution({
+        workspace: nextWorkspace,
+        metadata: { graph_id: graphId, source: 'training_panel' },
+      });
+      setTrainingLocalRunResult(runResult);
+      useGraphStore.getState().markDirty();
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: runResult.result.status === 'completed' ? 'info' : 'error',
+        message: `Local execution ${runResult.result.status}: ${runResult.result.job_id}`,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to run local plan';
+      setLocalRunError(message);
+      appendLog({
+        batch: progress?.batch ?? 0,
+        level: 'error',
+        message,
+        timestamp: Date.now(),
+      });
+    } finally {
+      setLocalRunRunning(false);
+    }
+  }, [
+    appendLog,
+    currentGraphLabel,
+    graph,
+    graphId,
+    inSubgraph,
+    progress?.batch,
+    setTrainingLocalRunResult,
+    setWorkspace,
+    taskSpec,
+    trainingSpec,
+    uiState,
+    workspace,
+  ]);
+
   const handleAddTerm = useCallback((parentPath: string[]) => {
     setAddModalParentPath(parentPath);
     setShowAddModal(true);
@@ -257,7 +323,8 @@ export function TrainingPanel() {
     if (!selectedPath || selectedPath === ROOT_PATH) return [];
     return selectedPath.split('/');
   }, [selectedPath]);
-  const preparedPlan = lastExecutionPreparation?.plan ?? null;
+  const preparedPlan = lastLocalRunResult?.result.plan ?? lastExecutionPreparation?.plan ?? null;
+  const localRunStatus = lastLocalRunResult?.result.status ?? null;
   const executionControlsDisabled = !graphId || inSubgraph;
 
   return (
@@ -730,7 +797,7 @@ export function TrainingPanel() {
           <FileJson className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <div className="min-w-0 space-y-0.5">
             <div className="truncate font-semibold" title={preparedPlan.job_id}>
-              {preparedPlan.job_id}
+              {localRunStatus ? `${preparedPlan.job_id} (${localRunStatus})` : preparedPlan.job_id}
             </div>
             <div className="truncate text-[10px] text-emerald-600" title={preparedPlan.run_directory}>
               {preparedPlan.backend} - {preparedPlan.run_directory}
@@ -743,12 +810,17 @@ export function TrainingPanel() {
           {planError}
         </div>
       )}
+      {localRunError && (
+        <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+          {localRunError}
+        </div>
+      )}
 
       <button
         type="button"
         className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
         onClick={handlePrepareExecutionPlan}
-        disabled={executionControlsDisabled || planPreparing}
+        disabled={executionControlsDisabled || planPreparing || localRunRunning}
       >
         {planPreparing ? (
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -756,6 +828,20 @@ export function TrainingPanel() {
           <FileJson className="h-4 w-4" />
         )}
         <span>{planPreparing ? 'Preparing plan' : 'Prepare local plan'}</span>
+      </button>
+
+      <button
+        type="button"
+        className="flex w-full items-center justify-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={handleRunLocalExecution}
+        disabled={executionControlsDisabled || planPreparing || localRunRunning}
+      >
+        {localRunRunning ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <PlayCircle className="h-4 w-4" />
+        )}
+        <span>{localRunRunning ? 'Running local plan' : 'Run local plan'}</span>
       </button>
 
       <button

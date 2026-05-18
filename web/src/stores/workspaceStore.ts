@@ -8,6 +8,7 @@ import type {
   StudioScenarioSpec,
   StudioStageKind,
   StudioStageSpec,
+  StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioValidationState,
   StudioWorkspaceSpec,
@@ -296,10 +297,12 @@ export function buildWorkspaceSnapshot({
 interface WorkspaceStoreState {
   workspace: StudioWorkspaceSpec | null;
   lastTrainingExecutionPreparation: StudioTrainingExecutionPreparation | null;
+  lastTrainingLocalRunResult: StudioTrainingLocalRunResult | null;
   setWorkspace: (workspace: StudioWorkspaceSpec | null) => void;
   setTrainingExecutionPreparation: (
     preparation: StudioTrainingExecutionPreparation | null
   ) => void;
+  setTrainingLocalRunResult: (result: StudioTrainingLocalRunResult | null) => void;
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
 }
@@ -314,6 +317,7 @@ function activeTrainScenario(workspace: StudioWorkspaceSpec | null): string | nu
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   workspace: null,
   lastTrainingExecutionPreparation: null,
+  lastTrainingLocalRunResult: null,
 
   setWorkspace: (workspace) => set({ workspace }),
 
@@ -321,6 +325,12 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
     set((state) => ({
       lastTrainingExecutionPreparation: preparation,
       workspace: preparation?.workspace ?? state.workspace,
+    })),
+
+  setTrainingLocalRunResult: (result) =>
+    set((state) => ({
+      lastTrainingLocalRunResult: result,
+      workspace: result?.workspace ?? state.workspace,
     })),
 
   updateActiveScenarioTrainingSpec: (trainingSpec) =>
