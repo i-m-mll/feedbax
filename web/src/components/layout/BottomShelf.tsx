@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useLayoutStore, SHELF_HEADER_HEIGHT } from '@/stores/layoutStore';
-import { TrainingPanel } from '@/components/panels/TrainingPanel';
 import { AnalysisPanel } from '@/components/panels/AnalysisPanel';
 import { ConsolePanel } from '@/components/panels/ConsolePanel';
 import { BottomSidebar } from '@/components/layout/BottomSidebar';
+import {
+  EvaluateCollectionPanel,
+  TrainCollectionPanel,
+} from '@/components/panels/RunCollectionStagePanel';
 import {
   StageDraftPanel,
   StageProvenancePanel,
@@ -47,7 +50,8 @@ export function BottomShelf({
 
   const activeContent = useMemo(() => {
     if (mode === 'console') return <ConsolePanel />;
-    if (activeStage?.kind === 'train') return <TrainingPanel />;
+    if (activeStage?.kind === 'train') return <TrainCollectionPanel />;
+    if (activeStage?.kind === 'eval') return <EvaluateCollectionPanel />;
     if (activeStage?.kind === 'analysis') return <AnalysisPanel />;
     return <StageDraftPanel stage={activeStage} scenario={activeScenario} />;
   }, [activeStage, activeScenario, mode]);
@@ -151,7 +155,7 @@ export function BottomShelf({
           <div className="flex-1 min-w-0 h-full">
             {activeContent}
           </div>
-          {mode === 'stage' && (
+          {mode === 'stage' && activeStage?.kind !== 'train' && activeStage?.kind !== 'eval' && (
             <StageProvenancePanel stage={activeStage} scenario={activeScenario} />
           )}
         </div>
