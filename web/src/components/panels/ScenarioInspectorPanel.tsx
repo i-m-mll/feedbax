@@ -18,6 +18,7 @@ import {
 import type { StudioScenarioEntity, StudioScenarioEntityRegistry } from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { Trash2 } from 'lucide-react';
+import type { ParamValue } from '@/types/graph';
 
 const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'graph_edge', 'probe']);
 
@@ -30,6 +31,71 @@ function formatValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function coerceParamValue(rawValue: string, currentValue: unknown): ParamValue {
+  if (typeof currentValue === 'number') {
+    const parsed = Number.parseFloat(rawValue);
+    return Number.isFinite(parsed) ? parsed : currentValue;
+  }
+  if (typeof currentValue === 'boolean') {
+    return rawValue === 'true';
+  }
+  if (Array.isArray(currentValue) || (currentValue && typeof currentValue === 'object')) {
+    try {
+      return JSON.parse(rawValue) as ParamValue;
+    } catch {
+      return currentValue as ParamValue;
+    }
+  }
+  if (currentValue === null) return rawValue;
+  return rawValue;
+}
+
+function ParamValueEditor({
+  name,
+  value,
+  onChange,
+}: {
+  name: string;
+  value: unknown;
+  onChange: (value: ParamValue) => void;
+}) {
+  if (typeof value === 'boolean') {
+    return (
+      <label className="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 text-xs">
+        <span className="truncate font-medium text-slate-500">{name}</span>
+        <input
+          type="checkbox"
+          checked={value}
+          onChange={(event) => onChange(event.target.checked)}
+          className="h-4 w-4 rounded border-slate-300"
+        />
+      </label>
+    );
+  }
+
+  const isStructured = Array.isArray(value) || (value !== null && typeof value === 'object');
+  return (
+    <label className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 text-xs">
+      <span className="truncate pt-2 font-medium text-slate-500">{name}</span>
+      {isStructured ? (
+        <textarea
+          value={formatValue(value)}
+          onChange={(event) => onChange(coerceParamValue(event.target.value, value))}
+          className="min-h-16 rounded border border-slate-200 px-2 py-1.5 font-mono text-xs text-slate-700"
+        />
+      ) : (
+        <input
+          type={typeof value === 'number' ? 'number' : 'text'}
+          value={formatValue(value)}
+          step={typeof value === 'number' ? 'any' : undefined}
+          onChange={(event) => onChange(coerceParamValue(event.target.value, value))}
+          className="h-8 rounded border border-slate-200 px-2 text-xs text-slate-700"
+        />
+      )}
+    </label>
+  );
 }
 
 function entityKindTone(kind: StudioScenarioEntity['kind']) {
@@ -104,23 +170,48 @@ function RelationList({
 }
 
 function TaskInspector({ entity }: { entity: StudioScenarioEntity }) {
-  const task = entity.metadata.task_spec;
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const updateActiveScenarioTaskSpec = useWorkspaceStore((state) => state.updateActiveScenarioTaskSpec);
+  const markDirty = useGraphStore((state) => state.markDirty);
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const task = activeScenario?.task_spec ?? entity.metadata.task_spec;
   const params =
     task && typeof task === 'object' && 'params' in task && task.params && typeof task.params === 'object'
       ? Object.entries(task.params as Record<string, unknown>)
       : [];
+  const updateParam = (key: string, value: ParamValue) => {
+    if (!activeScenario?.task_spec) return;
+    updateActiveScenarioTaskSpec({
+      ...activeScenario.task_spec,
+      params: {
+        ...activeScenario.task_spec.params,
+        [key]: value,
+      },
+    });
+    markDirty();
+  };
+  const bindingState = formatValue(entity.metadata.binding_state);
+  const inheritanceState = formatValue(entity.metadata.inheritance_state);
   return (
     <section className="space-y-3">
-      <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Task Parameters</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Task Parameters</div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">
+          {bindingState} · {inheritanceState}
+        </div>
+      </div>
       {params.length === 0 ? (
         <div className="text-sm text-slate-400">No task parameters recorded.</div>
       ) : (
         <div className="space-y-2">
           {params.map(([key, value]) => (
-            <div key={key} className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 text-xs">
-              <div className="truncate font-medium text-slate-500">{key}</div>
-              <div className="break-words text-slate-700">{formatValue(value)}</div>
-            </div>
+            <ParamValueEditor
+              key={key}
+              name={key}
+              value={value}
+              onChange={(nextValue) => updateParam(key, nextValue)}
+            />
           ))}
         </div>
       )}
@@ -129,12 +220,23 @@ function TaskInspector({ entity }: { entity: StudioScenarioEntity }) {
 }
 
 function MechanicsInspector({ entity }: { entity: StudioScenarioEntity }) {
+  const graph = useGraphStore((state) => state.graph);
+  const updateNodeParams = useGraphStore((state) => state.updateNodeParams);
   const nodeId = typeof entity.metadata.node_id === 'string' ? entity.metadata.node_id : null;
   const componentType =
     typeof entity.metadata.component_type === 'string' ? entity.metadata.component_type : null;
+  const nodeSpec = nodeId ? graph.nodes[nodeId] : null;
+  const params = Object.entries(nodeSpec?.params ?? {});
+  const bindingState = formatValue(entity.metadata.binding_state);
+  const inheritanceState = formatValue(entity.metadata.inheritance_state);
   return (
     <section className="space-y-3">
-      <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Mechanics Binding</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Mechanics Binding</div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-slate-400">
+          {bindingState} · {inheritanceState}
+        </div>
+      </div>
       <div className="space-y-2 text-xs text-slate-600">
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
           <div className="font-medium text-slate-500">Graph node</div>
@@ -145,6 +247,21 @@ function MechanicsInspector({ entity }: { entity: StudioScenarioEntity }) {
           <div className="break-words">{componentType ?? 'Scenario mechanics'}</div>
         </div>
       </div>
+      {params.length > 0 && (
+        <div className="space-y-2 border-t border-slate-100 pt-3">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
+          {params.map(([key, value]) => (
+            <ParamValueEditor
+              key={key}
+              name={key}
+              value={value}
+              onChange={(nextValue) => {
+                if (nodeId) updateNodeParams(nodeId, key, nextValue);
+              }}
+            />
+          ))}
+        </div>
+      )}
     </section>
   );
 }

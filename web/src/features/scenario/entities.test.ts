@@ -126,10 +126,13 @@ describe('scenario entity registry', () => {
     expect(registry.entities[taskEntityId('scenario:train')]).toMatchObject({
       kind: 'task_object',
       label: 'ReachingTask',
+      relations: [{ kind: 'binds', entity_id: graphNodeEntityId('task') }],
+      metadata: { binding_state: 'bound', inheritance_state: 'owned' },
     });
     expect(registry.entities[mechanicsEntityId('scenario:train', 'mechanics')]).toMatchObject({
       kind: 'mechanics_object',
       relations: [{ kind: 'binds', entity_id: graphNodeEntityId('mechanics') }],
+      metadata: { binding_state: 'bound', inheritance_state: 'owned' },
     });
     expect(registry.entities[objectiveEntityId('endpoint')]).toMatchObject({
       kind: 'objective_term',
@@ -152,5 +155,30 @@ describe('scenario entity registry', () => {
       graphEdgeEntityId('state:task->mechanics')
     );
     expect(entityIdFromGraphSelection({})).toBeNull();
+  });
+
+  it('marks task and mechanics entities from child scenarios as inherited or overridden', () => {
+    const registry = buildScenarioEntityRegistry({
+      scenario: {
+        ...scenario,
+        id: 'scenario:eval',
+        parent_scenario_id: 'scenario:train',
+      },
+    });
+
+    expect(registry.entities[taskEntityId('scenario:eval')]).toMatchObject({
+      metadata: {
+        binding_state: 'bound',
+        inheritance_state: 'inherited_or_overridden',
+        parent_scenario_id: 'scenario:train',
+      },
+    });
+    expect(registry.entities[mechanicsEntityId('scenario:eval', 'mechanics')]).toMatchObject({
+      metadata: {
+        binding_state: 'bound',
+        inheritance_state: 'inherited_or_overridden',
+        parent_scenario_id: 'scenario:train',
+      },
+    });
   });
 });
