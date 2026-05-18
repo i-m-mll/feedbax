@@ -54,28 +54,11 @@ describe('scenario integration derivation', () => {
     );
   });
 
-  it('maps artifact and analysis outputs into workspace overlay descriptors', () => {
+  it('does not treat ordinary analysis figures as workspace overlays', () => {
     const workspace = seededWorkspace();
     const overlays = artifactOverlaysForWorkspace(workspace);
 
-    expect(overlays).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          label: 'Forward Velocity Profiles',
-          source: 'artifact',
-          uri: '_artifacts/b399efc/figures/forward_velocity_profiles/figure.html',
-        }),
-        expect.objectContaining({
-          label: 'Forward velocity profiles',
-          source: 'analysis',
-          uri: 'results/b399efc/figures/forward_velocity_profiles',
-        }),
-        expect.objectContaining({
-          source: 'evaluation',
-          stageId: 'stage:eval',
-        }),
-      ])
-    );
+    expect(overlays).toEqual([]);
   });
 
   it('exposes stage-owned analysis and report references', () => {

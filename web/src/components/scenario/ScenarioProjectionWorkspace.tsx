@@ -14,12 +14,6 @@ import {
   type ScenarioProjectionItem,
 } from '@/features/scenario/projections';
 import {
-  artifactOverlaysForWorkspace,
-  scenarioMetricSpecs,
-  type ScenarioArtifactOverlay,
-  type ScenarioMetricSpec,
-} from '@/features/scenario/integration';
-import {
   addObjectiveTerm,
   createObjectiveTerm,
   ensureObjectiveSpec,
@@ -74,33 +68,57 @@ function isSelectedOrRelated(
   return item.entity_id === selectedId || relatedIds.has(item.entity_id);
 }
 
-function ProjectionTabs({
-  active,
-  onChange,
-  canAddObjective,
-  onAddObjective,
-}: {
-  active: StudioTopPaneProjection;
-  onChange: (projection: StudioTopPaneProjection) => void;
-  canAddObjective: boolean;
-  onAddObjective: () => void;
-}) {
+export function ScenarioProjectionToolbar() {
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
+  const graph = useGraphStore((state) => state.graph);
+  const topPane = getTopPaneState(workspace);
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const registry = useMemo(
+    () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
+    [activeScenario, graph]
+  );
+  const selectedEntity = getScenarioEntity(registry, topPane.selected_entity_id);
+  const sourceSelector = sourceSelectorForEntity(selectedEntity, registry);
+  const taskEntity =
+    Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
+  const canAddObjective = Boolean(activeScenario && sourceSelector);
+  const addObjectiveFromSelection = () => {
+    if (!activeScenario || !selectedEntity || !sourceSelector) return;
+    const targetSelector = targetSelectorForEntity(taskEntity);
+    const term = createObjectiveTerm({
+      spec: objectiveSpec,
+      label: `Objective: ${selectedEntity.label}`,
+      sourceSelector,
+      targetSelector,
+    });
+    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
+    setTopPaneProjection('objectives');
+    selectTopPaneEntity(`objective_term:${term.id}`);
+  };
+
   return (
-    <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3">
-      <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 p-1">
+    <div className="flex h-11 shrink-0 items-end justify-between border-b border-slate-200 bg-white px-3">
+      <div className="flex h-full items-end">
         {PROJECTIONS.map((projection) => {
           const Icon = projection.icon;
-          const selected = projection.id === active;
+          const selected = projection.id === topPane.active_projection;
           return (
             <button
               key={projection.id}
               type="button"
-              onClick={() => onChange(projection.id)}
+              onClick={() => setTopPaneProjection(projection.id)}
               className={clsx(
-                'inline-flex h-8 items-center gap-2 rounded px-3 text-xs font-medium transition-colors',
+                'inline-flex h-10 items-center gap-2 border-b-2 px-4 text-xs font-semibold uppercase tracking-[0.12em] transition-colors',
                 selected
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-slate-400 hover:text-slate-600'
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -112,8 +130,13 @@ function ProjectionTabs({
       <button
         type="button"
         disabled={!canAddObjective}
-        onClick={onAddObjective}
-        className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+        onClick={addObjectiveFromSelection}
+        title={
+          canAddObjective
+            ? `Add objective from ${selectedEntity?.label ?? 'selected selector'}`
+            : 'Select a port, probe, or other explicit variable selector first.'
+        }
+        className="mb-1.5 inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Plus className="h-3.5 w-3.5" />
         Add objective
@@ -196,19 +219,14 @@ function EntityList({
 
 function WorkspaceProjection({
   registry,
-  metrics,
-  overlays,
   selectedId,
   onSelect,
 }: {
   registry: StudioScenarioEntityRegistry;
-  metrics: ScenarioMetricSpec[];
-  overlays: ScenarioArtifactOverlay[];
   selectedId: string | null;
   onSelect: (entityId: string | null) => void;
 }) {
   const items = workspaceProjectionItems(registry);
-  const selectedEntity = getScenarioEntity(registry, selectedId);
   const relatedItems = relatedProjectionItems(registry, selectedId);
   const relatedIds = new Set(relatedItems.map((item) => item.entity_id));
   const taskEntity = Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
@@ -244,14 +262,6 @@ function WorkspaceProjection({
         relatedIds
       )
     : false;
-  const overlayColors = ['#0f766e', '#7c3aed', '#ea580c', '#2563eb'];
-  const overlayPaths = overlays.slice(0, 4).map((overlay, index) => ({
-    overlay,
-    color: overlayColors[index % overlayColors.length],
-    path: `M ${125 + index * 12} ${255 - index * 9} C ${190} ${120 + index * 14}, ${
-      300
-    } ${300 - index * 18}, ${374 - index * 10} ${160 + index * 24}`,
-  }));
 
   return (
     <div className="grid h-full min-h-0 bg-slate-50 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -341,17 +351,6 @@ function WorkspaceProjection({
                 </g>
               );
             })}
-          {overlayPaths.map(({ overlay, color, path }) => (
-            <path
-              key={overlay.id}
-              d={path}
-              fill="none"
-              stroke={color}
-              strokeWidth="2.5"
-              strokeOpacity="0.72"
-              strokeDasharray={overlay.source === 'artifact' ? '7 5' : undefined}
-            />
-          ))}
           <circle cx="250" cy="210" r="4" fill="#047857" />
         </svg>
         <div className="absolute left-4 top-4 rounded border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-sm">
@@ -367,68 +366,8 @@ function WorkspaceProjection({
           relatedIds={relatedIds}
           onSelect={onSelect}
         />
-        <MetricTraceList metrics={metrics} />
-        <OverlayTraceList overlays={overlays} />
-        {selectedEntity && (
-          <div className="border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
-            <div className="font-medium text-slate-700">{selectedEntity.label}</div>
-            {selectedEntity.summary && <div className="mt-1">{selectedEntity.summary}</div>}
-          </div>
-        )}
       </aside>
     </div>
-  );
-}
-
-function MetricTraceList({ metrics }: { metrics: ScenarioMetricSpec[] }) {
-  return (
-    <section className="border-t border-slate-100 px-4 py-3">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-        Metric Specs
-      </div>
-      <div className="mt-2 space-y-2">
-        {metrics.slice(0, 6).map((metric) => (
-          <div key={`${metric.source}:${metric.sourceId}:${metric.id}`} className="text-xs">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate font-medium text-slate-700">{metric.label}</span>
-              <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                {metric.source}
-              </span>
-            </div>
-            <div className="mt-0.5 truncate text-[11px] text-slate-400">
-              {metric.selector ?? metric.summary ?? metric.sourceId}
-            </div>
-          </div>
-        ))}
-        {metrics.length === 0 && <div className="text-xs text-slate-400">None derived</div>}
-      </div>
-    </section>
-  );
-}
-
-function OverlayTraceList({ overlays }: { overlays: ScenarioArtifactOverlay[] }) {
-  return (
-    <section className="border-t border-slate-100 px-4 py-3">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-        Overlays
-      </div>
-      <div className="mt-2 space-y-2">
-        {overlays.slice(0, 5).map((overlay) => (
-          <div key={overlay.id} className="text-xs">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate font-medium text-slate-700">{overlay.label}</span>
-              <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                {overlay.source}
-              </span>
-            </div>
-            <div className="mt-0.5 truncate text-[11px] text-slate-400">
-              {overlay.uri ?? overlay.summary ?? overlay.role}
-            </div>
-          </div>
-        ))}
-        {overlays.length === 0 && <div className="text-xs text-slate-400">None available</div>}
-      </div>
-    </section>
   );
 }
 
@@ -560,7 +499,6 @@ function ObjectivesProjection({
 
 export function ScenarioProjectionWorkspace() {
   const workspace = useWorkspaceStore((state) => state.workspace);
-  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioObjectiveSpec
@@ -570,46 +508,15 @@ export function ScenarioProjectionWorkspace() {
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
-  const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
-  const overlays = useMemo(() => artifactOverlaysForWorkspace(workspace), [workspace]);
   const registry = useMemo(
     () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
     [activeScenario, graph]
   );
   const stageSummary =
     typeof activeStage?.metadata.summary === 'string' ? activeStage.metadata.summary : null;
-  const selectedEntity = getScenarioEntity(registry, topPane.selected_entity_id);
-  const canAddObjective = Boolean(activeScenario && selectedEntity);
-  const addObjectiveFromSelection = () => {
-    if (!activeScenario || !selectedEntity) return;
-    const taskEntity =
-      Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
-    const mechanicsEntity =
-      Object.values(registry.entities).find((entity) => entity.kind === 'mechanics_object') ?? null;
-    const sourceSelector =
-      sourceSelectorForEntity(selectedEntity, registry) ??
-      sourceSelectorForEntity(mechanicsEntity, registry);
-    const targetSelector =
-      targetSelectorForEntity(selectedEntity) ?? targetSelectorForEntity(taskEntity);
-    const term = createObjectiveTerm({
-      spec: objectiveSpec,
-      label: `Objective: ${selectedEntity.label}`,
-      sourceSelector,
-      targetSelector,
-    });
-    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
-    setTopPaneProjection('objectives');
-    selectTopPaneEntity(`objective_term:${term.id}`);
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ProjectionTabs
-        active={topPane.active_projection}
-        onChange={setTopPaneProjection}
-        canAddObjective={canAddObjective}
-        onAddObjective={addObjectiveFromSelection}
-      />
       <div className="relative min-h-0 flex-1">
         {topPane.active_projection === 'graph' && (
           <div className="absolute inset-0">
@@ -619,8 +526,6 @@ export function ScenarioProjectionWorkspace() {
         {topPane.active_projection === 'workspace' && (
           <WorkspaceProjection
             registry={registry}
-            metrics={metrics}
-            overlays={overlays}
             selectedId={topPane.selected_entity_id}
             onSelect={selectTopPaneEntity}
           />

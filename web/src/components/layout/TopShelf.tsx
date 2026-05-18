@@ -1,6 +1,9 @@
 import { Sidebar } from '@/components/layout/Sidebar';
 import { RightPanel } from '@/components/panels/RightPanel';
-import { ScenarioProjectionWorkspace } from '@/components/scenario/ScenarioProjectionWorkspace';
+import {
+  ScenarioProjectionToolbar,
+  ScenarioProjectionWorkspace,
+} from '@/components/scenario/ScenarioProjectionWorkspace';
 import { useLayoutStore } from '@/stores/layoutStore';
 
 export function TopShelf({ height }: { height: number }) {
@@ -12,13 +15,16 @@ export function TopShelf({ height }: { height: number }) {
       style={{ height }}
     >
       {!topCollapsed && (
-        <div className="flex flex-1 min-h-0">
-          <Sidebar />
-          <main className="relative flex-1 min-h-0">
-            <ScenarioProjectionWorkspace />
-          </main>
-          <RightPanel />
-        </div>
+        <>
+          <ScenarioProjectionToolbar />
+          <div className="flex flex-1 min-h-0">
+            <Sidebar />
+            <main className="relative flex-1 min-h-0">
+              <ScenarioProjectionWorkspace />
+            </main>
+            <RightPanel />
+          </div>
+        </>
       )}
     </section>
   );

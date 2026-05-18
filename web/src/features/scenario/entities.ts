@@ -96,7 +96,8 @@ export function entityKindLabel(kind: StudioScenarioEntityKind): string {
 export function selectorToEntityId(selector: StudioSelectorRef | null | undefined): string | null {
   if (!selector) return null;
   if (selector.namespace === 'graph_port' && selector.target_id && selector.path) {
-    return graphPortEntityId(selector.target_id, 'output', selector.path);
+    const direction = selector.metadata.direction === 'input' ? 'input' : 'output';
+    return graphPortEntityId(selector.target_id, direction, selector.path);
   }
   if (selector.namespace === 'probe' && selector.target_id) {
     return probeEntityId(selector.target_id);

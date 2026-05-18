@@ -9,6 +9,7 @@ import {
   mechanicsEntityId,
   objectiveEntityId,
   probeEntityId,
+  selectorToEntityId,
   taskEntityId,
 } from '@/features/scenario/entities';
 import type { GraphSpec } from '@/types/graph';
@@ -155,6 +156,23 @@ describe('scenario entity registry', () => {
       graphEdgeEntityId('state:task->mechanics')
     );
     expect(entityIdFromGraphSelection({})).toBeNull();
+  });
+
+  it('maps graph-port selectors back to the selected port direction', () => {
+    const registry = buildScenarioEntityRegistry({ scenario });
+    const inputSelector = registry.entities[graphPortEntityId('mechanics', 'input', 'force')]
+      .selector;
+    const outputSelector = registry.entities[graphPortEntityId('mechanics', 'output', 'effector')]
+      .selector;
+
+    expect(inputSelector).toMatchObject({ metadata: { direction: 'input' } });
+    expect(outputSelector).toMatchObject({ metadata: { direction: 'output' } });
+    expect(selectorToEntityId(inputSelector)).toBe(
+      graphPortEntityId('mechanics', 'input', 'force')
+    );
+    expect(selectorToEntityId(outputSelector)).toBe(
+      graphPortEntityId('mechanics', 'output', 'effector')
+    );
   });
 
   it('marks task and mechanics entities from child scenarios as inherited or overridden', () => {
