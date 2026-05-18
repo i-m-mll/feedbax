@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { TrainingRun, EvalRun } from '@/types/runs';
 import { fetchTrainingRuns, fetchEvalRuns } from '@/api/runAPI';
 import { getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
-import type { StudioCollectionRef, StudioManifestRef } from '@/types/workspace';
+import type { StudioCollectionRef, StudioManifestRef, StudioWorkspaceSpec } from '@/types/workspace';
 
 const TRAINING_COLLECTION_ID = 'collection:training-runs';
 const SELECTED_TRAINING_COLLECTION_ID = 'collection:selected-training-runs';
@@ -67,6 +67,94 @@ function collectionFromRefs(
 function selectionIds(stageSelection: Record<string, unknown>, key: string): string[] {
   const value = stageSelection[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function manifestRefsFromCollections(collections: StudioCollectionRef[]): StudioManifestRef[] {
+  const refs = new Map<string, StudioManifestRef>();
+  for (const collection of collections) {
+    for (const ref of collection.item_refs) {
+      refs.set(ref.id, ref);
+    }
+  }
+  return Array.from(refs.values());
+}
+
+function runStatus(value: unknown): TrainingRun['status'] {
+  return value === 'running' || value === 'failed' || value === 'stopped' ? value : 'completed';
+}
+
+function evalStatus(value: unknown): EvalRun['status'] {
+  return value === 'running' || value === 'failed' ? value : 'completed';
+}
+
+function displayNameFromRef(ref: StudioManifestRef): string {
+  return typeof ref.metadata.name === 'string' ? ref.metadata.name : ref.id;
+}
+
+function createdAtFromRef(ref: StudioManifestRef): string {
+  return typeof ref.metadata.created_at === 'string' ? ref.metadata.created_at : '';
+}
+
+function hyperparamsFromRef(ref: StudioManifestRef): Record<string, string | number> {
+  const hyperparams = ref.metadata.hyperparams;
+  if (hyperparams && typeof hyperparams === 'object' && !Array.isArray(hyperparams)) {
+    return Object.fromEntries(
+      Object.entries(hyperparams as Record<string, unknown>).filter(
+        (entry): entry is [string, string | number] =>
+          typeof entry[1] === 'string' || typeof entry[1] === 'number'
+      )
+    );
+  }
+
+  const keys = [
+    'hidden_type',
+    'n_replicates',
+    'n_warmup_batches',
+    'batch_size',
+    'ramp_shape',
+    'ramp_duration_steps',
+    'nn_output_pre_go',
+    'final_validation_loss',
+  ];
+  return Object.fromEntries(
+    keys.flatMap((key) => {
+      const value = ref.metadata[key];
+      return typeof value === 'string' || typeof value === 'number' ? [[key, value]] : [];
+    })
+  );
+}
+
+function trainingRunFromManifestRef(ref: StudioManifestRef): TrainingRun {
+  return {
+    id: ref.id,
+    name: displayNameFromRef(ref),
+    createdAt: createdAtFromRef(ref),
+    status: runStatus(ref.metadata.status),
+    hyperparams: hyperparamsFromRef(ref),
+  };
+}
+
+function evalRunFromManifestRef(ref: StudioManifestRef): EvalRun {
+  const trainingRunId =
+    typeof ref.metadata.training_run_id === 'string'
+      ? ref.metadata.training_run_id
+      : Array.isArray(ref.metadata.training_run_ids) &&
+          typeof ref.metadata.training_run_ids[0] === 'string'
+        ? ref.metadata.training_run_ids[0]
+        : '';
+  return {
+    id: ref.id,
+    trainingRunId,
+    name: displayNameFromRef(ref),
+    createdAt: createdAtFromRef(ref),
+    status: evalStatus(ref.metadata.status),
+    description:
+      typeof ref.metadata.description === 'string'
+        ? ref.metadata.description
+        : typeof ref.metadata.name === 'string'
+          ? ref.metadata.name
+          : undefined,
+  };
 }
 
 export function selectedTrainingRunIdFromWorkspace(): string | null {
@@ -218,6 +306,7 @@ interface RunStoreState {
   addTrainingRun: (run: TrainingRun) => void;
   addEvalRun: (run: EvalRun) => void;
   updateEvalRunStatus: (id: string, status: EvalRun['status']) => void;
+  hydrateFromWorkspace: (workspace: StudioWorkspaceSpec | null | undefined) => void;
 }
 
 export const useRunStore = create<RunStoreState>((set, get) => ({
@@ -296,5 +385,40 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
         r.id === id ? { ...r, status } : r,
       ),
     }));
+  },
+
+  hydrateFromWorkspace: (workspace) => {
+    const trainStage = getStageByKind(workspace ?? null, 'train');
+    const evalStage = getStageByKind(workspace ?? null, 'eval');
+    const analysisStage = getStageByKind(workspace ?? null, 'analysis');
+    const trainingRefs = trainStage
+      ? manifestRefsFromCollections([
+          ...trainStage.output_collections,
+          ...(evalStage?.input_collections ?? []),
+        ]).filter((ref) => ref.role === 'training_run' || ref.kind === 'TrainingRun')
+      : [];
+    const evalRefs = evalStage
+      ? manifestRefsFromCollections([
+          ...evalStage.output_collections,
+          ...(analysisStage?.input_collections ?? []),
+        ]).filter((ref) => ref.role === 'evaluation_run' || ref.kind === 'EvaluationRun')
+      : [];
+    const selectedTrainingRunId =
+      selectionIds(evalStage?.selection_spec ?? {}, 'training_run_ids')[0] ??
+      trainingRefs[0]?.id ??
+      null;
+    const selectedEvalRunId =
+      selectionIds(analysisStage?.selection_spec ?? {}, 'eval_run_ids')[0] ??
+      selectionIds(evalStage?.selection_spec ?? {}, 'evaluation_run_ids')[0] ??
+      evalRefs[0]?.id ??
+      null;
+
+    set({
+      trainingRuns: trainingRefs.map(trainingRunFromManifestRef),
+      evalRuns: evalRefs.map(evalRunFromManifestRef),
+      selectedTrainingRunId,
+      selectedEvalRunId,
+      loading: false,
+    });
   },
 }));

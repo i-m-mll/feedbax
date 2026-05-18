@@ -122,4 +122,29 @@ describe('useRunStore stage collection ownership', () => {
       'collection:selected-evaluation-runs',
     ]);
   });
+
+  it('hydrates run selector state from existing workspace collections', () => {
+    useRunStore.getState().addTrainingRun(trainingRun);
+    useRunStore.getState().addEvalRun(evalRun);
+
+    const workspace = useWorkspaceStore.getState().workspace;
+    useRunStore.setState({
+      trainingRuns: [],
+      evalRuns: [],
+      selectedTrainingRunId: null,
+      selectedEvalRunId: null,
+    });
+    useRunStore.getState().hydrateFromWorkspace(workspace);
+
+    expect(useRunStore.getState().trainingRuns[0]).toMatchObject({
+      id: trainingRun.id,
+      name: trainingRun.name,
+    });
+    expect(useRunStore.getState().evalRuns[0]).toMatchObject({
+      id: evalRun.id,
+      trainingRunId: trainingRun.id,
+    });
+    expect(useRunStore.getState().selectedTrainingRunId).toBe(trainingRun.id);
+    expect(useRunStore.getState().selectedEvalRunId).toBe(evalRun.id);
+  });
 });
