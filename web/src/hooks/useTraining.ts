@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import { startTraining, stopTraining } from '@/api/client';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
+import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { GraphSpec } from '@/types/graph';
 import type { TrainingConfig } from '@/types/training';
 
@@ -87,9 +88,11 @@ function buildTrainingConfig(
 }
 
 export function useTraining() {
+  const trainingStore = useTrainingStore();
+  const trainingScenario = useWorkspaceStore((state) => getTrainingScenario(state.workspace));
+  const trainingSpec = trainingScenario?.training_spec ?? trainingStore.trainingSpec;
+  const taskSpec = trainingScenario?.task_spec ?? trainingStore.taskSpec;
   const {
-    trainingSpec,
-    taskSpec,
     status,
     jobId,
     setStatus,
@@ -98,7 +101,7 @@ export function useTraining() {
     appendLog,
     clearHistory,
     setLatestTrajectory,
-  } = useTrainingStore();
+  } = trainingStore;
   const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
   const wsRef = useRef<WebSocket | null>(null);

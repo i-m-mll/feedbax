@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { useGraphStore } from '@/stores/graphStore';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import type {
   LossTermSpec,
   LossValidationError,
@@ -102,6 +102,14 @@ function persistTaskSpecDraft(taskSpec: TaskSpec) {
   useGraphStore.getState().markDirty();
 }
 
+function currentWorkspaceTrainingSpec(fallback: TrainingSpec): TrainingSpec {
+  return getTrainingScenario(useWorkspaceStore.getState().workspace)?.training_spec ?? fallback;
+}
+
+function currentWorkspaceTaskSpec(fallback: TaskSpec): TaskSpec {
+  return getTrainingScenario(useWorkspaceStore.getState().workspace)?.task_spec ?? fallback;
+}
+
 interface TrainingStoreState {
   trainingSpec: TrainingSpec;
   taskSpec: TaskSpec;
@@ -180,11 +188,12 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   // Actions
   setTrainingSpec: (spec) => {
     const state = get();
+    const base = currentWorkspaceTrainingSpec(state.trainingSpec);
     const trainingSpec = {
-      ...state.trainingSpec,
+      ...base,
       ...spec,
       optimizer: {
-        ...state.trainingSpec.optimizer,
+        ...base.optimizer,
         ...(spec.optimizer ?? {}),
       },
     };
@@ -192,8 +201,9 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
     persistTrainingSpecDraft(trainingSpec);
   },
   setTaskSpec: (spec) => {
+    const base = currentWorkspaceTaskSpec(get().taskSpec);
     const taskSpec = {
-      ...get().taskSpec,
+      ...base,
       ...spec,
     };
     set({ taskSpec });
@@ -233,27 +243,30 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   setHighlightedProbeSelector: (selector) => set({ highlightedProbeSelector: selector }),
   updateLossTerm: (path, updates) => {
     const state = get();
+    const base = currentWorkspaceTrainingSpec(state.trainingSpec);
     const trainingSpec = {
-      ...state.trainingSpec,
-      loss: updateLossTermAtPath(state.trainingSpec.loss, path, updates),
+      ...base,
+      loss: updateLossTermAtPath(base.loss, path, updates),
     };
     set({ trainingSpec });
     persistTrainingSpecDraft(trainingSpec);
   },
   addLossTerm: (parentPath, key, term) => {
     const state = get();
+    const base = currentWorkspaceTrainingSpec(state.trainingSpec);
     const trainingSpec = {
-      ...state.trainingSpec,
-      loss: addLossTermAtPath(state.trainingSpec.loss, parentPath, key, term),
+      ...base,
+      loss: addLossTermAtPath(base.loss, parentPath, key, term),
     };
     set({ trainingSpec });
     persistTrainingSpecDraft(trainingSpec);
   },
   removeLossTerm: (path) => {
     const state = get();
+    const base = currentWorkspaceTrainingSpec(state.trainingSpec);
     const trainingSpec = {
-      ...state.trainingSpec,
-      loss: removeLossTermAtPath(state.trainingSpec.loss, path),
+      ...base,
+      loss: removeLossTermAtPath(base.loss, path),
     };
     set({ trainingSpec });
     persistTrainingSpecDraft(trainingSpec);

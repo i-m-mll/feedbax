@@ -1,4 +1,5 @@
 import { useTrainingStore } from '@/stores/trainingStore';
+import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { LossTermSpec } from '@/types/training';
 import { useCallback, useEffect, useRef } from 'react';
 import { Crosshair, Plus } from 'lucide-react';
@@ -21,7 +22,9 @@ export function PortContextMenu({
   onClose,
 }: PortContextMenuProps) {
   const addLossTerm = useTrainingStore((state) => state.addLossTerm);
-  const trainingSpec = useTrainingStore((state) => state.trainingSpec);
+  const trainingStoreSpec = useTrainingStore((state) => state.trainingSpec);
+  const trainingScenario = useWorkspaceStore((state) => getTrainingScenario(state.workspace));
+  const trainingSpec = trainingScenario?.training_spec ?? trainingStoreSpec;
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click

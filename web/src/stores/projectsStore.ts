@@ -49,9 +49,11 @@ function captureGraphSnapshot(): GraphSnapshot {
 
 function captureTrainingSnapshot(): TrainingSnapshot {
   const s = useTrainingStore.getState();
+  const workspace = useWorkspaceStore.getState().workspace;
+  const workspaceOwned = workspace ? trainingSnapshotFromWorkspace(workspace) : null;
   return {
-    trainingSpec: s.trainingSpec,
-    taskSpec: s.taskSpec,
+    trainingSpec: workspaceOwned?.trainingSpec ?? s.trainingSpec,
+    taskSpec: workspaceOwned?.taskSpec ?? s.taskSpec,
     selectedLossPath: s.selectedLossPath,
     lossValidationErrors: s.lossValidationErrors,
     highlightedProbeSelector: s.highlightedProbeSelector,
@@ -372,6 +374,15 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       if (tabId === activeTabId) return;
       const target = tabs.find((t) => t.tabId === tabId);
       if (!target) return;
+      const targetTrainingSnapshot =
+        target.workspaceSnapshot
+          ? {
+              ...trainingSnapshotFromWorkspace(target.workspaceSnapshot),
+              selectedLossPath: target.trainingSnapshot.selectedLossPath,
+              lossValidationErrors: target.trainingSnapshot.lossValidationErrors,
+              highlightedProbeSelector: target.trainingSnapshot.highlightedProbeSelector,
+            }
+          : target.trainingSnapshot;
 
       // Save current tab state
       const updatedTabs = tabs.map((tab) =>
@@ -381,11 +392,11 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       // Restore the target tab's store state
       useGraphStore.getState().restoreSnapshot(target.graphSnapshot);
       useTrainingStore.setState({
-        trainingSpec: target.trainingSnapshot.trainingSpec,
-        taskSpec: target.trainingSnapshot.taskSpec,
-        selectedLossPath: target.trainingSnapshot.selectedLossPath,
-        lossValidationErrors: target.trainingSnapshot.lossValidationErrors,
-        highlightedProbeSelector: target.trainingSnapshot.highlightedProbeSelector,
+        trainingSpec: targetTrainingSnapshot.trainingSpec,
+        taskSpec: targetTrainingSnapshot.taskSpec,
+        selectedLossPath: targetTrainingSnapshot.selectedLossPath,
+        lossValidationErrors: targetTrainingSnapshot.lossValidationErrors,
+        highlightedProbeSelector: targetTrainingSnapshot.highlightedProbeSelector,
       });
       restoreAnalysisSnapshot(target.analysisSnapshot);
       useWorkspaceStore.getState().setWorkspace(target.workspaceSnapshot);
@@ -408,15 +419,24 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         // Switch to adjacent tab: prefer left, otherwise right
         const nextIdx = idx > 0 ? idx - 1 : 0;
         const nextTab = nextTabs[nextIdx];
+        const nextTrainingSnapshot =
+          nextTab.workspaceSnapshot
+            ? {
+                ...trainingSnapshotFromWorkspace(nextTab.workspaceSnapshot),
+                selectedLossPath: nextTab.trainingSnapshot.selectedLossPath,
+                lossValidationErrors: nextTab.trainingSnapshot.lossValidationErrors,
+                highlightedProbeSelector: nextTab.trainingSnapshot.highlightedProbeSelector,
+              }
+            : nextTab.trainingSnapshot;
 
         // Restore next tab's store state
         useGraphStore.getState().restoreSnapshot(nextTab.graphSnapshot);
         useTrainingStore.setState({
-          trainingSpec: nextTab.trainingSnapshot.trainingSpec,
-          taskSpec: nextTab.trainingSnapshot.taskSpec,
-          selectedLossPath: nextTab.trainingSnapshot.selectedLossPath,
-          lossValidationErrors: nextTab.trainingSnapshot.lossValidationErrors,
-          highlightedProbeSelector: nextTab.trainingSnapshot.highlightedProbeSelector,
+          trainingSpec: nextTrainingSnapshot.trainingSpec,
+          taskSpec: nextTrainingSnapshot.taskSpec,
+          selectedLossPath: nextTrainingSnapshot.selectedLossPath,
+          lossValidationErrors: nextTrainingSnapshot.lossValidationErrors,
+          highlightedProbeSelector: nextTrainingSnapshot.highlightedProbeSelector,
         });
         restoreAnalysisSnapshot(nextTab.analysisSnapshot);
         useWorkspaceStore.getState().setWorkspace(nextTab.workspaceSnapshot);
