@@ -14,7 +14,6 @@ import { useGraphStore } from '@/stores/graphStore';
 import {
   buildScenarioEntityRegistry,
   entityKindLabel,
-  getScenarioEntity,
 } from '@/features/scenario/entities';
 import { objectiveProjectionItems, workspaceProjectionItems } from '@/features/scenario/projections';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide-react';
@@ -121,7 +120,6 @@ function ProjectionSidebar({
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const registry = buildScenarioEntityRegistry({ scenario: activeScenario, graph });
-  const selected = getScenarioEntity(registry, topPane.selected_entity_id);
   const items =
     projection === 'workspace'
       ? workspaceProjectionItems(registry)
@@ -153,12 +151,6 @@ function ProjectionSidebar({
         ))}
         {items.length === 0 && <div className="text-xs text-slate-400">None recorded</div>}
       </div>
-      {selected && (
-        <div className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500">
-          <div className="font-medium text-slate-700">{selected.label}</div>
-          {selected.summary && <div className="mt-1">{selected.summary}</div>}
-        </div>
-      )}
     </div>
   );
 }

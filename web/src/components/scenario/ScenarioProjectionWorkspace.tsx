@@ -1,27 +1,23 @@
 import { useMemo } from 'react';
 import clsx from 'clsx';
-import { GitBranch, ListChecks, Map as MapIcon, Plus, Trash2 } from 'lucide-react';
+import { GitBranch, ListChecks, Map as MapIcon, Trash2 } from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
   buildScenarioEntityRegistry,
-  entityKindLabel,
-  getScenarioEntity,
 } from '@/features/scenario/entities';
 import {
   objectiveProjectionItems,
   relatedProjectionItems,
-  workspaceProjectionItems,
   type ScenarioProjectionItem,
 } from '@/features/scenario/projections';
 import {
-  addObjectiveTerm,
-  createObjectiveTerm,
   ensureObjectiveSpec,
+  OBJECTIVE_PENALTY_OPTIONS,
+  OBJECTIVE_TEMPORAL_MODE_OPTIONS,
   objectiveTermEnabled,
+  objectiveSelectorSubpath,
   removeObjectiveTerm,
   setObjectiveTermEnabled,
-  sourceSelectorForEntity,
-  targetSelectorForEntity,
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
 import { useGraphStore } from '@/stores/graphStore';
@@ -38,6 +34,7 @@ import type {
   StudioScenarioEntityRegistry,
   StudioTopPaneProjection,
 } from '@/types/workspace';
+import type { TimeAggregationSpec } from '@/types/training';
 
 const PROJECTIONS: Array<{
   id: StudioTopPaneProjection;
@@ -71,40 +68,10 @@ function isSelectedOrRelated(
 export function ScenarioProjectionToolbar() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
-  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
-  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
-    (state) => state.updateActiveScenarioObjectiveSpec
-  );
-  const graph = useGraphStore((state) => state.graph);
   const topPane = getTopPaneState(workspace);
-  const activeStage = getActiveStage(workspace);
-  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
-  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
-  const registry = useMemo(
-    () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
-    [activeScenario, graph]
-  );
-  const selectedEntity = getScenarioEntity(registry, topPane.selected_entity_id);
-  const sourceSelector = sourceSelectorForEntity(selectedEntity, registry);
-  const taskEntity =
-    Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
-  const canAddObjective = Boolean(activeScenario && sourceSelector);
-  const addObjectiveFromSelection = () => {
-    if (!activeScenario || !selectedEntity || !sourceSelector) return;
-    const targetSelector = targetSelectorForEntity(taskEntity);
-    const term = createObjectiveTerm({
-      spec: objectiveSpec,
-      label: `Objective: ${selectedEntity.label}`,
-      sourceSelector,
-      targetSelector,
-    });
-    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
-    setTopPaneProjection('objectives');
-    selectTopPaneEntity(`objective_term:${term.id}`);
-  };
 
   return (
-    <div className="flex h-11 shrink-0 items-end justify-between border-b border-slate-200 bg-white px-3">
+    <div className="flex h-11 shrink-0 items-end border-b border-slate-200 bg-white px-3">
       <div className="flex h-full items-end">
         {PROJECTIONS.map((projection) => {
           const Icon = projection.icon;
@@ -127,20 +94,6 @@ export function ScenarioProjectionToolbar() {
           );
         })}
       </div>
-      <button
-        type="button"
-        disabled={!canAddObjective}
-        onClick={addObjectiveFromSelection}
-        title={
-          canAddObjective
-            ? `Add objective from ${selectedEntity?.label ?? 'selected selector'}`
-            : 'Select a port, probe, or other explicit variable selector first.'
-        }
-        className="mb-1.5 inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        <Plus className="h-3.5 w-3.5" />
-        Add objective
-      </button>
     </div>
   );
 }
@@ -165,58 +118,6 @@ function ScenarioBadge({
   );
 }
 
-function EntityList({
-  title,
-  items,
-  selectedId,
-  relatedIds,
-  onSelect,
-}: {
-  title: string;
-  items: ScenarioProjectionItem[];
-  selectedId: string | null;
-  relatedIds: Set<string>;
-  onSelect: (entityId: string | null) => void;
-}) {
-  return (
-    <section className="min-h-0">
-      <div className="px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-        {title}
-      </div>
-      <div className="space-y-1 px-3">
-        {items.map((item) => {
-          const active = item.entity_id === selectedId;
-          const related = relatedIds.has(item.entity_id);
-          return (
-            <button
-              key={item.entity_id}
-              type="button"
-              onClick={() => onSelect(item.entity_id)}
-              className={clsx(
-                'w-full rounded-md border px-3 py-2 text-left text-xs transition-colors',
-                active
-                  ? 'border-brand-300 bg-brand-50 text-slate-900'
-                  : related
-                    ? 'border-slate-200 bg-white text-slate-700'
-                    : 'border-transparent bg-transparent text-slate-600 hover:border-slate-200 hover:bg-white'
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate font-medium">{item.label}</span>
-                <span className="shrink-0 text-[10px] text-slate-400">
-                  {entityKindLabel(item.kind)}
-                </span>
-              </div>
-              {item.summary && <div className="mt-0.5 truncate text-slate-400">{item.summary}</div>}
-            </button>
-          );
-        })}
-        {items.length === 0 && <div className="px-1 text-xs text-slate-400">None recorded</div>}
-      </div>
-    </section>
-  );
-}
-
 function WorkspaceProjection({
   registry,
   selectedId,
@@ -226,7 +127,6 @@ function WorkspaceProjection({
   selectedId: string | null;
   onSelect: (entityId: string | null) => void;
 }) {
-  const items = workspaceProjectionItems(registry);
   const relatedItems = relatedProjectionItems(registry, selectedId);
   const relatedIds = new Set(relatedItems.map((item) => item.entity_id));
   const taskEntity = Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
@@ -264,7 +164,7 @@ function WorkspaceProjection({
     : false;
 
   return (
-    <div className="grid h-full min-h-0 bg-slate-50 lg:grid-cols-[minmax(0,1fr)_20rem]">
+    <div className="h-full min-h-0 bg-slate-50">
       <div className="relative min-h-0 overflow-hidden">
         <svg viewBox="0 0 500 420" className="h-full w-full" role="img" aria-label="Workspace projection">
           <rect x="78" y="38" width="344" height="344" rx="8" fill="#ffffff" stroke="#dbe3ee" />
@@ -322,35 +222,6 @@ function WorkspaceProjection({
           >
             <circle cx="302" cy="170" r="10" fill={mechanicsSelected ? '#f59e0b' : '#475569'} />
           </g>
-          {items
-            .filter((item) => item.kind === 'objective_term')
-            .map((item, index) => {
-              const target = targets[index % targets.length] ?? { x: 250, y: 80 };
-              const active = item.entity_id === selectedId || relatedIds.has(item.entity_id);
-              return (
-                <g
-                  key={item.entity_id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelect(item.entity_id)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      onSelect(item.entity_id);
-                    }
-                  }}
-                >
-                  <line
-                    x1="302"
-                    y1="170"
-                    x2={target.x}
-                    y2={target.y}
-                    stroke={active ? '#7c3aed' : '#c4b5fd'}
-                    strokeWidth={active ? 3 : 2}
-                    strokeDasharray="5 5"
-                  />
-                </g>
-              );
-            })}
           <circle cx="250" cy="210" r="4" fill="#047857" />
         </svg>
         <div className="absolute left-4 top-4 rounded border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-sm">
@@ -358,17 +229,25 @@ function WorkspaceProjection({
           <div className="mt-0.5 text-slate-500">{mechanicsEntity?.summary ?? 'Mechanics'}</div>
         </div>
       </div>
-      <aside className="min-h-0 overflow-y-auto border-l border-slate-200 bg-white">
-        <EntityList
-          title="Workspace Entities"
-          items={items}
-          selectedId={selectedId}
-          relatedIds={relatedIds}
-          onSelect={onSelect}
-        />
-      </aside>
     </div>
   );
+}
+
+function temporalSelector(term: StudioObjectiveTermSpec): TimeAggregationSpec {
+  const value = term.temporal_selector;
+  if (!value || typeof value !== 'object' || !('mode' in value)) return { mode: 'all' };
+  return value as TimeAggregationSpec;
+}
+
+function updateTemporalSelector(
+  term: StudioObjectiveTermSpec,
+  updates: Partial<TimeAggregationSpec>
+): TimeAggregationSpec {
+  const current = temporalSelector(term);
+  return {
+    ...current,
+    ...updates,
+  };
 }
 
 function ObjectivesProjection({
@@ -398,16 +277,19 @@ function ObjectivesProjection({
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-5">
       <div className="mx-auto max-w-5xl overflow-hidden rounded-md border border-slate-200 bg-white">
-        <div className="grid grid-cols-[minmax(0,1.4fr)_7rem_7rem_minmax(0,1fr)_5rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+        <div className="grid grid-cols-[minmax(10rem,1.4fr)_6.5rem_5.5rem_7.25rem_8.5rem_minmax(8rem,1fr)_4rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
           <div>Term</div>
           <div>Role</div>
           <div>Weight</div>
+          <div>Penalty</div>
+          <div>Time</div>
           <div>Selector</div>
           <div>State</div>
         </div>
         {items.map((item) => {
           const term = termByEntityId.get(item.entity_id);
           const source = term?.source_selector;
+          const time = term ? temporalSelector(term) : { mode: 'all' as const };
           const active = item.entity_id === selectedId;
           const related = relatedIds.has(item.entity_id);
           if (!term) return null;
@@ -416,7 +298,7 @@ function ObjectivesProjection({
               key={item.entity_id}
               onClick={() => onSelect(item.entity_id)}
               className={clsx(
-                'grid w-full grid-cols-[minmax(0,1.4fr)_7rem_7rem_minmax(0,1fr)_5rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left text-xs last:border-b-0',
+                'grid w-full grid-cols-[minmax(10rem,1.4fr)_6.5rem_5.5rem_7.25rem_8.5rem_minmax(8rem,1fr)_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left text-xs last:border-b-0',
                 active
                   ? 'bg-brand-50 text-slate-900'
                   : related
@@ -457,6 +339,36 @@ function ObjectivesProjection({
                 onClick={(event) => event.stopPropagation()}
                 className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
               />
+              <select
+                value={term.penalty ?? 'squared_l2'}
+                onChange={(event) => updateTerm(term.id, { penalty: event.target.value })}
+                onClick={(event) => event.stopPropagation()}
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
+              >
+                {OBJECTIVE_PENALTY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={time.mode}
+                onChange={(event) =>
+                  updateTerm(term.id, {
+                    temporal_selector: updateTemporalSelector(term, {
+                      mode: event.target.value as TimeAggregationSpec['mode'],
+                    }),
+                  })
+                }
+                onClick={(event) => event.stopPropagation()}
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
+              >
+                {OBJECTIVE_TEMPORAL_MODE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <div className="truncate text-slate-500">{source?.compact ?? 'None'}</div>
               <div className="flex items-center gap-1">
                 <input

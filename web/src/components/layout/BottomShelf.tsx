@@ -93,11 +93,11 @@ export function BottomShelf({
       style={{ height }}
     >
       <div
-        className="flex items-center px-4 gap-3"
+        className="flex items-end gap-3 border-b border-slate-200 px-3"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
         <div className="relative flex-1 min-w-0">
-          <div ref={tabsRef} className="flex items-center gap-2 overflow-x-auto pr-6">
+          <div ref={tabsRef} className="flex items-end overflow-x-auto pr-6">
             {stages.map((stage) => {
               const Icon = stageIcons[stage.kind] ?? Workflow;
               const active = mode === 'stage' && stage.id === activeStage?.id;
@@ -106,10 +106,10 @@ export function BottomShelf({
                   key={stage.id}
                   onClick={() => selectStage(stage.id)}
                   className={clsx(
-                    'flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.2em] px-3 py-1.5 rounded-full border whitespace-nowrap',
+                    'inline-flex h-10 items-center gap-2 whitespace-nowrap border-b-2 px-4 text-xs font-semibold uppercase tracking-[0.12em] transition-colors',
                     active
-                      ? 'border-brand-500 text-brand-600 bg-brand-500/10'
-                      : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                      ? 'border-brand-500 text-brand-600'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
                   )}
                   title={`${stage.kind}: ${stage.label}`}
                 >
@@ -118,17 +118,17 @@ export function BottomShelf({
                 </button>
               );
             })}
-            <div className="shrink-0 w-px h-5 bg-slate-200" />
+            <div className="mx-2 mb-2 h-5 w-px shrink-0 bg-slate-200" />
             <button
               onClick={() => {
                 if (bottomCollapsed) toggleBottom(availableHeight);
                 setMode('console');
               }}
               className={clsx(
-                'flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.2em] px-3 py-1.5 rounded-full border whitespace-nowrap',
+                'inline-flex h-10 items-center gap-2 whitespace-nowrap border-b-2 px-4 text-xs font-semibold uppercase tracking-[0.12em] transition-colors',
                 mode === 'console'
-                  ? 'border-brand-500 text-brand-600 bg-brand-500/10'
-                  : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-slate-400 hover:text-slate-600'
               )}
             >
               <Terminal className="h-3.5 w-3.5" />

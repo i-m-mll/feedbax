@@ -3,7 +3,10 @@ import {
   addObjectiveTerm,
   createObjectiveTerm,
   lossSpecFromObjectiveSpec,
+  objectiveGraphPortTarget,
+  objectiveSelectorSubpath,
   removeObjectiveTerm,
+  selectorWithSubpath,
   setObjectiveTermEnabled,
   sourceSelectorForEntity,
   updateObjectiveTerm,
@@ -46,6 +49,42 @@ describe('scenario objective operations', () => {
 
     const removed = removeObjectiveTerm(disabled, term.id);
     expect(removed.terms).toEqual([]);
+  });
+
+  it('keeps substate selectors related to their source graph port', () => {
+    const portSelector = {
+      namespace: 'graph_port' as const,
+      compact: 'port:mechanics.effector',
+      target_id: 'mechanics',
+      path: 'effector',
+      metadata: { direction: 'output' },
+    };
+    const substateSelector = selectorWithSubpath(portSelector, 'position');
+    const term = createObjectiveTerm({
+      spec: baseSpec,
+      label: 'Effector position',
+      sourceSelector: substateSelector,
+    });
+    const withTerm = addObjectiveTerm(baseSpec, term);
+
+    expect(substateSelector).toMatchObject({
+      namespace: 'state_path',
+      compact: 'path:states.mechanics.effector.pos',
+      metadata: {
+        graph_port_node_id: 'mechanics',
+        graph_port_name: 'effector',
+        subpath: 'position',
+      },
+    });
+    expect(objectiveSelectorSubpath(substateSelector)).toBe('position');
+    expect(objectiveGraphPortTarget(substateSelector)).toEqual({
+      nodeId: 'mechanics',
+      direction: 'output',
+      port: 'effector',
+    });
+    expect(lossSpecFromObjectiveSpec(withTerm).children?.[term.id]).toMatchObject({
+      selector: 'path:states.mechanics.effector.pos',
+    });
   });
 
   it('uses explicit graph port selectors instead of inferring from graph nodes', () => {

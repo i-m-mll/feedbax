@@ -173,6 +173,18 @@ describe('scenario entity registry', () => {
     expect(selectorToEntityId(outputSelector)).toBe(
       graphPortEntityId('mechanics', 'output', 'effector')
     );
+    expect(selectorToEntityId({
+      namespace: 'state_path',
+      compact: 'path:states.mechanics.effector.pos',
+      target_id: 'mechanics',
+      path: 'states.mechanics.effector.pos',
+      metadata: {
+        graph_port_node_id: 'mechanics',
+        graph_port_name: 'effector',
+        graph_port_direction: 'output',
+        subpath: 'position',
+      },
+    })).toBe(graphPortEntityId('mechanics', 'output', 'effector'));
   });
 
   it('marks task and mechanics entities from child scenarios as inherited or overridden', () => {

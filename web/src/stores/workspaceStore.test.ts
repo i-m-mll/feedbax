@@ -281,6 +281,35 @@ describe('buildWorkspaceSnapshot', () => {
     });
   });
 
+  it('maps known legacy probe losses onto graph-port substates', () => {
+    const objectiveSpec = objectiveSpecFromLossSpec({
+      type: 'Composite',
+      label: 'loss',
+      weight: 1,
+      children: {
+        activity: {
+          type: 'TargetStateLoss',
+          label: 'Network Activity',
+          weight: 0.01,
+          selector: 'probe:network_hidden',
+          norm: 'squared_l2',
+          time_agg: { mode: 'all' },
+        },
+      },
+    });
+
+    expect(objectiveSpec.terms[0].source_selector).toMatchObject({
+      namespace: 'state_path',
+      compact: 'path:states.net.hidden',
+      metadata: {
+        legacy_selector: 'probe:network_hidden',
+        graph_port_node_id: 'network',
+        graph_port_name: 'hidden',
+        subpath: 'hidden',
+      },
+    });
+  });
+
   it('lowers active scenario objective edits back into the training loss spec', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
