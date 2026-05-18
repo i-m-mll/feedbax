@@ -67,6 +67,7 @@ export function AnalysisPageSettings() {
   const selectedTrainingRunId = useRunStore((s) => s.selectedTrainingRunId);
   const evalRuns = useRunStore((s) => s.evalRuns);
   const addEvalRun = useRunStore((s) => s.addEvalRun);
+  const selectEvalRun = useRunStore((s) => s.selectEvalRun);
   const updateEvalRunStatus = useRunStore((s) => s.updateEvalRunStatus);
 
   const activePage = pages.find((p) => p.id === activePageId);
@@ -195,6 +196,14 @@ export function AnalysisPageSettings() {
     updateEvalRunStatus,
   ]);
 
+  const handleSelectEvalRun = useCallback(
+    (id: string | null) => {
+      selectEvalRun(id);
+      setEvalRunId(id);
+    },
+    [selectEvalRun, setEvalRunId],
+  );
+
   if (!activePage) {
     return (
       <div className="p-4 text-xs text-slate-400 italic">
@@ -214,7 +223,7 @@ export function AnalysisPageSettings() {
         </div>
         <EvalRunSelector
           selectedEvalRunId={evalRunId}
-          onSelectEvalRun={setEvalRunId}
+          onSelectEvalRun={handleSelectEvalRun}
         />
       </div>
 
