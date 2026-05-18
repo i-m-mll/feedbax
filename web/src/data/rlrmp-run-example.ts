@@ -9,14 +9,19 @@ import type {
 const TRAIN_STAGE_ID = 'stage:train';
 const EVAL_STAGE_ID = 'stage:eval';
 const ANALYSIS_STAGE_ID = 'stage:analysis';
+const REPORT_STAGE_ID = 'stage:report';
 
 const TRAINING_COLLECTION_ID = 'collection:training-runs';
 const EVAL_INPUT_COLLECTION_ID = 'collection:b399efc-training-runs-for-eval';
 const EVALUATION_COLLECTION_ID = 'collection:evaluation-runs';
 const ANALYSIS_INPUT_COLLECTION_ID = 'collection:b399efc-evaluation-runs-for-analysis';
+const ANALYSIS_OUTPUT_COLLECTION_ID = 'collection:b399efc-analysis-products';
+const REPORT_COLLECTION_ID = 'collection:b399efc-reports';
 
 const EVALUATION_RUN_ID = 'rlrmp:b399efc:eval:centerout-sisu0.5-zero-perturbation';
 const WINNER_RUN_ID = 'rlrmp:b399efc:movement_ramp__power6_dur80';
+const ANALYSIS_PRODUCT_ID = 'rlrmp:b399efc:analysis:summary-products';
+const REPORT_MANIFEST_ID = 'rlrmp:b399efc:report:movement-ramp-summary';
 
 interface MovementRampRunSeed {
   variant: string;
@@ -211,6 +216,47 @@ function evaluationRunRef(): StudioManifestRef {
   };
 }
 
+function analysisProductRef(): StudioManifestRef {
+  return {
+    kind: 'AnalysisProduct',
+    id: ANALYSIS_PRODUCT_ID,
+    role: 'analysis_product',
+    provider: 'rlrmp',
+    uri: 'results/b399efc/figures/summary-products.json',
+    metadata: {
+      name: 'Movement-ramp summary analysis products',
+      status: 'completed',
+      source_issue: 'b399efc',
+      page_id: 'analysis:b399efc:summary',
+      eval_run_ids: [EVALUATION_RUN_ID],
+      figure_topics: [
+        'forward_velocity_profiles',
+        'hold_drift_profiles',
+        'peak_velocity_distributions',
+        'summary_metrics',
+      ],
+      metric_ids: ['peak_velocity_m_per_s', 'hold_drift_mm', 'within_cell_velocity_rmse_m_per_s'],
+    },
+  };
+}
+
+function reportManifestRef(): StudioManifestRef {
+  return {
+    kind: 'ReportManifest',
+    id: REPORT_MANIFEST_ID,
+    role: 'report',
+    provider: 'rlrmp',
+    uri: 'results/b399efc/report/manifest.json',
+    metadata: {
+      name: 'Movement-ramp summary report',
+      status: 'completed',
+      source_issue: 'b399efc',
+      analysis_product_ids: [ANALYSIS_PRODUCT_ID],
+      source_stage_id: ANALYSIS_STAGE_ID,
+    },
+  };
+}
+
 function artifactRefs(): StudioArtifactRef[] {
   return [
     {
@@ -320,6 +366,8 @@ export function seedRlrmpMovementRampWorkspace(
 ): StudioWorkspaceSpec {
   const trainingRefs = MOVEMENT_RAMP_RUNS.map(trainingRunRef);
   const evalRef = evaluationRunRef();
+  const analysisProduct = analysisProductRef();
+  const reportManifest = reportManifestRef();
   const artifacts = artifactRefs();
   const trainingCollection = collection(
     TRAINING_COLLECTION_ID,
@@ -361,6 +409,30 @@ export function seedRlrmpMovementRampWorkspace(
       seeded_example: true,
     }
   );
+  const analysisOutputCollection = collection(
+    ANALYSIS_OUTPUT_COLLECTION_ID,
+    'analysis_products',
+    'Movement-ramp analysis products',
+    ANALYSIS_STAGE_ID,
+    [analysisProduct],
+    {
+      source_collection_id: ANALYSIS_INPUT_COLLECTION_ID,
+      selected_eval_run_id: EVALUATION_RUN_ID,
+      seeded_example: true,
+    }
+  );
+  const reportCollection = collection(
+    REPORT_COLLECTION_ID,
+    'reports',
+    'Movement-ramp report products',
+    REPORT_STAGE_ID,
+    [reportManifest],
+    {
+      source_collection_id: ANALYSIS_OUTPUT_COLLECTION_ID,
+      analysis_product_ids: [ANALYSIS_PRODUCT_ID],
+      seeded_example: true,
+    }
+  );
 
   return {
     ...baseWorkspace,
@@ -371,8 +443,10 @@ export function seedRlrmpMovementRampWorkspace(
       evalInputCollection,
       evaluationCollection,
       analysisInputCollection,
+      analysisOutputCollection,
+      reportCollection,
     ],
-    manifest_refs: [...trainingRefs, evalRef],
+    manifest_refs: [...trainingRefs, evalRef, analysisProduct, reportManifest],
     artifact_refs: artifacts,
     stages: baseWorkspace.stages.map((stage) => {
       if (stage.kind === 'train') {
@@ -422,18 +496,43 @@ export function seedRlrmpMovementRampWorkspace(
         return {
           ...stage,
           label: 'Analyze',
-          status: 'ready' as const,
+          status: 'completed' as const,
           input_collections: [analysisInputCollection],
-          output_collections: stage.output_collections,
+          output_collections: [analysisOutputCollection],
+          manifest_refs: [analysisProduct],
+          artifact_refs: artifacts,
           selection_spec: {
             source_collection_id: EVALUATION_COLLECTION_ID,
             eval_run_ids: [EVALUATION_RUN_ID],
             input_collection_ids: [ANALYSIS_INPUT_COLLECTION_ID],
+            output_collection_ids: [ANALYSIS_OUTPUT_COLLECTION_ID],
           },
           metadata: {
             ...stage.metadata,
             source_issue: 'b399efc',
             seeded_example: true,
+            summary: 'Seeded analysis products for the b399efc validation run.',
+          },
+        };
+      }
+      if (stage.kind === 'report') {
+        return {
+          ...stage,
+          label: 'Report',
+          status: 'completed' as const,
+          input_collections: [analysisOutputCollection],
+          output_collections: [reportCollection],
+          manifest_refs: [reportManifest],
+          selection_spec: {
+            source_collection_id: ANALYSIS_OUTPUT_COLLECTION_ID,
+            analysis_product_ids: [ANALYSIS_PRODUCT_ID],
+            report_ids: [REPORT_MANIFEST_ID],
+          },
+          metadata: {
+            ...stage.metadata,
+            source_issue: 'b399efc',
+            seeded_example: true,
+            summary: 'Seeded report consuming the movement-ramp analysis products.',
           },
         };
       }
@@ -483,6 +582,45 @@ export function seedRlrmpMovementRampWorkspace(
             },
           ];
         }
+        if (scenario.stage_id === REPORT_STAGE_ID) {
+          return [
+            id,
+            {
+              ...scenario,
+              label: 'Movement-ramp summary report',
+              report_spec: {
+                schema_version: 'feedbax.studio.report.v1',
+                consumes: [
+                  {
+                    stage_id: ANALYSIS_STAGE_ID,
+                    collection_id: ANALYSIS_OUTPUT_COLLECTION_ID,
+                    manifest_ids: [ANALYSIS_PRODUCT_ID],
+                  },
+                ],
+                sections: [
+                  {
+                    id: 'section:movement-ramp-summary',
+                    title: 'Movement-ramp summary',
+                    role: 'results_summary',
+                    source_stage_id: ANALYSIS_STAGE_ID,
+                    collection_id: ANALYSIS_OUTPUT_COLLECTION_ID,
+                    manifest_ids: [ANALYSIS_PRODUCT_ID],
+                    artifact_ids: ['rlrmp:b399efc:figures'],
+                  },
+                ],
+                metadata: {
+                  source_issue: 'b399efc',
+                  seeded_example: true,
+                },
+              },
+              metadata: {
+                ...scenario.metadata,
+                source_issue: 'b399efc',
+                seeded_example: true,
+              },
+            },
+          ];
+        }
         return [id, scenario];
       })
     ),
@@ -505,4 +643,3 @@ export const RLRMP_MOVEMENT_RAMP_TEMPLATE = {
   description: 'Completed b399efc movement-ramp training matrix with seeded pipeline refs.',
   pageNames: ['b399efc summary'],
 } as const;
-
