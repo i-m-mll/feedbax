@@ -1,0 +1,204 @@
+import type { StudioManifestRef, StudioStageSpec } from '@/types/workspace';
+
+export interface TrainingRunSummary {
+  id: string;
+  label: string;
+  status: string;
+  variant: string | null;
+  rampShape: string | null;
+  rampDurationSteps: number | null;
+  nnOutputPreGo: number | null;
+  finalValidationLoss: number | null;
+  velocityRmse: number | null;
+  peakVelocityMean: number | null;
+  peakVelocitySd: number | null;
+  holdDriftMeanMm: number | null;
+  holdDriftSdMm: number | null;
+  replicateCount: number | null;
+  batchSize: number | null;
+  warmupBatches: number | null;
+  checkpointAvailable: boolean;
+  sourceIssue: string | null;
+  provenanceId: string;
+  uri: string | null;
+}
+
+export interface EvaluationRunSummary {
+  id: string;
+  label: string;
+  status: string;
+  selectedTrainingRunId: string | null;
+  trainingRunIds: string[];
+  targets: string | null;
+  sisu: number | null;
+  perturbation: string | null;
+  sourceIssue: string | null;
+  provenanceId: string;
+  uri: string | null;
+}
+
+export function selectedIds(stage: StudioStageSpec | null | undefined, key: string): string[] {
+  const value = stage?.selection_spec[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+export function trainingRunSummaries(stage: StudioStageSpec | null | undefined): TrainingRunSummary[] {
+  const refs = uniqueRefs(
+    stage?.output_collections.flatMap((collection) => collection.item_refs) ?? []
+  );
+  return refs
+    .filter((ref) => ref.role === 'training_run' || ref.kind === 'TrainingRun')
+    .map(trainingRunSummary)
+    .sort((a, b) => {
+      if (a.finalValidationLoss === null && b.finalValidationLoss === null) {
+        return a.label.localeCompare(b.label);
+      }
+      if (a.finalValidationLoss === null) return 1;
+      if (b.finalValidationLoss === null) return -1;
+      return a.finalValidationLoss - b.finalValidationLoss;
+    });
+}
+
+export function trainingInputSummaries(
+  stage: StudioStageSpec | null | undefined
+): TrainingRunSummary[] {
+  const refs = uniqueRefs(
+    stage?.input_collections.flatMap((collection) => collection.item_refs) ?? []
+  );
+  return refs
+    .filter((ref) => ref.role === 'training_run' || ref.kind === 'TrainingRun')
+    .map(trainingRunSummary)
+    .sort((a, b) => {
+      if (a.finalValidationLoss === null && b.finalValidationLoss === null) {
+        return a.label.localeCompare(b.label);
+      }
+      if (a.finalValidationLoss === null) return 1;
+      if (b.finalValidationLoss === null) return -1;
+      return a.finalValidationLoss - b.finalValidationLoss;
+    });
+}
+
+export function evaluationRunSummaries(
+  stage: StudioStageSpec | null | undefined
+): EvaluationRunSummary[] {
+  const refs = uniqueRefs(
+    stage?.output_collections.flatMap((collection) => collection.item_refs) ?? []
+  );
+  return refs
+    .filter((ref) => ref.role === 'evaluation_run' || ref.kind === 'EvaluationRun')
+    .map(evaluationRunSummary);
+}
+
+export function bestTrainingRun(rows: TrainingRunSummary[]): TrainingRunSummary | null {
+  return rows.find((row) => row.finalValidationLoss !== null) ?? rows[0] ?? null;
+}
+
+export function formatMetric(value: number | null, digits = 3): string {
+  if (value === null || !Number.isFinite(value)) return 'Not recorded';
+  if (Math.abs(value) >= 100) return value.toFixed(0);
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  if (Math.abs(value) >= 1) return value.toFixed(digits);
+  return value.toPrecision(digits);
+}
+
+export function runParameterSummary(row: TrainingRunSummary): string {
+  const parts = [
+    row.rampShape ? `${capitalize(row.rampShape)} ramp` : null,
+    row.rampDurationSteps !== null ? `${row.rampDurationSteps} steps` : null,
+    row.nnOutputPreGo !== null ? `pre-go ${row.nnOutputPreGo}` : null,
+    row.replicateCount !== null ? `${row.replicateCount} reps` : null,
+  ];
+  return parts.filter(Boolean).join(' - ') || 'Parameters not recorded';
+}
+
+export function evaluationProtocolLabel(row: EvaluationRunSummary): string {
+  const parts = [
+    row.targets,
+    row.sisu !== null ? `SISU ${row.sisu}` : null,
+    row.perturbation ? perturbationLabel(row.perturbation) : null,
+  ];
+  return parts.filter(Boolean).join(' - ') || 'Protocol not recorded';
+}
+
+function uniqueRefs(refs: StudioManifestRef[]): StudioManifestRef[] {
+  const byId = new Map<string, StudioManifestRef>();
+  for (const ref of refs) byId.set(ref.id, ref);
+  return Array.from(byId.values());
+}
+
+function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
+  return {
+    id: ref.id,
+    label: stringValue(ref.metadata.name) ?? ref.id,
+    status: stringValue(ref.metadata.status) ?? 'unknown',
+    variant: stringValue(ref.metadata.run_variant),
+    rampShape: stringValue(ref.metadata.ramp_shape),
+    rampDurationSteps: numberValue(ref.metadata.ramp_duration_steps),
+    nnOutputPreGo: numberValue(ref.metadata.nn_output_pre_go),
+    finalValidationLoss: numberValue(ref.metadata.final_validation_loss),
+    velocityRmse: numberValue(ref.metadata.within_cell_velocity_rmse_m_per_s),
+    peakVelocityMean: nestedNumber(ref.metadata.peak_velocity_m_per_s, 'mean'),
+    peakVelocitySd: nestedNumber(ref.metadata.peak_velocity_m_per_s, 'sd'),
+    holdDriftMeanMm: nestedNumber(ref.metadata.hold_drift_mm, 'mean'),
+    holdDriftSdMm: nestedNumber(ref.metadata.hold_drift_mm, 'sd'),
+    replicateCount: numberValue(ref.metadata.n_replicates),
+    batchSize: numberValue(ref.metadata.batch_size),
+    warmupBatches: numberValue(ref.metadata.n_warmup_batches),
+    checkpointAvailable: Boolean(ref.uri) || stringValue(ref.metadata.checkpoint_uri) !== null,
+    sourceIssue: stringValue(ref.metadata.source_issue),
+    provenanceId: ref.id,
+    uri: ref.uri ?? null,
+  };
+}
+
+function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
+  const protocol = objectValue(ref.metadata.eval_protocol);
+  const trainingRunIds = arrayOfStrings(ref.metadata.training_run_ids);
+  return {
+    id: ref.id,
+    label: stringValue(ref.metadata.name) ?? ref.id,
+    status: stringValue(ref.metadata.status) ?? 'unknown',
+    selectedTrainingRunId: stringValue(ref.metadata.selected_training_run_id),
+    trainingRunIds,
+    targets: stringValue(protocol?.targets),
+    sisu: numberValue(protocol?.sisu),
+    perturbation: stringValue(protocol?.perturbation),
+    sourceIssue: stringValue(ref.metadata.source_issue),
+    provenanceId: ref.id,
+    uri: ref.uri ?? null,
+  };
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function nestedNumber(value: unknown, key: string): number | null {
+  return numberValue(objectValue(value)?.[key]);
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function capitalize(value: string): string {
+  return value.length === 0 ? value : `${value[0].toUpperCase()}${value.slice(1)}`;
+}
+
+function perturbationLabel(value: string): string {
+  return value === 'none' ? 'no perturbation' : `${value} perturbation`;
+}

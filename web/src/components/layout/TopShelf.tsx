@@ -23,18 +23,13 @@ export function TopShelf({ height }: { height: number }) {
               <Canvas />
             </div>
             {activeStage && (
-              <div className="pointer-events-none absolute left-4 top-4 z-10 max-w-[min(28rem,calc(100%-2rem))] rounded border border-slate-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.22em] text-slate-400">
-                  <span>{activeStage.kind}</span>
-                  <span className="h-1 w-1 rounded-full bg-slate-300" />
-                  <span>{activeStage.status}</span>
+              <div className="pointer-events-none absolute bottom-4 left-[4.75rem] z-10 max-w-[min(28rem,calc(100%-7rem))] rounded border border-slate-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
+                <div className="truncate text-sm font-semibold text-slate-800">
+                  {activeScenario?.label ?? activeStage.label}
                 </div>
-                <div className="mt-0.5 truncate text-sm font-semibold text-slate-800">
-                  {activeStage.label}
-                </div>
-                {activeScenario && (
-                  <div className="truncate text-xs text-slate-500">
-                    {activeScenario.label}
+                {typeof activeStage.metadata.summary === 'string' && (
+                  <div className="mt-0.5 truncate text-xs text-slate-500">
+                    {activeStage.metadata.summary}
                   </div>
                 )}
               </div>
