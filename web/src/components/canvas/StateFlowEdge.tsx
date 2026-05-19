@@ -8,6 +8,7 @@ export function StateFlowEdge({
   sourcePosition,
   targetPosition,
   data,
+  selected,
 }: EdgeProps) {
   const [path] = getBezierPath({
     sourceX,
@@ -18,8 +19,8 @@ export function StateFlowEdge({
     targetPosition,
   });
   const primary = data?.primary ?? true;
-  const strokeWidth = primary ? 3 : 2.2;
-  const stroke = primary ? '#475569' : '#94a3b8';
+  const strokeWidth = selected ? (primary ? 4.4 : 3.6) : primary ? 3 : 2.2;
+  const stroke = selected ? '#2563eb' : primary ? '#475569' : '#94a3b8';
   const dash = primary ? 'none' : '6 6';
 
   return (
@@ -30,7 +31,7 @@ export function StateFlowEdge({
         stroke,
         strokeWidth,
         strokeDasharray: dash,
-        opacity: primary ? 0.9 : 0.75,
+        opacity: selected ? 1 : primary ? 0.9 : 0.75,
         fill: 'none',
       }}
       pointerEvents="stroke"

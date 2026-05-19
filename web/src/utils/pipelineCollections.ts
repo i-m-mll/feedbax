@@ -14,6 +14,7 @@ export interface TrainingRunSummary {
   peakVelocitySd: number | null;
   holdDriftMeanMm: number | null;
   holdDriftSdMm: number | null;
+  metrics: Record<string, number | null>;
   replicateCount: number | null;
   batchSize: number | null;
   warmupBatches: number | null;
@@ -103,6 +104,13 @@ export function formatMetric(value: number | null, digits = 3): string {
   return value.toPrecision(digits);
 }
 
+export function trainingRunMetricValue(
+  row: TrainingRunSummary,
+  metricId: string
+): number | null {
+  return row.metrics[metricId] ?? null;
+}
+
 export function runParameterSummary(row: TrainingRunSummary): string {
   const parts = [
     row.rampShape ? `${capitalize(row.rampShape)} ramp` : null,
@@ -143,6 +151,7 @@ function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
     peakVelocitySd: nestedNumber(ref.metadata.peak_velocity_m_per_s, 'sd'),
     holdDriftMeanMm: nestedNumber(ref.metadata.hold_drift_mm, 'mean'),
     holdDriftSdMm: nestedNumber(ref.metadata.hold_drift_mm, 'sd'),
+    metrics: trainingRunMetrics(ref),
     replicateCount: numberValue(ref.metadata.n_replicates),
     batchSize: numberValue(ref.metadata.batch_size),
     warmupBatches: numberValue(ref.metadata.n_warmup_batches),
@@ -151,6 +160,17 @@ function trainingRunSummary(ref: StudioManifestRef): TrainingRunSummary {
     provenanceId: ref.id,
     uri: ref.uri ?? null,
   };
+}
+
+function trainingRunMetrics(ref: StudioManifestRef): Record<string, number | null> {
+  const metrics: Record<string, number | null> = {};
+  for (const [key, value] of Object.entries(ref.metadata)) {
+    const direct = numberValue(value);
+    const mean = nestedNumber(value, 'mean');
+    if (direct !== null) metrics[key] = direct;
+    else if (mean !== null) metrics[key] = mean;
+  }
+  return metrics;
 }
 
 function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {

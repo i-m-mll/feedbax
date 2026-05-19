@@ -41,6 +41,10 @@ describe('pipeline collection summaries', () => {
     expect(rows[0]).toMatchObject({
       label: 'Power 6 ramp, duration 80',
       finalValidationLoss: 0.1021,
+      metrics: expect.objectContaining({
+        final_validation_loss: 0.1021,
+        peak_velocity_m_per_s: 1.157,
+      }),
       rampDurationSteps: 80,
       sourceIssue: 'b399efc',
     });

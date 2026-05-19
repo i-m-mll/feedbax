@@ -16,30 +16,19 @@ import {
   entityKindLabel,
 } from '@/features/scenario/entities';
 import { objectiveProjectionItems, workspaceProjectionItems } from '@/features/scenario/projections';
-import { PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import clsx from 'clsx';
 
 type ActiveTab = 'components' | 'tasks';
 
 export function Sidebar() {
-  const { leftSidebarWidth, leftSidebarVisible, toggleLeftSidebar, setLeftSidebarWidth } =
+  const { leftSidebarWidth, leftSidebarVisible, setLeftSidebarWidth } =
     useLayoutStore();
   const [activeTab, setActiveTab] = useState<ActiveTab>('components');
   const workspace = useWorkspaceStore((state) => state.workspace);
   const topPane = getTopPaneState(workspace);
 
   if (!leftSidebarVisible) {
-    return (
-      <div className="relative flex items-center">
-        <button
-          onClick={toggleLeftSidebar}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 rounded-r bg-slate-100 hover:bg-slate-200 text-slate-400 hover:text-slate-600"
-          title="Show component library"
-        >
-          <PanelLeftOpen className="w-4 h-4" />
-        </button>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -47,7 +36,7 @@ export function Sidebar() {
       style={{ width: leftSidebarWidth }}
       className="border-r border-slate-100 bg-white/90 backdrop-blur-sm flex flex-col relative shrink-0"
     >
-      <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+      <div className="px-4 pt-4 pb-2 flex items-center">
         <div className="flex gap-1">
           <button
             onClick={() => setActiveTab('components')}
@@ -74,13 +63,6 @@ export function Sidebar() {
             </button>
           )}
         </div>
-        <button
-          onClick={toggleLeftSidebar}
-          className="p-1 rounded text-slate-400 hover:text-slate-600"
-          title="Hide sidebar"
-        >
-          <PanelLeftClose className="w-3.5 h-3.5" />
-        </button>
       </div>
       {topPane.active_projection === 'graph' && activeTab === 'components' && <ComponentLibrary />}
       {topPane.active_projection === 'graph' && activeTab === 'tasks' && <TaskLibrary />}

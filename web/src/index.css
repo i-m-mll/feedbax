@@ -29,14 +29,18 @@
 
 body {
   margin: 0;
+  width: 100%;
   min-height: 100vh;
+  overflow-x: hidden;
   font-family: 'Work Sans', 'Segoe UI', sans-serif;
   color: #0f1115;
   background: radial-gradient(circle at top left, #fefefe 0%, #f4f5f7 40%, #eef1f6 100%);
 }
 
 #root {
+  width: 100%;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 .react-flow__node {

@@ -27,6 +27,10 @@ export interface OpenTab {
   workspaceSnapshot: StudioWorkspaceSpec | null;
 }
 
+const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
+const LOCAL_PROJECTS_STORAGE_VERSION = 1;
+const LOCAL_PERSIST_DELAY_MS = 250;
+
 function captureGraphSnapshot(): GraphSnapshot {
   const s = useGraphStore.getState();
   return {
@@ -212,6 +216,110 @@ function captureCurrentTab(tab: OpenTab): OpenTab {
   };
 }
 
+function localStorageOrNull(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function compactGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
+  return {
+    ...snapshot,
+    past: [],
+    future: [],
+    pendingStateMerge: null,
+  };
+}
+
+function compactTabForStorage(tab: OpenTab): OpenTab {
+  return {
+    ...tab,
+    graphSnapshot: compactGraphSnapshot(tab.graphSnapshot),
+  };
+}
+
+function isOpenTab(value: unknown): value is OpenTab {
+  if (!value || typeof value !== 'object') return false;
+  const tab = value as Partial<OpenTab>;
+  return (
+    typeof tab.tabId === 'string' &&
+    typeof tab.label === 'string' &&
+    Boolean(tab.graphSnapshot?.graph) &&
+    Boolean(tab.graphSnapshot?.uiState) &&
+    Boolean(tab.trainingSnapshot)
+  );
+}
+
+function restoreTabStores(tab: OpenTab) {
+  useGraphStore.getState().restoreSnapshot(compactGraphSnapshot(tab.graphSnapshot));
+  useTrainingStore.setState({
+    trainingSpec: tab.trainingSnapshot.trainingSpec,
+    taskSpec: tab.trainingSnapshot.taskSpec,
+    selectedLossPath: tab.trainingSnapshot.selectedLossPath,
+    lossValidationErrors: tab.trainingSnapshot.lossValidationErrors,
+    highlightedProbeSelector: tab.trainingSnapshot.highlightedProbeSelector,
+  });
+  restoreAnalysisSnapshot(tab.analysisSnapshot);
+  useWorkspaceStore.getState().setWorkspace(tab.workspaceSnapshot);
+  resetTrajectoryStoreForTabSwitch();
+  resetStatisticsStoreForTabSwitch();
+}
+
+function loadLocalProjectTabs(): { tabs: OpenTab[]; activeTabId: string } | null {
+  const storage = localStorageOrNull();
+  if (!storage) return null;
+  const raw = storage.getItem(LOCAL_PROJECTS_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      version?: number;
+      activeTabId?: string;
+      tabs?: unknown[];
+    };
+    if (parsed.version !== LOCAL_PROJECTS_STORAGE_VERSION || !Array.isArray(parsed.tabs)) {
+      return null;
+    }
+    const tabs = parsed.tabs.filter(isOpenTab).map(compactTabForStorage);
+    if (tabs.length === 0) return null;
+    const activeTabId =
+      typeof parsed.activeTabId === 'string' &&
+      tabs.some((tab) => tab.tabId === parsed.activeTabId)
+        ? parsed.activeTabId
+        : tabs[0].tabId;
+    const activeTab = tabs.find((tab) => tab.tabId === activeTabId) ?? tabs[0];
+    restoreTabStores(activeTab);
+    return { tabs, activeTabId: activeTab.tabId };
+  } catch {
+    return null;
+  }
+}
+
+export function persistLocalProjectTabs(): boolean {
+  const storage = localStorageOrNull();
+  if (!storage) return false;
+  const { tabs, activeTabId } = useProjectsStore.getState();
+  const persistedTabs = tabs.map((tab) =>
+    compactTabForStorage(tab.tabId === activeTabId ? captureCurrentTab(tab) : tab)
+  );
+  try {
+    storage.setItem(
+      LOCAL_PROJECTS_STORAGE_KEY,
+      JSON.stringify({
+        version: LOCAL_PROJECTS_STORAGE_VERSION,
+        activeTabId,
+        savedAt: new Date().toISOString(),
+        tabs: persistedTabs,
+      })
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface ProjectsStoreState {
   tabs: OpenTab[];
   activeTabId: string;
@@ -251,11 +359,12 @@ function buildInitialTab(): OpenTab {
 }
 
 export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
-  const firstTab = buildInitialTab();
+  const restored = loadLocalProjectTabs();
+  const firstTab = restored ? null : buildInitialTab();
 
   return {
-    tabs: [firstTab],
-    activeTabId: firstTab.tabId,
+    tabs: restored?.tabs ?? [firstTab as OpenTab],
+    activeTabId: restored?.activeTabId ?? (firstTab as OpenTab).tabId,
 
     openNewTab: (name: string) => {
       // Save current tab state
@@ -482,6 +591,25 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
     },
   };
 });
+
+let localPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleLocalProjectPersistence() {
+  if (!localStorageOrNull()) return;
+  if (localPersistTimer) clearTimeout(localPersistTimer);
+  localPersistTimer = setTimeout(() => {
+    localPersistTimer = null;
+    persistLocalProjectTabs();
+  }, LOCAL_PERSIST_DELAY_MS);
+}
+
+if (localStorageOrNull()) {
+  useProjectsStore.subscribe(scheduleLocalProjectPersistence);
+  useGraphStore.subscribe(scheduleLocalProjectPersistence);
+  useTrainingStore.subscribe(scheduleLocalProjectPersistence);
+  useAnalysisStore.subscribe(scheduleLocalProjectPersistence);
+  useWorkspaceStore.subscribe(scheduleLocalProjectPersistence);
+}
 
 // Subscribe to graphStore graph name changes to keep active tab label in sync.
 // Manual deduplication: only call updateActiveTabLabel when the name actually changes.

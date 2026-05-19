@@ -11,15 +11,15 @@ export function TopShelf({ height }: { height: number }) {
 
   return (
     <section
-      className="flex flex-col h-full min-h-0 bg-white/80 backdrop-blur-sm"
+      className="flex h-full w-full max-w-full flex-col overflow-hidden min-h-0 bg-white/80 backdrop-blur-sm"
       style={{ height }}
     >
       {!topCollapsed && (
         <>
           <ScenarioProjectionToolbar />
-          <div className="flex flex-1 min-h-0">
+          <div className="flex min-w-0 flex-1 min-h-0">
             <Sidebar />
-            <main className="relative flex-1 min-h-0">
+            <main className="relative min-w-0 flex-1 min-h-0">
               <ScenarioProjectionWorkspace />
             </main>
             <RightPanel />

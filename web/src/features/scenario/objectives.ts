@@ -307,6 +307,7 @@ function selectorFromGraphPortEntity(entity: StudioScenarioEntity): StudioSelect
 }
 
 function selectorFromGraphEdgeEntity(entity: StudioScenarioEntity): StudioSelectorRef | null {
+  if (entity.selector) return entity.selector;
   const wire = entity.metadata.wire as WireSpec | undefined;
   if (!wire) return null;
   return {

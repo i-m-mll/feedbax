@@ -139,13 +139,21 @@ export function TreescopePanel() {
     return null;
   }
 
+  if (statusQuery.error) {
+    return (
+      <div className="border-t border-slate-100 p-4">
+        <div className="text-xs text-slate-400">
+          Inspection backend is not reachable.
+        </div>
+      </div>
+    );
+  }
+
   if (!statusQuery.data?.treescope_available) {
     return (
       <div className="border-t border-slate-100 p-4">
         <div className="text-xs text-slate-400">
-          Treescope visualization is not available.
-          <br />
-          Install with: <code className="bg-slate-100 px-1 rounded">pip install treescope</code>
+          Treescope is not available in the inspection backend environment.
         </div>
       </div>
     );

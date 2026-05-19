@@ -107,7 +107,7 @@ export function ComponentLibrary() {
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set(['Neural Networks'])
   );
-  const { components, isLoading, error } = useComponents();
+  const { components, isLoading } = useComponents();
   const currentContext = useGraphStore((state) => state.currentContext);
   const isExclusiveContext = CONTEXT_EXCLUSIVE_FILTER.has(currentContext);
   const coreComponents = useMemo(
@@ -192,9 +192,6 @@ export function ComponentLibrary() {
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
         {isLoading && components.length === 0 && (
           <div className="text-xs text-slate-400">Loading components...</div>
-        )}
-        {error && (
-          <div className="text-xs text-amber-500">Using local component catalog.</div>
         )}
         {currentContext === 'penzai' && (
           <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50/60 p-3">

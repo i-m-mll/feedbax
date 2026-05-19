@@ -1189,6 +1189,16 @@ def _centerout_endpoints_grid(
     return pos_endpoints
 
 
+def _random_centerout_endpoints(
+    key: PRNGKeyArray,
+    center: Float[Array, "2"],
+    length: float,
+) -> Float[Array, "2 2"]:
+    angle = jr.uniform(key, (), minval=0, maxval=2 * jnp.pi)
+    target = center + length * jnp.stack([jnp.cos(angle), jnp.sin(angle)])
+    return jnp.stack([center, target])
+
+
 def _forceless_task_inputs(
     target_states: CartesianState,
 ) -> CartesianState:
@@ -1380,6 +1390,10 @@ class DelayedReaches(AbstractTask):
         eval_reach_length: The length (in space) of each reach in the validation set.
         eval_grid_n: The number of evenly-spaced internal grid points of the
             workspace at which a set of center-out reach is placed.
+        train_endpoint_mode: How training endpoints are sampled. ``"workspace"``
+            samples arbitrary start and target points within ``workspace``.
+            ``"center_out"`` samples reaches from the workspace center with
+            length ``eval_reach_length``.
         seed_validation: The random seed for generating the validation trials.
     """
 
@@ -1403,6 +1417,7 @@ class DelayedReaches(AbstractTask):
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
+    train_endpoint_mode: Literal["workspace", "center_out"] = "workspace"
 
     def __check_init__(self):
         if len(self.epoch_len_ranges) + 1 != len(self.epoch_names):
@@ -1423,7 +1438,16 @@ class DelayedReaches(AbstractTask):
 
         key1, key2 = jr.split(key)
 
-        effector_pos_endpoints = uniform_tuples(key1, n=2, bounds=self.workspace)
+        if self.train_endpoint_mode == "workspace":
+            effector_pos_endpoints = uniform_tuples(key1, n=2, bounds=self.workspace)
+        elif self.train_endpoint_mode == "center_out":
+            effector_pos_endpoints = _random_centerout_endpoints(
+                key1,
+                jnp.mean(self.workspace, axis=0),
+                self.eval_reach_length,
+            )
+        else:
+            raise ValueError(f"Unsupported train_endpoint_mode: {self.train_endpoint_mode!r}")
         effector_init_state, effector_target_state = _pos_only_states(effector_pos_endpoints)
 
         # Construct time sequences of inputs and targets

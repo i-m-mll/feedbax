@@ -6,11 +6,13 @@ import equinox as eqx
 
 from feedbax._mapping import WhereDict
 from feedbax.graph import init_state_from_component
+from feedbax.intervene import TimeSeriesParam
 from feedbax.loss import AbstractLoss
 
 try:
     from feedbax.task import (
         AbstractTask,
+        DelayedReaches,
         TaskComponent,
         TaskInterventionSpecs,
         TaskTrialSpec,
@@ -47,6 +49,9 @@ class DummyTask(AbstractTask):
     def get_validation_trials(self, key):
         return self.get_train_trial(key)
 
+    def validation_plots(self, states, trial_specs=None):
+        return {}
+
     @property
     def n_validation_trials(self) -> int:
         return 1
@@ -55,7 +60,7 @@ class DummyTask(AbstractTask):
 def test_task_component_open_loop_steps():
     task = DummyTask()
     inputs = jnp.array([[1.0], [2.0], [3.0]])
-    intervene = {"foo": jnp.array([10.0, 20.0, 30.0])}
+    intervene = {"foo": TimeSeriesParam(jnp.array([10.0, 20.0, 30.0]))}
     trial_spec = TaskTrialSpec(
         inits=WhereDict(),
         targets=WhereDict(),
@@ -73,6 +78,21 @@ def test_task_component_open_loop_steps():
     assert (out1["inputs"] == inputs[0]).all()
     assert (out2["inputs"] == inputs[1]).all()
     assert (out3["inputs"] == inputs[2]).all()
-    assert out1["intervene"]["foo"] == intervene["foo"][0]
-    assert out2["intervene"]["foo"] == intervene["foo"][1]
-    assert out3["intervene"]["foo"] == intervene["foo"][2]
+    assert out1["intervene"]["foo"] == intervene["foo"].value[0]
+    assert out2["intervene"]["foo"] == intervene["foo"].value[1]
+    assert out3["intervene"]["foo"] == intervene["foo"].value[2]
+
+
+def test_delayed_reaches_can_sample_center_out_training_trials():
+    task = DelayedReaches(
+        loss_func=DummyLoss(),
+        n_steps=20,
+        workspace=jnp.asarray([[-1.0, -1.0], [1.0, 1.0]]),
+        train_endpoint_mode="center_out",
+        eval_reach_length=0.5,
+        epoch_len_ranges=((0, 1), (2, 3)),
+    )
+
+    trial = task.get_train_trial(jax.random.PRNGKey(0))
+
+    assert jnp.allclose(trial.inits["mechanics.effector"].pos, jnp.zeros(2))

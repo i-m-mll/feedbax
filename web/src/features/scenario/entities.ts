@@ -43,6 +43,10 @@ export function graphEdgeEntityId(edgeId: string): string {
   return `graph_edge:${edgeId}`;
 }
 
+export function stateFlowEdgeId(sourceNodeId: string, targetNodeId: string): string {
+  return `state:${sourceNodeId}->${targetNodeId}`;
+}
+
 export function probeEntityId(tapId: string): string {
   return `probe:${tapId}`;
 }
@@ -114,8 +118,15 @@ export function selectorToEntityId(selector: StudioSelectorRef | null | undefine
   if (selector.namespace === 'probe' && selector.target_id) {
     return probeEntityId(selector.target_id);
   }
+  const stateFlowId =
+    typeof selector.metadata.state_flow_edge_id === 'string'
+      ? selector.metadata.state_flow_edge_id
+      : null;
+  if (selector.namespace === 'state_path' && stateFlowId) {
+    return graphEdgeEntityId(stateFlowId);
+  }
   if (selector.namespace === 'task_object') {
-    return selector.target_id ? `task_object:${selector.target_id}` : null;
+    return selector.target_id ? taskEntityId(selector.target_id) : null;
   }
   if (selector.namespace === 'mechanics_object' || selector.namespace === 'biomechanics_object') {
     return selector.target_id ? `mechanics_object:${selector.target_id}` : null;
@@ -248,6 +259,50 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSp
         relation('target', graphPortEntityId(wire.target_node, 'input', wire.target_port)),
       ],
       metadata: { edge_id: edgeId, wire },
+    }, true);
+  }
+
+  const stateFlows = new Set<string>();
+  for (const wire of graph.wires) {
+    const edgeId = stateFlowEdgeId(wire.source_node, wire.target_node);
+    if (stateFlows.has(edgeId)) continue;
+    stateFlows.add(edgeId);
+    addEntity(registry, {
+      id: graphEdgeEntityId(edgeId),
+      kind: 'graph_edge',
+      label: `${wire.source_node} → ${wire.target_node}`,
+      summary: 'Full state flow',
+      scenario_id: registry.scenario_id,
+      stage_id: registry.stage_id,
+      selector: {
+        namespace: 'state_path',
+        compact: `path:${edgeId}`,
+        target_id: wire.target_node,
+        path: 'state',
+        role: 'observed',
+        expected_shape: null,
+        dtype: null,
+        units: null,
+        frame: null,
+        metadata: {
+          label: 'Full state',
+          detail: `${wire.source_node} → ${wire.target_node}`,
+          source: 'state_flow_edge',
+          state_flow_edge_id: edgeId,
+          source_node_id: wire.source_node,
+          target_node_id: wire.target_node,
+        },
+      },
+      relations: [
+        relation('source', graphNodeEntityId(wire.source_node)),
+        relation('target', graphNodeEntityId(wire.target_node)),
+      ],
+      metadata: {
+        edge_id: edgeId,
+        edge_type: 'state_flow',
+        source_node_id: wire.source_node,
+        target_node_id: wire.target_node,
+      },
     }, true);
   }
 

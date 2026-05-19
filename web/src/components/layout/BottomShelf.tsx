@@ -89,7 +89,7 @@ export function BottomShelf({
 
   return (
     <section
-      className="relative bg-white/90 backdrop-blur-sm border-t border-slate-100"
+      className="relative w-full max-w-full overflow-hidden bg-white/90 backdrop-blur-sm border-t border-slate-100"
       style={{ height }}
     >
       <div
@@ -147,7 +147,7 @@ export function BottomShelf({
         <div
           style={{ height: Math.max(0, height - SHELF_HEADER_HEIGHT) }}
           className={clsx(
-            'flex',
+            'flex min-w-0',
             mode === 'console' || activeStage?.kind === 'analysis' ? 'overflow-hidden' : 'overflow-y-auto'
           )}
         >
