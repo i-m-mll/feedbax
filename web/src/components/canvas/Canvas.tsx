@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import {
   Background,
   Controls,
+  ControlButton,
   MiniMap,
   ReactFlow,
   Panel,
@@ -27,7 +28,7 @@ import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
-import { ChevronsDown, ChevronsUp, MoveDiagonal } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
@@ -67,6 +68,7 @@ export function Canvas() {
   } = useGraphStore();
   const { resizeMode, toggleResizeMode } = useLayoutStore();
   const showMinimap = useSettingsStore((state) => state.showMinimap);
+  const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const { components } = useComponents();
@@ -276,7 +278,16 @@ export function Canvas() {
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5f5" />
-        <Controls />
+        <Controls>
+          <ControlButton
+            onClick={toggleMinimap}
+            title={showMinimap ? 'Hide minimap' : 'Show minimap'}
+            aria-label={showMinimap ? 'Hide minimap' : 'Show minimap'}
+            className={showMinimap ? 'text-brand-600' : 'text-slate-500'}
+          >
+            <MapIcon className="h-4 w-4" aria-hidden="true" />
+          </ControlButton>
+        </Controls>
         {showMinimap && <MiniMap nodeColor="#9ca3af" />}
         <Panel position="top-left" className="nodrag">
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">
