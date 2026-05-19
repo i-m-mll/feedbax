@@ -109,7 +109,7 @@ function ScenarioBadge({
 }) {
   if (!stageLabel && !scenarioLabel) return null;
   return (
-    <div className="pointer-events-none absolute bottom-4 left-4 z-10 max-w-[min(28rem,calc(100%-2rem))] rounded border border-slate-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
+    <div className="pointer-events-none absolute bottom-4 left-20 z-10 max-w-[min(28rem,calc(100%-6rem))] rounded border border-slate-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
       <div className="truncate text-sm font-semibold text-slate-800">
         {scenarioLabel ?? stageLabel}
       </div>
