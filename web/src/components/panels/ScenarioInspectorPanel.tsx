@@ -1,10 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import {
   buildScenarioEntityRegistry,
-  entityKindLabel,
   getScenarioEntity,
-  selectorToEntityId,
 } from '@/features/scenario/entities';
 import {
   addObjectiveTerm,
@@ -14,14 +12,23 @@ import {
   OBJECTIVE_PENALTY_OPTIONS,
   OBJECTIVE_TEMPORAL_MODE_OPTIONS,
   objectiveTermEnabled,
-  objectiveSelectorSubpath,
   removeObjectiveTerm,
-  selectorWithSubpath,
   setObjectiveTermEnabled,
   sourceSelectorForEntity,
   targetSelectorForEntity,
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
+import {
+  selectorDetail,
+  selectorDisplayLabel,
+  selectorGroupLabel,
+  selectorAccessExpression,
+  selectorWithAccessExpression,
+  preferredSelectorForGraphPort,
+  selectorOptionsForGraphPort,
+  selectorOptionsForRegistry,
+  type StudioSelectorOption,
+} from '@/features/scenario/selectors';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
@@ -33,13 +40,14 @@ import type {
   StudioObjectiveTermSpec,
   StudioScenarioEntity,
   StudioScenarioEntityRegistry,
+  StudioSelectorRef,
 } from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ParamValue } from '@/types/graph';
 import type { TimeAggregationSpec } from '@/types/training';
 
-const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'graph_edge', 'probe']);
+const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'probe']);
 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return 'None';
@@ -139,40 +147,12 @@ function ParamValueEditor({
   );
 }
 
-function entityKindTone(kind: StudioScenarioEntity['kind']) {
-  switch (kind) {
-    case 'graph_node':
-    case 'graph_port':
-    case 'graph_edge':
-      return 'bg-sky-50 text-sky-700 border-sky-100';
-    case 'task_object':
-      return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-    case 'mechanics_object':
-      return 'bg-amber-50 text-amber-700 border-amber-100';
-    case 'objective_term':
-      return 'bg-violet-50 text-violet-700 border-violet-100';
-    case 'probe':
-      return 'bg-rose-50 text-rose-700 border-rose-100';
-    default:
-      return 'bg-slate-50 text-slate-600 border-slate-100';
-  }
-}
-
 function EntityHeader({ entity }: { entity: StudioScenarioEntity }) {
+  const showSummary = entity.kind !== 'graph_node' && entity.kind !== 'graph_port';
   return (
     <div className="border-b border-slate-100 px-6 py-4">
-      <div className="flex items-center gap-2">
-        <span
-          className={clsx(
-            'rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]',
-            entityKindTone(entity.kind)
-          )}
-        >
-          {entityKindLabel(entity.kind)}
-        </span>
-      </div>
-      <div className="mt-2 break-words text-sm font-semibold text-slate-800">{entity.label}</div>
-      {entity.summary && (
+      <div className="break-words text-sm font-semibold text-slate-800">{entity.label}</div>
+      {showSummary && entity.summary && (
         <div className="mt-1 break-words text-xs text-slate-500">{entity.summary}</div>
       )}
     </div>
@@ -200,7 +180,7 @@ function RelationList({
             >
               <div className="font-medium text-slate-600">{item.label ?? item.kind}</div>
               <div className="mt-0.5 break-words text-slate-500">
-                {related ? `${entityKindLabel(related.kind)}: ${related.label}` : item.entity_id}
+                {related ? related.label : item.entity_id}
               </div>
             </div>
           );
@@ -307,6 +287,208 @@ function MechanicsInspector({ entity }: { entity: StudioScenarioEntity }) {
   );
 }
 
+function SelectorPicker({
+  value,
+  options,
+  onChange,
+}: {
+  value: StudioSelectorRef | null | undefined;
+  options: StudioSelectorOption[];
+  onChange: (selector: StudioSelectorRef | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const selectedLabel = selectorDisplayLabel(value);
+  const selectedDetail = selectorDetail(value);
+  const normalizedQuery = query.trim().toLowerCase();
+  const visible = options.filter((option) => {
+    if (!normalizedQuery) return true;
+    return [
+      option.label,
+      option.detail,
+      option.selector.compact,
+      option.selector.path,
+      selectorGroupLabel(option.group),
+    ]
+      .filter(Boolean)
+      .some((part) => part!.toLowerCase().includes(normalizedQuery));
+  });
+  const groups = Array.from(new Set(visible.map((option) => option.group)));
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full items-center justify-between gap-3 rounded border border-slate-200 bg-white px-2.5 py-2 text-left hover:border-brand-200"
+      >
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-slate-800">
+            {selectedLabel}
+          </span>
+          {selectedDetail && (
+            <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+              {selectedDetail}
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 text-[11px] font-medium text-brand-600">Browse paths</span>
+      </button>
+      {open && (
+        <div className="rounded-md border border-slate-200 bg-white p-2 shadow-sm">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search paths, ports, task objects"
+            className="mb-2 h-8 w-full rounded border border-slate-200 px-2 text-xs text-slate-700 focus:border-brand-300 focus:outline-none"
+            autoFocus
+          />
+          <div className="max-h-72 overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => {
+                onChange(null);
+                setOpen(false);
+              }}
+              className="mb-1 flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs text-slate-500 hover:bg-slate-50"
+            >
+              None
+            </button>
+            {groups.map((group) => (
+              <div key={group} className="mb-2 last:mb-0">
+                <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  {selectorGroupLabel(group)}
+                </div>
+                <div className="space-y-1">
+                  {visible
+                    .filter((option) => option.group === group)
+                    .map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          onChange(option.selector);
+                          setOpen(false);
+                          setQuery('');
+                        }}
+                        className="flex w-full items-start justify-between gap-3 rounded px-2 py-1.5 text-left text-xs hover:bg-brand-50"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium text-slate-700">
+                            {option.label}
+                          </span>
+                          <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+                            {option.detail ?? option.selector.compact}
+                          </span>
+                        </span>
+                        {option.used_by_objective_ids.length > 0 && (
+                          <span className="shrink-0 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">
+                            used
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            ))}
+            {visible.length === 0 && (
+              <div className="px-2 py-4 text-center text-xs text-slate-400">
+                No matching selectors.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SelectorAccessEditor({
+  value,
+  onChange,
+}: {
+  value: StudioSelectorRef | null | undefined;
+  onChange: (selector: StudioSelectorRef | null) => void;
+}) {
+  const [expression, setExpression] = useState(selectorAccessExpression(value));
+
+  useEffect(() => {
+    setExpression(selectorAccessExpression(value));
+  }, [value]);
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50/70 p-2">
+      <label className="block space-y-1 text-xs text-slate-500">
+        <span>Subpath / slice</span>
+        <div className="flex gap-2">
+          <input
+            value={expression}
+            onChange={(event) => setExpression(event.target.value)}
+            placeholder=".state[0:2]"
+            className="h-8 min-w-0 flex-1 rounded border border-slate-200 bg-white px-2 font-mono text-xs text-slate-700 focus:border-brand-300 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => onChange(selectorWithAccessExpression(value, expression))}
+            className="shrink-0 rounded border border-slate-200 bg-white px-2 text-xs font-medium text-slate-600 hover:border-brand-200 hover:text-slate-900"
+          >
+            Apply
+          </button>
+        </div>
+      </label>
+      <div className="mt-1 text-[11px] leading-4 text-slate-400">
+        Use field/key access and Python-style indices or slices relative to the selected source.
+      </div>
+    </div>
+  );
+}
+
+function SelectorCandidateButtons({
+  options,
+  value,
+  onChange,
+}: {
+  options: StudioSelectorOption[];
+  value: StudioSelectorRef | null | undefined;
+  onChange: (selector: StudioSelectorRef) => void;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <div className="grid gap-1.5">
+      {options.map((option) => {
+        const selected = option.selector.compact === value?.compact;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.selector)}
+            className={clsx(
+              'flex min-w-0 items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left text-xs',
+              selected
+                ? 'border-brand-300 bg-brand-50 text-slate-800'
+                : 'border-slate-200 bg-white text-slate-600 hover:border-brand-200'
+            )}
+          >
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{option.label}</span>
+              {option.detail && (
+                <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+                  {option.detail}
+                </span>
+              )}
+            </span>
+            {selected && (
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-600">
+                source
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ObjectiveInspector({
   entity,
   registry,
@@ -324,11 +506,10 @@ function ObjectiveInspector({
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const termId = entity.id.replace(/^objective_term:/, '');
   const term = objectiveSpec.terms.find((candidate) => candidate.id === termId);
-  const selectablePorts = Object.values(registry.entities)
-    .filter((candidate) => candidate.kind === 'graph_port' && candidate.selector)
-    .sort((a, b) => a.label.localeCompare(b.label));
-  const sourceEntityId = selectorToEntityId(term?.source_selector) ?? '';
-  const selectedSourcePort = sourceEntityId ? registry.entities[sourceEntityId] : null;
+  const selectorOptions = useMemo(
+    () => selectorOptionsForRegistry({ registry, objectiveSpec }),
+    [objectiveSpec, registry]
+  );
   if (!term) {
     return <div className="text-sm text-slate-400">Objective term is no longer available.</div>;
   }
@@ -420,43 +601,18 @@ function ObjectiveInspector({
         />
         Enabled
       </label>
-      <label className="block space-y-1 text-xs text-slate-500">
-        <span>Source</span>
-        <select
-          value={sourceEntityId}
-          onChange={(event) => {
-            const source = registry.entities[event.target.value];
-            updateTerm({
-              source_selector: source?.selector ?? null,
-            });
-          }}
-          className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
-        >
-          <option value="">None</option>
-          {selectablePorts.map((port) => (
-            <option key={port.id} value={port.id}>
-              {port.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block space-y-1 text-xs text-slate-500">
-        <span>Substate / index</span>
-        <input
-          value={objectiveSelectorSubpath(term.source_selector)}
-          placeholder="position"
-          disabled={!selectedSourcePort?.selector}
-          onChange={(event) =>
-            updateTerm({
-              source_selector: selectorWithSubpath(
-                selectedSourcePort?.selector,
-                event.target.value
-              ),
-            })
-          }
-          className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800 disabled:bg-slate-50 disabled:text-slate-400"
+      <div className="block space-y-1 text-xs text-slate-500">
+        <span>Objective source</span>
+        <SelectorPicker
+          value={term.source_selector}
+          options={selectorOptions}
+          onChange={(selector) => updateTerm({ source_selector: selector })}
         />
-      </label>
+        <SelectorAccessEditor
+          value={term.source_selector}
+          onChange={(selector) => updateTerm({ source_selector: selector })}
+        />
+      </div>
       <div className="space-y-2 border-t border-slate-100 pt-3">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Time</div>
         <div className="grid grid-cols-2 gap-3">
@@ -599,7 +755,7 @@ function ObjectiveInspector({
   );
 }
 
-function PortInspector({
+function SourceInspector({
   entity,
   registry,
 }: {
@@ -619,14 +775,36 @@ function PortInspector({
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const sourceSelector = sourceSelectorForEntity(entity, registry);
+  const selectorOptions = useMemo(
+    () => selectorOptionsForRegistry({ registry, objectiveSpec }),
+    [objectiveSpec, registry]
+  );
+  const preferredSourceSelector = useMemo(
+    () => preferredSelectorForGraphPort(sourceSelector, selectorOptions),
+    [selectorOptions, sourceSelector]
+  );
+  const sourceCandidates = useMemo(
+    () => selectorOptionsForGraphPort(sourceSelector, selectorOptions),
+    [selectorOptions, sourceSelector]
+  );
+  const [draftSourceSelector, setDraftSourceSelector] = useState<StudioSelectorRef | null>(
+    preferredSourceSelector
+  );
   const taskEntity =
     Object.values(registry.entities).find((candidate) => candidate.kind === 'task_object') ?? null;
+
+  useEffect(() => {
+    setDraftSourceSelector(preferredSourceSelector);
+  }, [entity.id, preferredSourceSelector]);
+
+  const selectedSourceSelector = draftSourceSelector ?? preferredSourceSelector;
+
   const addObjective = () => {
-    if (!activeScenario || !sourceSelector) return;
+    if (!activeScenario || !selectedSourceSelector) return;
     const term = createObjectiveTerm({
       spec: objectiveSpec,
-      label: `Objective: ${entity.label}`,
-      sourceSelector,
+      label: `Objective: ${selectorDisplayLabel(selectedSourceSelector)}`,
+      sourceSelector: selectedSourceSelector,
       targetSelector: targetSelectorForEntity(taskEntity),
     });
     updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
@@ -639,31 +817,89 @@ function PortInspector({
 
   return (
     <section className="space-y-3">
-      <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Port Selector</div>
-      <div className="space-y-2 text-xs text-slate-600">
-        <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3">
-          <div className="font-medium text-slate-500">Node</div>
-          <div className="break-words">{formatValue(entity.metadata.node_id)}</div>
-        </div>
-        <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3">
-          <div className="font-medium text-slate-500">Port</div>
-          <div className="break-words">{formatValue(entity.metadata.port)}</div>
-        </div>
-        <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-3">
-          <div className="font-medium text-slate-500">Direction</div>
-          <div className="break-words">{formatValue(entity.metadata.direction)}</div>
-        </div>
+      <div className="space-y-2 text-xs text-slate-500">
+        <span>Objective source</span>
+        <SelectorCandidateButtons
+          options={sourceCandidates}
+          value={selectedSourceSelector}
+          onChange={setDraftSourceSelector}
+        />
+        <SelectorPicker
+          value={selectedSourceSelector}
+          options={selectorOptions}
+          onChange={setDraftSourceSelector}
+        />
+        <SelectorAccessEditor
+          value={selectedSourceSelector}
+          onChange={setDraftSourceSelector}
+        />
       </div>
       <button
         type="button"
-        disabled={!activeScenario || !sourceSelector}
+        disabled={!activeScenario || !selectedSourceSelector}
         onClick={addObjective}
         className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add objective
+        Add objective from {selectorDisplayLabel(selectedSourceSelector)}
       </button>
     </section>
+  );
+}
+
+function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
+  const addTapForEdge = useGraphStore((state) => state.addTapForEdge);
+  const edgeId = typeof entity.metadata.edge_id === 'string' ? entity.metadata.edge_id : null;
+  const edgeType = typeof entity.metadata.edge_type === 'string' ? entity.metadata.edge_type : null;
+  const wire = entity.metadata.wire as
+    | {
+        source_node: string;
+        source_port: string;
+        target_node: string;
+        target_port: string;
+      }
+    | undefined;
+
+  if (edgeType === 'state_flow') {
+    return (
+      <div className="space-y-5 p-6">
+        <div>
+          <div className="text-sm font-medium text-slate-800">{entity.label}</div>
+          <div className="mt-1 text-xs text-slate-500">Full state flow</div>
+        </div>
+        {edgeId && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
+              onClick={() => addTapForEdge(edgeId, 'probe')}
+            >
+              Add Probe Tap
+            </button>
+            <button
+              type="button"
+              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
+              onClick={() => addTapForEdge(edgeId, 'intervention')}
+            >
+              Add Intervention Tap
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 p-6">
+      <div className="text-sm font-medium text-slate-800">
+        {wire
+          ? `${wire.source_node}.${wire.source_port} → ${wire.target_node}.${wire.target_port}`
+          : entity.label}
+      </div>
+      <div className="text-xs text-slate-400">
+        Port wires are the source of truth for state merging.
+      </div>
+    </div>
   );
 }
 
@@ -685,7 +921,7 @@ function EntityBody({
       {entity.kind === 'objective_term' && (
         <ObjectiveInspector entity={entity} registry={registry} />
       )}
-      {entity.kind === 'graph_port' && <PortInspector entity={entity} registry={registry} />}
+      {entity.kind === 'graph_port' && <SourceInspector entity={entity} registry={registry} />}
       <RelationList entity={entity} registry={registry} />
     </div>
   );
@@ -725,8 +961,24 @@ export function ScenarioInspectorPanel() {
 
   return (
     <div>
-      <EntityHeader entity={entity} />
+      {entity.kind !== 'graph_node' && entity.kind !== 'graph_edge' && (
+        <EntityHeader entity={entity} />
+      )}
+      {entity.kind === 'graph_edge' ? (
+        <>
+          <EdgeInspector entity={entity} />
+          {entity.selector && (
+            <div className="border-t border-slate-100 p-6">
+              <SourceInspector entity={entity} registry={registry} />
+            </div>
+          )}
+          <div className="px-6 pb-6">
+            <RelationList entity={entity} registry={registry} />
+          </div>
+        </>
+      ) : (
       <EntityBody entity={entity} registry={registry} />
+      )}
     </div>
   );
 }

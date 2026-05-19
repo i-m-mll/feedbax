@@ -76,10 +76,6 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const compositeTypes = useGraphStore((state) => state._compositeTypes);
   const isComposite =
     compositeTypes.has(spec.type) || hasSubgraph;
-  const isTaskNode = useGraphStore((state) => {
-    const def = state._componentRegistry.get(spec.type);
-    return def?.category === 'Tasks';
-  });
   const inputCount = spec.input_ports.length;
   const outputCount = spec.output_ports.length;
   const totalPorts = inputCount + outputCount;
@@ -170,8 +166,8 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   return (
     <div
       className={clsx(
-        'relative rounded-xl border shadow-soft bg-white/90 backdrop-blur transition-all duration-150',
-        selected ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-slate-200',
+        'relative rounded-xl border-2 shadow-soft bg-white/90 backdrop-blur transition-all duration-150',
+        selected ? 'border-brand-500 ring-2 ring-brand-500/30' : 'border-slate-200',
         isNodeHighlighted && !selected && 'border-amber-400 ring-2 ring-amber-200'
       )}
       style={{ width, height }}
@@ -230,21 +226,11 @@ export function CustomNode({ id, data, selected }: NodeProps) {
       >
         {/* Left slot: name (normal) or type string (reversed) */}
         {reversed ? (
-          !collapsedEffective && (
-            <div className="flex items-center gap-1.5 shrink-0">
-              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
-                {spec.type}
-              </div>
-              {isTaskNode && (
-                <span
-                  className="text-[9px] uppercase tracking-wider text-slate-400 border border-slate-300 rounded-full px-1.5 py-0 leading-[16px] whitespace-nowrap"
-                  title="Base task configuration. Evaluation-specific modifications (perturbations, altered targets) are configured in the Analysis tab."
-                >
-                  Base Task
-                </span>
-              )}
+          <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
+            <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
+              {label}
             </div>
-          )
+          </div>
         ) : (
           <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
             <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
@@ -277,25 +263,15 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             </button>
           )}
           {reversed ? (
-            <>
-              <div className="text-sm font-medium text-slate-800 truncate" title={label}>
-                {label}
+            !collapsedEffective && (
+              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                {spec.type}
               </div>
-            </>
+            )
           ) : (
             !collapsedEffective && (
-              <div className="flex items-center gap-1.5">
-                <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
-                  {spec.type}
-                </div>
-                {isTaskNode && (
-                  <span
-                    className="text-[9px] uppercase tracking-wider text-slate-400 border border-slate-300 rounded-full px-1.5 py-0 leading-[16px] whitespace-nowrap"
-                    title="Base task configuration. Evaluation-specific modifications (perturbations, altered targets) are configured in the Analysis tab."
-                  >
-                    Base Task
-                  </span>
-                )}
+              <div className="text-[11px] text-slate-500 truncate max-w-[110px]" title={spec.type}>
+                {spec.type}
               </div>
             )
           )}
@@ -324,7 +300,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
                 objectivePorts.has(`input:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
                 topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
-                  'bg-brand-500 ring-2 ring-brand-200 scale-125'
+                  'bg-brand-600 ring-4 ring-brand-300 scale-150'
               )}
               onContextMenu={(e) => handlePortContextMenu(e, port, 'input')}
             />
@@ -350,7 +326,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 objectivePorts.has(`output:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
                 highlightedPorts.has(port) && 'bg-amber-400 ring-2 ring-amber-200 scale-125',
                 topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
-                  'bg-brand-500 ring-2 ring-brand-200 scale-125'
+                  'bg-brand-600 ring-4 ring-brand-300 scale-150'
               )}
               onContextMenu={(e) => handlePortContextMenu(e, port, 'output')}
             />
@@ -366,7 +342,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 'nodrag nopan absolute flex items-center gap-2 rounded px-1 py-0.5 text-slate-600 hover:bg-brand-50 hover:text-brand-700',
                 objectivePorts.has(`input:${port}`) && 'font-semibold text-violet-700',
                 topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
-                  'bg-brand-50 font-semibold text-brand-700',
+                  'bg-brand-100 font-semibold text-brand-800 ring-[3px] ring-brand-300 shadow-sm',
                 reversed && 'flex-row-reverse'
               )}
               style={{
@@ -396,7 +372,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                 objectivePorts.has(`output:${port}`) && 'font-semibold text-violet-700',
                 highlightedPorts.has(port) ? 'text-amber-600 font-medium' : 'text-slate-600',
                 topPane.selected_entity_id === graphPortEntityId(label, 'output', port) &&
-                  'bg-brand-50 font-semibold text-brand-700'
+                  'bg-brand-100 font-semibold text-brand-800 ring-[3px] ring-brand-300 shadow-sm'
               )}
               style={{
                 top: rowCenterInBody(index),

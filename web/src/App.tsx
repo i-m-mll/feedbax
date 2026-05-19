@@ -9,6 +9,7 @@ import { useAppShortcuts } from '@/hooks/useShortcuts';
 import { useGraphStore } from '@/stores/graphStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useTrainingStore } from '@/stores/trainingStore';
+import { persistLocalProjectTabs } from '@/stores/projectsStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
 import { updateGraph } from '@/api/client';
 import {
@@ -86,6 +87,7 @@ export default function App() {
         );
         markSaved(graphId);
       } catch (e) {
+        persistLocalProjectTabs();
         toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
       } finally {
         savingRef.current = false;
@@ -106,6 +108,7 @@ export default function App() {
   useEffect(() => {
     const handlePageHide = (event: PageTransitionEvent) => {
       if (event.persisted) return; // page going into bfcache, not unloading
+      persistLocalProjectTabs();
       const { isDirty: dirty, graphId: gid, graph, uiState, graphStack } = useGraphStore.getState();
       if (!dirty || !gid) return;
       // Always save the root graph — if inside a subgraph, graphStack[0] is the root context.
@@ -217,11 +220,11 @@ export default function App() {
   return (
     <>
     <Toaster theme="dark" position="bottom-right" />
-    <div className="min-h-screen flex flex-col">
+    <div className="flex min-h-screen w-full max-w-full flex-col overflow-hidden">
       <Header />
-      <div ref={containerRef} className="flex-1 min-h-0">
+      <div ref={containerRef} className="min-w-0 flex-1 min-h-0">
         <div
-          className="grid h-full min-h-0"
+          className="grid h-full min-h-0 w-full max-w-full overflow-hidden"
           style={{
             gridTemplateRows:
               topHeight === undefined || bottomEffectiveHeight === undefined
@@ -229,7 +232,7 @@ export default function App() {
                 : `${topHeight}px ${DIVIDER_HEIGHT}px ${bottomEffectiveHeight}px`,
           }}
         >
-          <div className="min-h-0">
+          <div className="min-w-0 min-h-0 overflow-hidden">
             <TopShelf height={topHeight ?? TOP_COLLAPSED_HEIGHT} />
           </div>
           <Divider availableHeight={availableHeight} />

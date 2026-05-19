@@ -57,15 +57,14 @@ export function PropertiesPanel() {
 
   if (selectedEdge && selectedEdge.type === 'state-flow') {
     return (
-      <div className="p-6 space-y-6">
+      <div className="space-y-5 p-6">
         <div>
-          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Edge</div>
-          <div className="mt-2 text-sm text-slate-600">
+          <div className="text-sm font-medium text-slate-800">
             {selectedEdge.source} → {selectedEdge.target}
           </div>
+          <div className="mt-1 text-xs text-slate-500">Full state flow</div>
         </div>
         <div className="space-y-2">
-          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Taps</div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
@@ -87,9 +86,8 @@ export function PropertiesPanel() {
 
   if (selectedEdge && selectedEdge.type !== 'state-flow') {
     return (
-      <div className="p-6 space-y-4">
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Port Wire</div>
-        <div className="text-sm text-slate-600">
+      <div className="space-y-2 p-6">
+        <div className="text-sm font-medium text-slate-800">
           {selectedEdge.source}.{selectedEdge.sourceHandle} → {selectedEdge.target}.
           {selectedEdge.targetHandle}
         </div>
@@ -130,25 +128,22 @@ export function PropertiesPanel() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Node</div>
-        <label className="flex flex-col gap-2 text-xs text-slate-500 mt-3">
-          Name
-          <input
-            value={nameValue}
-            onChange={(event) => setNameValue(event.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                commitRename();
-              }
-              if (event.key === 'Escape') {
-                setNameValue(selectedNode.id);
-              }
-            }}
-            className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-          />
-        </label>
-        <div className="text-sm text-slate-500 mt-2">{nodeSpec.type}</div>
+        <input
+          aria-label="Node name"
+          value={nameValue}
+          onChange={(event) => setNameValue(event.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              commitRename();
+            }
+            if (event.key === 'Escape') {
+              setNameValue(selectedNode.id);
+            }
+          }}
+          className="-mx-1 w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-sm font-semibold text-slate-800 outline-none hover:border-slate-200 focus:border-brand-300 focus:bg-white"
+        />
+        <div className="mt-1 text-sm text-slate-500">{nodeSpec.type}</div>
       </div>
 
       {component?.is_composite ? (

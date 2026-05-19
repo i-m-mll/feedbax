@@ -28,6 +28,7 @@ import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
+import type { GraphNodeData } from '@/types/graph';
 import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
@@ -115,6 +116,14 @@ export function Canvas() {
     () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
     [graphStack, currentGraphLabel]
   );
+  const collapsibleNodes = useMemo(
+    () => nodes.filter((node) => node.type !== 'tap'),
+    [nodes]
+  );
+  const allNodesCollapsed =
+    collapsibleNodes.length > 0 &&
+    collapsibleNodes.every((node) => Boolean((node.data as GraphNodeData).collapsed));
+  const CollapseIcon = allNodesCollapsed ? ChevronsUp : ChevronsDown;
 
   const graphViewKey = useMemo(
     () =>
@@ -280,6 +289,23 @@ export function Canvas() {
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5f5" />
         <Controls>
           <ControlButton
+            onClick={() => setAllNodesCollapsed(!allNodesCollapsed)}
+            title={allNodesCollapsed ? 'Expand all nodes' : 'Collapse all nodes'}
+            aria-label={allNodesCollapsed ? 'Expand all nodes' : 'Collapse all nodes'}
+            disabled={collapsibleNodes.length === 0}
+            className="text-slate-500"
+          >
+            <CollapseIcon className="h-4 w-4" aria-hidden="true" />
+          </ControlButton>
+          <ControlButton
+            onClick={toggleResizeMode}
+            title={resizeMode ? 'Exit resize mode' : 'Enter resize mode'}
+            aria-label={resizeMode ? 'Exit resize mode' : 'Enter resize mode'}
+            className={resizeMode ? 'text-brand-600' : 'text-slate-500'}
+          >
+            <MoveDiagonal className="h-4 w-4" aria-hidden="true" />
+          </ControlButton>
+          <ControlButton
             onClick={toggleMinimap}
             title={showMinimap ? 'Hide minimap' : 'Show minimap'}
             aria-label={showMinimap ? 'Hide minimap' : 'Show minimap'}
@@ -321,38 +347,6 @@ export function Canvas() {
                 </div>
               );
             })}
-          </div>
-        </Panel>
-        <Panel position="top-right" className="nodrag">
-          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs shadow-soft">
-            <button
-              className="flex items-center justify-center text-slate-500 hover:text-slate-700"
-              onClick={() => setAllNodesCollapsed(true)}
-              title="Collapse all nodes"
-            >
-              <ChevronsDown className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="flex items-center justify-center text-slate-500 hover:text-slate-700"
-              onClick={() => setAllNodesCollapsed(false)}
-              title="Expand all nodes"
-            >
-              <ChevronsUp className="w-3.5 h-3.5" />
-            </button>
-            <div className="h-4 w-px bg-slate-200" />
-            <button
-              className={clsx(
-                'flex items-center gap-2 rounded-full px-2 py-0.5',
-                resizeMode
-                  ? 'text-brand-600 bg-brand-500/10'
-                  : 'text-slate-500 hover:text-slate-700'
-              )}
-              onClick={toggleResizeMode}
-              title={resizeMode ? 'Exit resize mode' : 'Enter resize mode'}
-            >
-              <MoveDiagonal className="w-3.5 h-3.5" />
-              Resize
-            </button>
           </div>
         </Panel>
       </ReactFlow>

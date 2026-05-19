@@ -639,7 +639,7 @@ export function seedRlrmpMovementRampWorkspace(
 
 export const RLRMP_MOVEMENT_RAMP_TEMPLATE = {
   id: 'rlrmp-movement-ramp-runs',
-  name: 'RLRMP movement-ramp runs',
-  description: 'Completed b399efc movement-ramp training matrix with seeded pipeline refs.',
+  name: 'RLRMP movement-ramp training runs',
+  description: 'Seven completed training runs seeded into the Train and Evaluate tables.',
   pageNames: ['b399efc summary'],
 } as const;

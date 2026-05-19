@@ -12,6 +12,7 @@ import {
   PlayCircle,
   Server,
   SlidersHorizontal,
+  XCircle,
 } from 'lucide-react';
 import { getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
@@ -22,6 +23,7 @@ import {
   formatMetric,
   runParameterSummary,
   selectedIds,
+  trainingRunMetricValue,
   trainingInputSummaries,
   trainingRunSummaries,
   type EvaluationRunSummary,
@@ -39,15 +41,20 @@ import {
   scenarioMetricSpecs,
   type ScenarioMetricSpec,
 } from '@/features/scenario/integration';
+import {
+  runMetricColumns,
+  type MetricColumnSpec,
+} from '@/utils/runMetricColumns';
 
 type RunView = 'all' | 'selected' | 'best';
-type SortKey = 'loss' | 'velocityRmse' | 'peakVelocity' | 'holdDrift' | 'progress';
+type SortKey = string;
 type SortDirection = 'asc' | 'desc';
 
 interface SortState {
   key: SortKey;
   direction: SortDirection;
 }
+
 
 export function TrainCollectionPanel() {
   const workspace = useWorkspaceStore((state) => state.workspace);
@@ -58,7 +65,7 @@ export function TrainCollectionPanel() {
   );
   const markDirty = useGraphStore((state) => state.markDirty);
   const [view, setView] = useState<RunView>('all');
-  const [sort, setSort] = useState<SortState>({ key: 'loss', direction: 'asc' });
+  const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(() => new Set());
   const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
 
@@ -68,6 +75,7 @@ export function TrainCollectionPanel() {
   const protocol = trainingProtocolSnapshot(trainStage, trainScenario);
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const rows = useMemo(() => trainingRunSummaries(trainStage), [trainStage]);
+  const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedRunIds.has(row.id)),
@@ -152,8 +160,9 @@ export function TrainCollectionPanel() {
   );
 
   return (
-    <div className="relative h-full overflow-y-auto bg-slate-50/40">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-5 text-sm text-slate-600">
+    <div className="relative h-full overflow-hidden bg-slate-50/40">
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-5 px-6 py-5 text-sm text-slate-600">
         <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -175,14 +184,15 @@ export function TrainCollectionPanel() {
                 </button>
               )}
             </div>
+            <div className="mt-4 border-t border-slate-100 pt-4">
+              <TrainingProtocolEditor
+                protocol={protocol}
+                onProtocolChange={updateProtocol}
+              />
+            </div>
           </div>
           <div className="space-y-3">
-            <TrainingProtocolEditor
-              protocol={protocol}
-              onTargetChange={setTarget}
-              onProtocolChange={updateProtocol}
-            />
-            <MetricTracePanel metrics={metrics} />
+            <ExecutionTarget value={protocol.computeTarget} onChange={setTarget} />
           </div>
         </section>
 
@@ -190,6 +200,7 @@ export function TrainCollectionPanel() {
           title="Run collection"
           rows={visibleRows}
           allRows={rows}
+          metricColumns={metricColumns}
           selectedIds={selectedRunIds}
           view={view}
           sort={sort}
@@ -202,6 +213,9 @@ export function TrainCollectionPanel() {
           onClear={clearSelection}
           onOpenDetails={setDetailsRun}
         />
+
+        <MetricTracePanel metrics={metrics} />
+        </div>
       </div>
       {detailsRun && <RunDetailOverlay run={detailsRun} onClose={() => setDetailsRun(null)} />}
     </div>
@@ -213,7 +227,7 @@ export function EvaluateCollectionPanel() {
   const setActiveStage = useWorkspaceStore((state) => state.setActiveStage);
   const updateStageDraft = useWorkspaceStore((state) => state.updateStageDraft);
   const [view, setView] = useState<RunView>('all');
-  const [sort, setSort] = useState<SortState>({ key: 'loss', direction: 'asc' });
+  const [sort, setSort] = useState<SortState>({ key: 'final_validation_loss', direction: 'asc' });
   const [detailsRun, setDetailsRun] = useState<TrainingRunSummary | null>(null);
 
   const trainStage = getStageByKind(workspace, 'train');
@@ -221,6 +235,7 @@ export function EvaluateCollectionPanel() {
   const analysisStage = getStageByKind(workspace, 'analysis');
   const metrics = useMemo(() => scenarioMetricSpecs(workspace), [workspace]);
   const rows = useMemo(() => trainingInputSummaries(evalStage), [evalStage]);
+  const metricColumns = useMemo(() => runMetricColumns(metrics, rows), [metrics, rows]);
   const bestRow = useMemo(() => bestTrainingRun(rows), [rows]);
   const evaluationRows = useMemo(() => evaluationRunSummaries(evalStage), [evalStage]);
   const selectedIdsForEval = useMemo(
@@ -294,8 +309,9 @@ export function EvaluateCollectionPanel() {
   );
 
   return (
-    <div className="relative h-full overflow-y-auto bg-slate-50/40">
-      <div className="mx-auto grid max-w-7xl gap-5 px-6 py-5 text-sm text-slate-600 xl:grid-cols-[minmax(0,1fr)_20rem]">
+    <div className="relative h-full overflow-hidden bg-slate-50/40">
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto grid w-full max-w-7xl min-w-0 gap-5 px-6 py-5 text-sm text-slate-600 xl:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="space-y-5">
           <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="text-base font-semibold text-slate-800">Validation set</div>
@@ -308,6 +324,7 @@ export function EvaluateCollectionPanel() {
             title="Run set"
             rows={visibleRows}
             allRows={rows}
+            metricColumns={metricColumns}
             selectedIds={selectedIdsForEval}
             view={view}
             sort={sort}
@@ -322,57 +339,60 @@ export function EvaluateCollectionPanel() {
           />
         </div>
 
-        <div className="space-y-3">
-          <ExecutionTarget value={stageExecutionTarget(evalStage)} onChange={setTarget} />
-          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-2">
-              <SlidersHorizontal className="h-4 w-4 text-slate-400" />
-              <div className="font-semibold text-slate-800">Validation conditions</div>
-            </div>
-            <div className="mt-3 space-y-2">
-              <ProtocolRow label="Targets" value="8-direction center-out" />
-              <ProtocolRow label="SISU" value="0.5" />
-              <ProtocolRow label="Perturbation" value="None" />
-            </div>
-            <button
-              type="button"
-              disabled
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                selectedIdsForEval.size === 0
-                  ? 'Select at least one run first.'
-                  : 'Backend execution wiring is pending; the selection is ready.'
-              }
-            >
-              <PlayCircle className="h-3.5 w-3.5" />
-              Run selected
-            </button>
-          </section>
+          <div className="space-y-3">
+            <ExecutionTarget value={stageExecutionTarget(evalStage)} onChange={setTarget} />
+            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-slate-400" />
+                <div className="font-semibold text-slate-800">Validation conditions</div>
+              </div>
+              <div className="mt-3 space-y-2">
+                <ProtocolRow label="Targets" value="8-direction center-out" />
+                <ProtocolRow label="SISU" value="0.5" />
+                <ProtocolRow label="Perturbation" value="None" />
+              </div>
+              <button
+                type="button"
+                disabled
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                title={
+                  selectedIdsForEval.size === 0
+                    ? 'Select at least one run first.'
+                    : 'Backend execution wiring is pending; the selection is ready.'
+                }
+              >
+                <PlayCircle className="h-3.5 w-3.5" />
+                Run selected
+              </button>
+            </section>
 
-          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-slate-400" />
-              <div className="font-semibold text-slate-800">Results</div>
-            </div>
-            <div className="mt-3 space-y-3">
-              {evaluationRows.length === 0 ? (
-                <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500">
-                  No validation results yet.
-                </div>
-              ) : (
-                evaluationRows.map((row) => (
-                  <EvaluationResult
-                    key={row.id}
-                    row={row}
-                    selectedRun={rows.find((candidate) => candidate.id === row.selectedTrainingRunId)}
-                    onOpenAnalyze={openAnalyze}
-                  />
-                ))
-              )}
-            </div>
-          </section>
+            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-slate-400" />
+                <div className="font-semibold text-slate-800">Results</div>
+              </div>
+              <div className="mt-3 space-y-3">
+                {evaluationRows.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500">
+                    No validation results yet.
+                  </div>
+                ) : (
+                  evaluationRows.map((row) => (
+                    <EvaluationResult
+                      key={row.id}
+                      row={row}
+                      selectedRun={rows.find(
+                        (candidate) => candidate.id === row.selectedTrainingRunId
+                      )}
+                      onOpenAnalyze={openAnalyze}
+                    />
+                  ))
+                )}
+              </div>
+            </section>
 
-          <MetricTracePanel metrics={metrics} />
+            <MetricTracePanel metrics={metrics} />
+          </div>
         </div>
       </div>
       {detailsRun && <RunDetailOverlay run={detailsRun} onClose={() => setDetailsRun(null)} />}
@@ -384,6 +404,7 @@ function RunTable({
   title,
   rows,
   allRows,
+  metricColumns,
   selectedIds,
   view,
   sort,
@@ -399,6 +420,7 @@ function RunTable({
   title: string;
   rows: TrainingRunSummary[];
   allRows: TrainingRunSummary[];
+  metricColumns: MetricColumnSpec[];
   selectedIds: Set<string>;
   view: RunView;
   sort: SortState;
@@ -411,8 +433,13 @@ function RunTable({
   onClear: () => void;
   onOpenDetails: (run: TrainingRunSummary) => void;
 }) {
+  const metricTemplateColumns =
+    metricColumns.length > 0
+      ? ` repeat(${metricColumns.length}, minmax(4.75rem,0.8fr))`
+      : '';
+  const gridTemplateColumns = `1.5rem minmax(12rem,1.8fr) minmax(7rem,1fr)${metricTemplateColumns} minmax(4.75rem,0.7fr) 2rem`;
   return (
-    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+    <section className="max-w-full overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="font-semibold text-slate-800">{title}</div>
@@ -445,38 +472,53 @@ function RunTable({
           </button>
         </div>
       </div>
-      <div className="grid grid-cols-[2rem_minmax(13rem,1.45fr)_6rem_6rem_7rem_7rem_7rem_7rem_2.5rem] gap-3 border-b border-slate-100 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-        <div />
-        <div>Run</div>
-        <SortHeader label="Loss" sortKey="loss" sort={sort} onChange={onSortChange} />
-        <SortHeader label="Vel RMSE" sortKey="velocityRmse" sort={sort} onChange={onSortChange} />
-        <SortHeader label="Peak vel" sortKey="peakVelocity" sort={sort} onChange={onSortChange} />
-        <SortHeader label="Hold drift" sortKey="holdDrift" sort={sort} onChange={onSortChange} />
-        <SortHeader label="Progress" sortKey="progress" sort={sort} onChange={onSortChange} />
-        <div>Checkpoint</div>
-        <div />
-      </div>
       {rows.length === 0 ? (
         <EmptyCollection
           title={allRows.length === 0 ? 'No runs yet' : 'No rows in this view'}
           detail={
             allRows.length === 0
-              ? 'Runs will appear here after training or import.'
+              ? 'The seeded run table is in Examples > RLRMP movement-ramp training runs.'
               : 'Change the filter or select runs from the full collection.'
           }
         />
       ) : (
-        <div className="divide-y divide-slate-100">
-          {rows.map((row) => (
-            <TrainingRunRow
-              key={row.id}
-              row={row}
-              selected={selectedIds.has(row.id)}
-              isBest={bestRunId === row.id}
-              onToggle={() => onToggle(row.id)}
-              onOpenDetails={() => onOpenDetails(row)}
-            />
-          ))}
+        <div className="overflow-x-auto">
+          <div className="min-w-full">
+            <div
+              className="grid items-start gap-2 border-b border-slate-100 px-4 py-2 text-[11px] font-semibold text-slate-500"
+              style={{ gridTemplateColumns }}
+            >
+              <div />
+              <div>Run</div>
+              <SortHeader label="Progress" sortKey="progress" sort={sort} onChange={onSortChange} />
+              {metricColumns.map((column) => (
+                <SortHeader
+                  key={column.id}
+                  label={column.label}
+                  units={column.units}
+                  sortKey={column.id}
+                  sort={sort}
+                  onChange={onSortChange}
+                />
+              ))}
+              <div>Checkpoint</div>
+              <div />
+            </div>
+            <div className="divide-y divide-slate-100">
+              {rows.map((row) => (
+                <TrainingRunRow
+                  key={row.id}
+                  row={row}
+                  metricColumns={metricColumns}
+                  gridTemplateColumns={gridTemplateColumns}
+                  selected={selectedIds.has(row.id)}
+                  isBest={bestRunId === row.id}
+                  onToggle={() => onToggle(row.id)}
+                  onOpenDetails={() => onOpenDetails(row)}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </section>
@@ -485,12 +527,16 @@ function RunTable({
 
 function TrainingRunRow({
   row,
+  metricColumns,
+  gridTemplateColumns,
   selected,
   isBest,
   onToggle,
   onOpenDetails,
 }: {
   row: TrainingRunSummary;
+  metricColumns: MetricColumnSpec[];
+  gridTemplateColumns: string;
   selected: boolean;
   isBest: boolean;
   onToggle: () => void;
@@ -502,48 +548,51 @@ function TrainingRunRow({
     : row.checkpointAvailable
       ? 'Available'
       : 'None';
+  const complete = row.status === 'completed';
 
   return (
     <div
       className={clsx(
-        'grid grid-cols-[2rem_minmax(13rem,1.45fr)_6rem_6rem_7rem_7rem_7rem_7rem_2.5rem] gap-3 px-4 py-3 text-xs',
+        'grid items-center gap-2 px-4 py-2 text-xs',
         selected && 'bg-brand-50/40'
       )}
+      style={{ gridTemplateColumns }}
     >
       <button
         type="button"
         onClick={onToggle}
         className={clsx(
-          'flex h-8 w-8 items-center justify-center rounded-md border transition-colors',
+          'flex h-6 w-6 items-center justify-center rounded-md border transition-colors',
           selected
             ? 'border-brand-500 bg-brand-500 text-white'
             : 'border-slate-200 bg-white text-slate-400 hover:border-brand-200 hover:text-brand-500'
         )}
         aria-label={selected ? `Deselect ${row.label}` : `Select ${row.label}`}
       >
-        {selected ? <Check className="h-4 w-4" /> : <Circle className="h-4 w-4" />}
+        {selected ? <Check className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
       </button>
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
           <span className="truncate font-semibold text-slate-800">{row.label}</span>
           {isBest && (
-            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+            <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
               lowest loss
             </span>
           )}
-          <StatusDot status={row.status} />
-        </div>
-        <div className="mt-1 truncate text-slate-500" title={runParameterSummary(row)}>
-          {runParameterSummary(row)}
         </div>
       </div>
-      <MetricValue value={formatMetric(row.finalValidationLoss, 4)} />
-      <MetricValue value={formatMetric(row.velocityRmse, 3)} />
-      <MetricValue value={`${formatMetric(row.peakVelocityMean, 3)} +/- ${formatMetric(row.peakVelocitySd, 2)}`} />
-      <MetricValue value={`${formatMetric(row.holdDriftMeanMm, 2)} +/- ${formatMetric(row.holdDriftSdMm, 2)} mm`} />
-      <MetricValue value={progress} done={row.status === 'completed'} />
+      <div className="flex min-w-0 items-center gap-1.5 font-medium text-slate-700" title={progress}>
+        {complete && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+        <span className="truncate">{progress}</span>
+      </div>
+      {metricColumns.map((column) => (
+        <MetricValue
+          key={column.id}
+          value={formatMetric(trainingRunMetricValue(row, column.id), 3)}
+        />
+      ))}
       <div className="flex items-center gap-1 text-slate-600">
-        {row.checkpointAvailable && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+        {!row.checkpointAvailable && <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />}
         <span className="truncate" title={checkpoint}>{checkpoint}</span>
       </div>
       <button
@@ -629,22 +678,24 @@ function EvaluationResult({
 }
 
 function MetricTracePanel({ metrics }: { metrics: ScenarioMetricSpec[] }) {
-  const visible = metrics.filter((metric) => metric.source !== 'task_default').slice(0, 5);
+  const visible = uniqueMetricTraces(metrics).slice(0, 5);
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="font-semibold text-slate-800">Metric provenance</div>
-      <div className="mt-3 space-y-2">
+    <section className="max-w-3xl rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="font-semibold text-slate-800">Metric sources</div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {visible.map((metric) => (
-          <div key={`${metric.source}:${metric.sourceId}:${metric.id}`} className="text-xs">
+          <div key={`${metric.source}:${metric.id}`} className="min-w-0 rounded-md border border-slate-100 px-2.5 py-2 text-xs">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate font-medium text-slate-700">{metric.label}</span>
               <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
                 {metric.source}
               </span>
             </div>
-            <div className="mt-0.5 truncate text-[11px] text-slate-400">
-              {metric.selector ?? metric.summary ?? metric.sourceId}
-            </div>
+            {metric.summary && (
+              <div className="mt-0.5 truncate text-[11px] text-slate-400">
+                {metric.summary}
+              </div>
+            )}
           </div>
         ))}
         {visible.length === 0 && <div className="text-xs text-slate-400">No metrics derived</div>}
@@ -653,14 +704,32 @@ function MetricTracePanel({ metrics }: { metrics: ScenarioMetricSpec[] }) {
   );
 }
 
+function uniqueMetricTraces(metrics: ScenarioMetricSpec[]): ScenarioMetricSpec[] {
+  const byKey = new Map<string, ScenarioMetricSpec>();
+  for (const metric of metrics) {
+    if (metric.source === 'task_default') continue;
+    const key = `${metric.source}:${metric.id}`;
+    const existing = byKey.get(key);
+    if (!existing || sourceTraceRank(metric.source) < sourceTraceRank(existing.source)) {
+      byKey.set(key, metric);
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => {
+    const source = sourceTraceRank(a.source) - sourceTraceRank(b.source);
+    return source || a.label.localeCompare(b.label);
+  });
+}
+
+function sourceTraceRank(source: ScenarioMetricSpec['source']): number {
+  return ['objective', 'analysis', 'manifest', 'task_default'].indexOf(source);
+}
+
 function ExecutionTarget({
   value,
   onChange,
-  embedded = false,
 }: {
   value: ExecutionTargetChoice;
   onChange: (value: ExecutionTargetChoice) => void;
-  embedded?: boolean;
 }) {
   const targets: Array<{
     id: ExecutionTargetChoice;
@@ -687,8 +756,8 @@ function ExecutionTarget({
       detail: 'Advanced connection details',
     },
   ];
-  const content = (
-    <>
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="font-semibold text-slate-800">Run target</div>
       <div className="mt-3 space-y-2">
         {targets.map((target) => {
@@ -715,27 +784,15 @@ function ExecutionTarget({
           );
         })}
       </div>
-    </>
-  );
-
-  if (embedded) {
-    return <div className="border-t border-slate-100 pt-3">{content}</div>;
-  }
-
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      {content}
     </section>
   );
 }
 
 function TrainingProtocolEditor({
   protocol,
-  onTargetChange,
   onProtocolChange,
 }: {
   protocol: TrainingProtocolSnapshot;
-  onTargetChange: (value: ExecutionTargetChoice) => void;
   onProtocolChange: (patch: Partial<TrainingProtocolSnapshot>) => void;
 }) {
   const updateNumber = (
@@ -764,40 +821,36 @@ function TrainingProtocolEditor({
   };
 
   return (
-    <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="font-semibold text-slate-800">Training protocol</div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-        <NumberField
-          label="Learning rate"
-          min={0}
-          step={0.0001}
-          value={protocol.learningRate}
-          onChange={(value) => updateNumber('learningRate', value)}
-        />
-        <NumberField
-          label="Batches"
-          min={0}
-          step={1}
-          value={protocol.batchCount}
-          onChange={(value) => updateInteger('batchCount', value)}
-        />
-        <NumberField
-          label="Batch size"
-          min={0}
-          step={1}
-          value={protocol.batchSize}
-          onChange={(value) => updateInteger('batchSize', value)}
-        />
-        <NumberField
-          label="Checkpoint every"
-          min={0}
-          step={1}
-          value={protocol.checkpointInterval ?? ''}
-          onChange={updateCheckpointInterval}
-        />
-      </div>
-      <ExecutionTarget value={protocol.computeTarget} onChange={onTargetChange} embedded />
-    </section>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <NumberField
+        label="Learning rate"
+        min={0}
+        step={0.0001}
+        value={protocol.learningRate}
+        onChange={(value) => updateNumber('learningRate', value)}
+      />
+      <NumberField
+        label="Batches"
+        min={0}
+        step={1}
+        value={protocol.batchCount}
+        onChange={(value) => updateInteger('batchCount', value)}
+      />
+      <NumberField
+        label="Batch size"
+        min={0}
+        step={1}
+        value={protocol.batchSize}
+        onChange={(value) => updateInteger('batchSize', value)}
+      />
+      <NumberField
+        label="Checkpoint every"
+        min={0}
+        step={1}
+        value={protocol.checkpointInterval ?? ''}
+        onChange={updateCheckpointInterval}
+      />
+    </div>
   );
 }
 
@@ -831,11 +884,13 @@ function NumberField({
 
 function SortHeader({
   label,
+  units,
   sortKey,
   sort,
   onChange,
 }: {
   label: string;
+  units?: string | null;
   sortKey: SortKey;
   sort: SortState;
   onChange: (sort: SortState) => void;
@@ -851,8 +906,10 @@ function SortHeader({
         })
       }
       className={clsx('text-left hover:text-slate-700', active && 'text-slate-700')}
+      title={units ? `${label} (${units})` : label}
     >
-      {label}
+      <span className="block truncate">{label}</span>
+      {units && <span className="block truncate text-[9px] normal-case tracking-normal">{units}</span>}
       {active && <span className="ml-1">{sort.direction === 'asc' ? '↑' : '↓'}</span>}
     </button>
   );
@@ -975,12 +1032,8 @@ function sortTrainingRows(rows: TrainingRunSummary[], sort: SortState): Training
 }
 
 function metricValue(row: TrainingRunSummary, key: SortKey): number | null {
-  if (key === 'loss') return row.finalValidationLoss;
-  if (key === 'velocityRmse') return row.velocityRmse;
-  if (key === 'peakVelocity') return row.peakVelocityMean;
-  if (key === 'holdDrift') return row.holdDriftMeanMm;
   if (key === 'progress') return row.status === 'completed' ? row.warmupBatches ?? 1 : 0;
-  return null;
+  return trainingRunMetricValue(row, key);
 }
 
 function compareMetric(a: number | null, b: number | null): number {

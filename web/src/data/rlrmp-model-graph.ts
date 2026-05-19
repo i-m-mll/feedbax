@@ -5,7 +5,7 @@
  *   - SimpleStagedNetwork: GRU-based recurrent network (100-180 hidden units)
  *   - PointMass: 2D point-mass plant mechanics
  *   - FeedbackChannels: delayed, noisy proprioceptive feedback (position + velocity)
- *   - SimpleReaches: center-out reaching task
+ *   - DelayedReaches: delayed center-out reaching task
  *
  * This is a simplified visual representation of the model architecture.
  * The actual model is built from Python Equinox modules; this graph
@@ -28,15 +28,24 @@ export function createRlrmpModelGraph(projectName: string): {
   const graph: GraphSpec = {
     nodes: {
       task: {
-        type: 'SimpleReaches',
+        type: 'DelayedReaches',
         params: {
-          n_steps: 100,
+          n_steps: 140,
           workspace: [
-            [-0.15, -0.15],
-            [0.15, 0.15],
+            [-1.0, -1.0],
+            [1.0, 1.0],
           ],
+          train_endpoint_mode: 'center_out',
+          epoch_len_ranges: [
+            [0, 1],
+            [10, 30],
+          ],
+          target_on_epochs: [1, 2],
+          hold_epochs: [0, 1],
+          move_epochs: [2],
+          p_catch_trial: 0.5,
           eval_n_directions: 8,
-          eval_reach_length: 0.08,
+          eval_reach_length: 0.5,
           eval_grid_n: 1,
         },
         input_ports: [],
@@ -125,7 +134,7 @@ export function createRlrmpModelGraph(projectName: string): {
       task: { position: { x: 100, y: 200 }, collapsed: false, selected: false },
       network: { position: { x: 380, y: 200 }, collapsed: false, selected: false },
       mechanics: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
-      feedback: { position: { x: 520, y: 420 }, collapsed: false, selected: false },
+      feedback: { position: { x: 520, y: 420 }, collapsed: false, selected: false, reversed: true },
     },
   };
 

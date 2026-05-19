@@ -49,7 +49,7 @@ export function Divider({ availableHeight }: DividerProps) {
         {/* ChevronUp — sits above the line; hidden when top pane is already collapsed */}
         {!topCollapsed && (
           <button
-            className="absolute bottom-[10px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+            className="absolute bottom-[10px] right-0 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-slate-400 text-white shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-500"
             title={bottomCollapsed ? 'Expand bottom pane' : 'Collapse top pane'}
             onClick={() => bottomCollapsed ? toggleBottom(availableHeight) : toggleTop(availableHeight)}
           >
@@ -59,7 +59,7 @@ export function Divider({ availableHeight }: DividerProps) {
         {/* ChevronDown — sits below the line; hidden when bottom pane is already collapsed */}
         {!bottomCollapsed && (
           <button
-            className="absolute top-[10px] right-0 w-5 h-5 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+            className="absolute top-[10px] right-0 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-slate-400 text-white shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-500"
             title={topCollapsed ? 'Expand top pane' : 'Collapse bottom pane'}
             onClick={() => topCollapsed ? toggleTop(availableHeight) : toggleBottom(availableHeight)}
           >

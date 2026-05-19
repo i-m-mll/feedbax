@@ -13,6 +13,11 @@ import {
   ensureObjectiveSpec,
   targetSelectorForEntity,
 } from '@/features/scenario/objectives';
+import {
+  preferredSelectorForGraphPort,
+  selectorDisplayLabel,
+  selectorOptionsForRegistry,
+} from '@/features/scenario/selectors';
 import type { LossTermSpec } from '@/types/training';
 import type { StudioSelectorRef } from '@/types/workspace';
 import { useCallback, useEffect, useRef } from 'react';
@@ -56,6 +61,17 @@ export function PortContextMenu({
   const registry = buildScenarioEntityRegistry({ scenario: activeScenario, graph });
   const taskEntity =
     Object.values(registry.entities).find((entity) => entity.kind === 'task_object') ?? null;
+  const rawSourceSelector: StudioSelectorRef = {
+    namespace: 'graph_port',
+    compact: `port:${nodeName}.${portName}`,
+    target_id: nodeName,
+    path: portName,
+    role: 'observed',
+    metadata: { direction: portType },
+  };
+  const selectorOptions = selectorOptionsForRegistry({ registry, objectiveSpec });
+  const sourceSelector = preferredSelectorForGraphPort(rawSourceSelector, selectorOptions);
+  const sourceLabel = selectorDisplayLabel(sourceSelector);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
@@ -121,18 +137,10 @@ export function PortContextMenu({
   }, [nodeName, portName, trainingSpec.loss, addLossTerm, onClose]);
 
   const handleAddObjective = useCallback(() => {
-    if (!activeScenario) return;
-    const sourceSelector: StudioSelectorRef = {
-      namespace: 'graph_port',
-      compact: `port:${nodeName}.${portName}`,
-      target_id: nodeName,
-      path: portName,
-      role: 'observed',
-      metadata: { direction: portType },
-    };
+    if (!activeScenario || !sourceSelector) return;
     const term = createObjectiveTerm({
       spec: objectiveSpec,
-      label: `Objective: ${nodeName}.${portName}`,
+      label: `Objective: ${sourceLabel}`,
       sourceSelector,
       targetSelector: targetSelectorForEntity(taskEntity),
     });
@@ -145,16 +153,15 @@ export function PortContextMenu({
     onClose();
   }, [
     activeScenario,
-    nodeName,
     objectiveSpec,
     onClose,
-    portName,
-    portType,
     selectTopPaneEntity,
     setSelectedEdge,
     setSelectedNode,
     setSelectedTap,
     setTopPaneProjection,
+    sourceLabel,
+    sourceSelector,
     taskEntity,
     updateActiveScenarioObjectiveSpec,
   ]);
@@ -182,7 +189,7 @@ export function PortContextMenu({
         className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
       >
         <ListPlus className="w-4 h-4 text-brand-500" />
-        Add objective
+        <span className="min-w-0 truncate">Add objective from {sourceLabel}</span>
       </button>
       {portType === 'output' && (
         <button

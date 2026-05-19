@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
+import { getTopPaneState, useWorkspaceStore } from '@/stores/workspaceStore';
 import { validateGraph } from '@/features/graph/validation';
 import clsx from 'clsx';
 
@@ -11,6 +12,8 @@ export function ValidationPanel() {
   const graph = useGraphStore((state) => state.graph);
   const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
   const isInSubgraph = useGraphStore((state) => state.graphStack.length > 0);
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const selectedEntityId = getTopPaneState(workspace).selected_entity_id;
   const validation = useMemo(() => validateGraph(graph), [graph]);
 
   const toggleExpanded = useCallback(() => {
@@ -20,6 +23,8 @@ export function ValidationPanel() {
   const hasIssues = !validation.valid || validation.warnings.length > 0 || validation.cycles.length > 0;
   const errorCount = validation.errors.length;
   const warningCount = validation.warnings.length + validation.cycles.length;
+
+  if (selectedEntityId) return null;
 
   return (
     <div className="border-t border-slate-100">

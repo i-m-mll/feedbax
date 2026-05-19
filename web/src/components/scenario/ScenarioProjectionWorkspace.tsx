@@ -1,6 +1,15 @@
 import { useMemo } from 'react';
 import clsx from 'clsx';
-import { GitBranch, ListChecks, Map as MapIcon, Trash2 } from 'lucide-react';
+import {
+  GitBranch,
+  ListChecks,
+  Map as MapIcon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Trash2,
+} from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
   buildScenarioEntityRegistry,
@@ -20,6 +29,7 @@ import {
   setObjectiveTermEnabled,
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
+import { selectorDetail, selectorDisplayLabel } from '@/features/scenario/selectors';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
@@ -27,6 +37,7 @@ import {
   getTopPaneState,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
@@ -68,11 +79,27 @@ function isSelectedOrRelated(
 export function ScenarioProjectionToolbar() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
+  const {
+    leftSidebarVisible,
+    rightSidebarVisible,
+    toggleLeftSidebar,
+    toggleRightSidebar,
+  } = useLayoutStore();
   const topPane = getTopPaneState(workspace);
+  const LeftIcon = leftSidebarVisible ? PanelLeftClose : PanelLeftOpen;
+  const RightIcon = rightSidebarVisible ? PanelRightClose : PanelRightOpen;
 
   return (
-    <div className="flex h-11 shrink-0 items-end border-b border-slate-200 bg-white px-3">
-      <div className="flex h-full items-end">
+    <div className="flex h-11 shrink-0 items-end justify-between border-b border-slate-200 bg-white px-3">
+      <div className="flex h-full min-w-0 items-end">
+        <button
+          type="button"
+          onClick={toggleLeftSidebar}
+          className="mb-1 mr-2 inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          title={leftSidebarVisible ? 'Hide component palette' : 'Show component palette'}
+        >
+          <LeftIcon className="h-4 w-4" />
+        </button>
         {PROJECTIONS.map((projection) => {
           const Icon = projection.icon;
           const selected = projection.id === topPane.active_projection;
@@ -94,6 +121,14 @@ export function ScenarioProjectionToolbar() {
           );
         })}
       </div>
+      <button
+        type="button"
+        onClick={toggleRightSidebar}
+        className="mb-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+        title={rightSidebarVisible ? 'Hide properties panel' : 'Show properties panel'}
+      >
+        <RightIcon className="h-4 w-4" />
+      </button>
     </div>
   );
 }
@@ -283,8 +318,8 @@ function ObjectivesProjection({
           <div>Weight</div>
           <div>Penalty</div>
           <div>Time</div>
-          <div>Selector</div>
-          <div>State</div>
+          <div>Source</div>
+          <div />
         </div>
         {items.map((item) => {
           const term = termByEntityId.get(item.entity_id);
@@ -369,7 +404,16 @@ function ObjectivesProjection({
                   </option>
                 ))}
               </select>
-              <div className="truncate text-slate-500">{source?.compact ?? 'None'}</div>
+              <div className="min-w-0">
+                <div className="truncate text-slate-600" title={source?.compact}>
+                  {selectorDisplayLabel(source)}
+                </div>
+                {selectorDetail(source) && (
+                  <div className="mt-0.5 truncate text-[11px] text-slate-400">
+                    {selectorDetail(source)}
+                  </div>
+                )}
+              </div>
               <div className="flex items-center gap-1">
                 <input
                   type="checkbox"

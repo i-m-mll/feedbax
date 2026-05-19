@@ -56,7 +56,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     ...RLRMP_MOVEMENT_RAMP_TEMPLATE,
     createAnalysis: createRlrmpMovementRampAnalysis,
-    createModelGraph: () => createRlrmpModelGraph('RLRMP movement-ramp runs'),
+    createModelGraph: () => createRlrmpModelGraph('RLRMP movement-ramp training runs'),
     createWorkspace: ({ baseWorkspace }) => seedRlrmpMovementRampWorkspace(baseWorkspace),
   },
 ];

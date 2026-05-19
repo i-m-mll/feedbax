@@ -2,16 +2,17 @@ import {
   Settings,
   Save,
   FolderOpen,
-  Plus,
+  FilePlus,
   Download,
   X,
-  BookOpen,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
+import { toast } from 'sonner';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
-import { useProjectsStore } from '@/stores/projectsStore';
+import { persistLocalProjectTabs, useProjectsStore } from '@/stores/projectsStore';
 import { useRunStore } from '@/stores/runStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
@@ -19,8 +20,11 @@ import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
 import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
 
+type ProjectOverlaySection = 'projects' | 'examples' | 'import';
+
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectOverlaySection, setProjectOverlaySection] = useState<ProjectOverlaySection | null>(null);
   const [exporting, setExporting] = useState(false);
   const [pendingTab, setPendingTab] = useState<{ name: string } | null>(null);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
@@ -56,6 +60,7 @@ export function Header() {
 
   const handleSave = async () => {
     if (inSubgraph) return;
+    persistLocalProjectTabs();
     try {
       const response = await saveMutation.mutateAsync({
         graphId,
@@ -67,8 +72,11 @@ export function Header() {
       } else if (graphId) {
         markSaved(graphId);
       }
+      persistLocalProjectTabs();
     } catch (error) {
       console.error(error);
+      persistLocalProjectTabs();
+      toast.error('Saved locally; backend is unreachable', { id: 'save-local-fallback' });
     }
   };
 
@@ -166,6 +174,13 @@ export function Header() {
   return (
     <>
     {settingsOpen && <SettingsOverlay onClose={() => setSettingsOpen(false)} />}
+    {projectOverlaySection && (
+      <ProjectOpenOverlay
+        initialSection={projectOverlaySection}
+        onClose={() => setProjectOverlaySection(null)}
+        onOpenSaved={handleOpen}
+      />
+    )}
     <header className="relative z-40 h-12 flex items-center gap-2 px-3 border-b border-slate-100 bg-white/80 backdrop-blur">
       {/* Logo — fixed width */}
       <div className="flex-none flex items-center gap-2 font-display text-sm tracking-[0.2em] text-slate-600 pr-2">
@@ -284,17 +299,21 @@ export function Header() {
             />
           </div>
         )}
-        <button
-          onClick={() => setPendingTab({ name: '' })}
-          className="flex-none p-1.5 rounded-lg text-slate-400 hover:bg-slate-50 hover:text-slate-600"
-          title="New project tab"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
       </div>
 
       {/* Right-side action buttons */}
       <div className="flex-none flex items-center gap-3 text-slate-500">
+        <button
+          className="p-1.5 rounded-full hover:bg-slate-100"
+          title="New project"
+          onClick={() => {
+            setProjectOverlaySection(null);
+            setSettingsOpen(false);
+            setPendingTab({ name: '' });
+          }}
+        >
+          <FilePlus className="w-4 h-4" />
+        </button>
         <button
           className="p-1.5 rounded-full hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
           title={inSubgraph ? 'Return to model root to save' : 'Save'}
@@ -311,12 +330,23 @@ export function Header() {
         >
           <Download className="w-4 h-4" />
         </button>
-        <OpenProjectDropdown onOpen={handleOpen} onBeforeOpen={() => setSettingsOpen(false)} />
-        <TemplateProjectsDropdown onBeforeOpen={() => setSettingsOpen(false)} />
+        <button
+          className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500"
+          title="Open project"
+          onClick={() => {
+            setSettingsOpen(false);
+            setProjectOverlaySection('projects');
+          }}
+        >
+          <FolderOpen className="w-4 h-4" />
+        </button>
         <button
           className="p-1.5 rounded-full hover:bg-slate-100"
           title="Settings"
-          onClick={() => setSettingsOpen((prev) => !prev)}
+          onClick={() => {
+            setProjectOverlaySection(null);
+            setSettingsOpen((prev) => !prev);
+          }}
         >
           <Settings className="w-4 h-4" />
         </button>
@@ -325,150 +355,36 @@ export function Header() {
     </>
   );
 }
-
-interface OpenProjectDropdownProps {
-  onOpen: (id: string) => void;
-  onBeforeOpen?: () => void;
-}
-
-function OpenProjectDropdown({ onOpen, onBeforeOpen }: OpenProjectDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const dropdownRef = useRef<HTMLDivElement | null>(null);
+function ProjectOpenOverlay({
+  initialSection,
+  onClose,
+  onOpenSaved,
+}: {
+  initialSection: ProjectOverlaySection;
+  onClose: () => void;
+  onOpenSaved: (id: string) => Promise<void>;
+}) {
+  const [activeSection, setActiveSection] = useState<ProjectOverlaySection>(initialSection);
   const graphsQuery = useGraphsList();
-  // Use a ref so addEventListener/removeEventListener always see the same function identity
-  const handlerRef = useRef<((event: PointerEvent) => void) | null>(null);
-
-  const handlePointerDown = useCallback((event: PointerEvent) => {
-    const target = event.target as Node | null;
-    if (!target) return;
-    if (
-      dropdownRef.current &&
-      !dropdownRef.current.contains(target) &&
-      !triggerRef.current?.contains(target)
-    ) {
-      if (handlerRef.current) {
-        document.removeEventListener('pointerdown', handlerRef.current);
-        handlerRef.current = null;
-      }
-      setOpen(false);
-    }
-  }, []);
-
-  const toggleOpen = () => {
-    if (!open) {
-      onBeforeOpen?.();
-      handlerRef.current = handlePointerDown;
-      document.addEventListener('pointerdown', handlePointerDown);
-    } else {
-      if (handlerRef.current) {
-        document.removeEventListener('pointerdown', handlerRef.current);
-        handlerRef.current = null;
-      }
-    }
-    setOpen((prev) => !prev);
-  };
-
-  return (
-    <div className="relative">
-      <button
-        ref={triggerRef}
-        className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500"
-        title="Open project in new tab"
-        onClick={toggleOpen}
-      >
-        <FolderOpen className="w-4 h-4" />
-      </button>
-      {open && (
-        <div
-          ref={dropdownRef}
-          className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-2"
-        >
-          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 px-2 pb-1">
-            Open in new tab
-          </div>
-          <div className="max-h-48 overflow-y-auto">
-            {(graphsQuery.data?.graphs ?? []).map((item: any) => (
-              <button
-                key={item.id}
-                onClick={() => {
-                  onOpen(item.id);
-                  if (handlerRef.current) {
-                    document.removeEventListener('pointerdown', handlerRef.current);
-                    handlerRef.current = null;
-                  }
-                  setOpen(false);
-                }}
-                className="w-full text-left text-sm px-2 py-2 rounded-lg hover:bg-slate-50"
-              >
-                <div className="font-medium text-slate-700">{item.metadata.name}</div>
-                <div className="text-xs text-slate-400">{item.metadata.updated_at}</div>
-              </button>
-            ))}
-            {graphsQuery.isLoading && (
-              <div className="text-xs text-slate-400 px-2 py-2">Loading…</div>
-            )}
-            {!graphsQuery.isLoading && (graphsQuery.data?.graphs?.length ?? 0) === 0 && (
-              <div className="text-xs text-slate-400 px-2 py-2">No saved projects yet.</div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Template Projects Dropdown — creates projects from pre-built templates
-// ---------------------------------------------------------------------------
-
-interface TemplateProjectsDropdownProps {
-  onBeforeOpen?: () => void;
-}
-
-function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const dropdownRef = useRef<HTMLDivElement | null>(null);
-  const handlerRef = useRef<((event: PointerEvent) => void) | null>(null);
   const { openProjectInTab } = useProjectsStore();
 
-  const handlePointerDown = useCallback((event: PointerEvent) => {
-    const target = event.target as Node | null;
-    if (!target) return;
-    if (
-      dropdownRef.current &&
-      !dropdownRef.current.contains(target) &&
-      !triggerRef.current?.contains(target)
-    ) {
-      if (handlerRef.current) {
-        document.removeEventListener('pointerdown', handlerRef.current);
-        handlerRef.current = null;
-      }
-      setOpen(false);
-    }
-  }, []);
+  useEffect(() => {
+    setActiveSection(initialSection);
+  }, [initialSection]);
 
-  const toggleOpen = () => {
-    if (!open) {
-      onBeforeOpen?.();
-      handlerRef.current = handlePointerDown;
-      document.addEventListener('pointerdown', handlePointerDown);
-    } else {
-      if (handlerRef.current) {
-        document.removeEventListener('pointerdown', handlerRef.current);
-        handlerRef.current = null;
-      }
-    }
-    setOpen((prev) => !prev);
-  };
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const handleLoadTemplate = useCallback(
     async (templateIdx: number) => {
       const template = PROJECT_TEMPLATES[templateIdx];
       if (!template) return;
 
-      // Use the template's model graph if available, otherwise create blank
       let modelGraph: ReturnType<typeof createBlankGraph>;
       let uiState: any;
 
@@ -502,11 +418,8 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
       }
 
       try {
-        // Persist to backend immediately so this is a real project, not ephemeral
         const response = await createGraph(modelGraph, uiState, workspace);
         const graphId = response.id;
-
-        // Save analysis pages to the backend
         const analysisPages = analysisSnapshot.pages.map((page) => ({
           id: page.id,
           name: page.name,
@@ -524,8 +437,6 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           analysisSnapshot.activePageId,
           workspace,
         );
-
-        // Open in a new tab with the persisted graphId
         openProjectInTab(
           graphId,
           modelGraph,
@@ -535,11 +446,9 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
           workspace,
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
-
         localStorage.setItem('feedbax:lastProjectId', graphId);
-      } catch (err) {
-        console.error('Failed to save example project to backend:', err);
-        // Fall back to ephemeral tab if save fails
+      } catch (error) {
+        console.error('Failed to save example project to backend:', error);
         openProjectInTab(
           '',
           modelGraph,
@@ -550,61 +459,122 @@ function TemplateProjectsDropdown({ onBeforeOpen }: TemplateProjectsDropdownProp
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
       }
-
-      if (handlerRef.current) {
-        document.removeEventListener('pointerdown', handlerRef.current);
-        handlerRef.current = null;
-      }
-      setOpen(false);
+      persistLocalProjectTabs();
+      onClose();
     },
-    [openProjectInTab],
+    [onClose, openProjectInTab],
   );
 
-  if (PROJECT_TEMPLATES.length === 0) return null;
+  const navItems: Array<{ id: ProjectOverlaySection; label: string }> = [
+    { id: 'projects', label: 'Projects' },
+    { id: 'examples', label: 'Examples' },
+    { id: 'import', label: 'Import' },
+  ];
 
   return (
-    <div className="relative">
-      <button
-        ref={triggerRef}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-slate-500 text-xs font-medium"
-        title="Load example project"
-        onClick={toggleOpen}
-      >
-        <BookOpen className="w-4 h-4" />
-        <span className="hidden sm:inline">Examples</span>
-      </button>
-      {open && (
-        <div
-          ref={dropdownRef}
-          className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-slate-100 bg-white shadow-lift z-50 p-2"
+    <div className="fixed inset-x-0 bottom-0 top-12 z-50 flex bg-white">
+      <nav className="w-48 shrink-0 border-r border-slate-100 bg-slate-50 px-4 py-6">
+        <div className="space-y-1">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveSection(item.id)}
+              className={clsx(
+                'w-full rounded-md px-3 py-2 text-left text-sm font-medium',
+                activeSection === item.id
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-500 hover:bg-white hover:text-slate-800'
+              )}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+      <div className="min-w-0 flex-1 overflow-y-auto p-6">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          title="Close"
         >
-          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400 px-2 pb-1">
-            Example Projects
+          <X className="h-4 w-4" />
+        </button>
+
+        {activeSection === 'projects' && (
+          <div className="max-w-3xl">
+            <div className="grid gap-2">
+              {(graphsQuery.data?.graphs ?? []).map((item: any) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={async () => {
+                    await onOpenSaved(item.id);
+                    onClose();
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:border-brand-200 hover:bg-slate-50"
+                >
+                  <div className="font-medium text-slate-800">{item.metadata.name}</div>
+                  <div className="mt-1 text-xs text-slate-400">{item.metadata.updated_at}</div>
+                </button>
+              ))}
+              {graphsQuery.isLoading && (
+                <div className="rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-400">
+                  Loading projects...
+                </div>
+              )}
+              {!graphsQuery.isLoading && (graphsQuery.data?.graphs?.length ?? 0) === 0 && (
+                <div className="rounded-lg border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-400">
+                  No saved projects yet.
+                </div>
+              )}
+            </div>
           </div>
-          <div className="max-h-64 overflow-y-auto">
-            {PROJECT_TEMPLATES.map((template, idx) => (
+        )}
+
+        {activeSection === 'examples' && (
+          <div className="grid max-w-5xl gap-3 md:grid-cols-2">
+            {PROJECT_TEMPLATES.map((template, index) => (
               <button
                 key={template.id}
-                onClick={() => handleLoadTemplate(idx)}
-                className="w-full text-left text-sm px-2 py-2 rounded-lg hover:bg-slate-50"
+                type="button"
+                onClick={() => handleLoadTemplate(index)}
+                className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-brand-200 hover:bg-slate-50"
               >
-                <div className="font-medium text-slate-700">{template.name}</div>
-                <div className="text-xs text-slate-400 mt-0.5">{template.description}</div>
-                <div className="flex gap-1 mt-1 flex-wrap">
-                  {template.pageNames.map((pn) => (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold text-slate-800">{template.name}</div>
+                    <div className="mt-1 text-sm leading-5 text-slate-500">{template.description}</div>
+                  </div>
+                  {template.createWorkspace && (
+                    <span className="shrink-0 rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-brand-700">
+                      runs
+                    </span>
+                  )}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1">
+                  {template.pageNames.map((pageName) => (
                     <span
-                      key={pn}
-                      className="inline-block rounded-full bg-emerald-50 text-emerald-600 text-[10px] px-1.5 py-0.5"
+                      key={pageName}
+                      className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-600"
                     >
-                      {pn}
+                      {pageName}
                     </span>
                   ))}
                 </div>
               </button>
             ))}
           </div>
-        </div>
-      )}
+        )}
+
+        {activeSection === 'import' && (
+          <div className="max-w-2xl rounded-lg border border-dashed border-slate-200 px-5 py-8 text-sm text-slate-500">
+            Bundle import is not wired yet. This surface is reserved for project bundles and local
+            files once the storage/import contract is settled.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

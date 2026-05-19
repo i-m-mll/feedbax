@@ -10,6 +10,7 @@ import {
   objectiveEntityId,
   probeEntityId,
   selectorToEntityId,
+  stateFlowEdgeId,
   taskEntityId,
 } from '@/features/scenario/entities';
 import type { GraphSpec } from '@/types/graph';
@@ -120,6 +121,16 @@ describe('scenario entity registry', () => {
     expect(registry.entities[graphEdgeEntityId(graphEdgeId(wire))]).toMatchObject({
       kind: 'graph_edge',
     });
+    expect(registry.entities[graphEdgeEntityId(stateFlowEdgeId('task', 'mechanics'))]).toMatchObject({
+      kind: 'graph_edge',
+      label: 'task → mechanics',
+      summary: 'Full state flow',
+      selector: {
+        namespace: 'state_path',
+        compact: 'path:state:task->mechanics',
+      },
+      metadata: { edge_type: 'state_flow' },
+    });
     expect(registry.entities[probeEntityId('tap:effector')]).toMatchObject({
       kind: 'probe',
       summary: 'effector',
@@ -185,6 +196,13 @@ describe('scenario entity registry', () => {
         subpath: 'position',
       },
     })).toBe(graphPortEntityId('mechanics', 'output', 'effector'));
+    expect(selectorToEntityId({
+      namespace: 'state_path',
+      compact: 'path:state:task->mechanics',
+      target_id: 'mechanics',
+      path: 'state',
+      metadata: { state_flow_edge_id: 'state:task->mechanics' },
+    })).toBe(graphEdgeEntityId('state:task->mechanics'));
   });
 
   it('marks task and mechanics entities from child scenarios as inherited or overridden', () => {

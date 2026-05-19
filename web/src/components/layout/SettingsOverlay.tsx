@@ -41,13 +41,13 @@ export function SettingsOverlay({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/40"
+      className="fixed inset-x-0 bottom-0 top-12 z-50 flex items-stretch bg-white"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       {/* Panel */}
-      <div className="flex h-full w-full max-w-3xl bg-white shadow-xl">
+      <div className="flex h-full w-full bg-white">
         {/* Left sidebar */}
         <nav className="flex-none w-44 border-r border-slate-100 pt-14 pb-6 px-4 flex flex-col gap-0.5">
           <div className="text-[10px] uppercase tracking-widest text-slate-400 px-2 pb-2">

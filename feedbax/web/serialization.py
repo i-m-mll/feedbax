@@ -675,7 +675,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 params.update(
                     {
                         "workspace": jnp.asarray(task.workspace).tolist(),
-                        "delay_steps": task.delay_steps,
+                        "train_endpoint_mode": task.train_endpoint_mode,
+                        "epoch_len_ranges": [list(item) for item in task.epoch_len_ranges],
+                        "target_on_epochs": jnp.asarray(task.target_on_epochs).tolist(),
+                        "hold_epochs": jnp.asarray(task.hold_epochs).tolist(),
+                        "move_epochs": jnp.asarray(task.move_epochs).tolist(),
+                        "p_catch_trial": task.p_catch_trial,
+                        "eval_n_directions": task.eval_n_directions,
+                        "eval_reach_length": task.eval_reach_length,
+                        "eval_grid_n": task.eval_grid_n,
                     }
                 )
             elif isinstance(task, Stabilization):
@@ -785,9 +793,20 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
     elif task_type == "DelayedReaches":
         task = DelayedReaches(
             loss_func=loss_func,
-            n_steps=int(params.get("n_steps", 240)),
+            n_steps=int(params.get("n_steps", 140)),
             workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
-            delay_steps=int(params.get("delay_steps", 40)),
+            train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
+            epoch_len_ranges=tuple(
+                tuple(int(value) for value in item)
+                for item in params.get("epoch_len_ranges", [[5, 15], [10, 20]])
+            ),
+            target_on_epochs=tuple(int(value) for value in params.get("target_on_epochs", [1, 2])),
+            hold_epochs=tuple(int(value) for value in params.get("hold_epochs", [0, 1])),
+            move_epochs=tuple(int(value) for value in params.get("move_epochs", [2])),
+            p_catch_trial=float(params.get("p_catch_trial", 0.5)),
+            eval_n_directions=int(params.get("eval_n_directions", 7)),
+            eval_reach_length=float(params.get("eval_reach_length", 0.5)),
+            eval_grid_n=int(params.get("eval_grid_n", 1)),
         )
     elif task_type == "Stabilization":
         task = Stabilization(
