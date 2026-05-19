@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import {
   Background,
   Controls,
+  ControlButton,
   MiniMap,
   ReactFlow,
   Panel,
+  useNodesInitialized,
   useReactFlow,
   type Connection,
   BackgroundVariant,
@@ -12,6 +14,12 @@ import {
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  graphEdgeEntityId,
+  graphNodeEntityId,
+  probeEntityId,
+} from '@/features/scenario/entities';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -20,7 +28,7 @@ import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
-import { ChevronsDown, ChevronsUp, MoveDiagonal } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
   component: CustomNode,
@@ -33,8 +41,11 @@ const edgeTypes = {
   'state-flow': StateFlowEdge,
 };
 
+const DEFAULT_FIT_VIEW_OPTIONS = { padding: 0.22, maxZoom: 1 } as const;
+
 export function Canvas() {
   const {
+    graphId,
     nodes,
     edges,
     onNodesChange,
@@ -57,10 +68,15 @@ export function Canvas() {
   } = useGraphStore();
   const { resizeMode, toggleResizeMode } = useLayoutStore();
   const showMinimap = useSettingsStore((state) => state.showMinimap);
+  const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const { components } = useComponents();
   const reactFlow = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
+  const fittedGraphKey = useRef<string | null>(null);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -99,6 +115,24 @@ export function Canvas() {
     () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
     [graphStack, currentGraphLabel]
   );
+
+  const graphViewKey = useMemo(
+    () =>
+      [graphId ?? 'inline', ...graphStack.map((layer) => layer.graphId ?? layer.label), currentGraphLabel].join(
+        '/'
+      ),
+    [graphId, graphStack, currentGraphLabel]
+  );
+
+  useEffect(() => {
+    if (!nodesInitialized || nodes.length === 0 || fittedGraphKey.current === graphViewKey) {
+      return;
+    }
+    fittedGraphKey.current = graphViewKey;
+    requestAnimationFrame(() => {
+      reactFlow.fitView({ ...DEFAULT_FIT_VIEW_OPTIONS, duration: 0 });
+    });
+  }, [graphViewKey, nodes.length, nodesInitialized, reactFlow]);
 
   const getPortType = useCallback(
     (nodeId: string, port: string, direction: 'inputs' | 'outputs') => {
@@ -202,21 +236,36 @@ export function Canvas() {
           setSelectedNode(null);
           setSelectedTap(null);
           setSelectedEdge(null);
+          selectTopPaneEntity(null);
         }}
         onNodeClick={(_, node) => {
           if (node.type === 'tap') {
-            setSelectedTap(node.id.replace(/^tap:/, ''));
+            const tapId = node.id.replace(/^tap:/, '');
+            setSelectedTap(tapId);
+            selectTopPaneEntity(probeEntityId(tapId));
           } else {
             setSelectedTap(null);
             setSelectedNode(node.id);
             setSelectedEdge(null);
+            selectTopPaneEntity(graphNodeEntityId(node.id));
           }
         }}
         onEdgeClick={(_, edge) => {
           setSelectedEdge(edge.id);
           setSelectedNode(null);
           setSelectedTap(null);
+          selectTopPaneEntity(graphEdgeEntityId(edge.id));
         }}
+        onNodeMouseEnter={(_, node) => {
+          hoverTopPaneEntity(
+            node.type === 'tap'
+              ? probeEntityId(node.id.replace(/^tap:/, ''))
+              : graphNodeEntityId(node.id)
+          );
+        }}
+        onNodeMouseLeave={() => hoverTopPaneEntity(null)}
+        onEdgeMouseEnter={(_, edge) => hoverTopPaneEntity(graphEdgeEntityId(edge.id))}
+        onEdgeMouseLeave={() => hoverTopPaneEntity(null)}
         onEdgeDoubleClick={(_, edge) => {
           if (edge.type === 'state-flow') {
             addTapForEdge(edge.id, 'probe');
@@ -224,13 +273,21 @@ export function Canvas() {
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
-        fitView
         snapToGrid
         snapGrid={[16, 16]}
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5f5" />
-        <Controls />
+        <Controls>
+          <ControlButton
+            onClick={toggleMinimap}
+            title={showMinimap ? 'Hide minimap' : 'Show minimap'}
+            aria-label={showMinimap ? 'Hide minimap' : 'Show minimap'}
+            className={showMinimap ? 'text-brand-600' : 'text-slate-500'}
+          >
+            <MapIcon className="h-4 w-4" aria-hidden="true" />
+          </ControlButton>
+        </Controls>
         {showMinimap && <MiniMap nodeColor="#9ca3af" />}
         <Panel position="top-left" className="nodrag">
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-500 shadow-soft">

@@ -3,13 +3,16 @@ import {
   buildWorkspaceSnapshot,
   getActiveScenario,
   getActiveStage,
+  getTopPaneState,
   getTrainingScenario,
   objectiveSpecFromLossSpec,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
+import { graphNodeEntityId } from '@/features/scenario/entities';
+import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
-import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { StudioObjectiveSpec, StudioWorkspaceSpec } from '@/types/workspace';
 
 const graph: GraphSpec = {
   nodes: {},
@@ -209,6 +212,29 @@ describe('buildWorkspaceSnapshot', () => {
     expect(refreshed.ui_state.active_stage_id).toBe(getActiveStage(refreshed)?.id);
   });
 
+  it('stores top-pane projection and scenario entity selection in workspace UI state', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    useWorkspaceStore.getState().setTopPaneProjection('objectives');
+    useWorkspaceStore.getState().selectTopPaneEntity(graphNodeEntityId('task'));
+    useWorkspaceStore.getState().hoverTopPaneEntity(graphNodeEntityId('mechanics'));
+
+    const topPane = getTopPaneState(useWorkspaceStore.getState().workspace);
+    expect(topPane.active_projection).toBe('objectives');
+    expect(topPane.selected_entity_id).toBe(graphNodeEntityId('task'));
+    expect(topPane.hovered_entity_id).toBe(graphNodeEntityId('mechanics'));
+    expect(useWorkspaceStore.getState().workspace?.ui_state.top_pane).toMatchObject(topPane);
+  });
+
   it('updates train scenario drafts as the primary task/training/objective owner', () => {
     const workspace = buildWorkspaceSnapshot({
       workspace: null,
@@ -252,6 +278,71 @@ describe('buildWorkspaceSnapshot', () => {
       namespace: 'graph_port',
       target_id: 'effector',
       path: 'position',
+    });
+  });
+
+  it('maps known legacy probe losses onto graph-port substates', () => {
+    const objectiveSpec = objectiveSpecFromLossSpec({
+      type: 'Composite',
+      label: 'loss',
+      weight: 1,
+      children: {
+        activity: {
+          type: 'TargetStateLoss',
+          label: 'Network Activity',
+          weight: 0.01,
+          selector: 'probe:network_hidden',
+          norm: 'squared_l2',
+          time_agg: { mode: 'all' },
+        },
+      },
+    });
+
+    expect(objectiveSpec.terms[0].source_selector).toMatchObject({
+      namespace: 'state_path',
+      compact: 'path:states.net.hidden',
+      metadata: {
+        legacy_selector: 'probe:network_hidden',
+        graph_port_node_id: 'network',
+        graph_port_name: 'hidden',
+        subpath: 'hidden',
+      },
+    });
+  });
+
+  it('lowers active scenario objective edits back into the training loss spec', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+    const current = getTrainingScenario(useWorkspaceStore.getState().workspace)!
+      .objective_spec as StudioObjectiveSpec;
+    const term = createObjectiveTerm({
+      spec: current,
+      label: 'Endpoint',
+      sourceSelector: {
+        namespace: 'graph_port',
+        compact: 'port:mechanics.effector',
+        target_id: 'mechanics',
+        path: 'effector',
+        metadata: {},
+      },
+    });
+    useWorkspaceStore.getState().updateActiveScenarioObjectiveSpec(addObjectiveTerm(current, term));
+
+    const scenario = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
+    const objectiveSpec = scenario.objective_spec as StudioObjectiveSpec;
+    expect(objectiveSpec.terms.some((item) => item.id === term.id)).toBe(true);
+    expect(scenario.training_spec?.loss.children?.[term.id]).toMatchObject({
+      label: 'Endpoint',
+      selector: 'port:mechanics.effector',
     });
   });
 

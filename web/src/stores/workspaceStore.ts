@@ -1,4 +1,8 @@
 import { create } from 'zustand';
+import {
+  lossSpecFromObjectiveSpec,
+  selectorWithSubpath,
+} from '@/features/scenario/objectives';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -9,6 +13,8 @@ import type {
   StudioPipelineMaterializationResult,
   StudioScenarioSpec,
   StudioSelectorRef,
+  StudioTopPaneProjection,
+  StudioTopPaneState,
   StudioStageKind,
   StudioStageSpec,
   StudioTrainingLocalRunResult,
@@ -34,6 +40,23 @@ const DEFAULT_SCENARIO_IDS = {
   analysis: 'scenario:analysis',
   report: 'scenario:report',
 } as const;
+
+const DEFAULT_TOP_PANE_STATE: StudioTopPaneState = {
+  active_projection: 'graph',
+  selected_entity_id: null,
+  hovered_entity_id: null,
+  pinned_inspector_entity_id: null,
+  metadata: {},
+};
+
+const LEGACY_PROBE_SELECTOR_MAP: Record<
+  string,
+  { nodeId: string; port: string; subpath: string }
+> = {
+  effector_pos: { nodeId: 'mechanics', port: 'effector', subpath: 'position' },
+  effector_vel: { nodeId: 'mechanics', port: 'effector', subpath: 'velocity' },
+  network_hidden: { nodeId: 'network', port: 'hidden', subpath: 'hidden' },
+};
 
 function emptyValidation(): StudioValidationState {
   return {
@@ -71,13 +94,78 @@ function markDraftMetadata(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeTopPaneState(value: unknown): StudioTopPaneState {
+  const record = isRecord(value) ? value : {};
+  const activeProjection =
+    record.active_projection === 'workspace' || record.active_projection === 'objectives'
+      ? record.active_projection
+      : 'graph';
+  return {
+    active_projection: activeProjection,
+    selected_entity_id:
+      typeof record.selected_entity_id === 'string' ? record.selected_entity_id : null,
+    hovered_entity_id:
+      typeof record.hovered_entity_id === 'string' ? record.hovered_entity_id : null,
+    pinned_inspector_entity_id:
+      typeof record.pinned_inspector_entity_id === 'string'
+        ? record.pinned_inspector_entity_id
+        : null,
+    metadata: isRecord(record.metadata) ? record.metadata : {},
+  };
+}
+
+function updateTopPaneState(
+  workspace: StudioWorkspaceSpec,
+  patch: Partial<StudioTopPaneState>,
+  reason: string,
+  markDirty = true
+): StudioWorkspaceSpec {
+  const topPane = {
+    ...normalizeTopPaneState(workspace.ui_state.top_pane),
+    ...patch,
+    metadata: {
+      ...normalizeTopPaneState(workspace.ui_state.top_pane).metadata,
+      ...(patch.metadata ?? {}),
+    },
+  };
+  return {
+    ...workspace,
+    ui_state: {
+      ...workspace.ui_state,
+      top_pane: topPane,
+    },
+    metadata: markDirty ? markDraftMetadata(workspace.metadata, reason) : workspace.metadata,
+  };
+}
+
 function selectorRefFromString(selector: string | undefined): StudioSelectorRef | null {
   if (!selector) return null;
   if (selector.startsWith('probe:')) {
+    const probeId = selector.slice('probe:'.length);
+    const mappedProbe = LEGACY_PROBE_SELECTOR_MAP[probeId];
+    if (mappedProbe) {
+      const baseSelector: StudioSelectorRef = {
+        namespace: 'graph_port',
+        compact: `port:${mappedProbe.nodeId}.${mappedProbe.port}`,
+        target_id: mappedProbe.nodeId,
+        path: mappedProbe.port,
+        role: 'observed',
+        metadata: {
+          source: 'legacy_loss_selector',
+          legacy_selector: selector,
+          direction: 'output',
+        },
+      };
+      return selectorWithSubpath(baseSelector, mappedProbe.subpath);
+    }
     return {
       namespace: 'probe',
       compact: selector,
-      target_id: selector.slice('probe:'.length),
+      target_id: probeId,
       path: null,
       metadata: { source: 'legacy_loss_selector' },
     };
@@ -427,6 +515,9 @@ interface WorkspaceStoreState {
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
   updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
+  setTopPaneProjection: (projection: StudioTopPaneProjection) => void;
+  selectTopPaneEntity: (entityId: string | null, reason?: string) => void;
+  hoverTopPaneEntity: (entityId: string | null) => void;
   updateStageCollections: (
     stageId: string,
     collections: {
@@ -477,6 +568,17 @@ function activeTrainScenario(workspace: StudioWorkspaceSpec | null): string | nu
   const trainStage = getStageByKind(workspace, 'train');
   const activeStage = getActiveStage(workspace);
   return trainStage?.scenario_id ?? activeStage?.scenario_id ?? null;
+}
+
+function activeScenarioId(workspace: StudioWorkspaceSpec | null): string | null {
+  if (!workspace) return null;
+  return getActiveStage(workspace)?.scenario_id ?? activeTrainScenario(workspace);
+}
+
+export function getTopPaneState(
+  workspace: StudioWorkspaceSpec | null | undefined
+): StudioTopPaneState {
+  return normalizeTopPaneState(workspace?.ui_state.top_pane);
 }
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
@@ -657,10 +759,16 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
 
   updateActiveScenarioObjectiveSpec: (objectiveSpec) =>
     set((state) => {
-      const scenarioId = activeTrainScenario(state.workspace);
+      const scenarioId = activeScenarioId(state.workspace);
       if (!state.workspace || !scenarioId) return {};
       const scenario = state.workspace.scenarios[scenarioId];
       if (!scenario) return {};
+      const trainingSpec = scenario.training_spec
+        ? {
+            ...scenario.training_spec,
+            loss: lossSpecFromObjectiveSpec(objectiveSpec),
+          }
+        : scenario.training_spec;
       return {
         workspace: {
           ...state.workspace,
@@ -668,6 +776,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             ...state.workspace.scenarios,
             [scenarioId]: {
               ...scenario,
+              training_spec: trainingSpec,
               objective_spec: objectiveSpec,
               metadata: markDraftMetadata(
                 {
@@ -680,6 +789,43 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
           },
           metadata: markDraftMetadata(state.workspace.metadata, 'objective_spec_updated'),
         },
+      };
+    }),
+
+  setTopPaneProjection: (projection) =>
+    set((state) => {
+      if (!state.workspace) return {};
+      return {
+        workspace: updateTopPaneState(
+          state.workspace,
+          { active_projection: projection },
+          'top_pane_projection_changed'
+        ),
+      };
+    }),
+
+  selectTopPaneEntity: (entityId, reason = 'top_pane_selection_changed') =>
+    set((state) => {
+      if (!state.workspace) return {};
+      return {
+        workspace: updateTopPaneState(
+          state.workspace,
+          { selected_entity_id: entityId, hovered_entity_id: null },
+          reason
+        ),
+      };
+    }),
+
+  hoverTopPaneEntity: (entityId) =>
+    set((state) => {
+      if (!state.workspace) return {};
+      return {
+        workspace: updateTopPaneState(
+          state.workspace,
+          { hovered_entity_id: entityId },
+          'top_pane_hover_changed',
+          false
+        ),
       };
     }),
 
