@@ -18,8 +18,8 @@ import type { StudioStageKind } from '@/types/workspace';
 import { BarChart3, FileText, FlaskConical, PlayCircle, Terminal, Workflow } from 'lucide-react';
 
 const stageIcons: Record<StudioStageKind, typeof PlayCircle> = {
-  train: PlayCircle,
-  eval: FlaskConical,
+  train: FlaskConical,
+  eval: PlayCircle,
   analysis: BarChart3,
   report: FileText,
   import: Workflow,
