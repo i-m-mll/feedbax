@@ -5,6 +5,7 @@ import {
   MiniMap,
   ReactFlow,
   Panel,
+  useNodesInitialized,
   useReactFlow,
   type Connection,
   BackgroundVariant,
@@ -39,8 +40,11 @@ const edgeTypes = {
   'state-flow': StateFlowEdge,
 };
 
+const DEFAULT_FIT_VIEW_OPTIONS = { padding: 0.22, maxZoom: 1 } as const;
+
 export function Canvas() {
   const {
+    graphId,
     nodes,
     edges,
     onNodesChange,
@@ -67,8 +71,10 @@ export function Canvas() {
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const { components } = useComponents();
   const reactFlow = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
+  const fittedGraphKey = useRef<string | null>(null);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -107,6 +113,24 @@ export function Canvas() {
     () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
     [graphStack, currentGraphLabel]
   );
+
+  const graphViewKey = useMemo(
+    () =>
+      [graphId ?? 'inline', ...graphStack.map((layer) => layer.graphId ?? layer.label), currentGraphLabel].join(
+        '/'
+      ),
+    [graphId, graphStack, currentGraphLabel]
+  );
+
+  useEffect(() => {
+    if (!nodesInitialized || nodes.length === 0 || fittedGraphKey.current === graphViewKey) {
+      return;
+    }
+    fittedGraphKey.current = graphViewKey;
+    requestAnimationFrame(() => {
+      reactFlow.fitView({ ...DEFAULT_FIT_VIEW_OPTIONS, duration: 0 });
+    });
+  }, [graphViewKey, nodes.length, nodesInitialized, reactFlow]);
 
   const getPortType = useCallback(
     (nodeId: string, port: string, direction: 'inputs' | 'outputs') => {
@@ -247,7 +271,6 @@ export function Canvas() {
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
-        fitView
         snapToGrid
         snapGrid={[16, 16]}
         proOptions={{ hideAttribution: true }}
