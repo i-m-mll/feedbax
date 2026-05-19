@@ -18,7 +18,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  showMinimap: true,
+  showMinimap: false,
   snapToGrid: false,
   snapGridSize: 20,
   showGridBackground: false,
