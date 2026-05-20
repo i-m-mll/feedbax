@@ -9,6 +9,8 @@ from feedbax.training.rl.tasks import (
     TASK_REACH,
     TASK_SWING,
     TASK_TRACK,
+    reach_task,
+    reach_task_params,
     reconstruct_trajectory,
     sample_task_jax,
     sample_task_params_jax,
@@ -76,6 +78,28 @@ def test_sample_task_params_shapes(key, n_steps, dt):
     assert params.control_points.shape == (6, 2)
     assert params.perturb_force.shape == (2,)
     assert params.n_steps == n_steps
+
+
+def test_reach_task_params_materialize_without_stored_trajectory(n_steps, dt):
+    start = jnp.array([0.0, 0.0])
+    target = jnp.array([0.3, -0.2])
+    params = reach_task_params(start, target, n_steps, dt)
+
+    dense_leaves = [
+        leaf
+        for leaf in jax.tree_util.tree_leaves(params)
+        if getattr(leaf, "shape", ()) == (n_steps, 2)
+    ]
+    assert dense_leaves == []
+
+    pos, vel = reconstruct_trajectory(params)
+    dense_spec = reach_task(jnp.arange(n_steps) * dt, start, target)
+
+    assert pos.shape == (n_steps, 2)
+    assert vel.shape == (n_steps, 2)
+    assert jnp.allclose(pos, dense_spec.target_pos)
+    assert jnp.allclose(vel, dense_spec.target_vel, atol=1e-4)
+    assert dense_spec.target_pos.shape == (n_steps, 2)
 
 
 def test_jit_and_vmap_compatible(key, n_steps, dt):

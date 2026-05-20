@@ -522,6 +522,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         from feedbax.mechanics.plant import DirectForceInput
         from feedbax.mechanics.skeleton.pointmass import PointMass
         from feedbax.nn import SimpleStagedNetwork
+        from feedbax.training.rl.tasks import reach_task_params, target_at_t
 
     except ImportError as exc:
         _emit(
@@ -727,15 +728,19 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # Single-episode rollout through Diffrax (differentiable)
     # ------------------------------------------------------------------
 
-    def _rollout(ctrl, target_pos_traj, target_vel_traj, episode_key):
+    def _rollout(ctrl, task_params, episode_key):
         phys = backend.init_state(plant, key=episode_key)
         init_act = jnp.zeros(N_MUSCLES)
         init_phase = jnp.zeros(1)
+        init_target_pos, init_target_vel = target_at_t(
+            task_params,
+            jnp.array(0, dtype=jnp.int32),
+        )
         init_obs = _extract_obs(
             phys,
             init_act,
-            target_pos_traj[0],
-            target_vel_traj[0],
+            init_target_pos,
+            init_target_vel,
             init_phase,
         )
         # Controller hidden state: initialize to zeros
@@ -748,11 +753,12 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             phys_s, act, hidden, _obs_prev = carry
 
             phase = jnp.array([t_idx / N_STEPS])
+            target_pos, target_vel = target_at_t(task_params, t_idx)
             obs = _extract_obs(
                 phys_s,
                 act,
-                target_pos_traj[t_idx],
-                target_vel_traj[t_idx],
+                target_pos,
+                target_vel,
                 phase,
             )
 
@@ -781,54 +787,57 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             )
 
             new_carry = (new_phys, action, new_hidden, obs)
-            output = (new_effector.pos, action, new_hidden)
+            output = (new_effector.pos, action, new_hidden, target_pos)
             return new_carry, output
 
         init_carry = (phys, init_act, init_hidden, init_obs)
         t_idxs = jnp.arange(N_STEPS)
-        _, (eff_traj, act_traj, hidden_traj) = jax.lax.scan(
+        _, (eff_traj, act_traj, hidden_traj, target_pos_traj) = jax.lax.scan(
             _step,
             init_carry,
             (t_idxs, scan_keys),
         )
-        return eff_traj, act_traj, hidden_traj
+        return eff_traj, act_traj, hidden_traj, target_pos_traj
 
     # ------------------------------------------------------------------
     # Target sampling (random reach targets)
     # ------------------------------------------------------------------
 
-    def _sample_targets(batch_key, batch_size):
-        """Sample random 2D reach targets in the reachable workspace.
+    def _sample_task_params(batch_key, batch_size):
+        """Sample compact reach task parameter records for a training batch.
 
         Returns:
-            target_pos_batch: shape (batch, N_STEPS, 2)
-            target_vel_batch: shape (batch, N_STEPS, 2), zeros for reach
+            Batched TaskParams. Endpoint/timing records are stored eagerly;
+            dense target trajectories are generated inside rollout scans.
         """
         keys = jr.split(batch_key, batch_size)
 
-        def _one_target(k):
+        def _one_task(k):
             # Polar coordinates: r in [0.1, 0.4], theta in [0, pi/2]
             r = jr.uniform(k, minval=0.1, maxval=0.4)
             theta = jr.uniform(k, minval=0.0, maxval=jnp.pi / 2.0)
             tx = r * jnp.cos(theta)
             ty = r * jnp.sin(theta)
-            target_pos = jnp.broadcast_to(jnp.array([tx, ty]), (N_STEPS, 2))
-            target_vel = jnp.zeros((N_STEPS, 2))
-            return target_pos, target_vel
+            return reach_task_params(
+                jnp.zeros((2,)),
+                jnp.array([tx, ty]),
+                N_STEPS,
+                CONTROL_DT,
+            )
 
-        return jax.vmap(_one_target)(keys)
+        return jax.vmap(_one_task)(keys)
 
     # ------------------------------------------------------------------
     # Supervised loss
     # ------------------------------------------------------------------
 
-    def _loss_fn(ctrl, target_pos_batch, target_vel_batch, batch_keys):
+    def _loss_fn(ctrl, task_params_batch, batch_keys):
         """Mean supervised loss over a batch of episodes."""
 
-        def _single(tgt_pos, tgt_vel, ep_key):
-            eff_traj, act_traj, _ = _rollout(ctrl, tgt_pos, tgt_vel, ep_key)
+        def _single(task_params, ep_key):
+            eff_traj, act_traj, _, target_pos_traj = _rollout(ctrl, task_params, ep_key)
             # Tracking: mean L1 distance, weighted by temporal ramp
-            l1 = jnp.sum(jnp.abs(eff_traj - tgt_pos), axis=-1)  # (T,)
+            l1 = jnp.sum(jnp.abs(eff_traj - target_pos_traj), axis=-1)  # (T,)
             time_w = jnp.linspace(0.5, 1.5, N_STEPS)
             tracking = jnp.mean(l1 * time_w)
             # Effort
@@ -840,7 +849,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             total = tracking + cfg.effort_weight * effort + 0.001 * smoothness
             return total, (tracking, effort, smoothness)
 
-        results = jax.vmap(_single)(target_pos_batch, target_vel_batch, batch_keys)
+        results = jax.vmap(_single)(task_params_batch, batch_keys)
         totals, (trackings, efforts, smoothnesses) = results
         mean_total = jnp.mean(totals)
         mean_tracking = jnp.mean(trackings)
@@ -858,12 +867,11 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # ------------------------------------------------------------------
 
     @eqx.filter_jit
-    def _train_step(ctrl, opt_st, target_pos_batch, target_vel_batch, step_key):
+    def _train_step(ctrl, opt_st, task_params_batch, step_key):
         batch_keys = jr.split(step_key, cfg.batch_size)
         (loss, terms), grads = eqx.filter_value_and_grad(_loss_fn, has_aux=True)(
             ctrl,
-            target_pos_batch,
-            target_vel_batch,
+            task_params_batch,
             batch_keys,
         )
         grad_norm = optax.global_norm(grads)
@@ -884,16 +892,16 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
 
         rng_key, batch_key, step_key = jr.split(rng_key, 3)
 
-        # Sample targets
-        target_pos_batch, target_vel_batch = _sample_targets(batch_key, cfg.batch_size)
+        # Sample compact task params. Dense target trajectories are materialized
+        # inside the per-episode rollout scan where each timestep needs them.
+        task_params_batch = _sample_task_params(batch_key, cfg.batch_size)
 
         step_t0 = time.perf_counter()
         try:
             controller, opt_state, loss_val, loss_terms, grad_norm = _train_step(
                 controller,
                 opt_state,
-                target_pos_batch,
-                target_vel_batch,
+                task_params_batch,
                 step_key,
             )
             # Block until JAX computation is complete for accurate timing.
