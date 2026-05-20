@@ -200,7 +200,12 @@ export interface StudioValueSpec {
   metadata: Record<string, unknown>;
 }
 
-export type StudioSchemaOrigin = 'declared' | 'inferred_static' | 'curated_fallback' | 'unknown';
+export type StudioSchemaOrigin =
+  | 'declared'
+  | 'inferred_static'
+  | 'runtime_sample'
+  | 'curated_fallback'
+  | 'unknown';
 
 export interface ValueSchema {
   id: string;
@@ -242,7 +247,7 @@ export interface TaskDataSchema {
 export interface SelectorTargetSchema {
   id: string;
   label: string;
-  kind: 'port' | 'task_data' | 'objective' | 'probe' | 'state_hint';
+  kind: 'port' | 'task_data' | 'objective' | 'probe' | 'state_hint' | 'sample_leaf';
   selector: string;
   value_schema: ValueSchema;
   origin: StudioSchemaOrigin;
