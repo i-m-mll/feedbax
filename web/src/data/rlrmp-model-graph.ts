@@ -5,7 +5,7 @@
  *   - SimpleStagedNetwork: GRU-based recurrent network (100-180 hidden units)
  *   - PointMass: 2D point-mass plant mechanics
  *   - FeedbackChannels: delayed, noisy proprioceptive feedback (position + velocity)
- *   - DelayedReaches: delayed center-out reaching task
+ *   - DelayedReaches task config stored on the owning Studio scenario
  *
  * This is a simplified visual representation of the model architecture.
  * The actual model is built from Python Equinox modules; this graph
@@ -13,6 +13,30 @@
  */
 
 import type { GraphSpec, GraphUIState } from '@/types/graph';
+import type { TaskSpec } from '@/types/training';
+
+export const RLRMP_DELAYED_REACHES_TASK_SPEC: TaskSpec = {
+  type: 'DelayedReaches',
+  params: {
+    n_steps: 140,
+    workspace: [
+      [-1.0, -1.0],
+      [1.0, 1.0],
+    ],
+    train_endpoint_mode: 'center_out',
+    epoch_len_ranges: [
+      [0, 1],
+      [10, 30],
+    ],
+    target_on_epochs: [1, 2],
+    hold_epochs: [0, 1],
+    move_epochs: [2],
+    p_catch_trial: 0.5,
+    eval_n_directions: 8,
+    eval_reach_length: 0.5,
+    eval_grid_n: 1,
+  },
+};
 
 /**
  * Create the RLRMP model graph with node positions for visual layout.
@@ -27,30 +51,6 @@ export function createRlrmpModelGraph(projectName: string): {
 
   const graph: GraphSpec = {
     nodes: {
-      task: {
-        type: 'DelayedReaches',
-        params: {
-          n_steps: 140,
-          workspace: [
-            [-1.0, -1.0],
-            [1.0, 1.0],
-          ],
-          train_endpoint_mode: 'center_out',
-          epoch_len_ranges: [
-            [0, 1],
-            [10, 30],
-          ],
-          target_on_epochs: [1, 2],
-          hold_epochs: [0, 1],
-          move_epochs: [2],
-          p_catch_trial: 0.5,
-          eval_n_directions: 8,
-          eval_reach_length: 0.5,
-          eval_grid_n: 1,
-        },
-        input_ports: [],
-        output_ports: ['inputs', 'targets', 'inits', 'intervene'],
-      },
       network: {
         type: 'SimpleStagedNetwork',
         params: {
@@ -86,12 +86,6 @@ export function createRlrmpModelGraph(projectName: string): {
       },
     },
     wires: [
-      {
-        source_node: 'task',
-        source_port: 'inputs',
-        target_node: 'network',
-        target_port: 'input',
-      },
       {
         source_node: 'feedback',
         source_port: 'output',
@@ -131,7 +125,6 @@ export function createRlrmpModelGraph(projectName: string): {
   const uiState: GraphUIState = {
     viewport: { x: 0, y: 0, zoom: 1 },
     node_states: {
-      task: { position: { x: 100, y: 200 }, collapsed: false, selected: false },
       network: { position: { x: 380, y: 200 }, collapsed: false, selected: false },
       mechanics: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
       feedback: { position: { x: 520, y: 420 }, collapsed: false, selected: false, reversed: true },

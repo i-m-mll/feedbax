@@ -11,7 +11,11 @@ import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
 import { createRlrmpPart1Analysis, RLRMP_PART1_TEMPLATE } from '@/data/rlrmp-part1';
 import { createRlrmpPart2Project, RLRMP_PART2_META } from '@/data/rlrmp-part2';
-import { createRlrmpModelGraph } from '@/data/rlrmp-model-graph';
+import {
+  createRlrmpModelGraph,
+  RLRMP_DELAYED_REACHES_TASK_SPEC,
+} from '@/data/rlrmp-model-graph';
+import { createDefaultTaskBindingSpec } from '@/features/scenario/taskBindings';
 import {
   createRlrmpMovementRampAnalysis,
   RLRMP_MOVEMENT_RAMP_TEMPLATE,
@@ -41,22 +45,47 @@ export interface ProjectTemplate {
   }) => StudioWorkspaceSpec;
 }
 
+function seedRlrmpTaskWorkspace(
+  baseWorkspace: StudioWorkspaceSpec,
+  graph: GraphSpec
+): StudioWorkspaceSpec {
+  const trainStage = baseWorkspace.stages.find((stage) => stage.kind === 'train');
+  const trainScenarioId = trainStage?.scenario_id;
+  if (!trainScenarioId) return baseWorkspace;
+  const trainScenario = baseWorkspace.scenarios[trainScenarioId];
+  if (!trainScenario) return baseWorkspace;
+  return {
+    ...baseWorkspace,
+    scenarios: {
+      ...baseWorkspace.scenarios,
+      [trainScenarioId]: {
+        ...trainScenario,
+        task_spec: RLRMP_DELAYED_REACHES_TASK_SPEC,
+        task_binding_spec: createDefaultTaskBindingSpec(graph),
+      },
+    },
+  };
+}
+
 /** All available project templates. */
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     ...RLRMP_PART1_TEMPLATE,
     createAnalysis: createRlrmpPart1Analysis,
     createModelGraph: () => createRlrmpModelGraph('RLRMP: Part 1'),
+    createWorkspace: ({ baseWorkspace, graph }) => seedRlrmpTaskWorkspace(baseWorkspace, graph),
   },
   {
     ...RLRMP_PART2_META,
     createAnalysis: createRlrmpPart2Project,
     createModelGraph: () => createRlrmpModelGraph('rlrmp: Part 2'),
+    createWorkspace: ({ baseWorkspace, graph }) => seedRlrmpTaskWorkspace(baseWorkspace, graph),
   },
   {
     ...RLRMP_MOVEMENT_RAMP_TEMPLATE,
     createAnalysis: createRlrmpMovementRampAnalysis,
     createModelGraph: () => createRlrmpModelGraph('RLRMP movement-ramp training runs'),
-    createWorkspace: ({ baseWorkspace }) => seedRlrmpMovementRampWorkspace(baseWorkspace),
+    createWorkspace: ({ baseWorkspace, graph }) =>
+      seedRlrmpMovementRampWorkspace(seedRlrmpTaskWorkspace(baseWorkspace, graph)),
   },
 ];

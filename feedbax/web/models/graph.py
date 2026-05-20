@@ -249,6 +249,42 @@ class StudioCollectionRef(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class StudioTaskOutputSpec(BaseModel):
+    """Scenario-owned task output that may be bound into a model graph."""
+
+    id: str
+    label: str
+    kind: str
+    path: str
+    bindable: bool
+    expected_shape: Optional[List[Any]] = None
+    dtype: Optional[str] = None
+    units: Optional[str] = None
+    frame: Optional[str] = None
+    value_spec: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTaskBinding(BaseModel):
+    """Binding from a scenario task output into a graph input port."""
+
+    id: str
+    source_output_id: str
+    target_node_id: str
+    target_port: str
+    role: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTaskBindingSpec(BaseModel):
+    """Scenario-owned task output surface and its model bindings."""
+
+    schema_version: str = "feedbax.studio.task_bindings.v1"
+    exposed_outputs: List[StudioTaskOutputSpec] = Field(default_factory=list)
+    bindings: List[StudioTaskBinding] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class StudioScenarioSpec(BaseModel):
     """Stage-owned structural scenario draft for model/task/objective state.
 
@@ -267,6 +303,7 @@ class StudioScenarioSpec(BaseModel):
     graph_ui_state: Optional[GraphUIState] = None
     training_spec: Optional[Dict[str, Any]] = None
     task_spec: Optional[Dict[str, Any]] = None
+    task_binding_spec: Optional[StudioTaskBindingSpec] = None
     objective_spec: Optional[Dict[str, Any]] = None
     probe_specs: List[Dict[str, Any]] = Field(default_factory=list)
     temporal_spec: Optional[Dict[str, Any]] = None

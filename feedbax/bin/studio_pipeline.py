@@ -28,6 +28,7 @@ def _materialize_training(args: argparse.Namespace) -> int:
     graph_spec = _read_json(args.graph)
     training_spec = _read_json(args.training)
     task_spec = _read_json(args.task)
+    task_binding_spec = _read_json(args.task_binding) if args.task_binding else None
 
     training_result = validate_training_spec(training_spec, graph_spec=graph_spec)
     task_result = validate_task_spec(task_spec)
@@ -61,6 +62,7 @@ def _materialize_training(args: argparse.Namespace) -> int:
         ],
         "validation": training_result.model_dump(mode="json", exclude_none=True),
         "task_type": task_spec.get("type"),
+        "task_binding_spec": task_binding_spec,
         "warnings": warnings,
         "notes": [
             "This is a Studio Phase 4 materialized training result.",
@@ -84,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     training_parser.add_argument("--graph", required=True, help="GraphSpec JSON path")
     training_parser.add_argument("--training", required=True, help="TrainingSpec JSON path")
     training_parser.add_argument("--task", required=True, help="TaskSpec JSON path")
+    training_parser.add_argument(
+        "--task-binding",
+        default=None,
+        help="StudioTaskBindingSpec JSON path",
+    )
     training_parser.add_argument("--output", required=True, help="Output JSON artifact path")
 
     args = parser.parse_args(argv)

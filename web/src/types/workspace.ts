@@ -80,6 +80,8 @@ export type StudioSelectorNamespace =
   | 'probe'
   | 'state_path'
   | 'task_object'
+  | 'task_output'
+  | 'task_binding'
   | 'mechanics_object'
   | 'biomechanics_object'
   | 'artifact_field'
@@ -123,11 +125,52 @@ export interface StudioObjectiveSpec {
   metadata: Record<string, unknown>;
 }
 
+export type StudioTaskOutputKind =
+  | 'signal'
+  | 'target'
+  | 'initial_state'
+  | 'intervention'
+  | 'trial_param'
+  | 'protocol_value'
+  | string;
+
+export interface StudioTaskOutputSpec {
+  id: string;
+  label: string;
+  kind: StudioTaskOutputKind;
+  path: string;
+  bindable: boolean;
+  expected_shape?: unknown[] | null;
+  dtype?: string | null;
+  units?: string | null;
+  frame?: string | null;
+  value_spec?: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioTaskBinding {
+  id: string;
+  source_output_id: string;
+  target_node_id: string;
+  target_port: string;
+  role: 'model_input' | 'target' | 'initial_state' | 'intervention' | string;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioTaskBindingSpec {
+  schema_version: 'feedbax.studio.task_bindings.v1' | string;
+  exposed_outputs: StudioTaskOutputSpec[];
+  bindings: StudioTaskBinding[];
+  metadata: Record<string, unknown>;
+}
+
 export type StudioScenarioEntityKind =
   | 'graph_node'
   | 'graph_port'
   | 'graph_edge'
   | 'task_object'
+  | 'task_output'
+  | 'task_binding'
   | 'mechanics_object'
   | 'objective_term'
   | 'probe'
@@ -192,6 +235,7 @@ export interface StudioScenarioSpec {
   graph_ui_state?: GraphUIState | null;
   training_spec?: TrainingSpec | null;
   task_spec?: TaskSpec | null;
+  task_binding_spec?: StudioTaskBindingSpec | null;
   objective_spec?: StudioObjectiveSpec | Record<string, unknown> | null;
   probe_specs: Array<Record<string, unknown>>;
   temporal_spec?: Record<string, unknown> | null;

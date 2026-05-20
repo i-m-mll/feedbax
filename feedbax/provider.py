@@ -37,6 +37,8 @@ from feedbax.studio_execution import (
 from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
 
+TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
+
 
 class ProviderModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -411,6 +413,18 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
     def _validate_graph(graph: GraphSpec, prefix: str = "") -> None:
         for node_name, node_spec in graph.nodes.items():
             node_path = f"{prefix}/nodes/{node_name}"
+            if node_spec.type in TASK_COMPONENT_TYPES:
+                errors.append(
+                    ValidationIssue(
+                        type="task_node_not_allowed",
+                        message=(
+                            f"Task component {node_spec.type!r} must be stored on "
+                            "StudioScenarioSpec.task_spec/task_binding_spec, not GraphSpec.nodes"
+                        ),
+                        location={"path": node_path},
+                    )
+                )
+                continue
             meta = registry.get(node_spec.type)
             if meta is None:
                 errors.append(

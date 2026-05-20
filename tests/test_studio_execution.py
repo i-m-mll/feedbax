@@ -17,12 +17,21 @@ from feedbax.web.models.graph import (
     GraphMetadata,
     GraphSpec,
     StudioStageSpec,
+    StudioTaskBindingSpec,
     build_default_studio_workspace,
 )
 
 
 def _graph() -> GraphSpec:
     return GraphSpec(
+        nodes={
+            "network": {
+                "type": "Gain",
+                "params": {"gain": 1.0},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            }
+        },
         metadata=GraphMetadata(
             name="Studio execution smoke",
             created_at="2026-05-18T00:00:00+00:00",
@@ -45,6 +54,38 @@ def _workspace():
         "type": "ReachingTask",
         "params": {"n_targets": 4, "target_radius": 0.02},
     }
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate({
+        "schema_version": "feedbax.studio.task_bindings.v1",
+        "exposed_outputs": [
+            {
+                "id": "inputs",
+                "label": "Inputs",
+                "kind": "signal",
+                "path": "inputs",
+                "bindable": True,
+                "metadata": {},
+            },
+            {
+                "id": "targets",
+                "label": "Targets",
+                "kind": "target",
+                "path": "targets",
+                "bindable": False,
+                "metadata": {},
+            },
+        ],
+        "bindings": [
+            {
+                "id": "task:inputs->network:input",
+                "source_output_id": "inputs",
+                "target_node_id": "network",
+                "target_port": "input",
+                "role": "model_input",
+                "metadata": {},
+            }
+        ],
+        "metadata": {},
+    })
     workspace.stages.append(
         StudioStageSpec(
             id="stage:future-report-packaging",
@@ -73,6 +114,12 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
     assert prepared.execution_spec.issues == ["ddd3758"]
     assert prepared.execution_spec.metadata["studio"]["workspace_id"] == prepared.workspace.id
     assert prepared.execution_spec.metadata["studio"]["training_spec"]["n_batches"] == 25
+    assert (
+        prepared.execution_spec.metadata["studio"]["task_binding_spec"]["bindings"][0][
+            "target_node_id"
+        ]
+        == "network"
+    )
     assert prepared.plan.job_id == "studio-plan"
     assert prepared.plan.run_directory == "/tmp/feedbax-studio/feedbax_runs/studio-plan"
     assert any(route.source == "training-spec.json" for route in prepared.plan.artifact_routes)
@@ -145,6 +192,7 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert (snapshot_dir / "graph-spec.json").exists()
     assert (snapshot_dir / "training-spec.json").exists()
     assert (snapshot_dir / "task-spec.json").exists()
+    assert (snapshot_dir / "task-binding-spec.json").exists()
     assert (snapshot_dir / "artifacts" / "training-summary.json").exists()
     assert result.result.status == "completed"
     assert result.result.return_code == 0
@@ -152,6 +200,9 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert result.result.manifest_payload["kind"] == "TrainingRunManifest"
     assert result.result.manifest_payload["training_spec"]["inline"]["n_batches"] == 25
     assert result.result.manifest_payload["task_spec"]["inline"]["type"] == "ReachingTask"
+    assert result.result.manifest_payload["task_binding_spec"]["inline"]["bindings"][0][
+        "target_port"
+    ] == "input"
 
     train_stage = next(stage for stage in result.workspace.stages if stage.kind == "train")
     assert train_stage.status == "completed"
@@ -241,6 +292,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(tmp_path: Path):
     eval_scenario = materialized.workspace.scenarios["scenario:eval"]
     assert eval_scenario.parent_scenario_id == "scenario:train"
     assert eval_scenario.task_spec["type"] == "ReachingTask"
+    assert eval_scenario.task_binding_spec.bindings[0].target_node_id == "network"
     assert len(materialized.workspace.manifest_refs) >= 4
     assert any(ref.role == "report" for ref in materialized.workspace.artifact_refs)
 

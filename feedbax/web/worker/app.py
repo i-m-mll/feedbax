@@ -49,6 +49,7 @@ class _Job:
     # Spec dicts forwarded from the API layer.
     training_spec: Optional[Dict[str, Any]] = None
     task_spec: Optional[Dict[str, Any]] = None
+    task_binding_spec: Optional[Dict[str, Any]] = None
     # Graph spec dict forwarded from the API layer for network param extraction.
     graph_spec: Optional[Dict[str, Any]] = None
     # Path to the serialized checkpoint file after training completes.
@@ -115,6 +116,7 @@ def _write_job_manifest(job: _Job) -> None:
             total_batches=job.total_batches,
             training_spec=job.training_spec,
             task_spec=job.task_spec,
+            task_binding_spec=job.task_binding_spec,
             graph_spec=job.graph_spec,
             checkpoint_path=job.checkpoint_path,
             history_events=_manifest_history_events(job),
@@ -1201,6 +1203,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         training_config: Optional[Dict[str, Any]] = body.get("training_config", None)
         training_spec: Optional[Dict[str, Any]] = body.get("training_spec", None)
         task_spec: Optional[Dict[str, Any]] = body.get("task_spec", None)
+        task_binding_spec: Optional[Dict[str, Any]] = body.get("task_binding_spec", None)
         graph_spec: Optional[Dict[str, Any]] = body.get("graph_spec", None)
         snapshot_interval = int(body.get("snapshot_interval", 100))
 
@@ -1216,6 +1219,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             training_config=training_config,
             training_spec=training_spec,
             task_spec=task_spec,
+            task_binding_spec=task_binding_spec,
             graph_spec=graph_spec,
             status=WorkerStatus.RUNNING,
             snapshot_interval=snapshot_interval,

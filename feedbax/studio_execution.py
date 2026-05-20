@@ -172,6 +172,9 @@ def prepare_studio_training_execution(
         graph=scenario.graph.model_dump(mode="json", exclude_none=True),
         training_spec=scenario.training_spec,
         task_spec=scenario.task_spec,
+        task_binding_spec=scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
+        if scenario.task_binding_spec is not None
+        else None,
     )
     if validation.errors:
         stage.validation = validation
@@ -457,17 +460,20 @@ def _validate_training_scenario(
     graph: dict[str, Any],
     training_spec: dict[str, Any],
     task_spec: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None = None,
 ) -> StudioValidationState:
     from feedbax.provider import validate_graph_spec, validate_task_spec, validate_training_spec
 
     graph_result = validate_graph_spec(graph)
     training_result = validate_training_spec(training_spec, graph_spec=graph)
     task_result = validate_task_spec(task_spec)
+    task_binding_errors = _validate_task_binding_spec(graph, task_binding_spec)
 
     errors = [
         *_provider_issues_to_studio(graph_result.errors, prefix="graph"),
         *_provider_issues_to_studio(training_result.errors, prefix="training_spec"),
         *_provider_issues_to_studio(task_result.errors, prefix="task_spec"),
+        *task_binding_errors,
     ]
     warnings = [
         *_provider_issues_to_studio(graph_result.warnings, prefix="graph", severity="warning"),
@@ -494,6 +500,97 @@ def _validate_training_scenario(
         warnings=warnings,
         metadata={"validated_by": "feedbax.studio_execution"},
     )
+
+
+def _validate_task_binding_spec(
+    graph: dict[str, Any],
+    task_binding_spec: dict[str, Any] | None,
+) -> list[StudioValidationIssue]:
+    if task_binding_spec is None:
+        return []
+    nodes = graph.get("nodes", {}) if isinstance(graph.get("nodes"), dict) else {}
+    graph_wires = graph.get("wires", []) if isinstance(graph.get("wires"), list) else []
+    outputs = task_binding_spec.get("exposed_outputs", [])
+    bindings = task_binding_spec.get("bindings", [])
+    output_by_id = {
+        output.get("id"): output
+        for output in outputs
+        if isinstance(output, dict) and isinstance(output.get("id"), str)
+    }
+    occupied_inputs = {
+        (wire.get("target_node"), wire.get("target_port"))
+        for wire in graph_wires
+        if isinstance(wire, dict)
+    }
+    binding_targets: set[tuple[Any, Any]] = set()
+    issues: list[StudioValidationIssue] = []
+    seen_outputs: set[str] = set()
+    for output_id in output_by_id:
+        if output_id in seen_outputs:
+            issues.append(
+                StudioValidationIssue(
+                    type="duplicate_task_output",
+                    message=f"Task output {output_id!r} is declared more than once",
+                    location={"path": "/task_binding_spec/exposed_outputs"},
+                )
+            )
+        seen_outputs.add(output_id)
+    for index, binding in enumerate(bindings):
+        if not isinstance(binding, dict):
+            continue
+        source_output_id = binding.get("source_output_id")
+        target_node_id = binding.get("target_node_id")
+        target_port = binding.get("target_port")
+        path = f"/task_binding_spec/bindings/{index}"
+        output = output_by_id.get(source_output_id)
+        if output is None:
+            issues.append(
+                StudioValidationIssue(
+                    type="unknown_task_output",
+                    message=f"Task binding source output {source_output_id!r} is not declared",
+                    location={"path": f"{path}/source_output_id"},
+                )
+            )
+        elif not output.get("bindable", False):
+            issues.append(
+                StudioValidationIssue(
+                    type="task_output_not_bindable",
+                    message=f"Task output {source_output_id!r} is not bindable",
+                    location={"path": f"{path}/source_output_id"},
+                )
+            )
+        target_node = nodes.get(target_node_id)
+        if not isinstance(target_node, dict):
+            issues.append(
+                StudioValidationIssue(
+                    type="unknown_task_binding_target_node",
+                    message=f"Task binding target node {target_node_id!r} does not exist",
+                    location={"path": f"{path}/target_node_id"},
+                )
+            )
+            continue
+        input_ports = target_node.get("input_ports", [])
+        if target_port not in input_ports:
+            issues.append(
+                StudioValidationIssue(
+                    type="unknown_task_binding_target_port",
+                    message=(
+                        f"Task binding target port {target_node_id}.{target_port} does not exist"
+                    ),
+                    location={"path": f"{path}/target_port"},
+                )
+            )
+        target = (target_node_id, target_port)
+        if target in occupied_inputs or target in binding_targets:
+            issues.append(
+                StudioValidationIssue(
+                    type="task_binding_target_occupied",
+                    message=f"Task binding target {target_node_id}.{target_port} is already occupied",
+                    location={"path": path},
+                )
+            )
+        binding_targets.add(target)
+    return issues
 
 
 def _provider_issues_to_studio(
@@ -545,6 +642,9 @@ def _build_execution_spec(
             else None,
             "training_spec": scenario.training_spec,
             "task_spec": scenario.task_spec,
+            "task_binding_spec": scenario.task_binding_spec.model_dump(mode="json", exclude_none=True)
+            if scenario.task_binding_spec is not None
+            else None,
             "objective_spec": scenario.objective_spec,
             "temporal_spec": scenario.temporal_spec,
         },
@@ -555,6 +655,7 @@ def _build_execution_spec(
                 "graph-spec.json",
                 "training-spec.json",
                 "task-spec.json",
+                "task-binding-spec.json",
                 "artifacts/training-summary.json",
             ],
             "current_command_role": "materialize_mvp_training_result",
@@ -570,6 +671,7 @@ def _build_execution_spec(
             "--graph graph-spec.json "
             "--training training-spec.json "
             "--task task-spec.json "
+            "--task-binding task-binding-spec.json "
             "--output artifacts/training-summary.json"
         ),
         repos=repos or [],
@@ -582,6 +684,7 @@ def _build_execution_spec(
                 "graph-spec.json",
                 "training-spec.json",
                 "task-spec.json",
+                "task-binding-spec.json",
                 "artifacts/training-summary.json",
             ],
             bulk_paths=["artifacts"],
@@ -615,6 +718,11 @@ def _materialize_local_execution_snapshot(
         else {},
         "training-spec.json": scenario.training_spec or {},
         "task-spec.json": scenario.task_spec or {},
+        "task-binding-spec.json": scenario.task_binding_spec.model_dump(
+            mode="json", exclude_none=True
+        )
+        if scenario.task_binding_spec is not None
+        else {},
     }
     for filename, payload in files.items():
         _write_json(snapshot_dir / filename, payload)
@@ -679,6 +787,7 @@ def _local_result_artifact_refs(
                     "graph-spec.json",
                     "training-spec.json",
                     "task-spec.json",
+                    "task-binding-spec.json",
                 ],
             },
         ),
@@ -731,6 +840,8 @@ def _materialize_eval_stage(
         }
         if eval_scenario.task_spec is None and train_scenario is not None:
             eval_scenario.task_spec = train_scenario.task_spec
+        if eval_scenario.task_binding_spec is None and train_scenario is not None:
+            eval_scenario.task_binding_spec = train_scenario.task_binding_spec
         workspace.scenarios[eval_scenario.id] = eval_scenario
 
     input_refs = _collection_manifest_parents(training_collection)
