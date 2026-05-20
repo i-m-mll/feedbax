@@ -100,8 +100,8 @@ def _schema_workspace():
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v1",
-            "exposed_outputs": [
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
                 {
                     "id": "inputs",
                     "label": "Inputs",
@@ -124,7 +124,7 @@ def _schema_workspace():
             "bindings": [
                 {
                     "id": "task:inputs->network:input",
-                    "source_output_id": "inputs",
+                    "source_data_id": "inputs",
                     "target_node_id": "network",
                     "target_port": "input",
                     "role": "model_input",
@@ -344,7 +344,7 @@ def test_provider_http_endpoints() -> None:
     assert any(port["id"] == "port:network.input:input" for port in payload["ports"])
     assert any(item["id"] == "task_data:inputs" for item in payload["task_data"])
     assert any(
-        target["selector"] == "path:state.effector.pos"
+        target["selector"] == "path:states.mechanics.effector.pos"
         for target in payload["selector_targets"]
     )
     assert any(issue["type"] == "stage_missing_scenario" for issue in payload["issues"])
@@ -364,7 +364,7 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert "task_data:inputs" in selectors
     assert "probe:activation-tap" in selectors
     assert "probe:manual-probe" in selectors
-    assert "path:state.effector.pos" in selectors
+    assert "path:states.mechanics.effector.pos" in selectors
     assert any(issue.type == "stage_missing_scenario" for issue in registry.issues)
 
 

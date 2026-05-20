@@ -11,6 +11,8 @@ from feedbax.manifest import SCHEMA_VERSION, utc_now
 from feedbax.web.models.component import PortType
 from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
+SchemaOrigin = Literal["declared", "inferred_static", "curated_fallback", "unknown"]
+
 
 class StudioSchemaModel(BaseModel):
     """Base model for static Studio schema records."""
@@ -29,6 +31,7 @@ class ValueSchema(StudioSchemaModel):
     rank: Optional[int] = None
     units: Optional[str] = None
     frame: Optional[str] = None
+    origin: SchemaOrigin = "unknown"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -43,6 +46,7 @@ class PortSchema(StudioSchemaModel):
     direction: Literal["input", "output"]
     value_schema: ValueSchema
     bound_task_data_id: Optional[str] = None
+    origin: SchemaOrigin = "unknown"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -55,6 +59,7 @@ class TaskDataSchema(StudioSchemaModel):
     path: str
     bindable: bool = False
     value_schema: ValueSchema
+    origin: SchemaOrigin = "unknown"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -66,6 +71,7 @@ class SelectorTargetSchema(StudioSchemaModel):
     kind: Literal["port", "task_data", "objective", "probe", "state_hint"]
     selector: str
     value_schema: ValueSchema
+    origin: SchemaOrigin = "unknown"
     source: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -283,6 +289,7 @@ def _port_schema(
 ) -> PortSchema:
     port_id = f"port:{node_id}.{port}:{direction}"
     dtype = port_type.dtype if port_type is not None else None
+    origin: SchemaOrigin = "declared" if port_type is not None else "unknown"
     return PortSchema(
         id=port_id,
         label=f"{node_id}.{port}",
@@ -297,8 +304,10 @@ def _port_schema(
             dtype=dtype,
             shape=list(port_type.shape) if port_type is not None and port_type.shape else None,
             rank=port_type.rank if port_type is not None else None,
+            origin=origin,
             metadata={"component_type": component_type},
         ),
+        origin=origin,
     )
 
 
@@ -321,8 +330,10 @@ def _graph_port_schema(
             id=f"value:{port_id}",
             label=f"graph.{port}",
             kind="graph_port",
+            origin="inferred_static",
             metadata=metadata,
         ),
+        origin="inferred_static",
         metadata=metadata,
     )
 
@@ -334,32 +345,34 @@ def node_input_binding(graph: GraphSpec, port_name: str) -> Optional[tuple[str, 
 
 def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskDataSchema]:
     task_data: list[TaskDataSchema] = []
-    for output in task_binding_spec.exposed_outputs:
-        value = output.value_spec
+    for data in task_binding_spec.exposed_data:
+        value = data.value_spec
         task_data.append(
             TaskDataSchema(
-                id=f"task_data:{output.id}",
-                label=output.label,
-                kind=output.kind,
-                path=output.path,
-                bindable=output.bindable,
+                id=f"task_data:{data.id}",
+                label=data.label,
+                kind=data.kind,
+                path=data.path,
+                bindable=data.bindable,
                 value_schema=ValueSchema(
-                    id=f"value:task_data:{output.id}",
-                    label=output.label,
+                    id=f"value:task_data:{data.id}",
+                    label=data.label,
                     kind="task_data",
-                    dtype=output.dtype or (value.dtype if value is not None else None),
-                    shape=output.expected_shape or (value.shape if value is not None else None),
-                    units=output.units or (value.units if value is not None else None),
-                    frame=output.frame or (value.frame if value is not None else None),
+                    dtype=data.dtype or (value.dtype if value is not None else None),
+                    shape=data.expected_shape or (value.shape if value is not None else None),
+                    units=data.units or (value.units if value is not None else None),
+                    frame=data.frame or (value.frame if value is not None else None),
+                    origin="declared",
                     metadata={
-                        **output.metadata,
-                        "task_data_path": output.path,
+                        **data.metadata,
+                        "task_data_path": data.path,
                         "value_spec": value.model_dump(mode="json", exclude_none=True)
                         if value is not None
                         else None,
                     },
                 ),
-                metadata=output.metadata,
+                origin="declared",
+                metadata=data.metadata,
             )
         )
     return task_data
@@ -370,7 +383,7 @@ def _mark_bound_ports(
     task_binding_spec: StudioTaskBindingSpec,
 ) -> None:
     task_data_ids = {
-        output.id: f"task_data:{output.id}" for output in task_binding_spec.exposed_outputs
+        data.id: f"task_data:{data.id}" for data in task_binding_spec.exposed_data
     }
     by_target = {
         (port.node_id, port.port): port
@@ -380,7 +393,7 @@ def _mark_bound_ports(
     for binding in task_binding_spec.bindings:
         port = by_target.get((binding.target_node_id, binding.target_port))
         if port is not None:
-            port.bound_task_data_id = task_data_ids.get(binding.source_output_id)
+            port.bound_task_data_id = task_data_ids.get(binding.source_data_id)
 
 
 def _task_binding_issues(
@@ -389,19 +402,19 @@ def _task_binding_issues(
     base_path: str,
 ) -> list[SchemaValidationIssue]:
     issues: list[SchemaValidationIssue] = []
-    seen_outputs: set[str] = set()
-    output_by_id = {}
-    for index, output in enumerate(task_binding_spec.exposed_outputs):
-        if output.id in seen_outputs:
+    seen_data: set[str] = set()
+    data_by_id = {}
+    for index, data in enumerate(task_binding_spec.exposed_data):
+        if data.id in seen_data:
             issues.append(
                 SchemaValidationIssue(
                     type="duplicate_task_data",
-                    message=f"Task data {output.id!r} is declared more than once",
-                    location={"path": f"{base_path}/exposed_outputs/{index}/id"},
+                    message=f"Task data {data.id!r} is declared more than once",
+                    location={"path": f"{base_path}/exposed_data/{index}/id"},
                 )
             )
-        seen_outputs.add(output.id)
-        output_by_id[output.id] = output
+        seen_data.add(data.id)
+        data_by_id[data.id] = data
 
     if graph is None:
         if task_binding_spec.bindings:
@@ -418,21 +431,21 @@ def _task_binding_issues(
     binding_targets: set[tuple[str, str]] = set()
     for index, binding in enumerate(task_binding_spec.bindings):
         binding_path = f"{base_path}/bindings/{index}"
-        output = output_by_id.get(binding.source_output_id)
-        if output is None:
+        data = data_by_id.get(binding.source_data_id)
+        if data is None:
             issues.append(
                 SchemaValidationIssue(
                     type="unknown_task_data",
-                    message=f"Task binding source {binding.source_output_id!r} is not declared",
-                    location={"path": f"{binding_path}/source_output_id"},
+                    message=f"Task binding source {binding.source_data_id!r} is not declared",
+                    location={"path": f"{binding_path}/source_data_id"},
                 )
             )
-        elif not output.bindable:
+        elif not data.bindable:
             issues.append(
                 SchemaValidationIssue(
                     type="task_data_not_bindable",
-                    message=f"Task data {binding.source_output_id!r} is not bindable",
-                    location={"path": f"{binding_path}/source_output_id"},
+                    message=f"Task data {binding.source_data_id!r} is not bindable",
+                    location={"path": f"{binding_path}/source_data_id"},
                 )
             )
 
@@ -487,6 +500,7 @@ def _port_selector_targets(ports: list[PortSchema]) -> list[SelectorTargetSchema
                 kind="port",
                 selector=selector,
                 value_schema=port.value_schema,
+                origin=port.origin,
                 source={"port_id": port.id, "direction": port.direction},
             )
         )
@@ -501,6 +515,7 @@ def _task_data_selector_targets(task_data: list[TaskDataSchema]) -> list[Selecto
             kind="task_data",
             selector=f"task_data:{item.path}",
             value_schema=item.value_schema,
+            origin=item.origin,
             source={"task_data_id": item.id},
         )
         for item in task_data
@@ -522,8 +537,10 @@ def _graph_probe_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema
                     id=f"value:{probe.selector}",
                     label=probe.label,
                     kind="probe",
+                    origin="inferred_static",
                     metadata={"node": probe.node, "timing": probe.timing},
                 ),
+                origin="inferred_static",
                 source={
                     "probe_id": probe.id,
                     "node_id": probe.node,
@@ -553,7 +570,9 @@ def _objective_selector_targets(
                     id=f"value:objective:{selector}",
                     label=selector,
                     kind="objective",
+                    origin="inferred_static",
                 ),
+                origin="inferred_static",
                 source={"objective_spec": True},
             )
         )
@@ -581,7 +600,9 @@ def _explicit_probe_selector_targets(
                     label=str(probe.get("label") or selector),
                     kind="probe",
                     dtype=probe.get("dtype") if isinstance(probe.get("dtype"), str) else None,
+                    origin="declared",
                 ),
+                origin="declared",
                 source={"probe_specs_index": index},
                 metadata={key: value for key, value in probe.items() if key != "selector"},
             )
@@ -591,12 +612,12 @@ def _explicit_probe_selector_targets(
 
 def _known_state_hint_targets() -> list[SelectorTargetSchema]:
     hints = [
-        ("path:state.effector.pos", "Effector position", "vector"),
-        ("path:state.effector.vel", "Effector velocity", "vector"),
-        ("path:state.mechanics.effector.pos", "Mechanics effector position", "vector"),
-        ("path:state.mechanics.effector.vel", "Mechanics effector velocity", "vector"),
-        ("path:state.network.hidden", "Network hidden state", "vector"),
-        ("path:state.controller.hidden", "Controller hidden state", "vector"),
+        ("path:states.mechanics.effector.pos", "Effector position", "vector"),
+        ("path:states.mechanics.effector.vel", "Effector velocity", "vector"),
+        ("path:states.net.hidden", "Network hidden state", "vector"),
+        ("path:states.net.output", "Network output", "vector"),
+        ("path:states.efferent.output", "Motor command", "vector"),
+        ("path:task.validation_trials.targets", "Validation targets", "vector"),
     ]
     return [
         SelectorTargetSchema(
@@ -609,7 +630,9 @@ def _known_state_hint_targets() -> list[SelectorTargetSchema]:
                 label=label,
                 kind="state_hint",
                 dtype=dtype,
+                origin="curated_fallback",
             ),
+            origin="curated_fallback",
             source={"curated": True},
         )
         for selector, label, dtype in hints
