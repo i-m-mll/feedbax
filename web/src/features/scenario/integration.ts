@@ -5,10 +5,14 @@ import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
   StudioScenarioSpec,
+  StudioSelectorRef,
   StudioStageKind,
   StudioStageSpec,
+  StudioTaskDataSpec,
   StudioWorkspaceSpec,
+  ValueSchema,
 } from '@/types/workspace';
+import { selectorSchemaMetadata, selectorValueSchema } from './selectors';
 
 export type ScenarioMetricSource = 'objective' | 'analysis' | 'manifest' | 'task_default';
 export type ScenarioOverlaySource = 'artifact' | 'analysis' | 'evaluation';
@@ -24,6 +28,8 @@ export interface ScenarioMetricSpec {
   scenarioId: string | null;
   sourceId: string;
   summary: string | null;
+  selectorRef?: StudioSelectorRef | null;
+  valueSchema?: ValueSchema | null;
   metadata: Record<string, unknown>;
 }
 
@@ -98,6 +104,47 @@ function metricLabel(metricId: string): { label: string; units: string | null } 
   return METRIC_LABELS[metricId] ?? { label: titleFromId(metricId), units: null };
 }
 
+function metricValueSchema(
+  metricId: string,
+  label: string,
+  units: string | null,
+  source: ScenarioMetricSource,
+  metadata: Record<string, unknown> = {}
+): ValueSchema {
+  return {
+    id: `value:metric:${source}:${metricId}`,
+    label,
+    kind: 'metric',
+    dtype: 'float32',
+    shape: [],
+    rank: 0,
+    units,
+    frame: null,
+    origin: 'inferred_static',
+    metadata,
+  };
+}
+
+function taskDataValueSchema(data: StudioTaskDataSpec | null | undefined): ValueSchema | null {
+  if (!data) return null;
+  const value = data.value_spec;
+  return {
+    id: `value:task_data:${data.id}`,
+    label: data.label,
+    kind: 'task_data',
+    dtype: data.dtype ?? value?.dtype ?? null,
+    shape: data.expected_shape ?? value?.shape ?? null,
+    units: data.units ?? value?.units ?? null,
+    frame: data.frame ?? value?.frame ?? null,
+    origin: 'declared',
+    metadata: {
+      ...data.metadata,
+      task_data_path: data.path,
+      value_spec: value ?? null,
+    },
+  };
+}
+
 function objectiveSpec(value: unknown): StudioObjectiveSpec | null {
   if (!isRecord(value) || !Array.isArray(value.terms)) return null;
   return value as unknown as StudioObjectiveSpec;
@@ -158,19 +205,30 @@ function objectiveMetrics(
   if (!spec) return [];
   return spec.terms
     .filter((term): term is StudioObjectiveTermSpec => term.role === 'metric')
-    .map((term) => ({
-      id: term.id,
-      label: term.label,
-      role: term.role,
-      source: 'objective' as const,
-      selector: term.source_selector?.compact ?? term.target_selector?.compact ?? null,
-      units: term.units ?? null,
-      stageId: stage?.id ?? scenario.stage_id ?? null,
-      scenarioId: scenario.id,
-      sourceId: term.id,
-      summary: term.source_selector?.compact ?? term.target_selector?.compact ?? null,
-      metadata: { ...term.metadata },
-    }));
+    .map((term) => {
+      const selectorRef = term.source_selector ?? term.target_selector ?? null;
+      const valueSchema = selectorValueSchema(selectorRef);
+      return {
+        id: term.id,
+        label: term.label,
+        role: term.role,
+        source: 'objective' as const,
+        selector: selectorRef?.compact ?? null,
+        units: term.units ?? selectorRef?.units ?? valueSchema?.units ?? null,
+        stageId: stage?.id ?? scenario.stage_id ?? null,
+        scenarioId: scenario.id,
+        sourceId: term.id,
+        summary: selectorRef?.compact ?? null,
+        selectorRef,
+        valueSchema,
+        metadata: {
+          ...term.metadata,
+          selector_schema: selectorSchemaMetadata(selectorRef),
+          value_schema: valueSchema,
+          temporal_selector: term.temporal_selector ?? null,
+        },
+      };
+    });
 }
 
 function analysisMetrics(
@@ -183,6 +241,11 @@ function analysisMetrics(
       const params = isRecord(node.params) ? node.params : {};
       for (const metricId of arrayOfStrings(params.metrics)) {
         const label = metricLabel(metricId);
+        const valueSchema = metricValueSchema(metricId, label.label, label.units, 'analysis', {
+          page_id: page.id,
+          node_id: stringValue(node.id),
+          source_figure: stringValue(params.source_figure),
+        });
         pushUniqueMetric(metrics, {
           id: metricId,
           label: label.label,
@@ -194,10 +257,14 @@ function analysisMetrics(
           scenarioId: scenario.id,
           sourceId: `${page.id}:${stringValue(node.id) ?? stringValue(node.label) ?? metricId}`,
           summary: stringValue(node.label) ?? page.name,
+          valueSchema,
           metadata: {
             page_id: page.id,
             node_id: stringValue(node.id),
             node_type: stringValue(node.type),
+            value_schema: valueSchema,
+            window: stringValue(params.window),
+            temporal_aggregation: stringValue(params.temporal_aggregation),
           },
         });
       }
@@ -212,6 +279,11 @@ function manifestMetrics(workspace: StudioWorkspaceSpec): ScenarioMetricSpec[] {
     for (const metricId of MANIFEST_METRIC_KEYS) {
       if (!(metricId in ref.metadata)) continue;
       const label = metricLabel(metricId);
+      const valueSchema = metricValueSchema(metricId, label.label, label.units, 'manifest', {
+        manifest_kind: ref.kind,
+        manifest_role: ref.role,
+        provider: ref.provider,
+      });
       pushUniqueMetric(metrics, {
         id: metricId,
         label: label.label,
@@ -223,10 +295,12 @@ function manifestMetrics(workspace: StudioWorkspaceSpec): ScenarioMetricSpec[] {
         scenarioId: stage?.scenario_id ?? null,
         sourceId: ref.id,
         summary: ref.role ?? ref.kind,
+        valueSchema,
         metadata: {
           manifest_kind: ref.kind,
           manifest_role: ref.role,
           provider: ref.provider,
+          value_schema: valueSchema,
         },
       });
     }
@@ -247,6 +321,13 @@ function taskDefaultMetrics(
     return [];
   }
   const label = metricLabel('target_reach_error');
+  const valueSchema = taskDataValueSchema(targetData) ?? metricValueSchema(
+    'target_reach_error',
+    label.label,
+    label.units,
+    'task_default',
+    { task_type: taskSpec.type }
+  );
   const targetSummary =
     isRecord(taskSpec.params) && 'n_targets' in taskSpec.params
       ? `${taskSpec.params.n_targets} target task`
@@ -263,7 +344,25 @@ function taskDefaultMetrics(
       scenarioId: scenario.id,
       sourceId: taskSpec.type,
       summary: targetSummary,
-      metadata: { task_type: taskSpec.type, task_data_id: targetData?.id ?? null },
+      valueSchema,
+      metadata: {
+        task_type: taskSpec.type,
+        task_data_id: targetData?.id ?? null,
+        task_data_schema: targetData
+          ? {
+              id: `task_data:${targetData.id}`,
+              label: targetData.label,
+              kind: targetData.kind,
+              path: targetData.path,
+              bindable: targetData.bindable,
+              value_schema: valueSchema,
+              origin: 'declared',
+              metadata: targetData.metadata,
+            }
+          : null,
+        value_schema: valueSchema,
+        temporal_aggregation: 'final',
+      },
     },
   ];
 }

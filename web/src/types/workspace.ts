@@ -282,6 +282,8 @@ export interface StudioTaskTimelineSignalSpec {
   kind: StudioTaskDataKind | string;
   path: string;
   epoch_ids: string[];
+  value_schema?: ValueSchema | null;
+  task_data_schema?: TaskDataSchema | null;
   metadata: Record<string, unknown>;
 }
 

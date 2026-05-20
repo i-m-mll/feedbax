@@ -11,6 +11,7 @@ export interface MetricColumnSpec {
   units: string | null;
   source: ScenarioMetricSpec['source'];
   summary: string | null;
+  metadata: Record<string, unknown>;
 }
 
 export function runMetricColumns(
@@ -28,6 +29,10 @@ export function runMetricColumns(
       units: metric.units,
       source: metric.source,
       summary: metric.summary,
+      metadata: {
+        ...metric.metadata,
+        value_schema: metric.valueSchema ?? metric.metadata.value_schema ?? null,
+      },
     });
   }
 
