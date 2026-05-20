@@ -8,6 +8,7 @@ import type {
 import { VALUE_SCHEMA_VERSION } from './taskTimeline';
 
 export const TASK_BINDING_SCHEMA_VERSION = 'feedbax.studio.task_bindings.v2';
+export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
 
 export const TASK_COMPONENT_TYPES = new Set([
   'ReachingTask',
@@ -20,6 +21,7 @@ function taskDataValueSchema(
   id: string,
   label: string,
   kind: string,
+  role: string,
   path: string,
   value: Pick<ValueSchema, 'dtype' | 'shape' | 'units' | 'frame'>,
   metadata: Record<string, unknown> = {}
@@ -33,7 +35,7 @@ function taskDataValueSchema(
     units: value.units ?? null,
     frame: value.frame ?? null,
     origin: 'declared',
-    metadata: { ...metadata, task_data_path: path, task_data_kind: kind },
+    metadata: { ...metadata, task_data_path: path, task_data_kind: kind, task_data_role: role },
   };
 }
 
@@ -61,6 +63,7 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
     'inputs',
     'Inputs',
     'signal',
+    'model_input',
     'inputs',
     { dtype: 'float32', shape: ['time', 'channels'], units: null, frame: 'task_time' },
     { temporal_support: 'trajectory' }
@@ -68,6 +71,7 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
   const targetsSchema = taskDataValueSchema(
     'targets',
     'Targets',
+    'target',
     'target',
     'targets',
     { dtype: 'float32', shape: ['time', 'target_dims'], units: null, frame: 'task_time' },
@@ -82,6 +86,7 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
     'inits',
     'Initial state',
     'initial_state',
+    'initial_state',
     'inits',
     { dtype: 'float32', shape: ['state'], units: null, frame: null },
     { temporal_support: 'initial' }
@@ -89,6 +94,7 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
   const interveneSchema = taskDataValueSchema(
     'intervene',
     'Intervention',
+    'intervention',
     'intervention',
     'intervene',
     { dtype: 'float32', shape: ['time', 'channels'], units: null, frame: 'task_time' },
@@ -99,6 +105,7 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
       id: 'inputs',
       label: 'Inputs',
       kind: 'signal',
+      role: 'model_input',
       path: 'inputs',
       bindable: true,
       expected_shape: inputsSchema.shape,
@@ -106,12 +113,13 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
       units: inputsSchema.units,
       frame: inputsSchema.frame,
       value_spec: taskDataValueSpec(inputsSchema),
-      metadata: { value_schema_id: inputsSchema.id },
+      metadata: { value_schema_id: inputsSchema.id, task_data_role: 'model_input' },
     },
     {
       id: 'targets',
       label: 'Targets',
       kind: 'target',
+      role: 'target',
       path: 'targets',
       bindable: false,
       expected_shape: targetsSchema.shape,
@@ -119,12 +127,13 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
       units: targetsSchema.units,
       frame: targetsSchema.frame,
       value_spec: taskDataValueSpec(targetsSchema),
-      metadata: { value_schema_id: targetsSchema.id },
+      metadata: { value_schema_id: targetsSchema.id, task_data_role: 'target' },
     },
     {
       id: 'inits',
       label: 'Initial state',
       kind: 'initial_state',
+      role: 'initial_state',
       path: 'inits',
       bindable: false,
       expected_shape: initsSchema.shape,
@@ -132,12 +141,13 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
       units: initsSchema.units,
       frame: initsSchema.frame,
       value_spec: taskDataValueSpec(initsSchema),
-      metadata: { value_schema_id: initsSchema.id },
+      metadata: { value_schema_id: initsSchema.id, task_data_role: 'initial_state' },
     },
     {
       id: 'intervene',
       label: 'Intervention',
       kind: 'intervention',
+      role: 'intervention',
       path: 'intervene',
       bindable: false,
       expected_shape: interveneSchema.shape,
@@ -145,7 +155,7 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
       units: interveneSchema.units,
       frame: interveneSchema.frame,
       value_spec: taskDataValueSpec(interveneSchema),
-      metadata: { value_schema_id: interveneSchema.id },
+      metadata: { value_schema_id: interveneSchema.id, task_data_role: 'intervention' },
     },
   ];
 }

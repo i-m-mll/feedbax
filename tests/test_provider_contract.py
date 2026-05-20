@@ -241,6 +241,23 @@ def test_task_validation_rejects_invalid_delayed_reach_epoch_params() -> None:
     }
 
 
+def test_task_validation_reports_pathful_step_count_errors() -> None:
+    invalid = validate_task_spec(
+        {"type": "DelayedReaches", "params": {"n_steps": 0}}
+    )
+    mismatch = validate_task_spec(
+        {
+            "type": "DelayedReaches",
+            "timeline": {"n_steps": 140},
+            "params": {"n_steps": 120},
+        }
+    )
+
+    assert invalid.errors[0].type == "invalid_task_n_steps"
+    assert invalid.errors[0].location == {"path": "/params/n_steps"}
+    assert {error.type for error in mismatch.errors} == {"task_n_steps_mismatch"}
+
+
 def test_graph_validation_reports_unknown_components() -> None:
     graph = _minimal_graph_spec()
     graph["nodes"]["bad"] = {
@@ -570,6 +587,28 @@ def test_studio_schema_enumeration_validates_task_binding_schema_mismatch() -> N
     assert "task_binding_dtype_mismatch" in issue_types
 
 
+def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings() -> None:
+    workspace = _schema_workspace()
+    scenario = workspace.scenarios["scenario:train"]
+    assert scenario.task_binding_spec is not None
+    scenario.task_binding_spec.exposed_data[1].bindable = True
+    scenario.task_binding_spec.exposed_data[1].role = "target"
+    scenario.task_binding_spec.bindings[0].source_data_id = "targets"
+
+    registry = enumerate_studio_schema_registry(workspace, scenario.id)
+    task_data = {item.path: item for item in registry.task_data}
+    issue_types = {issue.type for issue in registry.issues}
+
+    assert task_data["inputs"].role == "model_input"
+    assert task_data["inputs"].bindable is True
+    assert task_data["targets"].role == "target"
+    assert task_data["targets"].bindable is False
+    assert task_data["targets"].metadata["task_data_surface"] == "protocol"
+    assert "task_data_bindable_role_mismatch" in issue_types
+    assert "task_data_protocol_path_bindable" in issue_types
+    assert "task_data_not_bindable" in issue_types
+
+
 def test_studio_schema_enumeration_validates_intervention_targets() -> None:
     workspace = _schema_workspace()
     scenario = workspace.scenarios["scenario:train"]
@@ -677,3 +716,12 @@ def test_worker_training_cfg_uses_task_n_steps() -> None:
 
     assert cfg.n_batches == 4
     assert cfg.n_reach_steps == 140
+
+
+def test_worker_training_cfg_uses_timeline_task_n_steps() -> None:
+    cfg = _extract_training_cfg(
+        {"n_batches": 4, "n_reach_steps": 80},
+        {"type": "DelayedReaches", "timeline": {"n_steps": 150}, "params": {"n_steps": 140}},
+    )
+
+    assert cfg.n_reach_steps == 150

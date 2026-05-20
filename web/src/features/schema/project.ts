@@ -12,6 +12,26 @@ import type {
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import { validateInterventionSchema } from './interventions';
 
+const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
+const PROTOCOL_TASK_DATA_KINDS = new Set([
+  'target',
+  'initial_state',
+  'intervention',
+  'eval_control',
+  'trial_control',
+  'validation',
+  'protocol_value',
+]);
+const PROTOCOL_TASK_DATA_PATH_PREFIXES = [
+  'targets',
+  'inits',
+  'intervene',
+  'validation_trials',
+  'eval',
+  'trial_controls',
+  'task.validation_trials',
+];
+
 export function projectStudioSchema(
   graph: GraphSpec,
   components: ComponentDefinition[],
@@ -188,6 +208,13 @@ function graphPortSchema(
 function enumerateTaskData(taskBindingSpec?: StudioTaskBindingSpec | null): TaskDataSchema[] {
   return (taskBindingSpec?.exposed_data ?? []).map((data) => {
     const value = data.value_spec;
+    const role = taskDataRole(data);
+    const surface = isBindableTaskData(data) ? 'graph_input' : 'protocol';
+    const metadata = {
+      ...data.metadata,
+      task_data_role: role,
+      task_data_surface: surface,
+    };
     const valueSchema: ValueSchema = {
       id: `value:task_data:${data.id}`,
       label: data.label,
@@ -198,7 +225,7 @@ function enumerateTaskData(taskBindingSpec?: StudioTaskBindingSpec | null): Task
       frame: data.frame ?? value?.frame ?? null,
       origin: 'declared',
       metadata: {
-        ...data.metadata,
+        ...metadata,
         task_data_path: data.path,
         value_spec: value ?? null,
       },
@@ -207,13 +234,35 @@ function enumerateTaskData(taskBindingSpec?: StudioTaskBindingSpec | null): Task
       id: `task_data:${data.id}`,
       label: data.label,
       kind: data.kind,
+      role,
       path: data.path,
-      bindable: data.bindable,
+      bindable: isBindableTaskData(data),
       value_schema: valueSchema,
       origin: 'declared',
-      metadata: data.metadata,
+      metadata,
     };
   });
+}
+
+function taskDataRole(data: { kind: string; role?: string | null; bindable: boolean; metadata: Record<string, unknown> }): string {
+  const metadataRole = data.metadata.task_data_role;
+  if (typeof data.role === 'string' && data.role.length > 0) return data.role;
+  if (typeof metadataRole === 'string' && metadataRole.length > 0) return metadataRole;
+  if (['signal', 'input', 'model_input', 'graph_input'].includes(data.kind)) {
+    return data.bindable ? 'model_input' : 'protocol_value';
+  }
+  if (data.kind === 'trial_param') return 'trial_control';
+  return data.kind;
+}
+
+function isBindableTaskData(data: { kind: string; role?: string | null; bindable: boolean; metadata: Record<string, unknown> }): boolean {
+  return data.bindable && GRAPH_BINDABLE_TASK_DATA_ROLES.has(taskDataRole(data));
+}
+
+function usesProtocolTaskDataPath(path: string): boolean {
+  return PROTOCOL_TASK_DATA_PATH_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}.`)
+  );
 }
 
 function markBoundPorts(ports: PortSchema[], taskBindingSpec?: StudioTaskBindingSpec | null): void {
@@ -339,7 +388,7 @@ function validateTaskBindings(
     } else if (!data.bindable) {
       issues.push({
         type: 'task_data_not_bindable',
-        message: `Task Data ${binding.source_data_id} is not bindable`,
+        message: `Task Data ${binding.source_data_id} has protocol role ${data.role} and is not bindable`,
         severity: 'error',
         location: { path },
       });
@@ -378,6 +427,35 @@ function validateTaskBindings(
       });
     }
     bindingTargets.add(targetKey);
+  });
+
+  taskBindingSpec?.exposed_data.forEach((data, index) => {
+    const path = `task_binding_spec.exposed_data.${index}`;
+    const role = taskDataRole(data);
+    if (data.bindable && !GRAPH_BINDABLE_TASK_DATA_ROLES.has(role)) {
+      issues.push({
+        type: 'task_data_bindable_role_mismatch',
+        message: `Task Data ${data.id} has protocol role ${role}`,
+        severity: 'error',
+        location: { path },
+      });
+    }
+    if (!data.bindable && GRAPH_BINDABLE_TASK_DATA_ROLES.has(role)) {
+      issues.push({
+        type: 'task_data_graph_role_not_bindable',
+        message: `Task Data ${data.id} has graph-facing role ${role} but is not bindable`,
+        severity: 'error',
+        location: { path },
+      });
+    }
+    if (data.bindable && (PROTOCOL_TASK_DATA_KINDS.has(data.kind) || usesProtocolTaskDataPath(data.path))) {
+      issues.push({
+        type: 'task_data_protocol_path_bindable',
+        message: `Task Data ${data.id} points at protocol-owned task data`,
+        severity: 'error',
+        location: { path },
+      });
+    }
   });
   return issues;
 }

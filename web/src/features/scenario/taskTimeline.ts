@@ -64,10 +64,12 @@ function timelineTaskDataSchema(
   path: string,
   valueSchema: ValueSchema
 ): TaskDataSchema {
+  const role = kind === 'signal' ? 'model_input' : kind;
   return {
     id: `task_data:${id}`,
     label,
     kind,
+    role,
     path,
     bindable: kind === 'signal',
     value_schema: valueSchema,
@@ -75,6 +77,8 @@ function timelineTaskDataSchema(
     metadata: {
       source: 'task_timeline',
       value_schema_id: valueSchema.id,
+      task_data_role: role,
+      task_data_surface: kind === 'signal' ? 'graph_input' : 'protocol',
     },
   };
 }
