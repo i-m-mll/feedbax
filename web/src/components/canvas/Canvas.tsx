@@ -22,7 +22,7 @@ import {
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { getTopPaneState, getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import {
   graphEdgeEntityId,
   graphNodeEntityId,
@@ -91,6 +91,7 @@ export function Canvas() {
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const workspace = useWorkspaceStore((state) => state.workspace);
+  const topPane = getTopPaneState(workspace);
   const { components } = useComponents();
   const reactFlow = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -264,17 +265,19 @@ export function Canvas() {
       ref={containerRef}
       className="relative w-full h-full overflow-hidden bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
     >
-      <TaskBindingOverlay
-        bindings={taskBindingSpec.bindings}
-        containerRef={containerRef}
-        onSelect={(binding) => {
-          setSelectedEdge(null);
-          setSelectedNode(null);
-          setSelectedTap(null);
-          selectTopPaneEntity(taskBindingEntityId(binding.id));
-        }}
-        onHover={(binding) => hoverTopPaneEntity(binding ? taskBindingEntityId(binding.id) : null)}
-      />
+      {topPane.active_projection === 'task' && (
+        <TaskBindingOverlay
+          bindings={taskBindingSpec.bindings}
+          containerRef={containerRef}
+          onSelect={(binding) => {
+            setSelectedEdge(null);
+            setSelectedNode(null);
+            setSelectedTap(null);
+            selectTopPaneEntity(taskBindingEntityId(binding.id));
+          }}
+          onHover={(binding) => hoverTopPaneEntity(binding ? taskBindingEntityId(binding.id) : null)}
+        />
+      )}
       <ReactFlow
         className="relative z-10"
         style={{ zIndex: 10 }}

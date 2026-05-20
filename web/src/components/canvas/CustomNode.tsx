@@ -9,10 +9,12 @@ import {
   getActiveStage,
   getScenario,
   getTopPaneState,
+  getTrainingScenario,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { graphPortEntityId } from '@/features/scenario/entities';
 import { objectiveGraphPortTarget } from '@/features/scenario/objectives';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
@@ -34,6 +36,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const toggleNodeCollapse = useGraphStore((state) => state.toggleNodeCollapse);
   const toggleNodeReversed = useGraphStore((state) => state.toggleNodeReversed);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
+  const graph = useGraphStore((state) => state.graph);
   const hasSubgraph = useGraphStore((state) => Boolean(state.graph.subgraphs?.[label]));
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
@@ -43,6 +46,19 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const topPane = getTopPaneState(workspace);
+  const taskBoundInputs = useMemo(() => {
+    const trainingScenario = getTrainingScenario(workspace);
+    const taskBindingSpec = ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph);
+    const taskDataById = new Map(taskBindingSpec.exposed_data.map((item) => [item.id, item]));
+    const boundInputs = new Map<string, string>();
+    for (const binding of taskBindingSpec.bindings) {
+      if (binding.target_node_id !== label) continue;
+      const taskData = taskDataById.get(binding.source_data_id);
+      boundInputs.set(binding.target_port, taskData?.label ?? binding.source_data_id);
+    }
+    return boundInputs;
+  }, [graph, label, workspace]);
+  const showTaskSourceHints = topPane.active_projection === 'model';
   const objectivePorts = useMemo(() => {
     const activeScenario = getScenario(workspace, getActiveStage(workspace)?.scenario_id);
     const objectiveSpec = activeScenario?.objective_spec;
@@ -298,6 +314,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               }}
               className={clsx(
                 'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
+                taskBoundInputs.has(port) && 'bg-emerald-500 ring-2 ring-emerald-200',
                 objectivePorts.has(`input:${port}`) && 'bg-violet-500 ring-2 ring-violet-200',
                 topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
                   'bg-brand-600 ring-4 ring-brand-300 scale-150'
@@ -355,6 +372,14 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             >
               {objectivePorts.has(`input:${port}`) && (
                 <Crosshair className="w-3 h-3 text-violet-500" />
+              )}
+              {showTaskSourceHints && taskBoundInputs.has(port) && (
+                <span
+                  className="max-w-[6.5rem] truncate rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-700 shadow-sm"
+                  title={`Task data: ${taskBoundInputs.get(port)}`}
+                >
+                  {taskBoundInputs.get(port)}
+                </span>
               )}
               <span>{port}</span>
             </button>

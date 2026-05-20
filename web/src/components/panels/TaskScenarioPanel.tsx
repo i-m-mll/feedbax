@@ -257,7 +257,7 @@ export function TaskScenarioPanel() {
   );
   const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
 
-  if (topPane.active_projection !== 'graph') return null;
+  if (topPane.active_projection !== 'task') return null;
 
   const params = Object.entries(task.params ?? {}).filter(
     ([key]) => !(timeline && isDelayedReachTimelineParam(key))

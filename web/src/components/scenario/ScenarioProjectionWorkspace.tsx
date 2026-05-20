@@ -8,6 +8,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Settings2,
   Trash2,
 } from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
@@ -52,7 +53,8 @@ const PROJECTIONS: Array<{
   label: string;
   icon: typeof GitBranch;
 }> = [
-  { id: 'graph', label: 'Graph', icon: GitBranch },
+  { id: 'model', label: 'Model', icon: GitBranch },
+  { id: 'task', label: 'Task', icon: Settings2 },
   { id: 'workspace', label: 'Workspace', icon: MapIcon },
   { id: 'objectives', label: 'Objectives', icon: ListChecks },
 ];
@@ -474,7 +476,7 @@ export function ScenarioProjectionWorkspace() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">
-        {topPane.active_projection === 'graph' && (
+        {(topPane.active_projection === 'model' || topPane.active_projection === 'task') && (
           <div className="absolute inset-0">
             <Canvas />
           </div>
