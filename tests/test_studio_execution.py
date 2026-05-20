@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.studio_execution import (
@@ -55,8 +56,8 @@ def _workspace():
         "params": {"n_targets": 4, "target_radius": 0.02},
     }
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate({
-        "schema_version": "feedbax.studio.task_bindings.v1",
-        "exposed_outputs": [
+        "schema_version": "feedbax.studio.task_bindings.v2",
+        "exposed_data": [
             {
                 "id": "inputs",
                 "label": "Inputs",
@@ -77,7 +78,7 @@ def _workspace():
         "bindings": [
             {
                 "id": "task:inputs->network:input",
-                "source_output_id": "inputs",
+                "source_data_id": "inputs",
                 "target_node_id": "network",
                 "target_port": "input",
                 "role": "model_input",
@@ -172,6 +173,44 @@ def test_studio_training_plan_endpoint_rejects_missing_training_spec():
 
     assert response.status_code == 422
     assert "training_spec" in response.json()["detail"]
+
+
+def test_task_binding_spec_rejects_legacy_v1_contract():
+    with pytest.raises(ValueError, match="task_bindings.v1.*exposed_data.*source_data_id"):
+        StudioTaskBindingSpec.model_validate({
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [],
+            "bindings": [],
+            "metadata": {},
+        })
+
+
+def test_task_binding_spec_rejects_source_output_id():
+    with pytest.raises(ValueError, match="source_output_id.*source_data_id"):
+        StudioTaskBindingSpec.model_validate({
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->network:input",
+                    "source_output_id": "inputs",
+                    "target_node_id": "network",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        })
 
 
 def test_run_studio_training_local_execution_materializes_snapshot_and_refs(

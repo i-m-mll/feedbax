@@ -87,6 +87,55 @@ describe('scenario objective operations', () => {
     });
   });
 
+  it('keeps schema-backed selector metadata on objective terms', () => {
+    const sourceSelector = {
+      namespace: 'state_path' as const,
+      compact: 'path:states.decoder.readout',
+      target_id: 'decoder',
+      path: 'states.decoder.readout',
+      expected_shape: ['time', 4],
+      dtype: 'float32',
+      units: 'a.u.',
+      frame: 'decoder',
+      role: 'observed' as const,
+      metadata: {
+        label: 'Decoder readout',
+        value_schema: {
+          id: 'value:path:states.decoder.readout',
+          label: 'Decoder readout',
+          kind: 'trajectory',
+          dtype: 'float32',
+          shape: ['time', 4],
+          rank: 2,
+          units: 'a.u.',
+          frame: 'decoder',
+          origin: 'declared',
+          metadata: { temporal_support: 'trajectory' },
+        },
+      },
+    };
+
+    const term = createObjectiveTerm({
+      spec: baseSpec,
+      label: 'Decoder metric',
+      sourceSelector,
+    });
+    const updated = updateObjectiveTerm(addObjectiveTerm(baseSpec, term), term.id, {
+      role: 'metric',
+    });
+
+    expect(updated.terms[0]).toMatchObject({
+      units: 'a.u.',
+      metadata: {
+        source_selector_compact: 'path:states.decoder.readout',
+        source_value_schema_id: 'value:path:states.decoder.readout',
+        source_dtype: 'float32',
+        source_shape: ['time', 4],
+        source_frame: 'decoder',
+      },
+    });
+  });
+
   it('uses explicit graph port selectors instead of inferring from graph nodes', () => {
     const registry: StudioScenarioEntityRegistry = {
       scenario_id: 'scenario:train',

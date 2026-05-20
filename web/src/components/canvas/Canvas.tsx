@@ -33,6 +33,11 @@ import {
   ensureTaskBindingSpec,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
+import {
+  hasBlockingSchemaIssue,
+  projectStudioSchema,
+  validateConnectionAgainstSchema,
+} from '@/features/schema/project';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -40,7 +45,6 @@ import { StateFlowEdge } from './StateFlowEdge';
 import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
-import type { PortType } from '@/types/components';
 import type { GraphNodeData } from '@/types/graph';
 import type { StudioTaskBinding } from '@/types/workspace';
 import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
@@ -131,9 +135,9 @@ export function Canvas() {
     return () => observer.disconnect();
   }, [reactFlow]);
 
-  const componentMap = useMemo(
-    () => new Map(components.map((component) => [component.name, component])),
-    [components]
+  const schemaRegistry = useMemo(
+    () => projectStudioSchema(graph, components, taskBindingSpec),
+    [components, graph, taskBindingSpec]
   );
 
   const breadcrumbs = useMemo(
@@ -164,40 +168,6 @@ export function Canvas() {
     });
   }, [graphViewKey, nodes.length, nodesInitialized, reactFlow]);
 
-  const getPortType = useCallback(
-    (nodeId: string, port: string, direction: 'inputs' | 'outputs') => {
-      const nodeSpec = graph.nodes[nodeId];
-      if (!nodeSpec) return undefined;
-      const component = componentMap.get(nodeSpec.type);
-      return component?.port_types?.[direction]?.[port];
-    },
-    [componentMap, graph.nodes]
-  );
-
-  const isCompatible = useCallback((sourceType?: PortType, targetType?: PortType) => {
-    if (!sourceType || !targetType) return true;
-    if (sourceType.dtype === 'any' || targetType.dtype === 'any') return true;
-    if (sourceType.dtype !== targetType.dtype) return false;
-    if (
-      sourceType.rank !== undefined &&
-      targetType.rank !== undefined &&
-      sourceType.rank !== targetType.rank
-    ) {
-      return false;
-    }
-    if (sourceType.shape && targetType.shape) {
-      if (sourceType.shape.length !== targetType.shape.length) return false;
-      for (let i = 0; i < sourceType.shape.length; i += 1) {
-        const sourceDim = sourceType.shape[i];
-        const targetDim = targetType.shape[i];
-        const sourceWildcard = sourceDim < 0;
-        const targetWildcard = targetDim < 0;
-        if (!sourceWildcard && !targetWildcard && sourceDim !== targetDim) return false;
-      }
-    }
-    return true;
-  }, []);
-
   const isStateHandle = (handleId?: string | null) =>
     typeof handleId === 'string' && handleId.startsWith('__state');
 
@@ -222,11 +192,17 @@ export function Canvas() {
         connection.targetHandle
       );
       if (inputTaken) return false;
-      const sourceType = getPortType(connection.source, connection.sourceHandle, 'outputs');
-      const targetType = getPortType(connection.target, connection.targetHandle, 'inputs');
-      return isCompatible(sourceType, targetType);
+      return !hasBlockingSchemaIssue(
+        validateConnectionAgainstSchema(
+          schemaRegistry,
+          connection.source,
+          connection.sourceHandle,
+          connection.target,
+          connection.targetHandle
+        )
+      );
     },
-    [getPortType, graph, isCompatible, taskBindingSpec]
+    [graph, schemaRegistry, taskBindingSpec]
   );
 
   const handleConnect = useCallback(
@@ -238,9 +214,26 @@ export function Canvas() {
       ) {
         return;
       }
+      if (
+        connection.source &&
+        connection.sourceHandle &&
+        connection.target &&
+        connection.targetHandle &&
+        hasBlockingSchemaIssue(
+          validateConnectionAgainstSchema(
+            schemaRegistry,
+            connection.source,
+            connection.sourceHandle,
+            connection.target,
+            connection.targetHandle
+          )
+        )
+      ) {
+        return;
+      }
       onConnect(connection);
     },
-    [graph, onConnect, taskBindingSpec]
+    [graph, onConnect, schemaRegistry, taskBindingSpec]
   );
 
   const onDrop = useCallback(
@@ -464,7 +457,7 @@ function TaskBindingOverlay({
 
       const targetRect = targetHandle.getBoundingClientRect();
       const sourcePort = document.querySelector<HTMLElement>(
-        `[data-task-output-port-id="${selectorValue(binding.source_output_id)}"]`
+        `[data-task-data-port-id="${selectorValue(binding.source_data_id)}"]`
       );
       const sourceRect = sourcePort?.getBoundingClientRect();
       const sourceY = sourceRect
@@ -500,7 +493,7 @@ function TaskBindingOverlay({
     const resizeObserver = new ResizeObserver(schedule);
     resizeObserver.observe(container);
     document
-      .querySelectorAll<HTMLElement>('[data-task-output-port-id]')
+      .querySelectorAll<HTMLElement>('[data-task-data-port-id]')
       .forEach((element) => resizeObserver.observe(element));
 
     const viewportObserver = new MutationObserver(schedule);

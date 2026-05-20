@@ -18,6 +18,11 @@ from feedbax.provider import (
     validate_spec,
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, prepare_execution_plan
+from feedbax.studio_schema import (
+    StudioSchemaEnumerationRequest,
+    StudioSchemaRegistry,
+    enumerate_studio_schema_registry,
+)
 from feedbax.studio_execution import (
     StudioExecutionPreparationError,
     StudioPipelineMaterializationRequest,
@@ -111,3 +116,17 @@ async def materialize_studio_pipeline_stages(
         return materialize_studio_pipeline(payload)
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/schemas",
+    response_model=StudioSchemaRegistry,
+)
+async def enumerate_studio_schemas(
+    payload: StudioSchemaEnumerationRequest,
+) -> StudioSchemaRegistry:
+    return enumerate_studio_schema_registry(
+        payload.workspace,
+        payload.scenario_id,
+        runtime_introspection=payload.runtime_introspection,
+    )

@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from feedbax.execution import (
     ArtifactPolicy,
@@ -38,11 +38,14 @@ from feedbax.manifest import (
     utc_now,
     write_manifest,
 )
+from feedbax.studio_schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.web.models.graph import (
+    GraphSpec,
     StudioArtifactRef,
     StudioCollectionRef,
     StudioManifestRef,
     StudioStageSpec,
+    StudioTaskBindingSpec,
     StudioValidationIssue,
     StudioValidationState,
     StudioWorkspaceSpec,
@@ -508,89 +511,42 @@ def _validate_task_binding_spec(
 ) -> list[StudioValidationIssue]:
     if task_binding_spec is None:
         return []
-    nodes = graph.get("nodes", {}) if isinstance(graph.get("nodes"), dict) else {}
-    graph_wires = graph.get("wires", []) if isinstance(graph.get("wires"), list) else []
-    outputs = task_binding_spec.get("exposed_outputs", [])
-    bindings = task_binding_spec.get("bindings", [])
-    output_by_id = {
-        output.get("id"): output
-        for output in outputs
-        if isinstance(output, dict) and isinstance(output.get("id"), str)
-    }
-    occupied_inputs = {
-        (wire.get("target_node"), wire.get("target_port"))
-        for wire in graph_wires
-        if isinstance(wire, dict)
-    }
-    binding_targets: set[tuple[Any, Any]] = set()
-    issues: list[StudioValidationIssue] = []
-    seen_outputs: set[str] = set()
-    for output_id in output_by_id:
-        if output_id in seen_outputs:
+    try:
+        validated_spec = StudioTaskBindingSpec.model_validate(task_binding_spec)
+    except ValidationError as exc:
+        issues: list[StudioValidationIssue] = []
+        for error in exc.errors():
+            loc = error.get("loc", ())
+            suffix = "".join(f"/{part}" for part in loc) if loc else ""
+            message = str(error.get("msg", "Invalid task binding spec"))
+            if message.startswith("Value error, "):
+                message = message.removeprefix("Value error, ")
             issues.append(
                 StudioValidationIssue(
-                    type="duplicate_task_output",
-                    message=f"Task output {output_id!r} is declared more than once",
-                    location={"path": "/task_binding_spec/exposed_outputs"},
+                    type="invalid_task_binding_spec",
+                    message=message,
+                    location={"path": f"/task_binding_spec{suffix}"},
                 )
             )
-        seen_outputs.add(output_id)
-    for index, binding in enumerate(bindings):
-        if not isinstance(binding, dict):
-            continue
-        source_output_id = binding.get("source_output_id")
-        target_node_id = binding.get("target_node_id")
-        target_port = binding.get("target_port")
-        path = f"/task_binding_spec/bindings/{index}"
-        output = output_by_id.get(source_output_id)
-        if output is None:
-            issues.append(
-                StudioValidationIssue(
-                    type="unknown_task_output",
-                    message=f"Task binding source output {source_output_id!r} is not declared",
-                    location={"path": f"{path}/source_output_id"},
-                )
-            )
-        elif not output.get("bindable", False):
-            issues.append(
-                StudioValidationIssue(
-                    type="task_output_not_bindable",
-                    message=f"Task output {source_output_id!r} is not bindable",
-                    location={"path": f"{path}/source_output_id"},
-                )
-            )
-        target_node = nodes.get(target_node_id)
-        if not isinstance(target_node, dict):
-            issues.append(
-                StudioValidationIssue(
-                    type="unknown_task_binding_target_node",
-                    message=f"Task binding target node {target_node_id!r} does not exist",
-                    location={"path": f"{path}/target_node_id"},
-                )
-            )
-            continue
-        input_ports = target_node.get("input_ports", [])
-        if target_port not in input_ports:
-            issues.append(
-                StudioValidationIssue(
-                    type="unknown_task_binding_target_port",
-                    message=(
-                        f"Task binding target port {target_node_id}.{target_port} does not exist"
-                    ),
-                    location={"path": f"{path}/target_port"},
-                )
-            )
-        target = (target_node_id, target_port)
-        if target in occupied_inputs or target in binding_targets:
-            issues.append(
-                StudioValidationIssue(
-                    type="task_binding_target_occupied",
-                    message=f"Task binding target {target_node_id}.{target_port} is already occupied",
-                    location={"path": path},
-                )
-            )
-        binding_targets.add(target)
-    return issues
+        return issues
+    graph_spec = GraphSpec.model_validate(graph)
+    return _schema_issues_to_studio(
+        validate_task_binding_schema(validated_spec, graph_spec, "/task_binding_spec")
+    )
+
+
+def _schema_issues_to_studio(
+    issues: list[SchemaValidationIssue],
+) -> list[StudioValidationIssue]:
+    return [
+        StudioValidationIssue(
+            type=issue.type,
+            message=issue.message,
+            location=issue.location,
+            severity=issue.severity,
+        )
+        for issue in issues
+    ]
 
 
 def _provider_issues_to_studio(

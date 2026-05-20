@@ -80,7 +80,7 @@ export type StudioSelectorNamespace =
   | 'probe'
   | 'state_path'
   | 'task_object'
-  | 'task_output'
+  | 'task_data'
   | 'task_binding'
   | 'mechanics_object'
   | 'biomechanics_object'
@@ -125,7 +125,7 @@ export interface StudioObjectiveSpec {
   metadata: Record<string, unknown>;
 }
 
-export type StudioTaskOutputKind =
+export type StudioTaskDataKind =
   | 'signal'
   | 'target'
   | 'initial_state'
@@ -134,10 +134,10 @@ export type StudioTaskOutputKind =
   | 'protocol_value'
   | string;
 
-export interface StudioTaskOutputSpec {
+export interface StudioTaskDataSpec {
   id: string;
   label: string;
-  kind: StudioTaskOutputKind;
+  kind: StudioTaskDataKind;
   path: string;
   bindable: boolean;
   expected_shape?: unknown[] | null;
@@ -150,7 +150,7 @@ export interface StudioTaskOutputSpec {
 
 export interface StudioTaskBinding {
   id: string;
-  source_output_id: string;
+  source_data_id: string;
   target_node_id: string;
   target_port: string;
   role: 'model_input' | 'target' | 'initial_state' | 'intervention' | string;
@@ -158,8 +158,8 @@ export interface StudioTaskBinding {
 }
 
 export interface StudioTaskBindingSpec {
-  schema_version: 'feedbax.studio.task_bindings.v1' | string;
-  exposed_outputs: StudioTaskOutputSpec[];
+  schema_version: 'feedbax.studio.task_bindings.v2' | string;
+  exposed_data: StudioTaskDataSpec[];
   bindings: StudioTaskBinding[];
   metadata: Record<string, unknown>;
 }
@@ -200,6 +200,96 @@ export interface StudioValueSpec {
   metadata: Record<string, unknown>;
 }
 
+export type StudioInterventionOperation =
+  | 'clamp'
+  | 'noise'
+  | 'constant'
+  | 'offset'
+  | 'scale'
+  | string;
+
+export interface StudioInterventionValueBounds {
+  min?: unknown;
+  max?: unknown;
+}
+
+export interface StudioInterventionTransformSpec {
+  operation: StudioInterventionOperation;
+  target_selector?: StudioSelectorRef | null;
+  value?: StudioValueSpec | null;
+  bounds?: StudioInterventionValueBounds | null;
+  parameters?: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
+}
+
+export type StudioSchemaOrigin =
+  | 'declared'
+  | 'inferred_static'
+  | 'runtime_sample'
+  | 'curated_fallback'
+  | 'unknown';
+
+export interface ValueSchema {
+  id: string;
+  label: string;
+  kind: string;
+  dtype?: string | null;
+  shape?: unknown[] | null;
+  rank?: number | null;
+  units?: string | null;
+  frame?: string | null;
+  origin: StudioSchemaOrigin;
+  metadata: Record<string, unknown>;
+}
+
+export interface PortSchema {
+  id: string;
+  label: string;
+  node_id?: string | null;
+  component_type?: string | null;
+  port: string;
+  direction: 'input' | 'output';
+  value_schema: ValueSchema;
+  bound_task_data_id?: string | null;
+  origin: StudioSchemaOrigin;
+  metadata: Record<string, unknown>;
+}
+
+export interface TaskDataSchema {
+  id: string;
+  label: string;
+  kind: string;
+  path: string;
+  bindable: boolean;
+  value_schema: ValueSchema;
+  origin: StudioSchemaOrigin;
+  metadata: Record<string, unknown>;
+}
+
+export interface SelectorTargetSchema {
+  id: string;
+  label: string;
+  kind: 'port' | 'task_data' | 'objective' | 'probe' | 'state_hint' | 'sample_leaf';
+  selector: string;
+  value_schema: ValueSchema;
+  origin: StudioSchemaOrigin;
+  source: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioSchemaRegistry {
+  kind: 'studio_schema_registry';
+  schema_version: string;
+  generated_at: string;
+  workspace_id?: string | null;
+  scenario_id?: string | null;
+  ports: PortSchema[];
+  task_data: TaskDataSchema[];
+  selector_targets: SelectorTargetSchema[];
+  issues: StudioValidationIssue[];
+  metadata: Record<string, unknown>;
+}
+
 export interface StudioTaskEpochSpec {
   id: string;
   label: string;
@@ -211,9 +301,11 @@ export interface StudioTaskEpochSpec {
 export interface StudioTaskTimelineSignalSpec {
   id: string;
   label: string;
-  kind: StudioTaskOutputKind | string;
+  kind: StudioTaskDataKind | string;
   path: string;
   epoch_ids: string[];
+  value_schema?: ValueSchema | null;
+  task_data_schema?: TaskDataSchema | null;
   metadata: Record<string, unknown>;
 }
 
@@ -229,7 +321,7 @@ export type StudioScenarioEntityKind =
   | 'graph_port'
   | 'graph_edge'
   | 'task_object'
-  | 'task_output'
+  | 'task_data'
   | 'task_binding'
   | 'mechanics_object'
   | 'objective_term'

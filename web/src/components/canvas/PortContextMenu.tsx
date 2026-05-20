@@ -6,6 +6,7 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
+import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { buildScenarioEntityRegistry } from '@/features/scenario/entities';
 import {
   addObjectiveTerm,
@@ -57,6 +58,10 @@ export function PortContextMenu({
   const setSelectedEdge = useGraphStore((state) => state.setSelectedEdge);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const schemaQuery = useStudioSchemaRegistry(
+    workspace,
+    activeStage?.scenario_id ?? activeScenario?.id ?? null
+  );
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const registry = buildScenarioEntityRegistry({ scenario: activeScenario, graph });
   const taskEntity =
@@ -69,7 +74,11 @@ export function PortContextMenu({
     role: 'observed',
     metadata: { direction: portType },
   };
-  const selectorOptions = selectorOptionsForRegistry({ registry, objectiveSpec });
+  const selectorOptions = selectorOptionsForRegistry({
+    registry,
+    schemaRegistry: schemaQuery.data ?? null,
+    objectiveSpec,
+  });
   const sourceSelector = preferredSelectorForGraphPort(rawSourceSelector, selectorOptions);
   const sourceLabel = selectorDisplayLabel(sourceSelector);
   const menuRef = useRef<HTMLDivElement>(null);

@@ -39,6 +39,18 @@ function metric(id: string, source: ScenarioMetricSpec['source']): ScenarioMetri
     scenarioId: 'scenario:train',
     sourceId: `${source}:${id}`,
     summary: null,
+    valueSchema: {
+      id: `value:metric:${source}:${id}`,
+      label: id,
+      kind: 'metric',
+      dtype: 'float32',
+      shape: [],
+      rank: 0,
+      units: id === 'custom_success_rate' ? '%' : null,
+      frame: null,
+      origin: 'inferred_static',
+      metadata: {},
+    },
     metadata: {},
   };
 }
@@ -62,7 +74,14 @@ describe('run metric columns', () => {
       )
     ).toEqual([
       expect.objectContaining({ id: 'final_validation_loss', label: 'Loss' }),
-      expect.objectContaining({ id: 'custom_success_rate', label: 'Success rate', units: '%' }),
+      expect.objectContaining({
+        id: 'custom_success_rate',
+        label: 'Success rate',
+        units: '%',
+        metadata: expect.objectContaining({
+          value_schema: expect.objectContaining({ units: '%' }),
+        }),
+      }),
     ]);
   });
 
