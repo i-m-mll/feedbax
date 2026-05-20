@@ -50,6 +50,11 @@ describe('delayed reach task timeline helpers', () => {
         dtype: 'float32',
         shape: ['time', 2],
         frame: 'cartesian_effector',
+        metadata: {
+          storage: 'compact_task_params',
+          compact_representation: 'delayed_reach_task_params_v1',
+          materializes_to: { dtype: 'float32', shape: ['time', 2] },
+        },
       },
       task_data_schema: {
         id: 'task_data:move',
@@ -58,6 +63,11 @@ describe('delayed reach task timeline helpers', () => {
           id: 'value:task_timeline:move',
         },
       },
+    });
+    expect(timeline.metadata).toMatchObject({
+      representation: 'delayed_reach_task_params_v1',
+      storage: 'compact_task_params',
+      materializes_targets: true,
     });
   });
 

@@ -341,6 +341,7 @@ class StudioTaskDataSpec(BaseModel):
     id: str
     label: str
     kind: str
+    role: Optional[str] = None
     path: str
     bindable: bool
     expected_shape: Optional[List[Any]] = None

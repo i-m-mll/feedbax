@@ -1279,13 +1279,7 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional
 
         def _run_trial(trial_spec, init_state, key):
             inputs = _prepare_inputs(model, trial_spec.inputs)
-            # Bug: 7d6dad4 — prefer timeline.n_steps when available; falls back to
-            # inferring from input array shape when timeline has no n_steps set.
-            timeline = getattr(trial_spec, 'timeline', None)
-            if timeline is not None and getattr(timeline, 'n_steps', None) is not None:
-                n_steps = timeline.n_steps
-            else:
-                n_steps = _infer_n_steps(inputs)
+            n_steps = _infer_n_steps(inputs, getattr(trial_spec, "timeline", None))
             # Extract time-varying intervention params and add as model inputs.
             # These are routed to intervenor params_override ports via input
             # bindings added by intervention_compat graph surgery.

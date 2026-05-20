@@ -134,10 +134,24 @@ export type StudioTaskDataKind =
   | 'protocol_value'
   | string;
 
+export type StudioTaskDataRole =
+  | 'model_input'
+  | 'graph_input'
+  | 'target'
+  | 'initial_state'
+  | 'intervention'
+  | 'eval_control'
+  | 'trial_control'
+  | 'compact_task_trajectory'
+  | 'materialized_task_trajectory'
+  | 'protocol_value'
+  | string;
+
 export interface StudioTaskDataSpec {
   id: string;
   label: string;
   kind: StudioTaskDataKind;
+  role?: StudioTaskDataRole | null;
   path: string;
   bindable: boolean;
   expected_shape?: unknown[] | null;
@@ -259,6 +273,7 @@ export interface TaskDataSchema {
   id: string;
   label: string;
   kind: string;
+  role: string;
   path: string;
   bindable: boolean;
   value_schema: ValueSchema;

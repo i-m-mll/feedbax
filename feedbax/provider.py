@@ -26,6 +26,7 @@ from feedbax.manifest import (
     utc_now,
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
@@ -654,7 +655,139 @@ def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidation
                 location={"path": "/type"},
             )
         )
+    errors.extend(_validate_task_n_steps(spec))
+    if spec.type in {"DelayedReaches", "feedbax.task.DelayedReaches"}:
+        errors.extend(_validate_delayed_reaches_task_params(spec.params))
     return ProviderValidationResult(valid=not errors, errors=errors)
+
+
+def _validate_task_n_steps(spec: TaskSpec) -> list[ValidationIssue]:
+    errors: list[ValidationIssue] = []
+    parsed_values: list[tuple[str, int]] = []
+    for path, value in task_n_steps_values(spec):
+        parsed = parse_positive_n_steps(value)
+        if parsed is None:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_task_n_steps",
+                    message="Task step count must be a positive integer",
+                    location={"path": path},
+                )
+            )
+        else:
+            parsed_values.append((path, parsed))
+
+    distinct = {value for _path, value in parsed_values}
+    if len(distinct) > 1:
+        paths = ", ".join(f"{path}={value}" for path, value in parsed_values)
+        errors.append(
+            ValidationIssue(
+                type="task_n_steps_mismatch",
+                message=f"Task step-count declarations disagree: {paths}",
+                location={"path": "/"},
+            )
+        )
+    return errors
+
+
+def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[ValidationIssue]:
+    """Validate compact DelayedReaches task params at the Studio boundary."""
+    errors: list[ValidationIssue] = []
+    dense_keys = [
+        key
+        for key in ("targets", "target_pos", "target_vel", "validation_trials")
+        if key in params
+    ]
+    for key in dense_keys:
+        errors.append(
+            ValidationIssue(
+                type="dense_task_trajectory_not_allowed",
+                message=(
+                    f"DelayedReaches params must store compact task parameters; "
+                    f"remove dense trajectory field {key!r}"
+                ),
+                location={"path": f"/params/{key}"},
+            )
+        )
+
+    epoch_len_ranges = params.get("epoch_len_ranges", [[5, 15], [10, 20]])
+    if not isinstance(epoch_len_ranges, list):
+        errors.append(
+            ValidationIssue(
+                type="invalid_epoch_len_ranges",
+                message="DelayedReaches epoch_len_ranges must be a list of [min, max] pairs",
+                location={"path": "/params/epoch_len_ranges"},
+            )
+        )
+        return errors
+
+    for index, item in enumerate(epoch_len_ranges):
+        if not isinstance(item, list) or len(item) != 2:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_epoch_len_range",
+                    message="Each DelayedReaches epoch_len_ranges entry must be [min, max]",
+                    location={"path": f"/params/epoch_len_ranges/{index}"},
+                )
+            )
+            continue
+        try:
+            lower = int(item[0])
+            upper = int(item[1])
+        except (TypeError, ValueError):
+            errors.append(
+                ValidationIssue(
+                    type="invalid_epoch_len_range",
+                    message="DelayedReaches epoch lengths must be integers",
+                    location={"path": f"/params/epoch_len_ranges/{index}"},
+                )
+            )
+            continue
+        if lower < 0 or upper < lower:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_epoch_len_range",
+                    message="DelayedReaches epoch length ranges must satisfy 0 <= min <= max",
+                    location={"path": f"/params/epoch_len_ranges/{index}"},
+                )
+            )
+
+    epoch_count = len(epoch_len_ranges) + 1
+    for key in ("target_on_epochs", "hold_epochs", "move_epochs"):
+        value = params.get(key, [])
+        if not isinstance(value, list):
+            errors.append(
+                ValidationIssue(
+                    type="invalid_epoch_index_list",
+                    message=f"DelayedReaches {key} must be a list of epoch indexes",
+                    location={"path": f"/params/{key}"},
+                )
+            )
+            continue
+        for index, item in enumerate(value):
+            try:
+                epoch_index = int(item)
+            except (TypeError, ValueError):
+                errors.append(
+                    ValidationIssue(
+                        type="invalid_epoch_index",
+                        message=f"DelayedReaches {key} entries must be integer epoch indexes",
+                        location={"path": f"/params/{key}/{index}"},
+                    )
+                )
+                continue
+            if epoch_index < 0 or epoch_index >= epoch_count:
+                errors.append(
+                    ValidationIssue(
+                        type="invalid_epoch_index",
+                        message=(
+                            f"DelayedReaches {key} entry {epoch_index} is outside "
+                            f"the configured epoch range [0, {epoch_count - 1}]"
+                        ),
+                        location={"path": f"/params/{key}/{index}"},
+                    )
+                )
+    return errors
 
 
 def validate_evaluation_spec(

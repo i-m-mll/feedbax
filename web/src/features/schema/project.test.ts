@@ -65,6 +65,7 @@ function taskBindingSpec(sourceDataId = 'inputs'): StudioTaskBindingSpec {
         id: 'inputs',
         label: 'Inputs',
         kind: 'signal',
+        role: 'model_input',
         path: 'inputs',
         bindable: true,
         dtype: 'vector',
@@ -74,6 +75,7 @@ function taskBindingSpec(sourceDataId = 'inputs'): StudioTaskBindingSpec {
         id: 'targets',
         label: 'Targets',
         kind: 'target',
+        role: 'target',
         path: 'targets',
         bindable: false,
         dtype: 'scalar',
@@ -143,6 +145,22 @@ describe('projectStudioSchema', () => {
 
     expect(issueTypes).toContain('task_data_not_bindable');
     expect(issueTypes).toContain('task_binding_target_occupied');
+  });
+
+  it('keeps protocol Task Data out of graph-facing task bindings', () => {
+    const spec = taskBindingSpec('targets');
+    spec.exposed_data[1].bindable = true;
+
+    const registry = projectStudioSchema(graph, components, spec);
+    const targetData = registry.task_data.find((data) => data.path === 'targets');
+    const issueTypes = new Set(registry.issues.map((issue) => issue.type));
+
+    expect(targetData?.role).toBe('target');
+    expect(targetData?.bindable).toBe(false);
+    expect(targetData?.metadata.task_data_surface).toBe('protocol');
+    expect(issueTypes).toContain('task_data_bindable_role_mismatch');
+    expect(issueTypes).toContain('task_data_protocol_path_bindable');
+    expect(issueTypes).toContain('task_data_not_bindable');
   });
 
   it('exposes connection validation for canvas guards', () => {
