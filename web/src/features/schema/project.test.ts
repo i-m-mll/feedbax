@@ -157,4 +157,62 @@ describe('projectStudioSchema', () => {
 
     expect(issues.map((issue) => issue.type)).toContain('graph_wire_dtype_mismatch');
   });
+
+  it('validates typed intervention taps against selector schemas', () => {
+    const registry = projectStudioSchema(
+      {
+        ...graph,
+        taps: [
+          {
+            id: 'good-clamp',
+            type: 'intervention',
+            position: { afterNode: 'source' },
+            paths: {},
+            transform: {
+              type: 'intervention',
+              params: {},
+              intervention: {
+                operation: 'clamp',
+                target_selector: {
+                  namespace: 'graph_port',
+                  compact: 'port:source.output',
+                  target_id: 'source',
+                  path: 'output',
+                  role: 'observed',
+                  metadata: {},
+                },
+                bounds: { min: 0, max: 1 },
+                metadata: {},
+              },
+            },
+          },
+          {
+            id: 'bad-offset',
+            type: 'intervention',
+            position: { afterNode: 'sink' },
+            paths: {},
+            transform: {
+              type: 'intervention',
+              params: {},
+              intervention: {
+                operation: 'offset',
+                target_selector: {
+                  namespace: 'custom',
+                  compact: 'path:missing',
+                  role: 'observed',
+                  metadata: {},
+                },
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+      components
+    );
+    const issueTypes = new Set(registry.issues.map((issue) => issue.type));
+
+    expect(issueTypes).toContain('intervention_unknown_target');
+    expect(issueTypes).not.toContain('intervention_missing_bounds');
+  });
 });

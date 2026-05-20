@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
-import { probeEntityId } from '@/features/scenario/entities';
+import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { buildScenarioEntityRegistry, probeEntityId } from '@/features/scenario/entities';
+import {
+  selectorDetail,
+  selectorDisplayLabel,
+  selectorOptionsForRegistry,
+  type StudioSelectorOption,
+} from '@/features/scenario/selectors';
+import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { useComponents } from '@/hooks/useComponents';
 import type { ParamSchema, ParamValue, TapSpec } from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
+import type {
+  StudioInterventionOperation,
+  StudioInterventionTransformSpec,
+  StudioSelectorRef,
+  StudioValueSpec,
+} from '@/types/workspace';
 import { FigOpsSection, DependencyPortsSection } from '@/components/analysis/FigOpsSection';
 import clsx from 'clsx';
 
@@ -19,10 +32,29 @@ export function PropertiesPanel() {
   const removeTap = useGraphStore((state) => state.removeTap);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const workspace = useWorkspaceStore((state) => state.workspace);
   const selectedTapId = useGraphStore((state) => state.selectedTapId);
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId);
   const edges = useGraphStore((state) => state.edges);
   const { components } = useComponents();
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const schemaQuery = useStudioSchemaRegistry(
+    workspace,
+    activeStage?.scenario_id ?? activeScenario?.id ?? null
+  );
+  const scenarioRegistry = useMemo(
+    () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
+    [activeScenario, graph]
+  );
+  const selectorOptions = useMemo(
+    () =>
+      selectorOptionsForRegistry({
+        registry: scenarioRegistry,
+        schemaRegistry: schemaQuery.data ?? null,
+      }),
+    [scenarioRegistry, schemaQuery.data]
+  );
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.selected && node.type !== 'tap'),
@@ -49,6 +81,7 @@ export function PropertiesPanel() {
       <TapEditor
         tap={selectedTap}
         nodeIds={Object.keys(graph.nodes)}
+        selectorOptions={selectorOptions}
         onUpdate={(updates) => updateTap(selectedTap.id, updates)}
         onRemove={() => removeTap(selectedTap.id)}
       />
@@ -252,14 +285,51 @@ export function PropertiesPanel() {
   );
 }
 
+function parseNumericDraft(value: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function constantInterventionValue(
+  value: unknown,
+  intervention: StudioInterventionTransformSpec
+): StudioValueSpec {
+  return {
+    schema_version: 'feedbax.studio.value.v1',
+    mode: 'constant',
+    value,
+    dtype: intervention.target_selector?.dtype ?? null,
+    shape: intervention.target_selector?.expected_shape ?? null,
+    units: intervention.target_selector?.units ?? null,
+    frame: intervention.target_selector?.frame ?? null,
+    metadata: {},
+  };
+}
+
+function defaultInterventionSpec(
+  selector: StudioSelectorRef | null | undefined
+): StudioInterventionTransformSpec {
+  return {
+    operation: 'clamp',
+    target_selector: selector ?? null,
+    bounds: null,
+    value: null,
+    parameters: null,
+    metadata: {},
+  };
+}
+
 function TapEditor({
   tap,
   nodeIds,
+  selectorOptions,
   onUpdate,
   onRemove,
 }: {
   tap: TapSpec;
   nodeIds: string[];
+  selectorOptions: StudioSelectorOption[];
   onUpdate: (updates: Partial<TapSpec>) => void;
   onRemove: () => void;
 }) {
@@ -267,15 +337,40 @@ function TapEditor({
   const [newOutputPath, setNewOutputPath] = useState('');
 
   const transform = tap.transform ?? { type: 'custom', params: {} };
+  const intervention =
+    transform.intervention ?? defaultInterventionSpec(selectorOptions[0]?.selector);
   const [transformJson, setTransformJson] = useState(
     JSON.stringify(transform.params ?? {}, null, 2)
   );
   const [transformType, setTransformType] = useState(transform.type ?? 'custom');
+  const [interventionValueJson, setInterventionValueJson] = useState(
+    JSON.stringify(intervention.value?.value ?? null, null, 2)
+  );
 
   useEffect(() => {
     setTransformType(transform.type ?? 'custom');
     setTransformJson(JSON.stringify(transform.params ?? {}, null, 2));
+    setInterventionValueJson(
+      JSON.stringify(transform.intervention?.value?.value ?? null, null, 2)
+    );
   }, [tap.id, tap.transform]);
+
+  const updateIntervention = (updates: Partial<StudioInterventionTransformSpec>) => {
+    onUpdate({
+      transform: {
+        type: transformType || transform.type || 'intervention',
+        params: transform.params ?? {},
+        intervention: {
+          ...intervention,
+          ...updates,
+          metadata: {
+            ...(intervention.metadata ?? {}),
+            ...(updates.metadata ?? {}),
+          },
+        },
+      },
+    });
+  };
 
   const updatePaths = (next: Record<string, string>) => {
     onUpdate({ paths: next });
@@ -317,7 +412,11 @@ function TapEditor({
     } else {
       onUpdate({
         type: nextType,
-        transform: tap.transform ?? { type: 'custom', params: {} },
+        transform: tap.transform ?? {
+          type: 'intervention',
+          params: {},
+          intervention: defaultInterventionSpec(selectorOptions[0]?.selector),
+        },
       });
     }
   };
@@ -435,7 +534,112 @@ function TapEditor({
       {tap.type === 'intervention' && (
         <div className="border-t border-slate-100 pt-4 space-y-3">
           <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
-            Transform
+            Targeting
+          </div>
+          <label className="flex flex-col gap-1 text-xs text-slate-500">
+            Operation
+            <select
+              value={intervention.operation}
+              onChange={(event) =>
+                updateIntervention({
+                  operation: event.target.value as StudioInterventionOperation,
+                })
+              }
+              className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+            >
+              <option value="clamp">Clamp</option>
+              <option value="noise">Noise</option>
+              <option value="constant">Constant</option>
+              <option value="offset">Offset</option>
+              <option value="scale">Scale</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-500">
+            Target
+            <select
+              value={intervention.target_selector?.compact ?? ''}
+              onChange={(event) => {
+                const option = selectorOptions.find(
+                  (candidate) => candidate.selector.compact === event.target.value
+                );
+                updateIntervention({ target_selector: option?.selector ?? null });
+              }}
+              className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+            >
+              <option value="">Select target</option>
+              {selectorOptions.map((option) => (
+                <option key={option.id} value={option.selector.compact}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {intervention.target_selector && (
+            <div className="rounded-md border border-slate-100 bg-slate-50 px-2 py-1.5 text-xs text-slate-500">
+              <div className="font-medium text-slate-700">
+                {selectorDisplayLabel(intervention.target_selector)}
+              </div>
+              <div className="mt-0.5">{selectorDetail(intervention.target_selector)}</div>
+            </div>
+          )}
+          {intervention.operation === 'clamp' ? (
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1 text-xs text-slate-500">
+                Min
+                <input
+                  value={String(intervention.bounds?.min ?? '')}
+                  onChange={(event) =>
+                    updateIntervention({
+                      bounds: {
+                        ...(intervention.bounds ?? {}),
+                        min: parseNumericDraft(event.target.value),
+                      },
+                    })
+                  }
+                  className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-slate-500">
+                Max
+                <input
+                  value={String(intervention.bounds?.max ?? '')}
+                  onChange={(event) =>
+                    updateIntervention({
+                      bounds: {
+                        ...(intervention.bounds ?? {}),
+                        max: parseNumericDraft(event.target.value),
+                      },
+                    })
+                  }
+                  className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+                />
+              </label>
+            </div>
+          ) : (
+            <label className="flex flex-col gap-1 text-xs text-slate-500">
+              Value (JSON)
+              <textarea
+                rows={3}
+                value={interventionValueJson}
+                onChange={(event) => setInterventionValueJson(event.target.value)}
+                onBlur={() => {
+                  try {
+                    updateIntervention({
+                      value: constantInterventionValue(
+                        JSON.parse(interventionValueJson),
+                        intervention
+                      ),
+                    });
+                  } catch {
+                    // ignore invalid JSON
+                  }
+                }}
+                className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700 font-mono"
+              />
+            </label>
+          )}
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
+            Runtime Transform
           </div>
           <label className="flex flex-col gap-1 text-xs text-slate-500">
             Type
@@ -447,6 +651,7 @@ function TapEditor({
                   transform: {
                     type: transformType || 'custom',
                     params: transform.params ?? {},
+                    intervention: transform.intervention ?? null,
                   },
                 })
               }
@@ -466,6 +671,7 @@ function TapEditor({
                     transform: {
                       type: transformType || 'custom',
                       params: parsed,
+                      intervention: transform.intervention ?? null,
                     },
                   });
                 } catch {

@@ -211,6 +211,14 @@ def enumerate_studio_schema_registry(
     registry.selector_targets.extend(_explicit_probe_selector_targets(scenario.probe_specs))
     registry.selector_targets.extend(_known_state_hint_targets())
     registry.selector_targets = _dedupe_selector_targets(registry.selector_targets)
+    if scenario.graph is not None:
+        registry.issues.extend(
+            validate_intervention_schema(
+                scenario.graph,
+                registry.selector_targets,
+                f"/scenarios/{scenario.id}/graph",
+            )
+        )
     return registry
 
 
@@ -639,6 +647,230 @@ def validate_task_binding_schema(
             )
         binding_targets.add(target)
     return issues
+
+
+def validate_intervention_schema(
+    graph: GraphSpec,
+    selector_targets: list[SelectorTargetSchema],
+    base_path: str = "",
+) -> list[SchemaValidationIssue]:
+    """Validate typed intervention tap semantics against selector target schemas."""
+
+    issues: list[SchemaValidationIssue] = []
+    by_selector = {target.selector: target for target in selector_targets}
+    by_id = {target.id: target for target in selector_targets}
+    for index, tap in enumerate(graph.taps or []):
+        if tap.type != "intervention":
+            continue
+        path = f"{base_path}/taps/{index}/transform/intervention"
+        intervention = tap.transform.intervention if tap.transform is not None else None
+        if intervention is None:
+            issues.append(
+                SchemaValidationIssue(
+                    type="intervention_missing_spec",
+                    message=f"Intervention tap {tap.id!r} needs a typed target and operation",
+                    location={"path": path},
+                )
+            )
+            continue
+
+        operation = intervention.operation
+        if operation not in {"clamp", "noise", "constant", "offset", "scale"}:
+            issues.append(
+                SchemaValidationIssue(
+                    type="intervention_unknown_operation",
+                    message=(
+                        f"Intervention operation {operation!r} is not supported "
+                        "by schema validation"
+                    ),
+                    location={"path": f"{path}/operation"},
+                )
+            )
+            continue
+
+        target_selector = intervention.target_selector
+        schema_target_id = None
+        if target_selector is not None:
+            schema_target_id = target_selector.metadata.get("schema_target_id")
+        target = (
+            by_id.get(schema_target_id)
+            if isinstance(schema_target_id, str)
+            else None
+        )
+        if target is None and target_selector is not None:
+            target = by_selector.get(target_selector.compact)
+        if target is None:
+            compact = target_selector.compact if target_selector is not None else None
+            issues.append(
+                SchemaValidationIssue(
+                    type="intervention_unknown_target",
+                    message=(
+                        f"Intervention target {compact!r} is not in the selector "
+                        "schema registry"
+                    ),
+                    location={"path": f"{path}/target_selector"},
+                )
+            )
+            continue
+
+        issues.extend(
+            _intervention_numeric_schema_issues(
+                operation,
+                target.value_schema,
+                path,
+                target.label,
+            )
+        )
+
+        if operation == "clamp" and not _has_clamp_bound(intervention.bounds):
+            issues.append(
+                SchemaValidationIssue(
+                    type="intervention_missing_bounds",
+                    message=f"Clamp intervention for {target.label} needs at least one bound",
+                    location={"path": f"{path}/bounds"},
+                )
+            )
+        if operation in {"constant", "offset", "scale"} and intervention.value is None:
+            issues.append(
+                SchemaValidationIssue(
+                    type="intervention_missing_value",
+                    message=f"{operation} intervention for {target.label} needs a value spec",
+                    location={"path": f"{path}/value"},
+                )
+            )
+        if operation == "noise" and not _has_noise_scale(intervention):
+            issues.append(
+                SchemaValidationIssue(
+                    type="intervention_missing_noise_scale",
+                    message=f"Noise intervention for {target.label} needs a scale or std value",
+                    location={"path": f"{path}/value"},
+                )
+            )
+
+        if intervention.value is not None:
+            compatible = _intervention_shape_compatible(
+                intervention.value.shape,
+                target.value_schema.shape,
+            )
+            if compatible is False:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="intervention_value_shape_mismatch",
+                        message=(
+                            f"Intervention value shape {intervention.value.shape!r} "
+                            f"does not match {target.label} shape "
+                            f"{target.value_schema.shape!r}"
+                        ),
+                        location={"path": f"{path}/value/shape"},
+                    )
+                )
+            elif (
+                compatible is None
+                and operation in {"constant", "offset"}
+                and target.value_schema.shape is not None
+            ):
+                issues.append(
+                    SchemaValidationIssue(
+                        type="intervention_value_unknown_shape",
+                        message=(
+                            f"Intervention value for {target.label} cannot be "
+                            "shape-checked from static schema data"
+                        ),
+                        severity="warning",
+                        location={"path": f"{path}/value"},
+                    )
+                )
+    return issues
+
+
+def _intervention_numeric_schema_issues(
+    operation: str,
+    schema: ValueSchema,
+    path: str,
+    label: str,
+) -> list[SchemaValidationIssue]:
+    numeric = _is_numeric_schema(schema)
+    if numeric is False:
+        return [
+            SchemaValidationIssue(
+                type="intervention_target_dtype_mismatch",
+                message=(
+                    f"{operation} intervention target {label} has non-numeric "
+                    f"dtype {schema.dtype!r}"
+                ),
+                location={"path": path},
+            )
+        ]
+    if numeric is None or schema.origin == "unknown":
+        return [
+            SchemaValidationIssue(
+                type="intervention_target_unknown_schema",
+                message=(
+                    f"{operation} intervention target {label} cannot be fully "
+                    "checked from static schema data"
+                ),
+                severity="warning",
+                location={"path": path},
+            )
+        ]
+    return []
+
+
+def _is_numeric_schema(schema: ValueSchema) -> Optional[bool]:
+    if schema.dtype is None:
+        return None
+    dtype = schema.dtype.lower()
+    if dtype in {
+        "float",
+        "float16",
+        "float32",
+        "float64",
+        "int",
+        "int16",
+        "int32",
+        "int64",
+        "uint",
+        "uint16",
+        "uint32",
+        "uint64",
+        "number",
+        "scalar",
+        "vector",
+        "array",
+        "tensor",
+    }:
+        return True
+    if "float" in dtype or "int" in dtype:
+        return True
+    return False
+
+
+def _has_clamp_bound(bounds: Any) -> bool:
+    return bounds is not None and (bounds.min is not None or bounds.max is not None)
+
+
+def _has_noise_scale(intervention: Any) -> bool:
+    parameters = intervention.parameters or {}
+    return (
+        intervention.value is not None
+        or parameters.get("scale") is not None
+        or parameters.get("std") is not None
+        or parameters.get("noise_std") is not None
+    )
+
+
+def _intervention_shape_compatible(
+    source_shape: Optional[list[Any]],
+    target_shape: Optional[list[Any]],
+) -> Optional[bool]:
+    if source_shape is None or target_shape is None:
+        return None
+    if len(source_shape) != len(target_shape):
+        return False
+    return all(
+        _shape_dim_matches(source_dim, target_dim)
+        for source_dim, target_dim in zip(source_shape, target_shape)
+    )
 
 
 def _value_schema_compatibility_issues(

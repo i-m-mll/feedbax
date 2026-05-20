@@ -1,3 +1,5 @@
+import type { StudioInterventionTransformSpec } from '@/types/workspace';
+
 export type ParamPrimitive = number | string | boolean | null;
 
 export interface ParamValueObject {
@@ -36,6 +38,7 @@ export interface UserPortSpec {
 export interface TapTransform {
   type: string;
   params: ParamValueObject;
+  intervention?: StudioInterventionTransformSpec | null;
 }
 
 export interface TapSpec {

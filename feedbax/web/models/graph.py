@@ -57,6 +57,7 @@ class TapTransform(BaseModel):
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
+    intervention: Optional["StudioInterventionTransformSpec"] = None
 
 
 class TapSpec(BaseModel):
@@ -266,6 +267,39 @@ class StudioValueSpec(BaseModel):
     shape: Optional[List[Any]] = None
     units: Optional[str] = None
     frame: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioSelectorRef(BaseModel):
+    """Typed reference to a schema-backed Studio selector target."""
+
+    namespace: str
+    compact: str
+    target_id: Optional[str] = None
+    path: Optional[str] = None
+    expected_shape: Optional[List[Any]] = None
+    dtype: Optional[str] = None
+    units: Optional[str] = None
+    frame: Optional[str] = None
+    role: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioInterventionValueBounds(BaseModel):
+    """Optional lower and upper bounds for clamp-style interventions."""
+
+    min: Optional[Any] = None
+    max: Optional[Any] = None
+
+
+class StudioInterventionTransformSpec(BaseModel):
+    """Narrow Studio-authored intervention semantics for graph taps."""
+
+    operation: str
+    target_selector: Optional[StudioSelectorRef] = None
+    value: Optional[StudioValueSpec] = None
+    bounds: Optional[StudioInterventionValueBounds] = None
+    parameters: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
