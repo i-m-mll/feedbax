@@ -2,6 +2,8 @@
 
 ::: feedbax.plot.loss_history
 
+::: feedbax.plot.loss_history_compare
+
 ::: feedbax.plot.loss_mean_history
 
 ::: feedbax.plot.effector_trajectories

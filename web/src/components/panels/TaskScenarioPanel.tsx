@@ -1,6 +1,13 @@
 import { useMemo } from 'react';
 import { PlugZap, Settings2 } from 'lucide-react';
 import { createDefaultTaskBindingSpec, ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import {
+  delayedReachTaskWithTimeline,
+  delayedReachTimelineFromTask,
+  isDelayedReachTimelineParam,
+  toggleDelayedReachSignalEpoch,
+  updateDelayedReachEpochRange,
+} from '@/features/scenario/taskTimeline';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getTopPaneState,
@@ -9,6 +16,7 @@ import {
 } from '@/stores/workspaceStore';
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
+import type { StudioTaskTimelineSpec } from '@/types/workspace';
 
 const TASK_CATALOG: TaskSpec[] = [
   {
@@ -29,6 +37,13 @@ const TASK_CATALOG: TaskSpec[] = [
     params: {
       n_steps: 140,
       train_endpoint_mode: 'center_out',
+      epoch_len_ranges: [
+        [0, 1],
+        [10, 30],
+      ],
+      target_on_epochs: [1, 2],
+      hold_epochs: [0, 1],
+      move_epochs: [2],
       p_catch_trial: 0.5,
       eval_n_directions: 8,
       eval_reach_length: 0.5,
@@ -116,6 +131,115 @@ function ParamEditor({
   );
 }
 
+function DelayedReachTimelineEditor({
+  timeline,
+  onChange,
+}: {
+  timeline: StudioTaskTimelineSpec;
+  onChange: (timeline: StudioTaskTimelineSpec) => void;
+}) {
+  const editableEpochs = timeline.epochs.slice(0, -1);
+  return (
+    <section className="space-y-2">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+        Timeline
+      </div>
+      <div className="overflow-hidden rounded border border-slate-100">
+        <div
+          className="grid bg-slate-50/80 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-400"
+          style={{ gridTemplateColumns: `72px repeat(${timeline.epochs.length}, minmax(58px, 1fr))` }}
+        >
+          <div className="px-2 py-1.5">Signal</div>
+          {timeline.epochs.map((epoch) => (
+            <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
+              {epoch.label}
+            </div>
+          ))}
+        </div>
+        <div
+          className="grid items-center border-t border-slate-100 text-xs"
+          style={{ gridTemplateColumns: `72px repeat(${timeline.epochs.length}, minmax(58px, 1fr))` }}
+        >
+          <div className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
+            Length
+          </div>
+          {timeline.epochs.map((epoch) => {
+            const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
+            const inferred = Boolean(epoch.length.metadata.inferred_from_remaining_steps);
+            return (
+              <div key={epoch.id} className="border-l border-slate-100 px-1 py-1.5">
+                {inferred ? (
+                  <div className="truncate text-center text-[10px] text-slate-400">remaining</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-1">
+                    {(['min', 'max'] as const).map((key) => (
+                      <input
+                        key={key}
+                        type="number"
+                        min={0}
+                        value={Number(value?.[key] ?? 0)}
+                        onChange={(event) =>
+                          onChange(
+                            updateDelayedReachEpochRange(
+                              timeline,
+                              epoch.id,
+                              key,
+                              Number(event.target.value)
+                            )
+                          )
+                        }
+                        className="h-6 min-w-0 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
+                        aria-label={`${epoch.label} ${key} length`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {timeline.signals.map((signal) => (
+          <div
+            key={signal.id}
+            className="grid items-center border-t border-slate-100 text-xs"
+            style={{ gridTemplateColumns: `72px repeat(${timeline.epochs.length}, minmax(58px, 1fr))` }}
+          >
+            <div className="truncate px-2 py-1.5 font-medium text-slate-600">{signal.label}</div>
+            {timeline.epochs.map((epoch) => (
+              <label
+                key={epoch.id}
+                className="flex h-8 items-center justify-center border-l border-slate-100"
+                title={`${signal.label} during ${epoch.label}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={signal.epoch_ids.includes(epoch.id)}
+                  onChange={(event) =>
+                    onChange(
+                      toggleDelayedReachSignalEpoch(
+                        timeline,
+                        signal.id,
+                        epoch.id,
+                        event.target.checked
+                      )
+                    )
+                  }
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+      {editableEpochs.length > 0 && (
+        <div className="text-[10px] text-slate-400">
+          Length ranges are sampled per trial; final epoch uses remaining steps.
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function TaskScenarioPanel() {
   const graph = useGraphStore((state) => state.graph);
   const markDirty = useGraphStore((state) => state.markDirty);
@@ -134,7 +258,10 @@ export function TaskScenarioPanel() {
 
   if (topPane.active_projection !== 'graph') return null;
 
-  const params = Object.entries(task.params ?? {});
+  const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
+  const params = Object.entries(task.params ?? {}).filter(
+    ([key]) => !(timeline && isDelayedReachTimelineParam(key))
+  );
   const bindableOutputs = taskBindingSpec.exposed_outputs.filter((output) => output.bindable);
   const protocolOutputs = taskBindingSpec.exposed_outputs.filter((output) => !output.bindable);
   const boundTarget = (nodeId: string, port: string) => `${nodeId}.${port}`;
@@ -153,6 +280,10 @@ export function TaskScenarioPanel() {
     if (!next) return;
     updateTaskSpec(next);
     updateTaskBindingSpec(createDefaultTaskBindingSpec(graph));
+    markDirty();
+  };
+  const updateTimeline = (nextTimeline: StudioTaskTimelineSpec) => {
+    updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
     markDirty();
   };
 
@@ -199,6 +330,7 @@ export function TaskScenarioPanel() {
         </div>
       </section>
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        {timeline && <DelayedReachTimelineEditor timeline={timeline} onChange={updateTimeline} />}
         <section className="space-y-2">
           <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
             Parameters

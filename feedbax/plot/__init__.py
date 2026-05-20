@@ -6,7 +6,7 @@ from .colors import (
 )
 from .io import save_figure, save_figure_with_spec
 from .misc import AxesLabels
-from .plotly import loss_history
+from .plotly import loss_history, loss_history_compare
 from .profiles import profiles
 from .trajectories import (
     trajectories,

@@ -144,7 +144,7 @@ export interface StudioTaskOutputSpec {
   dtype?: string | null;
   units?: string | null;
   frame?: string | null;
-  value_spec?: Record<string, unknown> | null;
+  value_spec?: StudioValueSpec | null;
   metadata: Record<string, unknown>;
 }
 
@@ -161,6 +161,66 @@ export interface StudioTaskBindingSpec {
   schema_version: 'feedbax.studio.task_bindings.v1' | string;
   exposed_outputs: StudioTaskOutputSpec[];
   bindings: StudioTaskBinding[];
+  metadata: Record<string, unknown>;
+}
+
+export type StudioValueSpecMode =
+  | 'constant'
+  | 'reference'
+  | 'expression'
+  | 'function'
+  | 'distribution'
+  | 'schedule'
+  | string;
+
+export interface StudioValueSpec {
+  schema_version: 'feedbax.studio.value.v1' | string;
+  mode: StudioValueSpecMode;
+  value?: unknown;
+  reference?: StudioSelectorRef | null;
+  expression?: string | null;
+  function_id?: string | null;
+  parameters?: Record<string, unknown> | null;
+  distribution?: Record<string, unknown> | null;
+  schedule?: Record<string, unknown> | null;
+  sampling_scope?:
+    | 'snapshot'
+    | 'run'
+    | 'replicate'
+    | 'trial'
+    | 'epoch'
+    | 'timestep'
+    | 'sweep'
+    | string
+    | null;
+  dtype?: string | null;
+  shape?: unknown[] | null;
+  units?: string | null;
+  frame?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioTaskEpochSpec {
+  id: string;
+  label: string;
+  index: number;
+  length: StudioValueSpec;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioTaskTimelineSignalSpec {
+  id: string;
+  label: string;
+  kind: StudioTaskOutputKind | string;
+  path: string;
+  epoch_ids: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioTaskTimelineSpec {
+  schema_version: 'feedbax.studio.task_timeline.v1' | string;
+  epochs: StudioTaskEpochSpec[];
+  signals: StudioTaskTimelineSignalSpec[];
   metadata: Record<string, unknown>;
 }
 

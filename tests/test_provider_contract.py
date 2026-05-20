@@ -19,7 +19,8 @@ from feedbax.provider import (
     validate_training_spec,
 )
 from feedbax.web.app import create_app
-from feedbax.web.worker.app import WorkerStatus, _Job, _run_training_stub
+from feedbax.web.models.graph import StudioTaskTimelineSpec
+from feedbax.web.worker.app import WorkerStatus, _Job, _extract_training_cfg, _run_training_stub
 
 
 def _minimal_graph_spec() -> dict:
@@ -127,6 +128,42 @@ def test_graph_validation_rejects_task_nodes() -> None:
 
     assert not result.valid
     assert result.errors[0].type == "task_node_not_allowed"
+
+
+def test_studio_task_timeline_spec_validates_value_specs() -> None:
+    timeline = StudioTaskTimelineSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_timeline.v1",
+            "epochs": [
+                {
+                    "id": "epoch:0",
+                    "label": "hold",
+                    "index": 0,
+                    "length": {
+                        "schema_version": "feedbax.studio.value.v1",
+                        "mode": "constant",
+                        "value": {"min": 0, "max": 1},
+                        "metadata": {"scope": "trial"},
+                    },
+                    "metadata": {},
+                }
+            ],
+            "signals": [
+                {
+                    "id": "hold",
+                    "label": "Hold cue",
+                    "kind": "signal",
+                    "path": "inputs.hold",
+                    "epoch_ids": ["epoch:0"],
+                    "metadata": {},
+                }
+            ],
+            "metadata": {"task_type": "DelayedReaches"},
+        }
+    )
+
+    assert timeline.epochs[0].length.mode == "constant"
+    assert timeline.signals[0].epoch_ids == ["epoch:0"]
 
 
 def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path) -> None:
@@ -238,3 +275,13 @@ def test_worker_stub_emits_durable_training_manifest(
     complete = next(event for event in events if event["type"] == "training_complete")
     assert complete["manifest_id"] == job.manifest_payload["id"]
     assert complete["manifest_path"] == job.manifest_path
+
+
+def test_worker_training_cfg_uses_task_n_steps() -> None:
+    cfg = _extract_training_cfg(
+        {"n_batches": 4, "n_reach_steps": 80},
+        {"type": "DelayedReaches", "params": {"n_steps": 140}},
+    )
+
+    assert cfg.n_batches == 4
+    assert cfg.n_reach_steps == 140

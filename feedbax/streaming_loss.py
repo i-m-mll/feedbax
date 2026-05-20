@@ -6,11 +6,9 @@ index.  This eliminates the need to store the full state trajectory during
 training.
 
 The helper ``make_streaming_loss_fn`` analyses a ``CompositeLoss`` (or any
-``AbstractLoss``) and builds a closure ``(state_view, t) -> scalar`` that sums
-all per-step contributions.  Only loss types whose per-step contribution can be
-computed from the current state alone are supported; cross-timestep losses
-(e.g. ``EffectorStraightPathLoss``, ``StopAtGoalLoss``) raise
-``NotImplementedError``.
+``AbstractLoss``) and builds a closure that sums all per-step contributions.
+Per-step losses consume the current state. Cross-timestep losses declare their
+finite-difference order and consume a rolling window of recent states.
 
 :copyright: Copyright 2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
@@ -18,16 +16,20 @@ computed from the current state alone are supported; cross-timestep losses
 
 from __future__ import annotations
 
+import functools as ft
 from collections.abc import Callable, Mapping
 
 import equinox as eqx
+import jax.tree as jt
 import jax.numpy as jnp
 from jaxtyping import Array
 
 from feedbax._model import AbstractModel
+from feedbax._streaming import current_state_from_window
 from feedbax.loss import (
     AbstractLoss,
     CompositeLoss,
+    CrossTimestepLoss,
     ModelLoss,
     TargetSpec,
     TargetStateLoss,
@@ -42,9 +44,10 @@ def make_streaming_loss_fn(
 ) -> Callable:
     """Construct a per-step streaming loss function from a loss tree.
 
-    The returned function has signature ``(state_view, t) -> scalar`` and is
-    intended to be called inside ``lax.scan`` via ``iterate_component``'s
-    ``streaming_loss_fn`` parameter.
+    The returned function normally has signature ``(state_view, t) -> scalar``.
+    If any term is a ``CrossTimestepLoss``, it advertises
+    ``streaming_order > 0`` and expects a rolling state window with a leading
+    time axis of length ``streaming_order + 1`` instead of a single state.
 
     This function should be called *inside* ``filter_vmap`` so that
     ``trial_specs`` refers to a single trial (no batch dimension).
@@ -66,10 +69,11 @@ def make_streaming_loss_fn(
     # Collect (leaf_loss, cumulative_weight) pairs from the loss tree.
     terms = _collect_leaf_terms(loss_func, parent_weight=1.0)
 
-    # Separate into per-step terms (TargetStateLoss) and constant terms
+    # Separate into per-step terms, cross-timestep terms, and constant terms
     # (ModelLoss — independent of state, evaluated once).
     step_term_closures: list[Callable] = []
     constant_loss = jnp.float32(0.0)
+    streaming_order = 0
 
     for leaf_loss, cum_weight in terms:
         if isinstance(leaf_loss, ModelLoss):
@@ -89,6 +93,14 @@ def make_streaming_loss_fn(
             step_term_closures.append(closure)
             continue
 
+        if isinstance(leaf_loss, CrossTimestepLoss):
+            closure = _make_cross_timestep_closure(
+                leaf_loss, cum_weight, n_steps,
+            )
+            step_term_closures.append(closure)
+            streaming_order = max(streaming_order, leaf_loss.order)
+            continue
+
         raise NotImplementedError(
             f"{type(leaf_loss).__name__} does not support streaming loss. "
             "It requires the full trajectory and cannot be evaluated per-step. "
@@ -98,23 +110,31 @@ def make_streaming_loss_fn(
     # Freeze the list so the closure captures a tuple (JIT-friendly).
     _closures = tuple(step_term_closures)
     _const = constant_loss
+    _streaming_order = streaming_order
 
-    def streaming_fn(state_view, t):
+    def streaming_fn(state_or_window, t):
         """Per-step loss contribution.
 
         Args:
-            state_view: The component's state view at this timestep (single
-                trial, no batch dimension).
+            state_or_window: The component's state view at this timestep
+                (single trial, no batch dimension), or a rolling state window
+                when ``streaming_order > 0``.
             t: The 0-based timestep index (a JAX integer scalar).
 
         Returns:
             A scalar loss contribution for this timestep.
         """
         total = _const
+        current_state = (
+            current_state_from_window(state_or_window)
+            if _streaming_order > 0
+            else state_or_window
+        )
         for fn in _closures:
-            total = total + fn(state_view, t)
+            total = total + fn(state_or_window, current_state, t)
         return total
 
+    streaming_fn.streaming_order = streaming_order
     return streaming_fn
 
 
@@ -240,12 +260,54 @@ def _make_target_state_closure(
     norm_fn = loss.norm
     w = cum_weight
 
-    def _step(state_view, t):
-        state_component = where_fn(state_view)  # (features,) — single trial
+    def _step(state_window, current_state, t):
+        state_component = where_fn(current_state)  # (features,) — single trial
         tv = target_value[t] if target_is_time_varying else target_value
         error = norm_fn(state_component - tv)  # scalar
         weight_t = time_weights[t]
         return w * error * weight_t
+
+    return _step
+
+
+def _make_cross_timestep_closure(
+    loss: CrossTimestepLoss,
+    cum_weight: float,
+    n_steps: int,
+) -> Callable:
+    """Build a per-step closure for one cross-timestep finite-difference term."""
+    if loss.order < 1:
+        raise ValueError(f"{type(loss).__name__} order must be >= 1")
+    if n_steps <= loss.order:
+        raise ValueError(
+            f"{type(loss).__name__} order {loss.order} requires more than "
+            f"{loss.order} timesteps, got {n_steps}."
+        )
+
+    order = loss.order
+    denominator = jnp.asarray(n_steps - order, dtype=jnp.float32)
+    where_fn = loss.where
+    norm_fn = loss.norm
+    w = cum_weight
+
+    def _step(state_window, current_state, t):
+        substate = where_fn(state_window)
+
+        def _per_leaf(arr):
+            arr = arr[-(order + 1):]
+            d = jnp.diff(arr, n=order, axis=0)
+            d_norm = norm_fn(d)
+            return jnp.sum(d_norm, axis=0) / denominator
+
+        per_leaf = jt.map(_per_leaf, substate)
+        leaves = jt.leaves(per_leaf)
+        if not leaves:
+            raise ValueError(
+                f"{type(loss).__name__}('{loss.label}'): `where` returned no "
+                "array leaves to penalise."
+            )
+        value = ft.reduce(jnp.add, leaves)
+        return jnp.where(t >= order, w * value, jnp.asarray(0.0, dtype=value.dtype))
 
     return _step
 
