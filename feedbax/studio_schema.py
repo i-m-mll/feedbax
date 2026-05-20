@@ -179,6 +179,12 @@ def enumerate_studio_schema_registry(
         registry.ports = _enumerate_graph_ports(scenario.graph)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
         registry.selector_targets.extend(_graph_probe_selector_targets(scenario.graph))
+        registry.issues.extend(
+            validate_graph_connection_schema(
+                scenario.graph,
+                f"/scenarios/{scenario.id}/graph",
+            )
+        )
 
     if scenario.task_binding_spec is None:
         registry.issues.append(
@@ -193,7 +199,7 @@ def enumerate_studio_schema_registry(
         registry.task_data = _enumerate_task_data(scenario.task_binding_spec)
         registry.selector_targets.extend(_task_data_selector_targets(registry.task_data))
         registry.issues.extend(
-            _task_binding_issues(
+            validate_task_binding_schema(
                 scenario.task_binding_spec,
                 scenario.graph,
                 f"/scenarios/{scenario.id}/task_binding_spec",
@@ -206,6 +212,130 @@ def enumerate_studio_schema_registry(
     registry.selector_targets.extend(_known_state_hint_targets())
     registry.selector_targets = _dedupe_selector_targets(registry.selector_targets)
     return registry
+
+
+def validate_graph_connection_schema(
+    graph: GraphSpec,
+    base_path: str = "",
+) -> list[SchemaValidationIssue]:
+    """Validate graph wires against provider-owned port schema records."""
+
+    ports = _enumerate_graph_ports(graph)
+    by_node_port_direction = {
+        (port.node_id, port.port, port.direction): port
+        for port in ports
+        if port.node_id is not None
+    }
+    by_node_port = {
+        (port.node_id, port.port): port
+        for port in ports
+        if port.node_id is not None
+    }
+    occupied: dict[tuple[str, str], int] = {}
+    for binding in graph.input_bindings.values():
+        occupied[(binding[0], binding[1])] = -1
+
+    issues: list[SchemaValidationIssue] = []
+    for index, wire in enumerate(graph.wires):
+        wire_path = f"{base_path}/wires/{index}"
+        source = by_node_port_direction.get((wire.source_node, wire.source_port, "output"))
+        target = by_node_port_direction.get((wire.target_node, wire.target_port, "input"))
+        source_any_direction = by_node_port.get((wire.source_node, wire.source_port))
+        target_any_direction = by_node_port.get((wire.target_node, wire.target_port))
+
+        if source is None:
+            if source_any_direction is not None:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="wrong_source_port_direction",
+                        message=(
+                            f"Wire source {wire.source_node}.{wire.source_port} is "
+                            "not an output port"
+                        ),
+                        location={"path": f"{wire_path}/source_port"},
+                    )
+                )
+            elif wire.source_node in graph.nodes:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="unknown_source_port",
+                        message=(
+                            f"Wire source port "
+                            f"{wire.source_node}.{wire.source_port} does not exist"
+                        ),
+                        location={"path": f"{wire_path}/source_port"},
+                    )
+                )
+            else:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="unknown_source_node",
+                        message=f"Wire source node {wire.source_node!r} does not exist",
+                        location={"path": f"{wire_path}/source_node"},
+                    )
+                )
+
+        if target is None:
+            if target_any_direction is not None:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="wrong_target_port_direction",
+                        message=(
+                            f"Wire target {wire.target_node}.{wire.target_port} is "
+                            "not an input port"
+                        ),
+                        location={"path": f"{wire_path}/target_port"},
+                    )
+                )
+            elif wire.target_node in graph.nodes:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="unknown_target_port",
+                        message=(
+                            f"Wire target port "
+                            f"{wire.target_node}.{wire.target_port} does not exist"
+                        ),
+                        location={"path": f"{wire_path}/target_port"},
+                    )
+                )
+            else:
+                issues.append(
+                    SchemaValidationIssue(
+                        type="unknown_target_node",
+                        message=f"Wire target node {wire.target_node!r} does not exist",
+                        location={"path": f"{wire_path}/target_node"},
+                    )
+                )
+
+        target_key = (wire.target_node, wire.target_port)
+        previous = occupied.get(target_key)
+        if previous is not None:
+            location = (
+                f"{base_path}/input_bindings" if previous < 0 else f"{base_path}/wires/{previous}"
+            )
+            issues.append(
+                SchemaValidationIssue(
+                    type="graph_input_occupied",
+                    message=f"Input {wire.target_node}.{wire.target_port} is already occupied",
+                    location={"path": wire_path, "occupied_by": location},
+                )
+            )
+        occupied[target_key] = index
+
+        if source is None or target is None:
+            continue
+        issues.extend(
+            _value_schema_compatibility_issues(
+                source.value_schema,
+                target.value_schema,
+                path=wire_path,
+                source_label=source.label,
+                target_label=target.label,
+                issue_prefix="graph_wire",
+            )
+        )
+
+    return issues
 
 
 def _active_scenario_id(workspace: StudioWorkspaceSpec) -> Optional[str]:
@@ -396,11 +526,13 @@ def _mark_bound_ports(
             port.bound_task_data_id = task_data_ids.get(binding.source_data_id)
 
 
-def _task_binding_issues(
+def validate_task_binding_schema(
     task_binding_spec: StudioTaskBindingSpec,
     graph: Optional[GraphSpec],
     base_path: str,
 ) -> list[SchemaValidationIssue]:
+    """Validate task-data bindings against task-data and graph port schemas."""
+
     issues: list[SchemaValidationIssue] = []
     seen_data: set[str] = set()
     data_by_id = {}
@@ -428,6 +560,14 @@ def _task_binding_issues(
         return issues
 
     occupied = {(wire.target_node, wire.target_port) for wire in graph.wires}
+    task_data_schemas = {
+        item.id.removeprefix("task_data:"): item for item in _enumerate_task_data(task_binding_spec)
+    }
+    port_schemas = {
+        (port.node_id, port.port): port
+        for port in _enumerate_graph_ports(graph)
+        if port.direction == "input" and port.node_id is not None
+    }
     binding_targets: set[tuple[str, str]] = set()
     for index, binding in enumerate(task_binding_spec.bindings):
         binding_path = f"{base_path}/bindings/{index}"
@@ -470,6 +610,20 @@ def _task_binding_issues(
                     location={"path": f"{binding_path}/target_port"},
                 )
             )
+        else:
+            data_schema = task_data_schemas.get(binding.source_data_id)
+            port_schema = port_schemas.get((binding.target_node_id, binding.target_port))
+            if data_schema is not None and port_schema is not None:
+                issues.extend(
+                    _value_schema_compatibility_issues(
+                        data_schema.value_schema,
+                        port_schema.value_schema,
+                        path=binding_path,
+                        source_label=data_schema.label,
+                        target_label=port_schema.label,
+                        issue_prefix="task_binding",
+                    )
+                )
 
         target = (binding.target_node_id, binding.target_port)
         if target in occupied or target in binding_targets:
@@ -485,6 +639,107 @@ def _task_binding_issues(
             )
         binding_targets.add(target)
     return issues
+
+
+def _value_schema_compatibility_issues(
+    source: ValueSchema,
+    target: ValueSchema,
+    *,
+    path: str,
+    source_label: str,
+    target_label: str,
+    issue_prefix: str,
+) -> list[SchemaValidationIssue]:
+    issues: list[SchemaValidationIssue] = []
+    known_constraint = False
+
+    source_dtype = source.dtype
+    target_dtype = target.dtype
+    if source_dtype is not None or target_dtype is not None:
+        known_constraint = True
+    if (
+        source_dtype
+        and target_dtype
+        and source_dtype != "any"
+        and target_dtype != "any"
+        and source_dtype != target_dtype
+    ):
+        issues.append(
+            SchemaValidationIssue(
+                type=f"{issue_prefix}_dtype_mismatch",
+                message=(
+                    f"{source_label} has dtype {source_dtype!r}, but "
+                    f"{target_label} expects {target_dtype!r}"
+                ),
+                location={"path": path},
+            )
+        )
+
+    if source.rank is not None or target.rank is not None:
+        known_constraint = True
+    if source.rank is not None and target.rank is not None and source.rank != target.rank:
+        issues.append(
+            SchemaValidationIssue(
+                type=f"{issue_prefix}_rank_mismatch",
+                message=(
+                    f"{source_label} has rank {source.rank}, but "
+                    f"{target_label} expects rank {target.rank}"
+                ),
+                location={"path": path},
+            )
+        )
+
+    source_shape = source.shape
+    target_shape = target.shape
+    if source_shape is not None or target_shape is not None:
+        known_constraint = True
+    if source_shape is not None and target_shape is not None:
+        if len(source_shape) != len(target_shape):
+            issues.append(
+                SchemaValidationIssue(
+                    type=f"{issue_prefix}_shape_mismatch",
+                    message=(
+                        f"{source_label} has shape {source_shape!r}, but "
+                        f"{target_label} expects {target_shape!r}"
+                    ),
+                    location={"path": path},
+                )
+            )
+        else:
+            for source_dim, target_dim in zip(source_shape, target_shape):
+                if _shape_dim_matches(source_dim, target_dim):
+                    continue
+                issues.append(
+                    SchemaValidationIssue(
+                        type=f"{issue_prefix}_shape_mismatch",
+                        message=(
+                            f"{source_label} has shape {source_shape!r}, but "
+                            f"{target_label} expects {target_shape!r}"
+                        ),
+                        location={"path": path},
+                    )
+                )
+                break
+
+    if not known_constraint or source.origin == "unknown" or target.origin == "unknown":
+        issues.append(
+            SchemaValidationIssue(
+                type=f"{issue_prefix}_unknown_schema",
+                message=(
+                    f"Compatibility for {source_label} -> {target_label} cannot "
+                    "be fully checked from static schema data"
+                ),
+                severity="warning",
+                location={"path": path},
+            )
+        )
+    return issues
+
+
+def _shape_dim_matches(source_dim: Any, target_dim: Any) -> bool:
+    if source_dim in (None, "any", "*", -1) or target_dim in (None, "any", "*", -1):
+        return True
+    return source_dim == target_dim
 
 
 def _port_selector_targets(ports: list[PortSchema]) -> list[SelectorTargetSchema]:

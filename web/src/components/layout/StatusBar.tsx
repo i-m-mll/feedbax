@@ -2,11 +2,26 @@ import { CheckCircle2, Circle, AlertTriangle } from 'lucide-react';
 import { useMemo } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import { validateGraph } from '@/features/graph/validation';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { projectStudioSchema } from '@/features/schema/project';
 import { useTrainingStore } from '@/stores/trainingStore';
+import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { useComponents } from '@/hooks/useComponents';
 
 export function StatusBar() {
   const graph = useGraphStore(state => state.graph);
-  const validation = useMemo(() => validateGraph(graph), [graph]);
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const { components } = useComponents();
+  const trainingScenario = getTrainingScenario(workspace);
+  const taskBindingSpec = useMemo(
+    () => ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph),
+    [graph, trainingScenario?.task_binding_spec]
+  );
+  const schemaRegistry = useMemo(
+    () => projectStudioSchema(graph, components, taskBindingSpec),
+    [components, graph, taskBindingSpec]
+  );
+  const validation = useMemo(() => validateGraph(graph, schemaRegistry), [graph, schemaRegistry]);
   const status = useTrainingStore((state) => state.status);
 
   return (

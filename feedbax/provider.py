@@ -42,6 +42,7 @@ from feedbax.studio_schema import (
     StudioSchemaRegistry,
     TaskDataSchema,
     ValueSchema,
+    validate_graph_connection_schema,
 )
 from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
@@ -422,6 +423,24 @@ def _component_ports(node_type: str, node_ports: list[str], attr: str, registry:
     return list(getattr(meta, attr))
 
 
+def _schema_issues_to_provider(
+    issues: list[SchemaValidationIssue],
+) -> tuple[list[ValidationIssue], list[ValidationIssue]]:
+    errors: list[ValidationIssue] = []
+    warnings: list[ValidationIssue] = []
+    for issue in issues:
+        converted = ValidationIssue(
+            type=issue.type,
+            message=issue.message,
+            location=issue.location,
+        )
+        if issue.severity == "error":
+            errors.append(converted)
+        else:
+            warnings.append(converted)
+    return errors, warnings
+
+
 def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidationResult:
     from feedbax.web.services.component_registry import ComponentRegistry
 
@@ -486,50 +505,11 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                         )
                     )
 
-        for idx, wire in enumerate(graph.wires):
-            wire_path = f"{prefix}/wires/{idx}"
-            source = graph.nodes.get(wire.source_node)
-            target = graph.nodes.get(wire.target_node)
-            if source is None:
-                errors.append(
-                    ValidationIssue(
-                        type="unknown_source_node",
-                        message=f"Wire source node {wire.source_node!r} does not exist",
-                        location={"path": wire_path},
-                    )
-                )
-            elif wire.source_port not in _component_ports(
-                source.type, source.output_ports, "output_ports", registry
-            ):
-                errors.append(
-                    ValidationIssue(
-                        type="unknown_source_port",
-                        message=(
-                            f"Wire source port {wire.source_node}.{wire.source_port} does not exist"
-                        ),
-                        location={"path": wire_path},
-                    )
-                )
-            if target is None:
-                errors.append(
-                    ValidationIssue(
-                        type="unknown_target_node",
-                        message=f"Wire target node {wire.target_node!r} does not exist",
-                        location={"path": wire_path},
-                    )
-                )
-            elif wire.target_port not in _component_ports(
-                target.type, target.input_ports, "input_ports", registry
-            ):
-                errors.append(
-                    ValidationIssue(
-                        type="unknown_target_port",
-                        message=(
-                            f"Wire target port {wire.target_node}.{wire.target_port} does not exist"
-                        ),
-                        location={"path": wire_path},
-                    )
-                )
+        graph_errors, graph_warnings = _schema_issues_to_provider(
+            validate_graph_connection_schema(graph, prefix)
+        )
+        errors.extend(graph_errors)
+        warnings.extend(graph_warnings)
 
         if graph.subgraphs:
             for subgraph_node, subgraph in graph.subgraphs.items():
