@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal, Optional
 
@@ -11,7 +12,13 @@ from feedbax.manifest import SCHEMA_VERSION, utc_now
 from feedbax.web.models.component import PortType
 from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
-SchemaOrigin = Literal["declared", "inferred_static", "curated_fallback", "unknown"]
+SchemaOrigin = Literal[
+    "declared",
+    "inferred_static",
+    "runtime_sample",
+    "curated_fallback",
+    "unknown",
+]
 
 
 class StudioSchemaModel(BaseModel):
@@ -68,7 +75,14 @@ class SelectorTargetSchema(StudioSchemaModel):
 
     id: str
     label: str
-    kind: Literal["port", "task_data", "objective", "probe", "state_hint"]
+    kind: Literal[
+        "port",
+        "task_data",
+        "objective",
+        "probe",
+        "state_hint",
+        "sample_leaf",
+    ]
     selector: str
     value_schema: ValueSchema
     origin: SchemaOrigin = "unknown"
@@ -100,18 +114,67 @@ class StudioSchemaRegistry(StudioSchemaModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RuntimeIntrospectionOptions(StudioSchemaModel):
+    """Explicit opt-in options for bounded runtime/sample schema enrichment."""
+
+    enabled: bool = False
+    max_targets: int = Field(default=64, ge=1, le=256)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeSampleLeafSchema(StudioSchemaModel):
+    """Schema record returned by an optional provider runtime introspector."""
+
+    path: str
+    label: Optional[str] = None
+    selector: Optional[str] = None
+    kind: str = "sample_leaf"
+    dtype: Optional[str] = None
+    shape: Optional[list[Any]] = None
+    rank: Optional[int] = None
+    units: Optional[str] = None
+    frame: Optional[str] = None
+    value: Any = None
+    source: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeIntrospectionResult(StudioSchemaModel):
+    """Result returned by a bounded runtime/sample introspection hook."""
+
+    sample_leaves: list[RuntimeSampleLeafSchema] = Field(default_factory=list)
+    issues: list[SchemaValidationIssue] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class StudioSchemaEnumerationRequest(StudioSchemaModel):
     """HTTP request for static Studio schema enumeration."""
 
     workspace: StudioWorkspaceSpec
     scenario_id: Optional[str] = None
+    runtime_introspection: RuntimeIntrospectionOptions | bool | None = None
+
+
+RuntimeSchemaIntrospector = Callable[
+    [StudioWorkspaceSpec, str, RuntimeIntrospectionOptions],
+    RuntimeIntrospectionResult | dict[str, Any],
+]
 
 
 def enumerate_studio_schema_registry(
     workspace: StudioWorkspaceSpec | dict[str, Any],
     scenario_id: Optional[str] = None,
+    *,
+    runtime_introspection: RuntimeIntrospectionOptions | bool | dict[str, Any] | None = None,
+    runtime_introspector: Optional[RuntimeSchemaIntrospector] = None,
 ) -> StudioSchemaRegistry:
-    """Enumerate static Studio schemas without compiling or running JAX code."""
+    """Enumerate Studio schemas, optionally enriched by an explicit runtime hook.
+
+    The default path is static-only and never compiles or runs JAX code. Runtime
+    sample enrichment is opt-in and delegated to a caller-supplied hook so the
+    provider contract can expose richer schemas without making basic validation
+    depend on full execution.
+    """
 
     try:
         workspace_spec = (
@@ -143,6 +206,10 @@ def enumerate_studio_schema_registry(
         metadata={
             "enumerated_by": "feedbax.studio_schema",
             "requires_jax_execution": False,
+            "runtime_introspection": _runtime_introspection_metadata(
+                runtime_introspection,
+                status="not_requested",
+            ),
         },
     )
 
@@ -209,6 +276,13 @@ def enumerate_studio_schema_registry(
 
     registry.selector_targets.extend(_objective_selector_targets(scenario.objective_spec))
     registry.selector_targets.extend(_explicit_probe_selector_targets(scenario.probe_specs))
+    _apply_runtime_introspection(
+        registry,
+        workspace_spec,
+        scenario.id,
+        runtime_introspection,
+        runtime_introspector,
+    )
     registry.selector_targets.extend(_known_state_hint_targets())
     registry.selector_targets = _dedupe_selector_targets(registry.selector_targets)
     return registry
@@ -336,6 +410,94 @@ def validate_graph_connection_schema(
         )
 
     return issues
+
+
+def _runtime_introspection_options(
+    value: RuntimeIntrospectionOptions | bool | dict[str, Any] | None,
+) -> RuntimeIntrospectionOptions:
+    if isinstance(value, RuntimeIntrospectionOptions):
+        return value
+    if isinstance(value, bool):
+        return RuntimeIntrospectionOptions(enabled=value)
+    if isinstance(value, dict):
+        return RuntimeIntrospectionOptions.model_validate(value)
+    return RuntimeIntrospectionOptions(enabled=False)
+
+
+def _runtime_introspection_metadata(
+    value: RuntimeIntrospectionOptions | bool | dict[str, Any] | None,
+    *,
+    status: str,
+) -> dict[str, Any]:
+    options = _runtime_introspection_options(value)
+    return {
+        "enabled": options.enabled,
+        "status": status if options.enabled else "not_requested",
+        "max_targets": options.max_targets,
+    }
+
+
+def _apply_runtime_introspection(
+    registry: StudioSchemaRegistry,
+    workspace: StudioWorkspaceSpec,
+    scenario_id: str,
+    requested: RuntimeIntrospectionOptions | bool | dict[str, Any] | None,
+    runtime_introspector: Optional[RuntimeSchemaIntrospector],
+) -> None:
+    options = _runtime_introspection_options(requested)
+    if not options.enabled:
+        registry.metadata["runtime_introspection"] = _runtime_introspection_metadata(
+            options,
+            status="not_requested",
+        )
+        return
+
+    if runtime_introspector is None:
+        registry.metadata["runtime_introspection"] = _runtime_introspection_metadata(
+            options,
+            status="unavailable",
+        )
+        registry.issues.append(
+            SchemaValidationIssue(
+                type="runtime_introspection_unavailable",
+                message=(
+                    "Runtime sample introspection was requested, but no provider "
+                    "introspector is configured"
+                ),
+                severity="warning",
+                location={"path": "/runtime_introspection"},
+            )
+        )
+        return
+
+    try:
+        result = RuntimeIntrospectionResult.model_validate(
+            runtime_introspector(workspace, scenario_id, options)
+        )
+    except Exception as exc:
+        registry.metadata["runtime_introspection"] = _runtime_introspection_metadata(
+            options,
+            status="failed",
+        )
+        registry.issues.append(
+            SchemaValidationIssue(
+                type="runtime_introspection_failed",
+                message=f"Runtime sample introspection failed: {exc}",
+                severity="warning",
+                location={"path": "/runtime_introspection"},
+            )
+        )
+        return
+
+    leaves = result.sample_leaves[: options.max_targets]
+    registry.selector_targets.extend(_runtime_sample_selector_targets(leaves))
+    registry.issues.extend(result.issues)
+    registry.metadata["runtime_introspection"] = {
+        **_runtime_introspection_metadata(options, status="completed"),
+        "target_count": len(leaves),
+        "truncated": len(result.sample_leaves) > len(leaves),
+        **result.metadata,
+    }
 
 
 def _active_scenario_id(workspace: StudioWorkspaceSpec) -> Optional[str]:
@@ -775,6 +937,94 @@ def _task_data_selector_targets(task_data: list[TaskDataSchema]) -> list[Selecto
         )
         for item in task_data
     ]
+
+
+def _runtime_sample_selector_targets(
+    leaves: list[RuntimeSampleLeafSchema],
+) -> list[SelectorTargetSchema]:
+    targets: list[SelectorTargetSchema] = []
+    for leaf in leaves:
+        selector = leaf.selector or _runtime_leaf_selector(leaf.path)
+        label = leaf.label or leaf.path
+        inferred = _infer_value_schema_from_sample(leaf.value)
+        dtype = leaf.dtype or inferred.get("dtype")
+        shape = leaf.shape or inferred.get("shape")
+        rank = leaf.rank if leaf.rank is not None else inferred.get("rank")
+        targets.append(
+            SelectorTargetSchema(
+                id=f"selector:{selector}",
+                label=label,
+                kind="sample_leaf",
+                selector=selector,
+                value_schema=ValueSchema(
+                    id=f"value:{selector}",
+                    label=label,
+                    kind=leaf.kind,
+                    dtype=dtype,
+                    shape=shape,
+                    rank=rank,
+                    units=leaf.units,
+                    frame=leaf.frame,
+                    origin="runtime_sample",
+                    metadata={
+                        **leaf.metadata,
+                        "sample_path": leaf.path,
+                        "runtime_introspection": True,
+                    },
+                ),
+                origin="runtime_sample",
+                source={
+                    "runtime_introspection": True,
+                    "path": leaf.path,
+                    **leaf.source,
+                },
+                metadata=leaf.metadata,
+            )
+        )
+    return targets
+
+
+def _runtime_leaf_selector(path: str) -> str:
+    if path.startswith(("path:", "task_data:", "port:", "probe:")):
+        return path
+    return f"path:{path}"
+
+
+def _infer_value_schema_from_sample(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+
+    shape = getattr(value, "shape", None)
+    dtype = getattr(value, "dtype", None)
+    if shape is not None:
+        shape_list = [int(dim) if isinstance(dim, int) else dim for dim in list(shape)]
+        return {
+            "dtype": str(dtype) if dtype is not None else None,
+            "shape": shape_list,
+            "rank": len(shape_list),
+        }
+
+    if isinstance(value, bool):
+        return {"dtype": "bool", "shape": [], "rank": 0}
+    if isinstance(value, int):
+        return {"dtype": "int", "shape": [], "rank": 0}
+    if isinstance(value, float):
+        return {"dtype": "float", "shape": [], "rank": 0}
+    if isinstance(value, str):
+        return {"dtype": "string", "shape": [], "rank": 0}
+    if isinstance(value, list):
+        nested = _infer_list_shape(value)
+        return {"dtype": "array", "shape": nested, "rank": len(nested)}
+    return {}
+
+
+def _infer_list_shape(value: list[Any]) -> list[Any]:
+    if not value:
+        return [0]
+    first = value[0]
+    if isinstance(first, list):
+        return [len(value), *_infer_list_shape(first)]
+    return [len(value)]
 
 
 def _graph_probe_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema]:

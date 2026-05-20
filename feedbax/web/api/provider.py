@@ -125,4 +125,8 @@ async def materialize_studio_pipeline_stages(
 async def enumerate_studio_schemas(
     payload: StudioSchemaEnumerationRequest,
 ) -> StudioSchemaRegistry:
-    return enumerate_studio_schema_registry(payload.workspace, payload.scenario_id)
+    return enumerate_studio_schema_registry(
+        payload.workspace,
+        payload.scenario_id,
+        runtime_introspection=payload.runtime_introspection,
+    )

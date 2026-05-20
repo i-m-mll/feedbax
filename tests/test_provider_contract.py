@@ -18,7 +18,11 @@ from feedbax.provider import (
     validate_task_spec,
     validate_training_spec,
 )
-from feedbax.studio_schema import enumerate_studio_schema_registry
+from feedbax.studio_schema import (
+    RuntimeIntrospectionResult,
+    RuntimeSampleLeafSchema,
+    enumerate_studio_schema_registry,
+)
 from feedbax.web.app import create_app
 from feedbax.web.models.graph import (
     GraphMetadata,
@@ -163,6 +167,8 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "TrainingRunManifest" in manifest.schemas
     assert "StudioSchemaRegistry" in manifest.schemas
     assert "TaskDataSchema" in manifest.schemas
+    assert "RuntimeIntrospectionOptions" in manifest.schemas
+    assert "RuntimeSampleLeafSchema" in manifest.schemas
 
 
 def test_component_registry_snapshot_wraps_existing_registry() -> None:
@@ -394,6 +400,23 @@ def test_provider_http_endpoints() -> None:
     )
     assert any(issue["type"] == "stage_missing_scenario" for issue in payload["issues"])
 
+    runtime_schemas = client.post(
+        "/api/provider/studio/schemas",
+        json={
+            "workspace": _schema_workspace().model_dump(mode="json", exclude_none=True),
+            "scenario_id": "scenario:train",
+            "runtime_introspection": {"enabled": True, "max_targets": 4},
+        },
+    )
+    assert runtime_schemas.status_code == 200
+    runtime_payload = runtime_schemas.json()
+    assert runtime_payload["metadata"]["runtime_introspection"]["status"] == "unavailable"
+    assert any(
+        issue["type"] == "runtime_introspection_unavailable"
+        and issue["severity"] == "warning"
+        for issue in runtime_payload["issues"]
+    )
+
 
 def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() -> None:
     registry = enumerate_studio_schema_registry(_schema_workspace(), "scenario:train")
@@ -411,6 +434,71 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert "probe:manual-probe" in selectors
     assert "path:states.mechanics.effector.pos" in selectors
     assert any(issue.type == "stage_missing_scenario" for issue in registry.issues)
+    assert registry.metadata["runtime_introspection"]["status"] == "not_requested"
+
+
+def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_targets() -> None:
+    def introspector(workspace, scenario_id, options):
+        assert workspace.id
+        assert scenario_id == "scenario:train"
+        assert options.max_targets == 1
+        return RuntimeIntrospectionResult(
+            sample_leaves=[
+                RuntimeSampleLeafSchema(
+                    path="states.network.hidden",
+                    label="Network hidden state",
+                    value=[[0.0, 1.0], [2.0, 3.0]],
+                    source={"sample": "representative"},
+                ),
+                RuntimeSampleLeafSchema(
+                    path="task.validation_trials.targets",
+                    label="Validation targets",
+                    dtype="float32",
+                    shape=[8, 2],
+                ),
+            ],
+            metadata={"provider_hook": "test"},
+        )
+
+    registry = enumerate_studio_schema_registry(
+        _schema_workspace(),
+        "scenario:train",
+        runtime_introspection={"enabled": True, "max_targets": 1},
+        runtime_introspector=introspector,
+    )
+
+    runtime_targets = [
+        target for target in registry.selector_targets if target.origin == "runtime_sample"
+    ]
+    assert len(runtime_targets) == 1
+    target = runtime_targets[0]
+    assert target.kind == "sample_leaf"
+    assert target.selector == "path:states.network.hidden"
+    assert target.value_schema.shape == [2, 2]
+    assert target.value_schema.rank == 2
+    assert target.value_schema.origin == "runtime_sample"
+    assert registry.metadata["runtime_introspection"]["status"] == "completed"
+    assert registry.metadata["runtime_introspection"]["target_count"] == 1
+    assert registry.metadata["runtime_introspection"]["truncated"] is True
+
+
+def test_studio_schema_enumeration_runtime_introspection_failure_is_warning() -> None:
+    def introspector(_workspace, _scenario_id, _options):
+        raise RuntimeError("sample unavailable")
+
+    registry = enumerate_studio_schema_registry(
+        _schema_workspace(),
+        "scenario:train",
+        runtime_introspection=True,
+        runtime_introspector=introspector,
+    )
+
+    issue = next(
+        issue for issue in registry.issues if issue.type == "runtime_introspection_failed"
+    )
+    assert issue.severity == "warning"
+    assert "sample unavailable" in issue.message
+    assert registry.metadata["runtime_introspection"]["status"] == "failed"
 
 
 def test_studio_schema_enumeration_reports_missing_scenario_graph_and_binding() -> None:

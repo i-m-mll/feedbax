@@ -163,6 +163,7 @@ export async function materializeStudioPipeline(payload: {
 export async function fetchStudioSchemaRegistry(payload: {
   workspace: StudioWorkspaceSpec;
   scenario_id?: string | null;
+  runtime_introspection?: boolean | { enabled: boolean; max_targets?: number } | null;
 }) {
   return request<StudioSchemaRegistry>('/api/provider/studio/schemas', {
     method: 'POST',
