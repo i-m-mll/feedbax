@@ -10,9 +10,9 @@ import type {
   StudioSelectorRef,
 } from '@/types/workspace';
 import {
-  defaultTaskOutputs,
+  defaultTaskData,
   taskBindingEntityId,
-  taskOutputEntityId,
+  taskDataEntityId,
 } from '@/features/scenario/taskBindings';
 
 const MECHANICS_TYPE_HINTS = [
@@ -58,7 +58,7 @@ export function taskEntityId(scenarioId: string | null | undefined): string {
   return `task_object:${scenarioId ?? 'active'}:task`;
 }
 
-export { taskBindingEntityId, taskOutputEntityId };
+export { taskBindingEntityId, taskDataEntityId };
 
 export function mechanicsEntityId(
   scenarioId: string | null | undefined,
@@ -81,8 +81,8 @@ export function entityKindLabel(kind: StudioScenarioEntityKind): string {
       return 'Graph Edge';
     case 'task_object':
       return 'Task';
-    case 'task_output':
-      return 'Task Output';
+    case 'task_data':
+      return 'Task Data';
     case 'task_binding':
       return 'Task Binding';
     case 'mechanics_object':
@@ -137,9 +137,9 @@ export function selectorToEntityId(selector: StudioSelectorRef | null | undefine
   if (selector.namespace === 'task_object') {
     return selector.target_id ? taskEntityId(selector.target_id) : null;
   }
-  if (selector.namespace === 'task_output') {
+  if (selector.namespace === 'task_data') {
     return selector.target_id && selector.path
-      ? taskOutputEntityId(selector.target_id, selector.path)
+      ? taskDataEntityId(selector.target_id, selector.path)
       : null;
   }
   if (selector.namespace === 'task_binding') {
@@ -375,46 +375,46 @@ function addTaskEntity(
   }, true);
 
   const bindingSpec = scenario.task_binding_spec;
-  const outputs = bindingSpec?.exposed_outputs?.length
-    ? bindingSpec.exposed_outputs
-    : defaultTaskOutputs();
-  for (const output of outputs) {
-    const entityId = taskOutputEntityId(scenario.id, output.id);
+  const dataItems = bindingSpec?.exposed_data?.length
+    ? bindingSpec.exposed_data
+    : defaultTaskData();
+  for (const data of dataItems) {
+    const entityId = taskDataEntityId(scenario.id, data.id);
     addEntity(registry, {
       id: entityId,
-      kind: 'task_output',
-      label: output.label,
-      summary: output.kind,
+      kind: 'task_data',
+      label: data.label,
+      summary: data.kind,
       scenario_id: scenario.id,
       stage_id: scenario.stage_id ?? null,
       selector: {
-        namespace: 'task_output',
-        compact: `task_output:${output.id}`,
+        namespace: 'task_data',
+        compact: `task_data:${data.id}`,
         target_id: scenario.id,
-        path: output.id,
-        role: output.bindable ? 'editable' : 'observed',
-        expected_shape: output.expected_shape ?? null,
-        dtype: output.dtype ?? null,
-        units: output.units ?? null,
-        frame: output.frame ?? null,
+        path: data.id,
+        role: data.bindable ? 'editable' : 'observed',
+        expected_shape: data.expected_shape ?? null,
+        dtype: data.dtype ?? null,
+        units: data.units ?? null,
+        frame: data.frame ?? null,
         metadata: {
-          label: output.label,
-          detail: output.kind,
-          task_output_id: output.id,
-          bindable: output.bindable,
-          value_spec: output.value_spec ?? null,
+          label: data.label,
+          detail: data.kind,
+          task_data_id: data.id,
+          bindable: data.bindable,
+          value_spec: data.value_spec ?? null,
         },
       },
       relations: [relation('contains', taskObjectId, 'task')],
-      metadata: { output },
-    }, output.bindable);
+      metadata: { data },
+    }, data.bindable);
   }
 
   for (const binding of bindingSpec?.bindings ?? []) {
     addEntity(registry, {
       id: taskBindingEntityId(binding.id),
       kind: 'task_binding',
-      label: `${binding.source_output_id} -> ${binding.target_node_id}.${binding.target_port}`,
+      label: `${binding.source_data_id} -> ${binding.target_node_id}.${binding.target_port}`,
       summary: binding.role,
       scenario_id: scenario.id,
       stage_id: scenario.stage_id ?? null,
@@ -427,7 +427,7 @@ function addTaskEntity(
         metadata: { binding },
       },
       relations: [
-        relation('source', taskOutputEntityId(scenario.id, binding.source_output_id)),
+        relation('source', taskDataEntityId(scenario.id, binding.source_data_id)),
         relation('target', graphPortEntityId(binding.target_node_id, 'input', binding.target_port)),
       ],
       metadata: { binding },

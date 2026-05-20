@@ -240,17 +240,17 @@ function taskDefaultMetrics(
 ): ScenarioMetricSpec[] {
   const taskSpec = scenario.task_spec;
   if (!taskSpec) return [];
-  const targetOutput = scenario.task_binding_spec?.exposed_outputs.find(
-    (output) => output.id === 'targets' || output.kind === 'target'
+  const targetData = scenario.task_binding_spec?.exposed_data.find(
+    (data) => data.id === 'targets' || data.kind === 'target'
   );
-  if (!targetOutput && (!isRecord(taskSpec.params) || !('n_targets' in taskSpec.params))) {
+  if (!targetData && (!isRecord(taskSpec.params) || !('n_targets' in taskSpec.params))) {
     return [];
   }
   const label = metricLabel('target_reach_error');
   const targetSummary =
     isRecord(taskSpec.params) && 'n_targets' in taskSpec.params
       ? `${taskSpec.params.n_targets} target task`
-      : `${targetOutput?.label ?? 'Task target'} output`;
+      : `${targetData?.label ?? 'Task target'} data`;
   return [
     {
       id: 'target_reach_error',
@@ -263,7 +263,7 @@ function taskDefaultMetrics(
       scenarioId: scenario.id,
       sourceId: taskSpec.type,
       summary: targetSummary,
-      metadata: { task_type: taskSpec.type, task_output_id: targetOutput?.id ?? null },
+      metadata: { task_type: taskSpec.type, task_data_id: targetData?.id ?? null },
     },
   ];
 }

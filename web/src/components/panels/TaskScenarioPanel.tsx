@@ -262,8 +262,8 @@ export function TaskScenarioPanel() {
   const params = Object.entries(task.params ?? {}).filter(
     ([key]) => !(timeline && isDelayedReachTimelineParam(key))
   );
-  const bindableOutputs = taskBindingSpec.exposed_outputs.filter((output) => output.bindable);
-  const protocolOutputs = taskBindingSpec.exposed_outputs.filter((output) => !output.bindable);
+  const bindableData = taskBindingSpec.exposed_data.filter((data) => data.bindable);
+  const protocolData = taskBindingSpec.exposed_data.filter((data) => !data.bindable);
   const boundTarget = (nodeId: string, port: string) => `${nodeId}.${port}`;
   const updateParam = (key: string, value: ParamValue) => {
     updateTaskSpec({
@@ -309,21 +309,21 @@ export function TaskScenarioPanel() {
       <section className="shrink-0 border-b border-slate-100 px-4 py-2.5">
         <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
           <PlugZap className="h-3 w-3" />
-          Outputs
+          Task Data
         </div>
         <div className="mt-2 space-y-1">
-          {bindableOutputs.map((output) => (
+          {bindableData.map((data) => (
             <div
-              key={output.id}
+              key={data.id}
               className="relative flex h-7 items-center justify-end pr-3 text-xs"
             >
               <span className="min-w-0 truncate text-right font-medium text-slate-700">
-                {output.label}
+                {data.label}
               </span>
               <span
-                data-task-output-port-id={output.id}
+                data-task-data-port-id={data.id}
                 className="absolute right-[-21px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
-                title={`${output.label} task output`}
+                title={`${data.label} Task Data`}
               />
             </div>
           ))}
@@ -348,19 +348,19 @@ export function TaskScenarioPanel() {
             <div className="text-xs text-slate-400">None recorded</div>
           )}
         </section>
-        {protocolOutputs.length > 0 && (
+        {protocolData.length > 0 && (
           <section className="space-y-2">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
               Protocol
             </div>
             <div className="space-y-1">
-              {protocolOutputs.map((output) => (
+              {protocolData.map((data) => (
                 <div
-                  key={output.id}
+                  key={data.id}
                   className="flex h-7 items-center justify-between gap-3 rounded border border-slate-100 px-2 text-xs"
                 >
-                  <span className="truncate font-medium text-slate-600">{output.label}</span>
-                  <span className="shrink-0 text-[10px] text-slate-400">{output.kind}</span>
+                  <span className="truncate font-medium text-slate-600">{data.label}</span>
+                  <span className="shrink-0 text-[10px] text-slate-400">{data.kind}</span>
                 </div>
               ))}
             </div>
@@ -376,7 +376,7 @@ export function TaskScenarioPanel() {
                 key={binding.id}
                 className="rounded-md border border-emerald-100 bg-emerald-50/50 px-2.5 py-2 text-xs"
               >
-                <div className="font-medium text-slate-700">{binding.source_output_id}</div>
+                <div className="font-medium text-slate-700">{binding.source_data_id}</div>
                 <div className="mt-0.5 truncate text-[11px] text-slate-500">
                   {boundTarget(binding.target_node_id, binding.target_port)}
                 </div>

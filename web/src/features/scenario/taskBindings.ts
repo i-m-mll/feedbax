@@ -1,10 +1,10 @@
 import type { GraphSpec } from '@/types/graph';
 import type {
   StudioTaskBindingSpec,
-  StudioTaskOutputSpec,
+  StudioTaskDataSpec,
 } from '@/types/workspace';
 
-export const TASK_BINDING_SCHEMA_VERSION = 'feedbax.studio.task_bindings.v1';
+export const TASK_BINDING_SCHEMA_VERSION = 'feedbax.studio.task_bindings.v2';
 
 export const TASK_COMPONENT_TYPES = new Set([
   'ReachingTask',
@@ -13,7 +13,7 @@ export const TASK_COMPONENT_TYPES = new Set([
   'Stabilization',
 ]);
 
-export function defaultTaskOutputs(): StudioTaskOutputSpec[] {
+export function defaultTaskData(): StudioTaskDataSpec[] {
   return [
     {
       id: 'inputs',
@@ -50,15 +50,15 @@ export function defaultTaskOutputs(): StudioTaskOutputSpec[] {
   ];
 }
 
-export function taskBindingId(outputId: string, nodeId: string, port: string): string {
-  return `task:${outputId}->${nodeId}:${port}`;
+export function taskBindingId(dataId: string, nodeId: string, port: string): string {
+  return `task:${dataId}->${nodeId}:${port}`;
 }
 
-export function taskOutputEntityId(
+export function taskDataEntityId(
   scenarioId: string | null | undefined,
-  outputId: string
+  dataId: string
 ): string {
-  return `task_output:${scenarioId ?? 'active'}:${outputId}`;
+  return `task_data:${scenarioId ?? 'active'}:${dataId}`;
 }
 
 export function taskBindingEntityId(bindingId: string): string {
@@ -83,7 +83,7 @@ function compatibleNetworkInput(graph: GraphSpec): { nodeId: string; port: strin
 }
 
 export function createDefaultTaskBindingSpec(graph: GraphSpec): StudioTaskBindingSpec {
-  const outputs = defaultTaskOutputs();
+  const data = defaultTaskData();
   const bindingTarget = compatibleNetworkInput(graph);
   const bindings =
     bindingTarget === null
@@ -91,7 +91,7 @@ export function createDefaultTaskBindingSpec(graph: GraphSpec): StudioTaskBindin
       : [
           {
             id: taskBindingId('inputs', bindingTarget.nodeId, bindingTarget.port),
-            source_output_id: 'inputs',
+            source_data_id: 'inputs',
             target_node_id: bindingTarget.nodeId,
             target_port: bindingTarget.port,
             role: 'model_input',
@@ -100,7 +100,7 @@ export function createDefaultTaskBindingSpec(graph: GraphSpec): StudioTaskBindin
         ];
   return {
     schema_version: TASK_BINDING_SCHEMA_VERSION,
-    exposed_outputs: outputs,
+    exposed_data: data,
     bindings,
     metadata: {},
   };
@@ -111,11 +111,11 @@ export function ensureTaskBindingSpec(
   graph: GraphSpec
 ): StudioTaskBindingSpec {
   if (!spec) return createDefaultTaskBindingSpec(graph);
-  const defaults = defaultTaskOutputs();
-  const byId = new Map(spec.exposed_outputs.map((output) => [output.id, output]));
+  const defaults = defaultTaskData();
+  const byId = new Map(spec.exposed_data.map((data) => [data.id, data]));
   return {
     schema_version: spec.schema_version ?? TASK_BINDING_SCHEMA_VERSION,
-    exposed_outputs: defaults.map((output) => ({ ...output, ...(byId.get(output.id) ?? {}) })),
+    exposed_data: defaults.map((data) => ({ ...data, ...(byId.get(data.id) ?? {}) })),
     bindings: spec.bindings ?? [],
     metadata: spec.metadata ?? {},
   };

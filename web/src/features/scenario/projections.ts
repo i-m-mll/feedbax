@@ -27,7 +27,7 @@ export function workspaceProjectionItems(
 ): ScenarioProjectionItem[] {
   const primaryKinds = new Set<StudioScenarioEntityKind>([
     'task_object',
-    'task_output',
+    'task_data',
     'task_binding',
     'mechanics_object',
   ]);

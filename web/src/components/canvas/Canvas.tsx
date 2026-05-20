@@ -464,7 +464,7 @@ function TaskBindingOverlay({
 
       const targetRect = targetHandle.getBoundingClientRect();
       const sourcePort = document.querySelector<HTMLElement>(
-        `[data-task-output-port-id="${selectorValue(binding.source_output_id)}"]`
+        `[data-task-data-port-id="${selectorValue(binding.source_data_id)}"]`
       );
       const sourceRect = sourcePort?.getBoundingClientRect();
       const sourceY = sourceRect
@@ -500,7 +500,7 @@ function TaskBindingOverlay({
     const resizeObserver = new ResizeObserver(schedule);
     resizeObserver.observe(container);
     document
-      .querySelectorAll<HTMLElement>('[data-task-output-port-id]')
+      .querySelectorAll<HTMLElement>('[data-task-data-port-id]')
       .forEach((element) => resizeObserver.observe(element));
 
     const viewportObserver = new MutationObserver(schedule);
