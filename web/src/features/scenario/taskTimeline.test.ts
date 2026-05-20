@@ -31,11 +31,34 @@ describe('delayed reach task timeline helpers', () => {
       'movement',
     ]);
     expect(timeline.epochs[0].length.value).toEqual({ min: 0, max: 1 });
+    expect(timeline.epochs[0].length).toMatchObject({
+      dtype: 'int32',
+      units: 'steps',
+      metadata: {
+        value_schema_id: 'value:task_timeline:epoch_length',
+        temporal_window: { mode: 'epoch', epoch_id: 'epoch:0' },
+      },
+    });
     expect(timeline.epochs[2].length.metadata.inferred_from_remaining_steps).toBe(true);
     expect(timeline.signals.find((signal) => signal.id === 'target_on')?.epoch_ids).toEqual([
       'epoch:1',
       'epoch:2',
     ]);
+    expect(timeline.signals.find((signal) => signal.id === 'move')).toMatchObject({
+      value_schema: {
+        kind: 'task_target',
+        dtype: 'float32',
+        shape: ['time', 2],
+        frame: 'cartesian_effector',
+      },
+      task_data_schema: {
+        id: 'task_data:move',
+        path: 'targets.effector',
+        value_schema: {
+          id: 'value:task_timeline:move',
+        },
+      },
+    });
   });
 
   it('writes timeline edits back into backend-compatible delayed reach params', () => {

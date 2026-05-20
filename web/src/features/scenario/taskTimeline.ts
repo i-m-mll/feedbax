@@ -4,6 +4,8 @@ import type {
   StudioTaskTimelineSignalSpec,
   StudioTaskTimelineSpec,
   StudioValueSpec,
+  TaskDataSchema,
+  ValueSchema,
 } from '@/types/workspace';
 
 export const TASK_TIMELINE_SCHEMA_VERSION = 'feedbax.studio.task_timeline.v1';
@@ -21,12 +23,106 @@ export function isDelayedReachTimelineParam(key: string): boolean {
   return TIMELINE_PARAM_KEYS.has(key);
 }
 
-function constantValue(value: unknown, metadata: Record<string, unknown> = {}): StudioValueSpec {
+const EPOCH_LENGTH_VALUE_SCHEMA: ValueSchema = {
+  id: 'value:task_timeline:epoch_length',
+  label: 'Epoch length',
+  kind: 'epoch_length',
+  dtype: 'int32',
+  shape: ['range', 2],
+  rank: 2,
+  units: 'steps',
+  frame: 'task_time',
+  origin: 'inferred_static',
+  metadata: { temporal_support: 'epoch_window' },
+};
+
+function timelineValueSchema(
+  id: string,
+  label: string,
+  kind: string,
+  path: string,
+  value: Pick<ValueSchema, 'dtype' | 'shape' | 'units' | 'frame'>,
+  metadata: Record<string, unknown> = {}
+): ValueSchema {
+  return {
+    id: `value:task_timeline:${id}`,
+    label,
+    kind,
+    dtype: value.dtype ?? null,
+    shape: value.shape ?? null,
+    units: value.units ?? null,
+    frame: value.frame ?? null,
+    origin: 'inferred_static',
+    metadata: { ...metadata, task_data_path: path },
+  };
+}
+
+function timelineTaskDataSchema(
+  id: string,
+  label: string,
+  kind: StudioTaskTimelineSignalSpec['kind'],
+  path: string,
+  valueSchema: ValueSchema
+): TaskDataSchema {
+  return {
+    id: `task_data:${id}`,
+    label,
+    kind,
+    path,
+    bindable: kind === 'signal',
+    value_schema: valueSchema,
+    origin: 'inferred_static',
+    metadata: {
+      source: 'task_timeline',
+      value_schema_id: valueSchema.id,
+    },
+  };
+}
+
+function signalValueSchema(
+  id: string,
+  label: string,
+  kind: StudioTaskTimelineSignalSpec['kind'],
+  path: string
+): ValueSchema {
+  if (kind === 'target') {
+    return timelineValueSchema(
+      id,
+      label,
+      'task_target',
+      path,
+      { dtype: 'float32', shape: ['time', 2], units: null, frame: 'cartesian_effector' },
+      { temporal_support: 'epoch_masked_trajectory' }
+    );
+  }
+  return timelineValueSchema(
+    id,
+    label,
+    'task_signal',
+    path,
+    { dtype: 'bool', shape: ['time'], units: null, frame: 'task_time' },
+    { temporal_support: 'epoch_masked_signal' }
+  );
+}
+
+function constantValue(
+  value: unknown,
+  metadata: Record<string, unknown> = {},
+  valueSchema: ValueSchema | null = null
+): StudioValueSpec {
   return {
     schema_version: VALUE_SCHEMA_VERSION,
     mode: 'constant',
     value,
-    metadata,
+    dtype: valueSchema?.dtype ?? null,
+    shape: valueSchema?.shape ?? null,
+    units: valueSchema?.units ?? null,
+    frame: valueSchema?.frame ?? null,
+    metadata: {
+      ...metadata,
+      value_schema: valueSchema,
+      value_schema_id: valueSchema?.id ?? null,
+    },
   };
 }
 
@@ -57,13 +153,20 @@ function signal(
   path: string,
   epochSet: Set<number>
 ): StudioTaskTimelineSignalSpec {
+  const valueSchema = signalValueSchema(id, label, kind, path);
   return {
     id,
     label,
     kind,
     path,
     epoch_ids: [...epochSet].sort((a, b) => a - b).map((index) => `epoch:${index}`),
-    metadata: {},
+    value_schema: valueSchema,
+    task_data_schema: timelineTaskDataSchema(id, label, kind, path, valueSchema),
+    metadata: {
+      value_schema: valueSchema,
+      task_data_schema_id: `task_data:${id}`,
+      temporal_support: valueSchema.metadata.temporal_support,
+    },
   };
 }
 
@@ -79,11 +182,19 @@ export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimeline
       id: `epoch:${index}`,
       label: DELAYED_REACH_EPOCH_LABELS[index] ?? `epoch ${index + 1}`,
       index,
-      length: constantValue(isInferred ? null : { min: range[0], max: range[1] }, {
-        scope: 'trial',
-        inferred_from_remaining_steps: isInferred,
-      }),
-      metadata: {},
+      length: constantValue(
+        isInferred ? null : { min: range[0], max: range[1] },
+        {
+          scope: 'trial',
+          inferred_from_remaining_steps: isInferred,
+          temporal_window: { mode: 'epoch', epoch_id: `epoch:${index}` },
+        },
+        EPOCH_LENGTH_VALUE_SCHEMA
+      ),
+      metadata: {
+        value_schema: EPOCH_LENGTH_VALUE_SCHEMA,
+        temporal_window: { mode: 'epoch', epoch_id: `epoch:${index}` },
+      },
     };
   });
   return {

@@ -1,4 +1,8 @@
 import {
+  selectorSchemaMetadata,
+  selectorValueSchema,
+} from '@/features/scenario/selectors';
+import {
   graphPortEntityId,
   objectiveEntityId,
 } from '@/features/scenario/entities';
@@ -100,7 +104,7 @@ export function createObjectiveTerm({
   sourceSelector?: StudioSelectorRef | null;
   targetSelector?: StudioSelectorRef | null;
 }): StudioObjectiveTermSpec {
-  return {
+  return enrichObjectiveTermWithSelectorSchema({
     id: uniqueTermId(spec, label),
     type_id: 'TargetStateLoss',
     label,
@@ -111,10 +115,46 @@ export function createObjectiveTerm({
     penalty: 'squared_l2',
     temporal_selector: { mode: 'all' },
     weight: 1,
-    units: null,
+    units: selectorValueSchema(sourceSelector)?.units ?? sourceSelector?.units ?? null,
     validation: null,
     metadata: {
       authored_in: 'scenario_projection_workspace',
+    },
+  });
+}
+
+function prefixedSelectorMetadata(
+  prefix: 'source' | 'target',
+  selector: StudioSelectorRef | null | undefined
+): Record<string, unknown> {
+  const schemaMetadata = selectorSchemaMetadata(selector);
+  return Object.fromEntries(
+    Object.entries({
+      selector: selector ?? null,
+      selector_compact: selector?.compact ?? null,
+      ...schemaMetadata,
+    }).map(([key, value]) => [`${prefix}_${key}`, value])
+  );
+}
+
+export function enrichObjectiveTermWithSelectorSchema(
+  term: StudioObjectiveTermSpec
+): StudioObjectiveTermSpec {
+  const sourceUnits =
+    term.units ??
+    selectorValueSchema(term.source_selector)?.units ??
+    term.source_selector?.units ??
+    selectorValueSchema(term.target_selector)?.units ??
+    term.target_selector?.units ??
+    null;
+  return {
+    ...term,
+    units: sourceUnits,
+    metadata: {
+      ...term.metadata,
+      ...prefixedSelectorMetadata('source', term.source_selector),
+      ...prefixedSelectorMetadata('target', term.target_selector),
+      temporal_selector: term.temporal_selector ?? null,
     },
   };
 }
@@ -139,15 +179,19 @@ export function updateObjectiveTerm(
     ...spec,
     terms: spec.terms.map((term) =>
       term.id === termId
-        ? {
+        ? enrichObjectiveTermWithSelectorSchema({
             ...term,
             ...updates,
             id: term.id,
+            units:
+              updates.source_selector !== undefined || updates.target_selector !== undefined
+                ? updates.units
+                : updates.units ?? term.units,
             metadata: {
               ...term.metadata,
               ...(updates.metadata ?? {}),
             },
-          }
+          })
         : term
     ),
     metadata: { ...spec.metadata, edited_from: 'objective_authoring' },

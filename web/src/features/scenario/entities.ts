@@ -403,6 +403,7 @@ function addTaskEntity(
           task_data_id: data.id,
           bindable: data.bindable,
           value_spec: data.value_spec ?? null,
+          value_schema: data.value_spec?.metadata.value_schema ?? null,
         },
       },
       relations: [relation('contains', taskObjectId, 'task')],

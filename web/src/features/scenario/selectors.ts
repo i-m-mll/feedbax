@@ -6,6 +6,7 @@ import type {
   StudioSchemaOrigin,
   StudioSchemaRegistry,
   StudioSelectorRef,
+  ValueSchema,
 } from '@/types/workspace';
 
 export type SelectorOptionGroup =
@@ -130,6 +131,46 @@ function isSelectorRef(value: unknown): value is StudioSelectorRef {
   );
 }
 
+function isValueSchema(value: unknown): value is ValueSchema {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<ValueSchema>;
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.label === 'string' &&
+    typeof candidate.kind === 'string' &&
+    typeof candidate.origin === 'string' &&
+    typeof candidate.metadata === 'object' &&
+    candidate.metadata !== null
+  );
+}
+
+export function selectorValueSchema(
+  selector: StudioSelectorRef | null | undefined
+): ValueSchema | null {
+  return isValueSchema(selector?.metadata.value_schema) ? selector.metadata.value_schema : null;
+}
+
+export function selectorSchemaMetadata(
+  selector: StudioSelectorRef | null | undefined
+): Record<string, unknown> {
+  const valueSchema = selectorValueSchema(selector);
+  return {
+    value_schema: valueSchema,
+    value_schema_id: valueSchema?.id ?? null,
+    value_schema_kind: valueSchema?.kind ?? null,
+    schema_origin:
+      valueSchema?.origin ??
+      (typeof selector?.metadata.schema_origin === 'string'
+        ? selector.metadata.schema_origin
+        : null),
+    dtype: selector?.dtype ?? valueSchema?.dtype ?? null,
+    shape: selector?.expected_shape ?? valueSchema?.shape ?? null,
+    rank: valueSchema?.rank ?? null,
+    units: selector?.units ?? valueSchema?.units ?? null,
+    frame: selector?.frame ?? valueSchema?.frame ?? null,
+  };
+}
+
 export function selectorBase(selector: StudioSelectorRef | null | undefined): StudioSelectorRef | null {
   if (!selector) return null;
   const base = selector.metadata.base_selector;
@@ -202,10 +243,10 @@ export function selectorDetail(selector: StudioSelectorRef | null | undefined): 
   const path = selector.path ?? selector.compact.replace(/^path:/, '');
   const hint = selector.namespace === 'state_path' ? STATE_HINTS[path] : null;
   const parts = [
-    selector.units ?? hint?.units,
-    selector.dtype,
-    Array.isArray(selector.expected_shape ?? hint?.expected_shape)
-      ? (selector.expected_shape ?? hint?.expected_shape)?.join(' x ')
+    selector.units ?? selectorValueSchema(selector)?.units ?? hint?.units,
+    selector.dtype ?? selectorValueSchema(selector)?.dtype,
+    Array.isArray(selector.expected_shape ?? selectorValueSchema(selector)?.shape ?? hint?.expected_shape)
+      ? (selector.expected_shape ?? selectorValueSchema(selector)?.shape ?? hint?.expected_shape)?.join(' x ')
       : null,
     typeof selector.metadata.detail === 'string' ? selector.metadata.detail : hint?.detail ?? null,
   ];

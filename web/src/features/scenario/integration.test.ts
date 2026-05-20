@@ -39,16 +39,35 @@ describe('scenario integration derivation', () => {
           id: 'target_reach_error',
           source: 'task_default',
           selector: expect.stringContaining('task:'),
+          valueSchema: expect.objectContaining({
+            id: 'value:task_data:targets',
+            kind: 'task_data',
+          }),
+          metadata: expect.objectContaining({
+            task_data_schema: expect.objectContaining({
+              id: 'task_data:targets',
+            }),
+            temporal_aggregation: 'final',
+          }),
         }),
         expect.objectContaining({
           id: 'peak_velocity_m_per_s',
           source: 'analysis',
           sourceId: expect.stringContaining('summary_metrics'),
+          valueSchema: expect.objectContaining({
+            kind: 'metric',
+            units: 'm/s',
+          }),
         }),
         expect.objectContaining({
           id: 'final_validation_loss',
           source: 'manifest',
           sourceId: 'rlrmp:b399efc:movement_ramp__power6_dur80',
+          metadata: expect.objectContaining({
+            value_schema: expect.objectContaining({
+              id: 'value:metric:manifest:final_validation_loss',
+            }),
+          }),
         }),
       ])
     );
