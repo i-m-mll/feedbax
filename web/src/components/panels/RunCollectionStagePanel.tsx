@@ -768,17 +768,30 @@ function ExecutionTarget({
               key={target.id}
               type="button"
               onClick={() => onChange(target.id)}
+              aria-pressed={active}
               className={clsx(
-                'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
+                'relative flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
                 active
-                  ? 'border-brand-300 bg-brand-50 text-brand-800'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  ? 'border-brand-500 bg-brand-100 text-brand-900 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.35)]'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
               )}
             >
-              <Icon className="h-4 w-4 shrink-0" />
+              {active && <span className="absolute inset-y-2 left-0 w-1 rounded-r-full bg-brand-500" />}
+              <span
+                className={clsx(
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-full border',
+                  active
+                    ? 'border-brand-600 bg-brand-600 text-white'
+                    : 'border-slate-200 bg-slate-50 text-slate-500'
+                )}
+              >
+                {active ? <CheckCircle2 className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
+              </span>
               <span className="min-w-0">
                 <span className="block text-xs font-semibold">{target.title}</span>
-                <span className="block text-[11px] text-slate-500">{target.detail}</span>
+                <span className={clsx('block text-[11px]', active ? 'text-brand-700' : 'text-slate-500')}>
+                  {target.detail}
+                </span>
               </span>
             </button>
           );

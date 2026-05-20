@@ -255,10 +255,10 @@ export function TaskScenarioPanel() {
     () => ensureTaskBindingSpec(scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(graph), graph),
     [graph, scenario?.task_binding_spec]
   );
+  const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
 
   if (topPane.active_projection !== 'graph') return null;
 
-  const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
   const params = Object.entries(task.params ?? {}).filter(
     ([key]) => !(timeline && isDelayedReachTimelineParam(key))
   );
@@ -306,12 +306,13 @@ export function TaskScenarioPanel() {
           ))}
         </select>
       </div>
-      <section className="shrink-0 border-b border-slate-100 px-4 py-2.5">
-        <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-          <PlugZap className="h-3 w-3" />
-          Task Data
-        </div>
-        <div className="mt-2 space-y-1">
+      <section className="shrink-0 border-b border-slate-200 bg-slate-50/75 px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+        <div className="overflow-visible rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+            <PlugZap className="h-3 w-3 text-emerald-500" />
+            Task Data
+          </div>
+          <div className="space-y-1 px-3 py-2">
           {bindableData.map((data) => (
             <div
               key={data.id}
@@ -327,9 +328,10 @@ export function TaskScenarioPanel() {
               />
             </div>
           ))}
+          </div>
         </div>
       </section>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-slate-50/35 px-4 py-4">
         {timeline && <DelayedReachTimelineEditor timeline={timeline} onChange={updateTimeline} />}
         <section className="space-y-2">
           <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
