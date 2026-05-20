@@ -15,12 +15,13 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export function useAppShortcuts() {
-  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, nodes } =
+  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, markDirty, nodes } =
     useGraphStore();
   const workspace = useWorkspaceStore((state) => state.workspace);
   const updateTaskBindingSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioTaskBindingSpec
   );
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const saveMutation = useSaveGraph();
 
   const saveGraph = useCallback(async () => {
@@ -41,6 +42,20 @@ export function useAppShortcuts() {
     const taskBindingSpec = trainingScenario
       ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, graph, trainingScenario.task_spec)
       : null;
+    const selectedTaskBindingId = topPane.selected_entity_id?.startsWith('task_binding:')
+      ? topPane.selected_entity_id.slice('task_binding:'.length)
+      : null;
+    if (taskBindingSpec && selectedTaskBindingId) {
+      updateTaskBindingSpec({
+        ...taskBindingSpec,
+        bindings: taskBindingSpec.bindings.filter(
+          (binding) => binding.id !== selectedTaskBindingId
+        ),
+      });
+      selectTopPaneEntity(null);
+      markDirty();
+      return;
+    }
     const impactedBindings = (taskBindingSpec?.bindings ?? []).filter((binding) =>
       selectedNodeIds.includes(binding.target_node_id)
     );
@@ -66,7 +81,15 @@ export function useAppShortcuts() {
     }
 
     deleteSelected();
-  }, [deleteSelected, graph, nodes, updateTaskBindingSpec, workspace]);
+  }, [
+    deleteSelected,
+    graph,
+    markDirty,
+    nodes,
+    selectTopPaneEntity,
+    updateTaskBindingSpec,
+    workspace,
+  ]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {

@@ -104,6 +104,14 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   );
   const inputPorts = muxInputs?.ports ?? spec.input_ports;
   const nextMuxPort = muxInputs?.nextPort ?? null;
+  const taskHintEntries = useMemo(
+    () =>
+      inputPorts.flatMap((port) => {
+        const taskLabel = taskBoundInputs.get(port);
+        return taskLabel ? [{ port, taskLabel }] : [];
+      }),
+    [inputPorts, taskBoundInputs]
+  );
   const inputCount = inputPorts.length;
   const outputCount = spec.output_ports.length;
   const totalPorts = inputCount + outputCount;
@@ -227,8 +235,44 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           width: '8px',
           height: '8px',
         }}
-        className="w-2 h-2 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
+        className="w-2 h-2 z-20 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
       />
+      {collapsedEffective && showTaskSourceHints && taskHintEntries.length > 0 && (
+        <div
+          className="pointer-events-none absolute z-[1] flex flex-col gap-1"
+          style={{
+            top: HEADER_HEIGHT / 2,
+            [reversed ? 'right' : 'left']: -(TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP),
+            width: TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP,
+            transform: 'translateY(-50%)',
+          }}
+          aria-hidden="true"
+        >
+          <div
+            className="absolute top-1/2 h-[calc(100%-10px)] w-px -translate-y-1/2 bg-emerald-300"
+            style={reversed ? { left: 0 } : { right: 0 }}
+          />
+          {taskHintEntries.map(({ port, taskLabel }) => (
+            <div key={`collapsed-task-source-${port}`} className="flex h-5 items-center">
+              {reversed ? (
+                <>
+                  <div className="h-px flex-1 bg-emerald-300" />
+                  <div className="max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft">
+                    {taskLabel}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft">
+                    {taskLabel}
+                  </div>
+                  <div className="h-px flex-1 bg-emerald-300" />
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <Handle
         type="source"
         position={reversed ? Position.Left : Position.Right}
@@ -243,7 +287,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           width: '8px',
           height: '8px',
         }}
-        className="w-2 h-2 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
+        className="w-2 h-2 z-20 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
       />
       <div
         className={clsx(
@@ -351,7 +395,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               return (
                 <div
                   key={`task-source-${port}`}
-                  className="pointer-events-none absolute z-30 flex items-center"
+                  className="pointer-events-none absolute z-10 flex items-center"
                   style={{
                     top: rowCenterInBody(index),
                     [side]: -(TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP),

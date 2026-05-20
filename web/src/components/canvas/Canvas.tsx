@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,12 +12,20 @@ import {
   Background,
   Controls,
   ControlButton,
+  Handle,
   MiniMap,
   ReactFlow,
   Panel,
+  Position,
   useNodesInitialized,
   useReactFlow,
   type Connection,
+  type Edge,
+  type EdgeChange,
+  type EdgeProps,
+  type Node,
+  type NodeProps,
+  getBezierPath,
   BackgroundVariant,
 } from '@xyflow/react';
 import { useGraphStore } from '@/stores/graphStore';
@@ -46,22 +55,259 @@ import { StateFlowEdge } from './StateFlowEdge';
 import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
-import type { GraphNodeData } from '@/types/graph';
+import type { GraphEdgeData, GraphNodeData, TapNodeData } from '@/types/graph';
 import type { StudioTaskBinding } from '@/types/workspace';
 import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
+
+interface TaskSourceNodeData extends Record<string, unknown> {
+  label: string;
+}
+
+function TaskSourceNode({ data }: NodeProps) {
+  const nodeData = data as TaskSourceNodeData;
+  return (
+    <div
+      className="relative h-5 w-5"
+      aria-label={`${nodeData.label} task data source`}
+      title={`${nodeData.label} task data source`}
+    >
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="out"
+        className="h-5 w-5 cursor-crosshair border-0 bg-transparent opacity-0"
+        style={{
+          left: 0,
+          top: 0,
+          width: TASK_SOURCE_HANDLE_SIZE,
+          height: TASK_SOURCE_HANDLE_SIZE,
+          transform: 'none',
+        }}
+      />
+    </div>
+  );
+}
+
+function TaskBindingEdge({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+}: EdgeProps) {
+  const [path] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+  return (
+    <path
+      className="react-flow__edge-path"
+      d={path}
+      fill="none"
+      stroke="transparent"
+      strokeWidth={18}
+      strokeLinecap="round"
+      pointerEvents="stroke"
+    />
+  );
+}
 
 const nodeTypes = {
   component: CustomNode,
   subgraph: SubgraphNode,
   tap: TapNode,
+  taskSource: TaskSourceNode,
 };
 
 const edgeTypes = {
   routed: RoutedEdge,
   'state-flow': StateFlowEdge,
+  taskBinding: TaskBindingEdge,
 };
 
 const DEFAULT_FIT_VIEW_OPTIONS = { padding: 0.22, maxZoom: 1 } as const;
+const TASK_BINDING_ENTITY_PREFIX = 'task_binding:';
+const TASK_SOURCE_NODE_PREFIX = '__task_data_source__:';
+const TASK_BINDING_EDGE_PREFIX = '__task_binding_edge__:';
+const TASK_SOURCE_HANDLE_SIZE = 20;
+
+function taskSourceNodeId(dataId: string): string {
+  return `${TASK_SOURCE_NODE_PREFIX}${dataId}`;
+}
+
+function taskDataIdFromSourceNodeId(nodeId: string | null | undefined): string | null {
+  return nodeId?.startsWith(TASK_SOURCE_NODE_PREFIX)
+    ? nodeId.slice(TASK_SOURCE_NODE_PREFIX.length)
+    : null;
+}
+
+function taskBindingEdgeId(bindingId: string): string {
+  return `${TASK_BINDING_EDGE_PREFIX}${bindingId}`;
+}
+
+function taskBindingIdFromEdgeId(edgeId: string | null | undefined): string | null {
+  return edgeId?.startsWith(TASK_BINDING_EDGE_PREFIX)
+    ? edgeId.slice(TASK_BINDING_EDGE_PREFIX.length)
+    : null;
+}
+
+function cssSelectorValue(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function screenToCanvasFlowPosition(
+  point: { x: number; y: number },
+  container: HTMLElement | null
+): { x: number; y: number } {
+  const canvas =
+    container ?? document.querySelector<HTMLElement>('[data-studio-canvas-root="true"]');
+  const viewportElement = canvas?.querySelector<HTMLElement>('.react-flow__viewport');
+  const canvasRect = canvas?.getBoundingClientRect();
+  if (!canvasRect || !viewportElement) return point;
+
+  const transform = getComputedStyle(viewportElement).transform;
+  const matrix =
+    transform && transform !== 'none'
+      ? new DOMMatrixReadOnly(transform)
+      : new DOMMatrixReadOnly();
+  const scaleX = matrix.a || 1;
+  const scaleY = matrix.d || 1;
+  return {
+    x: (point.x - canvasRect.left - matrix.e) / scaleX,
+    y: (point.y - canvasRect.top - matrix.f) / scaleY,
+  };
+}
+
+function taskBindingPath(
+  container: HTMLElement,
+  binding: StudioTaskBinding
+): string | null {
+  const containerRect = container.getBoundingClientRect();
+  const sourcePort = document.querySelector<HTMLElement>(
+    `[data-task-data-port-id="${cssSelectorValue(binding.source_data_id)}"]`
+  );
+  const targetHandle =
+    container.querySelector<HTMLElement>(
+      `.react-flow__handle[data-nodeid="${cssSelectorValue(
+        binding.target_node_id
+      )}"][data-handleid="${cssSelectorValue(binding.target_port)}"]`
+    ) ??
+    container.querySelector<HTMLElement>(
+      `.react-flow__handle[data-nodeid="${cssSelectorValue(
+        binding.target_node_id
+      )}"][data-handleid="__state_in"]`
+    );
+  if (!sourcePort || !targetHandle) return null;
+
+  const sourceRect = sourcePort.getBoundingClientRect();
+  const targetRect = targetHandle.getBoundingClientRect();
+  const sourceX =
+    Math.max(
+      containerRect.left + 1,
+      Math.min(containerRect.right - 1, sourceRect.left + sourceRect.width / 2)
+    ) - containerRect.left;
+  const sourceY = sourceRect.top + sourceRect.height / 2 - containerRect.top;
+  const targetX = targetRect.left + targetRect.width / 2 - containerRect.left;
+  const targetY = targetRect.top + targetRect.height / 2 - containerRect.top;
+  const controlOffset = Math.max(48, Math.abs(targetX - sourceX) * 0.45);
+  return `M ${sourceX} ${sourceY} C ${sourceX + controlOffset} ${sourceY}, ${
+    targetX - controlOffset
+  } ${targetY}, ${targetX} ${targetY}`;
+}
+
+function TaskBindingVisualOverlay({
+  bindings,
+  selectedBindingId,
+  containerRef,
+}: {
+  bindings: StudioTaskBinding[];
+  selectedBindingId: string | null;
+  containerRef: RefObject<HTMLDivElement | null>;
+}) {
+  const bindingKey = bindings
+    .map(
+      (binding) =>
+        `${binding.id}:${binding.source_data_id}:${binding.target_node_id}:${binding.target_port}`
+    )
+    .join('|');
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || bindings.length === 0) return undefined;
+
+    let frame = 0;
+    let active = true;
+    const update = () => {
+      for (const binding of bindings) {
+        const path = taskBindingPath(container, binding);
+        container
+          .querySelectorAll<SVGPathElement>(
+            `[data-task-binding-visual-id="${cssSelectorValue(binding.id)}"]`
+          )
+          .forEach((element) => {
+            if (path) {
+              element.setAttribute('d', path);
+              element.style.display = '';
+            } else {
+              element.style.display = 'none';
+            }
+          });
+      }
+    };
+    const tick = () => {
+      update();
+      if (active) frame = requestAnimationFrame(tick);
+    };
+    update();
+    const interval = window.setInterval(update, 100);
+    frame = requestAnimationFrame(tick);
+    return () => {
+      active = false;
+      if (frame) cancelAnimationFrame(frame);
+      window.clearInterval(interval);
+    };
+  }, [bindingKey, bindings, containerRef]);
+
+  if (bindings.length === 0) return null;
+
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      style={{ zIndex: 9 }}
+      aria-hidden="true"
+    >
+      {bindings.map((binding) => {
+        const selected = selectedBindingId === binding.id;
+        return (
+          <g key={binding.id}>
+            <path
+              data-task-binding-visual-id={binding.id}
+              fill="none"
+              stroke={selected ? '#bbf7d0' : 'transparent'}
+              strokeWidth={9}
+              strokeLinecap="round"
+            />
+            <path
+              data-task-binding-visual-id={binding.id}
+              fill="none"
+              stroke={selected ? '#059669' : '#10b981'}
+              strokeWidth={selected ? 4 : 3}
+              strokeLinecap="round"
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
 
 export function Canvas() {
   const {
@@ -72,6 +318,7 @@ export function Canvas() {
     onEdgesChange,
     onConnect,
     addNodeFromComponent,
+    markDirty,
     setSelectedNode,
     setSelectedTap,
     setSelectedEdge,
@@ -91,14 +338,23 @@ export function Canvas() {
   const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
+  const updateTaskBindingSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioTaskBindingSpec
+  );
   const workspace = useWorkspaceStore((state) => state.workspace);
   const topPane = getTopPaneState(workspace);
+  const selectedTaskBindingId = topPane.selected_entity_id?.startsWith(TASK_BINDING_ENTITY_PREFIX)
+    ? topPane.selected_entity_id.slice(TASK_BINDING_ENTITY_PREFIX.length)
+    : null;
   const { components } = useComponents();
   const reactFlow = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
   const fittedGraphKey = useRef<string | null>(null);
+  const [taskSourcePositions, setTaskSourcePositions] = useState<
+    Record<string, { x: number; y: number }>
+  >({});
   const trainingScenario = getTrainingScenario(workspace);
   const taskBindingSpec = useMemo(
     () =>
@@ -109,9 +365,209 @@ export function Canvas() {
       ),
     [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
   );
+  const taskDataSignature = taskBindingSpec.exposed_data
+    .map((data) => `${data.id}:${data.label}:${data.role}:${data.bindable ? '1' : '0'}`)
+    .join('|');
+  const taskBindingSignature = taskBindingSpec.bindings
+    .map(
+      (binding) =>
+        `${binding.id}:${binding.source_data_id}:${binding.target_node_id}:${binding.target_port}:${binding.role}`
+    )
+    .join('|');
+  const taskBindings = useMemo(() => taskBindingSpec.bindings, [taskBindingSignature]);
+  const bindableTaskData = useMemo(
+    () => taskBindingSpec.exposed_data.filter((data) => data.bindable),
+    [taskDataSignature]
+  );
+  const bindableTaskDataKey = bindableTaskData.map((data) => data.id).join('|');
+
+  const updateTaskSourcePositions = useCallback(() => {
+    if (topPane.active_projection !== 'task') {
+      setTaskSourcePositions({});
+      return;
+    }
+    const container = containerRef.current;
+    if (!container || bindableTaskData.length === 0) {
+      setTaskSourcePositions({});
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const nextPositions: Record<string, { x: number; y: number }> = {};
+    bindableTaskData.forEach((data, index) => {
+      const sourcePort = document.querySelector<HTMLElement>(
+        `[data-task-data-port-id="${cssSelectorValue(data.id)}"]`
+      );
+      const sourceRect = sourcePort?.getBoundingClientRect();
+      const handleScreenX = sourceRect
+        ? Math.max(
+            containerRect.left + 1,
+            Math.min(
+              containerRect.right - 1,
+              sourceRect.left + sourceRect.width / 2
+            )
+          )
+        : containerRect.left + 1;
+      const handleScreenY = sourceRect
+        ? sourceRect.top + sourceRect.height / 2
+        : containerRect.top + 88 + index * 28;
+      nextPositions[data.id] = screenToCanvasFlowPosition(
+        {
+          x: handleScreenX - TASK_SOURCE_HANDLE_SIZE / 2,
+          y: handleScreenY - TASK_SOURCE_HANDLE_SIZE / 2,
+        },
+        container
+      );
+    });
+    setTaskSourcePositions((previous) => {
+      const previousKeys = Object.keys(previous);
+      const nextKeys = Object.keys(nextPositions);
+      if (
+        previousKeys.length === nextKeys.length &&
+        nextKeys.every((key) => {
+          const before = previous[key];
+          const after = nextPositions[key];
+          return (
+            before &&
+            Math.abs(before.x - after.x) < 0.5 &&
+            Math.abs(before.y - after.y) < 0.5
+          );
+        })
+      ) {
+        return previous;
+      }
+      return nextPositions;
+    });
+  }, [bindableTaskData, topPane.active_projection]);
+
+  useLayoutEffect(() => {
+    if (topPane.active_projection !== 'task') {
+      setTaskSourcePositions({});
+      return undefined;
+    }
+    const container = containerRef.current;
+    if (!container || bindableTaskData.length === 0) {
+      setTaskSourcePositions({});
+      return undefined;
+    }
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updateTaskSourcePositions();
+      });
+    };
+
+    updateTaskSourcePositions();
+    schedule();
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(container);
+    document
+      .querySelectorAll<HTMLElement>('[data-task-data-port-id]')
+      .forEach((element) => resizeObserver.observe(element));
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+    };
+  }, [
+    bindableTaskDataKey,
+    topPane.active_projection,
+    updateTaskSourcePositions,
+  ]);
+
+  const taskSourceNodes = useMemo<Node<GraphNodeData | TapNodeData | TaskSourceNodeData>[]>(
+    () =>
+      topPane.active_projection === 'task'
+        ? bindableTaskData.map((data, index) => {
+            let position = taskSourcePositions[data.id];
+            if (!position) {
+              const container = containerRef.current;
+              const sourcePort = document.querySelector<HTMLElement>(
+                `[data-task-data-port-id="${cssSelectorValue(data.id)}"]`
+              );
+              if (container && sourcePort) {
+                const containerRect = container.getBoundingClientRect();
+                const sourceRect = sourcePort.getBoundingClientRect();
+                const handleScreenX = Math.max(
+                  containerRect.left + 1,
+                  Math.min(
+                    containerRect.right - 1,
+                    sourceRect.left + sourceRect.width / 2
+                  )
+                );
+                const handleScreenY = sourceRect.top + sourceRect.height / 2;
+                position = screenToCanvasFlowPosition(
+                  {
+                    x: handleScreenX - TASK_SOURCE_HANDLE_SIZE / 2,
+                    y: handleScreenY - TASK_SOURCE_HANDLE_SIZE / 2,
+                  },
+                  container
+                );
+              } else {
+                position = {
+                  x: -TASK_SOURCE_HANDLE_SIZE,
+                  y: 88 + index * 28,
+                };
+              }
+            }
+            return {
+              id: taskSourceNodeId(data.id),
+              type: 'taskSource',
+              position,
+              data: { label: data.label },
+              draggable: false,
+              selectable: false,
+              deletable: false,
+              focusable: false,
+              style: {
+                width: TASK_SOURCE_HANDLE_SIZE,
+                height: TASK_SOURCE_HANDLE_SIZE,
+                opacity: 0,
+                pointerEvents: 'all',
+              },
+              zIndex: 3,
+            };
+          })
+        : [],
+    [bindableTaskData, taskSourcePositions, topPane.active_projection]
+  );
+
+  const taskBindingEdges = useMemo<Edge<GraphEdgeData>[]>(
+    () =>
+      topPane.active_projection === 'task'
+        ? taskBindings.map((binding) => ({
+            id: taskBindingEdgeId(binding.id),
+            source: taskSourceNodeId(binding.source_data_id),
+            sourceHandle: 'out',
+            target: binding.target_node_id,
+            targetHandle: binding.target_port,
+            type: 'taskBinding',
+            selectable: true,
+            deletable: true,
+            zIndex: 2,
+            data: {
+              task_binding_id: binding.id,
+              source_data_id: binding.source_data_id,
+            },
+            selected: selectedTaskBindingId === binding.id,
+          }))
+        : [],
+    [selectedTaskBindingId, taskBindingSignature, taskBindings, topPane.active_projection]
+  );
+
+  const displayNodes = useMemo(
+    () => [...nodes, ...taskSourceNodes],
+    [nodes, taskSourceNodes]
+  );
   const displayEdges = useMemo(
-    () => edges,
-    [edges]
+    () => [...edges, ...taskBindingEdges],
+    [edges, taskBindingEdges]
   );
 
   useEffect(() => {
@@ -178,6 +634,59 @@ export function Canvas() {
   const isStateHandle = (handleId?: string | null) =>
     typeof handleId === 'string' && handleId.startsWith('__state');
 
+  const upsertTaskBinding = useCallback(
+    (dataId: string, targetNodeId: string, targetPort: string) => {
+      const taskData = taskBindingSpec.exposed_data.find((data) => data.id === dataId);
+      if (!taskData?.bindable) return;
+      const existingBinding = taskBindingSpec.bindings.find(
+        (binding) => binding.source_data_id === dataId
+      );
+      if (
+        targetInputOccupied(
+          graph,
+          taskBindingSpec,
+          targetNodeId,
+          targetPort,
+          existingBinding?.id
+        )
+      ) {
+        return;
+      }
+      const nextBinding: StudioTaskBinding = {
+        id: `task:${dataId}->${targetNodeId}:${targetPort}`,
+        source_data_id: dataId,
+        target_node_id: targetNodeId,
+        target_port: targetPort,
+        role: taskData.role,
+        metadata: {},
+      };
+      updateTaskBindingSpec({
+        ...taskBindingSpec,
+        bindings: [
+          ...taskBindingSpec.bindings.filter(
+            (binding) => binding.id !== existingBinding?.id && binding.id !== nextBinding.id
+          ),
+          nextBinding,
+        ],
+      });
+      markDirty();
+      setSelectedEdge(null);
+      setSelectedNode(null);
+      setSelectedTap(null);
+      selectTopPaneEntity(taskBindingEntityId(nextBinding.id));
+    },
+    [
+      graph,
+      markDirty,
+      selectTopPaneEntity,
+      setSelectedEdge,
+      setSelectedNode,
+      setSelectedTap,
+      taskBindingSpec,
+      updateTaskBindingSpec,
+    ]
+  );
+
   const hasBlockingCanvasConnectionIssue = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.sourceHandle) return true;
@@ -207,6 +716,20 @@ export function Canvas() {
     (connection: Connection) => {
       if (!connection.target || !connection.targetHandle) return false;
       if (!connection.source || !connection.sourceHandle) return false;
+      const taskDataId = taskDataIdFromSourceNodeId(connection.source);
+      if (taskDataId) {
+        if (isStateHandle(connection.targetHandle)) return false;
+        const existingBinding = taskBindingSpec.bindings.find(
+          (binding) => binding.source_data_id === taskDataId
+        );
+        return !targetInputOccupied(
+          graph,
+          taskBindingSpec,
+          connection.target,
+          connection.targetHandle,
+          existingBinding?.id
+        );
+      }
       const sourceIsState = isStateHandle(connection.sourceHandle);
       const targetIsState = isStateHandle(connection.targetHandle);
       if (sourceIsState || targetIsState) {
@@ -231,6 +754,13 @@ export function Canvas() {
 
   const handleConnect = useCallback(
     (connection: Connection) => {
+      const taskDataId = taskDataIdFromSourceNodeId(connection.source);
+      if (taskDataId) {
+        if (!connection.target || !connection.targetHandle) return;
+        if (isStateHandle(connection.targetHandle)) return;
+        upsertTaskBinding(taskDataId, connection.target, connection.targetHandle);
+        return;
+      }
       if (
         connection.target &&
         connection.targetHandle &&
@@ -249,7 +779,76 @@ export function Canvas() {
       }
       onConnect(connection);
     },
-    [graph, hasBlockingCanvasConnectionIssue, onConnect, taskBindingSpec]
+    [graph, hasBlockingCanvasConnectionIssue, onConnect, taskBindingSpec, upsertTaskBinding]
+  );
+
+  const handleNodesChange = useCallback(
+    (changes: Parameters<typeof onNodesChange>[0]) => {
+      const graphChanges = changes.filter(
+        (change) => !('id' in change) || !taskDataIdFromSourceNodeId(change.id)
+      );
+      if (graphChanges.length > 0) onNodesChange(graphChanges);
+    },
+    [onNodesChange]
+  );
+
+  const removeTaskBindings = useCallback(
+    (bindingIds: Set<string>) => {
+      if (bindingIds.size === 0) return;
+      updateTaskBindingSpec({
+        ...taskBindingSpec,
+        bindings: taskBindingSpec.bindings.filter((binding) => !bindingIds.has(binding.id)),
+      });
+      markDirty();
+      if (selectedTaskBindingId && bindingIds.has(selectedTaskBindingId)) {
+        selectTopPaneEntity(null);
+      }
+    },
+    [
+      markDirty,
+      selectTopPaneEntity,
+      selectedTaskBindingId,
+      taskBindingSpec,
+      updateTaskBindingSpec,
+    ]
+  );
+
+  const handleEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      const graphChanges: EdgeChange[] = [];
+      const removedTaskBindingIds = new Set<string>();
+      for (const change of changes) {
+        const taskBindingId = taskBindingIdFromEdgeId('id' in change ? change.id : null);
+        if (!taskBindingId) {
+          graphChanges.push(change);
+          continue;
+        }
+        if (change.type === 'remove') {
+          removedTaskBindingIds.add(taskBindingId);
+        }
+        if (change.type === 'select') {
+          if (change.selected) {
+            setSelectedEdge(null);
+            setSelectedNode(null);
+            setSelectedTap(null);
+            selectTopPaneEntity(taskBindingEntityId(taskBindingId));
+          } else if (selectedTaskBindingId === taskBindingId) {
+            selectTopPaneEntity(null);
+          }
+        }
+      }
+      removeTaskBindings(removedTaskBindingIds);
+      if (graphChanges.length > 0) onEdgesChange(graphChanges);
+    },
+    [
+      onEdgesChange,
+      removeTaskBindings,
+      selectTopPaneEntity,
+      selectedTaskBindingId,
+      setSelectedEdge,
+      setSelectedNode,
+      setSelectedTap,
+    ]
   );
 
   const onDrop = useCallback(
@@ -278,32 +877,28 @@ export function Canvas() {
   return (
     <div
       ref={containerRef}
+      data-studio-canvas-root="true"
       className="relative w-full h-full overflow-hidden bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
     >
       {topPane.active_projection === 'task' && (
-        <TaskBindingOverlay
-          bindings={taskBindingSpec.bindings}
+        <TaskBindingVisualOverlay
+          bindings={taskBindings}
+          selectedBindingId={selectedTaskBindingId}
           containerRef={containerRef}
-          onSelect={(binding) => {
-            setSelectedEdge(null);
-            setSelectedNode(null);
-            setSelectedTap(null);
-            selectTopPaneEntity(taskBindingEntityId(binding.id));
-          }}
-          onHover={(binding) => hoverTopPaneEntity(binding ? taskBindingEntityId(binding.id) : null)}
         />
       )}
       <ReactFlow
         className="relative z-10"
         style={{ zIndex: 10 }}
-        nodes={nodes}
+        nodes={displayNodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         isValidConnection={isValidConnection}
+        onMoveEnd={() => updateTaskSourcePositions()}
         onPaneClick={() => {
           setSelectedNode(null);
           setSelectedTap(null);
@@ -311,6 +906,7 @@ export function Canvas() {
           selectTopPaneEntity(null);
         }}
         onNodeClick={(_, node) => {
+          if (taskDataIdFromSourceNodeId(node.id)) return;
           if (node.type === 'tap') {
             const tapId = node.id.replace(/^tap:/, '');
             setSelectedTap(tapId);
@@ -323,12 +919,21 @@ export function Canvas() {
           }
         }}
         onEdgeClick={(_, edge) => {
+          const bindingId = taskBindingIdFromEdgeId(edge.id);
+          if (bindingId) {
+            setSelectedEdge(null);
+            setSelectedNode(null);
+            setSelectedTap(null);
+            selectTopPaneEntity(taskBindingEntityId(bindingId));
+            return;
+          }
           setSelectedEdge(edge.id);
           setSelectedNode(null);
           setSelectedTap(null);
           selectTopPaneEntity(graphEdgeEntityId(edge.id));
         }}
         onNodeMouseEnter={(_, node) => {
+          if (taskDataIdFromSourceNodeId(node.id)) return;
           hoverTopPaneEntity(
             node.type === 'tap'
               ? probeEntityId(node.id.replace(/^tap:/, ''))
@@ -337,6 +942,11 @@ export function Canvas() {
         }}
         onNodeMouseLeave={() => hoverTopPaneEntity(null)}
         onEdgeMouseEnter={(_, edge) => {
+          const bindingId = taskBindingIdFromEdgeId(edge.id);
+          if (bindingId) {
+            hoverTopPaneEntity(taskBindingEntityId(bindingId));
+            return;
+          }
           hoverTopPaneEntity(graphEdgeEntityId(edge.id));
         }}
         onEdgeMouseLeave={() => hoverTopPaneEntity(null)}
@@ -423,183 +1033,6 @@ export function Canvas() {
         />
       )}
     </div>
-  );
-}
-
-function TaskBindingOverlay({
-  bindings,
-  containerRef,
-  onSelect,
-  onHover,
-}: {
-  bindings: StudioTaskBinding[];
-  containerRef: RefObject<HTMLDivElement | null>;
-  onSelect: (binding: StudioTaskBinding) => void;
-  onHover: (binding: StudioTaskBinding | null) => void;
-}) {
-  const [paths, setPaths] = useState<
-    Array<{
-      binding: StudioTaskBinding;
-      sourceX: number;
-      sourceY: number;
-      targetX: number;
-      targetY: number;
-    }>
-  >([]);
-
-  const selectorValue = useCallback(
-    (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"'),
-    []
-  );
-
-  const updatePaths = useCallback(() => {
-    const container = containerRef.current;
-    if (!container || bindings.length === 0) {
-      setPaths([]);
-      return;
-    }
-
-    const containerRect = container.getBoundingClientRect();
-    const nextPaths = bindings.flatMap((binding, index) => {
-      const nodeSelector = selectorValue(binding.target_node_id);
-      const targetHandle =
-        container.querySelector<HTMLElement>(
-          `.react-flow__handle[data-nodeid="${nodeSelector}"][data-handleid="${selectorValue(
-            binding.target_port
-          )}"]`
-        ) ??
-        container.querySelector<HTMLElement>(
-          `.react-flow__handle[data-nodeid="${nodeSelector}"][data-handleid="__state_in"]`
-        );
-      if (!targetHandle) return [];
-
-      const targetRect = targetHandle.getBoundingClientRect();
-      const sourcePort = document.querySelector<HTMLElement>(
-        `[data-task-data-port-id="${selectorValue(binding.source_data_id)}"]`
-      );
-      const sourceRect = sourcePort?.getBoundingClientRect();
-      const sourceY = sourceRect
-        ? sourceRect.top + sourceRect.height / 2 - containerRect.top
-        : 88 + index * 28;
-      return [
-        {
-          binding,
-          sourceX: 0,
-          sourceY,
-          targetX: targetRect.left + targetRect.width / 2 - containerRect.left,
-          targetY: targetRect.top + targetRect.height / 2 - containerRect.top,
-        },
-      ];
-    });
-    setPaths(nextPaths);
-  }, [bindings, containerRef, selectorValue]);
-
-  useEffect(() => {
-    updatePaths();
-    const container = containerRef.current;
-    if (!container) return undefined;
-
-    let frame = 0;
-    const schedule = () => {
-      if (frame) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        updatePaths();
-      });
-    };
-
-    const resizeObserver = new ResizeObserver(schedule);
-    resizeObserver.observe(container);
-    document
-      .querySelectorAll<HTMLElement>('[data-task-data-port-id]')
-      .forEach((element) => resizeObserver.observe(element));
-
-    const viewportObserver = new MutationObserver(schedule);
-    let observedViewport: HTMLElement | null = null;
-    const attachViewportObserver = () => {
-      const viewport = container.querySelector<HTMLElement>('.react-flow__viewport');
-      if (!viewport || viewport === observedViewport) return;
-      viewportObserver.disconnect();
-      observedViewport = viewport;
-      viewportObserver.observe(viewport, {
-        attributes: true,
-        childList: true,
-        subtree: true,
-        attributeFilter: ['style', 'class', 'transform'],
-      });
-    };
-    attachViewportObserver();
-
-    const rootObserver = new MutationObserver(() => {
-      attachViewportObserver();
-      schedule();
-    });
-    rootObserver.observe(container, {
-      childList: true,
-      subtree: true,
-    });
-
-    let startupPolls = 0;
-    const startupInterval = window.setInterval(() => {
-      attachViewportObserver();
-      schedule();
-      startupPolls += 1;
-      if (startupPolls >= 20) {
-        window.clearInterval(startupInterval);
-      }
-    }, 50);
-
-    window.addEventListener('resize', schedule);
-    window.addEventListener('scroll', schedule, true);
-    container.addEventListener('pointermove', schedule);
-    container.addEventListener('pointerup', schedule);
-    container.addEventListener('wheel', schedule, { passive: true });
-
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      resizeObserver.disconnect();
-      viewportObserver.disconnect();
-      rootObserver.disconnect();
-      window.clearInterval(startupInterval);
-      window.removeEventListener('resize', schedule);
-      window.removeEventListener('scroll', schedule, true);
-      container.removeEventListener('pointermove', schedule);
-      container.removeEventListener('pointerup', schedule);
-      container.removeEventListener('wheel', schedule);
-    };
-  }, [containerRef, updatePaths]);
-
-  if (paths.length === 0) return null;
-
-  return (
-    <svg
-      className="task-binding-overlay pointer-events-none absolute inset-0 h-full w-full"
-      style={{ zIndex: 0 }}
-    >
-      {paths.map(({ binding, sourceX, sourceY, targetX, targetY }) => {
-        const midX = sourceX + Math.max(48, (targetX - sourceX) / 2);
-        const path = `M ${sourceX} ${sourceY} C ${midX} ${sourceY}, ${midX} ${targetY}, ${targetX} ${targetY}`;
-        return (
-          <g key={binding.id}>
-            <path
-              className="task-binding-edge"
-              d={path}
-              fill="none"
-              stroke="#10b981"
-              strokeWidth={3}
-              pointerEvents="stroke"
-              style={{ pointerEvents: 'stroke' }}
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelect(binding);
-              }}
-              onMouseEnter={() => onHover(binding)}
-              onMouseLeave={() => onHover(null)}
-            />
-          </g>
-        );
-      })}
-    </svg>
   );
 }
 
