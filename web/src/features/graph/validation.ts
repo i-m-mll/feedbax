@@ -50,10 +50,15 @@ export interface ValidationWarning {
 
 export function validateGraph(
   graph: GraphSpec,
-  schemaRegistry?: Pick<StudioSchemaRegistry, 'issues'> | null
+  schemaRegistry?: Pick<StudioSchemaRegistry, 'issues' | 'ports'> | null
 ): ValidationResult {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
+  const taskBoundInputs = new Set(
+    (schemaRegistry?.ports ?? [])
+      .filter((port) => port.direction === 'input' && port.node_id && port.bound_task_data_id)
+      .map((port) => `${port.node_id}.${port.port}`)
+  );
 
   for (const [nodeName, node] of Object.entries(graph.nodes)) {
     for (const inputPort of node.input_ports) {
@@ -63,8 +68,9 @@ export function validateGraph(
       const hasBinding = Object.values(graph.input_bindings).some(
         ([n, p]) => n === nodeName && p === inputPort
       );
+      const hasTaskDataBinding = taskBoundInputs.has(`${nodeName}.${inputPort}`);
 
-      if (!hasWire && !hasBinding) {
+      if (!hasWire && !hasBinding && !hasTaskDataBinding) {
         errors.push({
           type: 'missing_input',
           message: `Input port '${nodeName}.${inputPort}' is not connected`,

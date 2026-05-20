@@ -200,7 +200,7 @@ function WorkspaceProjection({
 
   return (
     <div className="h-full min-h-0 bg-slate-50">
-      <div className="relative min-h-0 overflow-hidden">
+      <div className="relative h-full min-h-0 overflow-hidden">
         <svg viewBox="0 0 500 420" className="h-full w-full" role="img" aria-label="Workspace projection">
           <rect x="78" y="38" width="344" height="344" rx="8" fill="#ffffff" stroke="#dbe3ee" />
           <path d="M250 80 L250 340 M120 210 L380 210" stroke="#e2e8f0" strokeWidth="1" />
