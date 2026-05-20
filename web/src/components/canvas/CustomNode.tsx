@@ -29,6 +29,8 @@ const LABEL_OFFSET = 22;
 const HANDLE_OFFSET = -6;
 const MIN_WIDTH = 180;
 const MIN_HEIGHT = 96;
+const TASK_SOURCE_NODE_WIDTH = 112;
+const TASK_SOURCE_NODE_GAP = 24;
 
 export function CustomNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
@@ -341,6 +343,41 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               />
             );
           })}
+          {showTaskSourceHints &&
+            inputPorts.map((port, index) => {
+              const taskLabel = taskBoundInputs.get(port);
+              if (!taskLabel) return null;
+              const side = reversed ? 'right' : 'left';
+              return (
+                <div
+                  key={`task-source-${port}`}
+                  className="pointer-events-none absolute z-30 flex items-center"
+                  style={{
+                    top: rowCenterInBody(index),
+                    [side]: -(TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP),
+                    transform: 'translateY(-50%)',
+                    width: TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP,
+                  }}
+                  aria-hidden="true"
+                >
+                  {reversed ? (
+                    <>
+                      <div className="h-px flex-1 bg-emerald-400" />
+                      <div className="max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft">
+                        {taskLabel}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft">
+                        {taskLabel}
+                      </div>
+                      <div className="h-px flex-1 bg-emerald-400" />
+                    </>
+                  )}
+                </div>
+              );
+            })}
           {spec.output_ports.map((port, index) => (
             <Handle
               key={`handle-out-${port}`}
@@ -398,14 +435,6 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               >
                 {objectivePorts.has(`input:${port}`) && (
                   <Crosshair className="w-3 h-3 text-violet-500" />
-                )}
-                {showTaskSourceHints && taskBoundInputs.has(port) && (
-                  <span
-                    className="max-w-[6.5rem] truncate rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-700 shadow-sm"
-                    title={`Task data: ${taskBoundInputs.get(port)}`}
-                  >
-                    {taskBoundInputs.get(port)}
-                  </span>
                 )}
                 <span>{port}</span>
               </button>

@@ -1,6 +1,11 @@
-import { useMemo } from 'react';
+import { useMemo, type PointerEvent as ReactPointerEvent } from 'react';
 import { Settings2 } from 'lucide-react';
-import { createDefaultTaskBindingSpec, ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import {
+  createDefaultTaskBindingSpec,
+  ensureTaskBindingSpec,
+  targetInputOccupied,
+  taskBindingId,
+} from '@/features/scenario/taskBindings';
 import {
   delayedReachTaskWithTimeline,
   delayedReachTimelineFromTask,
@@ -16,7 +21,7 @@ import {
 } from '@/stores/workspaceStore';
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
-import type { StudioTaskTimelineSpec } from '@/types/workspace';
+import type { StudioTaskDataSpec, StudioTaskTimelineSpec } from '@/types/workspace';
 
 const TASK_CATALOG: TaskSpec[] = [
   {
@@ -129,6 +134,59 @@ function ParamEditor({
       )}
     </label>
   );
+}
+
+function graphInputHandleAtPoint(x: number, y: number): HTMLElement | null {
+  const element = document.elementFromPoint(x, y);
+  const handle = element?.closest<HTMLElement>('.react-flow__handle[data-nodeid][data-handleid]');
+  if (!handle || !handle.classList.contains('target')) return null;
+  const handleId = handle.dataset.handleid;
+  if (!handleId || handleId.startsWith('__state')) return null;
+  return handle;
+}
+
+function createTaskDataDragPreview(
+  sourceRect: DOMRect
+): {
+  update: (x: number, y: number) => void;
+  remove: () => void;
+} {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  const startX = sourceRect.left + sourceRect.width / 2;
+  const startY = sourceRect.top + sourceRect.height / 2;
+  svg.setAttribute('class', 'pointer-events-none fixed inset-0 z-50 h-screen w-screen');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', '#10b981');
+  path.setAttribute('stroke-width', '2.5');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-dasharray', '7 5');
+  svg.append(path);
+  document.body.append(svg);
+
+  const update = (x: number, y: number) => {
+    const controlOffset = Math.max(48, Math.abs(x - startX) * 0.5);
+    path.setAttribute(
+      'd',
+      `M ${startX} ${startY} C ${startX + controlOffset} ${startY}, ${
+        x - controlOffset
+      } ${y}, ${x} ${y}`
+    );
+  };
+  return {
+    update,
+    remove: () => svg.remove(),
+  };
+}
+
+function releasePointerCaptureIfHeld(source: HTMLElement, pointerId: number) {
+  try {
+    if (source.hasPointerCapture(pointerId)) {
+      source.releasePointerCapture(pointerId);
+    }
+  } catch {
+    // Pointer capture can be unavailable for synthetic/test pointer events.
+  }
 }
 
 function DelayedReachTimelineEditor({
@@ -291,6 +349,80 @@ export function TaskScenarioPanel() {
     updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
     markDirty();
   };
+  const startTaskDataDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    data: StudioTaskDataSpec
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const preview = createTaskDataDragPreview(event.currentTarget.getBoundingClientRect());
+    const sourcePointerId = event.pointerId;
+    const source = event.currentTarget;
+    try {
+      source.setPointerCapture(sourcePointerId);
+    } catch {
+      // Some synthetic/test pointer events do not register as active pointers.
+    }
+    preview.update(event.clientX, event.clientY);
+
+    const removeListeners = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', cancel);
+    };
+    function move(moveEvent: PointerEvent) {
+      preview.update(moveEvent.clientX, moveEvent.clientY);
+    }
+    function finish(upEvent: PointerEvent) {
+      preview.remove();
+      removeListeners();
+      releasePointerCaptureIfHeld(source, sourcePointerId);
+      const handle = graphInputHandleAtPoint(upEvent.clientX, upEvent.clientY);
+      const targetNodeId = handle?.dataset.nodeid;
+      const targetPort = handle?.dataset.handleid;
+      if (!targetNodeId || !targetPort) return;
+      const existingBinding = taskBindingSpec.bindings.find(
+        (binding) => binding.source_data_id === data.id
+      );
+      if (
+        targetInputOccupied(
+          graph,
+          taskBindingSpec,
+          targetNodeId,
+          targetPort,
+          existingBinding?.id
+        )
+      ) {
+        return;
+      }
+      const nextBinding = {
+        id: taskBindingId(data.id, targetNodeId, targetPort),
+        source_data_id: data.id,
+        target_node_id: targetNodeId,
+        target_port: targetPort,
+        role: data.role,
+        metadata: {},
+      };
+      updateTaskBindingSpec({
+        ...taskBindingSpec,
+        bindings: [
+          ...taskBindingSpec.bindings.filter(
+            (binding) => binding.id !== existingBinding?.id && binding.id !== nextBinding.id
+          ),
+          nextBinding,
+        ],
+      });
+      markDirty();
+    }
+    function cancel() {
+      preview.remove();
+      removeListeners();
+      releasePointerCaptureIfHeld(source, sourcePointerId);
+    }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', cancel);
+  };
 
   return (
     <aside className="relative z-20 flex w-72 shrink-0 flex-col overflow-visible border-r border-slate-100 bg-white/95">
@@ -327,7 +459,8 @@ export function TaskScenarioPanel() {
               </span>
               <span
                 data-task-data-port-id={data.id}
-                className="absolute right-[-17px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
+                onPointerDown={(event) => startTaskDataDrag(event, data)}
+                className="absolute right-[-17px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 cursor-crosshair rounded-full border border-white bg-emerald-500 shadow-soft transition hover:ring-4 hover:ring-emerald-200"
                 title={`${data.label} Task Data`}
               />
             </div>
