@@ -213,10 +213,14 @@ def _extract_training_cfg(
 
     if task_spec is not None:
         task_params = task_spec.get("params", {})
-        for key, cast in [("n_reach_steps", int), ("effort_weight", float)]:
+        for key, attr, cast in [
+            ("n_reach_steps", "n_reach_steps", int),
+            ("n_steps", "n_reach_steps", int),
+            ("effort_weight", "effort_weight", float),
+        ]:
             if key in task_params:
                 try:
-                    setattr(cfg, key, cast(task_params[key]))
+                    setattr(cfg, attr, cast(task_params[key]))
                 except (TypeError, ValueError):
                     pass
 

@@ -8,6 +8,9 @@ import pytest
 from feedbax.training.rl.obs_norm import (
     ObsNormState,
     init_obs_norm,
+    init_obs_norm_config,
+    maybe_update_obs_norm,
+    merge_obs_norm,
     normalize_obs,
     update_obs_norm,
 )
@@ -32,11 +35,13 @@ class TestObsNorm:
     def test_single_update(self):
         """Mean/var updated correctly for a known batch."""
         state = init_obs_norm(3)
-        batch = jnp.array([
-            [1.0, 2.0, 3.0],
-            [3.0, 4.0, 5.0],
-            [5.0, 6.0, 7.0],
-        ])
+        batch = jnp.array(
+            [
+                [1.0, 2.0, 3.0],
+                [3.0, 4.0, 5.0],
+                [5.0, 6.0, 7.0],
+            ]
+        )
         state = update_obs_norm(state, batch)
 
         expected_mean = jnp.array([3.0, 4.0, 5.0])
@@ -77,9 +82,7 @@ class TestObsNorm:
             state = update_obs_norm(state, batch)
 
         # Normalize a fresh batch from the same distribution
-        test_batch = 5.0 + 3.0 * jax.random.normal(
-            jax.random.PRNGKey(999), (1000, obs_dim)
-        )
+        test_batch = 5.0 + 3.0 * jax.random.normal(jax.random.PRNGKey(999), (1000, obs_dim))
         normed = normalize_obs(state, test_batch)
 
         assert jnp.allclose(jnp.mean(normed, axis=0), 0.0, atol=0.15)
@@ -150,3 +153,59 @@ class TestObsNorm:
         expected_var = jnp.var(batches[0], axis=0)
         assert jnp.allclose(new_states.mean[0], expected_mean, atol=1e-5)
         assert jnp.allclose(new_states.var[0], expected_var, atol=1e-5)
+
+    def test_empty_batch_is_noop(self):
+        """Empty rollout fragments should not poison stats with NaNs."""
+        state = ObsNormState(
+            count=jnp.array(5.0),
+            mean=jnp.array([1.0, 2.0]),
+            var=jnp.array([3.0, 4.0]),
+        )
+        updated = update_obs_norm(state, jnp.empty((0, 2)))
+
+        assert float(updated.count) == 5.0
+        assert jnp.allclose(updated.mean, state.mean)
+        assert jnp.allclose(updated.var, state.var)
+
+    def test_merge_obs_norm_matches_full_batch(self, key):
+        """Parallel state merge matches a single full-batch update."""
+        data = jax.random.normal(key, (128, 4))
+        left = update_obs_norm(init_obs_norm(4), data[:50])
+        right = update_obs_norm(init_obs_norm(4), data[50:])
+        merged = merge_obs_norm(left, right)
+        full = update_obs_norm(init_obs_norm(4), data)
+
+        assert float(merged.count) == 128.0
+        assert jnp.allclose(merged.mean, full.mean, atol=1e-6)
+        assert jnp.allclose(merged.var, full.var, atol=1e-6)
+
+    def test_maybe_update_training_gate(self):
+        """Eval mode leaves stats untouched through a JIT-safe gate."""
+        state = init_obs_norm(2)
+        batch = jnp.array([[2.0, 4.0], [6.0, 8.0]])
+
+        train_state = maybe_update_obs_norm(state, batch, True)
+        eval_state = maybe_update_obs_norm(train_state, batch * 10.0, False)
+
+        assert float(train_state.count) == 2.0
+        assert float(eval_state.count) == 2.0
+        assert jnp.allclose(eval_state.mean, train_state.mean)
+        assert jnp.allclose(eval_state.var, train_state.var)
+
+    def test_per_dimension_modes(self):
+        """Per-slice modes mix standardization, passthrough, scale, angle, phase."""
+        state = ObsNormState(
+            count=jnp.array(10.0),
+            mean=jnp.array([10.0, 0.0, 0.0, 0.0, 0.0]),
+            var=jnp.array([4.0, 1.0, 1.0, 1.0, 1.0]),
+        )
+        config = init_obs_norm_config(
+            ["standardize", "passthrough", "scale", "angle", "phase"],
+            scale_min=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0]),
+            scale_max=jnp.array([1.0, 1.0, 10.0, 1.0, 1.0]),
+        )
+        obs = jnp.array([[14.0, 7.0, 5.0, 3.0 * jnp.pi, 1.25]])
+        normed = normalize_obs(state, obs, config=config)
+
+        expected = jnp.array([[2.0, 7.0, 0.5, -1.0, 0.25]])
+        assert jnp.allclose(normed, expected, atol=1e-6)

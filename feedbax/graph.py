@@ -24,6 +24,10 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax._graph import detect_cycles_and_sort
 from feedbax._selectors import Selection, select
+from feedbax._streaming import (
+    init_streaming_state_window,
+    update_streaming_state_window,
+)
 
 
 def init_state_from_component(component: "Component") -> State:
@@ -586,8 +590,12 @@ class Graph(Component):
 
         # --- streaming-loss path: accumulate scalar, skip history ---
         if streaming_loss_fn is not None:
+            streaming_order = getattr(streaming_loss_fn, "streaming_order", 0)
+            init_state_view = self.state_view(state)
+            state_window = init_streaming_state_window(init_state_view, streaming_order)
+
             def step_streaming(carry, args):
-                state, prev_cycle_values, loss_accum = carry
+                state, prev_cycle_values, state_window, loss_accum = carry
                 (step_inputs, step_key), t = args
 
                 outputs, state, new_cycle_values = self.step(
@@ -598,15 +606,19 @@ class Graph(Component):
                 )
 
                 state_view = self.state_view(state)
-                step_loss = streaming_loss_fn(state_view, t)
-                return (state, new_cycle_values, loss_accum + step_loss), outputs
+                loss_input = state_view
+                if streaming_order > 0:
+                    state_window = update_streaming_state_window(state_window, state_view)
+                    loss_input = state_window
+                step_loss = streaming_loss_fn(loss_input, t)
+                return (state, new_cycle_values, state_window, loss_accum + step_loss), outputs
 
             if self.checkpoint:
                 step_streaming = jax.checkpoint(step_streaming)
 
-            (final_state, _, total_loss), outputs_seq = lax.scan(
+            (final_state, _, _, total_loss), outputs_seq = lax.scan(
                 step_streaming,
-                (state, init_cycle_values, jnp.float32(0.0)),
+                (state, init_cycle_values, state_window, jnp.float32(0.0)),
                 ((step_inputs_seq, keys), jnp.arange(n_steps)),
             )
             return outputs_seq, final_state, total_loss

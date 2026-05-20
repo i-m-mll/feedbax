@@ -249,6 +249,56 @@ class StudioCollectionRef(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class StudioValueSpec(BaseModel):
+    """Declarative value used by Studio task timelines and parameter fields."""
+
+    schema_version: str = "feedbax.studio.value.v1"
+    mode: str
+    value: Optional[Any] = None
+    reference: Optional[Dict[str, Any]] = None
+    expression: Optional[str] = None
+    function_id: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
+    distribution: Optional[Dict[str, Any]] = None
+    schedule: Optional[Dict[str, Any]] = None
+    sampling_scope: Optional[str] = None
+    dtype: Optional[str] = None
+    shape: Optional[List[Any]] = None
+    units: Optional[str] = None
+    frame: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTaskEpochSpec(BaseModel):
+    """Task timeline epoch/phase authored in Studio."""
+
+    id: str
+    label: str
+    index: int
+    length: StudioValueSpec
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTaskTimelineSignalSpec(BaseModel):
+    """Task signal membership across authored timeline epochs."""
+
+    id: str
+    label: str
+    kind: str
+    path: str
+    epoch_ids: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTaskTimelineSpec(BaseModel):
+    """Structured task timeline stored under Studio task specs."""
+
+    schema_version: str = "feedbax.studio.task_timeline.v1"
+    epochs: List[StudioTaskEpochSpec] = Field(default_factory=list)
+    signals: List[StudioTaskTimelineSignalSpec] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class StudioTaskOutputSpec(BaseModel):
     """Scenario-owned task output that may be bound into a model graph."""
 
@@ -261,7 +311,7 @@ class StudioTaskOutputSpec(BaseModel):
     dtype: Optional[str] = None
     units: Optional[str] = None
     frame: Optional[str] = None
-    value_spec: Optional[Dict[str, Any]] = None
+    value_spec: Optional[StudioValueSpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

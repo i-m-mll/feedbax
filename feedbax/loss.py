@@ -1000,45 +1000,37 @@ class ModelLoss(AbstractLoss):
         return self.loss_fn(model)
 
 
-class StateDerivativeLoss(AbstractLoss):
-    """Penalize the squared first-difference of a state variable along time.
+class CrossTimestepLoss(AbstractLoss):
+    """Marker base class for losses that consume neighbouring timesteps."""
 
-    Computes ``mean(||x_t - x_{t-1}||²)`` over the time axis (default ``axis=1``,
-    matching feedbax's ``(trial, time, ...)`` rollout layout). The selected
-    substate may be a single ``Array`` or a ``PyTree`` of arrays — each leaf is
-    differenced and squared-summed over its non-time/non-trial axes, then the
-    contributions are summed across leaves.
+    order: AbstractVar[int]
+    where: AbstractVar[Callable]
+    time_axis: AbstractVar[int]
+    norm: AbstractVar[Callable]
 
-    This is most commonly used as a hidden-state smoothness regulariser
-    (Shahbazi, Codol, Michaels & Gribble 2025, Eq. 1) at modest weight (e.g.
-    ``1e-3``) to suppress trial-to-trial variability in recurrent dynamics.
 
-    Attributes:
-        label: Name for the loss term.
-        where: Function ``state -> Array | PyTree[Array]`` selecting the
-            substate to penalise. The selected leaves must have the time axis
-            at ``time_axis`` and may have arbitrary feature axes after.
-        time_axis: Axis along which to take the first difference. Defaults to
-            ``1`` (feedbax convention: trial=0, time=1, features...).
-        norm: Function applied to the time-differenced state to produce a
-            scalar-per-(trial,time) loss density before time/trial averaging.
-            Default: squared L2 norm over feature axes.
+class NthDifferenceLoss(CrossTimestepLoss):
+    """Penalize the squared N-th finite difference of a state variable.
 
-    Note:
-        The class is invariant to the recurrent cell type (GRU, vanilla RNN,
-        leaky RNN, ...) because it operates structurally on the rollout PyTree
-        rather than knowing about the cell internals. It is also vmap-friendly:
-        when used inside an ensemble vmap (``ensembled=True`` in the trainer)
-        the time axis remains at ``time_axis`` in each replicate's view, so no
-        special-case handling is needed.
+    Computes ``mean(||diff(x, n=order)||²)`` over the time axis (default
+    ``axis=1``, matching feedbax's ``(trial, time, ...)`` rollout layout). The
+    selected substate may be a single ``Array`` or a ``PyTree`` of arrays: each
+    leaf is differenced and squared-summed over its non-time/non-trial axes,
+    then the contributions are summed across leaves.
 
-    Bug: efc4d68
+    ``order=1`` reproduces :class:`StateDerivativeLoss`; ``order=2`` reproduces
+    :class:`OutputJerkLoss` when applied to effector velocity.
     """
 
-    label: str = "state_derivative"
-    where: Callable = lambda state: state.net.hidden
+    label: str = "nth_difference"
+    order: int = eqx.field(default=1, static=True)
+    where: Callable = lambda state: state
     time_axis: int = 1
     norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
+
+    def __check_init__(self):
+        if self.order < 1:
+            raise ValueError("NthDifferenceLoss order must be >= 1")
 
     def term(
         self,
@@ -1046,34 +1038,40 @@ class StateDerivativeLoss(AbstractLoss):
         trial_specs: Optional["TaskTrialSpec"],
         model: Optional[AbstractModel],
     ) -> Array:
-        assert states is not None, "StateDerivativeLoss requires states"
+        assert states is not None, f"{type(self).__name__} requires states"
 
         substate = self.where(states)
 
         def _per_leaf(arr: Array) -> Array:
-            # First-difference along the time axis, then squared-norm over the
-            # remaining trailing feature axes, then mean over time. Result has
-            # the trial axis preserved (so TermTree.leaf's default jnp.mean
-            # reduces it cleanly even under ensemble vmap).
-            d = jnp.diff(arr, axis=self.time_axis)
-            d_norm = self.norm(d)  # reduces trailing feature axes
+            d = jnp.diff(arr, n=self.order, axis=self.time_axis)
+            d_norm = self.norm(d)
             return jnp.mean(d_norm, axis=self.time_axis)
 
-        # `where` may return either an Array or a PyTree[Array]. Sum leaf
-        # contributions so the overall term remains a scalar density per trial.
         per_leaf = jt.map(_per_leaf, substate)
         leaves = jt.leaves(per_leaf)
         if not leaves:
             raise ValueError(
-                f"StateDerivativeLoss('{self.label}'): `where` returned no array "
-                f"leaves to penalise."
+                f"{type(self).__name__}('{self.label}'): `where` returned no array "
+                "leaves to penalise."
             )
-        # Stack and sum leaf contributions along a new leading axis. This keeps
-        # the per-trial trailing structure intact for downstream reduction.
         return ft.reduce(jnp.add, leaves)
 
 
-class OutputJerkLoss(AbstractLoss):
+class StateDerivativeLoss(NthDifferenceLoss):
+    """Penalize the squared first-difference of a state variable along time.
+
+    Compatibility wrapper for ``NthDifferenceLoss(order=1)`` with the historic
+    default selector ``state.net.hidden``.
+
+    Bug: efc4d68
+    """
+
+    label: str = "state_derivative"
+    order: int = eqx.field(default=1, static=True)
+    where: Callable = lambda state: state.net.hidden
+
+
+class OutputJerkLoss(NthDifferenceLoss):
     """Penalise the squared discrete second-difference of a state variable along time.
 
     Computes ``mean(||x_{t+1} - 2 x_t + x_{t-1}||²)`` over the time axis (default
@@ -1114,43 +1112,8 @@ class OutputJerkLoss(AbstractLoss):
     """
 
     label: str = "output_jerk"
-    where: Callable = lambda state: state.mechanics.effector.vel
-    time_axis: int = 1
-    norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
-    # Cross-timestep order: how many neighbouring timesteps are needed. Used by
-    # streaming-loss machinery (feedbax d67e303) to size the rolling buffer.
     order: int = eqx.field(default=2, static=True)
-
-    def term(
-        self,
-        states: Optional[PyTree],
-        trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
-    ) -> Array:
-        assert states is not None, "OutputJerkLoss requires states"
-
-        substate = self.where(states)
-
-        def _per_leaf(arr: Array) -> Array:
-            # Second-difference along the time axis (n=2 ⇒ length-2 contraction
-            # of the time axis), then squared-norm over the remaining trailing
-            # feature axes, then mean over time. The trial axis is preserved
-            # so TermTree.leaf's default jnp.mean reduces it cleanly even
-            # under ensemble vmap.
-            d2 = jnp.diff(arr, n=2, axis=self.time_axis)
-            d2_norm = self.norm(d2)  # reduces trailing feature axes
-            return jnp.mean(d2_norm, axis=self.time_axis)
-
-        # `where` may return either an Array or a PyTree[Array]. Sum leaf
-        # contributions so the overall term remains a scalar density per trial.
-        per_leaf = jt.map(_per_leaf, substate)
-        leaves = jt.leaves(per_leaf)
-        if not leaves:
-            raise ValueError(
-                f"OutputJerkLoss('{self.label}'): `where` returned no array "
-                f"leaves to penalise."
-            )
-        return ft.reduce(jnp.add, leaves)
+    where: Callable = lambda state: state.mechanics.effector.vel
 
 
 class EpochMaskedLoss(AbstractLoss):
@@ -1169,9 +1132,10 @@ class EpochMaskedLoss(AbstractLoss):
     ``epoch_indices=(0, 1)`` — the mask is then 1 during the hold and
     target_on epochs and 0 once the go cue arrives.
 
-    Supported base losses: :class:`TargetStateLoss`,
-    :class:`StateDerivativeLoss` (``order=1``), :class:`OutputJerkLoss`
-    (``order=2``). For cross-timestep base losses the mask is aligned to the
+    Supported base losses: :class:`TargetStateLoss` and
+    :class:`NthDifferenceLoss` family terms such as :class:`StateDerivativeLoss`
+    (``order=1``) and :class:`OutputJerkLoss` (``order=2``). For cross-timestep
+    base losses the mask is aligned to the
     differenced time axis: order ``k`` consumes ``k`` timesteps so a length-T
     mask becomes length ``T - k`` after differencing. We follow the
     "right-edge" convention: the mask sample at index ``i`` of the differenced
@@ -1257,19 +1221,15 @@ class EpochMaskedLoss(AbstractLoss):
 
         if isinstance(base, TargetStateLoss):
             value = self._call_target_state(base, states, trial_specs, model)
-        elif isinstance(base, StateDerivativeLoss):
+        elif isinstance(base, CrossTimestepLoss):
             value = self._call_cross_timestep(
-                base, states, trial_specs, order=1
-            )
-        elif isinstance(base, OutputJerkLoss):
-            value = self._call_cross_timestep(
-                base, states, trial_specs, order=2
+                base, states, trial_specs, order=base.order
             )
         else:
             raise NotImplementedError(
                 f"EpochMaskedLoss does not yet support wrapping "
                 f"{type(base).__name__}. Supported base losses: "
-                "TargetStateLoss, StateDerivativeLoss, OutputJerkLoss."
+                "TargetStateLoss and CrossTimestepLoss."
             )
 
         return TermTree.leaf(self.label, value, originator=self)

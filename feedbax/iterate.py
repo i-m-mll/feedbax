@@ -17,8 +17,12 @@ import jax.random as jr
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.graph import Component, Graph
 from equinox.nn import State
+from feedbax._streaming import (
+    init_streaming_state_window,
+    update_streaming_state_window,
+)
+from feedbax.graph import Component, Graph
 
 
 def iterate_component(
@@ -36,29 +40,38 @@ def iterate_component(
     When ``streaming_loss_fn`` is provided the scan accumulates a scalar loss
     instead of storing state history, eliminating trajectory memory entirely.
     ``streaming_loss_fn`` should have signature ``(state_view, t) -> scalar``
-    where ``state_view`` is the component's state view at timestep ``t``
-    (0-based) and the return value is the per-step loss contribution already
-    reduced over batch and features.  ``state_filter`` is ignored in this mode.
+    for per-step losses. Functions produced by ``make_streaming_loss_fn`` may
+    instead advertise ``streaming_order > 0``; in that case a rolling state
+    window is passed so cross-timestep losses can be evaluated without storing
+    the full trajectory. ``state_filter`` is ignored in this mode.
     """
     keys = jr.split(key, n_steps)
     step_inputs = jax.vmap(lambda i: jt.map(lambda x: x[i], inputs))(jnp.arange(n_steps))
 
     # --- streaming-loss path: accumulate scalar, skip history storage ---
     if streaming_loss_fn is not None:
+        streaming_order = getattr(streaming_loss_fn, "streaming_order", 0)
+        init_state_view = component.state_view(init_state)
+        state_window = init_streaming_state_window(init_state_view, streaming_order)
+
         def step(carry, args):
-            state, loss_accum = carry
+            state, state_window, loss_accum = carry
             (step_input, step_key), t = args
             outputs, new_state = component(step_input, state, key=step_key)
             state_view = component.state_view(new_state)
-            step_loss = streaming_loss_fn(state_view, t)
-            return (new_state, loss_accum + step_loss), outputs
+            loss_input = state_view
+            if streaming_order > 0:
+                state_window = update_streaming_state_window(state_window, state_view)
+                loss_input = state_window
+            step_loss = streaming_loss_fn(loss_input, t)
+            return (new_state, state_window, loss_accum + step_loss), outputs
 
         if checkpoint:
             step = jax.checkpoint(step)
 
-        (final_state, total_loss), outputs = lax.scan(
+        (final_state, _, total_loss), outputs = lax.scan(
             step,
-            (init_state, jnp.float32(0.0)),
+            (init_state, state_window, jnp.float32(0.0)),
             ((step_inputs, keys), jnp.arange(n_steps)),
         )
         return outputs, final_state, total_loss
