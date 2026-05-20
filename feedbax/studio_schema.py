@@ -9,6 +9,15 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 from feedbax.manifest import SCHEMA_VERSION, utc_now
+from feedbax.studio_protocol import (
+    GRAPH_BINDABLE_TASK_DATA_ROLES,
+    PROTOCOL_TASK_DATA_KINDS,
+    TASK_DATA_ROLES,
+    is_bindable_task_data,
+    task_data_role,
+    task_data_surface,
+    task_data_uses_protocol_path,
+)
 from feedbax.web.models.component import PortType
 from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
@@ -63,6 +72,7 @@ class TaskDataSchema(StudioSchemaModel):
     id: str
     label: str
     kind: str
+    role: str
     path: str
     bindable: bool = False
     value_schema: ValueSchema
@@ -647,13 +657,21 @@ def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskD
     task_data: list[TaskDataSchema] = []
     for data in task_binding_spec.exposed_data:
         value = data.value_spec
+        role = task_data_role(data)
+        surface = task_data_surface(data)
+        metadata = {
+            **data.metadata,
+            "task_data_role": role,
+            "task_data_surface": surface,
+        }
         task_data.append(
             TaskDataSchema(
                 id=f"task_data:{data.id}",
                 label=data.label,
                 kind=data.kind,
+                role=role,
                 path=data.path,
-                bindable=data.bindable,
+                bindable=is_bindable_task_data(data),
                 value_schema=ValueSchema(
                     id=f"value:task_data:{data.id}",
                     label=data.label,
@@ -664,7 +682,7 @@ def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskD
                     frame=data.frame or (value.frame if value is not None else None),
                     origin="declared",
                     metadata={
-                        **data.metadata,
+                        **metadata,
                         "task_data_path": data.path,
                         "value_spec": value.model_dump(mode="json", exclude_none=True)
                         if value is not None
@@ -672,7 +690,7 @@ def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskD
                     },
                 ),
                 origin="declared",
-                metadata=data.metadata,
+                metadata=metadata,
             )
         )
     return task_data
@@ -707,16 +725,18 @@ def validate_task_binding_schema(
     seen_data: set[str] = set()
     data_by_id = {}
     for index, data in enumerate(task_binding_spec.exposed_data):
+        data_path = f"{base_path}/exposed_data/{index}"
         if data.id in seen_data:
             issues.append(
                 SchemaValidationIssue(
                     type="duplicate_task_data",
                     message=f"Task data {data.id!r} is declared more than once",
-                    location={"path": f"{base_path}/exposed_data/{index}/id"},
+                    location={"path": f"{data_path}/id"},
                 )
             )
         seen_data.add(data.id)
         data_by_id[data.id] = data
+        issues.extend(_task_data_role_issues(data, data_path))
 
     if graph is None:
         if task_binding_spec.bindings:
@@ -750,11 +770,15 @@ def validate_task_binding_schema(
                     location={"path": f"{binding_path}/source_data_id"},
                 )
             )
-        elif not data.bindable:
+        elif not is_bindable_task_data(data):
+            role = task_data_role(data)
             issues.append(
                 SchemaValidationIssue(
                     type="task_data_not_bindable",
-                    message=f"Task data {binding.source_data_id!r} is not bindable",
+                    message=(
+                        f"Task data {binding.source_data_id!r} has protocol role "
+                        f"{role!r} and is not bindable to graph inputs"
+                    ),
                     location={"path": f"{binding_path}/source_data_id"},
                 )
             )
@@ -808,6 +832,58 @@ def validate_task_binding_schema(
                 )
             )
         binding_targets.add(target)
+    return issues
+
+
+def _task_data_role_issues(
+    data: Any,
+    data_path: str,
+) -> list[SchemaValidationIssue]:
+    role = task_data_role(data)
+    issues: list[SchemaValidationIssue] = []
+    if role not in TASK_DATA_ROLES:
+        issues.append(
+            SchemaValidationIssue(
+                type="unknown_task_data_role",
+                message=f"Task data {data.id!r} declares unknown role {role!r}",
+                location={"path": f"{data_path}/role"},
+            )
+        )
+        return issues
+
+    if data.bindable and role not in GRAPH_BINDABLE_TASK_DATA_ROLES:
+        issues.append(
+            SchemaValidationIssue(
+                type="task_data_bindable_role_mismatch",
+                message=(
+                    f"Task data {data.id!r} has protocol role {role!r}; only "
+                    "model_input/graph_input Task Data may be marked bindable"
+                ),
+                location={"path": f"{data_path}/bindable"},
+            )
+        )
+    if not data.bindable and role in GRAPH_BINDABLE_TASK_DATA_ROLES:
+        issues.append(
+            SchemaValidationIssue(
+                type="task_data_graph_role_not_bindable",
+                message=f"Task data {data.id!r} has graph-facing role {role!r} but is not bindable",
+                location={"path": f"{data_path}/bindable"},
+            )
+        )
+    if data.bindable and (
+        data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data)
+    ):
+        issues.append(
+            SchemaValidationIssue(
+                type="task_data_protocol_path_bindable",
+                message=(
+                    f"Task data {data.id!r} points at protocol-owned task data; "
+                    "targets, initial state, interventions, and eval/trial controls "
+                    "must stay out of graph input bindings"
+                ),
+                location={"path": f"{data_path}/path"},
+            )
+        )
     return issues
 
 

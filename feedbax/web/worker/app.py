@@ -20,6 +20,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from feedbax.studio_protocol import infer_task_n_steps
+
 
 class WorkerStatus(str, Enum):
     IDLE = "idle"
@@ -211,11 +213,13 @@ def _extract_training_cfg(
         cfg.effort_weight = _get("effort_weight", cfg.effort_weight, float)
         cfg.snapshot_interval = _get("snapshot_interval", cfg.snapshot_interval, int)
 
+    n_steps = infer_task_n_steps(task_spec)
+    if n_steps is not None:
+        cfg.n_reach_steps = n_steps
+
     if task_spec is not None:
         task_params = task_spec.get("params", {})
         for key, attr, cast in [
-            ("n_reach_steps", "n_reach_steps", int),
-            ("n_steps", "n_reach_steps", int),
             ("effort_weight", "effort_weight", float),
         ]:
             if key in task_params:

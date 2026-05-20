@@ -26,6 +26,7 @@ from feedbax.manifest import (
     utc_now,
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
@@ -654,9 +655,39 @@ def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidation
                 location={"path": "/type"},
             )
         )
+    errors.extend(_validate_task_n_steps(spec))
     if spec.type in {"DelayedReaches", "feedbax.task.DelayedReaches"}:
         errors.extend(_validate_delayed_reaches_task_params(spec.params))
     return ProviderValidationResult(valid=not errors, errors=errors)
+
+
+def _validate_task_n_steps(spec: TaskSpec) -> list[ValidationIssue]:
+    errors: list[ValidationIssue] = []
+    parsed_values: list[tuple[str, int]] = []
+    for path, value in task_n_steps_values(spec):
+        parsed = parse_positive_n_steps(value)
+        if parsed is None:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_task_n_steps",
+                    message="Task step count must be a positive integer",
+                    location={"path": path},
+                )
+            )
+        else:
+            parsed_values.append((path, parsed))
+
+    distinct = {value for _path, value in parsed_values}
+    if len(distinct) > 1:
+        paths = ", ".join(f"{path}={value}" for path, value in parsed_values)
+        errors.append(
+            ValidationIssue(
+                type="task_n_steps_mismatch",
+                message=f"Task step-count declarations disagree: {paths}",
+                location={"path": "/"},
+            )
+        )
+    return errors
 
 
 def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[ValidationIssue]:
