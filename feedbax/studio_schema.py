@@ -244,6 +244,7 @@ def enumerate_studio_schema_registry(
         )
         return registry
 
+    schema_graph: Optional[GraphSpec] = None
     if scenario.graph is None:
         registry.issues.append(
             SchemaValidationIssue(
@@ -253,12 +254,16 @@ def enumerate_studio_schema_registry(
             )
         )
     else:
-        registry.ports = _enumerate_graph_ports(scenario.graph)
+        schema_graph = _normalize_dynamic_graph_ports(
+            scenario.graph,
+            scenario.task_binding_spec,
+        )
+        registry.ports = _enumerate_graph_ports(schema_graph)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
-        registry.selector_targets.extend(_graph_probe_selector_targets(scenario.graph))
+        registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
         registry.issues.extend(
             validate_graph_connection_schema(
-                scenario.graph,
+                schema_graph,
                 f"/scenarios/{scenario.id}/graph",
             )
         )
@@ -278,7 +283,7 @@ def enumerate_studio_schema_registry(
         registry.issues.extend(
             validate_task_binding_schema(
                 scenario.task_binding_spec,
-                scenario.graph,
+                schema_graph,
                 f"/scenarios/{scenario.id}/task_binding_spec",
             )
         )
@@ -549,6 +554,54 @@ def _workspace_reference_issues(workspace: StudioWorkspaceSpec) -> list[SchemaVa
     return issues
 
 
+def _mux_input_index(port_name: str) -> Optional[int]:
+    if not port_name.startswith("in_"):
+        return None
+    suffix = port_name.removeprefix("in_")
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
+def _normalize_dynamic_graph_ports(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec] = None,
+) -> GraphSpec:
+    changed = False
+    nodes = dict(graph.nodes)
+    for node_id, node in graph.nodes.items():
+        if node.type != "Mux":
+            continue
+        max_index = -1
+        for wire in graph.wires:
+            if wire.target_node != node_id:
+                continue
+            index = _mux_input_index(wire.target_port)
+            if index is not None:
+                max_index = max(max_index, index)
+        for binding in (task_binding_spec.bindings if task_binding_spec is not None else []):
+            if binding.target_node_id != node_id:
+                continue
+            index = _mux_input_index(binding.target_port)
+            if index is not None:
+                max_index = max(max_index, index)
+        required_count = max(2, max_index + 1)
+        input_ports = [f"in_{index}" for index in range(required_count)]
+        if node.input_ports == input_ports and node.params.get("n_inputs") == required_count:
+            continue
+        params = dict(node.params)
+        params["n_inputs"] = required_count
+        nodes[node_id] = node.model_copy(
+            update={
+                "params": params,
+                "input_ports": input_ports,
+                "output_ports": node.output_ports or ["output"],
+            }
+        )
+        changed = True
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+
+
 def _enumerate_graph_ports(graph: GraphSpec) -> list[PortSchema]:
     from feedbax.web.services.component_registry import ComponentRegistry
 
@@ -559,7 +612,7 @@ def _enumerate_graph_ports(graph: GraphSpec) -> list[PortSchema]:
         input_ports = list(node.input_ports or (meta.input_ports if meta is not None else []))
         output_ports = list(node.output_ports or (meta.output_ports if meta is not None else []))
         for port_name in input_ports:
-            port_type = meta.port_types.inputs.get(port_name) if meta and meta.port_types else None
+            port_type = _component_input_port_type(meta, node.type, port_name)
             ports.append(
                 _port_schema(
                     node_id=node_id,
@@ -587,6 +640,20 @@ def _enumerate_graph_ports(graph: GraphSpec) -> list[PortSchema]:
     for port_name in graph.output_ports:
         ports.append(_graph_port_schema(port=port_name, direction="output"))
     return ports
+
+
+def _component_input_port_type(meta: Any, component_type: str, port_name: str) -> Optional[PortType]:
+    if meta is None or meta.port_types is None:
+        return None
+    port_type = meta.port_types.inputs.get(port_name)
+    if (
+        port_type is None
+        and component_type == "Mux"
+        and port_name.startswith("in_")
+        and port_name.removeprefix("in_").isdigit()
+    ):
+        port_type = meta.port_types.inputs.get("in_0") or meta.port_types.inputs.get("in_1")
+    return port_type
 
 
 def _port_schema(

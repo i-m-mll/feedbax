@@ -64,6 +64,14 @@ export function createRlrmpModelGraph(projectName: string): {
         input_ports: ['input', 'feedback'],
         output_ports: ['output', 'hidden'],
       },
+      task_mux: {
+        type: 'Mux',
+        params: {
+          n_inputs: 3,
+        },
+        input_ports: ['in_0', 'in_1', 'in_2'],
+        output_ports: ['output'],
+      },
       mechanics: {
         type: 'PointMass',
         params: {
@@ -86,6 +94,12 @@ export function createRlrmpModelGraph(projectName: string): {
       },
     },
     wires: [
+      {
+        source_node: 'task_mux',
+        source_port: 'output',
+        target_node: 'network',
+        target_port: 'input',
+      },
       {
         source_node: 'feedback',
         source_port: 'output',
@@ -125,9 +139,10 @@ export function createRlrmpModelGraph(projectName: string): {
   const uiState: GraphUIState = {
     viewport: { x: 0, y: 0, zoom: 1 },
     node_states: {
-      network: { position: { x: 380, y: 200 }, collapsed: false, selected: false },
-      mechanics: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
-      feedback: { position: { x: 520, y: 420 }, collapsed: false, selected: false, reversed: true },
+      task_mux: { position: { x: 250, y: 200 }, collapsed: false, selected: false },
+      network: { position: { x: 520, y: 200 }, collapsed: false, selected: false },
+      mechanics: { position: { x: 800, y: 200 }, collapsed: false, selected: false },
+      feedback: { position: { x: 660, y: 420 }, collapsed: false, selected: false, reversed: true },
     },
   };
 

@@ -6,6 +6,7 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { useSaveGraph } from '@/hooks/useGraphs';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -36,7 +37,10 @@ export function useAppShortcuts() {
       .filter((node) => node.selected && !node.id.startsWith('tap:'))
       .map((node) => node.id);
     const topPane = getTopPaneState(workspace);
-    const taskBindingSpec = getTrainingScenario(workspace)?.task_binding_spec;
+    const trainingScenario = getTrainingScenario(workspace);
+    const taskBindingSpec = trainingScenario
+      ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, graph, trainingScenario.task_spec)
+      : null;
     const impactedBindings = (taskBindingSpec?.bindings ?? []).filter((binding) =>
       selectedNodeIds.includes(binding.target_node_id)
     );
@@ -62,7 +66,7 @@ export function useAppShortcuts() {
     }
 
     deleteSelected();
-  }, [deleteSelected, nodes, updateTaskBindingSpec, workspace]);
+  }, [deleteSelected, graph, nodes, updateTaskBindingSpec, workspace]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {

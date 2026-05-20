@@ -24,6 +24,32 @@ const graphWithNetworkInput: GraphSpec = {
   output_bindings: {},
 };
 
+const graphWithTaskMux: GraphSpec = {
+  ...graphWithNetworkInput,
+  nodes: {
+    task_mux: {
+      type: 'Mux',
+      params: { n_inputs: 3 },
+      input_ports: ['in_0', 'in_1', 'in_2'],
+      output_ports: ['output'],
+    },
+    network: {
+      type: 'Network',
+      params: {},
+      input_ports: ['input'],
+      output_ports: ['output'],
+    },
+  },
+  wires: [
+    {
+      source_node: 'task_mux',
+      source_port: 'output',
+      target_node: 'network',
+      target_port: 'input',
+    },
+  ],
+};
+
 const delayedTask: TaskSpec = { type: 'DelayedReaches', params: {} };
 
 describe('task data bindings', () => {
@@ -56,6 +82,17 @@ describe('task data bindings', () => {
     expect(spec.exposed_data.map((item) => item.id)).toContain('target_position');
     expect(spec.exposed_data.map((item) => item.id)).not.toContain('inputs');
     expect(spec.bindings).toEqual([]);
+  });
+
+  it('seeds named delayed-reach task data bindings into the task mux', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithTaskMux, delayedTask);
+
+    expect(spec.bindings.map((binding) => [binding.source_data_id, binding.target_port])).toEqual([
+      ['target_position', 'in_0'],
+      ['hold', 'in_1'],
+      ['target_on', 'in_2'],
+    ]);
+    expect(spec.bindings.every((binding) => binding.target_node_id === 'task_mux')).toBe(true);
   });
 
   it('drops legacy generic Inputs bindings when delayed-reach task data is normalized', () => {

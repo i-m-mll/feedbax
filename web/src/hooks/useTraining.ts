@@ -3,6 +3,7 @@ import { startTraining, stopTraining } from '@/api/client';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec, TrainingConfig } from '@/types/training';
 
@@ -182,7 +183,7 @@ export function useTraining() {
         taskSpec,
         graph,
         trainingConfig,
-        trainingScenario?.task_binding_spec
+        ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph, taskSpec)
       );
       setJobId(response.job_id);
       setStatus('running');

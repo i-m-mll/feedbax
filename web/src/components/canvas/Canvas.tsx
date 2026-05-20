@@ -38,6 +38,7 @@ import {
   projectStudioSchema,
   validateConnectionAgainstSchema,
 } from '@/features/schema/project';
+import { isNextMuxInputPort } from '@/features/graph/dynamicPorts';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -177,6 +178,31 @@ export function Canvas() {
   const isStateHandle = (handleId?: string | null) =>
     typeof handleId === 'string' && handleId.startsWith('__state');
 
+  const hasBlockingCanvasConnectionIssue = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.sourceHandle) return true;
+      if (!connection.target || !connection.targetHandle) return true;
+      const issues = validateConnectionAgainstSchema(
+        schemaRegistry,
+        connection.source,
+        connection.sourceHandle,
+        connection.target,
+        connection.targetHandle
+      );
+      const dynamicMuxTarget = isNextMuxInputPort(
+        graph,
+        connection.target,
+        connection.targetHandle,
+        taskBindingSpec
+      );
+      if (!dynamicMuxTarget) return hasBlockingSchemaIssue(issues);
+      return hasBlockingSchemaIssue(
+        issues.filter((issue) => issue.type !== 'unknown_target_port')
+      );
+    },
+    [graph, schemaRegistry, taskBindingSpec]
+  );
+
   const isValidConnection = useCallback(
     (connection: Connection) => {
       if (!connection.target || !connection.targetHandle) return false;
@@ -198,17 +224,9 @@ export function Canvas() {
         connection.targetHandle
       );
       if (inputTaken) return false;
-      return !hasBlockingSchemaIssue(
-        validateConnectionAgainstSchema(
-          schemaRegistry,
-          connection.source,
-          connection.sourceHandle,
-          connection.target,
-          connection.targetHandle
-        )
-      );
+      return !hasBlockingCanvasConnectionIssue(connection);
     },
-    [graph, schemaRegistry, taskBindingSpec]
+    [graph, hasBlockingCanvasConnectionIssue, taskBindingSpec]
   );
 
   const handleConnect = useCallback(
@@ -225,21 +243,13 @@ export function Canvas() {
         connection.sourceHandle &&
         connection.target &&
         connection.targetHandle &&
-        hasBlockingSchemaIssue(
-          validateConnectionAgainstSchema(
-            schemaRegistry,
-            connection.source,
-            connection.sourceHandle,
-            connection.target,
-            connection.targetHandle
-          )
-        )
+        hasBlockingCanvasConnectionIssue(connection)
       ) {
         return;
       }
       onConnect(connection);
     },
-    [graph, onConnect, schemaRegistry, taskBindingSpec]
+    [graph, hasBlockingCanvasConnectionIssue, onConnect, taskBindingSpec]
   );
 
   const onDrop = useCallback(

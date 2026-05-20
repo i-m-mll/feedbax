@@ -54,6 +54,7 @@ function seedRlrmpTaskWorkspace(
   if (!trainScenarioId) return baseWorkspace;
   const trainScenario = baseWorkspace.scenarios[trainScenarioId];
   if (!trainScenario) return baseWorkspace;
+  const taskBindingSpec = createDefaultTaskBindingSpec(graph, RLRMP_DELAYED_REACHES_TASK_SPEC);
   return {
     ...baseWorkspace,
     scenarios: {
@@ -61,7 +62,7 @@ function seedRlrmpTaskWorkspace(
       [trainScenarioId]: {
         ...trainScenario,
         task_spec: RLRMP_DELAYED_REACHES_TASK_SPEC,
-        task_binding_spec: createDefaultTaskBindingSpec(graph, RLRMP_DELAYED_REACHES_TASK_SPEC),
+        task_binding_spec: taskBindingSpec,
       },
     },
   };

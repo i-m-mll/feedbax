@@ -1,6 +1,7 @@
 import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
 import type {
+  StudioTaskBinding,
   StudioTaskBindingSpec,
   StudioTaskDataSpec,
   StudioValueSpec,
@@ -250,6 +251,35 @@ function compatibleNetworkInput(graph: GraphSpec): { nodeId: string; port: strin
   return null;
 }
 
+function delayedReachMuxBindings(
+  graph: GraphSpec,
+  data: StudioTaskDataSpec[]
+): StudioTaskBinding[] {
+  const mux = graph.nodes.task_mux;
+  if (mux?.type !== 'Mux') return [];
+  const dataIds = new Set(data.map((item) => item.id));
+  const portMap: Array<[string, string]> = [
+    ['target_position', 'in_0'],
+    ['hold', 'in_1'],
+    ['target_on', 'in_2'],
+  ];
+  if (
+    !portMap.every(
+      ([dataId, port]) => dataIds.has(dataId) && mux.input_ports.includes(port)
+    )
+  ) {
+    return [];
+  }
+  return portMap.map(([dataId, port]) => ({
+    id: taskBindingId(dataId, 'task_mux', port),
+    source_data_id: dataId,
+    target_node_id: 'task_mux',
+    target_port: port,
+    role: 'model_input',
+    metadata: {},
+  }));
+}
+
 function shouldPreserveExtraTaskData(
   data: StudioTaskDataSpec,
   task?: TaskSpec | null
@@ -265,6 +295,16 @@ export function createDefaultTaskBindingSpec(
   task?: TaskSpec | null
 ): StudioTaskBindingSpec {
   const data = defaultTaskData(task);
+  const delayedMuxBindings =
+    task?.type === 'DelayedReaches' ? delayedReachMuxBindings(graph, data) : [];
+  if (delayedMuxBindings.length > 0) {
+    return {
+      schema_version: TASK_BINDING_SCHEMA_VERSION,
+      exposed_data: data,
+      bindings: delayedMuxBindings,
+      metadata: {},
+    };
+  }
   const bindingTarget = compatibleNetworkInput(graph);
   const defaultBindableDataId = data.some((item) => item.id === 'inputs') ? 'inputs' : null;
   const bindings =
@@ -304,10 +344,15 @@ export function ensureTaskBindingSpec(
     ),
   ];
   const exposedDataIds = new Set(exposedData.map((data) => data.id));
+  const defaultMuxBindings =
+    task?.type === 'DelayedReaches' ? delayedReachMuxBindings(graph, exposedData) : [];
+  const bindings = (spec.bindings ?? []).filter((binding) =>
+    exposedDataIds.has(binding.source_data_id)
+  );
   return {
     schema_version: spec.schema_version ?? TASK_BINDING_SCHEMA_VERSION,
     exposed_data: exposedData,
-    bindings: (spec.bindings ?? []).filter((binding) => exposedDataIds.has(binding.source_data_id)),
+    bindings: bindings.length > 0 ? bindings : defaultMuxBindings,
     metadata: spec.metadata ?? {},
   };
 }
