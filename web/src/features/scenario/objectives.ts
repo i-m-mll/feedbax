@@ -328,6 +328,7 @@ export function sourceSelectorForEntity(
   if (entity.kind === 'graph_port') return selectorFromGraphPortEntity(entity);
   if (entity.kind === 'graph_edge') return selectorFromGraphEdgeEntity(entity);
   if (entity.kind === 'probe') return entity.selector ?? null;
+  if (entity.kind === 'task_output') return entity.selector ?? null;
   return null;
 }
 

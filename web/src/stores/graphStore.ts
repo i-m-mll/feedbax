@@ -180,21 +180,6 @@ function applyEdgeStates(
 export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
     nodes: {
-      task: {
-        type: 'SimpleReaches',
-        params: {
-          n_steps: 200,
-          workspace: [
-            [-1.0, -1.0],
-            [1.0, 1.0],
-          ],
-          eval_n_directions: 7,
-          eval_reach_length: 0.5,
-          eval_grid_n: 1,
-        },
-        input_ports: [],
-        output_ports: ['inputs', 'targets', 'inits', 'intervene'],
-      },
       network: {
         type: 'Network',
         params: {
@@ -226,12 +211,6 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
       },
     },
     wires: [
-      {
-        source_node: 'task',
-        source_port: 'inputs',
-        target_node: 'network',
-        target_port: 'input',
-      },
       {
         source_node: 'feedback',
         source_port: 'output',
@@ -271,7 +250,6 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
   const baseUiState: GraphUIState = {
     viewport: DEFAULT_VIEWPORT,
     node_states: {
-      task: { position: { x: 120, y: 200 }, collapsed: false, selected: false },
       network: { position: { x: 380, y: 200 }, collapsed: false, selected: false },
       mechanics: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
       feedback: { position: { x: 520, y: 400 }, collapsed: false, selected: false },

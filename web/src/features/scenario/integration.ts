@@ -239,8 +239,18 @@ function taskDefaultMetrics(
   stage: StudioStageSpec | null
 ): ScenarioMetricSpec[] {
   const taskSpec = scenario.task_spec;
-  if (!taskSpec || !isRecord(taskSpec.params) || !('n_targets' in taskSpec.params)) return [];
+  if (!taskSpec) return [];
+  const targetOutput = scenario.task_binding_spec?.exposed_outputs.find(
+    (output) => output.id === 'targets' || output.kind === 'target'
+  );
+  if (!targetOutput && (!isRecord(taskSpec.params) || !('n_targets' in taskSpec.params))) {
+    return [];
+  }
   const label = metricLabel('target_reach_error');
+  const targetSummary =
+    isRecord(taskSpec.params) && 'n_targets' in taskSpec.params
+      ? `${taskSpec.params.n_targets} target task`
+      : `${targetOutput?.label ?? 'Task target'} output`;
   return [
     {
       id: 'target_reach_error',
@@ -252,8 +262,8 @@ function taskDefaultMetrics(
       stageId: stage?.id ?? scenario.stage_id ?? null,
       scenarioId: scenario.id,
       sourceId: taskSpec.type,
-      summary: `${taskSpec.params.n_targets} target task`,
-      metadata: { task_type: taskSpec.type },
+      summary: targetSummary,
+      metadata: { task_type: taskSpec.type, task_output_id: targetOutput?.id ?? null },
     },
   ];
 }

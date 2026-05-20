@@ -370,6 +370,11 @@ def run_local_execution(
         if isinstance(studio_metadata.get("task_spec"), dict)
         else None
     )
+    task_binding_spec = (
+        studio_metadata.get("task_binding_spec")
+        if isinstance(studio_metadata.get("task_binding_spec"), dict)
+        else None
+    )
     graph_spec = (
         studio_metadata.get("graph_spec")
         if isinstance(studio_metadata.get("graph_spec"), dict)
@@ -423,6 +428,7 @@ def run_local_execution(
         total_batches=total_batches,
         training_spec=training_spec,
         task_spec=task_spec,
+        task_binding_spec=task_binding_spec,
         graph_spec=graph_spec,
         status=status,
         history_events=history_events,

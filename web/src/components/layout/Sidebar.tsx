@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { ComponentLibrary } from '@/components/panels/ComponentLibrary';
-import { TaskLibrary } from '@/components/panels/TaskLibrary';
 import { useLayoutStore } from '@/stores/layoutStore';
 import {
   getActiveStage,
@@ -18,7 +17,7 @@ import {
 import { objectiveProjectionItems, workspaceProjectionItems } from '@/features/scenario/projections';
 import clsx from 'clsx';
 
-type ActiveTab = 'components' | 'tasks';
+type ActiveTab = 'components';
 
 export function Sidebar() {
   const { leftSidebarWidth, leftSidebarVisible, setLeftSidebarWidth } =
@@ -49,23 +48,9 @@ export function Sidebar() {
           >
             {topPane.active_projection === 'graph' ? 'Components' : topPane.active_projection}
           </button>
-          {topPane.active_projection === 'graph' && (
-            <button
-              onClick={() => setActiveTab('tasks')}
-              className={clsx(
-                'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
-                activeTab === 'tasks'
-                  ? 'bg-slate-100 text-slate-700 font-semibold'
-                  : 'text-slate-400 hover:text-slate-600'
-              )}
-            >
-              Tasks
-            </button>
-          )}
         </div>
       </div>
       {topPane.active_projection === 'graph' && activeTab === 'components' && <ComponentLibrary />}
-      {topPane.active_projection === 'graph' && activeTab === 'tasks' && <TaskLibrary />}
       {topPane.active_projection !== 'graph' && (
         <ProjectionSidebar projection={topPane.active_projection} />
       )}

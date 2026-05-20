@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type RefObject,
+} from 'react';
 import {
   Background,
   Controls,
@@ -14,12 +22,17 @@ import {
 import { useGraphStore } from '@/stores/graphStore';
 import { useLayoutStore } from '@/stores/layoutStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import {
   graphEdgeEntityId,
   graphNodeEntityId,
   probeEntityId,
+  taskBindingEntityId,
 } from '@/features/scenario/entities';
+import {
+  ensureTaskBindingSpec,
+  targetInputOccupied,
+} from '@/features/scenario/taskBindings';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -29,6 +42,7 @@ import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 import type { PortType } from '@/types/components';
 import type { GraphNodeData } from '@/types/graph';
+import type { StudioTaskBinding } from '@/types/workspace';
 import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 
 const nodeTypes = {
@@ -72,12 +86,22 @@ export function Canvas() {
   const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
+  const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
   const reactFlow = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
   const fittedGraphKey = useRef<string | null>(null);
+  const trainingScenario = getTrainingScenario(workspace);
+  const taskBindingSpec = useMemo(
+    () => ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph),
+    [graph, trainingScenario?.task_binding_spec]
+  );
+  const displayEdges = useMemo(
+    () => edges,
+    [edges]
+  );
 
   useEffect(() => {
     const element = containerRef.current;
@@ -116,10 +140,7 @@ export function Canvas() {
     () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
     [graphStack, currentGraphLabel]
   );
-  const collapsibleNodes = useMemo(
-    () => nodes.filter((node) => node.type !== 'tap'),
-    [nodes]
-  );
+  const collapsibleNodes = useMemo(() => nodes.filter((node) => node.type !== 'tap'), [nodes]);
   const allNodesCollapsed =
     collapsibleNodes.length > 0 &&
     collapsibleNodes.every((node) => Boolean((node.data as GraphNodeData).collapsed));
@@ -194,15 +215,32 @@ export function Canvas() {
           connection.targetHandle === '__state_in'
         );
       }
-      const inputTaken = edges.some(
-        (edge) => edge.target === connection.target && edge.targetHandle === connection.targetHandle
+      const inputTaken = targetInputOccupied(
+        graph,
+        taskBindingSpec,
+        connection.target,
+        connection.targetHandle
       );
       if (inputTaken) return false;
       const sourceType = getPortType(connection.source, connection.sourceHandle, 'outputs');
       const targetType = getPortType(connection.target, connection.targetHandle, 'inputs');
       return isCompatible(sourceType, targetType);
     },
-    [edges, getPortType, isCompatible]
+    [getPortType, graph, isCompatible, taskBindingSpec]
+  );
+
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      if (
+        connection.target &&
+        connection.targetHandle &&
+        targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)
+      ) {
+        return;
+      }
+      onConnect(connection);
+    },
+    [graph, onConnect, taskBindingSpec]
   );
 
   const onDrop = useCallback(
@@ -212,6 +250,7 @@ export function Canvas() {
       if (!componentName) return;
       const component = components.find((item) => item.name === componentName);
       if (!component) return;
+      if (component.category === 'Tasks') return;
 
       const position = reactFlow.screenToFlowPosition({
         x: event.clientX,
@@ -230,16 +269,29 @@ export function Canvas() {
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
+      className="relative w-full h-full overflow-hidden bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
     >
+      <TaskBindingOverlay
+        bindings={taskBindingSpec.bindings}
+        containerRef={containerRef}
+        onSelect={(binding) => {
+          setSelectedEdge(null);
+          setSelectedNode(null);
+          setSelectedTap(null);
+          selectTopPaneEntity(taskBindingEntityId(binding.id));
+        }}
+        onHover={(binding) => hoverTopPaneEntity(binding ? taskBindingEntityId(binding.id) : null)}
+      />
       <ReactFlow
+        className="relative z-10"
+        style={{ zIndex: 10 }}
         nodes={nodes}
-        edges={edges}
+        edges={displayEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={(connection) => onConnect(connection)}
+        onConnect={handleConnect}
         isValidConnection={isValidConnection}
         onPaneClick={() => {
           setSelectedNode(null);
@@ -273,7 +325,9 @@ export function Canvas() {
           );
         }}
         onNodeMouseLeave={() => hoverTopPaneEntity(null)}
-        onEdgeMouseEnter={(_, edge) => hoverTopPaneEntity(graphEdgeEntityId(edge.id))}
+        onEdgeMouseEnter={(_, edge) => {
+          hoverTopPaneEntity(graphEdgeEntityId(edge.id));
+        }}
         onEdgeMouseLeave={() => hoverTopPaneEntity(null)}
         onEdgeDoubleClick={(_, edge) => {
           if (edge.type === 'state-flow') {
@@ -358,6 +412,183 @@ export function Canvas() {
         />
       )}
     </div>
+  );
+}
+
+function TaskBindingOverlay({
+  bindings,
+  containerRef,
+  onSelect,
+  onHover,
+}: {
+  bindings: StudioTaskBinding[];
+  containerRef: RefObject<HTMLDivElement | null>;
+  onSelect: (binding: StudioTaskBinding) => void;
+  onHover: (binding: StudioTaskBinding | null) => void;
+}) {
+  const [paths, setPaths] = useState<
+    Array<{
+      binding: StudioTaskBinding;
+      sourceX: number;
+      sourceY: number;
+      targetX: number;
+      targetY: number;
+    }>
+  >([]);
+
+  const selectorValue = useCallback(
+    (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"'),
+    []
+  );
+
+  const updatePaths = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || bindings.length === 0) {
+      setPaths([]);
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const nextPaths = bindings.flatMap((binding, index) => {
+      const nodeSelector = selectorValue(binding.target_node_id);
+      const targetHandle =
+        container.querySelector<HTMLElement>(
+          `.react-flow__handle[data-nodeid="${nodeSelector}"][data-handleid="${selectorValue(
+            binding.target_port
+          )}"]`
+        ) ??
+        container.querySelector<HTMLElement>(
+          `.react-flow__handle[data-nodeid="${nodeSelector}"][data-handleid="__state_in"]`
+        );
+      if (!targetHandle) return [];
+
+      const targetRect = targetHandle.getBoundingClientRect();
+      const sourcePort = document.querySelector<HTMLElement>(
+        `[data-task-output-port-id="${selectorValue(binding.source_output_id)}"]`
+      );
+      const sourceRect = sourcePort?.getBoundingClientRect();
+      const sourceY = sourceRect
+        ? sourceRect.top + sourceRect.height / 2 - containerRect.top
+        : 88 + index * 28;
+      return [
+        {
+          binding,
+          sourceX: 0,
+          sourceY,
+          targetX: targetRect.left + targetRect.width / 2 - containerRect.left,
+          targetY: targetRect.top + targetRect.height / 2 - containerRect.top,
+        },
+      ];
+    });
+    setPaths(nextPaths);
+  }, [bindings, containerRef, selectorValue]);
+
+  useEffect(() => {
+    updatePaths();
+    const container = containerRef.current;
+    if (!container) return undefined;
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updatePaths();
+      });
+    };
+
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(container);
+    document
+      .querySelectorAll<HTMLElement>('[data-task-output-port-id]')
+      .forEach((element) => resizeObserver.observe(element));
+
+    const viewportObserver = new MutationObserver(schedule);
+    let observedViewport: HTMLElement | null = null;
+    const attachViewportObserver = () => {
+      const viewport = container.querySelector<HTMLElement>('.react-flow__viewport');
+      if (!viewport || viewport === observedViewport) return;
+      viewportObserver.disconnect();
+      observedViewport = viewport;
+      viewportObserver.observe(viewport, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        attributeFilter: ['style', 'class', 'transform'],
+      });
+    };
+    attachViewportObserver();
+
+    const rootObserver = new MutationObserver(() => {
+      attachViewportObserver();
+      schedule();
+    });
+    rootObserver.observe(container, {
+      childList: true,
+      subtree: true,
+    });
+
+    let startupPolls = 0;
+    const startupInterval = window.setInterval(() => {
+      attachViewportObserver();
+      schedule();
+      startupPolls += 1;
+      if (startupPolls >= 20) {
+        window.clearInterval(startupInterval);
+      }
+    }, 50);
+
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    container.addEventListener('pointermove', schedule);
+    container.addEventListener('pointerup', schedule);
+    container.addEventListener('wheel', schedule, { passive: true });
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      viewportObserver.disconnect();
+      rootObserver.disconnect();
+      window.clearInterval(startupInterval);
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+      container.removeEventListener('pointermove', schedule);
+      container.removeEventListener('pointerup', schedule);
+      container.removeEventListener('wheel', schedule);
+    };
+  }, [containerRef, updatePaths]);
+
+  if (paths.length === 0) return null;
+
+  return (
+    <svg
+      className="task-binding-overlay pointer-events-none absolute inset-0 h-full w-full"
+      style={{ zIndex: 0 }}
+    >
+      {paths.map(({ binding, sourceX, sourceY, targetX, targetY }) => {
+        const midX = sourceX + Math.max(48, (targetX - sourceX) / 2);
+        const path = `M ${sourceX} ${sourceY} C ${midX} ${sourceY}, ${midX} ${targetY}, ${targetX} ${targetY}`;
+        return (
+          <g key={binding.id}>
+            <path
+              className="task-binding-edge"
+              d={path}
+              fill="none"
+              stroke="#10b981"
+              strokeWidth={3}
+              pointerEvents="stroke"
+              style={{ pointerEvents: 'stroke' }}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(binding);
+              }}
+              onMouseEnter={() => onHover(binding)}
+              onMouseLeave={() => onHover(null)}
+            />
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 

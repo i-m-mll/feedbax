@@ -119,12 +119,13 @@ export function ComponentLibrary() {
     suggestedCategories: Record<string, ComponentDefinition[]>;
     otherCategories: Record<string, ComponentDefinition[]>;
   }>(() => {
+    const modelComponents = components.filter((component) => component.category !== 'Tasks');
     const filtered = search
-      ? components.filter((component) =>
+      ? modelComponents.filter((component) =>
           component.name.toLowerCase().includes(search.toLowerCase()) ||
           component.description.toLowerCase().includes(search.toLowerCase())
         )
-      : components;
+      : modelComponents;
 
     const withoutPinned = filtered.filter((component) => !SUBGRAPH_TYPES.has(component.name));
     const withoutCdeInExclusiveContext = isExclusiveContext

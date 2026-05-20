@@ -9,6 +9,11 @@ import type {
   StudioScenarioSpec,
   StudioSelectorRef,
 } from '@/types/workspace';
+import {
+  defaultTaskOutputs,
+  taskBindingEntityId,
+  taskOutputEntityId,
+} from '@/features/scenario/taskBindings';
 
 const MECHANICS_TYPE_HINTS = [
   'mechanic',
@@ -20,8 +25,6 @@ const MECHANICS_TYPE_HINTS = [
   'joint',
   'skeleton',
 ];
-
-const TASK_TYPE_HINTS = ['task', 'reach', 'environment', 'trial'];
 
 export function graphNodeEntityId(nodeId: string): string {
   return `graph_node:${nodeId}`;
@@ -55,6 +58,8 @@ export function taskEntityId(scenarioId: string | null | undefined): string {
   return `task_object:${scenarioId ?? 'active'}:task`;
 }
 
+export { taskBindingEntityId, taskOutputEntityId };
+
 export function mechanicsEntityId(
   scenarioId: string | null | undefined,
   nodeId = 'active'
@@ -76,6 +81,10 @@ export function entityKindLabel(kind: StudioScenarioEntityKind): string {
       return 'Graph Edge';
     case 'task_object':
       return 'Task';
+    case 'task_output':
+      return 'Task Output';
+    case 'task_binding':
+      return 'Task Binding';
     case 'mechanics_object':
       return 'Mechanics';
     case 'objective_term':
@@ -128,6 +137,14 @@ export function selectorToEntityId(selector: StudioSelectorRef | null | undefine
   if (selector.namespace === 'task_object') {
     return selector.target_id ? taskEntityId(selector.target_id) : null;
   }
+  if (selector.namespace === 'task_output') {
+    return selector.target_id && selector.path
+      ? taskOutputEntityId(selector.target_id, selector.path)
+      : null;
+  }
+  if (selector.namespace === 'task_binding') {
+    return selector.target_id ? taskBindingEntityId(selector.target_id) : null;
+  }
   if (selector.namespace === 'mechanics_object' || selector.namespace === 'biomechanics_object') {
     return selector.target_id ? `mechanics_object:${selector.target_id}` : null;
   }
@@ -174,11 +191,6 @@ function isObjectiveSpec(value: StudioScenarioSpec['objective_spec']): value is 
 function isMechanicsNode(nodeId: string, type: string): boolean {
   const normalized = `${nodeId} ${type}`.toLowerCase();
   return MECHANICS_TYPE_HINTS.some((hint) => normalized.includes(hint));
-}
-
-function isTaskNode(nodeId: string, type: string): boolean {
-  const normalized = `${nodeId} ${type}`.toLowerCase();
-  return TASK_TYPE_HINTS.some((hint) => normalized.includes(hint));
 }
 
 function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSpec) {
@@ -334,19 +346,15 @@ function addProbeEntity(registry: StudioScenarioEntityRegistry, tap: TapSpec) {
 
 function addTaskEntity(
   registry: StudioScenarioEntityRegistry,
-  scenario: StudioScenarioSpec,
-  graph: GraphSpec | null
+  scenario: StudioScenarioSpec
 ) {
   if (!scenario.task_spec) return;
-  const taskNode = Object.entries(graph?.nodes ?? {}).find(([nodeId, node]) =>
-    isTaskNode(nodeId, node.type)
-  );
-  const relations = taskNode ? [relation('binds', graphNodeEntityId(taskNode[0]), 'graph node')] : [];
+  const taskObjectId = taskEntityId(scenario.id);
   addEntity(registry, {
-    id: taskEntityId(scenario.id),
+    id: taskObjectId,
     kind: 'task_object',
     label: scenario.task_spec.type,
-    summary: 'Active task/workspace',
+    summary: 'Scenario task/environment',
     scenario_id: scenario.id,
     stage_id: scenario.stage_id ?? null,
     selector: {
@@ -357,15 +365,74 @@ function addTaskEntity(
       role: 'editable',
       metadata: {},
     },
-    relations,
+    relations: [],
     metadata: {
       task_spec: scenario.task_spec,
-      graph_node_id: taskNode?.[0] ?? null,
-      binding_state: taskNode ? 'bound' : 'unbound',
+      binding_state: 'scenario_boundary',
       inheritance_state: scenario.parent_scenario_id ? 'inherited_or_overridden' : 'owned',
       parent_scenario_id: scenario.parent_scenario_id ?? null,
     },
   }, true);
+
+  const bindingSpec = scenario.task_binding_spec;
+  const outputs = bindingSpec?.exposed_outputs?.length
+    ? bindingSpec.exposed_outputs
+    : defaultTaskOutputs();
+  for (const output of outputs) {
+    const entityId = taskOutputEntityId(scenario.id, output.id);
+    addEntity(registry, {
+      id: entityId,
+      kind: 'task_output',
+      label: output.label,
+      summary: output.kind,
+      scenario_id: scenario.id,
+      stage_id: scenario.stage_id ?? null,
+      selector: {
+        namespace: 'task_output',
+        compact: `task_output:${output.id}`,
+        target_id: scenario.id,
+        path: output.id,
+        role: output.bindable ? 'editable' : 'observed',
+        expected_shape: output.expected_shape ?? null,
+        dtype: output.dtype ?? null,
+        units: output.units ?? null,
+        frame: output.frame ?? null,
+        metadata: {
+          label: output.label,
+          detail: output.kind,
+          task_output_id: output.id,
+          bindable: output.bindable,
+          value_spec: output.value_spec ?? null,
+        },
+      },
+      relations: [relation('contains', taskObjectId, 'task')],
+      metadata: { output },
+    }, output.bindable);
+  }
+
+  for (const binding of bindingSpec?.bindings ?? []) {
+    addEntity(registry, {
+      id: taskBindingEntityId(binding.id),
+      kind: 'task_binding',
+      label: `${binding.source_output_id} -> ${binding.target_node_id}.${binding.target_port}`,
+      summary: binding.role,
+      scenario_id: scenario.id,
+      stage_id: scenario.stage_id ?? null,
+      selector: {
+        namespace: 'task_binding',
+        compact: `task_binding:${binding.id}`,
+        target_id: binding.id,
+        path: null,
+        role: binding.role,
+        metadata: { binding },
+      },
+      relations: [
+        relation('source', taskOutputEntityId(scenario.id, binding.source_output_id)),
+        relation('target', graphPortEntityId(binding.target_node_id, 'input', binding.target_port)),
+      ],
+      metadata: { binding },
+    }, true);
+  }
 }
 
 function addMechanicsEntities(
@@ -486,7 +553,7 @@ export function buildScenarioEntityRegistry({
 
   if (resolvedGraph) addGraphEntities(registry, resolvedGraph);
   if (scenario) {
-    addTaskEntity(registry, scenario, resolvedGraph);
+    addTaskEntity(registry, scenario);
     addMechanicsEntities(registry, scenario, resolvedGraph);
     addObjectiveEntities(
       registry,

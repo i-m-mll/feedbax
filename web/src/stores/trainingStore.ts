@@ -75,10 +75,16 @@ export const defaultTrainingSpec: TrainingSpec = {
 };
 
 export const defaultTaskSpec: TaskSpec = {
-  type: 'ReachingTask',
+  type: 'SimpleReaches',
   params: {
-    n_targets: 8,
-    target_radius: 0.02,
+    n_steps: 200,
+    workspace: [
+      [-1.0, -1.0],
+      [1.0, 1.0],
+    ],
+    eval_n_directions: 7,
+    eval_reach_length: 0.5,
+    eval_grid_n: 1,
   },
   timeline: {
     epochs: {

@@ -139,6 +139,7 @@ export interface TrainingStartPayload {
   graph_id: string;
   training_spec: TrainingSpec;
   task_spec: TaskSpec;
+  task_binding_spec?: import('@/types/workspace').StudioTaskBindingSpec;
   graph_spec?: import('@/types/graph').GraphSpec;
   training_config?: TrainingConfig;
 }

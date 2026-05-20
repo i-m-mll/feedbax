@@ -175,6 +175,9 @@ export function selectorDisplayLabel(selector: StudioSelectorRef | null | undefi
       ? `${selector.target_id}.${selector.path}`
       : selector.compact;
   }
+  if (selector.namespace === 'task_output') {
+    return selector.path ? `task.${selector.path}` : selector.compact;
+  }
   if (selector.namespace === 'state_path') {
     return path;
   }
@@ -351,11 +354,15 @@ export function selectorOptionsForRegistry({
         })
       );
     }
-    if (entity.kind === 'task_object' || entity.kind === 'mechanics_object') {
+    if (
+      entity.kind === 'task_object' ||
+      entity.kind === 'task_output' ||
+      entity.kind === 'mechanics_object'
+    ) {
       const group = entity.kind === 'task_object' ? 'task' : 'mechanics';
       options.push(
         optionForSelector({
-          group,
+          group: entity.kind === 'mechanics_object' ? 'mechanics' : 'task',
           label: entity.label,
           detail: entity.summary ?? null,
           selector: {

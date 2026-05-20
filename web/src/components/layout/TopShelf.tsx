@@ -1,5 +1,6 @@
 import { Sidebar } from '@/components/layout/Sidebar';
 import { RightPanel } from '@/components/panels/RightPanel';
+import { TaskScenarioPanel } from '@/components/panels/TaskScenarioPanel';
 import {
   ScenarioProjectionToolbar,
   ScenarioProjectionWorkspace,
@@ -19,6 +20,7 @@ export function TopShelf({ height }: { height: number }) {
           <ScenarioProjectionToolbar />
           <div className="flex min-w-0 flex-1 min-h-0">
             <Sidebar />
+            <TaskScenarioPanel />
             <main className="relative min-w-0 flex-1 min-h-0">
               <ScenarioProjectionWorkspace />
             </main>

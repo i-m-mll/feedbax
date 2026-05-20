@@ -172,6 +172,7 @@ export async function startTraining(
   taskSpec: TaskSpec,
   graphSpec?: GraphSpec,
   trainingConfig?: TrainingConfig,
+  taskBindingSpec?: StudioWorkspaceSpec['scenarios'][string]['task_binding_spec'],
 ) {
   return request<{ job_id: string }>('/api/training', {
     method: 'POST',
@@ -179,6 +180,9 @@ export async function startTraining(
       graph_id: graphId,
       training_spec: trainingSpec,
       task_spec: taskSpec,
+      ...(taskBindingSpec !== undefined && taskBindingSpec !== null
+        ? { task_binding_spec: taskBindingSpec }
+        : {}),
       ...(graphSpec !== undefined ? { graph_spec: graphSpec } : {}),
       ...(trainingConfig !== undefined ? { training_config: trainingConfig } : {}),
     }),

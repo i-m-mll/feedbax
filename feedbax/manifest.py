@@ -160,6 +160,7 @@ class TrainingRunManifest(BaseManifest):
     graph_spec: Optional[SpecPayload | ParentRef] = None
     training_spec: Optional[SpecPayload] = None
     task_spec: Optional[SpecPayload] = None
+    task_binding_spec: Optional[SpecPayload] = None
     overrides: list[OverridePatch] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -417,6 +418,7 @@ def write_training_run_manifest(
     total_batches: int,
     training_spec: Optional[dict[str, Any]] = None,
     task_spec: Optional[dict[str, Any]] = None,
+    task_binding_spec: Optional[dict[str, Any]] = None,
     graph_spec: Optional[dict[str, Any]] = None,
     checkpoint_path: Optional[Path | str] = None,
     history_events: Optional[list[dict[str, Any]]] = None,
@@ -467,6 +469,9 @@ def write_training_run_manifest(
         if training_spec is not None
         else None,
         task_spec=spec_payload("TaskSpec", task_spec) if task_spec is not None else None,
+        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
+        if task_binding_spec is not None
+        else None,
         summary_metrics={
             key: value
             for key, value in {

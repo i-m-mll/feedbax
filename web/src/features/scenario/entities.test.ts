@@ -11,18 +11,20 @@ import {
   probeEntityId,
   selectorToEntityId,
   stateFlowEdgeId,
+  taskBindingEntityId,
   taskEntityId,
+  taskOutputEntityId,
 } from '@/features/scenario/entities';
 import type { GraphSpec } from '@/types/graph';
 import type { StudioScenarioSpec } from '@/types/workspace';
 
 const graph: GraphSpec = {
   nodes: {
-    task: {
-      type: 'SimpleReaches',
+    network: {
+      type: 'Network',
       params: {},
-      input_ports: [],
-      output_ports: ['targets'],
+      input_ports: ['input'],
+      output_ports: ['output'],
     },
     mechanics: {
       type: 'TwoLinkArm',
@@ -33,8 +35,8 @@ const graph: GraphSpec = {
   },
   wires: [
     {
-      source_node: 'task',
-      source_port: 'targets',
+      source_node: 'network',
+      source_port: 'output',
       target_node: 'mechanics',
       target_port: 'force',
     },
@@ -63,6 +65,38 @@ const scenario: StudioScenarioSpec = {
   graph_ui_state: null,
   training_spec: null,
   task_spec: { type: 'ReachingTask', params: { n_targets: 8 } },
+  task_binding_spec: {
+    schema_version: 'feedbax.studio.task_bindings.v1',
+    exposed_outputs: [
+      {
+        id: 'inputs',
+        label: 'Inputs',
+        kind: 'signal',
+        path: 'inputs',
+        bindable: true,
+        metadata: {},
+      },
+      {
+        id: 'targets',
+        label: 'Targets',
+        kind: 'target',
+        path: 'targets',
+        bindable: false,
+        metadata: {},
+      },
+    ],
+    bindings: [
+      {
+        id: 'task:inputs->network:input',
+        source_output_id: 'inputs',
+        target_node_id: 'network',
+        target_port: 'input',
+        role: 'model_input',
+        metadata: {},
+      },
+    ],
+    metadata: {},
+  },
   objective_spec: {
     schema_version: 'feedbax.studio.objective.v1',
     terms: [
@@ -109,10 +143,10 @@ describe('scenario entity registry', () => {
     const registry = buildScenarioEntityRegistry({ scenario });
     const wire = graph.wires[0];
 
-    expect(registry.entities[graphNodeEntityId('task')]).toMatchObject({
+    expect(registry.entities[graphNodeEntityId('network')]).toMatchObject({
       kind: 'graph_node',
-      label: 'task',
-      summary: 'SimpleReaches',
+      label: 'network',
+      summary: 'Network',
     });
     expect(registry.entities[graphPortEntityId('mechanics', 'output', 'effector')]).toMatchObject({
       kind: 'graph_port',
@@ -121,13 +155,13 @@ describe('scenario entity registry', () => {
     expect(registry.entities[graphEdgeEntityId(graphEdgeId(wire))]).toMatchObject({
       kind: 'graph_edge',
     });
-    expect(registry.entities[graphEdgeEntityId(stateFlowEdgeId('task', 'mechanics'))]).toMatchObject({
+    expect(registry.entities[graphEdgeEntityId(stateFlowEdgeId('network', 'mechanics'))]).toMatchObject({
       kind: 'graph_edge',
-      label: 'task → mechanics',
+      label: 'network → mechanics',
       summary: 'Full state flow',
       selector: {
         namespace: 'state_path',
-        compact: 'path:state:task->mechanics',
+        compact: 'path:state:network->mechanics',
       },
       metadata: { edge_type: 'state_flow' },
     });
@@ -138,8 +172,28 @@ describe('scenario entity registry', () => {
     expect(registry.entities[taskEntityId('scenario:train')]).toMatchObject({
       kind: 'task_object',
       label: 'ReachingTask',
-      relations: [{ kind: 'binds', entity_id: graphNodeEntityId('task') }],
-      metadata: { binding_state: 'bound', inheritance_state: 'owned' },
+      relations: [],
+      metadata: { binding_state: 'scenario_boundary', inheritance_state: 'owned' },
+    });
+    expect(registry.entities[taskOutputEntityId('scenario:train', 'inputs')]).toMatchObject({
+      kind: 'task_output',
+      selector: {
+        namespace: 'task_output',
+        compact: 'task_output:inputs',
+      },
+    });
+    expect(registry.entities[taskBindingEntityId('task:inputs->network:input')]).toMatchObject({
+      kind: 'task_binding',
+      relations: [
+        {
+          kind: 'source',
+          entity_id: taskOutputEntityId('scenario:train', 'inputs'),
+        },
+        {
+          kind: 'target',
+          entity_id: graphPortEntityId('network', 'input', 'input'),
+        },
+      ],
     });
     expect(registry.entities[mechanicsEntityId('scenario:train', 'mechanics')]).toMatchObject({
       kind: 'mechanics_object',
@@ -159,12 +213,12 @@ describe('scenario entity registry', () => {
   });
 
   it('maps graph selections to canonical entity ids', () => {
-    expect(entityIdFromGraphSelection({ nodeId: 'task' })).toBe(graphNodeEntityId('task'));
+    expect(entityIdFromGraphSelection({ nodeId: 'network' })).toBe(graphNodeEntityId('network'));
     expect(entityIdFromGraphSelection({ tapId: 'tap:effector' })).toBe(
       probeEntityId('tap:effector')
     );
-    expect(entityIdFromGraphSelection({ edgeId: 'state:task->mechanics' })).toBe(
-      graphEdgeEntityId('state:task->mechanics')
+    expect(entityIdFromGraphSelection({ edgeId: 'state:network->mechanics' })).toBe(
+      graphEdgeEntityId('state:network->mechanics')
     );
     expect(entityIdFromGraphSelection({})).toBeNull();
   });
@@ -198,11 +252,18 @@ describe('scenario entity registry', () => {
     })).toBe(graphPortEntityId('mechanics', 'output', 'effector'));
     expect(selectorToEntityId({
       namespace: 'state_path',
-      compact: 'path:state:task->mechanics',
+      compact: 'path:state:network->mechanics',
       target_id: 'mechanics',
       path: 'state',
-      metadata: { state_flow_edge_id: 'state:task->mechanics' },
-    })).toBe(graphEdgeEntityId('state:task->mechanics'));
+      metadata: { state_flow_edge_id: 'state:network->mechanics' },
+    })).toBe(graphEdgeEntityId('state:network->mechanics'));
+    expect(selectorToEntityId({
+      namespace: 'task_output',
+      compact: 'task_output:inputs',
+      target_id: 'scenario:train',
+      path: 'inputs',
+      metadata: {},
+    })).toBe(taskOutputEntityId('scenario:train', 'inputs'));
   });
 
   it('marks task and mechanics entities from child scenarios as inherited or overridden', () => {
@@ -216,7 +277,7 @@ describe('scenario entity registry', () => {
 
     expect(registry.entities[taskEntityId('scenario:eval')]).toMatchObject({
       metadata: {
-        binding_state: 'bound',
+        binding_state: 'scenario_boundary',
         inheritance_state: 'inherited_or_overridden',
         parent_scenario_id: 'scenario:train',
       },

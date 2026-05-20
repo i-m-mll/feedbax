@@ -3,6 +3,7 @@ import {
   lossSpecFromObjectiveSpec,
   selectorWithSubpath,
 } from '@/features/scenario/objectives';
+import { createDefaultTaskBindingSpec } from '@/features/scenario/taskBindings';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -13,6 +14,7 @@ import type {
   StudioPipelineMaterializationResult,
   StudioScenarioSpec,
   StudioSelectorRef,
+  StudioTaskBindingSpec,
   StudioTopPaneProjection,
   StudioTopPaneState,
   StudioStageKind,
@@ -299,6 +301,7 @@ function defaultScenario(
     graph_ui_state: null,
     training_spec: null,
     task_spec: null,
+    task_binding_spec: null,
     objective_spec: null,
     probe_specs: [],
     temporal_spec: null,
@@ -436,6 +439,8 @@ export function buildWorkspaceSnapshot({
   const existingTrain = scenarios[trainScenarioId];
   const scenarioTrainingSpec = existingTrain?.training_spec ?? trainingSpec;
   const scenarioTaskSpec = existingTrain?.task_spec ?? taskSpec;
+  const scenarioTaskBindingSpec =
+    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph);
   scenarios[trainScenarioId] = {
     ...defaultScenario(trainScenarioId, existingTrain?.label ?? 'Training scenario', trainStage.id),
     ...existingTrain,
@@ -443,6 +448,7 @@ export function buildWorkspaceSnapshot({
     graph_ui_state: uiState,
     training_spec: scenarioTrainingSpec,
     task_spec: scenarioTaskSpec,
+    task_binding_spec: scenarioTaskBindingSpec,
     objective_spec:
       existingTrain?.objective_spec ?? objectiveSpecFromLossSpec(scenarioTrainingSpec.loss),
     metadata: {
@@ -514,6 +520,7 @@ interface WorkspaceStoreState {
   ) => void;
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
+  updateActiveScenarioTaskBindingSpec: (taskBindingSpec: StudioTaskBindingSpec) => void;
   updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
   setTopPaneProjection: (projection: StudioTopPaneProjection) => void;
   selectTopPaneEntity: (entityId: string | null, reason?: string) => void;
@@ -753,6 +760,34 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             },
           },
           metadata: markDraftMetadata(state.workspace.metadata, 'task_spec_updated'),
+        },
+      };
+    }),
+
+  updateActiveScenarioTaskBindingSpec: (taskBindingSpec) =>
+    set((state) => {
+      const scenarioId = activeTrainScenario(state.workspace);
+      if (!state.workspace || !scenarioId) return {};
+      const scenario = state.workspace.scenarios[scenarioId];
+      if (!scenario) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          scenarios: {
+            ...state.workspace.scenarios,
+            [scenarioId]: {
+              ...scenario,
+              task_binding_spec: taskBindingSpec,
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  draft_owner: 'studio_workspace',
+                },
+                'task_binding_spec_updated'
+              ),
+            },
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, 'task_binding_spec_updated'),
         },
       };
     }),

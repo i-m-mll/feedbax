@@ -79,8 +79,54 @@ describe('buildWorkspaceSnapshot', () => {
     const scenario = workspace.scenarios[trainStage.scenario_id!];
     expect(scenario.training_spec).toEqual(trainingSpec);
     expect(scenario.task_spec).toEqual(taskSpec);
+    expect(scenario.task_binding_spec).toMatchObject({
+      schema_version: 'feedbax.studio.task_bindings.v1',
+      exposed_outputs: [
+        { id: 'inputs', bindable: true },
+        { id: 'targets', bindable: false },
+        { id: 'inits', bindable: false },
+        { id: 'intervene', bindable: false },
+      ],
+      bindings: [],
+    });
     expect(scenario.objective_spec).toEqual(objectiveSpecFromLossSpec(trainingSpec.loss));
     expect(scenario.graph).toEqual(graph);
+  });
+
+  it('seeds the task input binding when the graph exposes network.input', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph: {
+        ...graph,
+        nodes: {
+          network: {
+            type: 'Network',
+            params: {},
+            input_ports: ['input'],
+            output_ports: ['output'],
+          },
+        },
+      },
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
+    const scenario = workspace.scenarios[trainStage.scenario_id!];
+
+    expect(scenario.graph?.wires).toEqual([]);
+    expect(scenario.task_binding_spec?.bindings).toEqual([
+      {
+        id: 'task:inputs->network:input',
+        source_output_id: 'inputs',
+        target_node_id: 'network',
+        target_port: 'input',
+        role: 'model_input',
+        metadata: {},
+      },
+    ]);
   });
 
   it('preserves workspace-owned drafts and future metadata while refreshing graph state', () => {
@@ -99,6 +145,21 @@ describe('buildWorkspaceSnapshot', () => {
       ...taskSpec,
       params: { ...taskSpec.params, target_radius: 0.04 },
     };
+    const workspaceOwnedTaskBindingSpec = {
+      schema_version: 'feedbax.studio.task_bindings.v1',
+      exposed_outputs: [],
+      bindings: [
+        {
+          id: 'task:inputs->custom:input',
+          source_output_id: 'inputs',
+          target_node_id: 'custom',
+          target_port: 'input',
+          role: 'model_input',
+          metadata: {},
+        },
+      ],
+      metadata: { authored_in: 'workspace_store' },
+    };
     const withFutureStage: StudioWorkspaceSpec = {
       ...existing,
       scenarios: {
@@ -107,6 +168,7 @@ describe('buildWorkspaceSnapshot', () => {
           ...existing.scenarios[trainStage.scenario_id!],
           training_spec: workspaceOwnedTrainingSpec,
           task_spec: workspaceOwnedTaskSpec,
+          task_binding_spec: workspaceOwnedTaskBindingSpec,
           metadata: { authored_in: 'workspace_store' },
         },
       },
@@ -155,6 +217,7 @@ describe('buildWorkspaceSnapshot', () => {
     const scenario = refreshed.scenarios[refreshedTrainStage.scenario_id!];
     expect(scenario.training_spec?.n_batches).toBe(333);
     expect(scenario.task_spec?.params.target_radius).toBe(0.04);
+    expect(scenario.task_binding_spec).toEqual(workspaceOwnedTaskBindingSpec);
     expect(scenario.graph?.output_ports).toEqual(['effector']);
   });
 
@@ -268,10 +331,17 @@ describe('buildWorkspaceSnapshot', () => {
       ...taskSpec,
       params: { ...taskSpec.params, n_targets: 16 },
     });
+    useWorkspaceStore.getState().updateActiveScenarioTaskBindingSpec({
+      schema_version: 'feedbax.studio.task_bindings.v1',
+      exposed_outputs: [],
+      bindings: [],
+      metadata: { edited: true },
+    });
 
     const scenario = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
     expect(scenario.training_spec?.n_batches).toBe(500);
     expect(scenario.task_spec?.params.n_targets).toBe(16);
+    expect(scenario.task_binding_spec?.metadata.edited).toBe(true);
     expect(scenario.metadata.dirty).toBe(true);
     expect(scenario.objective_spec?.terms).toHaveLength(1);
     expect(scenario.objective_spec?.terms[0].source_selector).toMatchObject({

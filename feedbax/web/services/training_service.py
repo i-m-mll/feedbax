@@ -150,6 +150,7 @@ class TrainingService:
         training_config: Optional[dict] = None,
         training_spec: Optional[dict] = None,
         task_spec: Optional[dict] = None,
+        task_binding_spec: Optional[dict] = None,
         graph_spec: Optional[dict] = None,
     ) -> str:
         """Start a training job on the worker.
@@ -175,6 +176,7 @@ class TrainingService:
             training_config=training_config,
             training_spec=training_spec,
             task_spec=task_spec,
+            task_binding_spec=task_binding_spec,
             graph_spec=graph_spec,
             auth_token=self._auth_token,
         )

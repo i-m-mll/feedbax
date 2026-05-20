@@ -69,6 +69,7 @@ class TrainingRequest(BaseModel):
     graph_id: str
     training_spec: TrainingSpec
     task_spec: TaskSpec
+    task_binding_spec: Optional[dict] = None
     # Optional structured config for Phase 6 real JAX training.
     # When present, passed to the worker which runs actual JAX training.
     # When absent, the worker falls back to the synthetic stub.
@@ -87,6 +88,7 @@ async def start_training(payload: TrainingRequest):
         training_config=training_config,
         training_spec=payload.training_spec.model_dump(),
         task_spec=payload.task_spec.model_dump(),
+        task_binding_spec=payload.task_binding_spec,
         graph_spec=payload.graph_spec,
     )
     return {"job_id": job_id}

@@ -114,6 +114,21 @@ def test_graph_validation_reports_unknown_components() -> None:
     assert result.errors[0].type == "unknown_component_type"
 
 
+def test_graph_validation_rejects_task_nodes() -> None:
+    graph = _minimal_graph_spec()
+    graph["nodes"]["task"] = {
+        "type": "SimpleReaches",
+        "params": {},
+        "input_ports": [],
+        "output_ports": ["inputs", "targets", "inits", "intervene"],
+    }
+
+    result = validate_graph_spec(graph)
+
+    assert not result.valid
+    assert result.errors[0].type == "task_node_not_allowed"
+
+
 def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path) -> None:
     checkpoint = tmp_path / "model.eqx"
     checkpoint.write_bytes(b"checkpoint bytes")
@@ -124,6 +139,12 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
         total_batches=2,
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
+        task_binding_spec={
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [],
+            "bindings": [],
+            "metadata": {},
+        },
         graph_spec=_minimal_graph_spec(),
         checkpoint_path=checkpoint,
         history_events=[{"type": "training_progress", "batch": 1, "loss": 0.5}],
@@ -138,6 +159,7 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
     assert loaded.id == manifest.id
     assert loaded.status == "completed"
     assert loaded.summary_metrics["final_loss"] == 0.25
+    assert loaded.task_binding_spec is not None
     assert loaded.provenance.issues == ["5429a23"]
 
     checkpoint_ref = next(
@@ -191,6 +213,12 @@ def test_worker_stub_emits_durable_training_manifest(
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
+        task_binding_spec={
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [],
+            "bindings": [],
+            "metadata": {},
+        },
         graph_spec=_minimal_graph_spec(),
         status=WorkerStatus.RUNNING,
     )
