@@ -200,6 +200,28 @@ export interface StudioValueSpec {
   metadata: Record<string, unknown>;
 }
 
+export type StudioInterventionOperation =
+  | 'clamp'
+  | 'noise'
+  | 'constant'
+  | 'offset'
+  | 'scale'
+  | string;
+
+export interface StudioInterventionValueBounds {
+  min?: unknown;
+  max?: unknown;
+}
+
+export interface StudioInterventionTransformSpec {
+  operation: StudioInterventionOperation;
+  target_selector?: StudioSelectorRef | null;
+  value?: StudioValueSpec | null;
+  bounds?: StudioInterventionValueBounds | null;
+  parameters?: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
+}
+
 export type StudioSchemaOrigin =
   | 'declared'
   | 'inferred_static'

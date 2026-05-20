@@ -30,6 +30,7 @@ from feedbax.web.models.graph import (
     StudioStageSpec,
     StudioTaskBindingSpec,
     StudioTaskTimelineSpec,
+    TapSpec,
     build_default_studio_workspace,
 )
 from feedbax.web.worker.app import WorkerStatus, _Job, _extract_training_cfg, _run_training_stub
@@ -527,6 +528,65 @@ def test_studio_schema_enumeration_validates_task_binding_schema_mismatch() -> N
     issue_types = {issue.type for issue in registry.issues}
 
     assert "task_binding_dtype_mismatch" in issue_types
+
+
+def test_studio_schema_enumeration_validates_intervention_targets() -> None:
+    workspace = _schema_workspace()
+    scenario = workspace.scenarios["scenario:train"]
+    assert scenario.graph is not None
+    scenario.graph.taps = [
+        TapSpec.model_validate(item)
+        for item in [
+            {
+                "id": "valid-clamp",
+                "type": "intervention",
+                "position": {"afterNode": "network"},
+                "paths": {},
+                "transform": {
+                    "type": "intervention",
+                    "params": {},
+                    "intervention": {
+                        "operation": "clamp",
+                        "target_selector": {
+                            "namespace": "state_path",
+                            "compact": "path:states.net.output",
+                            "path": "states.net.output",
+                            "metadata": {},
+                        },
+                        "bounds": {"min": -1.0, "max": 1.0},
+                        "metadata": {},
+                    },
+                },
+            },
+            {
+                "id": "bad-constant",
+                "type": "intervention",
+                "position": {"afterNode": "network"},
+                "paths": {},
+                "transform": {
+                    "type": "intervention",
+                    "params": {},
+                    "intervention": {
+                        "operation": "constant",
+                        "target_selector": {
+                            "namespace": "task_data",
+                            "compact": "task_data:targets",
+                            "path": "targets",
+                            "metadata": {},
+                        },
+                        "metadata": {},
+                    },
+                },
+            },
+        ]
+    ]
+
+    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+    issue_types = {issue.type for issue in registry.issues}
+
+    assert "intervention_missing_value" in issue_types
+    assert "intervention_target_dtype_mismatch" in issue_types
+    assert "intervention_missing_bounds" not in issue_types
 
 
 def test_worker_stub_emits_durable_training_manifest(

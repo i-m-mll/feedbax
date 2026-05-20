@@ -2,6 +2,7 @@ import type { ComponentDefinition } from '@/types/components';
 import type { GraphSpec } from '@/types/graph';
 import type {
   PortSchema,
+  SelectorTargetSchema,
   StudioSchemaOrigin,
   StudioSchemaRegistry,
   StudioValidationIssue as SchemaValidationIssue,
@@ -9,6 +10,7 @@ import type {
   ValueSchema,
 } from '@/types/workspace';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
+import { validateInterventionSchema } from './interventions';
 
 export function projectStudioSchema(
   graph: GraphSpec,
@@ -19,6 +21,11 @@ export function projectStudioSchema(
   const ports = enumerateGraphPorts(graph, componentMap);
   const taskData = enumerateTaskData(taskBindingSpec);
   markBoundPorts(ports, taskBindingSpec);
+  const selectorTargets = [
+    ...portSelectorTargets(ports),
+    ...taskDataSelectorTargets(taskData),
+    ...knownStateHintTargets(),
+  ];
 
   return {
     kind: 'studio_schema_registry',
@@ -26,10 +33,11 @@ export function projectStudioSchema(
     generated_at: new Date().toISOString(),
     ports,
     task_data: taskData,
-    selector_targets: [],
+    selector_targets: selectorTargets,
     issues: [
       ...validateGraphConnections(graph, ports),
       ...validateTaskBindings(graph, ports, taskData, taskBindingSpec),
+      ...validateInterventionSchema(graph.taps, { selector_targets: selectorTargets }),
     ],
     metadata: { projected_by: 'feedbax.web.projectStudioSchema' },
   };
@@ -215,6 +223,62 @@ function markBoundPorts(ports: PortSchema[], taskBindingSpec?: StudioTaskBinding
       port.bound_task_data_id = `task_data:${binding.source_data_id}`;
     }
   }
+}
+
+function portSelectorTargets(ports: PortSchema[]): SelectorTargetSchema[] {
+  return ports
+    .filter((port) => port.node_id)
+    .map((port) => ({
+      id: `selector:port:${port.node_id}.${port.port}`,
+      label: port.label,
+      kind: 'port',
+      selector: `port:${port.node_id}.${port.port}`,
+      value_schema: port.value_schema,
+      origin: port.origin,
+      source: { port_id: port.id, direction: port.direction },
+      metadata: {},
+    }));
+}
+
+function taskDataSelectorTargets(taskData: TaskDataSchema[]): SelectorTargetSchema[] {
+  return taskData.map((item) => ({
+    id: `selector:task_data:${item.id.replace(/^task_data:/, '')}`,
+    label: item.label,
+    kind: 'task_data',
+    selector: `task_data:${item.path}`,
+    value_schema: item.value_schema,
+    origin: item.origin,
+    source: { task_data_id: item.id },
+    metadata: {},
+  }));
+}
+
+function knownStateHintTargets(): SelectorTargetSchema[] {
+  return [
+    ['path:states.mechanics.effector.pos', 'Effector position'],
+    ['path:states.mechanics.effector.vel', 'Effector velocity'],
+    ['path:states.net.hidden', 'Network hidden state'],
+    ['path:states.net.output', 'Network output'],
+    ['path:states.efferent.output', 'Motor command'],
+    ['path:states.feedback.noise', 'Feedback noise'],
+    ['path:task.validation_trials.targets', 'Validation targets'],
+  ].map(([selector, label]) => ({
+    id: `selector:${selector}`,
+    label,
+    kind: 'state_hint',
+    selector,
+    value_schema: {
+      id: `value:${selector}`,
+      label,
+      kind: 'state_hint',
+      dtype: 'vector',
+      origin: 'curated_fallback',
+      metadata: {},
+    },
+    origin: 'curated_fallback',
+    source: { curated: true },
+    metadata: {},
+  }));
 }
 
 function validateGraphConnections(graph: GraphSpec, ports: PortSchema[]): SchemaValidationIssue[] {
