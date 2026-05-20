@@ -34,6 +34,15 @@ from feedbax.studio_execution import (
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
 )
+from feedbax.studio_schema import (
+    PortSchema,
+    SchemaValidationIssue,
+    SelectorTargetSchema,
+    StudioSchemaEnumerationRequest,
+    StudioSchemaRegistry,
+    TaskDataSchema,
+    ValueSchema,
+)
 from feedbax.web.models.graph import GraphSpec
 from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
 
@@ -133,6 +142,13 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "StudioTrainingLocalRunResult": StudioTrainingLocalRunResult,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
         "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
+        "ValueSchema": ValueSchema,
+        "PortSchema": PortSchema,
+        "TaskDataSchema": TaskDataSchema,
+        "SelectorTargetSchema": SelectorTargetSchema,
+        "SchemaValidationIssue": SchemaValidationIssue,
+        "StudioSchemaRegistry": StudioSchemaRegistry,
+        "StudioSchemaEnumerationRequest": StudioSchemaEnumerationRequest,
         "GraphSpecManifest": GraphSpecManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
@@ -209,6 +225,15 @@ def provider_manifest() -> ProviderManifest:
             description=(
                 "Materialize Studio eval, analysis, and report stages from upstream "
                 "workspace collections and return updated lineage refs."
+            ),
+            transports=["python", "http"],
+        ),
+        "enumerate_studio_schemas": CapabilitySpec(
+            input_schema="StudioSchemaEnumerationRequest",
+            output_schema="StudioSchemaRegistry",
+            description=(
+                "Enumerate static Studio graph port, task data, selector target, "
+                "and validation schemas without JAX compilation or training."
             ),
             transports=["python", "http"],
         ),
