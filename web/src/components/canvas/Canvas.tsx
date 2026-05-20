@@ -100,8 +100,13 @@ export function Canvas() {
   const fittedGraphKey = useRef<string | null>(null);
   const trainingScenario = getTrainingScenario(workspace);
   const taskBindingSpec = useMemo(
-    () => ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph),
-    [graph, trainingScenario?.task_binding_spec]
+    () =>
+      ensureTaskBindingSpec(
+        trainingScenario?.task_binding_spec,
+        graph,
+        trainingScenario?.task_spec
+      ),
+    [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
   );
   const displayEdges = useMemo(
     () => edges,

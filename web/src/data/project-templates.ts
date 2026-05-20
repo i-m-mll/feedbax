@@ -61,7 +61,7 @@ function seedRlrmpTaskWorkspace(
       [trainScenarioId]: {
         ...trainScenario,
         task_spec: RLRMP_DELAYED_REACHES_TASK_SPEC,
-        task_binding_spec: createDefaultTaskBindingSpec(graph),
+        task_binding_spec: createDefaultTaskBindingSpec(graph, RLRMP_DELAYED_REACHES_TASK_SPEC),
       },
     },
   };

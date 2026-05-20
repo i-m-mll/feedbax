@@ -442,7 +442,7 @@ export function buildWorkspaceSnapshot({
   const scenarioTrainingSpec = existingTrain?.training_spec ?? trainingSpec;
   const scenarioTaskSpec = existingTrain?.task_spec ?? taskSpec;
   const scenarioTaskBindingSpec =
-    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph);
+    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, scenarioTaskSpec);
   scenarios[trainScenarioId] = {
     ...defaultScenario(trainScenarioId, existingTrain?.label ?? 'Training scenario', trainStage.id),
     ...existingTrain,

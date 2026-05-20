@@ -48,7 +48,11 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const topPane = getTopPaneState(workspace);
   const taskBoundInputs = useMemo(() => {
     const trainingScenario = getTrainingScenario(workspace);
-    const taskBindingSpec = ensureTaskBindingSpec(trainingScenario?.task_binding_spec, graph);
+    const taskBindingSpec = ensureTaskBindingSpec(
+      trainingScenario?.task_binding_spec,
+      graph,
+      trainingScenario?.task_spec
+    );
     const taskDataById = new Map(taskBindingSpec.exposed_data.map((item) => [item.id, item]));
     const boundInputs = new Map<string, string>();
     for (const binding of taskBindingSpec.bindings) {

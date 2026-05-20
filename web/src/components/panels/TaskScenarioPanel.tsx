@@ -252,8 +252,13 @@ export function TaskScenarioPanel() {
   const scenario = getTrainingScenario(workspace);
   const task = scenario?.task_spec ?? TASK_CATALOG[0];
   const taskBindingSpec = useMemo(
-    () => ensureTaskBindingSpec(scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(graph), graph),
-    [graph, scenario?.task_binding_spec]
+    () =>
+      ensureTaskBindingSpec(
+        scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, task),
+        graph,
+        task
+      ),
+    [graph, scenario?.task_binding_spec, task]
   );
   const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
 
@@ -279,7 +284,7 @@ export function TaskScenarioPanel() {
     const next = TASK_CATALOG.find((candidate) => candidate.type === taskType);
     if (!next) return;
     updateTaskSpec(next);
-    updateTaskBindingSpec(createDefaultTaskBindingSpec(graph));
+    updateTaskBindingSpec(createDefaultTaskBindingSpec(graph, next));
     markDirty();
   };
   const updateTimeline = (nextTimeline: StudioTaskTimelineSpec) => {
