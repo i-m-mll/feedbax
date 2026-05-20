@@ -2,12 +2,12 @@ import type { ComponentDefinition } from '@/types/components';
 import type { GraphSpec } from '@/types/graph';
 import type {
   PortSchema,
-  SchemaOrigin,
-  SchemaValidationIssue,
+  StudioSchemaOrigin,
   StudioSchemaRegistry,
+  StudioValidationIssue as SchemaValidationIssue,
   TaskDataSchema,
   ValueSchema,
-} from '@/types/studioSchema';
+} from '@/types/workspace';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 
 export function projectStudioSchema(
@@ -23,8 +23,10 @@ export function projectStudioSchema(
   return {
     kind: 'studio_schema_registry',
     schema_version: 'feedbax.schema.v1',
+    generated_at: new Date().toISOString(),
     ports,
     task_data: taskData,
+    selector_targets: [],
     issues: [
       ...validateGraphConnections(graph, ports),
       ...validateTaskBindings(graph, ports, taskData, taskBindingSpec),
@@ -128,7 +130,7 @@ function componentPortSchema(
   portType?: { dtype: string; shape?: number[] | null; rank?: number }
 ): PortSchema {
   const portId = `port:${nodeId}.${port}:${direction}`;
-  const origin: SchemaOrigin = portType ? 'declared' : 'unknown';
+  const origin: StudioSchemaOrigin = portType ? 'declared' : 'unknown';
   return {
     id: portId,
     label: `${nodeId}.${port}`,

@@ -1,5 +1,5 @@
 import type { GraphSpec, WireSpec } from '@/types/graph';
-import type { StudioSchemaRegistry } from '@/types/studioSchema';
+import type { StudioSchemaRegistry } from '@/types/workspace';
 
 export interface ValidationResult {
   valid: boolean;
