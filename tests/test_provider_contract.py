@@ -224,6 +224,51 @@ def test_graph_validation_rejects_task_nodes() -> None:
     assert result.errors[0].type == "task_node_not_allowed"
 
 
+def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch() -> None:
+    graph = {
+        "nodes": {
+            "linear": {
+                "type": "Linear",
+                "params": {},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+            "muscle": {
+                "type": "ReluMuscle",
+                "params": {},
+                "input_ports": ["excitation"],
+                "output_ports": ["force", "activation"],
+            },
+        },
+        "wires": [
+            {
+                "source_node": "linear",
+                "source_port": "output",
+                "target_node": "muscle",
+                "target_port": "excitation",
+            },
+            {
+                "source_node": "linear",
+                "source_port": "input",
+                "target_node": "muscle",
+                "target_port": "excitation",
+            },
+        ],
+        "input_ports": [],
+        "output_ports": [],
+        "input_bindings": {},
+        "output_bindings": {},
+    }
+
+    result = validate_graph_spec(graph)
+    issue_types = {issue.type for issue in result.errors}
+
+    assert not result.valid
+    assert "graph_wire_dtype_mismatch" in issue_types
+    assert "wrong_source_port_direction" in issue_types
+    assert "graph_input_occupied" in issue_types
+
+
 def test_studio_task_timeline_spec_validates_value_specs() -> None:
     timeline = StudioTaskTimelineSpec.model_validate(
         {
@@ -381,6 +426,19 @@ def test_studio_schema_enumeration_reports_missing_scenario_graph_and_binding() 
     issue_types = {issue.type for issue in registry.issues}
     assert "missing_graph" in issue_types
     assert "missing_task_binding_spec" in issue_types
+
+
+def test_studio_schema_enumeration_validates_task_binding_schema_mismatch() -> None:
+    workspace = _schema_workspace()
+    scenario = next(iter(workspace.scenarios.values()))
+    scenario.graph.nodes["network"].type = "Linear"
+    assert scenario.task_binding_spec is not None
+    scenario.task_binding_spec.exposed_data[0].dtype = "scalar"
+
+    registry = enumerate_studio_schema_registry(workspace, scenario.id)
+    issue_types = {issue.type for issue in registry.issues}
+
+    assert "task_binding_dtype_mismatch" in issue_types
 
 
 def test_worker_stub_emits_durable_training_manifest(

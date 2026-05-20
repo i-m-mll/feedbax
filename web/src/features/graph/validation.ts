@@ -1,4 +1,5 @@
 import type { GraphSpec, WireSpec } from '@/types/graph';
+import type { StudioSchemaRegistry } from '@/types/studioSchema';
 
 export interface ValidationResult {
   valid: boolean;
@@ -8,18 +9,49 @@ export interface ValidationResult {
 }
 
 export interface ValidationError {
-  type: 'missing_input' | 'invalid_wire' | 'duplicate_wire' | 'unbound_port';
+  type:
+    | 'missing_input'
+    | 'invalid_wire'
+    | 'duplicate_wire'
+    | 'unbound_port'
+    | 'graph_input_occupied'
+    | 'wrong_source_port_direction'
+    | 'wrong_target_port_direction'
+    | 'unknown_source_node'
+    | 'unknown_source_port'
+    | 'unknown_target_node'
+    | 'unknown_target_port'
+    | 'graph_wire_dtype_mismatch'
+    | 'graph_wire_rank_mismatch'
+    | 'graph_wire_shape_mismatch'
+    | 'task_binding_target_occupied'
+    | 'unknown_task_data'
+    | 'task_data_not_bindable'
+    | 'unknown_task_binding_target_node'
+    | 'unknown_task_binding_target_port'
+    | 'task_binding_dtype_mismatch'
+    | 'task_binding_rank_mismatch'
+    | 'task_binding_shape_mismatch'
+    | string;
   message: string;
-  location?: { node?: string; port?: string; wire?: WireSpec };
+  location?: { node?: string; port?: string; wire?: WireSpec } & Record<string, unknown>;
 }
 
 export interface ValidationWarning {
-  type: 'unconnected_output' | 'potential_type_mismatch';
+  type:
+    | 'unconnected_output'
+    | 'potential_type_mismatch'
+    | 'graph_wire_unknown_schema'
+    | 'task_binding_unknown_schema'
+    | string;
   message: string;
-  location?: { node?: string; port?: string };
+  location?: { node?: string; port?: string } & Record<string, unknown>;
 }
 
-export function validateGraph(graph: GraphSpec): ValidationResult {
+export function validateGraph(
+  graph: GraphSpec,
+  schemaRegistry?: Pick<StudioSchemaRegistry, 'issues'> | null
+): ValidationResult {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
 
@@ -56,6 +88,19 @@ export function validateGraph(graph: GraphSpec): ValidationResult {
           location: { node: nodeName, port: outputPort },
         });
       }
+    }
+  }
+
+  for (const issue of schemaRegistry?.issues ?? []) {
+    const validationIssue = {
+      type: issue.type,
+      message: issue.message,
+      location: issue.location ?? undefined,
+    };
+    if (issue.severity === 'error') {
+      errors.push(validationIssue);
+    } else {
+      warnings.push(validationIssue);
     }
   }
 

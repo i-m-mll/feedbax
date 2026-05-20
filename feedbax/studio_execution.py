@@ -38,7 +38,9 @@ from feedbax.manifest import (
     utc_now,
     write_manifest,
 )
+from feedbax.studio_schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.web.models.graph import (
+    GraphSpec,
     StudioArtifactRef,
     StudioCollectionRef,
     StudioManifestRef,
@@ -527,90 +529,24 @@ def _validate_task_binding_spec(
                 )
             )
         return issues
-    task_binding_spec = validated_spec.model_dump(mode="json", exclude_none=True)
-    nodes = graph.get("nodes", {}) if isinstance(graph.get("nodes"), dict) else {}
-    graph_wires = graph.get("wires", []) if isinstance(graph.get("wires"), list) else []
-    task_data = task_binding_spec.get("exposed_data", [])
-    bindings = task_binding_spec.get("bindings", [])
-    data_by_id: dict[str, dict[str, Any]] = {}
-    occupied_inputs = {
-        (wire.get("target_node"), wire.get("target_port"))
-        for wire in graph_wires
-        if isinstance(wire, dict)
-    }
-    binding_targets: set[tuple[Any, Any]] = set()
-    issues: list[StudioValidationIssue] = []
-    seen_data: set[str] = set()
-    for data in task_data:
-        if not isinstance(data, dict) or not isinstance(data.get("id"), str):
-            continue
-        data_id = data["id"]
-        if data_id in seen_data:
-            issues.append(
-                StudioValidationIssue(
-                    type="duplicate_task_data",
-                    message=f"Task Data {data_id!r} is declared more than once",
-                    location={"path": "/task_binding_spec/exposed_data"},
-                )
-            )
-        seen_data.add(data_id)
-        data_by_id[data_id] = data
-    for index, binding in enumerate(bindings):
-        if not isinstance(binding, dict):
-            continue
-        source_data_id = binding.get("source_data_id")
-        target_node_id = binding.get("target_node_id")
-        target_port = binding.get("target_port")
-        path = f"/task_binding_spec/bindings/{index}"
-        data = data_by_id.get(source_data_id)
-        if data is None:
-            issues.append(
-                StudioValidationIssue(
-                    type="unknown_task_data",
-                    message=f"Task binding source data {source_data_id!r} is not declared",
-                    location={"path": f"{path}/source_data_id"},
-                )
-            )
-        elif not data.get("bindable", False):
-            issues.append(
-                StudioValidationIssue(
-                    type="task_data_not_bindable",
-                    message=f"Task Data {source_data_id!r} is not bindable",
-                    location={"path": f"{path}/source_data_id"},
-                )
-            )
-        target_node = nodes.get(target_node_id)
-        if not isinstance(target_node, dict):
-            issues.append(
-                StudioValidationIssue(
-                    type="unknown_task_binding_target_node",
-                    message=f"Task binding target node {target_node_id!r} does not exist",
-                    location={"path": f"{path}/target_node_id"},
-                )
-            )
-            continue
-        input_ports = target_node.get("input_ports", [])
-        if target_port not in input_ports:
-            issues.append(
-                StudioValidationIssue(
-                    type="unknown_task_binding_target_port",
-                    message=(
-                        f"Task binding target port {target_node_id}.{target_port} does not exist"
-                    ),
-                    location={"path": f"{path}/target_port"},
-                )
-            )
-        target = (target_node_id, target_port)
-        if target in occupied_inputs or target in binding_targets:
-            issues.append(
-                StudioValidationIssue(
-                    type="task_binding_target_occupied",
-                    message=f"Task binding target {target_node_id}.{target_port} is already occupied",
-                    location={"path": path},
-                )
-            )
-        binding_targets.add(target)
-    return issues
+    graph_spec = GraphSpec.model_validate(graph)
+    return _schema_issues_to_studio(
+        validate_task_binding_schema(validated_spec, graph_spec, "/task_binding_spec")
+    )
+
+
+def _schema_issues_to_studio(
+    issues: list[SchemaValidationIssue],
+) -> list[StudioValidationIssue]:
+    return [
+        StudioValidationIssue(
+            type=issue.type,
+            message=issue.message,
+            location=issue.location,
+            severity=issue.severity,
+        )
+        for issue in issues
+    ]
 
 
 def _provider_issues_to_studio(

@@ -1,7 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
-import { getTopPaneState, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  getTopPaneState,
+  getTrainingScenario,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 import { validateGraph } from '@/features/graph/validation';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { projectStudioSchema } from '@/features/schema/project';
+import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
 
 export function ValidationPanel() {
@@ -13,8 +20,17 @@ export function ValidationPanel() {
   const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
   const isInSubgraph = useGraphStore((state) => state.graphStack.length > 0);
   const workspace = useWorkspaceStore((state) => state.workspace);
+  const { components } = useComponents();
   const selectedEntityId = getTopPaneState(workspace).selected_entity_id;
-  const validation = useMemo(() => validateGraph(graph), [graph]);
+  const taskBindingSpec = useMemo(() => {
+    const scenario = getTrainingScenario(workspace);
+    return ensureTaskBindingSpec(scenario?.task_binding_spec, graph);
+  }, [graph, workspace]);
+  const schemaRegistry = useMemo(
+    () => projectStudioSchema(graph, components, taskBindingSpec),
+    [components, graph, taskBindingSpec]
+  );
+  const validation = useMemo(() => validateGraph(graph, schemaRegistry), [graph, schemaRegistry]);
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((prev) => !prev);
