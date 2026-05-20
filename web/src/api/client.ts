@@ -2,6 +2,7 @@ import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type {
   StudioPipelineMaterializationResult,
+  StudioSchemaRegistry,
   StudioTrainingLocalRunResult,
   StudioTrainingExecutionPreparation,
   StudioWorkspaceSpec,
@@ -154,6 +155,16 @@ export async function materializeStudioPipeline(payload: {
   metadata?: Record<string, unknown>;
 }) {
   return request<StudioPipelineMaterializationResult>('/api/provider/studio/pipeline/materialize', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchStudioSchemaRegistry(payload: {
+  workspace: StudioWorkspaceSpec;
+  scenario_id?: string | null;
+}) {
+  return request<StudioSchemaRegistry>('/api/provider/studio/schemas', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

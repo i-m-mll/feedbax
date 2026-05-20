@@ -1,7 +1,10 @@
 import { STATE_FIELD_TREE, type StateFieldNode } from '@/types/analysis';
 import type {
+  SelectorTargetSchema,
   StudioObjectiveSpec,
   StudioScenarioEntityRegistry,
+  StudioSchemaOrigin,
+  StudioSchemaRegistry,
   StudioSelectorRef,
 } from '@/types/workspace';
 
@@ -21,6 +24,8 @@ export interface StudioSelectorOption {
   selector: StudioSelectorRef;
   source_entity_id: string | null;
   used_by_objective_ids: string[];
+  origin: StudioSchemaOrigin | 'entity_registry' | 'state_browser';
+  schema_target_id?: string | null;
 }
 
 const GROUP_LABELS: Record<SelectorOptionGroup, string> = {
@@ -104,6 +109,14 @@ const STATE_HINTS: Record<
 
 export function selectorGroupLabel(group: SelectorOptionGroup): string {
   return GROUP_LABELS[group];
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function directionValue(value: unknown): 'input' | 'output' | null {
+  return value === 'input' || value === 'output' ? value : null;
 }
 
 function isSelectorRef(value: unknown): value is StudioSelectorRef {
@@ -262,13 +275,168 @@ function stateSelectorForPath(path: string, label: string): StudioSelectorRef {
     metadata: {
       label: hint?.label ?? label,
       detail: hint?.detail ?? null,
-      source: 'state_browser',
+      source: 'curated_state_hint',
+      schema_origin: 'curated_fallback',
       subpath: hint?.subpath,
       graph_port_node_id: hint?.graph_port_node_id,
       graph_port_name: hint?.graph_port_name,
       graph_port_direction: hint?.graph_port_direction,
     },
   };
+}
+
+function parsePortSelector(selector: string): { nodeId: string; port: string } | null {
+  const match = /^port:([^.\s]+)\.(.+)$/.exec(selector);
+  if (!match) return null;
+  return { nodeId: match[1], port: match[2] };
+}
+
+function schemaPortForTarget(
+  target: SelectorTargetSchema,
+  schemaRegistry: StudioSchemaRegistry | null | undefined
+) {
+  const sourcePortId = stringValue(target.source.port_id);
+  return sourcePortId
+    ? schemaRegistry?.ports.find((port) => port.id === sourcePortId) ?? null
+    : null;
+}
+
+function schemaTaskDataForTarget(
+  target: SelectorTargetSchema,
+  schemaRegistry: StudioSchemaRegistry | null | undefined
+) {
+  const sourceTaskDataId = stringValue(target.source.task_data_id)?.replace(/^task_data:/, '');
+  const selectorPath = target.selector.startsWith('task_data:')
+    ? target.selector.replace(/^task_data:/, '')
+    : null;
+  return (
+    schemaRegistry?.task_data.find(
+      (data) =>
+        data.id.replace(/^task_data:/, '') === sourceTaskDataId ||
+        data.path === selectorPath
+    ) ?? null
+  );
+}
+
+function schemaTargetGraphMetadata(
+  target: SelectorTargetSchema,
+  schemaRegistry: StudioSchemaRegistry | null | undefined
+): Record<string, unknown> {
+  const path = target.selector.startsWith('path:') ? target.selector.replace(/^path:/, '') : null;
+  const hint = path ? STATE_HINTS[path] : null;
+  const port = schemaPortForTarget(target, schemaRegistry);
+  const parsedPort = parsePortSelector(target.selector);
+  const graphPortNodeId =
+    stringValue(target.source.graph_port_node_id) ??
+    port?.node_id ??
+    parsedPort?.nodeId ??
+    hint?.graph_port_node_id ??
+    null;
+  const graphPortName =
+    stringValue(target.source.graph_port_name) ??
+    port?.port ??
+    parsedPort?.port ??
+    hint?.graph_port_name ??
+    null;
+  const graphPortDirection =
+    directionValue(target.source.graph_port_direction) ??
+    directionValue(target.source.direction) ??
+    port?.direction ??
+    hint?.graph_port_direction ??
+    null;
+
+  return {
+    ...(graphPortNodeId ? { graph_port_node_id: graphPortNodeId } : {}),
+    ...(graphPortName ? { graph_port_name: graphPortName } : {}),
+    ...(graphPortDirection ? { graph_port_direction: graphPortDirection } : {}),
+  };
+}
+
+function schemaTargetSelectorRef(
+  target: SelectorTargetSchema,
+  schemaRegistry: StudioSchemaRegistry | null | undefined
+): StudioSelectorRef {
+  const valueSchema = target.value_schema;
+  const port = schemaPortForTarget(target, schemaRegistry);
+  const taskData = schemaTaskDataForTarget(target, schemaRegistry);
+  const parsedPort = parsePortSelector(target.selector);
+  const graphMetadata = schemaTargetGraphMetadata(target, schemaRegistry);
+  const pathSelector = target.selector.startsWith('path:')
+    ? target.selector.replace(/^path:/, '')
+    : null;
+  const taskDataPath = target.selector.startsWith('task_data:')
+    ? target.selector.replace(/^task_data:/, '')
+    : null;
+  const probeId = target.selector.startsWith('probe:')
+    ? target.selector.replace(/^probe:/, '')
+    : stringValue(target.source.probe_id);
+  const hint = pathSelector ? STATE_HINTS[pathSelector] : null;
+  const graphPortDirection =
+    directionValue(graphMetadata.graph_port_direction) ??
+    directionValue(target.source.direction);
+
+  let namespace: StudioSelectorRef['namespace'] = 'custom';
+  let targetId: string | null = stringValue(target.source.target_id);
+  let path: string | null = null;
+  let role: StudioSelectorRef['role'] = 'observed';
+
+  if (target.kind === 'port' || parsedPort) {
+    namespace = 'graph_port';
+    targetId = port?.node_id ?? parsedPort?.nodeId ?? targetId;
+    path = port?.port ?? parsedPort?.port ?? null;
+    role = graphPortDirection === 'input' ? 'editable' : 'observed';
+  } else if (target.kind === 'task_data' || taskDataPath) {
+    namespace = 'task_data';
+    targetId = schemaRegistry?.scenario_id ?? targetId;
+    path = taskData?.path ?? taskDataPath;
+    role = taskData?.bindable ? 'editable' : 'observed';
+  } else if (target.kind === 'probe' || probeId) {
+    namespace = 'probe';
+    targetId = probeId;
+    path = null;
+  } else if (pathSelector) {
+    namespace = 'state_path';
+    targetId = hint?.target_id ?? targetId;
+    path = pathSelector;
+  }
+
+  return {
+    namespace,
+    compact: target.selector,
+    target_id: targetId,
+    path,
+    role,
+    expected_shape: valueSchema.shape ?? hint?.expected_shape ?? null,
+    dtype: valueSchema.dtype ?? null,
+    units: valueSchema.units ?? hint?.units ?? null,
+    frame: valueSchema.frame ?? null,
+    metadata: {
+      ...target.metadata,
+      ...graphMetadata,
+      label: target.label,
+      detail: stringValue(target.metadata.detail),
+      source: 'studio_schema_registry',
+      schema_target_id: target.id,
+      schema_kind: target.kind,
+      schema_origin: target.origin,
+      selector_source: target.source,
+      value_schema: valueSchema,
+      ...(hint?.subpath ? { subpath: hint.subpath } : {}),
+      ...(graphPortDirection ? { direction: graphPortDirection } : {}),
+    },
+  };
+}
+
+function schemaTargetGroup(
+  target: SelectorTargetSchema,
+  selector: StudioSelectorRef
+): SelectorOptionGroup {
+  if (target.kind === 'port' || selector.namespace === 'graph_port') return 'ports';
+  if (target.kind === 'task_data' || selector.namespace === 'task_data') return 'task';
+  if (target.kind === 'probe' || selector.namespace === 'probe') return 'probes';
+  if (target.kind === 'objective') return 'analysis';
+  if (selector.path?.startsWith('task.')) return 'task';
+  return 'state';
 }
 
 function optionForSelector({
@@ -278,6 +446,8 @@ function optionForSelector({
   selector,
   sourceEntityId,
   usedByObjectiveIds,
+  origin,
+  schemaTargetId = null,
 }: {
   group: SelectorOptionGroup;
   label: string;
@@ -285,6 +455,8 @@ function optionForSelector({
   selector: StudioSelectorRef;
   sourceEntityId: string | null;
   usedByObjectiveIds: string[];
+  origin: StudioSelectorOption['origin'];
+  schemaTargetId?: string | null;
 }): StudioSelectorOption {
   return {
     id: `${group}:${selector.compact}`,
@@ -294,18 +466,39 @@ function optionForSelector({
     selector,
     source_entity_id: sourceEntityId,
     used_by_objective_ids: usedByObjectiveIds,
+    origin,
+    schema_target_id: schemaTargetId,
   };
 }
 
 export function selectorOptionsForRegistry({
   registry,
+  schemaRegistry,
   objectiveSpec,
 }: {
   registry: StudioScenarioEntityRegistry;
+  schemaRegistry?: StudioSchemaRegistry | null;
   objectiveSpec?: StudioObjectiveSpec | null;
 }): StudioSelectorOption[] {
   const usedByCompact = objectiveUsesByCompact(objectiveSpec);
   const options: StudioSelectorOption[] = [];
+  const schemaTargets = schemaRegistry?.selector_targets ?? [];
+
+  for (const target of schemaTargets) {
+    const selector = schemaTargetSelectorRef(target, schemaRegistry);
+    options.push(
+      optionForSelector({
+        group: schemaTargetGroup(target, selector),
+        label: target.label,
+        detail: selectorDetail(selector),
+        selector,
+        sourceEntityId: null,
+        usedByObjectiveIds: usedByCompact.get(selector.compact) ?? [],
+        origin: target.origin,
+        schemaTargetId: target.id,
+      })
+    );
+  }
 
   for (const entity of Object.values(registry.entities)) {
     if (!entity.selector) continue;
@@ -321,6 +514,7 @@ export function selectorOptionsForRegistry({
           },
           sourceEntityId: entity.id,
           usedByObjectiveIds: usedByCompact.get(entity.selector.compact) ?? [],
+          origin: 'entity_registry',
         })
       );
     }
@@ -336,6 +530,7 @@ export function selectorOptionsForRegistry({
           },
           sourceEntityId: entity.id,
           usedByObjectiveIds: usedByCompact.get(entity.selector.compact) ?? [],
+          origin: 'entity_registry',
         })
       );
     }
@@ -351,6 +546,7 @@ export function selectorOptionsForRegistry({
           },
           sourceEntityId: entity.id,
           usedByObjectiveIds: usedByCompact.get(entity.selector.compact) ?? [],
+          origin: 'entity_registry',
         })
       );
     }
@@ -359,7 +555,6 @@ export function selectorOptionsForRegistry({
       entity.kind === 'task_data' ||
       entity.kind === 'mechanics_object'
     ) {
-      const group = entity.kind === 'task_object' ? 'task' : 'mechanics';
       options.push(
         optionForSelector({
           group: entity.kind === 'mechanics_object' ? 'mechanics' : 'task',
@@ -371,24 +566,28 @@ export function selectorOptionsForRegistry({
           },
           sourceEntityId: entity.id,
           usedByObjectiveIds: usedByCompact.get(entity.selector.compact) ?? [],
+          origin: 'entity_registry',
         })
       );
     }
   }
 
-  for (const node of flattenStateFields(STATE_FIELD_TREE)) {
-    if (!STATE_HINTS[node.path]) continue;
-    const selector = stateSelectorForPath(node.path, node.label);
-    options.push(
-      optionForSelector({
-        group: node.path.startsWith('task.') ? 'task' : 'state',
-        label: selectorDisplayLabel(selector),
-        detail: selectorDetail(selector),
-        selector,
-        sourceEntityId: null,
-        usedByObjectiveIds: usedByCompact.get(selector.compact) ?? [],
-      })
-    );
+  if (schemaTargets.length === 0) {
+    for (const node of flattenStateFields(STATE_FIELD_TREE)) {
+      if (!STATE_HINTS[node.path]) continue;
+      const selector = stateSelectorForPath(node.path, node.label);
+      options.push(
+        optionForSelector({
+          group: node.path.startsWith('task.') ? 'task' : 'state',
+          label: selectorDisplayLabel(selector),
+          detail: selectorDetail(selector),
+          selector,
+          sourceEntityId: null,
+          usedByObjectiveIds: usedByCompact.get(selector.compact) ?? [],
+          origin: 'state_browser',
+        })
+      );
+    }
   }
 
   const seen = new Set<string>();

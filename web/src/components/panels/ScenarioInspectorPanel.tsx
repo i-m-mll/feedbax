@@ -30,6 +30,7 @@ import {
   type StudioSelectorOption,
 } from '@/features/scenario/selectors';
 import { useGraphStore } from '@/stores/graphStore';
+import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import {
   getActiveStage,
   getScenario,
@@ -40,6 +41,7 @@ import type {
   StudioObjectiveTermSpec,
   StudioScenarioEntity,
   StudioScenarioEntityRegistry,
+  StudioSchemaRegistry,
   StudioSelectorRef,
 } from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
@@ -492,9 +494,11 @@ function SelectorCandidateButtons({
 function ObjectiveInspector({
   entity,
   registry,
+  schemaRegistry,
 }: {
   entity: StudioScenarioEntity;
   registry: StudioScenarioEntityRegistry;
+  schemaRegistry: StudioSchemaRegistry | null;
 }) {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
@@ -507,8 +511,8 @@ function ObjectiveInspector({
   const termId = entity.id.replace(/^objective_term:/, '');
   const term = objectiveSpec.terms.find((candidate) => candidate.id === termId);
   const selectorOptions = useMemo(
-    () => selectorOptionsForRegistry({ registry, objectiveSpec }),
-    [objectiveSpec, registry]
+    () => selectorOptionsForRegistry({ registry, schemaRegistry, objectiveSpec }),
+    [objectiveSpec, registry, schemaRegistry]
   );
   if (!term) {
     return <div className="text-sm text-slate-400">Objective term is no longer available.</div>;
@@ -758,9 +762,11 @@ function ObjectiveInspector({
 function SourceInspector({
   entity,
   registry,
+  schemaRegistry,
 }: {
   entity: StudioScenarioEntity;
   registry: StudioScenarioEntityRegistry;
+  schemaRegistry: StudioSchemaRegistry | null;
 }) {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
@@ -776,8 +782,8 @@ function SourceInspector({
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const sourceSelector = sourceSelectorForEntity(entity, registry);
   const selectorOptions = useMemo(
-    () => selectorOptionsForRegistry({ registry, objectiveSpec }),
-    [objectiveSpec, registry]
+    () => selectorOptionsForRegistry({ registry, schemaRegistry, objectiveSpec }),
+    [objectiveSpec, registry, schemaRegistry]
   );
   const preferredSourceSelector = useMemo(
     () => preferredSelectorForGraphPort(sourceSelector, selectorOptions),
@@ -906,9 +912,11 @@ function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
 function EntityBody({
   entity,
   registry,
+  schemaRegistry,
 }: {
   entity: StudioScenarioEntity;
   registry: StudioScenarioEntityRegistry;
+  schemaRegistry: StudioSchemaRegistry | null;
 }) {
   if (GRAPH_ENTITY_KINDS.has(entity.kind)) {
     return <PropertiesPanel />;
@@ -919,9 +927,11 @@ function EntityBody({
       {entity.kind === 'task_object' && <TaskInspector entity={entity} />}
       {entity.kind === 'mechanics_object' && <MechanicsInspector entity={entity} />}
       {entity.kind === 'objective_term' && (
-        <ObjectiveInspector entity={entity} registry={registry} />
+        <ObjectiveInspector entity={entity} registry={registry} schemaRegistry={schemaRegistry} />
       )}
-      {entity.kind === 'graph_port' && <SourceInspector entity={entity} registry={registry} />}
+      {entity.kind === 'graph_port' && (
+        <SourceInspector entity={entity} registry={registry} schemaRegistry={schemaRegistry} />
+      )}
       <RelationList entity={entity} registry={registry} />
     </div>
   );
@@ -933,6 +943,11 @@ export function ScenarioInspectorPanel() {
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const graph = useGraphStore((state) => state.graph);
+  const schemaQuery = useStudioSchemaRegistry(
+    workspace,
+    activeStage?.scenario_id ?? activeScenario?.id ?? null
+  );
+  const schemaRegistry = schemaQuery.data ?? null;
 
   const registry = useMemo(
     () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
@@ -969,7 +984,11 @@ export function ScenarioInspectorPanel() {
           <EdgeInspector entity={entity} />
           {entity.selector && (
             <div className="border-t border-slate-100 p-6">
-              <SourceInspector entity={entity} registry={registry} />
+              <SourceInspector
+                entity={entity}
+                registry={registry}
+                schemaRegistry={schemaRegistry}
+              />
             </div>
           )}
           <div className="px-6 pb-6">
@@ -977,7 +996,7 @@ export function ScenarioInspectorPanel() {
           </div>
         </>
       ) : (
-      <EntityBody entity={entity} registry={registry} />
+        <EntityBody entity={entity} registry={registry} schemaRegistry={schemaRegistry} />
       )}
     </div>
   );

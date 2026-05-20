@@ -200,6 +200,69 @@ export interface StudioValueSpec {
   metadata: Record<string, unknown>;
 }
 
+export type StudioSchemaOrigin = 'declared' | 'inferred_static' | 'curated_fallback' | 'unknown';
+
+export interface ValueSchema {
+  id: string;
+  label: string;
+  kind: string;
+  dtype?: string | null;
+  shape?: unknown[] | null;
+  rank?: number | null;
+  units?: string | null;
+  frame?: string | null;
+  origin: StudioSchemaOrigin;
+  metadata: Record<string, unknown>;
+}
+
+export interface PortSchema {
+  id: string;
+  label: string;
+  node_id?: string | null;
+  component_type?: string | null;
+  port: string;
+  direction: 'input' | 'output';
+  value_schema: ValueSchema;
+  bound_task_data_id?: string | null;
+  origin: StudioSchemaOrigin;
+  metadata: Record<string, unknown>;
+}
+
+export interface TaskDataSchema {
+  id: string;
+  label: string;
+  kind: string;
+  path: string;
+  bindable: boolean;
+  value_schema: ValueSchema;
+  origin: StudioSchemaOrigin;
+  metadata: Record<string, unknown>;
+}
+
+export interface SelectorTargetSchema {
+  id: string;
+  label: string;
+  kind: 'port' | 'task_data' | 'objective' | 'probe' | 'state_hint';
+  selector: string;
+  value_schema: ValueSchema;
+  origin: StudioSchemaOrigin;
+  source: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+}
+
+export interface StudioSchemaRegistry {
+  kind: 'studio_schema_registry';
+  schema_version: string;
+  generated_at: string;
+  workspace_id?: string | null;
+  scenario_id?: string | null;
+  ports: PortSchema[];
+  task_data: TaskDataSchema[];
+  selector_targets: SelectorTargetSchema[];
+  issues: StudioValidationIssue[];
+  metadata: Record<string, unknown>;
+}
+
 export interface StudioTaskEpochSpec {
   id: string;
   label: string;
