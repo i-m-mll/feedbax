@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { PlugZap, Settings2 } from 'lucide-react';
+import { Settings2 } from 'lucide-react';
 import { createDefaultTaskBindingSpec, ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import {
   delayedReachTaskWithTimeline,
@@ -306,10 +306,9 @@ export function TaskScenarioPanel() {
           ))}
         </select>
       </div>
-      <section className="shrink-0 border-b border-slate-200 bg-slate-50/75 px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+      <section className="shrink-0 border-b border-slate-100 bg-white py-3 pl-4 pr-0">
         <div className="overflow-visible rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">
-            <PlugZap className="h-3 w-3 text-emerald-500" />
+          <div className="flex items-center rounded-t-lg border-b border-slate-100 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800">
             Task Data
           </div>
           <div className="space-y-1 px-3 py-2">
@@ -323,7 +322,7 @@ export function TaskScenarioPanel() {
               </span>
               <span
                 data-task-data-port-id={data.id}
-                className="absolute right-[-21px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
+                className="absolute right-[-17px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
                 title={`${data.label} Task Data`}
               />
             </div>
@@ -331,7 +330,7 @@ export function TaskScenarioPanel() {
           </div>
         </div>
       </section>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-slate-50/35 px-4 py-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-white px-4 py-4">
         {timeline && <DelayedReachTimelineEditor timeline={timeline} onChange={updateTimeline} />}
         <section className="space-y-2">
           <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">

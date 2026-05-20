@@ -495,7 +495,7 @@ function valueSchemaCompatibilityIssues(
     target.dtype &&
     source.dtype !== 'any' &&
     target.dtype !== 'any' &&
-    source.dtype !== target.dtype
+    !dtypesCompatible(source, target)
   ) {
     issues.push({
       type: `${issuePrefix}_dtype_mismatch`,
@@ -536,6 +536,45 @@ function valueSchemaCompatibilityIssues(
     });
   }
   return issues;
+}
+
+function dtypesCompatible(source: ValueSchema, target: ValueSchema): boolean {
+  const sourceDtype = normalizeDtype(source.dtype);
+  const targetDtype = normalizeDtype(target.dtype);
+  if (!sourceDtype || !targetDtype) return true;
+  if (sourceDtype === targetDtype) return true;
+  if (sourceDtype === 'any' || targetDtype === 'any') return true;
+  if (isConcreteNumericDtype(sourceDtype) && semanticNumericCompatible(source, targetDtype)) {
+    return true;
+  }
+  if (isConcreteNumericDtype(targetDtype) && semanticNumericCompatible(target, sourceDtype)) {
+    return true;
+  }
+  if (sourceDtype === 'state' && targetDtype === 'vector') return true;
+  if (sourceDtype === 'vector' && targetDtype === 'state') return true;
+  return false;
+}
+
+function normalizeDtype(dtype: string | null | undefined): string | null {
+  return dtype ? dtype.trim().toLowerCase() : null;
+}
+
+function isConcreteNumericDtype(dtype: string): boolean {
+  return /^(u?int|float|complex)\d*$/.test(dtype) || dtype === 'number';
+}
+
+function semanticNumericCompatible(schema: ValueSchema, semanticDtype: string): boolean {
+  if (semanticDtype === 'scalar') return schemaIsScalar(schema);
+  if (semanticDtype === 'vector' || semanticDtype === 'matrix' || semanticDtype === 'tensor') {
+    return !schemaIsScalar(schema);
+  }
+  return semanticDtype === 'state';
+}
+
+function schemaIsScalar(schema: ValueSchema): boolean {
+  if (schema.rank === 0) return true;
+  if (Array.isArray(schema.shape) && schema.shape.length === 0) return true;
+  return false;
 }
 
 function shapesCompatible(sourceShape: unknown[], targetShape: unknown[]): boolean {

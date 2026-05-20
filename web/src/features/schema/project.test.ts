@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { validateGraph } from '@/features/graph/validation';
 import { projectStudioSchema, validateConnectionAgainstSchema } from './project';
 import type { ComponentDefinition } from '@/types/components';
 import type { GraphSpec } from '@/types/graph';
@@ -145,6 +146,33 @@ describe('projectStudioSchema', () => {
 
     expect(issueTypes).toContain('task_data_not_bindable');
     expect(issueTypes).toContain('task_binding_target_occupied');
+  });
+
+  it('treats task-data bindings as graph input connectivity', () => {
+    const spec = taskBindingSpec();
+    spec.exposed_data[0].dtype = 'float32';
+    spec.exposed_data[0].expected_shape = ['time', 'channels'];
+    spec.exposed_data[0].value_spec = {
+      schema_version: 'feedbax.studio.value.v1',
+      mode: 'reference',
+      dtype: 'float32',
+      shape: ['time', 'channels'],
+      metadata: {},
+    };
+    spec.bindings[0] = {
+      ...spec.bindings[0],
+      target_node_id: 'source',
+      target_port: 'input',
+    };
+    const registry = projectStudioSchema(graph, components, spec);
+    const validation = validateGraph(graph, registry);
+
+    expect(registry.issues.map((issue) => issue.type)).not.toContain(
+      'task_binding_dtype_mismatch'
+    );
+    expect(
+      validation.errors.find((error) => error.message === "Input port 'source.input' is not connected")
+    ).toBeUndefined();
   });
 
   it('keeps protocol Task Data out of graph-facing task bindings', () => {
