@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Use Any for nested param values to avoid recursive type issues
@@ -299,8 +299,10 @@ class StudioTaskTimelineSpec(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class StudioTaskOutputSpec(BaseModel):
-    """Scenario-owned task output that may be bound into a model graph."""
+class StudioTaskDataSpec(BaseModel):
+    """Scenario-owned task data that may be bound into a model graph."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     label: str
@@ -316,23 +318,54 @@ class StudioTaskOutputSpec(BaseModel):
 
 
 class StudioTaskBinding(BaseModel):
-    """Binding from a scenario task output into a graph input port."""
+    """Binding from a scenario task data into a graph input port."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
-    source_output_id: str
+    source_data_id: str
     target_node_id: str
     target_port: str
     role: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_task_binding_field_names(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "source_output_id" in data:
+            raise ValueError(
+                "task_binding_spec.bindings[].source_output_id was renamed to "
+                "source_data_id in feedbax.studio.task_bindings.v2"
+            )
+        return data
+
 
 class StudioTaskBindingSpec(BaseModel):
-    """Scenario-owned task output surface and its model bindings."""
+    """Scenario-owned task data surface and its model bindings."""
 
-    schema_version: str = "feedbax.studio.task_bindings.v1"
-    exposed_outputs: List[StudioTaskOutputSpec] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "feedbax.studio.task_bindings.v2"
+    exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_task_binding_contract(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("schema_version") == "feedbax.studio.task_bindings.v1":
+            raise ValueError(
+                "feedbax.studio.task_bindings.v1 is no longer accepted; use "
+                "feedbax.studio.task_bindings.v2 with exposed_data and source_data_id"
+            )
+        if "exposed_outputs" in data:
+            raise ValueError(
+                "task_binding_spec.exposed_outputs was renamed to exposed_data in "
+                "feedbax.studio.task_bindings.v2"
+            )
+        return data
 
 
 class StudioScenarioSpec(BaseModel):

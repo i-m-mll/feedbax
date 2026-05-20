@@ -80,8 +80,8 @@ describe('buildWorkspaceSnapshot', () => {
     expect(scenario.training_spec).toEqual(trainingSpec);
     expect(scenario.task_spec).toEqual(taskSpec);
     expect(scenario.task_binding_spec).toMatchObject({
-      schema_version: 'feedbax.studio.task_bindings.v1',
-      exposed_outputs: [
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [
         { id: 'inputs', bindable: true },
         { id: 'targets', bindable: false },
         { id: 'inits', bindable: false },
@@ -120,7 +120,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(scenario.task_binding_spec?.bindings).toEqual([
       {
         id: 'task:inputs->network:input',
-        source_output_id: 'inputs',
+        source_data_id: 'inputs',
         target_node_id: 'network',
         target_port: 'input',
         role: 'model_input',
@@ -146,12 +146,12 @@ describe('buildWorkspaceSnapshot', () => {
       params: { ...taskSpec.params, target_radius: 0.04 },
     };
     const workspaceOwnedTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v1',
-      exposed_outputs: [],
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [],
       bindings: [
         {
           id: 'task:inputs->custom:input',
-          source_output_id: 'inputs',
+          source_data_id: 'inputs',
           target_node_id: 'custom',
           target_port: 'input',
           role: 'model_input',
@@ -332,8 +332,8 @@ describe('buildWorkspaceSnapshot', () => {
       params: { ...taskSpec.params, n_targets: 16 },
     });
     useWorkspaceStore.getState().updateActiveScenarioTaskBindingSpec({
-      schema_version: 'feedbax.studio.task_bindings.v1',
-      exposed_outputs: [],
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [],
       bindings: [],
       metadata: { edited: true },
     });

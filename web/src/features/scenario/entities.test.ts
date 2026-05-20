@@ -13,7 +13,7 @@ import {
   stateFlowEdgeId,
   taskBindingEntityId,
   taskEntityId,
-  taskOutputEntityId,
+  taskDataEntityId,
 } from '@/features/scenario/entities';
 import type { GraphSpec } from '@/types/graph';
 import type { StudioScenarioSpec } from '@/types/workspace';
@@ -66,8 +66,8 @@ const scenario: StudioScenarioSpec = {
   training_spec: null,
   task_spec: { type: 'ReachingTask', params: { n_targets: 8 } },
   task_binding_spec: {
-    schema_version: 'feedbax.studio.task_bindings.v1',
-    exposed_outputs: [
+    schema_version: 'feedbax.studio.task_bindings.v2',
+    exposed_data: [
       {
         id: 'inputs',
         label: 'Inputs',
@@ -88,7 +88,7 @@ const scenario: StudioScenarioSpec = {
     bindings: [
       {
         id: 'task:inputs->network:input',
-        source_output_id: 'inputs',
+        source_data_id: 'inputs',
         target_node_id: 'network',
         target_port: 'input',
         role: 'model_input',
@@ -175,11 +175,11 @@ describe('scenario entity registry', () => {
       relations: [],
       metadata: { binding_state: 'scenario_boundary', inheritance_state: 'owned' },
     });
-    expect(registry.entities[taskOutputEntityId('scenario:train', 'inputs')]).toMatchObject({
-      kind: 'task_output',
+    expect(registry.entities[taskDataEntityId('scenario:train', 'inputs')]).toMatchObject({
+      kind: 'task_data',
       selector: {
-        namespace: 'task_output',
-        compact: 'task_output:inputs',
+        namespace: 'task_data',
+        compact: 'task_data:inputs',
       },
     });
     expect(registry.entities[taskBindingEntityId('task:inputs->network:input')]).toMatchObject({
@@ -187,7 +187,7 @@ describe('scenario entity registry', () => {
       relations: [
         {
           kind: 'source',
-          entity_id: taskOutputEntityId('scenario:train', 'inputs'),
+          entity_id: taskDataEntityId('scenario:train', 'inputs'),
         },
         {
           kind: 'target',
@@ -258,12 +258,12 @@ describe('scenario entity registry', () => {
       metadata: { state_flow_edge_id: 'state:network->mechanics' },
     })).toBe(graphEdgeEntityId('state:network->mechanics'));
     expect(selectorToEntityId({
-      namespace: 'task_output',
-      compact: 'task_output:inputs',
+      namespace: 'task_data',
+      compact: 'task_data:inputs',
       target_id: 'scenario:train',
       path: 'inputs',
       metadata: {},
-    })).toBe(taskOutputEntityId('scenario:train', 'inputs'));
+    })).toBe(taskDataEntityId('scenario:train', 'inputs'));
   });
 
   it('marks task and mechanics entities from child scenarios as inherited or overridden', () => {

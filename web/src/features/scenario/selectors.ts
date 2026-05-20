@@ -175,7 +175,7 @@ export function selectorDisplayLabel(selector: StudioSelectorRef | null | undefi
       ? `${selector.target_id}.${selector.path}`
       : selector.compact;
   }
-  if (selector.namespace === 'task_output') {
+  if (selector.namespace === 'task_data') {
     return selector.path ? `task.${selector.path}` : selector.compact;
   }
   if (selector.namespace === 'state_path') {
@@ -356,7 +356,7 @@ export function selectorOptionsForRegistry({
     }
     if (
       entity.kind === 'task_object' ||
-      entity.kind === 'task_output' ||
+      entity.kind === 'task_data' ||
       entity.kind === 'mechanics_object'
     ) {
       const group = entity.kind === 'task_object' ? 'task' : 'mechanics';

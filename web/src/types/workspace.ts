@@ -80,7 +80,7 @@ export type StudioSelectorNamespace =
   | 'probe'
   | 'state_path'
   | 'task_object'
-  | 'task_output'
+  | 'task_data'
   | 'task_binding'
   | 'mechanics_object'
   | 'biomechanics_object'
@@ -125,7 +125,7 @@ export interface StudioObjectiveSpec {
   metadata: Record<string, unknown>;
 }
 
-export type StudioTaskOutputKind =
+export type StudioTaskDataKind =
   | 'signal'
   | 'target'
   | 'initial_state'
@@ -134,10 +134,10 @@ export type StudioTaskOutputKind =
   | 'protocol_value'
   | string;
 
-export interface StudioTaskOutputSpec {
+export interface StudioTaskDataSpec {
   id: string;
   label: string;
-  kind: StudioTaskOutputKind;
+  kind: StudioTaskDataKind;
   path: string;
   bindable: boolean;
   expected_shape?: unknown[] | null;
@@ -150,7 +150,7 @@ export interface StudioTaskOutputSpec {
 
 export interface StudioTaskBinding {
   id: string;
-  source_output_id: string;
+  source_data_id: string;
   target_node_id: string;
   target_port: string;
   role: 'model_input' | 'target' | 'initial_state' | 'intervention' | string;
@@ -158,8 +158,8 @@ export interface StudioTaskBinding {
 }
 
 export interface StudioTaskBindingSpec {
-  schema_version: 'feedbax.studio.task_bindings.v1' | string;
-  exposed_outputs: StudioTaskOutputSpec[];
+  schema_version: 'feedbax.studio.task_bindings.v2' | string;
+  exposed_data: StudioTaskDataSpec[];
   bindings: StudioTaskBinding[];
   metadata: Record<string, unknown>;
 }
@@ -211,7 +211,7 @@ export interface StudioTaskEpochSpec {
 export interface StudioTaskTimelineSignalSpec {
   id: string;
   label: string;
-  kind: StudioTaskOutputKind | string;
+  kind: StudioTaskDataKind | string;
   path: string;
   epoch_ids: string[];
   metadata: Record<string, unknown>;
@@ -229,7 +229,7 @@ export type StudioScenarioEntityKind =
   | 'graph_port'
   | 'graph_edge'
   | 'task_object'
-  | 'task_output'
+  | 'task_data'
   | 'task_binding'
   | 'mechanics_object'
   | 'objective_term'

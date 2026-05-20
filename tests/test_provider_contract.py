@@ -177,8 +177,8 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.studio.task_bindings.v1",
-            "exposed_outputs": [],
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [],
             "bindings": [],
             "metadata": {},
         },
@@ -251,8 +251,8 @@ def test_worker_stub_emits_durable_training_manifest(
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.studio.task_bindings.v1",
-            "exposed_outputs": [],
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [],
             "bindings": [],
             "metadata": {},
         },
