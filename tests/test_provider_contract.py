@@ -18,8 +18,16 @@ from feedbax.provider import (
     validate_task_spec,
     validate_training_spec,
 )
+from feedbax.studio_schema import enumerate_studio_schema_registry
 from feedbax.web.app import create_app
-from feedbax.web.models.graph import StudioTaskTimelineSpec
+from feedbax.web.models.graph import (
+    GraphMetadata,
+    GraphSpec,
+    StudioStageSpec,
+    StudioTaskBindingSpec,
+    StudioTaskTimelineSpec,
+    build_default_studio_workspace,
+)
 from feedbax.web.worker.app import WorkerStatus, _Job, _extract_training_cfg, _run_training_stub
 
 
@@ -61,14 +69,100 @@ def _minimal_training_spec() -> dict:
     }
 
 
+def _schema_workspace():
+    graph = GraphSpec(
+        nodes={
+            "network": {
+                "type": "Gain",
+                "params": {"gain": 1.0},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            }
+        },
+        output_ports=["model_output"],
+        output_bindings={"model_output": ("network", "output")},
+        taps=[
+            {
+                "id": "activation-tap",
+                "type": "probe",
+                "position": {"afterNode": "network"},
+                "paths": {"hidden": "state.network.hidden"},
+            }
+        ],
+        metadata=GraphMetadata(
+            name="Schema provider smoke",
+            created_at="2026-05-20T00:00:00+00:00",
+            updated_at="2026-05-20T00:00:00+00:00",
+        ),
+    )
+    workspace = build_default_studio_workspace(label="Schema provider", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "dtype": "vector",
+                    "metadata": {},
+                },
+                {
+                    "id": "targets",
+                    "label": "Targets",
+                    "kind": "target",
+                    "path": "targets",
+                    "bindable": False,
+                    "dtype": "state",
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->network:input",
+                    "source_output_id": "inputs",
+                    "target_node_id": "network",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+    scenario.objective_spec = {
+        "terms": [{"selector": "task_data:targets", "label": "Target tracking"}]
+    }
+    scenario.probe_specs = [{"id": "manual-probe", "label": "Manual probe"}]
+    workspace.stages.append(
+        StudioStageSpec(
+            id="stage:broken",
+            kind="eval",
+            label="Broken",
+            scenario_id="scenario:missing",
+        )
+    )
+    return workspace
+
+
 def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     manifest = provider_manifest()
 
     assert manifest.provider == "feedbax"
     assert manifest.capabilities["validate_graph_spec"].input_schema == "GraphSpec"
     assert manifest.capabilities["start_training_run"].output_schema == "TrainingRunManifest"
+    assert (
+        manifest.capabilities["enumerate_studio_schemas"].output_schema
+        == "StudioSchemaRegistry"
+    )
     assert "training_checkpoint" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
+    assert "StudioSchemaRegistry" in manifest.schemas
+    assert "TaskDataSchema" in manifest.schemas
 
 
 def test_component_registry_snapshot_wraps_existing_registry() -> None:
@@ -235,6 +329,58 @@ def test_provider_http_endpoints() -> None:
     )
     assert validation.status_code == 200
     assert validation.json()["valid"] is True
+
+    schemas = client.post(
+        "/api/provider/studio/schemas",
+        json={
+            "workspace": _schema_workspace().model_dump(mode="json", exclude_none=True),
+            "scenario_id": "scenario:train",
+        },
+    )
+    assert schemas.status_code == 200
+    payload = schemas.json()
+    assert payload["kind"] == "studio_schema_registry"
+    assert payload["scenario_id"] == "scenario:train"
+    assert any(port["id"] == "port:network.input:input" for port in payload["ports"])
+    assert any(item["id"] == "task_data:inputs" for item in payload["task_data"])
+    assert any(
+        target["selector"] == "path:state.effector.pos"
+        for target in payload["selector_targets"]
+    )
+    assert any(issue["type"] == "stage_missing_scenario" for issue in payload["issues"])
+
+
+def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() -> None:
+    registry = enumerate_studio_schema_registry(_schema_workspace(), "scenario:train")
+
+    assert registry.workspace_id is not None
+    assert registry.scenario_id == "scenario:train"
+    assert any(port.id == "port:network.input:input" for port in registry.ports)
+    bound = next(port for port in registry.ports if port.id == "port:network.input:input")
+    assert bound.bound_task_data_id == "task_data:inputs"
+    assert any(item.id == "task_data:targets" for item in registry.task_data)
+    selectors = {target.selector for target in registry.selector_targets}
+    assert "port:network.output" in selectors
+    assert "task_data:inputs" in selectors
+    assert "probe:activation-tap" in selectors
+    assert "probe:manual-probe" in selectors
+    assert "path:state.effector.pos" in selectors
+    assert any(issue.type == "stage_missing_scenario" for issue in registry.issues)
+
+
+def test_studio_schema_enumeration_reports_missing_scenario_graph_and_binding() -> None:
+    missing = enumerate_studio_schema_registry(_schema_workspace(), "scenario:missing")
+    assert any(issue.type == "missing_scenario" for issue in missing.issues)
+
+    workspace = _schema_workspace()
+    scenario = workspace.scenarios["scenario:train"]
+    scenario.graph = None
+    scenario.task_binding_spec = None
+    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+
+    issue_types = {issue.type for issue in registry.issues}
+    assert "missing_graph" in issue_types
+    assert "missing_task_binding_spec" in issue_types
 
 
 def test_worker_stub_emits_durable_training_manifest(
