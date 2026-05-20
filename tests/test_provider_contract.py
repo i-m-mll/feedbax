@@ -33,7 +33,15 @@ from feedbax.web.models.graph import (
     TapSpec,
     build_default_studio_workspace,
 )
-from feedbax.web.worker.app import WorkerStatus, _Job, _extract_training_cfg, _run_training_stub
+from feedbax.web.worker.app import (
+    WorkerStatus,
+    _Job,
+    _extract_graph_params,
+    _extract_task_sampling_cfg,
+    _extract_training_cfg,
+    _run_training,
+    _run_training_stub,
+)
 
 
 def _minimal_graph_spec() -> dict:
@@ -160,10 +168,7 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert manifest.provider == "feedbax"
     assert manifest.capabilities["validate_graph_spec"].input_schema == "GraphSpec"
     assert manifest.capabilities["start_training_run"].output_schema == "TrainingRunManifest"
-    assert (
-        manifest.capabilities["enumerate_studio_schemas"].output_schema
-        == "StudioSchemaRegistry"
-    )
+    assert manifest.capabilities["enumerate_studio_schemas"].output_schema == "StudioSchemaRegistry"
     assert "training_checkpoint" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
     assert "StudioSchemaRegistry" in manifest.schemas
@@ -470,8 +475,7 @@ def test_provider_http_endpoints() -> None:
     runtime_payload = runtime_schemas.json()
     assert runtime_payload["metadata"]["runtime_introspection"]["status"] == "unavailable"
     assert any(
-        issue["type"] == "runtime_introspection_unavailable"
-        and issue["severity"] == "warning"
+        issue["type"] == "runtime_introspection_unavailable" and issue["severity"] == "warning"
         for issue in runtime_payload["issues"]
     )
 
@@ -551,9 +555,7 @@ def test_studio_schema_enumeration_runtime_introspection_failure_is_warning() ->
         runtime_introspector=introspector,
     )
 
-    issue = next(
-        issue for issue in registry.issues if issue.type == "runtime_introspection_failed"
-    )
+    issue = next(issue for issue in registry.issues if issue.type == "runtime_introspection_failed")
     assert issue.severity == "warning"
     assert "sample unavailable" in issue.message
     assert registry.metadata["runtime_introspection"]["status"] == "failed"
@@ -725,3 +727,107 @@ def test_worker_training_cfg_uses_timeline_task_n_steps() -> None:
     )
 
     assert cfg.n_reach_steps == 150
+
+
+def test_worker_task_sampling_cfg_uses_delayed_reaches_params() -> None:
+    cfg = _extract_task_sampling_cfg(
+        {
+            "type": "DelayedReaches",
+            "params": {
+                "n_steps": 140,
+                "workspace": [[-1.0, -0.5], [1.0, 0.5]],
+                "train_endpoint_mode": "center_out",
+                "epoch_len_ranges": [[0, 1], [10, 30]],
+                "hold_epochs": [0, 1],
+                "move_epochs": [2],
+                "p_catch_trial": 0.5,
+                "eval_reach_length": 0.4,
+            },
+        }
+    )
+
+    assert cfg.task_type == "DelayedReaches"
+    assert cfg.workspace_min == (-1.0, -0.5)
+    assert cfg.workspace_max == (1.0, 0.5)
+    assert cfg.train_endpoint_mode == "center_out"
+    assert cfg.epoch_len_ranges == ((0, 1), (10, 30))
+    assert cfg.hold_epochs == (0, 1)
+    assert cfg.move_epochs == (2,)
+    assert cfg.p_catch_trial == 0.5
+    assert cfg.reach_length == 0.4
+
+
+def test_worker_rejects_dense_task_sampling_params() -> None:
+    try:
+        _extract_task_sampling_cfg(
+            {
+                "type": "DelayedReaches",
+                "params": {
+                    "n_steps": 140,
+                    "targets": [[[0.0, 0.0], [0.1, 0.1]]],
+                },
+            }
+        )
+    except ValueError as exc:
+        assert "compact task params only" in str(exc)
+    else:
+        raise AssertionError("Expected dense task params to be rejected")
+
+
+def test_worker_graph_params_use_simple_staged_network_and_pointmass() -> None:
+    params = _extract_graph_params(
+        {
+            "nodes": {
+                "network": {
+                    "type": "SimpleStagedNetwork",
+                    "params": {
+                        "hidden_size": 100,
+                        "input_size": 4,
+                        "out_size": 2,
+                        "hidden_type": "GRUCell",
+                        "out_nonlinearity": "tanh",
+                    },
+                },
+                "mechanics": {
+                    "type": "PointMass",
+                    "params": {"dt": 0.02},
+                },
+            },
+            "wires": [],
+            "input_ports": [],
+            "output_ports": [],
+            "input_bindings": {},
+            "output_bindings": {},
+        }
+    )
+
+    assert params["hidden_size"] == 100
+    assert params["input_size"] == 4
+    assert params["out_size"] == 2
+    assert params["dt"] == 0.02
+    assert params["plant_type"] == "PointMass"
+
+
+def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> None:
+    event_queue: queue.Queue = queue.Queue()
+    job = _Job(
+        job_id="invalid-job",
+        total_batches=1,
+        event_queue=event_queue,
+        stop_event=threading.Event(),
+        training_spec=_minimal_training_spec(),
+        task_spec={"type": "SimpleReaches", "params": {}},
+        task_binding_spec=None,
+        graph_spec=_minimal_graph_spec(),
+        status=WorkerStatus.RUNNING,
+    )
+
+    _run_training(job)
+
+    assert job.status == WorkerStatus.ERROR
+    events = []
+    while not event_queue.empty():
+        events.append(event_queue.get())
+    assert events[0]["type"] == "training_error"
+    assert "task_binding_spec" in events[0]["error"]
+    assert all(event is None or event.get("type") != "training_progress" for event in events)
