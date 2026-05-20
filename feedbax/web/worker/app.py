@@ -170,6 +170,53 @@ class _TrainingCfg:
     snapshot_interval: int = 100
 
 
+@dataclass(frozen=True)
+class _TaskSamplingCfg:
+    """Compact task-sampling settings derived from scenario-owned task_spec."""
+
+    task_type: str
+    workspace_min: tuple[float, float]
+    workspace_max: tuple[float, float]
+    train_endpoint_mode: str = "workspace"
+    reach_length: float = 0.25
+    p_catch_trial: float = 0.0
+    epoch_len_ranges: tuple[tuple[int, int], ...] = ()
+    hold_epochs: tuple[int, ...] = ()
+    move_epochs: tuple[int, ...] = ()
+
+
+def _as_mapping(name: str, value: Any) -> Dict[str, Any]:
+    """Return *value* as a dict or raise a clear worker-spec error."""
+    if not isinstance(value, dict):
+        raise ValueError(f"Training worker requires {name} to be an object")
+    return value
+
+
+def _require_worker_specs(job: _Job) -> None:
+    """Validate the Studio payload shape required by the real worker path."""
+    _as_mapping("training_spec", job.training_spec)
+    _as_mapping("task_spec", job.task_spec)
+    _as_mapping("graph_spec", job.graph_spec)
+    if job.task_binding_spec is None:
+        raise ValueError(
+            "Training worker requires scenario-owned task_binding_spec; "
+            "task data bindings must not be inferred from graph task nodes"
+        )
+    task_binding_spec = _as_mapping("task_binding_spec", job.task_binding_spec)
+    if task_binding_spec.get("schema_version") != "feedbax.studio.task_bindings.v2":
+        raise ValueError("Training worker requires task_binding_spec schema v2")
+    if "exposed_outputs" in task_binding_spec:
+        raise ValueError("task_binding_spec.exposed_outputs is not accepted; use exposed_data")
+    for index, binding in enumerate(task_binding_spec.get("bindings", [])):
+        if not isinstance(binding, dict):
+            raise ValueError(f"task_binding_spec.bindings[{index}] must be an object")
+        if "source_output_id" in binding or "source_data_id" not in binding:
+            raise ValueError(
+                "task_binding_spec bindings must use source_data_id; "
+                f"invalid binding at index {index}"
+            )
+
+
 def _extract_training_cfg(
     training_config: Optional[Dict[str, Any]],
     task_spec: Optional[Dict[str, Any]] = None,
@@ -225,6 +272,99 @@ def _extract_training_cfg(
                     pass
 
     return cfg
+
+
+def _extract_task_sampling_cfg(task_spec: Dict[str, Any]) -> _TaskSamplingCfg:
+    """Derive compact reach sampling settings from a Studio task spec.
+
+    The worker consumes scenario-owned task params only. Dense trajectories are
+    intentionally rejected at the provider boundary and are not accepted here.
+    """
+    task_type = str(task_spec.get("type", ""))
+    params = _as_mapping("task_spec.params", task_spec.get("params", {}))
+    normalized_type = task_type.removeprefix("feedbax.task.")
+    supported = {"ReachingTask", "SimpleReaches", "DelayedReaches"}
+    if normalized_type not in supported:
+        raise ValueError(
+            f"Training worker does not support task type {task_type!r}; "
+            f"supported task types are {sorted(supported)}"
+        )
+    dense_keys = [
+        key for key in ("targets", "target_pos", "target_vel", "validation_trials") if key in params
+    ]
+    if dense_keys:
+        raise ValueError(
+            "Training worker accepts compact task params only; remove dense "
+            f"trajectory fields {dense_keys}"
+        )
+
+    workspace = params.get("workspace")
+    if workspace is None:
+        target_radius = params.get("target_radius")
+        if target_radius is None:
+            raise ValueError(
+                "task_spec.params must include workspace or target_radius for worker sampling"
+            )
+        radius = float(target_radius)
+        workspace = [[-radius, -radius], [radius, radius]]
+    elif (
+        not isinstance(workspace, list)
+        or len(workspace) != 2
+        or not all(isinstance(item, list) and len(item) == 2 for item in workspace)
+    ):
+        raise ValueError("task_spec.params.workspace must be [[xmin, ymin], [xmax, ymax]]")
+    workspace_min = (float(workspace[0][0]), float(workspace[0][1]))
+    workspace_max = (float(workspace[1][0]), float(workspace[1][1]))
+    if workspace_min[0] >= workspace_max[0] or workspace_min[1] >= workspace_max[1]:
+        raise ValueError("task_spec.params.workspace min bounds must be below max bounds")
+
+    train_endpoint_mode = str(params.get("train_endpoint_mode", "workspace"))
+    if train_endpoint_mode not in {"workspace", "center_out"}:
+        raise ValueError("task_spec.params.train_endpoint_mode must be 'workspace' or 'center_out'")
+
+    workspace_extent = min(
+        workspace_max[0] - workspace_min[0],
+        workspace_max[1] - workspace_min[1],
+    )
+    reach_length = params.get(
+        "eval_reach_length",
+        params.get("target_radius", 0.25 * workspace_extent),
+    )
+    p_catch_trial = params.get("p_catch_trial", 0.0)
+
+    epoch_len_ranges: list[tuple[int, int]] = []
+    raw_epoch_ranges = params.get("epoch_len_ranges", [])
+    if raw_epoch_ranges:
+        if not isinstance(raw_epoch_ranges, list):
+            raise ValueError("task_spec.params.epoch_len_ranges must be a list")
+        for index, item in enumerate(raw_epoch_ranges):
+            if not isinstance(item, list) or len(item) != 2:
+                raise ValueError(f"task_spec.params.epoch_len_ranges[{index}] must be [min, max]")
+            lower = int(item[0])
+            upper = int(item[1])
+            if lower < 0 or upper < lower:
+                raise ValueError(
+                    "task_spec.params.epoch_len_ranges entries must satisfy 0 <= min <= max"
+                )
+            epoch_len_ranges.append((lower, upper))
+
+    def _epoch_list(key: str) -> tuple[int, ...]:
+        value = params.get(key, [])
+        if not isinstance(value, list):
+            raise ValueError(f"task_spec.params.{key} must be a list of epoch indexes")
+        return tuple(int(item) for item in value)
+
+    return _TaskSamplingCfg(
+        task_type=normalized_type,
+        workspace_min=workspace_min,
+        workspace_max=workspace_max,
+        train_endpoint_mode=train_endpoint_mode,
+        reach_length=float(reach_length),
+        p_catch_trial=float(p_catch_trial),
+        epoch_len_ranges=tuple(epoch_len_ranges),
+        hold_epochs=_epoch_list("hold_epochs"),
+        move_epochs=_epoch_list("move_epochs"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -316,13 +456,13 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     first mechanics/plant node found in the top-level graph.
 
     Returns a dict with keys:
-        hidden_type: equinox cell class (default eqx.nn.GRUCell)
-        hidden_size: hidden state dimension (default 128)
-        out_size: output dimension (default 6)
-        out_nonlinearity: activation callable (default jax.nn.sigmoid)
-        input_size: network input dimension (default 17)
-        dt: control timestep in seconds (default 0.01)
-        plant_type: mechanics node type string (default "TwoLinkArm")
+        hidden_type: equinox cell class
+        hidden_size: hidden state dimension
+        out_size: output dimension
+        out_nonlinearity: activation callable
+        input_size: network input dimension
+        dt: control timestep in seconds
+        plant_type: mechanics node type string
     """
     import equinox as eqx
     import jax
@@ -330,10 +470,8 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     CELL_MAP = {
         "GRU": eqx.nn.GRUCell,
         "LSTM": eqx.nn.LSTMCell,
-        # Legacy outer-param values (kept for backwards compat)
         "GRUCell": eqx.nn.GRUCell,
         "LSTMCell": eqx.nn.LSTMCell,
-        "SimpleRNNCell": eqx.nn.GRUCell,
     }
     NONLINEARITY_MAP = {
         "sigmoid": jax.nn.sigmoid,
@@ -355,78 +493,77 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         }
     )
 
-    # Observation dimension constants by plant family.
-    _ARM_OBS_DIM = 17  # joint_angles(2) + joint_vels(2) + activations(6)
-    # + effector_pos(2) + target_pos(2) + target_vel(2) + phase(1)
-    _POINTMASS_OBS_DIM = 13  # pos(2) + vel(2) + action(2) + effector(2)
-    # + target_pos(2) + target_vel(2) + phase(1)
-
-    defaults = {
-        "hidden_type": eqx.nn.GRUCell,
-        "hidden_size": 128,
-        "out_size": 6,
-        "out_nonlinearity": jax.nn.sigmoid,
-        "input_size": _ARM_OBS_DIM,
-        "dt": 0.01,
-        # Bug: cb13bdc — plant_type dispatches mechanics construction.
-        "plant_type": "TwoLinkArm",
-    }
-
     if graph_spec is None:
-        return defaults
+        raise ValueError("Training worker requires graph_spec")
 
     nodes = graph_spec.get("nodes", {})
-    network_node_id = next(
-        (nid for nid, n in nodes.items() if n.get("type") == "Network"),
-        None,
-    )
+    if not isinstance(nodes, dict):
+        raise ValueError("graph_spec.nodes must be an object")
 
-    # ------------------------------------------------------------------
-    # Extract dt from the first mechanics node in the top-level graph.
-    # Bug: cb13bdc — read dt from graph spec instead of hardcoding.
-    # ------------------------------------------------------------------
-    result = dict(defaults)
     mechanics_node = next(
         (n for n in nodes.values() if n.get("type") in _MECHANICS_NODE_TYPES),
         None,
     )
-    if mechanics_node is not None:
-        mech_params = mechanics_node.get("params", {})
-        try:
-            result["dt"] = float(mech_params.get("dt", defaults["dt"]))
-        except (TypeError, ValueError):
-            pass
-        # Bug: cb13bdc — extract the mechanics node type so the worker can
-        # dispatch on it instead of always building AnalyticalMusculoskeletalPlant.
-        mech_node_type = mechanics_node.get("type")
-        if mech_node_type is not None:
-            result["plant_type"] = mech_node_type
+    if mechanics_node is None:
+        raise ValueError("graph_spec must include a supported mechanics node")
+    mech_params = mechanics_node.get("params", {})
+    plant_type = mechanics_node.get("type")
+    if plant_type is None:
+        raise ValueError("mechanics node is missing type")
+    try:
+        dt = float(mech_params["dt"])
+    except KeyError as exc:
+        raise ValueError("mechanics node params must include dt") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError("mechanics node dt must be numeric") from exc
 
-    if network_node_id is None:
-        return result
+    network_node_id, network_node = next(
+        (
+            (nid, n)
+            for nid, n in nodes.items()
+            if n.get("type") in {"Network", "SimpleStagedNetwork"}
+        ),
+        (None, None),
+    )
+    if network_node_id is None or network_node is None:
+        raise ValueError("graph_spec must include a Network or SimpleStagedNetwork node")
 
-    # ------------------------------------------------------------------
-    # Extract input_size from outer Network node params.
-    # The outer param is the canonical interface dimension; the subgraph
-    # cell's input_size is an internal wiring detail.
-    # Bug: cb13bdc — read input_size from graph spec instead of hardcoding.
-    # ------------------------------------------------------------------
-    network_node = nodes[network_node_id]
+    result = {
+        "hidden_type": eqx.nn.GRUCell,
+        "hidden_size": 128,
+        "out_size": 6,
+        "out_nonlinearity": jax.nn.sigmoid,
+        "input_size": 17,
+        "dt": dt,
+        "plant_type": plant_type,
+    }
+
     outer_params = network_node.get("params", {})
-
-    # Bug: cb13bdc — when input_size is not explicitly set in the graph spec,
-    # infer the correct observation dimension from the plant type.  PointMass
-    # produces 13-dim observations vs 17-dim for the arm.
-    _POINTMASS_PLANT_TYPES = {"PointMass", "PointMass8MuscleRelu"}
-    explicit_input_size = outer_params.get("input_size")
-    if explicit_input_size is not None:
+    network_type = network_node.get("type")
+    if network_type == "SimpleStagedNetwork":
+        hidden_key = outer_params.get("hidden_type", "GRUCell")
+        if hidden_key not in CELL_MAP:
+            raise ValueError(f"Unsupported SimpleStagedNetwork hidden_type {hidden_key!r}")
+        nonlin_key = outer_params.get("out_nonlinearity", "identity")
+        if nonlin_key not in NONLINEARITY_MAP:
+            raise ValueError(f"Unsupported SimpleStagedNetwork out_nonlinearity {nonlin_key!r}")
         try:
-            result["input_size"] = int(explicit_input_size)
-        except (TypeError, ValueError):
-            pass
-    elif result["plant_type"] in _POINTMASS_PLANT_TYPES:
-        result["input_size"] = _POINTMASS_OBS_DIM
-    # else: keep the default (_ARM_OBS_DIM = 17)
+            result.update(
+                {
+                    "hidden_type": CELL_MAP[hidden_key],
+                    "hidden_size": int(outer_params["hidden_size"]),
+                    "out_size": int(outer_params["out_size"]),
+                    "out_nonlinearity": NONLINEARITY_MAP[nonlin_key],
+                    "input_size": int(outer_params["input_size"]),
+                }
+            )
+        except KeyError as exc:
+            raise ValueError(
+                f"SimpleStagedNetwork node {network_node_id!r} is missing param {exc.args[0]!r}"
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError("SimpleStagedNetwork size params must be integers") from exc
+        return result
 
     # ------------------------------------------------------------------
     # Authoritative source: reading hidden/output architecture from the
@@ -448,36 +585,42 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         (n for n in sub_nodes.values() if n.get("type") in ("GRU", "LSTM")),
         None,
     )
-    # Find the readout/output projection node (Linear)
-    # Prefer output_bindings["output"] but fall back to scanning for Linear
-    readout_node_name = None
+    if cell_node is None:
+        raise ValueError(
+            f"Network node {network_node_id!r} subgraph is missing a GRU/LSTM cell node"
+        )
     output_bindings = network_subgraph.get("output_bindings", {})
-    if "output" in output_bindings:
-        readout_node_name = output_bindings["output"][0]
+    if "output" not in output_bindings:
+        raise ValueError(
+            f"Network node {network_node_id!r} subgraph must bind output to a readout node"
+        )
+    readout_node_name = output_bindings["output"][0]
 
     readout_node = sub_nodes.get(readout_node_name)
     if readout_node is None:
-        readout_node = next(
-            (n for n in sub_nodes.values() if n.get("type") == "Linear"),
-            None,
+        raise ValueError(
+            f"Network node {network_node_id!r} output binding references missing "
+            f"node {readout_node_name!r}"
         )
 
-    if cell_node is not None:
-        result["hidden_type"] = CELL_MAP.get(cell_node.get("type", "GRU"), eqx.nn.GRUCell)
-        cell_params = cell_node.get("params", {})
-        try:
-            result["hidden_size"] = int(cell_params.get("hidden_size", defaults["hidden_size"]))
-        except (TypeError, ValueError):
-            pass
-
-    if readout_node is not None:
-        readout_params = readout_node.get("params", {})
-        try:
-            result["out_size"] = int(readout_params.get("output_size", defaults["out_size"]))
-        except (TypeError, ValueError):
-            pass
-        nonlin_key = readout_params.get("activation", "identity")
-        result["out_nonlinearity"] = NONLINEARITY_MAP.get(nonlin_key, lambda x: x)
+    cell_type = cell_node.get("type", "GRU")
+    if cell_type not in CELL_MAP:
+        raise ValueError(f"Unsupported Network cell type {cell_type!r}")
+    cell_params = cell_node.get("params", {})
+    readout_params = readout_node.get("params", {})
+    nonlin_key = readout_params.get("activation", "identity")
+    if nonlin_key not in NONLINEARITY_MAP:
+        raise ValueError(f"Unsupported Network readout activation {nonlin_key!r}")
+    try:
+        result["input_size"] = int(outer_params["input_size"])
+        result["hidden_type"] = CELL_MAP[cell_type]
+        result["hidden_size"] = int(cell_params["hidden_size"])
+        result["out_size"] = int(readout_params["output_size"])
+        result["out_nonlinearity"] = NONLINEARITY_MAP[nonlin_key]
+    except KeyError as exc:
+        raise ValueError(f"Network graph params are missing {exc.args[0]!r}") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Network graph size params must be integers") from exc
 
     return result
 
@@ -509,6 +652,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         import jax
         import jax.numpy as jnp
         import jax.random as jr
+        import jax.tree as jt
         import optax
 
         from feedbax.mechanics.backend import DiffraxBackend, PhysicsState
@@ -536,26 +680,17 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         job.status = WorkerStatus.ERROR
         return
 
-    # ------------------------------------------------------------------
-    # Extract architecture and physics params from the graph spec.
-    # Bug: cb13bdc — these values must come from the graph spec, not be
-    # hardcoded. _extract_graph_params falls back to sensible defaults when
-    # the graph spec is absent or incomplete.
-    # ------------------------------------------------------------------
-
     graph_params = _extract_graph_params(job.graph_spec)
+    task_sampling_cfg = _extract_task_sampling_cfg(_as_mapping("task_spec", job.task_spec))
 
     # ------------------------------------------------------------------
     # Constants
     # ------------------------------------------------------------------
 
-    # Bug: cb13bdc — CONTROL_DT read from mechanics node dt param.
     CONTROL_DT = graph_params["dt"]
     N_STEPS = cfg.n_reach_steps  # control steps per episode
-    # Bug: cb13bdc — OBS_DIM read from Network node input_size param.
     OBS_DIM = graph_params["input_size"]
 
-    # Bug: cb13bdc — dispatch plant construction on mechanics node type.
     plant_type = graph_params["plant_type"]
 
     # ------------------------------------------------------------------
@@ -567,11 +702,6 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
 
     _ARM_TYPES = {"TwoLinkArm", "Arm6MuscleRigidTendon"}
     _POINTMASS_TYPES = {"PointMass", "PointMass8MuscleRelu"}
-    # TODO(cb13bdc): PointMass8MuscleRelu should use 8 ReluMuscle actuators
-    # rather than DirectForceInput. For now it is routed to the PointMass plant
-    # with N_MUSCLES=8, which gives the correct observation dimension and plant
-    # geometry but uses direct force input instead of muscle-actuated dynamics.
-    # Full ReluMuscle wiring requires a new muscle config + DiffraxBackend path.
 
     if plant_type in _ARM_TYPES:
         # 6-muscle, 2-joint analytical musculoskeletal plant (original path).
@@ -604,52 +734,34 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         )
 
     elif plant_type in _POINTMASS_TYPES:
-        # Direct-force point mass. PointMass8MuscleRelu uses N_MUSCLES=8
-        # (placeholder until ReluMuscle actuators are wired); plain PointMass
-        # uses 2D force input.
-        N_MUSCLES = 8 if plant_type == "PointMass8MuscleRelu" else 2
+        if plant_type == "PointMass8MuscleRelu":
+            raise ValueError(
+                "PointMass8MuscleRelu requires explicit muscle wiring and is not "
+                "supported by the direct-force training bridge"
+            )
+        N_MUSCLES = 2
         N_JOINTS = 0
         _is_pointmass = True
 
         plant = DirectForceInput(PointMass(mass=1.0))
+        # PointMass uses cached JAX arrays; warm them outside JIT so transformed
+        # rollouts do not cache tracers on the skeleton instance.
+        _ = plant.skeleton.A, plant.skeleton.B, plant.skeleton.C, plant.skeleton._lti_system
 
     else:
-        # Bug: cb13bdc — unknown type: warn and fall back to arm.
-        import logging as _logging
+        raise ValueError(f"Unsupported mechanics node type {plant_type!r}")
 
-        _log = _logging.getLogger(__name__)
-        _log.warning(
-            "Unknown plant_type %r in graph spec; falling back to "
-            "AnalyticalMusculoskeletalPlant (TwoLinkArm).",
-            plant_type,
+    if graph_params["out_size"] != N_MUSCLES:
+        raise ValueError(
+            f"Network output size {graph_params['out_size']} does not match "
+            f"{plant_type} action size {N_MUSCLES}"
         )
-        N_MUSCLES = 6
-        N_JOINTS = 2
-        _is_pointmass = False
-
-        bounds = default_2link_bounds()
-        preset = BodyPreset(
-            segment_lengths=0.5 * (bounds.segment_lengths_min + bounds.segment_lengths_max),
-            segment_masses=0.5 * (bounds.segment_masses_min + bounds.segment_masses_max),
-            joint_damping=0.5 * (bounds.joint_damping_min + bounds.joint_damping_max),
-            joint_stiffness=0.5 * (bounds.joint_stiffness_min + bounds.joint_stiffness_max),
-            muscle_pcsa=0.5 * (bounds.muscle_pcsa_min + bounds.muscle_pcsa_max),
-            muscle_optimal_fiber_length=0.5
-            * (bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max),
-            muscle_tendon_slack_length=0.5
-            * (bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max),
-            muscle_moment_arm_magnitudes=0.5
-            * (bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max),
+    if _is_pointmass and OBS_DIM not in {4, 13}:
+        raise ValueError(
+            f"PointMass worker bridge supports network input_size 4 or 13, got {OBS_DIM}"
         )
-
-        topology = default_6muscle_2link_topology()
-        chain_config = ChainConfig(n_joints=N_JOINTS, muscle_topology=topology)
-
-        plant = AnalyticalMusculoskeletalPlant.from_body_preset(
-            preset,
-            chain_config,
-            clip_states=True,
-        )
+    if not _is_pointmass and OBS_DIM != 17:
+        raise ValueError(f"Arm worker bridge supports network input_size 17, got {OBS_DIM}")
 
     backend = DiffraxBackend(control_dt=CONTROL_DT)
 
@@ -699,6 +811,8 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         if _is_pointmass:
             # PointMass skeleton state is CartesianState with pos(2), vel(2).
             # No joint angles or muscle activations.
+            if OBS_DIM == 4:
+                return jnp.concatenate([effector.pos, target_pos])
             return jnp.concatenate(
                 [
                     sk.pos,  # config pos (2)
@@ -800,7 +914,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         return eff_traj, act_traj, hidden_traj, target_pos_traj
 
     # ------------------------------------------------------------------
-    # Target sampling (random reach targets)
+    # Target sampling from scenario-owned compact task params
     # ------------------------------------------------------------------
 
     def _sample_task_params(batch_key, batch_size):
@@ -811,19 +925,58 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             dense target trajectories are generated inside rollout scans.
         """
         keys = jr.split(batch_key, batch_size)
+        workspace_min = jnp.asarray(task_sampling_cfg.workspace_min)
+        workspace_max = jnp.asarray(task_sampling_cfg.workspace_max)
+        workspace_center = 0.5 * (workspace_min + workspace_max)
+        reach_length = jnp.asarray(task_sampling_cfg.reach_length)
+        p_catch_trial = jnp.asarray(task_sampling_cfg.p_catch_trial)
+        epoch_len_ranges = tuple(task_sampling_cfg.epoch_len_ranges)
+        hold_epochs = set(task_sampling_cfg.hold_epochs)
+        first_move_epoch = (
+            min(task_sampling_cfg.move_epochs)
+            if task_sampling_cfg.move_epochs
+            else len(epoch_len_ranges)
+        )
 
         def _one_task(k):
-            # Polar coordinates: r in [0.1, 0.4], theta in [0, pi/2]
-            r = jr.uniform(k, minval=0.1, maxval=0.4)
-            theta = jr.uniform(k, minval=0.0, maxval=jnp.pi / 2.0)
-            tx = r * jnp.cos(theta)
-            ty = r * jnp.sin(theta)
-            return reach_task_params(
-                jnp.zeros((2,)),
-                jnp.array([tx, ty]),
-                N_STEPS,
-                CONTROL_DT,
+            k_endpoint, k_angle, k_catch, *epoch_keys = jr.split(
+                k, max(4, len(epoch_len_ranges) + 3)
             )
+            if task_sampling_cfg.train_endpoint_mode == "center_out":
+                angle = jr.uniform(k_angle, minval=0.0, maxval=2.0 * jnp.pi)
+                start = workspace_center
+                end = start + reach_length * jnp.array([jnp.cos(angle), jnp.sin(angle)])
+                end = jnp.clip(end, workspace_min, workspace_max)
+            else:
+                endpoint_pair = jr.uniform(
+                    k_endpoint,
+                    shape=(2, 2),
+                    minval=workspace_min,
+                    maxval=workspace_max,
+                )
+                start = endpoint_pair[0]
+                end = endpoint_pair[1]
+
+            is_catch = jr.uniform(k_catch) < p_catch_trial
+            end = jnp.where(is_catch, start, end)
+
+            delay_steps = 0
+            for index, (lower, upper) in enumerate(epoch_len_ranges):
+                if index in hold_epochs and index < first_move_epoch:
+                    sampled = jr.randint(
+                        epoch_keys[index],
+                        shape=(),
+                        minval=lower,
+                        maxval=upper + 1,
+                    )
+                    delay_steps = delay_steps + sampled
+
+            task_params = reach_task_params(start, end, N_STEPS, CONTROL_DT)
+            if task_sampling_cfg.task_type == "DelayedReaches":
+                delay_steps = jnp.minimum(delay_steps, jnp.maximum(N_STEPS - 2, 0))
+                t0 = CONTROL_DT * delay_steps
+                task_params = task_params._replace(t0=t0)
+            return task_params
 
         return jax.vmap(_one_task)(keys)
 
@@ -966,20 +1119,16 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         # Trajectory snapshot
         if (batch + 1) % snapshot_interval == 0:
             try:
-                # Eval rollout: use a fixed target for visualization
                 eval_key = jr.PRNGKey(batch)
-                tgt_pos_const = jnp.broadcast_to(
-                    jnp.array([0.25, 0.25]),
-                    (N_STEPS, 2),
-                )
-                tgt_vel_const = jnp.zeros((N_STEPS, 2))
-                eff_traj, _, _ = _rollout(
+                eval_task = _sample_task_params(eval_key, 1)
+                single_eval_task = jt.map(lambda x: x[0], eval_task)
+                eff_traj, _, _, target_pos_traj = _rollout(
                     controller,
-                    tgt_pos_const,
-                    tgt_vel_const,
+                    single_eval_task,
                     eval_key,
                 )
                 eff_traj_np = np.array(jax.block_until_ready(eff_traj))
+                target_traj_np = np.array(jax.block_until_ready(target_pos_traj))
                 t_axis = np.linspace(0.0, N_STEPS * CONTROL_DT, N_STEPS).tolist()
                 effector_list = eff_traj_np.tolist()
                 _emit(
@@ -990,15 +1139,24 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
                         "batch": batch + 1,
                         "trajectory": {
                             "effector": effector_list,
-                            "target": [0.25, 0.25],
+                            "target": target_traj_np[-1].tolist(),
+                            "target_trajectory": target_traj_np.tolist(),
                             "t": t_axis,
                             "n_steps": N_STEPS,
                         },
                     },
                 )
-            except Exception:
-                # Non-fatal: fall back to synthetic snapshot
-                _emit(job, _make_trajectory_event(job, batch + 1, loss_val))
+            except Exception as exc:
+                _emit(
+                    job,
+                    {
+                        "type": "training_log",
+                        "job_id": job.job_id,
+                        "batch": batch + 1,
+                        "level": "warning",
+                        "message": f"Failed to emit trajectory snapshot: {exc}",
+                    },
+                )
 
     job.status = WorkerStatus.COMPLETED
 
@@ -1129,30 +1287,25 @@ def _run_training_stub(job: _Job) -> None:
 def _run_training(job: _Job) -> None:
     """Training entry point. Always attempts real JAX training.
 
-    Only falls back to the synthetic stub on exception — so the worker never
-    crashes the SSE stream. When ``training_config`` is ``None``, defaults from
-    ``_TrainingCfg`` are used for real training.
+    Invalid Studio payloads terminate with a ``training_error`` event instead
+    of falling through to synthetic output.
     """
     try:
+        _require_worker_specs(job)
         cfg = _extract_training_cfg(job.training_config, job.task_spec)
         _run_training_real(job, cfg)
     except Exception as exc:
-        # Real training raised an unexpected exception — fall back to stub
-        # only if the stream hasn't terminated yet (status still RUNNING).
         if job.status == WorkerStatus.RUNNING:
+            job.status = WorkerStatus.ERROR
             _emit(
                 job,
                 {
-                    "type": "training_log",
+                    "type": "training_error",
                     "job_id": job.job_id,
                     "batch": job.batch,
-                    "level": "warning",
-                    "message": (
-                        f"Real JAX training failed ({exc}); falling back to synthetic stub."
-                    ),
+                    "error": str(exc),
                 },
             )
-            _run_training_stub(job)
     finally:
         # Sentinel: tells SSE generator the stream is done.
         job.event_queue.put(None)
