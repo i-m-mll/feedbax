@@ -92,7 +92,12 @@ function signalValueSchema(
       'task_target',
       path,
       { dtype: 'float32', shape: ['time', 2], units: null, frame: 'cartesian_effector' },
-      { temporal_support: 'epoch_masked_trajectory' }
+      {
+        temporal_support: 'epoch_materialized_trajectory',
+        storage: 'compact_task_params',
+        compact_representation: 'delayed_reach_task_params_v1',
+        materializes_to: { dtype: 'float32', shape: ['time', 2] },
+      }
     );
   }
   return timelineValueSchema(
@@ -208,7 +213,9 @@ export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimeline
     metadata: {
       task_type: task.type,
       n_steps: params.n_steps ?? null,
-      representation: 'delayed_reach_epochs_v1',
+      representation: 'delayed_reach_task_params_v1',
+      storage: 'compact_task_params',
+      materializes_targets: true,
     },
   };
 }

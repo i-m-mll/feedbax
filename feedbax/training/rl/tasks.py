@@ -209,6 +209,34 @@ class TaskParams(NamedTuple):
         )
 
 
+def reach_task_params(
+    start_pos: Float[Array, " 2"],
+    end_pos: Float[Array, " 2"],
+    n_steps: int,
+    dt: float | Float[Array, ""],
+) -> TaskParams:
+    """Create compact deterministic parameters for a minimum-jerk reach.
+
+    This is the compact counterpart to :func:`reach_task`: it stores only the
+    endpoint record and timing scalars. Dense ``(T, 2)`` target arrays can be
+    reconstructed at execution time via :func:`target_at_t` or
+    :func:`reconstruct_trajectory`.
+    """
+    dt_arr = jnp.asarray(dt)
+    return TaskParams(
+        task_type=TASK_REACH,
+        start_pos=jnp.asarray(start_pos),
+        end_pos=jnp.asarray(end_pos),
+        perturb_time_idx=jnp.array(0, dtype=jnp.int32),
+        perturb_force=jnp.zeros((2,)),
+        control_points=jnp.zeros((6, 2)),
+        t0=jnp.asarray(0.0),
+        tf=dt_arr * (n_steps - 1),
+        dt=dt_arr,
+        n_steps=n_steps,
+    )
+
+
 def _fk_planar(
     joint_angles: Float[Array, " n_joints"],
     segment_lengths: Float[Array, " n_joints"],

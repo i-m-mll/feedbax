@@ -71,7 +71,12 @@ export function defaultTaskData(): StudioTaskDataSpec[] {
     'target',
     'targets',
     { dtype: 'float32', shape: ['time', 'target_dims'], units: null, frame: 'task_time' },
-    { temporal_support: 'trajectory' }
+    {
+      temporal_support: 'materialized_trajectory',
+      storage: 'compact_task_params',
+      compact_representation: 'delayed_reach_task_params_v1',
+      materializes_to: { dtype: 'float32', shape: ['time', 'target_dims'] },
+    }
   );
   const initsSchema = taskDataValueSchema(
     'inits',

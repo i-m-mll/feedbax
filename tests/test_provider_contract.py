@@ -201,6 +201,46 @@ def test_validation_functions_accept_small_vertical_slice_specs() -> None:
     ).valid
 
 
+def test_task_validation_rejects_dense_delayed_reach_trajectory_params() -> None:
+    result = validate_task_spec(
+        {
+            "type": "DelayedReaches",
+            "params": {
+                "n_steps": 140,
+                "targets": [[[0.0, 0.0], [0.1, 0.1]]],
+                "epoch_len_ranges": [[0, 1], [10, 30]],
+                "target_on_epochs": [1, 2],
+                "hold_epochs": [0, 1],
+                "move_epochs": [2],
+            },
+        }
+    )
+
+    assert not result.valid
+    assert result.errors[0].type == "dense_task_trajectory_not_allowed"
+    assert result.errors[0].location == {"path": "/params/targets"}
+
+
+def test_task_validation_rejects_invalid_delayed_reach_epoch_params() -> None:
+    result = validate_task_spec(
+        {
+            "type": "DelayedReaches",
+            "params": {
+                "epoch_len_ranges": [[10, 1]],
+                "target_on_epochs": [2],
+                "hold_epochs": [0],
+                "move_epochs": [1],
+            },
+        }
+    )
+
+    assert not result.valid
+    assert {error.type for error in result.errors} == {
+        "invalid_epoch_len_range",
+        "invalid_epoch_index",
+    }
+
+
 def test_graph_validation_reports_unknown_components() -> None:
     graph = _minimal_graph_spec()
     graph["nodes"]["bad"] = {
