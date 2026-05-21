@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Optional, TypeVar, Union
 
 import equinox as eqx
 from equinox import Module
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
@@ -22,7 +21,6 @@ from feedbax.channel import Channel, ChannelSpec, ChannelState
 from feedbax.filters import FilterState, FirstOrderFilter
 from feedbax.graph import Component, Graph, Wire
 from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.nn import NetworkState, SimpleStagedNetwork
 from feedbax.noise import Normal
 from feedbax._tree import tree_sum_n_features
 
@@ -141,11 +139,6 @@ class SimpleFeedback(Graph):
     """Graph of feedback channels, a neural network, and mechanics."""
 
     _feedback_specs: PyTree[ChannelSpec]
-    feedback_channels: FeedbackChannels
-    mechanics: Mechanics
-    net: Component
-    efferent_channel: Channel
-    force_lp: Optional[FirstOrderFilter]
 
     def __init__(
         self,
@@ -266,11 +259,26 @@ class SimpleFeedback(Graph):
         )
 
         self._feedback_specs = feedback_specs
-        self.feedback_channels = feedback
-        self.mechanics = mechanics
-        self.net = net
-        self.efferent_channel = efferent
-        self.force_lp = force_filter
+
+    @property
+    def feedback_channels(self) -> FeedbackChannels:
+        return self.nodes["feedback"]
+
+    @property
+    def mechanics(self) -> Mechanics:
+        return self.nodes["mechanics"]
+
+    @property
+    def net(self) -> Component:
+        return self.nodes["net"]
+
+    @property
+    def efferent_channel(self) -> Channel:
+        return self.nodes["efferent"]
+
+    @property
+    def force_lp(self) -> Optional[FirstOrderFilter]:
+        return self.nodes.get("force_filter")
 
     @staticmethod
     def get_nn_input_size(

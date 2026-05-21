@@ -6,10 +6,8 @@
 
 from collections.abc import (
     Callable,
-    Hashable,
     Iterable,
     Mapping,
-    MutableMapping,
     MutableSequence,
     Sequence,
     Set,
@@ -19,12 +17,10 @@ import difflib
 import dis
 import functools
 import hashlib
-import importlib
 import inspect
 import json
 from itertools import zip_longest, chain
 import logging
-from operator import attrgetter
 import os
 from pathlib import Path, PosixPath
 import pkgutil
@@ -49,7 +45,6 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
-import jax._src.pretty_printer as pp
 import jax.tree_util as jtu
 import jax_cookbook.tree as jtree
 import numpy as np
@@ -444,13 +439,38 @@ def where_func_to_attr_str_tree(where: Callable) -> PyTree[str]:
         raise TypeError("`where` must return a PyTree of node references")
 
 
+def _resolve_attr_or_graph_node_path(obj: Any, path: str) -> Any:
+    """Resolve a compact where path, preferring graph nodes when unambiguous."""
+    value = obj
+    parts = path.split(".") if path else []
+
+    for i, part in enumerate(parts):
+        node_match = re.fullmatch(r"""nodes\[['"]([^'"]+)['"]\]""", part)
+        if node_match is not None:
+            node_name = node_match.group(1)
+            value = value.nodes[node_name]
+            continue
+
+        nodes = getattr(value, "nodes", None)
+        if i == 0 and isinstance(nodes, Mapping) and part in nodes:
+            value = nodes[part]
+            continue
+
+        value = getattr(value, part)
+
+    return value
+
+
 def attr_str_tree_to_where_func(tree: PyTree[str]) -> Callable:
     """Reverse transformation to `where_func_to_labels`.
 
     Takes a PyTree of strings describing attribute accesses, and returns a function
     that returns a PyTree of attributes.
     """
-    getters = jt.map(lambda s: attrgetter(s), tree)
+    getters = jt.map(
+        lambda s: functools.partial(_resolve_attr_or_graph_node_path, path=s),
+        tree,
+    )
 
     def where_func(obj):
         return jt.map(lambda g: g(obj), getters)

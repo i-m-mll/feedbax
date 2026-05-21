@@ -1,10 +1,11 @@
-import equinox as eqx
-from equinox.nn import State, StateIndex
+from equinox.nn import StateIndex
 import jax
 import jax.numpy as jnp
 
+from feedbax._tree import filter_spec_leaves
 from feedbax.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.iterate import iterate_component
+from feedbax.misc import attr_str_tree_to_where_func
 
 
 class Increment(Component):
@@ -159,6 +160,49 @@ def test_graph_step_acyclic_returns_empty_cycle_values():
     )
     assert cycle == {}
     assert outputs["out"] == jnp.array(6.0)
+
+
+class _GraphWithDuplicateNet(Graph):
+    """Graph fixture whose field and executable node intentionally diverge."""
+
+    net: Component
+
+    def __init__(self):
+        executable_net = _Scaler(2.0)
+        stale_field_net = _Scaler(5.0)
+        super().__init__(
+            nodes={"net": executable_net},
+            wires=(),
+            input_ports=("input",),
+            output_ports=("out",),
+            input_bindings={"input": ("net", "x")},
+            output_bindings={"out": ("net", "y")},
+        )
+        self.net = stale_field_net
+
+
+def test_attr_string_where_prefers_graph_node_over_duplicate_field():
+    graph = _GraphWithDuplicateNet()
+    where = attr_str_tree_to_where_func("net")
+
+    assert where(graph) is graph.nodes["net"]
+    assert where(graph) is not graph.net
+
+
+def test_attr_string_filter_spec_targets_executable_graph_node():
+    graph = _GraphWithDuplicateNet()
+    where = attr_str_tree_to_where_func("net")
+    filter_spec = filter_spec_leaves(graph, where)
+
+    assert filter_spec.nodes["net"].factor is True
+    assert filter_spec.net.factor is False
+
+
+def test_attr_string_where_supports_explicit_nodes_index_path():
+    graph = _GraphWithDuplicateNet()
+    where = attr_str_tree_to_where_func("nodes['net'].factor")
+
+    assert where(graph) == graph.nodes["net"].factor
 
 
 def test_graph_step_cyclic_threads_cycle_values():
