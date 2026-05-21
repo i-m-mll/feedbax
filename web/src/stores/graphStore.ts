@@ -32,6 +32,7 @@ import {
   normalizeDynamicPorts,
   normalizeMuxSpec,
 } from '@/features/graph/dynamicPorts';
+import { normalizeGraphForStudioAuthoring } from '@/features/graph/normalization';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -280,155 +281,6 @@ export function createBlankGraph(): GraphSpec {
     input_bindings: {},
     output_bindings: {},
     metadata: { name: '', created_at: now, updated_at: now, version: '1.0.0' },
-  };
-}
-
-function migrateLegacyTaps(graph: GraphSpec): TapSpec[] {
-  const taps: TapSpec[] = graph.taps ? [...graph.taps] : [];
-  const usedIds = new Set(taps.map((tap) => tap.id));
-
-  const addTap = (tap: TapSpec) => {
-    if (usedIds.has(tap.id)) {
-      tap = { ...tap, id: createTapId() };
-    }
-    usedIds.add(tap.id);
-    taps.push(tap);
-  };
-
-  if (graph.barnacles) {
-    for (const [nodeId, barnacles] of Object.entries(graph.barnacles)) {
-      for (const barnacle of barnacles) {
-        const paths: Record<string, string> = {};
-        const usedNames = new Set<string>();
-        for (const path of barnacle.read_paths ?? []) {
-          const base = path.split('.').slice(-1)[0] || 'value';
-          let name = base;
-          let idx = 2;
-          while (usedNames.has(name)) {
-            name = `${base}_${idx}`;
-            idx += 1;
-          }
-          usedNames.add(name);
-          paths[name] = path;
-        }
-        const transform =
-          barnacle.kind === 'intervention'
-            ? {
-                type: barnacle.label || 'intervention',
-                params: {
-                  read_paths: barnacle.read_paths ?? [],
-                  write_paths: barnacle.write_paths ?? [],
-                  transform: barnacle.transform ?? '',
-                },
-              }
-            : undefined;
-        addTap({
-          id: barnacle.id,
-          type: barnacle.kind,
-          position: { afterNode: nodeId },
-          paths,
-          transform,
-        });
-      }
-    }
-  }
-
-  if (graph.user_ports) {
-    for (const [nodeId, ports] of Object.entries(graph.user_ports)) {
-      const paths: Record<string, string> = {};
-      for (const port of ports.outputs ?? []) {
-        paths[port] = port;
-      }
-      for (const port of ports.inputs ?? []) {
-        if (!(port in paths)) {
-          paths[port] = port;
-        }
-      }
-      if (Object.keys(paths).length > 0) {
-        addTap({
-          id: createTapId(),
-          type: 'probe',
-          position: { afterNode: nodeId },
-          paths,
-        });
-      }
-    }
-  }
-
-  return taps;
-}
-
-function migrateGraphSpec(graph: GraphSpec): GraphSpec {
-  const renamePort = (
-    nodeId: string,
-    port: string,
-    spec: ComponentSpec
-  ) => {
-    if (spec.type === 'Network' && port === 'target') {
-      return 'input';
-    }
-    return port;
-  };
-
-  const nodes = Object.fromEntries(
-    Object.entries(graph.nodes).map(([id, spec]) => {
-      let nextType = spec.type;
-      if (nextType === 'SimpleStagedNetwork') nextType = 'Network';
-      if (nextType === 'FeedbackChannel') nextType = 'Channel';
-      if (nextType === 'PenzaiSubgraph') nextType = 'PenzaiAdapter';
-      const nextParams = { ...spec.params };
-      if (nextType === 'Network') {
-        if ('output_size' in nextParams && !('out_size' in nextParams)) {
-          nextParams.out_size = nextParams.output_size;
-        }
-      }
-      const nextSpec: ComponentSpec = {
-        ...spec,
-        type: nextType,
-        params: nextParams,
-      };
-      if (nextType === 'Network' && spec.input_ports.includes('target')) {
-        nextSpec.input_ports = spec.input_ports.map((port) =>
-          port === 'target' ? 'input' : port
-        );
-      }
-      return [id, nextSpec];
-    })
-  );
-  const wires = graph.wires.map((wire) => {
-    const sourceSpec = nodes[wire.source_node];
-    const targetSpec = nodes[wire.target_node];
-    return {
-      ...wire,
-      source_port: sourceSpec ? renamePort(wire.source_node, wire.source_port, sourceSpec) : wire.source_port,
-      target_port: targetSpec ? renamePort(wire.target_node, wire.target_port, targetSpec) : wire.target_port,
-    };
-  });
-  const input_bindings = Object.fromEntries(
-    Object.entries(graph.input_bindings).map(([name, binding]) => {
-      const [nodeId, port] = binding;
-      const spec = nodes[nodeId];
-      const nextPort = spec ? renamePort(nodeId, port, spec) : port;
-      return [name === 'target' ? 'input' : name, [nodeId, nextPort] as [string, string]];
-    })
-  );
-  const input_ports = graph.input_ports.map((port) => (port === 'target' ? 'input' : port));
-  const subgraphs = graph.subgraphs
-    ? Object.fromEntries(
-        Object.entries(graph.subgraphs).map(([id, subgraph]) => [id, migrateGraphSpec(subgraph)])
-      )
-    : undefined;
-  const taps = migrateLegacyTaps(graph);
-  return {
-    ...graph,
-    nodes,
-    wires,
-    input_ports,
-    input_bindings,
-    taps,
-    subgraphs,
-    barnacles: undefined,
-    user_ports: undefined,
   };
 }
 
@@ -1348,7 +1200,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   pendingStateMerge: null,
   hydrateGraph: (graph, uiState, graphId) => {
     const edgeStyle = get().edgeStyle;
-    const migrated = normalizeDynamicPorts(migrateGraphSpec(graph));
+    const migrated = normalizeGraphForStudioAuthoring(graph);
     const normalized = normalizeUiState(migrated, uiState, edgeStyle);
     set({
       graphId: graphId ?? null,
@@ -1369,7 +1221,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   restoreSnapshot: (snapshot) => {
     const { edgeStyle } = snapshot;
-    const graph = normalizeDynamicPorts(migrateGraphSpec(snapshot.graph));
+    const graph = normalizeGraphForStudioAuthoring(snapshot.graph);
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     set({
       graphId: snapshot.graphId,

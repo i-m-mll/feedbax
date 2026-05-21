@@ -449,10 +449,12 @@ def _schema_issues_to_provider(
 
 
 def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidationResult:
+    from feedbax.web.graph_normalization import normalize_graph_for_studio_authoring
     from feedbax.web.services.component_registry import ComponentRegistry
 
     try:
-        spec = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)
+        parsed = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)
+        spec = normalize_graph_for_studio_authoring(parsed)
     except PydanticValidationError as exc:
         errors = _pydantic_errors(exc)
         return ProviderValidationResult(valid=False, errors=errors)

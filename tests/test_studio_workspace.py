@@ -22,6 +22,31 @@ def _graph() -> GraphSpec:
     )
 
 
+def _runtime_network_graph() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "network": {
+                "type": "SimpleStagedNetwork",
+                "params": {
+                    "hidden_size": 100,
+                    "input_size": 4,
+                    "output_size": 2,
+                    "hidden_type": "GRUCell",
+                },
+                "input_ports": ["target"],
+                "output_ports": ["output"],
+            }
+        },
+        input_ports=["target"],
+        input_bindings={"target": ("network", "target")},
+        metadata=GraphMetadata(
+            name="Runtime network",
+            created_at="2026-05-17T00:00:00+00:00",
+            updated_at="2026-05-17T00:00:00+00:00",
+        ),
+    )
+
+
 def _ui_state() -> GraphUIState:
     return GraphUIState()
 
@@ -83,6 +108,32 @@ def test_legacy_project_load_materializes_workspace(tmp_path):
     analysis_scenario = record.project.workspace.scenarios[analysis_stage.scenario_id]
     assert analysis_scenario.analysis_spec["active_page_id"] == "analysis-page"
     assert analysis_scenario.analysis_spec["pages"][0]["eval_run_id"] == "eval-1"
+
+
+def test_legacy_project_load_normalizes_runtime_network_authoring_shape(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    graph_id = "legacy-runtime-network"
+    graph = _runtime_network_graph()
+    payload = {
+        "metadata": graph.metadata.model_dump(),
+        "graph": graph.model_dump(),
+        "ui_state": _ui_state().model_dump(),
+    }
+    (tmp_path / f"{graph_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    record = service.get_graph(graph_id)
+
+    assert record.project.graph.nodes["network"].type == "Network"
+    assert record.project.graph.nodes["network"].input_ports == ["input"]
+    assert record.project.graph.input_bindings == {"input": ("network", "input")}
+    assert record.project.graph.subgraphs is not None
+    assert record.project.graph.subgraphs["network"].nodes["cell"].type == "GRU"
+    train_stage = next(stage for stage in record.project.workspace.stages if stage.kind == "train")
+    train_graph = record.project.workspace.scenarios[train_stage.scenario_id].graph
+    assert train_graph is not None
+    assert train_graph.nodes["network"].type == "Network"
+    assert train_graph.subgraphs is not None
+    assert "network" in train_graph.subgraphs
 
 
 def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):
