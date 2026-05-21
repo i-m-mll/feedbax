@@ -20,7 +20,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from feedbax.studio_schema import validate_task_binding_schema
 from feedbax.studio_protocol import infer_task_n_steps
+from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec
 
 
 class WorkerStatus(str, Enum):
@@ -198,7 +200,7 @@ def _require_worker_specs(job: _Job) -> None:
     """Validate the Studio payload shape required by the real worker path."""
     _as_mapping("training_spec", job.training_spec)
     _as_mapping("task_spec", job.task_spec)
-    _as_mapping("graph_spec", job.graph_spec)
+    graph_spec = GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec))
     if job.task_binding_spec is None:
         raise ValueError(
             "Training worker requires scenario-owned task_binding_spec; "
@@ -209,14 +211,14 @@ def _require_worker_specs(job: _Job) -> None:
         raise ValueError("Training worker requires task_binding_spec schema v2")
     if "exposed_outputs" in task_binding_spec:
         raise ValueError("task_binding_spec.exposed_outputs is not accepted; use exposed_data")
-    for index, binding in enumerate(task_binding_spec.get("bindings", [])):
-        if not isinstance(binding, dict):
-            raise ValueError(f"task_binding_spec.bindings[{index}] must be an object")
-        if "source_output_id" in binding or "source_data_id" not in binding:
-            raise ValueError(
-                "task_binding_spec bindings must use source_data_id; "
-                f"invalid binding at index {index}"
-            )
+    try:
+        binding_spec = StudioTaskBindingSpec.model_validate(task_binding_spec)
+    except ValueError as exc:
+        raise ValueError(f"Invalid task_binding_spec: {exc}") from exc
+    issues = validate_task_binding_schema(binding_spec, graph_spec, "/task_binding_spec")
+    if issues:
+        summary = "; ".join(f"{issue.type}: {issue.message}" for issue in issues)
+        raise ValueError(f"Invalid task_binding_spec for graph_spec: {summary}")
 
 
 def _extract_training_cfg(

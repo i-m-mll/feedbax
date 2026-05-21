@@ -3,6 +3,8 @@ import {
   createDefaultTaskBindingSpec,
   defaultTaskData,
   ensureTaskBindingSpec,
+  removeTaskBindingsForTargetNodes,
+  retargetTaskBindingsForNodeRename,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import type { GraphSpec } from '@/types/graph';
@@ -158,5 +160,34 @@ describe('task data bindings', () => {
 
     expect(targetInputOccupied(graphWithTaskMux, spec, 'task_mux', 'in_2')).toBe(true);
     expect(targetInputOccupied(graphWithTaskMux, spec, 'task_mux', 'in_3')).toBe(false);
+  });
+
+  it('retargets task binding IDs and target nodes when model nodes are renamed', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithNetworkInput, {
+      type: 'ReachingTask',
+      params: {},
+    });
+
+    const renamed = retargetTaskBindingsForNodeRename(spec, 'network', 'controller');
+
+    expect(renamed.bindings).toEqual([
+      {
+        id: 'task:inputs->controller:input',
+        source_data_id: 'inputs',
+        target_node_id: 'controller',
+        target_port: 'input',
+        role: 'model_input',
+        metadata: {},
+      },
+    ]);
+  });
+
+  it('removes bindings that target deleted model nodes', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithTaskMux, delayedTask);
+
+    const pruned = removeTaskBindingsForTargetNodes(spec, ['task_mux']);
+
+    expect(pruned.bindings).toEqual([]);
+    expect(pruned.exposed_data.map((data) => data.id)).toContain('target_position');
   });
 });

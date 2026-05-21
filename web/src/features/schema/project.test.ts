@@ -99,7 +99,7 @@ function taskBindingSpec(sourceDataId = 'inputs'): StudioTaskBindingSpec {
     ],
     bindings: [
       {
-        id: 'binding',
+        id: `task:${sourceDataId}->sink:excitation`,
         source_data_id: sourceDataId,
         target_node_id: 'sink',
         target_port: 'excitation',
@@ -160,6 +160,28 @@ describe('projectStudioSchema', () => {
 
     expect(issueTypes).toContain('task_data_not_bindable');
     expect(issueTypes).toContain('task_binding_target_occupied');
+  });
+
+  it('validates task binding identity as part of the binding contract', () => {
+    const spec = taskBindingSpec();
+    spec.bindings = [
+      {
+        ...spec.bindings[0],
+        id: 'not-canonical',
+      },
+      {
+        ...spec.bindings[0],
+      },
+      {
+        ...spec.bindings[0],
+      },
+    ];
+
+    const registry = projectStudioSchema(graph, components, spec);
+    const issueTypes = new Set(registry.issues.map((issue) => issue.type));
+
+    expect(issueTypes).toContain('task_binding_id_mismatch');
+    expect(issueTypes).toContain('duplicate_task_binding');
   });
 
   it('treats task-data bindings as graph input connectivity', () => {

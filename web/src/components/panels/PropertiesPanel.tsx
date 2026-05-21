@@ -32,6 +32,9 @@ export function PropertiesPanel() {
   const removeTap = useGraphStore((state) => state.removeTap);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const retargetTaskBindingsForNodeRename = useWorkspaceStore(
+    (state) => state.retargetActiveScenarioTaskBindingsForNodeRename
+  );
   const workspace = useWorkspaceStore((state) => state.workspace);
   const selectedTapId = useGraphStore((state) => state.selectedTapId);
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId);
@@ -149,8 +152,10 @@ export function PropertiesPanel() {
   const analysisMeta = nodeSpec?.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
 
   const commitRename = () => {
-    if (nameValue.trim() && nameValue.trim() !== selectedNode.id) {
-      renameNode(selectedNode.id, nameValue.trim());
+    const nextNodeId = nameValue.trim();
+    if (nextNodeId && nextNodeId !== selectedNode.id && !graph.nodes[nextNodeId]) {
+      retargetTaskBindingsForNodeRename(selectedNode.id, nextNodeId);
+      renameNode(selectedNode.id, nextNodeId);
     }
   };
 
@@ -194,7 +199,14 @@ export function PropertiesPanel() {
               key={param.name}
               schema={param}
               value={nodeSpec.params[param.name] ?? param.default ?? null}
-              onChange={(value) => updateNodeParams(selectedNode.id, param.name, value)}
+              onChange={(value) =>
+                updateNodeParams(
+                  selectedNode.id,
+                  param.name,
+                  value,
+                  activeScenario?.task_binding_spec
+                )
+              }
             />
           ))}
           {!component && (

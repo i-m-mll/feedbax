@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -115,12 +116,36 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
     assert prepared.execution_spec.issues == ["ddd3758"]
     assert prepared.execution_spec.metadata["studio"]["workspace_id"] == prepared.workspace.id
     assert prepared.execution_spec.metadata["studio"]["training_spec"]["n_batches"] == 25
+    task_binding_spec = prepared.execution_spec.metadata["studio"]["task_binding_spec"]
+    assert task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert task_binding_spec["exposed_data"][0]["id"] == "inputs"
+    assert "exposed_outputs" not in task_binding_spec
     assert (
-        prepared.execution_spec.metadata["studio"]["task_binding_spec"]["bindings"][0][
-            "target_node_id"
-        ]
-        == "network"
+        task_binding_spec["bindings"][0]["source_data_id"],
+        task_binding_spec["bindings"][0]["target_node_id"],
+        task_binding_spec["bindings"][0]["target_port"],
+    ) == ("inputs", "network", "input")
+    assert (
+        "source_output_id"
+        not in prepared.execution_spec.metadata["studio"]["task_binding_spec"]["bindings"][0]
     )
+    assert (
+        prepared.execution_spec.metadata["command_contract"]["expected_files"]
+        == prepared.execution_spec.artifact_policy.tracked_paths
+    )
+    assert (
+        prepared.execution_spec.metadata["command_contract"]["expected_files"][-2]
+        == "task-binding-spec.json"
+    )
+    assert (
+        prepared.execution_spec.metadata["command_contract"]["current_command_role"]
+        == "materialize_mvp_training_result"
+    )
+    assert (
+        prepared.execution_spec.metadata["command_contract"]["future_command_role"]
+        == "launch_training_runner"
+    )
+    assert set(prepared.execution_spec.metadata["studio"]["graph_spec"]["nodes"]) == {"network"}
     assert prepared.plan.job_id == "studio-plan"
     assert prepared.plan.run_directory == "/tmp/feedbax-studio/feedbax_runs/studio-plan"
     assert any(route.source == "training-spec.json" for route in prepared.plan.artifact_routes)
@@ -233,6 +258,19 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert (snapshot_dir / "task-spec.json").exists()
     assert (snapshot_dir / "task-binding-spec.json").exists()
     assert (snapshot_dir / "artifacts" / "training-summary.json").exists()
+    execution_spec = json.loads((snapshot_dir / "execution-spec.json").read_text())
+    task_binding_spec = json.loads((snapshot_dir / "task-binding-spec.json").read_text())
+    workspace_snapshot = json.loads((snapshot_dir / "workspace-snapshot.json").read_text())
+    assert (
+        execution_spec["metadata"]["studio"]["task_binding_spec"]
+        == task_binding_spec
+        == workspace_snapshot["scenarios"]["scenario:train"]["task_binding_spec"]
+    )
+    assert task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert task_binding_spec["exposed_data"][0]["id"] == "inputs"
+    assert "exposed_outputs" not in task_binding_spec
+    assert task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
+    assert "source_output_id" not in task_binding_spec["bindings"][0]
     assert result.result.status == "completed"
     assert result.result.return_code == 0
     assert Path(result.result.manifest_path).exists()
@@ -242,6 +280,12 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
     assert result.result.manifest_payload["task_binding_spec"]["inline"]["bindings"][0][
         "target_port"
     ] == "input"
+    assert (
+        result.result.manifest_payload["provenance"]["metadata"]["execution_metadata"]["studio"][
+            "task_binding_spec"
+        ]
+        == task_binding_spec
+    )
 
     train_stage = next(stage for stage in result.workspace.stages if stage.kind == "train")
     assert train_stage.status == "completed"

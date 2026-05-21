@@ -41,6 +41,7 @@ import {
 } from '@/features/scenario/entities';
 import {
   ensureTaskBindingSpec,
+  removeTaskBindingsForTargetNodes,
   taskBindingId,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
@@ -1079,9 +1080,33 @@ export function Canvas() {
       const graphChanges = changes.filter(
         (change) => !('id' in change) || !taskDataIdFromSourceNodeId(change.id)
       );
+      const removedNodeIds = graphChanges
+        .filter((change) => change.type === 'remove' && 'id' in change)
+        .map((change) => (change as { id: string }).id);
+      const nextTaskBindingSpec = removeTaskBindingsForTargetNodes(
+        taskBindingSpec,
+        removedNodeIds
+      );
+      if (nextTaskBindingSpec !== taskBindingSpec) {
+        updateTaskBindingSpec(nextTaskBindingSpec);
+        markDirty();
+        if (
+          selectedTaskBindingId &&
+          !nextTaskBindingSpec.bindings.some((binding) => binding.id === selectedTaskBindingId)
+        ) {
+          selectTopPaneEntity(null);
+        }
+      }
       if (graphChanges.length > 0) onNodesChange(graphChanges);
     },
-    [onNodesChange]
+    [
+      markDirty,
+      onNodesChange,
+      selectTopPaneEntity,
+      selectedTaskBindingId,
+      taskBindingSpec,
+      updateTaskBindingSpec,
+    ]
   );
 
   const removeTaskBindings = useCallback(
