@@ -307,9 +307,6 @@ export function TaskScenarioPanel() {
     [graph, scenario?.task_binding_spec, task]
   );
   const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
-
-  if (topPane.active_projection !== 'task') return null;
-
   const params = Object.entries(task.params ?? {}).filter(
     ([key]) => !(timeline && isDelayedReachTimelineParam(key))
   );
@@ -317,6 +314,7 @@ export function TaskScenarioPanel() {
   const protocolData = taskBindingSpec.exposed_data.filter((data) => !data.bindable);
   const boundTarget = (nodeId: string, port: string) => `${nodeId}.${port}`;
   useLayoutEffect(() => {
+    if (topPane.active_projection !== 'task') return;
     const aside = asideRef.current;
     const taskDataSection = taskDataSectionRef.current;
     if (!aside || !taskDataSection) return;
@@ -339,7 +337,10 @@ export function TaskScenarioPanel() {
       observer.disconnect();
       window.removeEventListener('resize', updateGap);
     };
-  }, [bindableData.length, taskSidebarWidth]);
+  }, [bindableData.length, taskSidebarWidth, topPane.active_projection]);
+
+  if (topPane.active_projection !== 'task') return null;
+
   const updateParam = (key: string, value: ParamValue) => {
     updateTaskSpec({
       ...task,
