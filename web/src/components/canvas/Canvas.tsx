@@ -217,8 +217,9 @@ const TASK_BINDING_ENTITY_PREFIX = 'task_binding:';
 const TASK_SOURCE_NODE_PREFIX = '__task_data_source__:';
 const TASK_BINDING_EDGE_PREFIX = '__task_binding_edge__:';
 const TASK_SOURCE_HANDLE_SCREEN_SIZE = 10;
-const TASK_CONNECT_AUTOPAN_ARM_DISTANCE = 32;
 const TASK_CONNECT_AUTOPAN_EDGE_DISTANCE = 36;
+// Keep arming outside the edge pan band so leaving the task-port dead-zone cannot twitch.
+const TASK_CONNECT_AUTOPAN_ARM_DISTANCE = TASK_CONNECT_AUTOPAN_EDGE_DISTANCE + 24;
 const TASK_CONNECT_AUTOPAN_MAX_SPEED = 16;
 
 function taskSourceNodeId(dataId: string): string {
