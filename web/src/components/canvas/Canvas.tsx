@@ -8,6 +8,7 @@ import {
   type DragEvent,
   type RefObject,
 } from 'react';
+import { flushSync } from 'react-dom';
 import {
   Background,
   Controls,
@@ -64,6 +65,9 @@ import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-r
 interface TaskSourceNodeData extends Record<string, unknown> {
   label: string;
   handleSize: number;
+  beginTaskConnection?: () => void;
+  prepareTaskConnection?: () => void;
+  releaseTaskConnection?: () => void;
 }
 
 interface TaskBindingEdgeData extends Record<string, unknown> {
@@ -82,6 +86,9 @@ function TaskSourceNode({ data }: NodeProps) {
       style={{ width: handleSize, height: handleSize }}
       aria-label={`${nodeData.label} task data source`}
       title={`${nodeData.label} task data source`}
+      onPointerDownCapture={nodeData.beginTaskConnection}
+      onPointerEnter={nodeData.prepareTaskConnection}
+      onPointerLeave={nodeData.releaseTaskConnection}
     >
       <Handle
         type="source"
@@ -210,6 +217,7 @@ const TASK_BINDING_ENTITY_PREFIX = 'task_binding:';
 const TASK_SOURCE_NODE_PREFIX = '__task_data_source__:';
 const TASK_BINDING_EDGE_PREFIX = '__task_binding_edge__:';
 const TASK_SOURCE_HANDLE_SCREEN_SIZE = 10;
+const TASK_CONNECT_AUTOPAN_ARM_DISTANCE = 32;
 
 function taskSourceNodeId(dataId: string): string {
   return `${TASK_SOURCE_NODE_PREFIX}${dataId}`;
@@ -417,7 +425,7 @@ function TaskBindingVisualOverlay({
   return (
     <svg
       className="pointer-events-none absolute inset-0 h-full w-full"
-      style={{ zIndex: 1 }}
+      style={{ zIndex: 0 }}
       aria-hidden="true"
     >
       {bindings.map((binding) => {
@@ -489,9 +497,11 @@ export function Canvas() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
   const fittedGraphKey = useRef<string | null>(null);
+  const taskConnectionActive = useRef(false);
   const [taskSourcePositions, setTaskSourcePositions] = useState<
     Record<string, { x: number; y: number }>
   >({});
+  const [taskConnectionAutoPan, setTaskConnectionAutoPan] = useState(true);
   const trainingScenario = getTrainingScenario(workspace);
   const taskBindingSpec = useMemo(
     () =>
@@ -519,6 +529,23 @@ export function Canvas() {
   const bindableTaskDataKey = bindableTaskData.map((data) => data.id).join('|');
   const taskSourceHandleSize =
     TASK_SOURCE_HANDLE_SCREEN_SIZE / Math.max(0.1, viewport.zoom || 1);
+
+  const prepareTaskConnection = useCallback(() => {
+    setTaskConnectionAutoPan(false);
+  }, []);
+
+  const beginTaskConnection = useCallback(() => {
+    flushSync(() => {
+      taskConnectionActive.current = true;
+      setTaskConnectionAutoPan(false);
+    });
+  }, []);
+
+  const releaseTaskConnection = useCallback(() => {
+    if (!taskConnectionActive.current) {
+      setTaskConnectionAutoPan(true);
+    }
+  }, []);
 
   const updateTaskSourcePositions = useCallback(() => {
     if (topPane.active_projection !== 'task') {
@@ -620,6 +647,22 @@ export function Canvas() {
     updateTaskSourcePositions,
   ]);
 
+  useEffect(() => {
+    if (taskConnectionAutoPan) return undefined;
+    const armTaskConnectionAutoPan = (event: PointerEvent) => {
+      if (!taskConnectionActive.current) return;
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+      if (event.clientX > containerRect.left + TASK_CONNECT_AUTOPAN_ARM_DISTANCE) {
+        setTaskConnectionAutoPan(true);
+      }
+    };
+    window.addEventListener('pointermove', armTaskConnectionAutoPan, true);
+    return () => {
+      window.removeEventListener('pointermove', armTaskConnectionAutoPan, true);
+    };
+  }, [taskConnectionAutoPan]);
+
   const taskSourceNodes = useMemo<Node<GraphNodeData | TapNodeData | TaskSourceNodeData>[]>(
     () =>
       topPane.active_projection === 'task'
@@ -659,7 +702,13 @@ export function Canvas() {
               id: taskSourceNodeId(data.id),
               type: 'taskSource',
               position,
-              data: { label: data.label, handleSize: taskSourceHandleSize },
+              data: {
+                label: data.label,
+                handleSize: taskSourceHandleSize,
+                beginTaskConnection,
+                prepareTaskConnection,
+                releaseTaskConnection,
+              },
               draggable: false,
               selectable: false,
               deletable: false,
@@ -674,7 +723,15 @@ export function Canvas() {
             };
           })
         : [],
-    [bindableTaskData, taskSourceHandleSize, taskSourcePositions, topPane.active_projection]
+    [
+      beginTaskConnection,
+      bindableTaskData,
+      prepareTaskConnection,
+      releaseTaskConnection,
+      taskSourceHandleSize,
+      taskSourcePositions,
+      topPane.active_projection,
+    ]
   );
 
   const taskBindingEdges = useMemo<Edge<GraphEdgeData>[]>(
@@ -689,7 +746,7 @@ export function Canvas() {
             type: 'taskBinding',
             selectable: true,
             deletable: true,
-            zIndex: 2,
+            zIndex: 0,
             data: {
               task_binding_id: binding.id,
               source_data_id: binding.source_data_id,
@@ -1035,6 +1092,20 @@ export function Canvas() {
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         isValidConnection={isValidConnection}
+        autoPanOnConnect={taskConnectionAutoPan}
+        onConnectStart={(_, params) => {
+          if (taskDataIdFromSourceNodeId(params.nodeId)) {
+            taskConnectionActive.current = true;
+            setTaskConnectionAutoPan(false);
+            return;
+          }
+          taskConnectionActive.current = false;
+          setTaskConnectionAutoPan(true);
+        }}
+        onConnectEnd={() => {
+          taskConnectionActive.current = false;
+          setTaskConnectionAutoPan(true);
+        }}
         onMoveEnd={() => updateTaskSourcePositions()}
         onPaneClick={() => {
           setSelectedNode(null);
