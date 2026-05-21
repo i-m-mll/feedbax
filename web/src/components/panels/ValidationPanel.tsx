@@ -24,7 +24,7 @@ export function ValidationPanel() {
   const selectedEntityId = getTopPaneState(workspace).selected_entity_id;
   const taskBindingSpec = useMemo(() => {
     const scenario = getTrainingScenario(workspace);
-    return ensureTaskBindingSpec(scenario?.task_binding_spec, graph);
+    return ensureTaskBindingSpec(scenario?.task_binding_spec, graph, scenario?.task_spec);
   }, [graph, workspace]);
   const schemaRegistry = useMemo(
     () => projectStudioSchema(graph, components, taskBindingSpec),

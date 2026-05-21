@@ -1,6 +1,12 @@
 import { useEffect, useCallback } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
+import {
+  getTopPaneState,
+  getTrainingScenario,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
 import { useSaveGraph } from '@/hooks/useGraphs';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -9,7 +15,13 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export function useAppShortcuts() {
-  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved } = useGraphStore();
+  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, markDirty, nodes } =
+    useGraphStore();
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const updateTaskBindingSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioTaskBindingSpec
+  );
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const saveMutation = useSaveGraph();
 
   const saveGraph = useCallback(async () => {
@@ -20,6 +32,64 @@ export function useAppShortcuts() {
       markSaved(graphId);
     }
   }, [graphId, graph, uiState, markSaved, saveMutation]);
+
+  const deleteSelection = useCallback(() => {
+    const selectedNodeIds = nodes
+      .filter((node) => node.selected && !node.id.startsWith('tap:'))
+      .map((node) => node.id);
+    const topPane = getTopPaneState(workspace);
+    const trainingScenario = getTrainingScenario(workspace);
+    const taskBindingSpec = trainingScenario
+      ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, graph, trainingScenario.task_spec)
+      : null;
+    const selectedTaskBindingId = topPane.selected_entity_id?.startsWith('task_binding:')
+      ? topPane.selected_entity_id.slice('task_binding:'.length)
+      : null;
+    if (taskBindingSpec && selectedTaskBindingId) {
+      updateTaskBindingSpec({
+        ...taskBindingSpec,
+        bindings: taskBindingSpec.bindings.filter(
+          (binding) => binding.id !== selectedTaskBindingId
+        ),
+      });
+      selectTopPaneEntity(null);
+      markDirty();
+      return;
+    }
+    const impactedBindings = (taskBindingSpec?.bindings ?? []).filter((binding) =>
+      selectedNodeIds.includes(binding.target_node_id)
+    );
+
+    if (
+      topPane.active_projection === 'model' &&
+      impactedBindings.length > 0 &&
+      !window.confirm(
+        `Delete selected node? It has ${impactedBindings.length} task binding${
+          impactedBindings.length === 1 ? '' : 's'
+        } wired into it.`
+      )
+    ) {
+      return;
+    }
+
+    if (taskBindingSpec && impactedBindings.length > 0) {
+      const impactedIds = new Set(impactedBindings.map((binding) => binding.id));
+      updateTaskBindingSpec({
+        ...taskBindingSpec,
+        bindings: taskBindingSpec.bindings.filter((binding) => !impactedIds.has(binding.id)),
+      });
+    }
+
+    deleteSelected();
+  }, [
+    deleteSelected,
+    graph,
+    markDirty,
+    nodes,
+    selectTopPaneEntity,
+    updateTaskBindingSpec,
+    workspace,
+  ]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -50,11 +120,11 @@ export function useAppShortcuts() {
 
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
-        deleteSelected();
+        deleteSelection();
       }
     };
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [deleteSelected, redo, undo, saveGraph]);
+  }, [deleteSelection, redo, undo, saveGraph]);
 }

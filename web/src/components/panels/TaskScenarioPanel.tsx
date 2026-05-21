@@ -1,6 +1,9 @@
 import { useMemo } from 'react';
 import { Settings2 } from 'lucide-react';
-import { createDefaultTaskBindingSpec, ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import {
+  createDefaultTaskBindingSpec,
+  ensureTaskBindingSpec,
+} from '@/features/scenario/taskBindings';
 import {
   delayedReachTaskWithTimeline,
   delayedReachTimelineFromTask,
@@ -252,12 +255,17 @@ export function TaskScenarioPanel() {
   const scenario = getTrainingScenario(workspace);
   const task = scenario?.task_spec ?? TASK_CATALOG[0];
   const taskBindingSpec = useMemo(
-    () => ensureTaskBindingSpec(scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(graph), graph),
-    [graph, scenario?.task_binding_spec]
+    () =>
+      ensureTaskBindingSpec(
+        scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, task),
+        graph,
+        task
+      ),
+    [graph, scenario?.task_binding_spec, task]
   );
   const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
 
-  if (topPane.active_projection !== 'graph') return null;
+  if (topPane.active_projection !== 'task') return null;
 
   const params = Object.entries(task.params ?? {}).filter(
     ([key]) => !(timeline && isDelayedReachTimelineParam(key))
@@ -279,14 +287,13 @@ export function TaskScenarioPanel() {
     const next = TASK_CATALOG.find((candidate) => candidate.type === taskType);
     if (!next) return;
     updateTaskSpec(next);
-    updateTaskBindingSpec(createDefaultTaskBindingSpec(graph));
+    updateTaskBindingSpec(createDefaultTaskBindingSpec(graph, next));
     markDirty();
   };
   const updateTimeline = (nextTimeline: StudioTaskTimelineSpec) => {
     updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
     markDirty();
   };
-
   return (
     <aside className="relative z-20 flex w-72 shrink-0 flex-col overflow-visible border-r border-slate-100 bg-white/95">
       <div className="border-b border-slate-100 px-4 py-3">
@@ -322,7 +329,7 @@ export function TaskScenarioPanel() {
               </span>
               <span
                 data-task-data-port-id={data.id}
-                className="absolute right-[-17px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
+                className="pointer-events-none absolute right-[-20px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
                 title={`${data.label} Task Data`}
               />
             </div>

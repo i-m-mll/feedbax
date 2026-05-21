@@ -12,7 +12,11 @@ import { graphNodeEntityId } from '@/features/scenario/entities';
 import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
-import type { StudioObjectiveSpec, StudioWorkspaceSpec } from '@/types/workspace';
+import type {
+  StudioObjectiveSpec,
+  StudioTopPaneState,
+  StudioWorkspaceSpec,
+} from '@/types/workspace';
 
 const graph: GraphSpec = {
   nodes: {},
@@ -296,6 +300,28 @@ describe('buildWorkspaceSnapshot', () => {
     expect(topPane.selected_entity_id).toBe(graphNodeEntityId('task'));
     expect(topPane.hovered_entity_id).toBe(graphNodeEntityId('mechanics'));
     expect(useWorkspaceStore.getState().workspace?.ui_state.top_pane).toMatchObject(topPane);
+  });
+
+  it('normalizes legacy graph top-pane projection to model', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+
+    expect(
+      getTopPaneState({
+        ...workspace,
+        ui_state: {
+          ...workspace.ui_state,
+          top_pane: { active_projection: 'graph' } as unknown as StudioTopPaneState,
+        },
+      }).active_projection
+    ).toBe('model');
   });
 
   it('updates train scenario drafts as the primary task/training/objective owner', () => {

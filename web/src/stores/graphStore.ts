@@ -26,6 +26,11 @@ import type {
   ParamValue,
 } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+import {
+  expandMuxForPort,
+  normalizeDynamicPorts,
+  normalizeMuxSpec,
+} from '@/features/graph/dynamicPorts';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -1219,24 +1224,6 @@ function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
     }));
 }
 
-function updateNodeSpec(
-  nodes: Node<GraphNodeData | TapNodeData>[],
-  nodeId: string,
-  spec: ComponentSpec
-) {
-  return nodes.map((node) => {
-    if (node.id !== nodeId) return node;
-    if (isTapNodeId(node.id)) return node;
-    return {
-      ...node,
-      data: {
-        ...(node.data as GraphNodeData),
-        spec,
-      },
-    };
-  });
-}
-
 function createNodeName(graph: GraphSpec, base: string) {
   const sanitized = base.charAt(0).toLowerCase() + base.slice(1);
   if (!(sanitized in graph.nodes)) {
@@ -1355,7 +1342,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   pendingStateMerge: null,
   hydrateGraph: (graph, uiState, graphId) => {
     const edgeStyle = get().edgeStyle;
-    const migrated = migrateGraphSpec(graph);
+    const migrated = normalizeDynamicPorts(migrateGraphSpec(graph));
     const normalized = normalizeUiState(migrated, uiState, edgeStyle);
     set({
       graphId: graphId ?? null,
@@ -1376,13 +1363,14 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   restoreSnapshot: (snapshot) => {
     const { edgeStyle } = snapshot;
-    const normalized = normalizeUiState(snapshot.graph, snapshot.uiState, edgeStyle);
+    const graph = normalizeDynamicPorts(snapshot.graph);
+    const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     set({
       graphId: snapshot.graphId,
-      graph: snapshot.graph,
+      graph,
       uiState: normalized,
-      nodes: buildNodes(snapshot.graph, normalized),
-      edges: buildEdges(snapshot.graph, normalized, edgeStyle),
+      nodes: buildNodes(graph, normalized),
+      edges: buildEdges(graph, normalized, edgeStyle),
       edgeStyle,
       graphStack: snapshot.graphStack,
       currentGraphLabel: snapshot.currentGraphLabel,
@@ -1430,15 +1418,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       if (state.past.length === 0) return state;
       const previous = state.past[state.past.length - 1];
+      const graph = normalizeDynamicPorts(previous.graph);
       const past = state.past.slice(0, -1);
       const future = [cloneSnapshot(state.graph, state.uiState), ...state.future];
-      const normalized = normalizeUiState(previous.graph, previous.uiState, state.edgeStyle);
+      const normalized = normalizeUiState(graph, previous.uiState, state.edgeStyle);
       return {
         ...state,
-        graph: previous.graph,
+        graph,
         uiState: normalized,
-        nodes: buildNodes(previous.graph, normalized),
-        edges: buildEdges(previous.graph, normalized, state.edgeStyle),
+        nodes: buildNodes(graph, normalized),
+        edges: buildEdges(graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -1451,15 +1440,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set((state) => {
       if (state.future.length === 0) return state;
       const next = state.future[0];
+      const graph = normalizeDynamicPorts(next.graph);
       const future = state.future.slice(1);
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
-      const normalized = normalizeUiState(next.graph, next.uiState, state.edgeStyle);
+      const normalized = normalizeUiState(graph, next.uiState, state.edgeStyle);
       return {
         ...state,
-        graph: next.graph,
+        graph,
         uiState: normalized,
-        nodes: buildNodes(next.graph, normalized),
-        edges: buildEdges(next.graph, normalized, state.edgeStyle),
+        nodes: buildNodes(graph, normalized),
+        edges: buildEdges(graph, normalized, state.edgeStyle),
         past,
         future,
         isDirty: true,
@@ -2259,6 +2249,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ...state.graph,
         wires: edgesToWires(nextEdges),
       };
+      graph = normalizeDynamicPorts(graph);
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
       }
@@ -2266,8 +2257,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const dirty = changes.length > 0;
       const selectedEdgeId = nextEdges.find((edge) => edge.selected)?.id ?? null;
       return {
-        edges: applyEdgeStates(nextEdges, edge_states, state.edgeStyle),
         graph,
+        nodes: buildNodes(graph, state.uiState),
+        edges: applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
         uiState: {
           ...state.uiState,
           edge_states,
@@ -2356,6 +2348,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         ...state.graph,
         wires: edgesToWires(nextEdges),
       };
+      graph = expandMuxForPort(graph, connection.target!, connection.targetHandle!);
+      graph = normalizeDynamicPorts(graph);
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
       }
@@ -2367,8 +2361,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
       };
       return {
-        edges: applyEdgeStates(nextEdges, edge_states, state.edgeStyle),
         graph,
+        nodes: buildNodes(graph, state.uiState),
+        edges: applyEdgeStates(buildEdges(graph, state.uiState, state.edgeStyle), edge_states, state.edgeStyle),
         uiState: {
           ...state.uiState,
           edge_states,
@@ -2389,7 +2384,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       const subgraphPreview = hasTemplate
         ? templateGraphToSubgraphPreview(component.template_graph!, component.template_ui_state)
         : undefined;
-      const spec: ComponentSpec = hasTemplate
+      let spec: ComponentSpec = hasTemplate
         ? {
             type: component.name,  // Use the actual component name as the type
             params: {
@@ -2404,6 +2399,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             input_ports: component.input_ports,
             output_ports: component.output_ports,
           };
+      spec = normalizeMuxSpec(
+        spec,
+        Number(spec.params.n_inputs) || spec.input_ports.length || 2
+      );
       let graph: GraphSpec = {
         ...state.graph,
         nodes: {
@@ -2451,15 +2450,22 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           [paramName]: value,
         },
       };
-      return {
-        graph: {
-          ...state.graph,
-          nodes: {
-            ...state.graph.nodes,
-            [nodeId]: updatedSpec,
-          },
+      const nextSpec = normalizeMuxSpec(
+        updatedSpec,
+        paramName === 'n_inputs' ? Number(value) : updatedSpec.input_ports.length
+      );
+      let graph: GraphSpec = {
+        ...state.graph,
+        nodes: {
+          ...state.graph.nodes,
+          [nodeId]: nextSpec,
         },
-        nodes: updateNodeSpec(state.nodes, nodeId, updatedSpec),
+      };
+      graph = normalizeDynamicPorts(graph);
+      return {
+        graph,
+        nodes: buildNodes(graph, state.uiState),
+        edges: buildEdges(graph, state.uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,

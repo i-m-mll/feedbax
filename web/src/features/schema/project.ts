@@ -11,6 +11,11 @@ import type {
 } from '@/types/workspace';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import { validateInterventionSchema } from './interventions';
+import {
+  MUX_COMPONENT_TYPE,
+  muxInputIndex,
+  normalizeDynamicPorts,
+} from '@/features/graph/dynamicPorts';
 
 const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
 const PROTOCOL_TASK_DATA_KINDS = new Set([
@@ -38,7 +43,8 @@ export function projectStudioSchema(
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): StudioSchemaRegistry {
   const componentMap = new Map(components.map((component) => [component.name, component]));
-  const ports = enumerateGraphPorts(graph, componentMap);
+  const schemaGraph = normalizeDynamicPorts(graph, taskBindingSpec);
+  const ports = enumerateGraphPorts(schemaGraph, componentMap);
   const taskData = enumerateTaskData(taskBindingSpec);
   markBoundPorts(ports, taskBindingSpec);
   const selectorTargets = [
@@ -55,8 +61,8 @@ export function projectStudioSchema(
     task_data: taskData,
     selector_targets: selectorTargets,
     issues: [
-      ...validateGraphConnections(graph, ports),
-      ...validateTaskBindings(graph, ports, taskData, taskBindingSpec),
+      ...validateGraphConnections(schemaGraph, ports),
+      ...validateTaskBindings(schemaGraph, ports, taskData, taskBindingSpec),
       ...validateInterventionSchema(graph.taps, { selector_targets: selectorTargets }),
     ],
     metadata: { projected_by: 'feedbax.web.projectStudioSchema' },
@@ -126,7 +132,7 @@ function enumerateGraphPorts(
       node.output_ports.length > 0 ? node.output_ports : component?.output_ports ?? [];
     for (const port of inputPorts) {
       ports.push(
-        componentPortSchema(nodeId, node.type, port, 'input', component?.port_types?.inputs?.[port])
+        componentPortSchema(nodeId, node.type, port, 'input', componentInputPortType(node.type, port, component))
       );
     }
     for (const port of outputPorts) {
@@ -148,6 +154,19 @@ function enumerateGraphPorts(
     ports.push(graphPortSchema(port, 'output'));
   }
   return ports;
+}
+
+function componentInputPortType(
+  componentType: string,
+  port: string,
+  component?: ComponentDefinition
+): { dtype: string; shape?: number[] | null; rank?: number } | undefined {
+  const explicit = component?.port_types?.inputs?.[port];
+  if (explicit) return explicit;
+  if (componentType === MUX_COMPONENT_TYPE && muxInputIndex(port) !== null) {
+    return component?.port_types?.inputs?.in_0 ?? component?.port_types?.inputs?.in_1;
+  }
+  return undefined;
 }
 
 function componentPortSchema(

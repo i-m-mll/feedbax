@@ -30,6 +30,12 @@ export function Sidebar() {
     return null;
   }
 
+  if (topPane.active_projection === 'task') {
+    return null;
+  }
+
+  const isModelProjection = topPane.active_projection === 'model';
+
   return (
     <aside
       style={{ width: leftSidebarWidth }}
@@ -41,17 +47,18 @@ export function Sidebar() {
             onClick={() => setActiveTab('components')}
             className={clsx(
               'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
-              topPane.active_projection === 'graph' && activeTab === 'components'
+              isModelProjection && activeTab === 'components'
                 ? 'bg-slate-100 text-slate-700 font-semibold'
                 : 'text-slate-400 hover:text-slate-600'
             )}
           >
-            {topPane.active_projection === 'graph' ? 'Components' : topPane.active_projection}
+            {isModelProjection ? 'Components' : topPane.active_projection}
           </button>
         </div>
       </div>
-      {topPane.active_projection === 'graph' && activeTab === 'components' && <ComponentLibrary />}
-      {topPane.active_projection !== 'graph' && (
+      {isModelProjection && activeTab === 'components' && <ComponentLibrary />}
+      {(topPane.active_projection === 'workspace' ||
+        topPane.active_projection === 'objectives') && (
         <ProjectionSidebar projection={topPane.active_projection} />
       )}
       <div

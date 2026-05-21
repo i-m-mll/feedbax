@@ -34,6 +34,20 @@ const components: ComponentDefinition[] = [
       outputs: { force: { dtype: 'scalar' } },
     },
   },
+  {
+    name: 'Mux',
+    category: 'Test',
+    description: '',
+    param_schema: [],
+    input_ports: ['in_0', 'in_1'],
+    output_ports: ['output'],
+    icon: 'GitMerge',
+    default_params: { n_inputs: 2 },
+    port_types: {
+      inputs: { in_0: { dtype: 'vector' }, in_1: { dtype: 'vector' } },
+      outputs: { output: { dtype: 'vector' } },
+    },
+  },
 ];
 
 const graph: GraphSpec = {
@@ -202,6 +216,58 @@ describe('projectStudioSchema', () => {
     );
 
     expect(issues.map((issue) => issue.type)).toContain('graph_wire_dtype_mismatch');
+  });
+
+  it('projects dynamic mux input ports with the mux input schema', () => {
+    const muxTaskBindings: StudioTaskBindingSpec = {
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [
+        {
+          id: 'target_on',
+          label: 'Target shown',
+          kind: 'signal',
+          role: 'model_input',
+          path: 'inputs.target_on',
+          bindable: true,
+          dtype: 'float32',
+          expected_shape: ['time', 1],
+          metadata: {},
+        },
+      ],
+      bindings: [
+        {
+          id: 'task:target_on->mux:in_2',
+          source_data_id: 'target_on',
+          target_node_id: 'mux',
+          target_port: 'in_2',
+          role: 'model_input',
+          metadata: {},
+        },
+      ],
+      metadata: {},
+    };
+    const registry = projectStudioSchema(
+      {
+        ...graph,
+        nodes: {
+          mux: {
+            type: 'Mux',
+            params: { n_inputs: 2 },
+            input_ports: ['in_0', 'in_1'],
+            output_ports: ['output'],
+          },
+        },
+      },
+      components,
+      muxTaskBindings
+    );
+
+    const dynamicPort = registry.ports.find((port) => port.id === 'port:mux.in_2:input');
+    expect(dynamicPort?.value_schema.dtype).toBe('vector');
+    expect(dynamicPort?.origin).toBe('declared');
+    expect(registry.issues.map((issue) => issue.type)).not.toContain(
+      'unknown_task_binding_target_port'
+    );
   });
 
   it('validates typed intervention taps against selector schemas', () => {

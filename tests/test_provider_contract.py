@@ -499,6 +499,60 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert registry.metadata["runtime_introspection"]["status"] == "not_requested"
 
 
+def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
+    graph = GraphSpec(
+        nodes={
+            "mux": {
+                "type": "Mux",
+                "params": {"n_inputs": 2},
+                "input_ports": ["in_0", "in_1"],
+                "output_ports": ["output"],
+            }
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("mux", "output")},
+    )
+    workspace = build_default_studio_workspace(label="Mux schema", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "target_on",
+                    "label": "Target shown",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.target_on",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 1],
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:target_on->mux:in_2",
+                    "source_data_id": "target_on",
+                    "target_node_id": "mux",
+                    "target_port": "in_2",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    port = next(port for port in registry.ports if port.id == "port:mux.in_2:input")
+
+    assert port.value_schema.dtype == "vector"
+    assert port.origin == "declared"
+    assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
+
+
 def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_targets() -> None:
     def introspector(workspace, scenario_id, options):
         assert workspace.id

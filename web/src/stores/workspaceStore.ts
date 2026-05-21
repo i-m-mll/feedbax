@@ -44,7 +44,7 @@ const DEFAULT_SCENARIO_IDS = {
 } as const;
 
 const DEFAULT_TOP_PANE_STATE: StudioTopPaneState = {
-  active_projection: 'graph',
+  active_projection: 'model',
   selected_entity_id: null,
   hovered_entity_id: null,
   pinned_inspector_entity_id: null,
@@ -103,9 +103,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function normalizeTopPaneState(value: unknown): StudioTopPaneState {
   const record = isRecord(value) ? value : {};
   const activeProjection =
-    record.active_projection === 'workspace' || record.active_projection === 'objectives'
+    record.active_projection === 'task' ||
+    record.active_projection === 'workspace' ||
+    record.active_projection === 'objectives'
       ? record.active_projection
-      : 'graph';
+      : 'model';
   return {
     active_projection: activeProjection,
     selected_entity_id:
@@ -440,7 +442,7 @@ export function buildWorkspaceSnapshot({
   const scenarioTrainingSpec = existingTrain?.training_spec ?? trainingSpec;
   const scenarioTaskSpec = existingTrain?.task_spec ?? taskSpec;
   const scenarioTaskBindingSpec =
-    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph);
+    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, scenarioTaskSpec);
   scenarios[trainScenarioId] = {
     ...defaultScenario(trainScenarioId, existingTrain?.label ?? 'Training scenario', trainStage.id),
     ...existingTrain,

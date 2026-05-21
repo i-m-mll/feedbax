@@ -20,7 +20,7 @@ export type StudioStageStatus =
   | 'failed'
   | 'cancelled';
 
-export type StudioTopPaneProjection = 'graph' | 'workspace' | 'objectives';
+export type StudioTopPaneProjection = 'model' | 'task' | 'workspace' | 'objectives';
 
 export interface StudioTopPaneState {
   active_projection: StudioTopPaneProjection;
