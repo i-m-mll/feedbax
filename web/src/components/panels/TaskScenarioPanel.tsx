@@ -412,7 +412,7 @@ export function TaskScenarioPanel() {
           {bindableData.map((data) => (
             <div
               key={data.id}
-              className="relative flex h-7 items-center justify-end overflow-hidden pr-3"
+              className="relative flex h-7 items-center justify-end overflow-visible pr-3"
             >
               <span className="min-w-0 truncate text-right text-slate-600">
                 {data.label}

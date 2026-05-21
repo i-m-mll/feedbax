@@ -71,10 +71,6 @@ body {
   height: 8px;
 }
 
-.local-x-scrollbar {
-  scrollbar-gutter: stable;
-}
-
 .local-x-scrollbar::-webkit-scrollbar {
   height: 9px;
 }
