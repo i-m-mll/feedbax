@@ -7,7 +7,7 @@ import type {
   StudioValueSpec,
   ValueSchema,
 } from '@/types/workspace';
-import { VALUE_SCHEMA_VERSION } from './taskTimeline';
+import { delayedReachTaskDataValueSpec, VALUE_SCHEMA_VERSION } from './taskTimeline';
 
 export const TASK_BINDING_SCHEMA_VERSION = 'feedbax.studio.task_bindings.v2';
 export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
@@ -146,7 +146,8 @@ function genericTaskData(): StudioTaskDataSpec[] {
 }
 
 function delayedReachTaskData(): StudioTaskDataSpec[] {
-  return [
+  const delayedTask: TaskSpec = { type: 'DelayedReaches', params: {} };
+  const data = [
     taskDataSpec({
       id: 'target_position',
       label: 'Target position',
@@ -210,6 +211,10 @@ function delayedReachTaskData(): StudioTaskDataSpec[] {
     }),
     ...genericTaskData().filter((data) => data.id === 'inits' || data.id === 'intervene'),
   ];
+  return data.map((item) => ({
+    ...item,
+    value_spec: delayedReachTaskDataValueSpec(item.id, delayedTask) ?? item.value_spec,
+  }));
 }
 
 export function defaultTaskData(task?: TaskSpec | null): StudioTaskDataSpec[] {

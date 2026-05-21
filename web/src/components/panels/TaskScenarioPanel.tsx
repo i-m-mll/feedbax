@@ -11,7 +11,9 @@ import {
   ensureTaskBindingSpec,
 } from '@/features/scenario/taskBindings';
 import {
+  applyDelayedReachTimelineEdit,
   delayedReachTaskWithTimeline,
+  delayedReachTimelinePreview,
   delayedReachTimelineFromTask,
   isDelayedReachTimelineParam,
   toggleDelayedReachSignalEpoch,
@@ -26,7 +28,7 @@ import {
 import { useLayoutStore } from '@/stores/layoutStore';
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
-import type { StudioTaskTimelineSpec } from '@/types/workspace';
+import type { StudioTaskTimelineSpec, StudioValueSpec } from '@/types/workspace';
 
 const TASK_CATALOG: TaskSpec[] = [
   {
@@ -141,6 +143,24 @@ function ParamEditor({
   );
 }
 
+function formatValueSpec(valueSpec: StudioValueSpec | null | undefined): string {
+  if (!valueSpec) return 'value';
+  if (valueSpec.mode === 'function') {
+    return valueSpec.function_id?.replace(/^delayed_reach_/, '') ?? 'function';
+  }
+  if (valueSpec.mode === 'constant') {
+    const value = valueSpec.value;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if ('active' in record && 'inactive' in record) {
+        return `${record.active}/${record.inactive}`;
+      }
+    }
+    return formatValue(value);
+  }
+  return valueSpec.mode;
+}
+
 function DelayedReachTimelineEditor({
   timeline,
   onChange,
@@ -149,8 +169,14 @@ function DelayedReachTimelineEditor({
   onChange: (timeline: StudioTaskTimelineSpec) => void;
 }) {
   const editableEpochs = timeline.epochs.slice(0, -1);
-  const timelineGridColumns = `6.5rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
-  const timelineMinWidth = `${6.5 + timeline.epochs.length * 4.875}rem`;
+  const preview = delayedReachTimelinePreview(timeline);
+  const timelineGridColumns = `7rem 5.75rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
+  const timelineMinWidth = `${12.75 + timeline.epochs.length * 4.875}rem`;
+  const previewMax = Math.max(
+    preview.n_steps ?? 0,
+    ...preview.epochs.map((epoch) => epoch.end_max),
+    1
+  );
   return (
     <section className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
@@ -164,6 +190,7 @@ function DelayedReachTimelineEditor({
               style={{ gridTemplateColumns: timelineGridColumns }}
             >
               <div className="px-3 py-1.5">Signal</div>
+              <div className="border-l border-slate-100 px-2 py-1.5 text-center">Value</div>
               {timeline.epochs.map((epoch) => (
                 <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
                   {epoch.id.replace(/^epoch:/, '')}
@@ -176,6 +203,9 @@ function DelayedReachTimelineEditor({
             >
               <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
                 Length
+              </div>
+              <div className="border-l border-slate-100 px-2 py-1.5 text-center text-[10px] text-slate-400">
+                steps
               </div>
               {timeline.epochs.map((epoch) => {
                 const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
@@ -245,6 +275,9 @@ function DelayedReachTimelineEditor({
                 <div className="truncate px-2.5 py-1.5 font-medium text-slate-600">
                   {signal.label}
                 </div>
+                <div className="truncate border-l border-slate-100 px-2 py-1.5 text-center text-[10px] font-medium text-slate-500">
+                  {formatValueSpec(signal.value_spec)}
+                </div>
                 {timeline.epochs.map((epoch) => (
                   <label
                     key={epoch.id}
@@ -278,6 +311,26 @@ function DelayedReachTimelineEditor({
           Length ranges are sampled per trial; final epoch uses remaining steps.
         </div>
       )}
+      <div className="space-y-1 rounded border border-slate-100 bg-slate-50/60 px-2 py-2">
+        {preview.signals.map((signal) => (
+          <div key={signal.id} className="grid grid-cols-[6.25rem_1fr] items-center gap-2">
+            <div className="truncate text-[10px] font-medium text-slate-500">{signal.label}</div>
+            <div className="relative h-3 overflow-hidden rounded bg-white">
+              {signal.active_ranges.map((range, index) => {
+                const left = `${(range.start_min / previewMax) * 100}%`;
+                const width = `${Math.max(1.5, ((range.end_max - range.start_min) / previewMax) * 100)}%`;
+                return (
+                  <div
+                    key={`${signal.id}-${index}`}
+                    className="absolute top-0 h-full rounded bg-emerald-400"
+                    style={{ left, width }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -294,6 +347,7 @@ export function TaskScenarioPanel() {
   const updateTaskBindingSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioTaskBindingSpec
   );
+  const updateScenarioDraft = useWorkspaceStore((state) => state.updateScenarioDraft);
   const topPane = getTopPaneState(workspace);
   const scenario = getTrainingScenario(workspace);
   const task = scenario?.task_spec ?? TASK_CATALOG[0];
@@ -359,7 +413,23 @@ export function TaskScenarioPanel() {
     markDirty();
   };
   const updateTimeline = (nextTimeline: StudioTaskTimelineSpec) => {
-    updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
+    const edited = applyDelayedReachTimelineEdit(task, taskBindingSpec, nextTimeline);
+    if (scenario?.id) {
+      updateScenarioDraft(
+        scenario.id,
+        {
+          task_spec: edited.task_spec,
+          task_binding_spec: ensureTaskBindingSpec(
+            edited.task_binding_spec,
+            graph,
+            edited.task_spec
+          ),
+        },
+        'task_timeline_updated'
+      );
+    } else {
+      updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
+    }
     markDirty();
   };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {

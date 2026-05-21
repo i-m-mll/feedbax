@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyDelayedReachTimelineEdit,
   delayedReachTaskWithTimeline,
+  delayedReachTimelinePreview,
   delayedReachTimelineFromTask,
   toggleDelayedReachSignalEpoch,
   updateDelayedReachEpochRange,
 } from './taskTimeline';
 import type { TaskSpec } from '@/types/training';
+import type { StudioTaskBindingSpec } from '@/types/workspace';
 
 const task: TaskSpec = {
   type: 'DelayedReaches',
@@ -44,7 +47,22 @@ describe('delayed reach task timeline helpers', () => {
       'epoch:1',
       'epoch:2',
     ]);
-    expect(timeline.signals.find((signal) => signal.id === 'move')).toMatchObject({
+    expect(timeline.signals.map((signal) => signal.id)).toEqual([
+      'target_position',
+      'hold',
+      'target_on',
+      'movement_target',
+    ]);
+    expect(timeline.signals.find((signal) => signal.id === 'target_position')).toMatchObject({
+      task_data_id: 'target_position',
+      epoch_ids: ['epoch:1', 'epoch:2'],
+      value_spec: {
+        mode: 'function',
+        function_id: 'delayed_reach_target_position',
+      },
+    });
+    expect(timeline.signals.find((signal) => signal.id === 'movement_target')).toMatchObject({
+      task_data_id: 'movement_target',
       value_schema: {
         kind: 'task_target',
         dtype: 'float32',
@@ -56,11 +74,15 @@ describe('delayed reach task timeline helpers', () => {
           materializes_to: { dtype: 'float32', shape: ['time', 2] },
         },
       },
+      value_spec: {
+        mode: 'function',
+        function_id: 'delayed_reach_movement_target',
+      },
       task_data_schema: {
-        id: 'task_data:move',
+        id: 'task_data:movement_target',
         path: 'targets.effector',
         value_schema: {
-          id: 'value:task_timeline:move',
+          id: 'value:task_timeline:movement_target',
         },
       },
     });
@@ -89,5 +111,75 @@ describe('delayed reach task timeline helpers', () => {
     ]);
     expect(editedTask.params.hold_epochs).toEqual([0]);
     expect(editedTask.timeline?.schema_version).toBe('feedbax.studio.task_timeline.v1');
+    expect(editedRange.epochs[1].length.metadata.value_schema_id).toBe(
+      'value:task_timeline:epoch_length'
+    );
+  });
+
+  it('keeps target position and target-on rows linked through target_on_epochs', () => {
+    const timeline = delayedReachTimelineFromTask(task)!;
+
+    const editedSignals = toggleDelayedReachSignalEpoch(
+      timeline,
+      'target_position',
+      'epoch:0',
+      true
+    );
+    const editedTask = delayedReachTaskWithTimeline(task, editedSignals);
+
+    expect(
+      editedSignals.signals.find((signal) => signal.id === 'target_position')?.epoch_ids
+    ).toEqual(['epoch:0', 'epoch:1', 'epoch:2']);
+    expect(editedSignals.signals.find((signal) => signal.id === 'target_on')?.epoch_ids).toEqual([
+      'epoch:0',
+      'epoch:1',
+      'epoch:2',
+    ]);
+    expect(editedTask.params.target_on_epochs).toEqual([0, 1, 2]);
+  });
+
+  it('previews sampled epoch ranges and remaining final epoch', () => {
+    const timeline = delayedReachTimelineFromTask(task)!;
+
+    const preview = delayedReachTimelinePreview(timeline);
+
+    expect(preview.epochs).toMatchObject([
+      { id: 'epoch:0', start_min: 0, start_max: 0, end_min: 0, end_max: 1 },
+      { id: 'epoch:1', start_min: 0, start_max: 1, end_min: 10, end_max: 31 },
+      { id: 'epoch:2', start_min: 10, start_max: 31, end_min: 140, end_max: 140 },
+    ]);
+    expect(preview.signals.find((signal) => signal.id === 'movement_target')).toMatchObject({
+      active_epoch_ids: ['epoch:2'],
+      active_ranges: [{ start_min: 10, end_max: 140 }],
+    });
+  });
+
+  it('applies timeline edits to task params and Task Data value specs', () => {
+    const timeline = delayedReachTimelineFromTask(task)!;
+    const taskBindingSpec: StudioTaskBindingSpec = {
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [
+        {
+          id: 'target_position',
+          label: 'Target position',
+          kind: 'signal',
+          role: 'model_input',
+          path: 'inputs.effector_target.pos',
+          bindable: true,
+          metadata: {},
+        },
+      ],
+      bindings: [],
+      metadata: {},
+    };
+
+    const edited = applyDelayedReachTimelineEdit(task, taskBindingSpec, timeline);
+
+    expect(edited.task_spec.params.move_epochs).toEqual([2]);
+    expect(edited.task_binding_spec?.exposed_data[0].value_spec).toMatchObject({
+      mode: 'function',
+      function_id: 'delayed_reach_target_position',
+    });
+    expect(edited.task_binding_spec?.metadata.updated_from).toBe('task_timeline_editor');
   });
 });
