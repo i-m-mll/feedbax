@@ -31,6 +31,9 @@ const MIN_WIDTH = 180;
 const MIN_HEIGHT = 96;
 const TASK_SOURCE_NODE_WIDTH = 112;
 const TASK_SOURCE_NODE_GAP = 24;
+const COLLAPSED_TASK_SOURCE_ROW_HEIGHT = 20;
+const COLLAPSED_TASK_SOURCE_ROW_GAP = 4;
+const COLLAPSED_STATE_HANDLE_CENTER_OFFSET = 4;
 
 export function CustomNode({ id, data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
@@ -117,6 +120,13 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const totalPorts = inputCount + outputCount;
   const canCollapse = totalPorts > 1;
   const collapsedEffective = collapsed && canCollapse;
+  const collapsedTaskHintHeight =
+    taskHintEntries.length * COLLAPSED_TASK_SOURCE_ROW_HEIGHT +
+    Math.max(0, taskHintEntries.length - 1) * COLLAPSED_TASK_SOURCE_ROW_GAP;
+  const collapsedTaskHintEndpointX = reversed
+    ? COLLAPSED_STATE_HANDLE_CENTER_OFFSET
+    : TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP - COLLAPSED_STATE_HANDLE_CENTER_OFFSET;
+  const collapsedTaskHintStartX = reversed ? TASK_SOURCE_NODE_GAP : TASK_SOURCE_NODE_WIDTH;
   const connectedInputs = new Set(nodeData.connected_inputs ?? []);
   const connectedOutputs = new Set(nodeData.connected_outputs ?? []);
   const hasStateIn = nodeData.state_in ?? false;
@@ -135,7 +145,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const updateNodeInternals = useUpdateNodeInternals();
   useEffect(() => {
     updateNodeInternals(id);
-  }, [id, inputPorts, reversed, updateNodeInternals]);
+  }, [collapsedEffective, height, id, inputPorts, reversed, updateNodeInternals, width]);
 
   // Check if this node has any highlighted ports
   const highlightedPorts = useMemo(() => {
@@ -240,36 +250,60 @@ export function CustomNode({ id, data, selected }: NodeProps) {
       />
       {collapsedEffective && showTaskSourceHints && taskHintEntries.length > 0 && (
         <div
-          className="pointer-events-none absolute z-[1] flex flex-col gap-1"
+          className="pointer-events-none absolute z-[1]"
           style={{
             top: HEADER_HEIGHT / 2,
             [reversed ? 'right' : 'left']: -(TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP),
             width: TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP,
+            height: collapsedTaskHintHeight,
             transform: 'translateY(-50%)',
           }}
           aria-hidden="true"
         >
-          <div
-            className="absolute top-1/2 h-[calc(100%-10px)] w-px -translate-y-1/2 bg-emerald-300"
-            style={reversed ? { left: 0 } : { right: 0 }}
-          />
-          {taskHintEntries.map(({ port, taskLabel }) => (
-            <div key={`collapsed-task-source-${port}`} className="flex h-5 items-center">
-              {reversed ? (
-                <>
-                  <div className="h-px flex-1 bg-emerald-300" />
-                  <div className="max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft">
-                    {taskLabel}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft">
-                    {taskLabel}
-                  </div>
-                  <div className="h-px flex-1 bg-emerald-300" />
-                </>
-              )}
+          <svg
+            className="absolute inset-0 overflow-visible"
+            width={TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP}
+            height={collapsedTaskHintHeight}
+            viewBox={`0 0 ${TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP} ${collapsedTaskHintHeight}`}
+            aria-hidden="true"
+          >
+            {taskHintEntries.map(({ port }, index) => {
+              const y =
+                index * (COLLAPSED_TASK_SOURCE_ROW_HEIGHT + COLLAPSED_TASK_SOURCE_ROW_GAP) +
+                COLLAPSED_TASK_SOURCE_ROW_HEIGHT / 2;
+              const controlOffset = Math.max(14, TASK_SOURCE_NODE_GAP * 0.8);
+              const path = reversed
+                ? `M ${collapsedTaskHintStartX} ${y} C ${TASK_SOURCE_NODE_GAP * 0.45} ${y}, ${controlOffset} ${collapsedTaskHintHeight / 2}, ${collapsedTaskHintEndpointX} ${collapsedTaskHintHeight / 2}`
+                : `M ${collapsedTaskHintStartX} ${y} C ${
+                    TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP * 0.55
+                  } ${y}, ${
+                    collapsedTaskHintEndpointX - controlOffset
+                  } ${collapsedTaskHintHeight / 2}, ${collapsedTaskHintEndpointX} ${
+                    collapsedTaskHintHeight / 2
+                  }`;
+              return (
+                <path
+                  key={`collapsed-task-source-path-${port}`}
+                  d={path}
+                  fill="none"
+                  stroke="#6ee7b7"
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                />
+              );
+            })}
+          </svg>
+          {taskHintEntries.map(({ port, taskLabel }, index) => (
+            <div
+              key={`collapsed-task-source-${port}`}
+              className="absolute max-w-[112px] truncate rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 shadow-soft"
+              style={{
+                top: index * (COLLAPSED_TASK_SOURCE_ROW_HEIGHT + COLLAPSED_TASK_SOURCE_ROW_GAP),
+                [reversed ? 'right' : 'left']: 0,
+                width: TASK_SOURCE_NODE_WIDTH,
+              }}
+            >
+              {taskLabel}
             </div>
           ))}
         </div>
@@ -320,7 +354,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
         {/* Right slot: action icons + type (normal) or name+chevron (reversed) */}
         <div className={clsx('flex items-center gap-2 shrink-0', reversed && 'ml-auto')}>
           <button
-            className="text-slate-400 hover:text-brand-600"
+            className="shrink-0 text-slate-400 hover:text-brand-600"
             onClick={(event) => {
               event.stopPropagation();
               toggleNodeReversed(label);
@@ -331,7 +365,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
           </button>
           {isComposite && (
             <button
-              className="text-slate-400 hover:text-brand-600"
+              className="shrink-0 text-slate-400 hover:text-brand-600"
               onClick={(event) => {
                 event.stopPropagation();
                 enterSubgraph(label);

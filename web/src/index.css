@@ -70,3 +70,22 @@ body {
 .react-flow__resize-control.line.bottom {
   height: 8px;
 }
+
+.local-x-scrollbar::-webkit-scrollbar {
+  height: 9px;
+}
+
+.local-x-scrollbar::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 999px;
+}
+
+.local-x-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border: 2px solid #f1f5f9;
+  border-radius: 999px;
+}
+
+.local-x-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

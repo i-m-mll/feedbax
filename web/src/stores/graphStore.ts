@@ -1363,7 +1363,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
   restoreSnapshot: (snapshot) => {
     const { edgeStyle } = snapshot;
-    const graph = normalizeDynamicPorts(snapshot.graph);
+    const graph = normalizeDynamicPorts(migrateGraphSpec(snapshot.graph));
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     set({
       graphId: snapshot.graphId,

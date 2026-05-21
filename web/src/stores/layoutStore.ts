@@ -8,6 +8,7 @@ interface LayoutStoreState {
   initialized: boolean;
   resizeMode: boolean;
   leftSidebarWidth: number;
+  taskSidebarWidth: number;
   rightSidebarWidth: number;
   leftSidebarVisible: boolean;
   rightSidebarVisible: boolean;
@@ -19,6 +20,7 @@ interface LayoutStoreState {
   initializeBottomHeight: (availableHeight: number) => void;
   toggleResizeMode: () => void;
   setLeftSidebarWidth: (width: number) => void;
+  setTaskSidebarWidth: (width: number) => void;
   setRightSidebarWidth: (width: number) => void;
   toggleLeftSidebar: () => void;
   toggleRightSidebar: () => void;
@@ -38,9 +40,12 @@ const DEFAULT_SPLIT_RATIO = 0.5;
 
 export const MIN_LEFT_WIDTH = 200;
 export const MAX_LEFT_WIDTH = 400;
+export const MIN_TASK_SIDEBAR_WIDTH = 320;
+export const MAX_TASK_SIDEBAR_WIDTH = 640;
 export const MIN_RIGHT_WIDTH = 240;
 export const MAX_RIGHT_WIDTH = 500;
 export const DEFAULT_LEFT_WIDTH = 256;
+export const DEFAULT_TASK_SIDEBAR_WIDTH = 440;
 export const DEFAULT_RIGHT_WIDTH = 320;
 export const MIN_BOTTOM_SIDEBAR_WIDTH = 200;
 export const MAX_BOTTOM_SIDEBAR_WIDTH = 400;
@@ -54,6 +59,9 @@ const clampBottomHeight = (height: number, availableHeight: number) => {
 
 const clampLeftWidth = (width: number) =>
   Math.max(MIN_LEFT_WIDTH, Math.min(MAX_LEFT_WIDTH, width));
+
+const clampTaskSidebarWidth = (width: number) =>
+  Math.max(MIN_TASK_SIDEBAR_WIDTH, Math.min(MAX_TASK_SIDEBAR_WIDTH, width));
 
 const clampRightWidth = (width: number) =>
   Math.max(MIN_RIGHT_WIDTH, Math.min(MAX_RIGHT_WIDTH, width));
@@ -70,6 +78,7 @@ export const useLayoutStore = create<LayoutStoreState>()(
       initialized: false,
       resizeMode: false,
       leftSidebarWidth: DEFAULT_LEFT_WIDTH,
+      taskSidebarWidth: DEFAULT_TASK_SIDEBAR_WIDTH,
       rightSidebarWidth: DEFAULT_RIGHT_WIDTH,
       leftSidebarVisible: true,
       rightSidebarVisible: true,
@@ -138,6 +147,9 @@ export const useLayoutStore = create<LayoutStoreState>()(
       setLeftSidebarWidth: (width) => {
         set({ leftSidebarWidth: clampLeftWidth(width) });
       },
+      setTaskSidebarWidth: (width) => {
+        set({ taskSidebarWidth: clampTaskSidebarWidth(width) });
+      },
       setRightSidebarWidth: (width) => {
         set({ rightSidebarWidth: clampRightWidth(width) });
       },
@@ -161,6 +173,7 @@ export const useLayoutStore = create<LayoutStoreState>()(
         bottomCollapsed: state.bottomCollapsed,
         bottomHeight: state.bottomHeight,
         leftSidebarWidth: state.leftSidebarWidth,
+        taskSidebarWidth: state.taskSidebarWidth,
         rightSidebarWidth: state.rightSidebarWidth,
         leftSidebarVisible: state.leftSidebarVisible,
         rightSidebarVisible: state.rightSidebarVisible,
