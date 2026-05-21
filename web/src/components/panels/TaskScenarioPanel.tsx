@@ -149,15 +149,15 @@ function DelayedReachTimelineEditor({
   onChange: (timeline: StudioTaskTimelineSpec) => void;
 }) {
   const editableEpochs = timeline.epochs.slice(0, -1);
-  const timelineGridColumns = `8rem repeat(${timeline.epochs.length}, minmax(6.75rem, 1fr))`;
-  const timelineMinWidth = `${8 + timeline.epochs.length * 6.75}rem`;
+  const timelineGridColumns = `6.5rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
+  const timelineMinWidth = `${6.5 + timeline.epochs.length * 4.875}rem`;
   return (
     <section className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
         Timeline
       </div>
       <div className="overflow-hidden rounded border border-slate-100">
-        <div className="overflow-x-auto">
+        <div className="local-x-scrollbar overflow-x-scroll pb-2">
           <div className="w-full" style={{ minWidth: timelineMinWidth }}>
             <div
               className="grid bg-slate-50/80 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-400"
@@ -165,8 +165,8 @@ function DelayedReachTimelineEditor({
             >
               <div className="px-3 py-1.5">Signal</div>
               {timeline.epochs.map((epoch) => (
-                <div key={epoch.id} className="border-l border-slate-100 px-3 py-1.5 text-center">
-                  {epoch.label}
+                <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
+                  {epoch.id.replace(/^epoch:/, '')}
                 </div>
               ))}
             </div>
@@ -181,33 +181,55 @@ function DelayedReachTimelineEditor({
                 const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
                 const inferred = Boolean(epoch.length.metadata.inferred_from_remaining_steps);
                 return (
-                  <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5">
+                  <div key={epoch.id} className="border-l border-slate-100 px-1.5 py-1.5">
                     {inferred ? (
                       <div className="whitespace-nowrap text-center text-[10px] text-slate-400">
                         remaining
                       </div>
                     ) : (
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {(['min', 'max'] as const).map((key) => (
+                      <div className="grid gap-1">
+                        <div className="grid grid-cols-[0.55rem_2.45rem] justify-center">
+                          <span aria-hidden="true" />
                           <input
-                            key={key}
                             type="number"
                             min={0}
-                            value={Number(value?.[key] ?? 0)}
+                            value={Number(value?.min ?? 0)}
                             onChange={(event) =>
                               onChange(
                                 updateDelayedReachEpochRange(
                                   timeline,
                                   epoch.id,
-                                  key,
+                                  'min',
                                   Number(event.target.value)
                                 )
                               )
                             }
-                            className="h-6 min-w-[3rem] rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
-                            aria-label={`${epoch.label} ${key} length`}
+                            className="h-6 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
+                            aria-label={`${epoch.label} min length`}
                           />
-                        ))}
+                        </div>
+                        <div className="grid grid-cols-[0.55rem_2.45rem] justify-center">
+                          <span className="select-none self-center text-center text-[11px] text-slate-400">
+                            -
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={Number(value?.max ?? 0)}
+                            onChange={(event) =>
+                              onChange(
+                                updateDelayedReachEpochRange(
+                                  timeline,
+                                  epoch.id,
+                                  'max',
+                                  Number(event.target.value)
+                                )
+                              )
+                            }
+                            className="h-6 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
+                            aria-label={`${epoch.label} max length`}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -220,7 +242,7 @@ function DelayedReachTimelineEditor({
                 className="grid items-center border-t border-slate-100 text-xs"
                 style={{ gridTemplateColumns: timelineGridColumns }}
               >
-                <div className="truncate px-3 py-1.5 font-medium text-slate-600">
+                <div className="truncate px-2.5 py-1.5 font-medium text-slate-600">
                   {signal.label}
                 </div>
                 {timeline.epochs.map((epoch) => (
@@ -381,17 +403,18 @@ export function TaskScenarioPanel() {
         ref={taskDataSectionRef}
         className="shrink-0 border-b border-slate-100 bg-white py-3 pl-4 pr-0"
       >
-        <div className="overflow-visible rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center rounded-t-lg border-b border-slate-100 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800">
-            Task Data
+        <div className="ml-auto w-fit min-w-[15rem] max-w-[calc(100%-1.25rem)] overflow-visible rounded-xl border-2 border-slate-200 bg-white/90 shadow-soft backdrop-blur">
+          <div className="flex items-center justify-between gap-3 rounded-t-xl border-b border-slate-100 bg-slate-50/70 px-3 py-2">
+            <div className="min-w-0 truncate text-sm font-medium text-slate-800">Task Data</div>
+            <div className="shrink-0 text-[11px] text-slate-500">Task</div>
           </div>
-          <div className="space-y-1 px-3 py-2">
+          <div className="space-y-1 px-3 py-2 text-xs text-slate-600">
           {bindableData.map((data) => (
             <div
               key={data.id}
-              className="relative flex h-7 items-center justify-end pr-3 text-xs"
+              className="relative flex h-7 items-center justify-end overflow-hidden pr-3"
             >
-              <span className="min-w-0 truncate text-right font-medium text-slate-700">
+              <span className="min-w-0 truncate text-right text-slate-600">
                 {data.label}
               </span>
               <span
