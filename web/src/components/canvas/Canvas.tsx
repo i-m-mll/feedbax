@@ -18,7 +18,6 @@ import {
   ReactFlow,
   Panel,
   Position,
-  useNodesInitialized,
   useReactFlow,
   useViewport,
   type Connection,
@@ -496,7 +495,6 @@ export function Canvas() {
   const { components } = useComponents();
   const reactFlow = useReactFlow();
   const viewport = useViewport();
-  const nodesInitialized = useNodesInitialized();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
   const fittedGraphKey = useRef<string | null>(null);
@@ -906,14 +904,28 @@ export function Canvas() {
   );
 
   useEffect(() => {
-    if (!nodesInitialized || nodes.length === 0 || fittedGraphKey.current === graphViewKey) {
+    if (nodes.length === 0 || fittedGraphKey.current === graphViewKey) {
       return;
     }
     fittedGraphKey.current = graphViewKey;
-    requestAnimationFrame(() => {
-      reactFlow.fitView({ ...DEFAULT_FIT_VIEW_OPTIONS, duration: 0 });
+    let cancelled = false;
+    let frame = 0;
+    const timeouts: number[] = [];
+    const fit = () => {
+      if (cancelled) return;
+      void reactFlow.fitView({ ...DEFAULT_FIT_VIEW_OPTIONS, duration: 0 });
+    };
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      fit();
     });
-  }, [graphViewKey, nodes.length, nodesInitialized, reactFlow]);
+    timeouts.push(window.setTimeout(fit, 50), window.setTimeout(fit, 150));
+    return () => {
+      cancelled = true;
+      if (frame) cancelAnimationFrame(frame);
+      timeouts.forEach((timeout) => window.clearTimeout(timeout));
+    };
+  }, [graphViewKey, nodes.length, reactFlow]);
 
   const isStateHandle = (handleId?: string | null) =>
     typeof handleId === 'string' && handleId.startsWith('__state');
