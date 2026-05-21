@@ -3,6 +3,7 @@ import {
   createDefaultTaskBindingSpec,
   defaultTaskData,
   ensureTaskBindingSpec,
+  targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
@@ -126,5 +127,36 @@ describe('task data bindings', () => {
 
     expect(spec.exposed_data.map((item) => item.id)).not.toContain('inputs');
     expect(spec.bindings).toEqual([]);
+  });
+
+  it('treats task data occupancy as target-scoped so one datum can fan out', () => {
+    const spec: StudioTaskBindingSpec = {
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [
+        {
+          id: 'target_on',
+          label: 'Target shown',
+          kind: 'signal',
+          role: 'model_input',
+          path: 'inputs.target_on',
+          bindable: true,
+          metadata: {},
+        },
+      ],
+      bindings: [
+        {
+          id: 'task:target_on->task_mux:in_2',
+          source_data_id: 'target_on',
+          target_node_id: 'task_mux',
+          target_port: 'in_2',
+          role: 'model_input',
+          metadata: {},
+        },
+      ],
+      metadata: {},
+    };
+
+    expect(targetInputOccupied(graphWithTaskMux, spec, 'task_mux', 'in_2')).toBe(true);
+    expect(targetInputOccupied(graphWithTaskMux, spec, 'task_mux', 'in_3')).toBe(false);
   });
 });

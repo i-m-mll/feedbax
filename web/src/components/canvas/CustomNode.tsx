@@ -234,6 +234,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
           width: '8px',
           height: '8px',
+          zIndex: 40,
         }}
         className="w-2 h-2 z-20 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
       />
@@ -286,6 +287,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
             : 'polygon(0% 0%, 100% 50%, 0% 100%)',
           width: '8px',
           height: '8px',
+          zIndex: 40,
         }}
         className="w-2 h-2 z-20 border-2 border-white shadow-soft cursor-crosshair bg-slate-600"
       />
@@ -374,6 +376,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                     : 'polygon(0% 0%, 100% 50%, 0% 100%)',
                   width: '8px',
                   height: '8px',
+                  zIndex: 40,
                 }}
                 className={clsx(
                   'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',
@@ -395,7 +398,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
               return (
                 <div
                   key={`task-source-${port}`}
-                  className="pointer-events-none absolute z-10 flex items-center"
+                  className="pointer-events-none absolute z-[1] flex items-center"
                   style={{
                     top: rowCenterInBody(index),
                     [side]: -(TASK_SOURCE_NODE_WIDTH + TASK_SOURCE_NODE_GAP),
@@ -437,6 +440,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
                   : 'polygon(0% 0%, 100% 50%, 0% 100%)',
                 width: '8px',
                 height: '8px',
+                zIndex: 40,
               }}
               className={clsx(
                 'w-2 h-2 z-20 border border-white shadow-soft transition-all duration-150 bg-slate-400',

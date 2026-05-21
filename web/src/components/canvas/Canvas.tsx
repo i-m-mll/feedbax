@@ -19,6 +19,7 @@ import {
   Position,
   useNodesInitialized,
   useReactFlow,
+  useViewport,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -40,6 +41,7 @@ import {
 } from '@/features/scenario/entities';
 import {
   ensureTaskBindingSpec,
+  taskBindingId,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import {
@@ -61,13 +63,23 @@ import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-r
 
 interface TaskSourceNodeData extends Record<string, unknown> {
   label: string;
+  handleSize: number;
+}
+
+interface TaskBindingEdgeData extends Record<string, unknown> {
+  task_binding_id?: string;
+  source_data_id?: string;
+  target_node_id?: string;
+  target_port?: string;
 }
 
 function TaskSourceNode({ data }: NodeProps) {
   const nodeData = data as TaskSourceNodeData;
+  const handleSize = Number(nodeData.handleSize) || TASK_SOURCE_HANDLE_SCREEN_SIZE;
   return (
     <div
-      className="relative h-5 w-5"
+      className="relative"
+      style={{ width: handleSize, height: handleSize }}
       aria-label={`${nodeData.label} task data source`}
       title={`${nodeData.label} task data source`}
     >
@@ -75,12 +87,12 @@ function TaskSourceNode({ data }: NodeProps) {
         type="source"
         position={Position.Right}
         id="out"
-        className="h-5 w-5 cursor-crosshair border-0 bg-transparent opacity-0"
+        className="cursor-crosshair border-0 bg-transparent opacity-0"
         style={{
           left: 0,
           top: 0,
-          width: TASK_SOURCE_HANDLE_SIZE,
-          height: TASK_SOURCE_HANDLE_SIZE,
+          width: handleSize,
+          height: handleSize,
           transform: 'none',
         }}
       />
@@ -95,6 +107,7 @@ function TaskBindingEdge({
   targetY,
   sourcePosition,
   targetPosition,
+  data,
 }: EdgeProps) {
   const [path] = getBezierPath({
     sourceX,
@@ -104,13 +117,75 @@ function TaskBindingEdge({
     sourcePosition,
     targetPosition,
   });
+  const edgeData = data as TaskBindingEdgeData | undefined;
+  const [taskPath, setTaskPath] = useState<string | null>(null);
+  const bindingKey =
+    edgeData?.task_binding_id &&
+    edgeData.source_data_id &&
+    edgeData.target_node_id &&
+    edgeData.target_port
+      ? [
+          edgeData.task_binding_id,
+          edgeData.source_data_id,
+          edgeData.target_node_id,
+          edgeData.target_port,
+        ].join(':')
+      : null;
+
+  useEffect(() => {
+    if (
+      !bindingKey ||
+      !edgeData?.source_data_id ||
+      !edgeData.target_node_id ||
+      !edgeData.target_port
+    ) {
+      setTaskPath(null);
+      return undefined;
+    }
+    const binding: Pick<
+      StudioTaskBinding,
+      'source_data_id' | 'target_node_id' | 'target_port'
+    > = {
+      source_data_id: edgeData.source_data_id,
+      target_node_id: edgeData.target_node_id,
+      target_port: edgeData.target_port,
+    };
+    const container = document.querySelector<HTMLElement>('[data-studio-canvas-root="true"]');
+    if (!container) {
+      setTaskPath(null);
+      return undefined;
+    }
+
+    let frame = 0;
+    let active = true;
+    let lastPath: string | null = null;
+    const update = () => {
+      const nextPath = taskBindingFlowPath(container, binding);
+      if (nextPath !== lastPath) {
+        lastPath = nextPath;
+        setTaskPath(nextPath);
+      }
+      if (active) frame = requestAnimationFrame(update);
+    };
+    update();
+    return () => {
+      active = false;
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [bindingKey, edgeData?.source_data_id, edgeData?.target_node_id, edgeData?.target_port]);
+
   return (
     <path
       className="react-flow__edge-path"
-      d={path}
+      d={taskPath ?? path}
       fill="none"
-      stroke="transparent"
-      strokeWidth={18}
+      stroke="rgba(0, 0, 0, 0)"
+      style={{
+        stroke: 'rgba(0, 0, 0, 0)',
+        strokeWidth: 22,
+        pointerEvents: 'stroke',
+      }}
+      strokeWidth={22}
       strokeLinecap="round"
       pointerEvents="stroke"
     />
@@ -134,7 +209,7 @@ const DEFAULT_FIT_VIEW_OPTIONS = { padding: 0.22, maxZoom: 1 } as const;
 const TASK_BINDING_ENTITY_PREFIX = 'task_binding:';
 const TASK_SOURCE_NODE_PREFIX = '__task_data_source__:';
 const TASK_BINDING_EDGE_PREFIX = '__task_binding_edge__:';
-const TASK_SOURCE_HANDLE_SIZE = 20;
+const TASK_SOURCE_HANDLE_SCREEN_SIZE = 10;
 
 function taskSourceNodeId(dataId: string): string {
   return `${TASK_SOURCE_NODE_PREFIX}${dataId}`;
@@ -186,10 +261,22 @@ function screenToCanvasFlowPosition(
   };
 }
 
-function taskBindingPath(
+type TaskBindingEndpoint = Pick<
+  StudioTaskBinding,
+  'source_data_id' | 'target_node_id' | 'target_port'
+>;
+
+interface TaskBindingCurve {
+  source: { x: number; y: number };
+  control1: { x: number; y: number };
+  control2: { x: number; y: number };
+  target: { x: number; y: number };
+}
+
+function taskBindingCurve(
   container: HTMLElement,
-  binding: StudioTaskBinding
-): string | null {
+  binding: TaskBindingEndpoint
+): TaskBindingCurve | null {
   const containerRect = container.getBoundingClientRect();
   const sourcePort = document.querySelector<HTMLElement>(
     `[data-task-data-port-id="${cssSelectorValue(binding.source_data_id)}"]`
@@ -209,18 +296,67 @@ function taskBindingPath(
 
   const sourceRect = sourcePort.getBoundingClientRect();
   const targetRect = targetHandle.getBoundingClientRect();
-  const sourceX =
-    Math.max(
-      containerRect.left + 1,
-      Math.min(containerRect.right - 1, sourceRect.left + sourceRect.width / 2)
-    ) - containerRect.left;
-  const sourceY = sourceRect.top + sourceRect.height / 2 - containerRect.top;
-  const targetX = targetRect.left + targetRect.width / 2 - containerRect.left;
-  const targetY = targetRect.top + targetRect.height / 2 - containerRect.top;
+  const sourceX = Math.max(
+    containerRect.left + 1,
+    Math.min(containerRect.right - 1, sourceRect.left + sourceRect.width / 2)
+  );
+  const sourceY = sourceRect.top + sourceRect.height / 2;
+  const targetX = targetRect.left + targetRect.width / 2;
+  const targetY = targetRect.top + targetRect.height / 2;
   const controlOffset = Math.max(48, Math.abs(targetX - sourceX) * 0.45);
-  return `M ${sourceX} ${sourceY} C ${sourceX + controlOffset} ${sourceY}, ${
-    targetX - controlOffset
-  } ${targetY}, ${targetX} ${targetY}`;
+  return {
+    source: { x: sourceX, y: sourceY },
+    control1: { x: sourceX + controlOffset, y: sourceY },
+    control2: { x: targetX - controlOffset, y: targetY },
+    target: { x: targetX, y: targetY },
+  };
+}
+
+function curvePath(curve: TaskBindingCurve): string {
+  return `M ${curve.source.x} ${curve.source.y} C ${curve.control1.x} ${curve.control1.y}, ${
+    curve.control2.x
+  } ${curve.control2.y}, ${curve.target.x} ${curve.target.y}`;
+}
+
+function taskBindingPath(
+  container: HTMLElement,
+  binding: TaskBindingEndpoint
+): string | null {
+  const containerRect = container.getBoundingClientRect();
+  const curve = taskBindingCurve(container, binding);
+  if (!curve) return null;
+  return curvePath({
+    source: {
+      x: curve.source.x - containerRect.left,
+      y: curve.source.y - containerRect.top,
+    },
+    control1: {
+      x: curve.control1.x - containerRect.left,
+      y: curve.control1.y - containerRect.top,
+    },
+    control2: {
+      x: curve.control2.x - containerRect.left,
+      y: curve.control2.y - containerRect.top,
+    },
+    target: {
+      x: curve.target.x - containerRect.left,
+      y: curve.target.y - containerRect.top,
+    },
+  });
+}
+
+function taskBindingFlowPath(
+  container: HTMLElement,
+  binding: TaskBindingEndpoint
+): string | null {
+  const curve = taskBindingCurve(container, binding);
+  if (!curve) return null;
+  return curvePath({
+    source: screenToCanvasFlowPosition(curve.source, container),
+    control1: screenToCanvasFlowPosition(curve.control1, container),
+    control2: screenToCanvasFlowPosition(curve.control2, container),
+    target: screenToCanvasFlowPosition(curve.target, container),
+  });
 }
 
 function TaskBindingVisualOverlay({
@@ -281,7 +417,7 @@ function TaskBindingVisualOverlay({
   return (
     <svg
       className="pointer-events-none absolute inset-0 h-full w-full"
-      style={{ zIndex: 9 }}
+      style={{ zIndex: 1 }}
       aria-hidden="true"
     >
       {bindings.map((binding) => {
@@ -348,6 +484,7 @@ export function Canvas() {
     : null;
   const { components } = useComponents();
   const reactFlow = useReactFlow();
+  const viewport = useViewport();
   const nodesInitialized = useNodesInitialized();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSize = useRef<{ width: number; height: number } | null>(null);
@@ -380,6 +517,8 @@ export function Canvas() {
     [taskDataSignature]
   );
   const bindableTaskDataKey = bindableTaskData.map((data) => data.id).join('|');
+  const taskSourceHandleSize =
+    TASK_SOURCE_HANDLE_SCREEN_SIZE / Math.max(0.1, viewport.zoom || 1);
 
   const updateTaskSourcePositions = useCallback(() => {
     if (topPane.active_projection !== 'task') {
@@ -413,8 +552,8 @@ export function Canvas() {
         : containerRect.top + 88 + index * 28;
       nextPositions[data.id] = screenToCanvasFlowPosition(
         {
-          x: handleScreenX - TASK_SOURCE_HANDLE_SIZE / 2,
-          y: handleScreenY - TASK_SOURCE_HANDLE_SIZE / 2,
+          x: handleScreenX - TASK_SOURCE_HANDLE_SCREEN_SIZE / 2,
+          y: handleScreenY - TASK_SOURCE_HANDLE_SCREEN_SIZE / 2,
         },
         container
       );
@@ -504,14 +643,14 @@ export function Canvas() {
                 const handleScreenY = sourceRect.top + sourceRect.height / 2;
                 position = screenToCanvasFlowPosition(
                   {
-                    x: handleScreenX - TASK_SOURCE_HANDLE_SIZE / 2,
-                    y: handleScreenY - TASK_SOURCE_HANDLE_SIZE / 2,
+                    x: handleScreenX - TASK_SOURCE_HANDLE_SCREEN_SIZE / 2,
+                    y: handleScreenY - TASK_SOURCE_HANDLE_SCREEN_SIZE / 2,
                   },
                   container
                 );
               } else {
                 position = {
-                  x: -TASK_SOURCE_HANDLE_SIZE,
+                  x: -taskSourceHandleSize,
                   y: 88 + index * 28,
                 };
               }
@@ -520,14 +659,14 @@ export function Canvas() {
               id: taskSourceNodeId(data.id),
               type: 'taskSource',
               position,
-              data: { label: data.label },
+              data: { label: data.label, handleSize: taskSourceHandleSize },
               draggable: false,
               selectable: false,
               deletable: false,
               focusable: false,
               style: {
-                width: TASK_SOURCE_HANDLE_SIZE,
-                height: TASK_SOURCE_HANDLE_SIZE,
+                width: taskSourceHandleSize,
+                height: taskSourceHandleSize,
                 opacity: 0,
                 pointerEvents: 'all',
               },
@@ -535,7 +674,7 @@ export function Canvas() {
             };
           })
         : [],
-    [bindableTaskData, taskSourcePositions, topPane.active_projection]
+    [bindableTaskData, taskSourceHandleSize, taskSourcePositions, topPane.active_projection]
   );
 
   const taskBindingEdges = useMemo<Edge<GraphEdgeData>[]>(
@@ -554,6 +693,8 @@ export function Canvas() {
             data: {
               task_binding_id: binding.id,
               source_data_id: binding.source_data_id,
+              target_node_id: binding.target_node_id,
+              target_port: binding.target_port,
             },
             selected: selectedTaskBindingId === binding.id,
           }))
@@ -638,22 +779,22 @@ export function Canvas() {
     (dataId: string, targetNodeId: string, targetPort: string) => {
       const taskData = taskBindingSpec.exposed_data.find((data) => data.id === dataId);
       if (!taskData?.bindable) return;
+      const nextBindingId = taskBindingId(dataId, targetNodeId, targetPort);
       const existingBinding = taskBindingSpec.bindings.find(
-        (binding) => binding.source_data_id === dataId
+        (binding) => binding.id === nextBindingId
       );
-      if (
-        targetInputOccupied(
-          graph,
-          taskBindingSpec,
-          targetNodeId,
-          targetPort,
-          existingBinding?.id
-        )
-      ) {
+      if (existingBinding) {
+        setSelectedEdge(null);
+        setSelectedNode(null);
+        setSelectedTap(null);
+        selectTopPaneEntity(taskBindingEntityId(existingBinding.id));
+        return;
+      }
+      if (targetInputOccupied(graph, taskBindingSpec, targetNodeId, targetPort)) {
         return;
       }
       const nextBinding: StudioTaskBinding = {
-        id: `task:${dataId}->${targetNodeId}:${targetPort}`,
+        id: nextBindingId,
         source_data_id: dataId,
         target_node_id: targetNodeId,
         target_port: targetPort,
@@ -664,7 +805,7 @@ export function Canvas() {
         ...taskBindingSpec,
         bindings: [
           ...taskBindingSpec.bindings.filter(
-            (binding) => binding.id !== existingBinding?.id && binding.id !== nextBinding.id
+            (binding) => binding.id !== nextBinding.id
           ),
           nextBinding,
         ],
@@ -719,15 +860,11 @@ export function Canvas() {
       const taskDataId = taskDataIdFromSourceNodeId(connection.source);
       if (taskDataId) {
         if (isStateHandle(connection.targetHandle)) return false;
-        const existingBinding = taskBindingSpec.bindings.find(
-          (binding) => binding.source_data_id === taskDataId
-        );
         return !targetInputOccupied(
           graph,
           taskBindingSpec,
           connection.target,
-          connection.targetHandle,
-          existingBinding?.id
+          connection.targetHandle
         );
       }
       const sourceIsState = isStateHandle(connection.sourceHandle);
