@@ -221,7 +221,15 @@ describe('buildWorkspaceSnapshot', () => {
     const scenario = refreshed.scenarios[refreshedTrainStage.scenario_id!];
     expect(scenario.training_spec?.n_batches).toBe(333);
     expect(scenario.task_spec?.params.target_radius).toBe(0.04);
-    expect(scenario.task_binding_spec).toEqual(workspaceOwnedTaskBindingSpec);
+    expect(scenario.task_binding_spec).toMatchObject({
+      ...workspaceOwnedTaskBindingSpec,
+      exposed_data: [
+        { id: 'inputs', bindable: true },
+        { id: 'targets', bindable: false },
+        { id: 'inits', bindable: false },
+        { id: 'intervene', bindable: false },
+      ],
+    });
     expect(scenario.graph?.output_ports).toEqual(['effector']);
   });
 
@@ -375,6 +383,111 @@ describe('buildWorkspaceSnapshot', () => {
       target_id: 'effector',
       path: 'position',
     });
+  });
+
+  it('normalizes task binding specs when restoring workspace snapshots', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph: {
+        ...graph,
+        nodes: {
+          network: {
+            type: 'Network',
+            params: {},
+            input_ports: ['input'],
+            output_ports: ['output'],
+          },
+        },
+      },
+      uiState,
+      trainingSpec,
+      taskSpec: {
+        type: 'DelayedReaches',
+        params: {},
+      },
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
+    const scenario = workspace.scenarios[trainStage.scenario_id!];
+    scenario.task_binding_spec = {
+      schema_version: 'feedbax.studio.task_bindings.v2',
+      exposed_data: [
+        {
+          id: 'inputs',
+          label: 'Inputs',
+          kind: 'signal',
+          role: 'model_input',
+          path: 'inputs',
+          bindable: true,
+          metadata: {},
+        },
+      ],
+      bindings: [
+        {
+          id: 'task:inputs->network:input',
+          source_data_id: 'inputs',
+          target_node_id: 'network',
+          target_port: 'input',
+          role: 'model_input',
+          metadata: {},
+        },
+      ],
+      metadata: {},
+    };
+
+    useWorkspaceStore.getState().setWorkspace(workspace);
+
+    const restored = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
+    expect(restored.task_binding_spec?.exposed_data.map((data) => data.id)).toEqual([
+      'target_position',
+      'hold',
+      'target_on',
+      'movement_target',
+      'inits',
+      'intervene',
+    ]);
+    expect(restored.task_binding_spec?.bindings).toEqual([]);
+  });
+
+  it('retargets active scenario task bindings when a model node is renamed', () => {
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph: {
+        ...graph,
+        nodes: {
+          network: {
+            type: 'Network',
+            params: {},
+            input_ports: ['input'],
+            output_ports: ['output'],
+          },
+        },
+      },
+      uiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot: null,
+      projectName: 'Workspace test',
+    });
+    useWorkspaceStore.getState().setWorkspace(workspace);
+
+    useWorkspaceStore
+      .getState()
+      .retargetActiveScenarioTaskBindingsForNodeRename('network', 'controller');
+
+    const scenario = getTrainingScenario(useWorkspaceStore.getState().workspace)!;
+    expect(scenario.task_binding_spec?.bindings).toEqual([
+      {
+        id: 'task:inputs->controller:input',
+        source_data_id: 'inputs',
+        target_node_id: 'controller',
+        target_port: 'input',
+        role: 'model_input',
+        metadata: {},
+      },
+    ]);
+    expect(scenario.metadata.updated_reason).toBe('task_binding_target_renamed');
   });
 
   it('maps known legacy probe losses onto graph-port substates', () => {

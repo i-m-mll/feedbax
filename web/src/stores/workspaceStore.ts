@@ -3,7 +3,11 @@ import {
   lossSpecFromObjectiveSpec,
   selectorWithSubpath,
 } from '@/features/scenario/objectives';
-import { createDefaultTaskBindingSpec } from '@/features/scenario/taskBindings';
+import {
+  createDefaultTaskBindingSpec,
+  ensureTaskBindingSpec,
+  retargetTaskBindingsForNodeRename,
+} from '@/features/scenario/taskBindings';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -317,6 +321,37 @@ function defaultScenario(
   };
 }
 
+function normalizeScenarioTaskBindingSpec(
+  scenario: StudioScenarioSpec
+): StudioScenarioSpec {
+  if (!scenario.graph) return scenario;
+  const taskBindingSpec = ensureTaskBindingSpec(
+    scenario.task_binding_spec,
+    scenario.graph,
+    scenario.task_spec
+  );
+  if (taskBindingSpec === scenario.task_binding_spec) return scenario;
+  return {
+    ...scenario,
+    task_binding_spec: taskBindingSpec,
+  };
+}
+
+function normalizeWorkspaceTaskBindingSpecs(
+  workspace: StudioWorkspaceSpec | null
+): StudioWorkspaceSpec | null {
+  if (!workspace) return workspace;
+  let changed = false;
+  const scenarios = Object.fromEntries(
+    Object.entries(workspace.scenarios).map(([scenarioId, scenario]) => {
+      const normalized = normalizeScenarioTaskBindingSpec(scenario);
+      if (normalized !== scenario) changed = true;
+      return [scenarioId, normalized];
+    })
+  );
+  return changed ? { ...workspace, scenarios } : workspace;
+}
+
 function analysisPagesFromSnapshot(snapshot: AnalysisSnapshot | null): AnalysisPageWire[] {
   if (!snapshot || snapshot.pages.length === 0) return [];
   return snapshot.pages.map((page) => ({
@@ -441,8 +476,11 @@ export function buildWorkspaceSnapshot({
   const existingTrain = scenarios[trainScenarioId];
   const scenarioTrainingSpec = existingTrain?.training_spec ?? trainingSpec;
   const scenarioTaskSpec = existingTrain?.task_spec ?? taskSpec;
-  const scenarioTaskBindingSpec =
-    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, scenarioTaskSpec);
+  const scenarioTaskBindingSpec = ensureTaskBindingSpec(
+    existingTrain?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, scenarioTaskSpec),
+    graph,
+    scenarioTaskSpec
+  );
   scenarios[trainScenarioId] = {
     ...defaultScenario(trainScenarioId, existingTrain?.label ?? 'Training scenario', trainStage.id),
     ...existingTrain,
@@ -491,12 +529,12 @@ export function buildWorkspaceSnapshot({
     );
   }
 
-  return {
+  return normalizeWorkspaceTaskBindingSpecs({
     ...withStages,
     label: withStages.label || projectName || graph.metadata?.name || 'Studio workspace',
     active_stage_id: withStages.active_stage_id ?? trainStage?.id ?? null,
     scenarios,
-  };
+  })!;
 }
 
 interface WorkspaceStoreState {
@@ -523,6 +561,10 @@ interface WorkspaceStoreState {
   updateActiveScenarioTrainingSpec: (trainingSpec: TrainingSpec) => void;
   updateActiveScenarioTaskSpec: (taskSpec: TaskSpec) => void;
   updateActiveScenarioTaskBindingSpec: (taskBindingSpec: StudioTaskBindingSpec) => void;
+  retargetActiveScenarioTaskBindingsForNodeRename: (
+    previousNodeId: string,
+    nextNodeId: string
+  ) => void;
   updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
   setTopPaneProjection: (projection: StudioTopPaneProjection) => void;
   selectTopPaneEntity: (entityId: string | null, reason?: string) => void;
@@ -596,7 +638,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   lastTrainingLocalRunResult: null,
   lastPipelineMaterializationResult: null,
 
-  setWorkspace: (workspace) => set({ workspace }),
+  setWorkspace: (workspace) => set({ workspace: normalizeWorkspaceTaskBindingSpecs(workspace) }),
 
   setActiveStage: (stageId) =>
     set((state) => {
@@ -790,6 +832,40 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             },
           },
           metadata: markDraftMetadata(state.workspace.metadata, 'task_binding_spec_updated'),
+        },
+      };
+    }),
+
+  retargetActiveScenarioTaskBindingsForNodeRename: (previousNodeId, nextNodeId) =>
+    set((state) => {
+      const scenarioId = activeTrainScenario(state.workspace);
+      if (!state.workspace || !scenarioId) return {};
+      const scenario = state.workspace.scenarios[scenarioId];
+      if (!scenario?.task_binding_spec) return {};
+      const taskBindingSpec = retargetTaskBindingsForNodeRename(
+        scenario.task_binding_spec,
+        previousNodeId,
+        nextNodeId
+      );
+      if (taskBindingSpec === scenario.task_binding_spec) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          scenarios: {
+            ...state.workspace.scenarios,
+            [scenarioId]: {
+              ...scenario,
+              task_binding_spec: taskBindingSpec,
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  draft_owner: 'studio_workspace',
+                },
+                'task_binding_target_renamed'
+              ),
+            },
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, 'task_binding_target_renamed'),
         },
       };
     }),

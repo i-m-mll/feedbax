@@ -16,6 +16,7 @@ import {
   muxInputIndex,
   normalizeDynamicPorts,
 } from '@/features/graph/dynamicPorts';
+import { taskBindingId } from '@/features/scenario/taskBindings';
 
 const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
 const PROTOCOL_TASK_DATA_KINDS = new Set([
@@ -391,12 +392,35 @@ function validateTaskBindings(
   const dataById = new Map(taskData.map((data) => [data.id.replace(/^task_data:/, ''), data]));
   const graphOccupied = new Set(graph.wires.map((wire) => `${wire.target_node}.${wire.target_port}`));
   const bindingTargets = new Set<string>();
+  const bindingIds = new Set<string>();
 
   taskBindingSpec?.bindings.forEach((binding, index) => {
     const path = `task_binding_spec.bindings.${index}`;
     const data = dataById.get(binding.source_data_id);
     const target = findPort(ports, binding.target_node_id, binding.target_port, 'input');
     const targetKey = `${binding.target_node_id}.${binding.target_port}`;
+    const expectedId = taskBindingId(
+      binding.source_data_id,
+      binding.target_node_id,
+      binding.target_port
+    );
+    if (bindingIds.has(binding.id)) {
+      issues.push({
+        type: 'duplicate_task_binding',
+        message: `Task binding ${binding.id} is declared more than once`,
+        severity: 'error',
+        location: { path },
+      });
+    }
+    bindingIds.add(binding.id);
+    if (binding.id !== expectedId) {
+      issues.push({
+        type: 'task_binding_id_mismatch',
+        message: `Task binding id ${binding.id} does not match ${expectedId}`,
+        severity: 'error',
+        location: { path },
+      });
+    }
     if (!data) {
       issues.push({
         type: 'unknown_task_data',

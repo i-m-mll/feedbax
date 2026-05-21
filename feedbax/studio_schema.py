@@ -790,6 +790,7 @@ def validate_task_binding_schema(
 
     issues: list[SchemaValidationIssue] = []
     seen_data: set[str] = set()
+    seen_bindings: set[str] = set()
     data_by_id = {}
     for index, data in enumerate(task_binding_spec.exposed_data):
         data_path = f"{base_path}/exposed_data/{index}"
@@ -828,6 +829,27 @@ def validate_task_binding_schema(
     binding_targets: set[tuple[str, str]] = set()
     for index, binding in enumerate(task_binding_spec.bindings):
         binding_path = f"{base_path}/bindings/{index}"
+        expected_id = (
+            f"task:{binding.source_data_id}->"
+            f"{binding.target_node_id}:{binding.target_port}"
+        )
+        if binding.id in seen_bindings:
+            issues.append(
+                SchemaValidationIssue(
+                    type="duplicate_task_binding",
+                    message=f"Task binding {binding.id!r} is declared more than once",
+                    location={"path": f"{binding_path}/id"},
+                )
+            )
+        seen_bindings.add(binding.id)
+        if binding.id != expected_id:
+            issues.append(
+                SchemaValidationIssue(
+                    type="task_binding_id_mismatch",
+                    message=f"Task binding id {binding.id!r} does not match {expected_id!r}",
+                    location={"path": f"{binding_path}/id"},
+                )
+            )
         data = data_by_id.get(binding.source_data_id)
         if data is None:
             issues.append(

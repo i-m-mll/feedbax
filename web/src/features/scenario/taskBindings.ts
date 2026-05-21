@@ -223,6 +223,13 @@ export function taskBindingId(dataId: string, nodeId: string, port: string): str
   return `task:${dataId}->${nodeId}:${port}`;
 }
 
+export function taskBindingTargetKey(
+  targetNodeId: string,
+  targetPort: string
+): string {
+  return `${targetNodeId}.${targetPort}`;
+}
+
 export function taskDataEntityId(
   scenarioId: string | null | undefined,
   dataId: string
@@ -357,6 +364,37 @@ export function ensureTaskBindingSpec(
   };
 }
 
+export function retargetTaskBindingsForNodeRename(
+  spec: StudioTaskBindingSpec,
+  previousNodeId: string,
+  nextNodeId: string
+): StudioTaskBindingSpec {
+  if (previousNodeId === nextNodeId) return spec;
+  let changed = false;
+  const bindings = spec.bindings.map((binding) => {
+    if (binding.target_node_id !== previousNodeId) return binding;
+    changed = true;
+    return {
+      ...binding,
+      id: taskBindingId(binding.source_data_id, nextNodeId, binding.target_port),
+      target_node_id: nextNodeId,
+    };
+  });
+  return changed ? { ...spec, bindings } : spec;
+}
+
+export function removeTaskBindingsForTargetNodes(
+  spec: StudioTaskBindingSpec,
+  targetNodeIds: Iterable<string>
+): StudioTaskBindingSpec {
+  const targetNodes = new Set(targetNodeIds);
+  if (targetNodes.size === 0) return spec;
+  const bindings = spec.bindings.filter(
+    (binding) => !targetNodes.has(binding.target_node_id)
+  );
+  return bindings.length === spec.bindings.length ? spec : { ...spec, bindings };
+}
+
 export function targetInputOccupied(
   graph: GraphSpec,
   taskBindingSpec: StudioTaskBindingSpec | null | undefined,
@@ -371,8 +409,8 @@ export function targetInputOccupied(
     (taskBindingSpec?.bindings ?? []).some(
       (binding) =>
         binding.id !== ignoredBindingId &&
-        binding.target_node_id === targetNodeId &&
-        binding.target_port === targetPort
+        taskBindingTargetKey(binding.target_node_id, binding.target_port) ===
+          taskBindingTargetKey(targetNodeId, targetPort)
     )
   );
 }

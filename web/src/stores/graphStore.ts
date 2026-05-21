@@ -26,6 +26,7 @@ import type {
   ParamValue,
 } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+import type { StudioTaskBindingSpec } from '@/types/workspace';
 import {
   expandMuxForPort,
   normalizeDynamicPorts,
@@ -1301,7 +1302,12 @@ interface GraphStoreState {
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection, styleOverride?: 'bezier' | 'elbow') => void;
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
-  updateNodeParams: (nodeId: string, paramName: string, value: ComponentSpec['params'][string]) => void;
+  updateNodeParams: (
+    nodeId: string,
+    paramName: string,
+    value: ComponentSpec['params'][string],
+    taskBindingSpec?: StudioTaskBindingSpec | null
+  ) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setSelectedTap: (tapId: string | null) => void;
   setSelectedEdge: (edgeId: string | null) => void;
@@ -2438,7 +2444,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
-  updateNodeParams: (nodeId, paramName, value) => {
+  updateNodeParams: (nodeId, paramName, value, taskBindingSpec) => {
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       const nodeSpec = state.graph.nodes[nodeId];
@@ -2461,7 +2467,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           [nodeId]: nextSpec,
         },
       };
-      graph = normalizeDynamicPorts(graph);
+      graph = normalizeDynamicPorts(graph, taskBindingSpec);
       return {
         graph,
         nodes: buildNodes(graph, state.uiState),

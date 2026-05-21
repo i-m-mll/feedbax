@@ -5,6 +5,7 @@ import queue
 import threading
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.manifest import Provenance, load_manifest, sha256_file, write_training_run_manifest
@@ -39,6 +40,7 @@ from feedbax.web.worker.app import (
     _extract_graph_params,
     _extract_task_sampling_cfg,
     _extract_training_cfg,
+    _require_worker_specs,
     _run_training,
     _run_training_stub,
 )
@@ -643,6 +645,24 @@ def test_studio_schema_enumeration_validates_task_binding_schema_mismatch() -> N
     assert "task_binding_dtype_mismatch" in issue_types
 
 
+def test_studio_schema_enumeration_validates_task_binding_identity() -> None:
+    workspace = _schema_workspace()
+    scenario = next(iter(workspace.scenarios.values()))
+    assert scenario.task_binding_spec is not None
+    binding = scenario.task_binding_spec.bindings[0]
+    scenario.task_binding_spec.bindings = [
+        binding.model_copy(update={"id": "not-canonical"}),
+        binding,
+        binding.model_copy(),
+    ]
+
+    registry = enumerate_studio_schema_registry(workspace, scenario.id)
+    issue_types = {issue.type for issue in registry.issues}
+
+    assert "task_binding_id_mismatch" in issue_types
+    assert "duplicate_task_binding" in issue_types
+
+
 def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings() -> None:
     workspace = _schema_workspace()
     scenario = workspace.scenarios["scenario:train"]
@@ -762,6 +782,152 @@ def test_worker_stub_emits_durable_training_manifest(
     complete = next(event for event in events if event["type"] == "training_complete")
     assert complete["manifest_id"] == job.manifest_payload["id"]
     assert complete["manifest_path"] == job.manifest_path
+
+
+def _worker_contract_job(
+    *,
+    task_binding_spec: dict | None,
+    graph_spec: dict | None = None,
+) -> _Job:
+    return _Job(
+        job_id="worker-contract",
+        total_batches=1,
+        event_queue=queue.Queue(),
+        stop_event=threading.Event(),
+        training_spec=_minimal_training_spec(),
+        task_spec={"type": "SimpleReaches", "params": {}},
+        task_binding_spec=task_binding_spec,
+        graph_spec=graph_spec or _minimal_graph_spec(),
+        status=WorkerStatus.RUNNING,
+    )
+
+
+def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
+    _require_worker_specs(
+        _worker_contract_job(
+            task_binding_spec={
+                "schema_version": "feedbax.studio.task_bindings.v2",
+                "exposed_data": [
+                    {
+                        "id": "inputs",
+                        "label": "Inputs",
+                        "kind": "signal",
+                        "path": "inputs",
+                        "bindable": True,
+                        "metadata": {},
+                    }
+                ],
+                "bindings": [
+                    {
+                        "id": "task:inputs->gain:input",
+                        "source_data_id": "inputs",
+                        "target_node_id": "gain",
+                        "target_port": "input",
+                        "role": "model_input",
+                        "metadata": {},
+                    }
+                ],
+                "metadata": {},
+            }
+        )
+    )
+
+
+def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None:
+    with pytest.raises(ValueError, match="unknown_task_binding_target_port"):
+        _require_worker_specs(
+            _worker_contract_job(
+                task_binding_spec={
+                    "schema_version": "feedbax.studio.task_bindings.v2",
+                    "exposed_data": [
+                        {
+                            "id": "inputs",
+                            "label": "Inputs",
+                            "kind": "signal",
+                            "path": "inputs",
+                            "bindable": True,
+                            "metadata": {},
+                        }
+                    ],
+                    "bindings": [
+                        {
+                            "id": "task:inputs->gain:missing",
+                            "source_data_id": "inputs",
+                            "target_node_id": "gain",
+                            "target_port": "missing",
+                            "role": "model_input",
+                            "metadata": {},
+                        }
+                    ],
+                    "metadata": {},
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("task_binding_spec", "message"),
+    [
+        (
+            None,
+            "must not be inferred from graph task nodes",
+        ),
+        (
+            {
+                "schema_version": "feedbax.studio.task_bindings.v1",
+                "exposed_outputs": [],
+                "bindings": [],
+                "metadata": {},
+            },
+            "schema v2",
+        ),
+        (
+            {
+                "schema_version": "feedbax.studio.task_bindings.v2",
+                "exposed_outputs": [],
+                "bindings": [],
+                "metadata": {},
+            },
+            "exposed_outputs is not accepted",
+        ),
+        (
+            {
+                "schema_version": "feedbax.studio.task_bindings.v2",
+                "exposed_data": [],
+                "bindings": [
+                    {
+                        "id": "task:inputs->network:input",
+                        "source_output_id": "inputs",
+                        "target_node_id": "network",
+                        "target_port": "input",
+                        "role": "model_input",
+                        "metadata": {},
+                    }
+                ],
+                "metadata": {},
+            },
+            "source_data_id",
+        ),
+    ],
+)
+def test_worker_spec_contract_rejects_legacy_or_inferred_task_bindings(
+    task_binding_spec: dict | None,
+    message: str,
+) -> None:
+    graph_with_task_node = _minimal_graph_spec()
+    graph_with_task_node["nodes"]["task"] = {
+        "type": "SimpleReaches",
+        "params": {},
+        "input_ports": [],
+        "output_ports": ["inputs"],
+    }
+    with pytest.raises(ValueError, match=message):
+        _require_worker_specs(
+            _worker_contract_job(
+                task_binding_spec=task_binding_spec,
+                graph_spec=graph_with_task_node,
+            )
+        )
 
 
 def test_worker_training_cfg_uses_task_n_steps() -> None:
