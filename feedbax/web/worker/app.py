@@ -193,6 +193,25 @@ class _TaskSamplingCfg:
     move_epochs: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True)
+class _WorkerGraphLowering:
+    """Graph-derived execution plan for the current worker bridge."""
+
+    network_node_id: str
+    network_input_port: str
+    network_output_port: str
+    model_input_data_id: str
+    model_input_path: str
+    model_input_size: Optional[int]
+    mechanics_node_id: str
+    mechanics_input_port: str
+    plant_type: str
+    dt: float
+    action_size: int
+    observation_layout: str
+    action_path: tuple[str, ...]
+
+
 def _as_mapping(name: str, value: Any) -> Dict[str, Any]:
     """Return *value* as a dict or raise a clear worker-spec error."""
     if not isinstance(value, dict):
@@ -458,7 +477,214 @@ def _extract_effort_weight_from_spec(
         return default
 
 
-def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+_MECHANICS_ACTION_PORTS: dict[str, dict[str, tuple[int, str]]] = {
+    "PointMass": {
+        "force": (2, "pointmass"),
+    },
+    "TwoLinkArm": {
+        "force": (2, "two_link_direct"),
+    },
+    "Arm6MuscleRigidTendon": {
+        "excitation": (6, "arm6_muscle"),
+    },
+    "PointMass8MuscleRelu": {
+        "excitation": (8, "pointmass8_muscle"),
+    },
+}
+
+_SUPPORTED_MECHANICS_NODE_TYPES = frozenset(_MECHANICS_ACTION_PORTS)
+
+_ACTION_PASSTHROUGH_NODE_TYPES = frozenset(
+    {
+        "AddNoise",
+        "Channel",
+        "Copy",
+        "DelayLine",
+        "FirstOrderFilter",
+        "Gain",
+        "NetworkClamp",
+        "Saturation",
+    }
+)
+
+
+def _last_static_dim(shape: Any) -> Optional[int]:
+    if not isinstance(shape, list) or not shape:
+        return None
+    value = shape[-1]
+    if isinstance(value, bool) or value in (None, "*", "..."):
+        return None
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
+
+
+def _derive_worker_graph_lowering(
+    graph_spec: Dict[str, Any],
+    task_binding_spec: Optional[Dict[str, Any]] = None,
+) -> _WorkerGraphLowering:
+    """Derive the worker bridge plan from graph topology and task bindings."""
+    nodes = graph_spec.get("nodes", {})
+    if not isinstance(nodes, dict):
+        raise ValueError("graph_spec.nodes must be an object")
+
+    data_by_id: dict[str, dict[str, Any]] = {}
+    model_input_binding: Optional[dict[str, Any]] = None
+    if task_binding_spec is not None:
+        exposed_data = task_binding_spec.get("exposed_data", [])
+        if not isinstance(exposed_data, list):
+            raise ValueError("task_binding_spec.exposed_data must be a list")
+        data_by_id = {
+            str(data.get("id")): data for data in exposed_data if isinstance(data, dict)
+        }
+        bindings = task_binding_spec.get("bindings", [])
+        if not isinstance(bindings, list):
+            raise ValueError("task_binding_spec.bindings must be a list")
+        model_inputs = [
+            binding
+            for binding in bindings
+            if isinstance(binding, dict) and binding.get("role") == "model_input"
+        ]
+        if len(model_inputs) != 1:
+            raise ValueError(
+                "Training worker requires exactly one task binding with role "
+                f"'model_input', got {len(model_inputs)}"
+            )
+        model_input_binding = model_inputs[0]
+        source_data_id = str(model_input_binding.get("source_data_id"))
+        if source_data_id not in data_by_id:
+            raise ValueError(
+                f"model_input binding references unknown task data {source_data_id!r}"
+            )
+
+    if model_input_binding is not None:
+        network_node_id = str(model_input_binding.get("target_node_id"))
+        network_input_port = str(model_input_binding.get("target_port"))
+    else:
+        network_node_id, network_node = next(
+            (
+                (nid, n)
+                for nid, n in nodes.items()
+                if isinstance(n, dict) and n.get("type") in {"Network", "SimpleStagedNetwork"}
+            ),
+            (None, None),
+        )
+        if network_node_id is None or network_node is None:
+            raise ValueError("graph_spec must include a Network or SimpleStagedNetwork node")
+        network_node_id = str(network_node_id)
+        network_input_port = "input"
+
+    network_node = nodes.get(network_node_id)
+    if not isinstance(network_node, dict) or network_node.get("type") not in {
+        "Network",
+        "SimpleStagedNetwork",
+    }:
+        raise ValueError(
+            "task_binding_spec model_input binding must target a Network or "
+            f"SimpleStagedNetwork node, got {network_node_id!r}"
+        )
+    if network_input_port not in network_node.get("input_ports", []):
+        raise ValueError(
+            f"model_input binding targets missing network port "
+            f"{network_node_id}.{network_input_port}"
+        )
+
+    mechanics_nodes = {
+        node_id: node
+        for node_id, node in nodes.items()
+        if isinstance(node, dict) and node.get("type") in _SUPPORTED_MECHANICS_NODE_TYPES
+    }
+    if not mechanics_nodes:
+        raise ValueError("graph_spec must include a supported mechanics node")
+
+    outgoing: dict[str, list[dict[str, Any]]] = {}
+    for wire in graph_spec.get("wires", []):
+        if not isinstance(wire, dict):
+            continue
+        outgoing.setdefault(str(wire.get("source_node")), []).append(wire)
+
+    queue_items: Deque[tuple[str, str, str, tuple[str, ...]]] = collections.deque()
+    for wire in outgoing.get(network_node_id, []):
+        source_port = str(wire.get("source_port"))
+        if source_port != "output" or source_port not in network_node.get("output_ports", []):
+            continue
+        target_node = str(wire.get("target_node"))
+        target_port = str(wire.get("target_port"))
+        queue_items.append(
+            (target_node, source_port, target_port, (network_node_id, target_node))
+        )
+
+    visited: set[tuple[str, str]] = set()
+    while queue_items:
+        node_id, network_output_port, incoming_port, path = queue_items.popleft()
+        key = (node_id, network_output_port)
+        if key in visited:
+            continue
+        visited.add(key)
+        node = nodes.get(node_id)
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type", ""))
+        if node_id in mechanics_nodes:
+            mechanics_node = mechanics_nodes[node_id]
+            plant_type = str(mechanics_node.get("type"))
+            action_ports = _MECHANICS_ACTION_PORTS[plant_type]
+            if incoming_port not in action_ports:
+                continue
+            action_size, observation_layout = action_ports[incoming_port]
+            params = _as_mapping(
+                f"graph_spec.nodes.{node_id}.params",
+                mechanics_node.get("params", {}),
+            )
+            try:
+                dt = float(params["dt"])
+            except KeyError as exc:
+                raise ValueError("mechanics node params must include dt") from exc
+            except (TypeError, ValueError) as exc:
+                raise ValueError("mechanics node dt must be numeric") from exc
+            model_input_size = None
+            model_input_data_id = ""
+            model_input_path = ""
+            if model_input_binding is not None:
+                model_input_data_id = str(model_input_binding["source_data_id"])
+                data = data_by_id[model_input_data_id]
+                model_input_path = str(data.get("path", ""))
+                model_input_size = _last_static_dim(data.get("expected_shape"))
+            return _WorkerGraphLowering(
+                network_node_id=network_node_id,
+                network_input_port=network_input_port,
+                network_output_port=network_output_port,
+                model_input_data_id=model_input_data_id,
+                model_input_path=model_input_path,
+                model_input_size=model_input_size,
+                mechanics_node_id=node_id,
+                mechanics_input_port=incoming_port,
+                plant_type=plant_type,
+                dt=dt,
+                action_size=action_size,
+                observation_layout=observation_layout,
+                action_path=path,
+            )
+        if node_type not in _ACTION_PASSTHROUGH_NODE_TYPES:
+            continue
+        for wire in outgoing.get(node_id, []):
+            target_node = str(wire.get("target_node"))
+            target_port = str(wire.get("target_port"))
+            queue_items.append(
+                (target_node, network_output_port, target_port, (*path, target_node))
+            )
+
+    raise ValueError(
+        f"graph_spec must wire {network_node_id!r} output to a supported mechanics action port"
+    )
+
+
+def _extract_graph_params(
+    graph_spec: Optional[Dict[str, Any]],
+    task_binding_spec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Extract model-construction parameters from a graph spec dict.
 
     Reads from the Network node's internal subgraph (the authoritative source
@@ -495,19 +721,6 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         "softmax": jax.nn.softmax,
         "identity": lambda x: x,
     }
-    # Node types that carry a ``dt`` param representing the mechanics timestep.
-    # Bug: cb13bdc — mechanics dt should come from the graph spec, not be hardcoded.
-    _MECHANICS_NODE_TYPES = frozenset(
-        {
-            "TwoLinkArm",
-            "PointMass",
-            "Mechanics",
-            "Arm6MuscleRigidTendon",
-            "PointMass8MuscleRelu",
-            "AcausalSystem",
-        }
-    )
-
     if graph_spec is None:
         raise ValueError("Training worker requires graph_spec")
 
@@ -515,42 +728,29 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     if not isinstance(nodes, dict):
         raise ValueError("graph_spec.nodes must be an object")
 
-    mechanics_node = next(
-        (n for n in nodes.values() if n.get("type") in _MECHANICS_NODE_TYPES),
-        None,
-    )
-    if mechanics_node is None:
-        raise ValueError("graph_spec must include a supported mechanics node")
-    mech_params = mechanics_node.get("params", {})
-    plant_type = mechanics_node.get("type")
-    if plant_type is None:
-        raise ValueError("mechanics node is missing type")
-    try:
-        dt = float(mech_params["dt"])
-    except KeyError as exc:
-        raise ValueError("mechanics node params must include dt") from exc
-    except (TypeError, ValueError) as exc:
-        raise ValueError("mechanics node dt must be numeric") from exc
+    lowering = _derive_worker_graph_lowering(graph_spec, task_binding_spec)
 
-    network_node_id, network_node = next(
-        (
-            (nid, n)
-            for nid, n in nodes.items()
-            if n.get("type") in {"Network", "SimpleStagedNetwork"}
-        ),
-        (None, None),
-    )
-    if network_node_id is None or network_node is None:
-        raise ValueError("graph_spec must include a Network or SimpleStagedNetwork node")
+    network_node_id = lowering.network_node_id
+    network_node = nodes[network_node_id]
 
     result = {
         "hidden_type": eqx.nn.GRUCell,
         "hidden_size": 128,
-        "out_size": 6,
+        "out_size": lowering.action_size,
         "out_nonlinearity": jax.nn.sigmoid,
-        "input_size": 17,
-        "dt": dt,
-        "plant_type": plant_type,
+        "input_size": lowering.model_input_size or 17,
+        "dt": lowering.dt,
+        "plant_type": lowering.plant_type,
+        "action_size": lowering.action_size,
+        "observation_layout": lowering.observation_layout,
+        "network_node_id": lowering.network_node_id,
+        "network_input_port": lowering.network_input_port,
+        "network_output_port": lowering.network_output_port,
+        "model_input_data_id": lowering.model_input_data_id,
+        "model_input_path": lowering.model_input_path,
+        "mechanics_node_id": lowering.mechanics_node_id,
+        "mechanics_input_port": lowering.mechanics_input_port,
+        "action_path": lowering.action_path,
     }
 
     outer_params = network_node.get("params", {})
@@ -563,11 +763,14 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
         if nonlin_key not in NONLINEARITY_MAP:
             raise ValueError(f"Unsupported SimpleStagedNetwork out_nonlinearity {nonlin_key!r}")
         try:
+            out_size = outer_params.get("out_size", outer_params.get("output_size"))
+            if out_size is None:
+                raise KeyError("out_size")
             result.update(
                 {
                     "hidden_type": CELL_MAP[hidden_key],
                     "hidden_size": int(outer_params["hidden_size"]),
-                    "out_size": int(outer_params["out_size"]),
+                    "out_size": int(out_size),
                     "out_nonlinearity": NONLINEARITY_MAP[nonlin_key],
                     "input_size": int(outer_params["input_size"]),
                 }
@@ -578,6 +781,17 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
             ) from exc
         except (TypeError, ValueError) as exc:
             raise ValueError("SimpleStagedNetwork size params must be integers") from exc
+        if int(result["out_size"]) != lowering.action_size:
+            raise ValueError(
+                f"Network output size {result['out_size']} does not match "
+                f"{lowering.plant_type}.{lowering.mechanics_input_port} action size "
+                f"{lowering.action_size}"
+            )
+        if lowering.model_input_size is not None and int(result["input_size"]) != lowering.model_input_size:
+            raise ValueError(
+                f"Network input size {result['input_size']} does not match task data "
+                f"{lowering.model_input_data_id!r} size {lowering.model_input_size}"
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -637,6 +851,18 @@ def _extract_graph_params(graph_spec: Optional[Dict[str, Any]]) -> Dict[str, Any
     except (TypeError, ValueError) as exc:
         raise ValueError("Network graph size params must be integers") from exc
 
+    if int(result["out_size"]) != lowering.action_size:
+        raise ValueError(
+            f"Network output size {result['out_size']} does not match "
+            f"{lowering.plant_type}.{lowering.mechanics_input_port} action size "
+            f"{lowering.action_size}"
+        )
+    if lowering.model_input_size is not None and int(result["input_size"]) != lowering.model_input_size:
+        raise ValueError(
+            f"Network input size {result['input_size']} does not match task data "
+            f"{lowering.model_input_data_id!r} size {lowering.model_input_size}"
+        )
+
     return result
 
 
@@ -679,6 +905,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         from feedbax.mechanics.model_builder import ChainConfig
         from feedbax.mechanics.muscle_config import default_6muscle_2link_topology
         from feedbax.mechanics.plant import DirectForceInput
+        from feedbax.mechanics.skeleton.arm import TwoLinkArm
         from feedbax.mechanics.skeleton.pointmass import PointMass
         from feedbax.nn import SimpleStagedNetwork
         from feedbax.training.rl.tasks import reach_task_params, target_at_t
@@ -695,7 +922,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         job.status = WorkerStatus.ERROR
         return
 
-    graph_params = _extract_graph_params(job.graph_spec)
+    graph_params = _extract_graph_params(job.graph_spec, job.task_binding_spec)
     task_sampling_cfg = _extract_task_sampling_cfg(_as_mapping("task_spec", job.task_spec))
 
     # ------------------------------------------------------------------
@@ -707,6 +934,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     OBS_DIM = graph_params["input_size"]
 
     plant_type = graph_params["plant_type"]
+    observation_layout = graph_params["observation_layout"]
 
     # ------------------------------------------------------------------
     # Build plant — dispatch on mechanics node type
@@ -715,12 +943,9 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     rng_key = jr.PRNGKey(0)
     preset_key, ctrl_key, rng_key = jr.split(rng_key, 3)
 
-    _ARM_TYPES = {"TwoLinkArm", "Arm6MuscleRigidTendon"}
-    _POINTMASS_TYPES = {"PointMass", "PointMass8MuscleRelu"}
-
-    if plant_type in _ARM_TYPES:
+    if observation_layout == "arm6_muscle":
         # 6-muscle, 2-joint analytical musculoskeletal plant (original path).
-        N_MUSCLES = 6
+        ACTION_SIZE = graph_params["action_size"]
         N_JOINTS = 2
         _is_pointmass = False
 
@@ -748,14 +973,8 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             clip_states=True,
         )
 
-    elif plant_type in _POINTMASS_TYPES:
-        if plant_type == "PointMass8MuscleRelu":
-            raise ValueError(
-                "PointMass8MuscleRelu requires explicit muscle wiring and is not "
-                "supported by the direct-force training bridge"
-            )
-        N_MUSCLES = 2
-        N_JOINTS = 0
+    elif observation_layout == "pointmass":
+        ACTION_SIZE = graph_params["action_size"]
         _is_pointmass = True
 
         plant = DirectForceInput(PointMass(mass=1.0))
@@ -763,19 +982,32 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         # rollouts do not cache tracers on the skeleton instance.
         _ = plant.skeleton.A, plant.skeleton.B, plant.skeleton.C, plant.skeleton._lti_system
 
-    else:
-        raise ValueError(f"Unsupported mechanics node type {plant_type!r}")
+    elif observation_layout == "two_link_direct":
+        ACTION_SIZE = graph_params["action_size"]
+        _is_pointmass = False
+        plant = DirectForceInput(TwoLinkArm())
 
-    if graph_params["out_size"] != N_MUSCLES:
+    elif observation_layout == "pointmass8_muscle":
+        raise ValueError(
+            "PointMass8MuscleRelu requires explicit muscle wiring and is not "
+            "supported by the current worker bridge"
+        )
+
+    else:
+        raise ValueError(f"Unsupported worker observation layout {observation_layout!r}")
+
+    if graph_params["out_size"] != ACTION_SIZE:
         raise ValueError(
             f"Network output size {graph_params['out_size']} does not match "
-            f"{plant_type} action size {N_MUSCLES}"
+            f"{plant_type} action size {ACTION_SIZE}"
         )
-    if _is_pointmass and OBS_DIM not in {4, 13}:
+    if observation_layout == "pointmass" and OBS_DIM not in {4, 13}:
         raise ValueError(
             f"PointMass worker bridge supports network input_size 4 or 13, got {OBS_DIM}"
         )
-    if not _is_pointmass and OBS_DIM != 17:
+    if observation_layout == "two_link_direct" and OBS_DIM != 13:
+        raise ValueError(f"TwoLinkArm worker bridge supports network input_size 13, got {OBS_DIM}")
+    if observation_layout == "arm6_muscle" and OBS_DIM != 17:
         raise ValueError(f"Arm worker bridge supports network input_size 17, got {OBS_DIM}")
 
     backend = DiffraxBackend(control_dt=CONTROL_DT)
@@ -859,7 +1091,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
 
     def _rollout(ctrl, task_params, episode_key):
         phys = backend.init_state(plant, key=episode_key)
-        init_act = jnp.zeros(N_MUSCLES)
+        init_act = jnp.zeros(ACTION_SIZE)
         init_phase = jnp.zeros(1)
         init_target_pos, init_target_vel = target_at_t(
             task_params,

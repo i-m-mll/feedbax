@@ -37,6 +37,7 @@ from feedbax.web.models.graph import (
 from feedbax.web.worker.app import (
     WorkerStatus,
     _Job,
+    _derive_worker_graph_lowering,
     _extract_graph_params,
     _extract_task_sampling_cfg,
     _extract_training_cfg,
@@ -98,6 +99,41 @@ def _runtime_network_graph_spec() -> dict:
         "output_ports": ["effector"],
         "input_bindings": {"target": ("network", "target")},
         "output_bindings": {"effector": ("mechanics", "effector")},
+    }
+
+
+def _task_input_binding(
+    *,
+    target_node_id: str = "network",
+    target_port: str = "input",
+    expected_shape: list | None = None,
+) -> dict:
+    data = {
+        "id": "inputs",
+        "label": "Inputs",
+        "kind": "signal",
+        "role": "model_input",
+        "path": "inputs",
+        "bindable": True,
+        "dtype": "vector",
+        "metadata": {},
+    }
+    if expected_shape is not None:
+        data["expected_shape"] = expected_shape
+    return {
+        "schema_version": "feedbax.studio.task_bindings.v2",
+        "exposed_data": [data],
+        "bindings": [
+            {
+                "id": f"task:inputs->{target_node_id}:{target_port}",
+                "source_data_id": "inputs",
+                "target_node_id": target_node_id,
+                "target_port": target_port,
+                "role": "model_input",
+                "metadata": {},
+            }
+        ],
+        "metadata": {},
     }
 
 
@@ -1133,13 +1169,24 @@ def test_worker_graph_params_use_simple_staged_network_and_pointmass() -> None:
                         "hidden_type": "GRUCell",
                         "out_nonlinearity": "tanh",
                     },
+                    "input_ports": ["input"],
+                    "output_ports": ["output"],
                 },
                 "mechanics": {
                     "type": "PointMass",
                     "params": {"dt": 0.02},
+                    "input_ports": ["force"],
+                    "output_ports": ["effector", "state"],
                 },
             },
-            "wires": [],
+            "wires": [
+                {
+                    "source_node": "network",
+                    "source_port": "output",
+                    "target_node": "mechanics",
+                    "target_port": "force",
+                }
+            ],
             "input_ports": [],
             "output_ports": [],
             "input_bindings": {},
@@ -1152,6 +1199,194 @@ def test_worker_graph_params_use_simple_staged_network_and_pointmass() -> None:
     assert params["out_size"] == 2
     assert params["dt"] == 0.02
     assert params["plant_type"] == "PointMass"
+    assert params["action_size"] == 2
+    assert params["mechanics_input_port"] == "force"
+    assert params["action_path"] == ("network", "mechanics")
+
+
+def test_worker_graph_lowering_uses_task_binding_network_and_passthrough_topology() -> None:
+    graph = {
+        "nodes": {
+            "unused_network": {
+                "type": "SimpleStagedNetwork",
+                "params": {
+                    "hidden_size": 8,
+                    "input_size": 99,
+                    "out_size": 2,
+                    "hidden_type": "GRUCell",
+                    "out_nonlinearity": "tanh",
+                },
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+            "network": {
+                "type": "SimpleStagedNetwork",
+                "params": {
+                    "hidden_size": 16,
+                    "input_size": 4,
+                    "out_size": 2,
+                    "hidden_type": "GRUCell",
+                    "out_nonlinearity": "tanh",
+                },
+                "input_ports": ["input"],
+                "output_ports": ["output", "hidden"],
+            },
+            "clamp": {
+                "type": "NetworkClamp",
+                "params": {},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+            "mechanics": {
+                "type": "PointMass",
+                "params": {"dt": 0.02},
+                "input_ports": ["force"],
+                "output_ports": ["effector", "state"],
+            },
+        },
+        "wires": [
+            {
+                "source_node": "network",
+                "source_port": "output",
+                "target_node": "clamp",
+                "target_port": "input",
+            },
+            {
+                "source_node": "clamp",
+                "source_port": "output",
+                "target_node": "mechanics",
+                "target_port": "force",
+            },
+        ],
+        "input_ports": [],
+        "output_ports": [],
+        "input_bindings": {},
+        "output_bindings": {},
+    }
+    task_binding = _task_input_binding(expected_shape=[4])
+
+    lowering = _derive_worker_graph_lowering(graph, task_binding)
+    params = _extract_graph_params(graph, task_binding)
+
+    assert lowering.network_node_id == "network"
+    assert lowering.model_input_data_id == "inputs"
+    assert lowering.action_path == ("network", "clamp", "mechanics")
+    assert params["hidden_size"] == 16
+    assert params["input_size"] == 4
+    assert params["observation_layout"] == "pointmass"
+
+
+def test_worker_graph_lowering_derives_two_link_direct_action_size() -> None:
+    graph = {
+        "nodes": {
+            "network": {
+                "type": "SimpleStagedNetwork",
+                "params": {
+                    "hidden_size": 16,
+                    "input_size": 13,
+                    "out_size": 2,
+                    "hidden_type": "GRUCell",
+                    "out_nonlinearity": "tanh",
+                },
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+            "mechanics": {
+                "type": "TwoLinkArm",
+                "params": {"dt": 0.01},
+                "input_ports": ["force"],
+                "output_ports": ["effector", "state"],
+            },
+        },
+        "wires": [
+            {
+                "source_node": "network",
+                "source_port": "output",
+                "target_node": "mechanics",
+                "target_port": "force",
+            }
+        ],
+        "input_ports": [],
+        "output_ports": [],
+        "input_bindings": {},
+        "output_bindings": {},
+    }
+
+    params = _extract_graph_params(graph, _task_input_binding(expected_shape=[13]))
+
+    assert params["plant_type"] == "TwoLinkArm"
+    assert params["action_size"] == 2
+    assert params["observation_layout"] == "two_link_direct"
+
+
+def test_worker_graph_lowering_derives_arm6_excitation_action_size() -> None:
+    graph = {
+        "nodes": {
+            "network": {
+                "type": "SimpleStagedNetwork",
+                "params": {
+                    "hidden_size": 16,
+                    "input_size": 17,
+                    "out_size": 6,
+                    "hidden_type": "GRUCell",
+                    "out_nonlinearity": "sigmoid",
+                },
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+            "mechanics": {
+                "type": "Arm6MuscleRigidTendon",
+                "params": {"dt": 0.01},
+                "input_ports": ["excitation"],
+                "output_ports": ["torques", "forces", "activations"],
+            },
+        },
+        "wires": [
+            {
+                "source_node": "network",
+                "source_port": "output",
+                "target_node": "mechanics",
+                "target_port": "excitation",
+            }
+        ],
+        "input_ports": [],
+        "output_ports": [],
+        "input_bindings": {},
+        "output_bindings": {},
+    }
+
+    params = _extract_graph_params(graph, _task_input_binding(expected_shape=[17]))
+
+    assert params["plant_type"] == "Arm6MuscleRigidTendon"
+    assert params["action_size"] == 6
+    assert params["observation_layout"] == "arm6_muscle"
+
+
+def test_worker_graph_lowering_rejects_task_data_input_size_mismatch() -> None:
+    graph = _runtime_network_graph_spec()
+    with pytest.raises(ValueError, match="does not match task data"):
+        _extract_graph_params(
+            graph,
+            _task_input_binding(target_port="target", expected_shape=[5]),
+        )
+
+
+def test_worker_graph_lowering_rejects_unwired_network_action() -> None:
+    graph = _runtime_network_graph_spec()
+    graph["wires"] = [
+        {
+            "source_node": "network",
+            "source_port": "hidden",
+            "target_node": "mechanics",
+            "target_port": "force",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="supported mechanics action port"):
+        _extract_graph_params(
+            graph,
+            _task_input_binding(target_port="target", expected_shape=[4]),
+        )
 
 
 def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> None:

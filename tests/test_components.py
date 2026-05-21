@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import equinox as eqx
 
 from feedbax._tree import filter_spec_leaves
 from feedbax.channel import Channel, ChannelSpec
@@ -108,3 +109,28 @@ def test_simplefeedback_nodes_selector_round_trips_to_executable_graph_node():
 
     assert where_str == "nodes['net']"
     assert where(model) is model.nodes["net"]
+
+
+def test_simplefeedback_model_net_update_replaces_executable_graph_node():
+    model = _make_simplefeedback(jax.random.PRNGKey(0))
+    replacement = SimpleStagedNetwork(
+        input_size=3,
+        hidden_size=4,
+        out_size=2,
+        key=jax.random.PRNGKey(1),
+    )
+
+    updated = eqx.tree_at(lambda item: item.net, model, replacement)
+
+    updated_leaves = [
+        leaf for leaf in jax.tree.leaves(updated.net) if hasattr(leaf, "shape")
+    ]
+    replacement_leaves = [
+        leaf for leaf in jax.tree.leaves(replacement) if hasattr(leaf, "shape")
+    ]
+
+    assert updated.net is updated.nodes["net"]
+    assert all(
+        jnp.array_equal(updated_leaf, replacement_leaf)
+        for updated_leaf, replacement_leaf in zip(updated_leaves, replacement_leaves)
+    )
