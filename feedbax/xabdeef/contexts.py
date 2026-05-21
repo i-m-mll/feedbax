@@ -9,7 +9,6 @@ import logging
 from typing import Any, Optional
 
 import equinox as eqx
-import jax
 from jaxtyping import PRNGKeyArray
 import optax  # type: ignore
 
@@ -41,7 +40,7 @@ class TrainingContext(eqx.Module):
 
     model: Component
     task: AbstractTask
-    where_train: Callable = lambda model: model.net
+    where_train: Callable = lambda model: model.nodes["net"]
     ensembled: bool = False
 
     def train(
@@ -99,7 +98,7 @@ def point_mass_nn_simple_reaches(
     encoding_size: Optional[int] = None,
     hidden_size: int = 50,
     hidden_type: type[eqx.Module] = eqx.nn.GRUCell,
-    where_train: Callable = lambda model: model.net,
+    where_train: Callable = lambda model: model.nodes["net"],
     feedback_delay_steps: int = 0,
     eval_grid_n: int = 1,
     eval_n_directions: int = 7,
