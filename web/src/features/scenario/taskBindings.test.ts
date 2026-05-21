@@ -71,11 +71,23 @@ describe('task data bindings', () => {
       path: 'inputs.effector_target.pos',
       role: 'model_input',
       expected_shape: ['time', 2],
+      value_spec: {
+        mode: 'function',
+        function_id: 'delayed_reach_target_position',
+      },
+    });
+    expect(data.find((item) => item.id === 'hold')?.value_spec).toMatchObject({
+      mode: 'constant',
+      value: { active: 1, inactive: 0 },
     });
     expect(data.find((item) => item.id === 'movement_target')).toMatchObject({
       path: 'targets.effector',
       role: 'target',
       bindable: false,
+      value_spec: {
+        mode: 'function',
+        function_id: 'delayed_reach_movement_target',
+      },
     });
   });
 
