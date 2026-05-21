@@ -9,7 +9,6 @@ import jax.random as jr
 import pytest
 
 import equinox as eqx
-from equinox.nn import State
 
 from feedbax.nn_cde import CDENetwork, CDENetworkState
 from feedbax.graph import init_state_from_component
@@ -165,8 +164,19 @@ class TestObsPrevTracking:
 # ---------------------------------------------------------------------------
 
 class TestZeroDX:
-    def test_hidden_unchanged_when_obs_equals_prev(self, net, state, key):
-        """If obs == obs_prev, the CDE step should not change hidden state."""
+    def test_hidden_unchanged_when_obs_equals_prev_without_decay_or_gate(self, key):
+        """If dX, decay, and gate feedback are zero, hidden state should not change."""
+        net = CDENetwork(
+            obs_dim=OBS_DIM,
+            hidden_dim=HIDDEN_DIM,
+            out_size=OUT_SIZE,
+            vf_width=VF_WIDTH,
+            vf_depth=VF_DEPTH,
+            decay=0.0,
+            use_anti_nf=False,
+            key=key,
+        )
+        state = init_state_from_component(net)
         obs = jr.normal(key, (OBS_DIM,))
         # First step: sets obs_prev = obs
         _, state1 = net({"input": obs}, state, key=key)

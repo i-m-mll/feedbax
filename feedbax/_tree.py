@@ -14,8 +14,7 @@ import string
 from collections import namedtuple
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
-from functools import partial
-from typing import Any, Optional, Tuple, TypeVar, TypeVarTuple, Union, get_type_hints
+from typing import Any, Optional, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -27,7 +26,7 @@ import numpy as np
 from jaxtyping import Array, ArrayLike, PRNGKeyArray, PyTree, PyTreeDef, Shaped
 
 from feedbax._progress import _tqdm, _tqdm_write
-from feedbax.misc import is_module, is_none, unique_generator, unzip2
+from feedbax.misc import is_module, unique_generator
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +53,12 @@ def anyf(*fns: Callable[..., bool]) -> Callable[..., bool]:
 
     becomes `is_leaf=anyf(is_module, eqx.is_array)`.
     """
-    return lambda *args, **kwargs: any(f(*args, **kwargs) for f in funcs)
+    return lambda *args, **kwargs: any(f(*args, **kwargs) for f in fns)
 
 
 def allf(*fns: Callable[..., bool]) -> Callable[..., bool]:
     """Returns a function that returns the logical intersection of boolean functions."""
-    return lambda *args, **kwargs: all(f(*args, **kwargs) for f in funcs)
+    return lambda *args, **kwargs: all(f(*args, **kwargs) for f in fns)
 
 
 def notf(func: Callable[..., bool]) -> Callable[..., bool]:

@@ -3,7 +3,6 @@ import json
 import os
 import time
 from collections.abc import Callable, Sequence
-from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -13,15 +12,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 import jax_cookbook.tree as jtree
-from feedbax.loss import AbstractLoss
 from feedbax.noise import Multiplicative, Normal
-from feedbax.task import SimpleReaches
-from feedbax.xabdeef.losses import simple_reach_loss
-from ipyfilechooser import FileChooser
-from IPython.display import display
-from ipywidgets import HTML
 from jax_cookbook import is_module, is_type
-from jaxtyping import PRNGKeyArray, PyTree
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS
@@ -41,7 +33,19 @@ from feedbax.tree_utils import (
     at_path,
     subdict,
 )
-from feedbax.types import LDict, TaskModelPair, TreeNamespace
+
+
+def _load_notebook_widgets():
+    try:
+        from ipyfilechooser import FileChooser
+        from IPython.display import display
+        from ipywidgets import HTML
+    except ImportError as exc:
+        raise ImportError(
+            "Notebook file chooser helpers require the 'notebook' optional dependencies. "
+            "Install feedbax with the notebook extra to use them."
+        ) from exc
+    return FileChooser, HTML, display
 
 
 def get_latest_matching_file(directory: str, pattern: str) -> Optional[str]:
@@ -84,6 +88,7 @@ def display_model_filechooser(
 
     The default filename is the one that sorts last.
     """
+    FileChooser, HTML, display = _load_notebook_widgets()
     fc = FileChooser(path)
     fc.filter_pattern = filter_pattern
     fc.title = "Select model file:"
@@ -101,7 +106,7 @@ def display_model_filechooser(
         )
         html_widget.value = "<pre>" + params_str.replace(":\n", ":") + "</pre>"
 
-    def display_params_callback(fc: Optional[FileChooser]):
+    def display_params_callback(fc: Optional[Any]):
         if fc is None:
             return
         if fc.selected is None:

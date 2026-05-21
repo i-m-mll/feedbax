@@ -1,0 +1,34 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.226387023925781,
+  "n_files"            : 209,
+  "n_lines"            : 71158,
+  "files_per_second"   : 923.197789236006,
+  "lines_per_second"   : 314320.135341893,
+  "report_file"        : ".unfrack/baseline-feedbax.json"},
+"Python" :{
+  "nFiles": 201,
+  "blank": 11751,
+  "comment": 13289,
+  "code": 45942},
+"Markdown" :{
+  "nFiles": 1,
+  "blank": 26,
+  "comment": 0,
+  "code": 66},
+"YAML" :{
+  "nFiles": 6,
+  "blank": 14,
+  "comment": 6,
+  "code": 46},
+"Bourne Shell" :{
+  "nFiles": 1,
+  "blank": 4,
+  "comment": 1,
+  "code": 13},
+"SUM": {
+  "blank": 11795,
+  "comment": 13296,
+  "code": 46067,
+  "nFiles": 209} }

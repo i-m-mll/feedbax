@@ -30,6 +30,7 @@ export interface OpenTab {
 const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
 const LOCAL_PROJECTS_STORAGE_VERSION = 1;
 const LOCAL_PERSIST_DELAY_MS = 250;
+const LAST_PROJECT_STORAGE_KEY = 'feedbax:lastProjectId';
 
 function captureGraphSnapshot(): GraphSnapshot {
   const s = useGraphStore.getState();
@@ -225,6 +226,14 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+export function getLastProjectId(): string | null {
+  return localStorageOrNull()?.getItem(LAST_PROJECT_STORAGE_KEY) ?? null;
+}
+
+export function setLastProjectId(id: string): void {
+  localStorageOrNull()?.setItem(LAST_PROJECT_STORAGE_KEY, id);
+}
+
 function compactGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
   return {
     ...snapshot,
@@ -323,6 +332,7 @@ export function persistLocalProjectTabs(): boolean {
 interface ProjectsStoreState {
   tabs: OpenTab[];
   activeTabId: string;
+  hasRestoredLocalTabs: boolean;
   openNewTab: (name: string) => void;
   openProjectInTab: (
     graphId: string,
@@ -365,6 +375,7 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
   return {
     tabs: restored?.tabs ?? [firstTab as OpenTab],
     activeTabId: restored?.activeTabId ?? (firstTab as OpenTab).tabId,
+    hasRestoredLocalTabs: Boolean(restored),
 
     openNewTab: (name: string) => {
       // Save current tab state

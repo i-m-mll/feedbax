@@ -1,10 +1,8 @@
-from ast import TypeVar
 from collections.abc import Callable, Sequence
-from typing import Any, Concatenate, Optional, ParamSpec, TypeAlias
+from typing import Any, Concatenate, Optional, ParamSpec, TypeAlias, TypeVar
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
 from jax_cookbook import map_rich
 from jax_cookbook.misc import construct_tuple_like
 from jaxtyping import PyTree

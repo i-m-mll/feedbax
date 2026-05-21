@@ -1,0 +1,59 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.309870004653931,
+  "n_files"            : 357,
+  "n_lines"            : 127339,
+  "files_per_second"   : 1152.09602297165,
+  "lines_per_second"   : 410943.292630776,
+  "report_file"        : ".unfrack/baseline-total.json"},
+"Python" :{
+  "nFiles": 201,
+  "blank": 11751,
+  "comment": 13289,
+  "code": 45942},
+"TypeScript" :{
+  "nFiles": 139,
+  "blank": 2719,
+  "comment": 1286,
+  "code": 36897},
+"JSON" :{
+  "nFiles": 4,
+  "blank": 0,
+  "comment": 0,
+  "code": 9188},
+"YAML" :{
+  "nFiles": 7,
+  "blank": 1253,
+  "comment": 6,
+  "code": 4745},
+"CSS" :{
+  "nFiles": 1,
+  "blank": 15,
+  "comment": 0,
+  "code": 76},
+"Markdown" :{
+  "nFiles": 1,
+  "blank": 26,
+  "comment": 0,
+  "code": 66},
+"JavaScript" :{
+  "nFiles": 2,
+  "blank": 0,
+  "comment": 0,
+  "code": 47},
+"HTML" :{
+  "nFiles": 1,
+  "blank": 0,
+  "comment": 0,
+  "code": 15},
+"Bourne Shell" :{
+  "nFiles": 1,
+  "blank": 4,
+  "comment": 1,
+  "code": 13},
+"SUM": {
+  "blank": 15768,
+  "comment": 14582,
+  "code": 96989,
+  "nFiles": 357} }

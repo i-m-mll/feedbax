@@ -495,7 +495,7 @@ from typing import Any, Callable, Literal, Optional, Sequence, Union
 import jax
 import equinox as eqx
 from equinox.nn import State
-from jaxtyping import PRNGKeyArray, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.graph import Component
 
