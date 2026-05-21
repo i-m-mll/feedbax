@@ -143,7 +143,41 @@ function ParamEditor({
   );
 }
 
-function formatValueSpec(valueSpec: StudioValueSpec | null | undefined): string {
+const TASK_TIMELINE_COPY: Record<
+  string,
+  { label: string; value: string; detail: string; preview: string }
+> = {
+  target_position: {
+    label: 'Target input',
+    value: 'sampled target',
+    detail: 'Model input: target position',
+    preview: 'Target position is provided to the model.',
+  },
+  hold: {
+    label: 'Hold/go cue',
+    value: '1 hold / 0 go',
+    detail: 'High during hold; low after go cue',
+    preview: 'Hold cue is high before movement.',
+  },
+  target_on: {
+    label: 'Target visible',
+    value: '1 visible',
+    detail: 'Target visibility gate',
+    preview: 'Target is shown during these epochs.',
+  },
+  movement_target: {
+    label: 'Loss target',
+    value: 'same sampled target',
+    detail: 'Protocol target used by the objective',
+    preview: 'Objective uses this target during movement.',
+  },
+};
+
+function formatValueSpec(
+  valueSpec: StudioValueSpec | null | undefined,
+  signalId?: string
+): string {
+  if (signalId && TASK_TIMELINE_COPY[signalId]) return TASK_TIMELINE_COPY[signalId].value;
   if (!valueSpec) return 'value';
   if (valueSpec.mode === 'function') {
     return valueSpec.function_id?.replace(/^delayed_reach_/, '') ?? 'function';
@@ -170,13 +204,17 @@ function DelayedReachTimelineEditor({
 }) {
   const editableEpochs = timeline.epochs.slice(0, -1);
   const preview = delayedReachTimelinePreview(timeline);
-  const timelineGridColumns = `7rem 5.75rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
-  const timelineMinWidth = `${12.75 + timeline.epochs.length * 4.875}rem`;
+  const timelineGridColumns = `8.75rem 6.75rem repeat(${timeline.epochs.length}, minmax(5.25rem, 1fr))`;
+  const timelineMinWidth = `${15.5 + timeline.epochs.length * 5.25}rem`;
   const previewMax = Math.max(
     preview.n_steps ?? 0,
     ...preview.epochs.map((epoch) => epoch.end_max),
     1
   );
+  const epochLabel = (label: string) => {
+    if (label === 'target_on') return 'target';
+    return label.replace(/_/g, ' ');
+  };
   return (
     <section className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
@@ -193,7 +231,12 @@ function DelayedReachTimelineEditor({
               <div className="border-l border-slate-100 px-2 py-1.5 text-center">Value</div>
               {timeline.epochs.map((epoch) => (
                 <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
-                  {epoch.id.replace(/^epoch:/, '')}
+                  <div className="text-[10px] font-semibold text-slate-500">
+                    {epochLabel(epoch.label)}
+                  </div>
+                  <div className="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-slate-300">
+                    epoch {epoch.index}
+                  </div>
                 </div>
               ))}
             </div>
@@ -204,8 +247,10 @@ function DelayedReachTimelineEditor({
               <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
                 Length
               </div>
-              <div className="border-l border-slate-100 px-2 py-1.5 text-center text-[10px] text-slate-400">
-                steps
+              <div className="border-l border-slate-100 px-2 py-1.5 text-center text-[10px] leading-3 text-slate-400">
+                min-max
+                <br />
+                steps/trial
               </div>
               {timeline.epochs.map((epoch) => {
                 const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
@@ -218,8 +263,10 @@ function DelayedReachTimelineEditor({
                       </div>
                     ) : (
                       <div className="grid gap-1">
-                        <div className="grid grid-cols-[0.55rem_2.45rem] justify-center">
-                          <span aria-hidden="true" />
+                        <div className="grid grid-cols-[1.25rem_2.45rem] justify-center">
+                          <span className="self-center text-right text-[9px] font-medium uppercase tracking-[0.08em] text-slate-300">
+                            min
+                          </span>
                           <input
                             type="number"
                             min={0}
@@ -238,9 +285,9 @@ function DelayedReachTimelineEditor({
                             aria-label={`${epoch.label} min length`}
                           />
                         </div>
-                        <div className="grid grid-cols-[0.55rem_2.45rem] justify-center">
-                          <span className="select-none self-center text-center text-[11px] text-slate-400">
-                            -
+                        <div className="grid grid-cols-[1.25rem_2.45rem] justify-center">
+                          <span className="self-center text-right text-[9px] font-medium uppercase tracking-[0.08em] text-slate-300">
+                            max
                           </span>
                           <input
                             type="number"
@@ -272,11 +319,16 @@ function DelayedReachTimelineEditor({
                 className="grid items-center border-t border-slate-100 text-xs"
                 style={{ gridTemplateColumns: timelineGridColumns }}
               >
-                <div className="truncate px-2.5 py-1.5 font-medium text-slate-600">
-                  {signal.label}
+                <div className="min-w-0 px-2.5 py-1.5">
+                  <div className="truncate font-medium text-slate-700">
+                    {TASK_TIMELINE_COPY[signal.id]?.label ?? signal.label}
+                  </div>
+                  <div className="truncate text-[10px] text-slate-400">
+                    {TASK_TIMELINE_COPY[signal.id]?.detail ?? signal.path}
+                  </div>
                 </div>
                 <div className="truncate border-l border-slate-100 px-2 py-1.5 text-center text-[10px] font-medium text-slate-500">
-                  {formatValueSpec(signal.value_spec)}
+                  {formatValueSpec(signal.value_spec, signal.id)}
                 </div>
                 {timeline.epochs.map((epoch) => (
                   <label
@@ -314,7 +366,14 @@ function DelayedReachTimelineEditor({
       <div className="space-y-1 rounded border border-slate-100 bg-slate-50/60 px-2 py-2">
         {preview.signals.map((signal) => (
           <div key={signal.id} className="grid grid-cols-[6.25rem_1fr] items-center gap-2">
-            <div className="truncate text-[10px] font-medium text-slate-500">{signal.label}</div>
+            <div className="min-w-0">
+              <div className="truncate text-[10px] font-medium text-slate-600">
+                {TASK_TIMELINE_COPY[signal.id]?.label ?? signal.label}
+              </div>
+              <div className="truncate text-[9px] text-slate-400">
+                {TASK_TIMELINE_COPY[signal.id]?.preview ?? 'Active during selected epochs.'}
+              </div>
+            </div>
             <div className="relative h-3 overflow-hidden rounded bg-white">
               {signal.active_ranges.map((range, index) => {
                 const left = `${(range.start_min / previewMax) * 100}%`;

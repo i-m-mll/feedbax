@@ -268,6 +268,22 @@ function isOpenTab(value: unknown): value is OpenTab {
   );
 }
 
+function isDisposableStartupPlaceholder(tab: OpenTab): boolean {
+  return (
+    tab.graphSnapshot.graphId === null &&
+    tab.graphSnapshot.isDirty === false &&
+    tab.label === 'Reaching Task Model' &&
+    tab.graphSnapshot.graph.metadata?.name === 'Reaching Task Model' &&
+    tab.trainingSnapshot.taskSpec.type === 'SimpleReaches'
+  );
+}
+
+function discardRestoredStartupPlaceholders(tabs: OpenTab[]): OpenTab[] {
+  if (!tabs.some((tab) => tab.graphSnapshot.graphId !== null)) return tabs;
+  const filtered = tabs.filter((tab) => !isDisposableStartupPlaceholder(tab));
+  return filtered.length > 0 ? filtered : tabs;
+}
+
 function restoreTabStores(tab: OpenTab) {
   const normalizedTab = compactTabForStorage(tab);
   useGraphStore.getState().restoreSnapshot(normalizedTab.graphSnapshot);
@@ -298,7 +314,9 @@ function loadLocalProjectTabs(): { tabs: OpenTab[]; activeTabId: string } | null
     if (parsed.version !== LOCAL_PROJECTS_STORAGE_VERSION || !Array.isArray(parsed.tabs)) {
       return null;
     }
-    const tabs = parsed.tabs.filter(isOpenTab).map(compactTabForStorage);
+    const tabs = discardRestoredStartupPlaceholders(
+      parsed.tabs.filter(isOpenTab).map(compactTabForStorage)
+    );
     if (tabs.length === 0) return null;
     const activeTabId =
       typeof parsed.activeTabId === 'string' &&
@@ -348,6 +366,7 @@ interface ProjectsStoreState {
     projectName?: string,
     analysisSnapshot?: AnalysisSnapshot | null,
     workspaceSnapshot?: StudioWorkspaceSpec | null,
+    options?: { replaceActiveTab?: boolean },
   ) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -436,7 +455,8 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       uiState,
       projectName,
       analysisSnapshot,
-    workspaceSnapshot,
+      workspaceSnapshot,
+      options,
     ) => {
       const { tabs, activeTabId } = get();
       const updatedTabs = tabs.map((tab) =>
@@ -496,7 +516,14 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
-      set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
+      if (options?.replaceActiveTab) {
+        set({
+          tabs: updatedTabs.map((tab) => (tab.tabId === activeTabId ? newTab : tab)),
+          activeTabId: newTab.tabId,
+        });
+      } else {
+        set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
+      }
     },
 
     switchTab: (tabId) => {
