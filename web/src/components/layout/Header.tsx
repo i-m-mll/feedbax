@@ -12,7 +12,12 @@ import { toast } from 'sonner';
 import { useGraphsList, useSaveGraph } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph, createGraph, updateGraph } from '@/api/client';
 import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
-import { persistLocalProjectTabs, useProjectsStore } from '@/stores/projectsStore';
+import {
+  getLastProjectId,
+  persistLocalProjectTabs,
+  setLastProjectId,
+  useProjectsStore,
+} from '@/stores/projectsStore';
 import { useRunStore } from '@/stores/runStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
@@ -40,7 +45,16 @@ export function Header() {
     isDirty,
     markSaved,
   } = useGraphStore();
-  const { tabs, activeTabId, openNewTab, openProjectInTab, switchTab, closeTab, renameTab } = useProjectsStore();
+  const {
+    tabs,
+    activeTabId,
+    hasRestoredLocalTabs,
+    openNewTab,
+    openProjectInTab,
+    switchTab,
+    closeTab,
+    renameTab,
+  } = useProjectsStore();
   const inSubgraph = graphStack.length > 0;
 
   // Focus pending tab input when it appears
@@ -138,7 +152,7 @@ export function Header() {
           : null;
         useTrainingStore.getState().seedDemoData({ lossHistory, latestTrajectory });
       }
-      localStorage.setItem('feedbax:lastProjectId', id);
+      setLastProjectId(id);
     } catch (error) {
       console.error(error);
     }
@@ -147,7 +161,8 @@ export function Header() {
   // Auto-load the last opened project on mount
   useEffect(() => {
     if (graphId !== null) return;
-    const lastId = localStorage.getItem('feedbax:lastProjectId');
+    if (hasRestoredLocalTabs) return;
+    const lastId = getLastProjectId();
     if (lastId) {
       handleOpen(lastId);
     }
@@ -446,7 +461,7 @@ function ProjectOpenOverlay({
           workspace,
         );
         useRunStore.getState().hydrateFromWorkspace(workspace);
-        localStorage.setItem('feedbax:lastProjectId', graphId);
+        setLastProjectId(graphId);
       } catch (error) {
         console.error('Failed to save example project to backend:', error);
         openProjectInTab(

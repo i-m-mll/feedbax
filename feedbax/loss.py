@@ -25,22 +25,18 @@ TODO:
 # from __future__ import annotations
 
 import functools as ft
-import inspect
 import logging
-from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import cached_property, partial
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
-    Generic,
     Literal,
     Optional,
     Self,
     Tuple,
     TypeVar,
-    Union,
 )
 
 import equinox as eqx
@@ -48,13 +44,13 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
-from equinox import AbstractVar, Module, field
+from equinox import AbstractVar, Module
 from jax_cookbook.misc import moving_avg, softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax._mapping import WhereDict
 from feedbax._model import AbstractModel
-from feedbax.misc import get_unique_label, unzip2
+from feedbax.misc import get_unique_label
 from feedbax.state import State
 
 if TYPE_CHECKING:
@@ -66,6 +62,14 @@ logger = logging.getLogger(__name__)
 
 
 U = TypeVar("U")
+
+
+def nan_safe_mse(input: Array, target: Array) -> Float[Array, ""]:
+    """Mean squared error over finite target entries only."""
+    finite = jnp.isfinite(target)
+    squared_error = jnp.where(finite, jnp.square(input - target), 0.0)
+    count = jnp.maximum(jnp.sum(finite), 1)
+    return jnp.sum(squared_error) / count
 
 
 @jtu.register_pytree_node_class

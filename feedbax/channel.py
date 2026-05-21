@@ -5,14 +5,12 @@
 """
 
 from collections.abc import Callable
-import dataclasses
 import logging
 from typing import Generic, Optional, Tuple, TypeVar
 
 import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
-import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -40,6 +38,7 @@ class ChannelState(Module):
 
 
 StateT = TypeVar("StateT")
+T = TypeVar("T")
 
 
 class ChannelSpec(Module, Generic[StateT]):

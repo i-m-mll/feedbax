@@ -14,7 +14,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TypeVar
 
 import equinox as eqx
 import jax.random as jr
@@ -26,6 +26,8 @@ from feedbax._tree import apply_to_filtered_leaves, is_type
 from feedbax.misc import git_commit_id, nested_dict_update
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 def save(
