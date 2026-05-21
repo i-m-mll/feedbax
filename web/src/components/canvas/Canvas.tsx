@@ -218,6 +218,8 @@ const TASK_SOURCE_NODE_PREFIX = '__task_data_source__:';
 const TASK_BINDING_EDGE_PREFIX = '__task_binding_edge__:';
 const TASK_SOURCE_HANDLE_SCREEN_SIZE = 10;
 const TASK_CONNECT_AUTOPAN_ARM_DISTANCE = 32;
+const TASK_CONNECT_AUTOPAN_EDGE_DISTANCE = 36;
+const TASK_CONNECT_AUTOPAN_MAX_SPEED = 16;
 
 function taskSourceNodeId(dataId: string): string {
   return `${TASK_SOURCE_NODE_PREFIX}${dataId}`;
@@ -498,6 +500,9 @@ export function Canvas() {
   const lastSize = useRef<{ width: number; height: number } | null>(null);
   const fittedGraphKey = useRef<string | null>(null);
   const taskConnectionActive = useRef(false);
+  const taskConnectionPanArmed = useRef(false);
+  const taskConnectionPanFrame = useRef(0);
+  const taskConnectionPointer = useRef<{ x: number; y: number } | null>(null);
   const [taskSourcePositions, setTaskSourcePositions] = useState<
     Record<string, { x: number; y: number }>
   >({});
@@ -529,23 +534,6 @@ export function Canvas() {
   const bindableTaskDataKey = bindableTaskData.map((data) => data.id).join('|');
   const taskSourceHandleSize =
     TASK_SOURCE_HANDLE_SCREEN_SIZE / Math.max(0.1, viewport.zoom || 1);
-
-  const prepareTaskConnection = useCallback(() => {
-    setTaskConnectionAutoPan(false);
-  }, []);
-
-  const beginTaskConnection = useCallback(() => {
-    flushSync(() => {
-      taskConnectionActive.current = true;
-      setTaskConnectionAutoPan(false);
-    });
-  }, []);
-
-  const releaseTaskConnection = useCallback(() => {
-    if (!taskConnectionActive.current) {
-      setTaskConnectionAutoPan(true);
-    }
-  }, []);
 
   const updateTaskSourcePositions = useCallback(() => {
     if (topPane.active_projection !== 'task') {
@@ -606,6 +594,109 @@ export function Canvas() {
     });
   }, [bindableTaskData, topPane.active_projection]);
 
+  const runTaskConnectionPanFrame = useCallback(() => {
+    taskConnectionPanFrame.current = 0;
+    if (!taskConnectionActive.current || !taskConnectionPanArmed.current) return;
+    const pointer = taskConnectionPointer.current;
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    if (!pointer || !containerRect) return;
+
+    let dx = 0;
+    let dy = 0;
+    if (pointer.x < containerRect.left + TASK_CONNECT_AUTOPAN_EDGE_DISTANCE) {
+      const distance = Math.max(0, pointer.x - containerRect.left);
+      dx =
+        TASK_CONNECT_AUTOPAN_MAX_SPEED *
+        (1 - distance / TASK_CONNECT_AUTOPAN_EDGE_DISTANCE);
+    } else if (pointer.x > containerRect.right - TASK_CONNECT_AUTOPAN_EDGE_DISTANCE) {
+      const distance = Math.max(0, containerRect.right - pointer.x);
+      dx =
+        -TASK_CONNECT_AUTOPAN_MAX_SPEED *
+        (1 - distance / TASK_CONNECT_AUTOPAN_EDGE_DISTANCE);
+    }
+    if (pointer.y < containerRect.top + TASK_CONNECT_AUTOPAN_EDGE_DISTANCE) {
+      const distance = Math.max(0, pointer.y - containerRect.top);
+      dy =
+        TASK_CONNECT_AUTOPAN_MAX_SPEED *
+        (1 - distance / TASK_CONNECT_AUTOPAN_EDGE_DISTANCE);
+    } else if (pointer.y > containerRect.bottom - TASK_CONNECT_AUTOPAN_EDGE_DISTANCE) {
+      const distance = Math.max(0, containerRect.bottom - pointer.y);
+      dy =
+        -TASK_CONNECT_AUTOPAN_MAX_SPEED *
+        (1 - distance / TASK_CONNECT_AUTOPAN_EDGE_DISTANCE);
+    }
+
+    if (dx === 0 && dy === 0) return;
+    const currentViewport = reactFlow.getViewport();
+    reactFlow.setViewport(
+      {
+        x: currentViewport.x + dx,
+        y: currentViewport.y + dy,
+        zoom: currentViewport.zoom,
+      },
+      { duration: 0 }
+    );
+    updateTaskSourcePositions();
+    taskConnectionPanFrame.current = requestAnimationFrame(runTaskConnectionPanFrame);
+  }, [reactFlow, updateTaskSourcePositions]);
+
+  const scheduleTaskConnectionPan = useCallback(() => {
+    if (taskConnectionPanFrame.current) return;
+    taskConnectionPanFrame.current = requestAnimationFrame(runTaskConnectionPanFrame);
+  }, [runTaskConnectionPanFrame]);
+
+  const stopTaskConnection = useCallback(() => {
+    taskConnectionActive.current = false;
+    taskConnectionPanArmed.current = false;
+    taskConnectionPointer.current = null;
+    if (taskConnectionPanFrame.current) {
+      cancelAnimationFrame(taskConnectionPanFrame.current);
+      taskConnectionPanFrame.current = 0;
+    }
+    setTaskConnectionAutoPan(true);
+  }, []);
+
+  const prepareTaskConnection = useCallback(() => {
+    setTaskConnectionAutoPan(false);
+  }, []);
+
+  const beginTaskConnection = useCallback(() => {
+    flushSync(() => {
+      taskConnectionActive.current = true;
+      taskConnectionPanArmed.current = false;
+      taskConnectionPointer.current = null;
+      if (taskConnectionPanFrame.current) {
+        cancelAnimationFrame(taskConnectionPanFrame.current);
+        taskConnectionPanFrame.current = 0;
+      }
+      setTaskConnectionAutoPan(false);
+    });
+  }, []);
+
+  const releaseTaskConnection = useCallback(() => {
+    if (!taskConnectionActive.current) {
+      setTaskConnectionAutoPan(true);
+    }
+  }, []);
+
+  const updateTaskConnectionPointer = useCallback(
+    (event: PointerEvent | MouseEvent) => {
+      if (!taskConnectionActive.current) return;
+      taskConnectionPointer.current = { x: event.clientX, y: event.clientY };
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (
+        containerRect &&
+        event.clientX > containerRect.left + TASK_CONNECT_AUTOPAN_ARM_DISTANCE
+      ) {
+        taskConnectionPanArmed.current = true;
+      }
+      if (taskConnectionPanArmed.current) {
+        scheduleTaskConnectionPan();
+      }
+    },
+    [scheduleTaskConnectionPan]
+  );
+
   useLayoutEffect(() => {
     if (topPane.active_projection !== 'task') {
       setTaskSourcePositions({});
@@ -649,19 +740,13 @@ export function Canvas() {
 
   useEffect(() => {
     if (taskConnectionAutoPan) return undefined;
-    const armTaskConnectionAutoPan = (event: PointerEvent) => {
-      if (!taskConnectionActive.current) return;
-      const containerRect = containerRef.current?.getBoundingClientRect();
-      if (!containerRect) return;
-      if (event.clientX > containerRect.left + TASK_CONNECT_AUTOPAN_ARM_DISTANCE) {
-        setTaskConnectionAutoPan(true);
-      }
-    };
-    window.addEventListener('pointermove', armTaskConnectionAutoPan, true);
+    window.addEventListener('pointermove', updateTaskConnectionPointer, true);
+    window.addEventListener('mousemove', updateTaskConnectionPointer, true);
     return () => {
-      window.removeEventListener('pointermove', armTaskConnectionAutoPan, true);
+      window.removeEventListener('pointermove', updateTaskConnectionPointer, true);
+      window.removeEventListener('mousemove', updateTaskConnectionPointer, true);
     };
-  }, [taskConnectionAutoPan]);
+  }, [taskConnectionAutoPan, updateTaskConnectionPointer]);
 
   const taskSourceNodes = useMemo<Node<GraphNodeData | TapNodeData | TaskSourceNodeData>[]>(
     () =>
@@ -1095,17 +1180,12 @@ export function Canvas() {
         autoPanOnConnect={taskConnectionAutoPan}
         onConnectStart={(_, params) => {
           if (taskDataIdFromSourceNodeId(params.nodeId)) {
-            taskConnectionActive.current = true;
-            setTaskConnectionAutoPan(false);
+            beginTaskConnection();
             return;
           }
-          taskConnectionActive.current = false;
-          setTaskConnectionAutoPan(true);
+          stopTaskConnection();
         }}
-        onConnectEnd={() => {
-          taskConnectionActive.current = false;
-          setTaskConnectionAutoPan(true);
-        }}
+        onConnectEnd={stopTaskConnection}
         onMoveEnd={() => updateTaskSourcePositions()}
         onPaneClick={() => {
           setSelectedNode(null);
