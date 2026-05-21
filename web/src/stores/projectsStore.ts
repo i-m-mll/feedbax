@@ -5,6 +5,10 @@ import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { useStatisticsStore } from '@/stores/statisticsStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  normalizeGraphForStudioAuthoring,
+  normalizeWorkspaceGraphsForStudioAuthoring,
+} from '@/features/graph/normalization';
 import type { TrainingSpec, TaskSpec, LossValidationError } from '@/types/training';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { AnalysisSnapshot } from '@/types/analysis';
@@ -237,6 +241,7 @@ export function setLastProjectId(id: string): void {
 function compactGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
   return {
     ...snapshot,
+    graph: normalizeGraphForStudioAuthoring(snapshot.graph),
     past: [],
     future: [],
     pendingStateMerge: null,
@@ -247,6 +252,7 @@ function compactTabForStorage(tab: OpenTab): OpenTab {
   return {
     ...tab,
     graphSnapshot: compactGraphSnapshot(tab.graphSnapshot),
+    workspaceSnapshot: normalizeWorkspaceGraphsForStudioAuthoring(tab.workspaceSnapshot),
   };
 }
 
@@ -263,16 +269,17 @@ function isOpenTab(value: unknown): value is OpenTab {
 }
 
 function restoreTabStores(tab: OpenTab) {
-  useGraphStore.getState().restoreSnapshot(compactGraphSnapshot(tab.graphSnapshot));
+  const normalizedTab = compactTabForStorage(tab);
+  useGraphStore.getState().restoreSnapshot(normalizedTab.graphSnapshot);
   useTrainingStore.setState({
-    trainingSpec: tab.trainingSnapshot.trainingSpec,
-    taskSpec: tab.trainingSnapshot.taskSpec,
-    selectedLossPath: tab.trainingSnapshot.selectedLossPath,
-    lossValidationErrors: tab.trainingSnapshot.lossValidationErrors,
-    highlightedProbeSelector: tab.trainingSnapshot.highlightedProbeSelector,
+    trainingSpec: normalizedTab.trainingSnapshot.trainingSpec,
+    taskSpec: normalizedTab.trainingSnapshot.taskSpec,
+    selectedLossPath: normalizedTab.trainingSnapshot.selectedLossPath,
+    lossValidationErrors: normalizedTab.trainingSnapshot.lossValidationErrors,
+    highlightedProbeSelector: normalizedTab.trainingSnapshot.highlightedProbeSelector,
   });
-  restoreAnalysisSnapshot(tab.analysisSnapshot);
-  useWorkspaceStore.getState().setWorkspace(tab.workspaceSnapshot);
+  restoreAnalysisSnapshot(normalizedTab.analysisSnapshot);
+  useWorkspaceStore.getState().setWorkspace(normalizedTab.workspaceSnapshot);
   resetTrajectoryStoreForTabSwitch();
   resetStatisticsStoreForTabSwitch();
 }
@@ -429,21 +436,24 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       uiState,
       projectName,
       analysisSnapshot,
-      workspaceSnapshot,
+    workspaceSnapshot,
     ) => {
       const { tabs, activeTabId } = get();
       const updatedTabs = tabs.map((tab) =>
         tab.tabId === activeTabId ? captureCurrentTab(tab) : tab
       );
+      const authoringGraph = normalizeGraphForStudioAuthoring(graph);
+      const authoringWorkspace =
+        normalizeWorkspaceGraphsForStudioAuthoring(workspaceSnapshot ?? null);
 
       const graphSnapshot: GraphSnapshot = {
-        graph,
+        graph: authoringGraph,
         uiState,
         graphId,
         isDirty: false,
         lastSavedAt: null,
         graphStack: [],
-        currentGraphLabel: projectName ?? graph.metadata?.name ?? 'Untitled',
+        currentGraphLabel: projectName ?? authoringGraph.metadata?.name ?? 'Untitled',
         currentContext: 'top-level',
         edgeStyle: 'bezier',
         past: [],
@@ -452,11 +462,11 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         selectedEdgeId: null,
         pendingStateMerge: null,
       };
-      const trainingSnapshot = trainingSnapshotFromWorkspace(workspaceSnapshot);
+      const trainingSnapshot = trainingSnapshotFromWorkspace(authoringWorkspace);
       const restoredAnalysis = analysisSnapshot ?? makeInitialAnalysisSnapshot();
       const restoredWorkspace = buildWorkspaceSnapshot({
-        workspace: workspaceSnapshot ?? null,
-        graph,
+        workspace: authoringWorkspace,
+        graph: authoringGraph,
         uiState,
         trainingSpec: trainingSnapshot.trainingSpec,
         taskSpec: trainingSnapshot.taskSpec,

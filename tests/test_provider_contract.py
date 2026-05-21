@@ -64,6 +64,43 @@ def _minimal_graph_spec() -> dict:
     }
 
 
+def _runtime_network_graph_spec() -> dict:
+    return {
+        "nodes": {
+            "network": {
+                "type": "SimpleStagedNetwork",
+                "params": {
+                    "hidden_size": 100,
+                    "input_size": 4,
+                    "output_size": 2,
+                    "hidden_type": "GRUCell",
+                    "out_nonlinearity": "tanh",
+                },
+                "input_ports": ["target"],
+                "output_ports": ["output", "hidden"],
+            },
+            "mechanics": {
+                "type": "PointMass",
+                "params": {"dt": 0.02},
+                "input_ports": ["force"],
+                "output_ports": ["effector"],
+            },
+        },
+        "wires": [
+            {
+                "source_node": "network",
+                "source_port": "output",
+                "target_node": "mechanics",
+                "target_port": "force",
+            }
+        ],
+        "input_ports": ["target"],
+        "output_ports": ["effector"],
+        "input_bindings": {"target": ("network", "target")},
+        "output_bindings": {"effector": ("mechanics", "effector")},
+    }
+
+
 def _minimal_training_spec() -> dict:
     return {
         "optimizer": {"type": "adamw", "params": {"learning_rate": 0.001}},
@@ -278,6 +315,13 @@ def test_graph_validation_reports_unknown_components() -> None:
 
     assert not result.valid
     assert result.errors[0].type == "unknown_component_type"
+
+
+def test_graph_validation_normalizes_runtime_network_authoring_payloads() -> None:
+    result = validate_graph_spec(_runtime_network_graph_spec())
+
+    assert result.valid
+    assert {error.type for error in result.errors} == set()
 
 
 def test_graph_validation_rejects_task_nodes() -> None:
@@ -499,6 +543,48 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert "path:states.mechanics.effector.pos" in selectors
     assert any(issue.type == "stage_missing_scenario" for issue in registry.issues)
     assert registry.metadata["runtime_introspection"]["status"] == "not_requested"
+
+
+def test_studio_schema_enumeration_normalizes_runtime_network_ports() -> None:
+    workspace = build_default_studio_workspace(
+        label="Runtime network",
+        graph=GraphSpec.model_validate(_runtime_network_graph_spec()),
+    )
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->network:target",
+                    "source_data_id": "inputs",
+                    "target_node_id": "network",
+                    "target_port": "target",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+
+    network_input = next(port for port in registry.ports if port.id == "port:network.input:input")
+    assert network_input.component_type == "Network"
+    assert network_input.bound_task_data_id == "task_data:inputs"
+    assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
 
 
 def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
@@ -831,6 +917,46 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
             }
         )
     )
+
+
+def test_worker_spec_contract_normalizes_runtime_network_payloads() -> None:
+    job = _worker_contract_job(
+        graph_spec=_runtime_network_graph_spec(),
+        task_binding_spec={
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->network:target",
+                    "source_data_id": "inputs",
+                    "target_node_id": "network",
+                    "target_port": "target",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        },
+    )
+
+    _require_worker_specs(job)
+
+    assert job.graph_spec["nodes"]["network"]["type"] == "Network"
+    assert "network" in job.graph_spec["subgraphs"]
+    assert job.task_binding_spec["bindings"][0]["target_port"] == "input"
+    params = _extract_graph_params(job.graph_spec)
+    assert params["hidden_size"] == 100
+    assert params["input_size"] == 4
+    assert params["out_size"] == 2
 
 
 def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None:

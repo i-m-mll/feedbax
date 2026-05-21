@@ -7,6 +7,11 @@ import json
 import uuid
 
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
+from feedbax.web.graph_normalization import (
+    normalize_graph_for_studio_authoring,
+    normalize_project_for_studio_authoring,
+    normalize_workspace_for_studio_authoring,
+)
 from feedbax.web.models.graph import (
     AnalysisPageSpec,
     GraphProject,
@@ -42,6 +47,7 @@ class GraphService:
 
     def create_graph(self, graph: GraphSpec, ui_state: Optional[GraphUIState]) -> GraphRecord:
         ensure_dirs()
+        graph = normalize_graph_for_studio_authoring(graph)
         graph_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         metadata = graph.metadata or GraphMetadata(
@@ -83,7 +89,7 @@ class GraphService:
         record = self.get_graph(graph_id)
         project = record.project
         if graph is not None:
-            project.graph = graph
+            project.graph = normalize_graph_for_studio_authoring(graph)
         if ui_state is not None:
             project.ui_state = ui_state
         if analysis_pages is not None:
@@ -91,7 +97,7 @@ class GraphService:
         if active_analysis_page_id is not None:
             project.active_analysis_page_id = active_analysis_page_id
         if workspace is not None:
-            project.workspace = workspace
+            project.workspace = normalize_workspace_for_studio_authoring(workspace)
         updated_at = datetime.now(timezone.utc).isoformat()
         project.metadata.updated_at = updated_at
         if project.graph.metadata is not None:
@@ -174,7 +180,7 @@ class GraphService:
     def _load_project(self, path: Path) -> GraphProject:
         with open(path, 'r', encoding='utf-8') as file:
             data = json.load(file)
-        project = GraphProject.model_validate(data)
+        project = normalize_project_for_studio_authoring(GraphProject.model_validate(data))
         self._ensure_workspace(project)
         return project
 
@@ -184,6 +190,8 @@ class GraphService:
             json.dump(project.model_dump(), file, indent=2)
 
     def _ensure_workspace(self, project: GraphProject) -> None:
+        project.graph = normalize_graph_for_studio_authoring(project.graph)
+        project.workspace = normalize_workspace_for_studio_authoring(project.workspace)
         if project.workspace is not None:
             return
         project.workspace = build_default_studio_workspace(

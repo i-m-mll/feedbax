@@ -8,6 +8,10 @@ import {
   ensureTaskBindingSpec,
   retargetTaskBindingsForNodeRename,
 } from '@/features/scenario/taskBindings';
+import {
+  normalizeGraphForStudioAuthoring,
+  normalizeTaskBindingSpecForStudioAuthoring,
+} from '@/features/graph/normalization';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -325,14 +329,25 @@ function normalizeScenarioTaskBindingSpec(
   scenario: StudioScenarioSpec
 ): StudioScenarioSpec {
   if (!scenario.graph) return scenario;
-  const taskBindingSpec = ensureTaskBindingSpec(
-    scenario.task_binding_spec,
+  const graph = normalizeGraphForStudioAuthoring(
     scenario.graph,
+    scenario.task_binding_spec
+  );
+  const normalizedExistingTaskBindingSpec = normalizeTaskBindingSpecForStudioAuthoring(
+    scenario.task_binding_spec,
+    graph
+  );
+  const taskBindingSpec = ensureTaskBindingSpec(
+    normalizedExistingTaskBindingSpec,
+    graph,
     scenario.task_spec
   );
-  if (taskBindingSpec === scenario.task_binding_spec) return scenario;
+  if (graph === scenario.graph && taskBindingSpec === scenario.task_binding_spec) {
+    return scenario;
+  }
   return {
     ...scenario,
+    graph,
     task_binding_spec: taskBindingSpec,
   };
 }

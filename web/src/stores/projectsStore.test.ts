@@ -99,4 +99,43 @@ describe('projectsStore local restore state', () => {
     expect(useProjectsStore.getState().hasRestoredLocalTabs).toBe(false);
     expect(useProjectsStore.getState().tabs).toHaveLength(1);
   });
+
+  it('normalizes restored local tab graphs before exposing project state', async () => {
+    const runtimePayload = JSON.parse(savedTabsPayload);
+    runtimePayload.tabs[0].graphSnapshot.graph.nodes = {
+      network: {
+        type: 'SimpleStagedNetwork',
+        params: { input_size: 4, hidden_size: 100, output_size: 2 },
+        input_ports: ['target'],
+        output_ports: ['output'],
+      },
+    };
+    runtimePayload.tabs[0].graphSnapshot.graph.input_ports = ['target'];
+    runtimePayload.tabs[0].graphSnapshot.graph.input_bindings = {
+      target: ['network', 'target'],
+    };
+
+    vi.resetModules();
+    vi.stubGlobal(
+      'window',
+      {
+        localStorage: makeStorage({
+          [LOCAL_PROJECTS_STORAGE_KEY]: JSON.stringify(runtimePayload),
+        }),
+      },
+    );
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-tab' });
+
+    const { useProjectsStore } = await import('@/stores/projectsStore');
+    const { useGraphStore } = await import('@/stores/graphStore');
+
+    expect(useProjectsStore.getState().tabs[0].graphSnapshot.graph.nodes.network.type).toBe(
+      'Network'
+    );
+    expect(useGraphStore.getState().graph.nodes.network.type).toBe('Network');
+    expect(useGraphStore.getState().graph.subgraphs?.network.nodes.cell.type).toBe('GRU');
+    expect(useGraphStore.getState().graph.input_bindings).toEqual({
+      input: ['network', 'input'],
+    });
+  });
 });
