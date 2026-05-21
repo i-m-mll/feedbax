@@ -1,4 +1,10 @@
-import { useMemo } from 'react';
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { Settings2 } from 'lucide-react';
 import {
   createDefaultTaskBindingSpec,
@@ -17,6 +23,7 @@ import {
   getTrainingScenario,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
 import type { StudioTaskTimelineSpec } from '@/types/workspace';
@@ -142,97 +149,107 @@ function DelayedReachTimelineEditor({
   onChange: (timeline: StudioTaskTimelineSpec) => void;
 }) {
   const editableEpochs = timeline.epochs.slice(0, -1);
+  const timelineGridColumns = `8rem repeat(${timeline.epochs.length}, minmax(6.75rem, 1fr))`;
+  const timelineMinWidth = `${8 + timeline.epochs.length * 6.75}rem`;
   return (
     <section className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
         Timeline
       </div>
       <div className="overflow-hidden rounded border border-slate-100">
-        <div
-          className="grid bg-slate-50/80 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-400"
-          style={{ gridTemplateColumns: `72px repeat(${timeline.epochs.length}, minmax(58px, 1fr))` }}
-        >
-          <div className="px-2 py-1.5">Signal</div>
-          {timeline.epochs.map((epoch) => (
-            <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
-              {epoch.label}
+        <div className="overflow-x-auto">
+          <div className="w-full" style={{ minWidth: timelineMinWidth }}>
+            <div
+              className="grid bg-slate-50/80 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-400"
+              style={{ gridTemplateColumns: timelineGridColumns }}
+            >
+              <div className="px-3 py-1.5">Signal</div>
+              {timeline.epochs.map((epoch) => (
+                <div key={epoch.id} className="border-l border-slate-100 px-3 py-1.5 text-center">
+                  {epoch.label}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <div
-          className="grid items-center border-t border-slate-100 text-xs"
-          style={{ gridTemplateColumns: `72px repeat(${timeline.epochs.length}, minmax(58px, 1fr))` }}
-        >
-          <div className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
-            Length
-          </div>
-          {timeline.epochs.map((epoch) => {
-            const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
-            const inferred = Boolean(epoch.length.metadata.inferred_from_remaining_steps);
-            return (
-              <div key={epoch.id} className="border-l border-slate-100 px-1 py-1.5">
-                {inferred ? (
-                  <div className="truncate text-center text-[10px] text-slate-400">remaining</div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-1">
-                    {(['min', 'max'] as const).map((key) => (
-                      <input
-                        key={key}
-                        type="number"
-                        min={0}
-                        value={Number(value?.[key] ?? 0)}
-                        onChange={(event) =>
-                          onChange(
-                            updateDelayedReachEpochRange(
-                              timeline,
-                              epoch.id,
-                              key,
-                              Number(event.target.value)
-                            )
-                          )
-                        }
-                        className="h-6 min-w-0 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
-                        aria-label={`${epoch.label} ${key} length`}
-                      />
-                    ))}
-                  </div>
-                )}
+            <div
+              className="grid items-center border-t border-slate-100 text-xs"
+              style={{ gridTemplateColumns: timelineGridColumns }}
+            >
+              <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                Length
               </div>
-            );
-          })}
-        </div>
-        {timeline.signals.map((signal) => (
-          <div
-            key={signal.id}
-            className="grid items-center border-t border-slate-100 text-xs"
-            style={{ gridTemplateColumns: `72px repeat(${timeline.epochs.length}, minmax(58px, 1fr))` }}
-          >
-            <div className="truncate px-2 py-1.5 font-medium text-slate-600">{signal.label}</div>
-            {timeline.epochs.map((epoch) => (
-              <label
-                key={epoch.id}
-                className="flex h-8 items-center justify-center border-l border-slate-100"
-                title={`${signal.label} during ${epoch.label}`}
+              {timeline.epochs.map((epoch) => {
+                const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
+                const inferred = Boolean(epoch.length.metadata.inferred_from_remaining_steps);
+                return (
+                  <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5">
+                    {inferred ? (
+                      <div className="whitespace-nowrap text-center text-[10px] text-slate-400">
+                        remaining
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(['min', 'max'] as const).map((key) => (
+                          <input
+                            key={key}
+                            type="number"
+                            min={0}
+                            value={Number(value?.[key] ?? 0)}
+                            onChange={(event) =>
+                              onChange(
+                                updateDelayedReachEpochRange(
+                                  timeline,
+                                  epoch.id,
+                                  key,
+                                  Number(event.target.value)
+                                )
+                              )
+                            }
+                            className="h-6 min-w-[3rem] rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
+                            aria-label={`${epoch.label} ${key} length`}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {timeline.signals.map((signal) => (
+              <div
+                key={signal.id}
+                className="grid items-center border-t border-slate-100 text-xs"
+                style={{ gridTemplateColumns: timelineGridColumns }}
               >
-                <input
-                  type="checkbox"
-                  checked={signal.epoch_ids.includes(epoch.id)}
-                  onChange={(event) =>
-                    onChange(
-                      toggleDelayedReachSignalEpoch(
-                        timeline,
-                        signal.id,
-                        epoch.id,
-                        event.target.checked
-                      )
-                    )
-                  }
-                  className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-              </label>
+                <div className="truncate px-3 py-1.5 font-medium text-slate-600">
+                  {signal.label}
+                </div>
+                {timeline.epochs.map((epoch) => (
+                  <label
+                    key={epoch.id}
+                    className="flex h-8 items-center justify-center border-l border-slate-100"
+                    title={`${signal.label} during ${epoch.label}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={signal.epoch_ids.includes(epoch.id)}
+                      onChange={(event) =>
+                        onChange(
+                          toggleDelayedReachSignalEpoch(
+                            timeline,
+                            signal.id,
+                            epoch.id,
+                            event.target.checked
+                          )
+                        )
+                      }
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                  </label>
+                ))}
+              </div>
             ))}
           </div>
-        ))}
+        </div>
       </div>
       {editableEpochs.length > 0 && (
         <div className="text-[10px] text-slate-400">
@@ -244,6 +261,10 @@ function DelayedReachTimelineEditor({
 }
 
 export function TaskScenarioPanel() {
+  const { taskSidebarWidth, setTaskSidebarWidth } = useLayoutStore();
+  const asideRef = useRef<HTMLElement | null>(null);
+  const taskDataSectionRef = useRef<HTMLElement | null>(null);
+  const [taskDataResizeGap, setTaskDataResizeGap] = useState({ top: 0, bottom: 0 });
   const graph = useGraphStore((state) => state.graph);
   const markDirty = useGraphStore((state) => state.markDirty);
   const workspace = useWorkspaceStore((state) => state.workspace);
@@ -273,6 +294,30 @@ export function TaskScenarioPanel() {
   const bindableData = taskBindingSpec.exposed_data.filter((data) => data.bindable);
   const protocolData = taskBindingSpec.exposed_data.filter((data) => !data.bindable);
   const boundTarget = (nodeId: string, port: string) => `${nodeId}.${port}`;
+  useLayoutEffect(() => {
+    const aside = asideRef.current;
+    const taskDataSection = taskDataSectionRef.current;
+    if (!aside || !taskDataSection) return;
+
+    const updateGap = () => {
+      const asideRect = aside.getBoundingClientRect();
+      const sectionRect = taskDataSection.getBoundingClientRect();
+      setTaskDataResizeGap({
+        top: Math.max(0, sectionRect.top - asideRect.top),
+        bottom: Math.max(0, sectionRect.bottom - asideRect.top),
+      });
+    };
+
+    updateGap();
+    const observer = new ResizeObserver(updateGap);
+    observer.observe(aside);
+    observer.observe(taskDataSection);
+    window.addEventListener('resize', updateGap);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateGap);
+    };
+  }, [bindableData.length, taskSidebarWidth]);
   const updateParam = (key: string, value: ParamValue) => {
     updateTaskSpec({
       ...task,
@@ -294,8 +339,27 @@ export function TaskScenarioPanel() {
     updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
     markDirty();
   };
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = taskSidebarWidth;
+    const onMove = (moveEvent: PointerEvent) => {
+      setTaskSidebarWidth(startWidth + (moveEvent.clientX - startX));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
   return (
-    <aside className="relative z-20 flex w-72 shrink-0 flex-col overflow-visible border-r border-slate-100 bg-white/95">
+    <aside
+      ref={asideRef}
+      style={{ width: taskSidebarWidth }}
+      className="relative z-20 flex shrink-0 flex-col overflow-visible border-r border-slate-100 bg-white/95"
+    >
       <div className="border-b border-slate-100 px-4 py-3">
         <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">
           <Settings2 className="h-3.5 w-3.5" />
@@ -313,7 +377,10 @@ export function TaskScenarioPanel() {
           ))}
         </select>
       </div>
-      <section className="shrink-0 border-b border-slate-100 bg-white py-3 pl-4 pr-0">
+      <section
+        ref={taskDataSectionRef}
+        className="shrink-0 border-b border-slate-100 bg-white py-3 pl-4 pr-0"
+      >
         <div className="overflow-visible rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center rounded-t-lg border-b border-slate-100 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800">
             Task Data
@@ -337,7 +404,7 @@ export function TaskScenarioPanel() {
           </div>
         </div>
       </section>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-white px-4 py-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto bg-white px-4 py-4">
         {timeline && <DelayedReachTimelineEditor timeline={timeline} onChange={updateTimeline} />}
         <section className="space-y-2">
           <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
@@ -395,6 +462,22 @@ export function TaskScenarioPanel() {
             )}
           </div>
         </section>
+      </div>
+      <div className="pointer-events-none absolute right-0 top-0 bottom-0 z-10 w-1">
+        <div
+          className="pointer-events-auto absolute right-0 top-0 w-1 cursor-col-resize touch-none hover:bg-brand-300/50 active:bg-brand-400/50"
+          style={{ height: taskDataResizeGap.top }}
+          aria-label="Resize task sidebar"
+          role="separator"
+          onPointerDown={startResize}
+        />
+        <div
+          className="pointer-events-auto absolute right-0 bottom-0 w-1 cursor-col-resize touch-none hover:bg-brand-300/50 active:bg-brand-400/50"
+          style={{ top: taskDataResizeGap.bottom }}
+          aria-label="Resize task sidebar"
+          role="separator"
+          onPointerDown={startResize}
+        />
       </div>
     </aside>
   );
