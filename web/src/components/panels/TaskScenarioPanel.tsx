@@ -11,6 +11,7 @@ import {
   ensureTaskBindingSpec,
 } from '@/features/scenario/taskBindings';
 import {
+  applyDelayedReachTimelineEdit,
   delayedReachTaskWithTimeline,
   delayedReachTimelineFromTask,
   isDelayedReachTimelineParam,
@@ -26,7 +27,7 @@ import {
 import { useLayoutStore } from '@/stores/layoutStore';
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
-import type { StudioTaskTimelineSpec } from '@/types/workspace';
+import type { StudioTaskTimelineSpec, StudioValueSpec } from '@/types/workspace';
 
 const TASK_CATALOG: TaskSpec[] = [
   {
@@ -141,6 +142,24 @@ function ParamEditor({
   );
 }
 
+function formatValueSpec(valueSpec: StudioValueSpec | null | undefined): string {
+  if (!valueSpec) return 'value';
+  if (valueSpec.mode === 'function') {
+    return 'function';
+  }
+  if (valueSpec.mode === 'constant') {
+    const value = valueSpec.value;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if ('active' in record && 'inactive' in record) {
+        return `${record.active}/${record.inactive}`;
+      }
+    }
+    return formatValue(value);
+  }
+  return valueSpec.mode;
+}
+
 function DelayedReachTimelineEditor({
   timeline,
   onChange,
@@ -149,8 +168,29 @@ function DelayedReachTimelineEditor({
   onChange: (timeline: StudioTaskTimelineSpec) => void;
 }) {
   const editableEpochs = timeline.epochs.slice(0, -1);
-  const timelineGridColumns = `6.5rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
-  const timelineMinWidth = `${6.5 + timeline.epochs.length * 4.875}rem`;
+  const signalRows = timeline.signals.filter((signal) => signal.kind === 'signal');
+  const timelineGridColumns = `7rem 5.75rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
+  const timelineMinWidth = `${12.75 + timeline.epochs.length * 4.875}rem`;
+  const updateVisibleRange = (
+    epoch: StudioTaskTimelineSpec['epochs'][number],
+    key: 'min' | 'max',
+    nextValue: number
+  ) => {
+    const current = epoch.length.value as { min?: unknown; max?: unknown } | null;
+    const currentMin = Number(current?.min ?? 0);
+    const currentMaxExclusive = Number(current?.max ?? currentMin + 1);
+    const currentMaxInclusive = Math.max(currentMin, currentMaxExclusive - 1);
+    const nextMin = Math.max(
+      0,
+      Math.round(key === 'min' ? nextValue : currentMin)
+    );
+    const nextMaxInclusive = Math.max(
+      nextMin,
+      Math.round(key === 'max' ? nextValue : currentMaxInclusive)
+    );
+    const withMin = updateDelayedReachEpochRange(timeline, epoch.id, 'min', nextMin);
+    return updateDelayedReachEpochRange(withMin, epoch.id, 'max', nextMaxInclusive + 1);
+  };
   return (
     <section className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
@@ -164,9 +204,10 @@ function DelayedReachTimelineEditor({
               style={{ gridTemplateColumns: timelineGridColumns }}
             >
               <div className="px-3 py-1.5">Signal</div>
+              <div className="border-l border-slate-100 px-2 py-1.5 text-center">Value</div>
               {timeline.epochs.map((epoch) => (
                 <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
-                  {epoch.id.replace(/^epoch:/, '')}
+                  {epoch.index}
                 </div>
               ))}
             </div>
@@ -177,9 +218,21 @@ function DelayedReachTimelineEditor({
               <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
                 Length
               </div>
+              <div className="border-l border-slate-100 px-2 py-1.5 text-center text-[10px] leading-3 text-slate-400">
+                min-max
+                <br />
+                steps/trial
+              </div>
               {timeline.epochs.map((epoch) => {
                 const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
                 const inferred = Boolean(epoch.length.metadata.inferred_from_remaining_steps);
+                const storedMin = Number(value?.min ?? 0);
+                const storedMaxExclusive = Number(value?.max ?? 0);
+                const visibleMin = Number.isFinite(storedMin) ? storedMin : 0;
+                const visibleMax = Math.max(
+                  visibleMin,
+                  Number.isFinite(storedMaxExclusive) ? storedMaxExclusive - 1 : visibleMin
+                );
                 return (
                   <div key={epoch.id} className="border-l border-slate-100 px-1.5 py-1.5">
                     {inferred ? (
@@ -188,43 +241,31 @@ function DelayedReachTimelineEditor({
                       </div>
                     ) : (
                       <div className="grid gap-1">
-                        <div className="grid grid-cols-[0.55rem_2.45rem] justify-center">
-                          <span aria-hidden="true" />
+                        <div className="grid grid-cols-[1.25rem_2.45rem] justify-center gap-1">
+                          <span className="self-center text-right text-[9px] font-medium uppercase tracking-[0.08em] text-slate-300">
+                            min
+                          </span>
                           <input
                             type="number"
                             min={0}
-                            value={Number(value?.min ?? 0)}
+                            value={visibleMin}
                             onChange={(event) =>
-                              onChange(
-                                updateDelayedReachEpochRange(
-                                  timeline,
-                                  epoch.id,
-                                  'min',
-                                  Number(event.target.value)
-                                )
-                              )
+                              onChange(updateVisibleRange(epoch, 'min', Number(event.target.value)))
                             }
                             className="h-6 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
                             aria-label={`${epoch.label} min length`}
                           />
                         </div>
-                        <div className="grid grid-cols-[0.55rem_2.45rem] justify-center">
-                          <span className="select-none self-center text-center text-[11px] text-slate-400">
-                            -
+                        <div className="grid grid-cols-[1.25rem_2.45rem] justify-center gap-1">
+                          <span className="self-center text-right text-[9px] font-medium uppercase tracking-[0.08em] text-slate-300">
+                            max
                           </span>
                           <input
                             type="number"
                             min={0}
-                            value={Number(value?.max ?? 0)}
+                            value={visibleMax}
                             onChange={(event) =>
-                              onChange(
-                                updateDelayedReachEpochRange(
-                                  timeline,
-                                  epoch.id,
-                                  'max',
-                                  Number(event.target.value)
-                                )
-                              )
+                              onChange(updateVisibleRange(epoch, 'max', Number(event.target.value)))
                             }
                             className="h-6 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
                             aria-label={`${epoch.label} max length`}
@@ -236,7 +277,7 @@ function DelayedReachTimelineEditor({
                 );
               })}
             </div>
-            {timeline.signals.map((signal) => (
+            {signalRows.map((signal) => (
               <div
                 key={signal.id}
                 className="grid items-center border-t border-slate-100 text-xs"
@@ -244,6 +285,9 @@ function DelayedReachTimelineEditor({
               >
                 <div className="truncate px-2.5 py-1.5 font-medium text-slate-600">
                   {signal.label}
+                </div>
+                <div className="truncate border-l border-slate-100 px-2 py-1.5 text-center text-[10px] font-medium text-slate-500">
+                  {formatValueSpec(signal.value_spec)}
                 </div>
                 {timeline.epochs.map((epoch) => (
                   <label
@@ -294,6 +338,7 @@ export function TaskScenarioPanel() {
   const updateTaskBindingSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioTaskBindingSpec
   );
+  const updateScenarioDraft = useWorkspaceStore((state) => state.updateScenarioDraft);
   const topPane = getTopPaneState(workspace);
   const scenario = getTrainingScenario(workspace);
   const task = scenario?.task_spec ?? TASK_CATALOG[0];
@@ -359,7 +404,23 @@ export function TaskScenarioPanel() {
     markDirty();
   };
   const updateTimeline = (nextTimeline: StudioTaskTimelineSpec) => {
-    updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
+    const edited = applyDelayedReachTimelineEdit(task, taskBindingSpec, nextTimeline);
+    if (scenario?.id) {
+      updateScenarioDraft(
+        scenario.id,
+        {
+          task_spec: edited.task_spec,
+          task_binding_spec: ensureTaskBindingSpec(
+            edited.task_binding_spec,
+            graph,
+            edited.task_spec
+          ),
+        },
+        'task_timeline_updated'
+      );
+    } else {
+      updateTaskSpec(delayedReachTaskWithTimeline(task, nextTimeline));
+    }
     markDirty();
   };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {

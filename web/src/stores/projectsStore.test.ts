@@ -99,4 +99,181 @@ describe('projectsStore local restore state', () => {
     expect(useProjectsStore.getState().hasRestoredLocalTabs).toBe(false);
     expect(useProjectsStore.getState().tabs).toHaveLength(1);
   });
+
+  it('normalizes restored local tab graphs before exposing project state', async () => {
+    const runtimePayload = JSON.parse(savedTabsPayload);
+    runtimePayload.tabs[0].graphSnapshot.graph.nodes = {
+      network: {
+        type: 'SimpleStagedNetwork',
+        params: { input_size: 4, hidden_size: 100, output_size: 2 },
+        input_ports: ['target'],
+        output_ports: ['output'],
+      },
+    };
+    runtimePayload.tabs[0].graphSnapshot.graph.input_ports = ['target'];
+    runtimePayload.tabs[0].graphSnapshot.graph.input_bindings = {
+      target: ['network', 'target'],
+    };
+
+    vi.resetModules();
+    vi.stubGlobal(
+      'window',
+      {
+        localStorage: makeStorage({
+          [LOCAL_PROJECTS_STORAGE_KEY]: JSON.stringify(runtimePayload),
+        }),
+      },
+    );
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-tab' });
+
+    const { useProjectsStore } = await import('@/stores/projectsStore');
+    const { useGraphStore } = await import('@/stores/graphStore');
+
+    expect(useProjectsStore.getState().tabs[0].graphSnapshot.graph.nodes.network.type).toBe(
+      'Network'
+    );
+    expect(useGraphStore.getState().graph.nodes.network.type).toBe('Network');
+    expect(useGraphStore.getState().graph.subgraphs?.network.nodes.cell.type).toBe('GRU');
+    expect(useGraphStore.getState().graph.input_bindings).toEqual({
+      input: ['network', 'input'],
+    });
+  });
+
+  it('can replace the startup placeholder when autoloading a saved project', async () => {
+    vi.resetModules();
+    vi.stubGlobal('window', { localStorage: makeStorage() });
+    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'generated-tab') });
+
+    const { useProjectsStore } = await import('@/stores/projectsStore');
+    const { useGraphStore } = await import('@/stores/graphStore');
+
+    expect(useProjectsStore.getState().tabs).toHaveLength(1);
+    expect(useGraphStore.getState().currentGraphLabel).toBe('Reaching Task Model');
+
+    useProjectsStore.getState().openProjectInTab(
+      'movement-ramp-project',
+      {
+        nodes: {},
+        wires: [],
+        input_ports: [],
+        output_ports: [],
+        input_bindings: {},
+        output_bindings: {},
+        metadata: {
+          name: 'RLRMP movement-ramp training runs',
+          created_at: '2026-05-21T00:00:00Z',
+          updated_at: '2026-05-21T00:00:00Z',
+          version: '1.0.0',
+        },
+      },
+      { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} },
+      'RLRMP movement-ramp training runs',
+      { pages: [], activePageId: null },
+      null,
+      { replaceActiveTab: true },
+    );
+
+    expect(useProjectsStore.getState().tabs).toHaveLength(1);
+    expect(useProjectsStore.getState().tabs[0].graphSnapshot.graphId).toBe(
+      'movement-ramp-project'
+    );
+    expect(useProjectsStore.getState().tabs[0].label).toBe(
+      'RLRMP movement-ramp training runs'
+    );
+    expect(useGraphStore.getState().graphId).toBe('movement-ramp-project');
+  });
+
+  it('drops restored clean startup placeholders when a saved project tab exists', async () => {
+    const payload = JSON.parse(savedTabsPayload);
+    payload.activeTabId = 'placeholder';
+    payload.tabs = [
+      {
+        tabId: 'placeholder',
+        label: 'Reaching Task Model',
+        graphSnapshot: {
+          graph: {
+            nodes: {},
+            wires: [],
+            input_ports: [],
+            output_ports: [],
+            input_bindings: {},
+            output_bindings: {},
+            metadata: {
+              name: 'Reaching Task Model',
+              created_at: '2026-05-21T00:00:00Z',
+              updated_at: '2026-05-21T00:00:00Z',
+              version: '1.0.0',
+            },
+          },
+          uiState: { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} },
+          graphId: null,
+          isDirty: false,
+          lastSavedAt: null,
+          graphStack: [],
+          currentGraphLabel: 'Reaching Task Model',
+          currentContext: 'top-level',
+          edgeStyle: 'bezier',
+          past: [],
+          future: [],
+          selectedTapId: null,
+          selectedEdgeId: null,
+          pendingStateMerge: null,
+        },
+        trainingSnapshot: {
+          trainingSpec: {
+            optimizer: { type: 'adam', params: { learning_rate: 0.001 } },
+            loss: { type: 'Composite', label: 'loss', weight: 1, children: {} },
+            n_batches: 10,
+            batch_size: 4,
+          },
+          taskSpec: { type: 'SimpleReaches', params: {} },
+          selectedLossPath: null,
+          lossValidationErrors: [],
+          highlightedProbeSelector: null,
+        },
+        analysisSnapshot: { pages: [], activePageId: null },
+        workspaceSnapshot: null,
+      },
+      {
+        ...payload.tabs[0],
+        tabId: 'movement-ramp',
+        label: 'RLRMP movement-ramp training runs',
+        graphSnapshot: {
+          ...payload.tabs[0].graphSnapshot,
+          graphId: 'movement-ramp-project',
+          currentGraphLabel: 'RLRMP movement-ramp training runs',
+          graph: {
+            ...payload.tabs[0].graphSnapshot.graph,
+            metadata: {
+              ...payload.tabs[0].graphSnapshot.graph.metadata,
+              name: 'RLRMP movement-ramp training runs',
+            },
+          },
+        },
+        trainingSnapshot: {
+          ...payload.tabs[0].trainingSnapshot,
+          taskSpec: { type: 'DelayedReaches', params: {} },
+        },
+      },
+    ];
+
+    vi.resetModules();
+    vi.stubGlobal(
+      'window',
+      {
+        localStorage: makeStorage({
+          [LOCAL_PROJECTS_STORAGE_KEY]: JSON.stringify(payload),
+        }),
+      },
+    );
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-tab' });
+
+    const { useProjectsStore } = await import('@/stores/projectsStore');
+
+    expect(useProjectsStore.getState().tabs).toHaveLength(1);
+    expect(useProjectsStore.getState().tabs[0].label).toBe(
+      'RLRMP movement-ramp training runs'
+    );
+    expect(useProjectsStore.getState().activeTabId).toBe('movement-ramp');
+  });
 });

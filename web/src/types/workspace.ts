@@ -317,8 +317,10 @@ export interface StudioTaskTimelineSignalSpec {
   id: string;
   label: string;
   kind: StudioTaskDataKind | string;
+  task_data_id?: string | null;
   path: string;
   epoch_ids: string[];
+  value_spec?: StudioValueSpec | null;
   value_schema?: ValueSchema | null;
   task_data_schema?: TaskDataSchema | null;
   metadata: Record<string, unknown>;

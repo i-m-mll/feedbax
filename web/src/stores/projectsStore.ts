@@ -5,6 +5,10 @@ import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { useStatisticsStore } from '@/stores/statisticsStore';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  normalizeGraphForStudioAuthoring,
+  normalizeWorkspaceGraphsForStudioAuthoring,
+} from '@/features/graph/normalization';
 import type { TrainingSpec, TaskSpec, LossValidationError } from '@/types/training';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { AnalysisSnapshot } from '@/types/analysis';
@@ -237,6 +241,7 @@ export function setLastProjectId(id: string): void {
 function compactGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
   return {
     ...snapshot,
+    graph: normalizeGraphForStudioAuthoring(snapshot.graph),
     past: [],
     future: [],
     pendingStateMerge: null,
@@ -247,6 +252,7 @@ function compactTabForStorage(tab: OpenTab): OpenTab {
   return {
     ...tab,
     graphSnapshot: compactGraphSnapshot(tab.graphSnapshot),
+    workspaceSnapshot: normalizeWorkspaceGraphsForStudioAuthoring(tab.workspaceSnapshot),
   };
 }
 
@@ -262,17 +268,34 @@ function isOpenTab(value: unknown): value is OpenTab {
   );
 }
 
+function isDisposableStartupPlaceholder(tab: OpenTab): boolean {
+  return (
+    tab.graphSnapshot.graphId === null &&
+    tab.graphSnapshot.isDirty === false &&
+    tab.label === 'Reaching Task Model' &&
+    tab.graphSnapshot.graph.metadata?.name === 'Reaching Task Model' &&
+    tab.trainingSnapshot.taskSpec.type === 'SimpleReaches'
+  );
+}
+
+function discardRestoredStartupPlaceholders(tabs: OpenTab[]): OpenTab[] {
+  if (!tabs.some((tab) => tab.graphSnapshot.graphId !== null)) return tabs;
+  const filtered = tabs.filter((tab) => !isDisposableStartupPlaceholder(tab));
+  return filtered.length > 0 ? filtered : tabs;
+}
+
 function restoreTabStores(tab: OpenTab) {
-  useGraphStore.getState().restoreSnapshot(compactGraphSnapshot(tab.graphSnapshot));
+  const normalizedTab = compactTabForStorage(tab);
+  useGraphStore.getState().restoreSnapshot(normalizedTab.graphSnapshot);
   useTrainingStore.setState({
-    trainingSpec: tab.trainingSnapshot.trainingSpec,
-    taskSpec: tab.trainingSnapshot.taskSpec,
-    selectedLossPath: tab.trainingSnapshot.selectedLossPath,
-    lossValidationErrors: tab.trainingSnapshot.lossValidationErrors,
-    highlightedProbeSelector: tab.trainingSnapshot.highlightedProbeSelector,
+    trainingSpec: normalizedTab.trainingSnapshot.trainingSpec,
+    taskSpec: normalizedTab.trainingSnapshot.taskSpec,
+    selectedLossPath: normalizedTab.trainingSnapshot.selectedLossPath,
+    lossValidationErrors: normalizedTab.trainingSnapshot.lossValidationErrors,
+    highlightedProbeSelector: normalizedTab.trainingSnapshot.highlightedProbeSelector,
   });
-  restoreAnalysisSnapshot(tab.analysisSnapshot);
-  useWorkspaceStore.getState().setWorkspace(tab.workspaceSnapshot);
+  restoreAnalysisSnapshot(normalizedTab.analysisSnapshot);
+  useWorkspaceStore.getState().setWorkspace(normalizedTab.workspaceSnapshot);
   resetTrajectoryStoreForTabSwitch();
   resetStatisticsStoreForTabSwitch();
 }
@@ -291,7 +314,9 @@ function loadLocalProjectTabs(): { tabs: OpenTab[]; activeTabId: string } | null
     if (parsed.version !== LOCAL_PROJECTS_STORAGE_VERSION || !Array.isArray(parsed.tabs)) {
       return null;
     }
-    const tabs = parsed.tabs.filter(isOpenTab).map(compactTabForStorage);
+    const tabs = discardRestoredStartupPlaceholders(
+      parsed.tabs.filter(isOpenTab).map(compactTabForStorage)
+    );
     if (tabs.length === 0) return null;
     const activeTabId =
       typeof parsed.activeTabId === 'string' &&
@@ -341,6 +366,7 @@ interface ProjectsStoreState {
     projectName?: string,
     analysisSnapshot?: AnalysisSnapshot | null,
     workspaceSnapshot?: StudioWorkspaceSpec | null,
+    options?: { replaceActiveTab?: boolean },
   ) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -430,20 +456,24 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       projectName,
       analysisSnapshot,
       workspaceSnapshot,
+      options,
     ) => {
       const { tabs, activeTabId } = get();
       const updatedTabs = tabs.map((tab) =>
         tab.tabId === activeTabId ? captureCurrentTab(tab) : tab
       );
+      const authoringGraph = normalizeGraphForStudioAuthoring(graph);
+      const authoringWorkspace =
+        normalizeWorkspaceGraphsForStudioAuthoring(workspaceSnapshot ?? null);
 
       const graphSnapshot: GraphSnapshot = {
-        graph,
+        graph: authoringGraph,
         uiState,
         graphId,
         isDirty: false,
         lastSavedAt: null,
         graphStack: [],
-        currentGraphLabel: projectName ?? graph.metadata?.name ?? 'Untitled',
+        currentGraphLabel: projectName ?? authoringGraph.metadata?.name ?? 'Untitled',
         currentContext: 'top-level',
         edgeStyle: 'bezier',
         past: [],
@@ -452,11 +482,11 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         selectedEdgeId: null,
         pendingStateMerge: null,
       };
-      const trainingSnapshot = trainingSnapshotFromWorkspace(workspaceSnapshot);
+      const trainingSnapshot = trainingSnapshotFromWorkspace(authoringWorkspace);
       const restoredAnalysis = analysisSnapshot ?? makeInitialAnalysisSnapshot();
       const restoredWorkspace = buildWorkspaceSnapshot({
-        workspace: workspaceSnapshot ?? null,
-        graph,
+        workspace: authoringWorkspace,
+        graph: authoringGraph,
         uiState,
         trainingSpec: trainingSnapshot.trainingSpec,
         taskSpec: trainingSnapshot.taskSpec,
@@ -486,7 +516,14 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       resetTrajectoryStoreForTabSwitch();
       resetStatisticsStoreForTabSwitch();
 
-      set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
+      if (options?.replaceActiveTab) {
+        set({
+          tabs: updatedTabs.map((tab) => (tab.tabId === activeTabId ? newTab : tab)),
+          activeTabId: newTab.tabId,
+        });
+      } else {
+        set({ tabs: [...updatedTabs, newTab], activeTabId: newTab.tabId });
+      }
     },
 
     switchTab: (tabId) => {

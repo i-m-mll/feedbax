@@ -18,6 +18,10 @@ from feedbax.studio_protocol import (
     task_data_surface,
     task_data_uses_protocol_path,
 )
+from feedbax.web.graph_normalization import (
+    normalize_graph_for_studio_authoring,
+    normalize_task_binding_spec_for_studio_authoring,
+)
 from feedbax.web.models.component import PortType
 from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
@@ -245,6 +249,7 @@ def enumerate_studio_schema_registry(
         return registry
 
     schema_graph: Optional[GraphSpec] = None
+    task_binding_spec = scenario.task_binding_spec
     if scenario.graph is None:
         registry.issues.append(
             SchemaValidationIssue(
@@ -254,9 +259,14 @@ def enumerate_studio_schema_registry(
             )
         )
     else:
+        authoring_graph = normalize_graph_for_studio_authoring(scenario.graph)
+        task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
+            task_binding_spec,
+            authoring_graph,
+        )
         schema_graph = _normalize_dynamic_graph_ports(
-            scenario.graph,
-            scenario.task_binding_spec,
+            authoring_graph,
+            task_binding_spec,
         )
         registry.ports = _enumerate_graph_ports(schema_graph)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
@@ -268,7 +278,7 @@ def enumerate_studio_schema_registry(
             )
         )
 
-    if scenario.task_binding_spec is None:
+    if task_binding_spec is None:
         registry.issues.append(
             SchemaValidationIssue(
                 type="missing_task_binding_spec",
@@ -278,16 +288,16 @@ def enumerate_studio_schema_registry(
             )
         )
     else:
-        registry.task_data = _enumerate_task_data(scenario.task_binding_spec)
+        registry.task_data = _enumerate_task_data(task_binding_spec)
         registry.selector_targets.extend(_task_data_selector_targets(registry.task_data))
         registry.issues.extend(
             validate_task_binding_schema(
-                scenario.task_binding_spec,
+                task_binding_spec,
                 schema_graph,
                 f"/scenarios/{scenario.id}/task_binding_spec",
             )
         )
-        _mark_bound_ports(registry.ports, scenario.task_binding_spec)
+        _mark_bound_ports(registry.ports, task_binding_spec)
 
     registry.selector_targets.extend(_objective_selector_targets(scenario.objective_spec))
     registry.selector_targets.extend(_explicit_probe_selector_targets(scenario.probe_specs))

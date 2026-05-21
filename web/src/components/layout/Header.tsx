@@ -36,7 +36,9 @@ export function Header() {
   const [renameValue, setRenameValue] = useState('');
   const pendingInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const startupAutoloadAttemptedRef = useRef(false);
   const saveMutation = useSaveGraph();
+  const graphsQuery = useGraphsList();
   const {
     graph,
     uiState,
@@ -94,7 +96,7 @@ export function Header() {
     }
   };
 
-  const handleOpen = async (id: string) => {
+  const handleOpen = async (id: string, options?: { replaceActiveTab?: boolean }) => {
     try {
       const data = await fetchGraph(id);
       // Build analysis snapshot from persisted pages (convert snake_case wire format)
@@ -126,6 +128,7 @@ export function Header() {
         data.metadata?.name ?? undefined,
         analysisSnapshot,
         data.workspace,
+        options,
       );
       useRunStore.getState().hydrateFromWorkspace(data.workspace);
       if (data.demo_training_data) {
@@ -153,21 +156,37 @@ export function Header() {
         useTrainingStore.getState().seedDemoData({ lossHistory, latestTrajectory });
       }
       setLastProjectId(id);
+      return true;
     } catch (error) {
       console.error(error);
+      return false;
     }
   };
 
-  // Auto-load the last opened project on mount
+  // Auto-load the last opened project on mount. In a fresh browser session the
+  // store creates a built-in placeholder tab first; replace it so startup does
+  // not leave the old SimpleReaches model open beside the real project.
   useEffect(() => {
     if (graphId !== null) return;
     if (hasRestoredLocalTabs) return;
+    if (startupAutoloadAttemptedRef.current) return;
+    if (graphsQuery.isLoading) return;
+
+    const savedGraphs = graphsQuery.data?.graphs ?? [];
     const lastId = getLastProjectId();
-    if (lastId) {
-      handleOpen(lastId);
-    }
+    const soleProjectId = savedGraphs.length === 1 ? savedGraphs[0].id : null;
+    const preferredId = lastId ?? soleProjectId;
+    if (!preferredId) return;
+
+    startupAutoloadAttemptedRef.current = true;
+    void (async () => {
+      const opened = await handleOpen(preferredId, { replaceActiveTab: true });
+      if (!opened && lastId && soleProjectId && soleProjectId !== lastId) {
+        await handleOpen(soleProjectId, { replaceActiveTab: true });
+      }
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [graphId, hasRestoredLocalTabs, graphsQuery.isLoading, graphsQuery.data]);
 
   const handleExport = async () => {
     if (!graphId) return;
@@ -377,7 +396,7 @@ function ProjectOpenOverlay({
 }: {
   initialSection: ProjectOverlaySection;
   onClose: () => void;
-  onOpenSaved: (id: string) => Promise<void>;
+  onOpenSaved: (id: string) => Promise<boolean>;
 }) {
   const [activeSection, setActiveSection] = useState<ProjectOverlaySection>(initialSection);
   const graphsQuery = useGraphsList();

@@ -22,6 +22,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from feedbax.studio_schema import validate_task_binding_schema
 from feedbax.studio_protocol import infer_task_n_steps
+from feedbax.web.graph_normalization import (
+    normalize_graph_for_studio_authoring,
+    normalize_task_binding_spec_for_studio_authoring,
+)
 from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec
 
 
@@ -200,7 +204,10 @@ def _require_worker_specs(job: _Job) -> None:
     """Validate the Studio payload shape required by the real worker path."""
     _as_mapping("training_spec", job.training_spec)
     _as_mapping("task_spec", job.task_spec)
-    graph_spec = GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec))
+    graph_spec = normalize_graph_for_studio_authoring(
+        GraphSpec.model_validate(_as_mapping("graph_spec", job.graph_spec))
+    )
+    job.graph_spec = graph_spec.model_dump(mode="json", exclude_none=True)
     if job.task_binding_spec is None:
         raise ValueError(
             "Training worker requires scenario-owned task_binding_spec; "
@@ -215,6 +222,8 @@ def _require_worker_specs(job: _Job) -> None:
         binding_spec = StudioTaskBindingSpec.model_validate(task_binding_spec)
     except ValueError as exc:
         raise ValueError(f"Invalid task_binding_spec: {exc}") from exc
+    binding_spec = normalize_task_binding_spec_for_studio_authoring(binding_spec, graph_spec)
+    job.task_binding_spec = binding_spec.model_dump(mode="json", exclude_none=True)
     issues = validate_task_binding_schema(binding_spec, graph_spec, "/task_binding_spec")
     if issues:
         summary = "; ".join(f"{issue.type}: {issue.message}" for issue in issues)
