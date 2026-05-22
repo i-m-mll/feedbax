@@ -40,9 +40,9 @@ class GraphService:
     def list_graphs(self) -> List[dict]:
         ensure_dirs()
         results: List[dict] = []
-        for path in self._storage_dir.glob('*.json'):
+        for path in self._storage_dir.glob("*.json"):
             project = self._load_project(path)
-            results.append({'id': path.stem, 'metadata': project.metadata})
+            results.append({"id": path.stem, "metadata": project.metadata})
         return results
 
     def create_graph(self, graph: GraphSpec, ui_state: Optional[GraphUIState]) -> GraphRecord:
@@ -51,11 +51,11 @@ class GraphService:
         graph_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         metadata = graph.metadata or GraphMetadata(
-            name='Untitled Graph',
+            name="Untitled Graph",
             description=None,
             created_at=now,
             updated_at=now,
-            version='1.0.0',
+            version="1.0.0",
         )
         if graph.metadata is None:
             graph.metadata = metadata
@@ -118,8 +118,7 @@ class GraphService:
         for node_name, node in graph.nodes.items():
             for input_port in node.input_ports:
                 has_wire = any(
-                    w.target_node == node_name and w.target_port == input_port
-                    for w in graph.wires
+                    w.target_node == node_name and w.target_port == input_port for w in graph.wires
                 )
                 has_binding = any(
                     binding == (node_name, input_port) for binding in graph.input_bindings.values()
@@ -127,26 +126,26 @@ class GraphService:
                 if not has_wire and not has_binding:
                     errors.append(
                         ValidationError(
-                            type='missing_input',
+                            type="missing_input",
                             message=f"Input port '{node_name}.{input_port}' is not connected",
-                            location={'node': node_name, 'port': input_port},
+                            location={"node": node_name, "port": input_port},
                         )
                     )
 
             for output_port in node.output_ports:
                 has_wire = any(
-                    w.source_node == node_name and w.source_port == output_port
-                    for w in graph.wires
+                    w.source_node == node_name and w.source_port == output_port for w in graph.wires
                 )
                 has_binding = any(
-                    binding == (node_name, output_port) for binding in graph.output_bindings.values()
+                    binding == (node_name, output_port)
+                    for binding in graph.output_bindings.values()
                 )
                 if not has_wire and not has_binding:
                     warnings.append(
                         ValidationWarning(
-                            type='unconnected_output',
+                            type="unconnected_output",
                             message=f"Output port '{node_name}.{output_port}' is not connected",
-                            location={'node': node_name, 'port': output_port},
+                            location={"node": node_name, "port": output_port},
                         )
                     )
 
@@ -161,24 +160,24 @@ class GraphService:
 
     def export_graph(self, graph_id: str, export_format: str) -> dict:
         record = self.get_graph(graph_id)
-        if export_format == 'json':
+        if export_format == "json":
             content = record.project.model_dump_json(indent=2)
             filename = f"{record.project.metadata.name}.json"
-            return {'content': content, 'filename': filename}
-        if export_format == 'python':
+            return {"content": content, "filename": filename}
+        if export_format == "python":
             content = (
                 "# TODO: Implement export to Python once feedbax.graph is available.\n"
                 f"# Graph id: {graph_id}\n"
             )
             filename = f"{record.project.metadata.name}.py"
-            return {'content': content, 'filename': filename}
-        raise ValueError('Unsupported format')
+            return {"content": content, "filename": filename}
+        raise ValueError("Unsupported format")
 
     def _path_for(self, graph_id: str) -> Path:
         return self._storage_dir / f"{graph_id}.json"
 
     def _load_project(self, path: Path) -> GraphProject:
-        with open(path, 'r', encoding='utf-8') as file:
+        with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
         project = normalize_project_for_studio_authoring(GraphProject.model_validate(data))
         self._ensure_workspace(project)
@@ -186,7 +185,7 @@ class GraphService:
 
     def _save_project(self, path: Path, project: GraphProject) -> None:
         self._ensure_workspace(project)
-        with open(path, 'w', encoding='utf-8') as file:
+        with open(path, "w", encoding="utf-8") as file:
             json.dump(project.model_dump(), file, indent=2)
 
     def _ensure_workspace(self, project: GraphProject) -> None:
@@ -205,6 +204,8 @@ class GraphService:
     def _detect_cycles(self, graph: GraphSpec) -> List[List[str]]:
         adjacency = {node_name: set() for node_name in graph.nodes}
         for wire in graph.wires:
+            if wire.temporality == "recurrent":
+                continue
             adjacency.setdefault(wire.source_node, set()).add(wire.target_node)
 
         cycles: List[List[str]] = []

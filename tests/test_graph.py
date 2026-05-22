@@ -1,3 +1,4 @@
+import pytest
 from equinox.nn import StateIndex
 import jax
 import jax.numpy as jnp
@@ -37,7 +38,7 @@ def test_graph_cycle_iteration():
     node = Increment()
     graph = Graph(
         nodes={"inc": node},
-        wires=(Wire("inc", "x", "inc", "x"),),
+        wires=(Wire("inc", "x", "inc", "x", temporality="recurrent"),),
         input_ports=(),
         output_ports=("x",),
         input_bindings={},
@@ -110,7 +111,7 @@ def _make_cyclic_graph():
     Wires:
       external "input" -> a.x
       a.y -> b.x
-      b.y -> a.x   (back-edge: forms cycle, will be detected)
+      b.y -> a.x   (recurrent one-step feedback)
 
     External output: b.y.
     """
@@ -120,7 +121,7 @@ def _make_cyclic_graph():
         nodes={"a": a, "b": b},
         wires=(
             Wire("a", "y", "b", "x"),
-            Wire("b", "y", "a", "x"),  # back-edge -> cycle
+            Wire("b", "y", "a", "x", temporality="recurrent"),
         ),
         input_ports=("input",),
         output_ports=("out",),
@@ -128,6 +129,21 @@ def _make_cyclic_graph():
         output_bindings={"out": ("b", "y")},
     )
     return graph
+
+
+def test_graph_rejects_instant_cycles():
+    with pytest.raises(ValueError, match="same-step cycle"):
+        Graph(
+            nodes={"a": _Scaler(0.5), "b": _AddOne()},
+            wires=(
+                Wire("a", "y", "b", "x"),
+                Wire("b", "y", "a", "x"),
+            ),
+            input_ports=("input",),
+            output_ports=("out",),
+            input_bindings={"input": ("a", "x")},
+            output_bindings={"out": ("b", "y")},
+        )._execution_order
 
 
 def test_graph_step_acyclic_returns_empty_cycle_values():
@@ -295,6 +311,4 @@ def test_graph_step_equivalent_to_call_with_iteration():
         out_history.append(out_t["out"])
     out_manual = jnp.stack(out_history, axis=0)
 
-    assert jnp.allclose(outputs_ref["out"], out_manual, atol=1e-7), (
-        outputs_ref["out"], out_manual
-    )
+    assert jnp.allclose(outputs_ref["out"], out_manual, atol=1e-7), (outputs_ref["out"], out_manual)

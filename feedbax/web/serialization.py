@@ -125,6 +125,47 @@ def _lookup_defaults(component_registry: Any, name: str) -> dict[str, Any]:
     return {}
 
 
+def _recurrent_zero_initializer(width: int, *, state_slot: str) -> dict[str, Any]:
+    return {
+        "kind": "zeros",
+        "scope": "trial",
+        "shape": [width],
+        "source": "state_initializer",
+        "state_slot": state_slot,
+    }
+
+
+def _network_recurrent_wires(cell_type: str, hidden_size: int) -> list[WireSpec]:
+    wires = [
+        WireSpec(
+            source_node="cell",
+            source_port="hidden",
+            target_node="cell",
+            target_port="hidden",
+            temporality="recurrent",
+            recurrent_initializer=_recurrent_zero_initializer(
+                hidden_size,
+                state_slot="hidden",
+            ),
+        )
+    ]
+    if cell_type == "LSTM":
+        wires.append(
+            WireSpec(
+                source_node="cell",
+                source_port="cell",
+                target_node="cell",
+                target_port="cell",
+                temporality="recurrent",
+                recurrent_initializer=_recurrent_zero_initializer(
+                    hidden_size,
+                    state_slot="cell",
+                ),
+            )
+        )
+    return wires
+
+
 def _migrate_spec(spec: GraphSpec) -> GraphSpec:
     nodes: dict[str, ComponentSpec] = {}
     for node_id, node_spec in spec.nodes.items():
@@ -160,6 +201,8 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
             source_port=_rename_port(wire.source_node, wire.source_port),
             target_node=wire.target_node,
             target_port=_rename_port(wire.target_node, wire.target_port),
+            temporality=wire.temporality,
+            recurrent_initializer=wire.recurrent_initializer,
         )
         for wire in spec.wires
     ]
@@ -228,6 +271,12 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
             # Standard Network subgraph: cell node + readout node
             sub_nodes = {
+                "input_mux": ComponentSpec(
+                    type="Mux",
+                    params={"n_inputs": 2},
+                    input_ports=["in_0", "in_1"],
+                    output_ports=["output"],
+                ),
                 "cell": ComponentSpec(
                     type=cell_type,
                     params={
@@ -257,18 +306,25 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 nodes=sub_nodes,
                 wires=[
                     WireSpec(
+                        source_node="input_mux",
+                        source_port="output",
+                        target_node="cell",
+                        target_port="input",
+                    ),
+                    WireSpec(
                         source_node="cell",
                         source_port="output",
                         target_node="readout",
                         target_port="input",
-                    )
+                    ),
+                    *_network_recurrent_wires(cell_type, int(component.hidden_size)),
                 ],
                 input_ports=["input", "feedback"],
                 output_ports=["output", "hidden"],
-                input_bindings={"input": ("cell", "input")},
+                input_bindings={"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")},
                 output_bindings={
                     "output": ("readout", "output"),
-                    "hidden": ("cell", "output"),
+                    "hidden": ("cell", "hidden"),
                 },
                 metadata=GraphMetadata(
                     name=f"{name} internals",
@@ -649,7 +705,9 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 params={
                     "builder_name": builder_name,
                     "input_port": component.input_ports[0] if component.input_ports else "input",
-                    "output_port": component.output_ports[0] if component.output_ports else "output",
+                    "output_port": component.output_ports[0]
+                    if component.output_ports
+                    else "output",
                 },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -711,6 +769,8 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 source_port=wire.source_port,
                 target_node=wire.target_node,
                 target_port=wire.target_port,
+                temporality=wire.temporality,
+                recurrent_initializer=wire.recurrent_initializer,
             )
             for wire in graph.wires
         ],
@@ -952,7 +1012,9 @@ def _build_relu_muscle(params: Mapping[str, Any]) -> ReluMuscle:
     )
 
 
-def _build_rigid_tendon_hill_muscle_thelen(params: Mapping[str, Any]) -> RigidTendonHillMuscleThelen:
+def _build_rigid_tendon_hill_muscle_thelen(
+    params: Mapping[str, Any],
+) -> RigidTendonHillMuscleThelen:
     return RigidTendonHillMuscleThelen(
         max_isometric_force=float(params.get("max_isometric_force", 500.0)),
         optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
@@ -1194,7 +1256,11 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
                     "Install with: pip install penzai"
                 )
             # Build the PenzaiSubgraph using the registered builder
-            builder_params = {k: v for k, v in params.items() if k not in ("builder_name", "input_port", "output_port")}
+            builder_params = {
+                k: v
+                for k, v in params.items()
+                if k not in ("builder_name", "input_port", "output_port")
+            }
             nodes[node_name] = build_penzai_subgraph(
                 builder_name=builder_name,
                 params=builder_params,
@@ -1211,6 +1277,8 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             wire.source_port,
             wire.target_node,
             wire.target_port,
+            wire.temporality,
+            wire.recurrent_initializer,
         )
         for wire in spec.wires
         if wire.source_node in nodes and wire.target_node in nodes

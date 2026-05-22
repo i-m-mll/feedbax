@@ -38,6 +38,16 @@ export function graphPortEntityId(
   return `graph_port:${nodeId}:${direction}:${port}`;
 }
 
+export function parseGraphPortEntityId(
+  entityId: string | null | undefined
+): { nodeId: string; direction: 'input' | 'output'; port: string } | null {
+  if (!entityId?.startsWith('graph_port:')) return null;
+  const [, nodeId, direction, ...portParts] = entityId.split(':');
+  const port = portParts.join(':');
+  if (!nodeId || (direction !== 'input' && direction !== 'output') || !port) return null;
+  return { nodeId, direction, port };
+}
+
 export function graphEdgeId(wire: WireSpec): string {
   return `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`;
 }
@@ -270,7 +280,13 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSp
         relation('source', graphPortEntityId(wire.source_node, 'output', wire.source_port)),
         relation('target', graphPortEntityId(wire.target_node, 'input', wire.target_port)),
       ],
-      metadata: { edge_id: edgeId, wire },
+      metadata: {
+        edge_id: edgeId,
+        edge_type: 'port_wire',
+        temporality: wire.temporality ?? 'instant',
+        recurrent_initializer: wire.recurrent_initializer ?? null,
+        wire,
+      },
     }, true);
   }
 

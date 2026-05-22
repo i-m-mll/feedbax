@@ -23,7 +23,9 @@ from feedbax.studio_schema import (
     RuntimeIntrospectionResult,
     RuntimeSampleLeafSchema,
     enumerate_studio_schema_registry,
+    validate_graph_connection_schema,
 )
+from feedbax.web.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
 from feedbax.web.models.graph import (
     GraphMetadata,
@@ -322,9 +324,7 @@ def test_task_validation_rejects_invalid_delayed_reach_epoch_params() -> None:
 
 
 def test_task_validation_reports_pathful_step_count_errors() -> None:
-    invalid = validate_task_spec(
-        {"type": "DelayedReaches", "params": {"n_steps": 0}}
-    )
+    invalid = validate_task_spec({"type": "DelayedReaches", "params": {"n_steps": 0}})
     mismatch = validate_task_spec(
         {
             "type": "DelayedReaches",
@@ -623,6 +623,210 @@ def test_studio_schema_enumeration_normalizes_runtime_network_ports() -> None:
     assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
 
 
+def test_network_authoring_normalization_emits_recurrent_cell_edges() -> None:
+    graph = GraphSpec.model_validate(_runtime_network_graph_spec())
+    normalized = normalize_graph_for_studio_authoring(graph)
+    subgraph = normalized.subgraphs["network"]
+
+    hidden_wire = next(
+        wire
+        for wire in subgraph.wires
+        if wire.source_node == "cell"
+        and wire.source_port == "hidden"
+        and wire.target_node == "cell"
+        and wire.target_port == "hidden"
+    )
+
+    assert hidden_wire.temporality == "recurrent"
+    assert hidden_wire.recurrent_initializer == {
+        "kind": "zeros",
+        "scope": "trial",
+        "shape": [100],
+        "source": "state_initializer",
+        "state_slot": "hidden",
+    }
+    assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
+
+
+def test_network_authoring_normalization_flattens_legacy_model_wrapper() -> None:
+    graph = GraphSpec.model_validate(_runtime_network_graph_spec())
+    legacy_inner = (
+        normalize_graph_for_studio_authoring(graph)
+        .subgraphs["network"]
+        .model_copy(
+            update={
+                "wires": [
+                    wire.model_copy(
+                        update={"temporality": "instant", "recurrent_initializer": None}
+                    )
+                    for wire in normalize_graph_for_studio_authoring(graph)
+                    .subgraphs["network"]
+                    .wires
+                ],
+                "output_ports": ["output"],
+                "output_bindings": {"output": ("readout", "output")},
+            }
+        )
+    )
+    wrapped = graph.model_copy(
+        update={
+            "nodes": {
+                **graph.nodes,
+                "network": graph.nodes["network"].model_copy(update={"type": "Network"}),
+            },
+            "subgraphs": {
+                "network": GraphSpec(
+                    nodes={
+                        "model": {
+                            "type": "Subgraph",
+                            "params": {},
+                            "input_ports": ["input", "feedback"],
+                            "output_ports": ["output"],
+                        }
+                    },
+                    wires=[],
+                    input_ports=["input", "feedback"],
+                    output_ports=["output"],
+                    input_bindings={
+                        "input": ("model", "input"),
+                        "feedback": ("model", "feedback"),
+                    },
+                    output_bindings={"output": ("model", "output")},
+                    subgraphs={"model": legacy_inner},
+                )
+            },
+        }
+    )
+
+    subgraph = normalize_graph_for_studio_authoring(wrapped).subgraphs["network"]
+
+    assert "model" not in subgraph.nodes
+    assert subgraph.nodes["cell"].type == "GRU"
+    assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
+    hidden_wire = next(
+        wire
+        for wire in subgraph.wires
+        if wire.source_node == "cell"
+        and wire.source_port == "hidden"
+        and wire.target_node == "cell"
+        and wire.target_port == "hidden"
+    )
+    assert hidden_wire.temporality == "recurrent"
+    assert hidden_wire.recurrent_initializer is not None
+
+
+def test_network_authoring_normalization_marks_feedback_cut_recurrent() -> None:
+    graph = GraphSpec(
+        nodes={
+            "network": {
+                "type": "Network",
+                "params": {},
+                "input_ports": ["input", "feedback"],
+                "output_ports": ["output"],
+            },
+            "mechanics": {
+                "type": "PointMass",
+                "params": {},
+                "input_ports": ["force"],
+                "output_ports": ["effector"],
+            },
+            "feedback": {
+                "type": "FeedbackChannels",
+                "params": {},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+        },
+        wires=[
+            {
+                "source_node": "network",
+                "source_port": "output",
+                "target_node": "mechanics",
+                "target_port": "force",
+            },
+            {
+                "source_node": "mechanics",
+                "source_port": "effector",
+                "target_node": "feedback",
+                "target_port": "input",
+            },
+            {
+                "source_node": "feedback",
+                "source_port": "output",
+                "target_node": "network",
+                "target_port": "feedback",
+            },
+        ],
+    )
+
+    recurrent_wire = normalize_graph_for_studio_authoring(graph).wires[2]
+
+    assert recurrent_wire.temporality == "recurrent"
+    assert recurrent_wire.recurrent_initializer == {
+        "kind": "zeros",
+        "scope": "trial",
+        "source": "state_initializer",
+        "state_slot": "feedback",
+    }
+
+
+def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cut() -> None:
+    graph = GraphSpec(
+        nodes={
+            "a": {
+                "type": "Gain",
+                "params": {},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+            "b": {
+                "type": "Gain",
+                "params": {},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+        },
+        wires=[
+            {
+                "source_node": "a",
+                "source_port": "output",
+                "target_node": "b",
+                "target_port": "input",
+            },
+            {
+                "source_node": "b",
+                "source_port": "output",
+                "target_node": "a",
+                "target_port": "input",
+            },
+        ],
+    )
+
+    issues = validate_graph_connection_schema(graph)
+    assert "instant_cycle" in {issue.type for issue in issues}
+
+    recurrent_graph = graph.model_copy(
+        update={
+            "wires": [
+                graph.wires[0],
+                graph.wires[1].model_copy(
+                    update={
+                        "temporality": "recurrent",
+                        "recurrent_initializer": {
+                            "kind": "zeros",
+                            "scope": "trial",
+                            "shape": [1],
+                        },
+                    }
+                ),
+            ]
+        }
+    )
+    recurrent_issues = validate_graph_connection_schema(recurrent_graph)
+    assert "instant_cycle" not in {issue.type for issue in recurrent_issues}
+    assert "recurrent_initializer_missing" not in {issue.type for issue in recurrent_issues}
+
+
 def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
     graph = GraphSpec(
         nodes={
@@ -675,6 +879,266 @@ def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
     assert port.value_schema.dtype == "vector"
     assert port.origin == "declared"
     assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
+
+
+def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
+    graph = GraphSpec(
+        nodes={
+            "network": {
+                "type": "Network",
+                "params": {"input_size": 2, "hidden_size": 100, "out_size": 6},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            }
+        }
+    )
+    workspace = build_default_studio_workspace(label="Sample view schema", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "target_position",
+                    "label": "Target position",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.effector_target.pos",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 2],
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:target_position->network:input",
+                    "source_data_id": "target_position",
+                    "target_node_id": "network",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    task_data = next(item for item in registry.task_data if item.id == "task_data:target_position")
+    network_input = next(port for port in registry.ports if port.id == "port:network.input:input")
+
+    assert task_data.value_schema.shape == ["time", 2]
+    assert task_data.value_schema.metadata["sample_shape"] == [2]
+    assert task_data.value_schema.metadata["time_axis"] == 0
+    assert network_input.value_schema.shape is None
+    issue_types = {issue.type for issue in registry.issues}
+    assert "task_binding_rank_mismatch" not in issue_types
+    assert "task_binding_shape_mismatch" not in issue_types
+    assert "task_binding_dtype_mismatch" not in issue_types
+
+
+def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() -> None:
+    graph = GraphSpec(
+        nodes={
+            "mux": {
+                "type": "Mux",
+                "params": {"n_inputs": 2},
+                "input_ports": ["in_0", "in_1"],
+                "output_ports": ["output"],
+            }
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("mux", "output")},
+    )
+    workspace = build_default_studio_workspace(label="Mux width schema", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "target_position",
+                    "label": "Target position",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.effector_target.pos",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 2],
+                    "metadata": {},
+                },
+                {
+                    "id": "hold",
+                    "label": "Hold/go cue",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.hold",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 1],
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:target_position->mux:in_0",
+                    "source_data_id": "target_position",
+                    "target_node_id": "mux",
+                    "target_port": "in_0",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:hold->mux:in_1",
+                    "source_data_id": "hold",
+                    "target_node_id": "mux",
+                    "target_port": "in_1",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    mux_output = next(port for port in registry.ports if port.id == "port:mux.output:output")
+
+    assert mux_output.value_schema.shape == [3]
+    assert mux_output.value_schema.rank == 1
+    assert mux_output.value_schema.metadata["dimension_source"] == "mux_concat_inputs"
+
+
+def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
+    child_graph = GraphSpec(
+        nodes={
+            "cell": {
+                "type": "GRU",
+                "params": {"input_size": 4, "hidden_size": 100},
+                "input_ports": ["input", "hidden"],
+                "output_ports": ["output", "hidden"],
+            },
+            "readout": {
+                "type": "Linear",
+                "params": {"input_size": 100, "output_size": 2},
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+            },
+        },
+        wires=[
+            {
+                "source_node": "cell",
+                "source_port": "output",
+                "target_node": "readout",
+                "target_port": "input",
+            }
+        ],
+        input_ports=["input", "hidden"],
+        output_ports=["output", "hidden"],
+        input_bindings={"input": ("cell", "input"), "hidden": ("cell", "hidden")},
+        output_bindings={"output": ("readout", "output"), "hidden": ("cell", "output")},
+    )
+    graph = GraphSpec(
+        nodes={
+            "task_mux": {
+                "type": "Mux",
+                "params": {"n_inputs": 3},
+                "input_ports": ["in_0", "in_1", "in_2"],
+                "output_ports": ["output"],
+            },
+            "network": {
+                "type": "Network",
+                "params": {"input_size": 4, "hidden_size": 100, "out_size": 2},
+                "input_ports": ["input", "hidden"],
+                "output_ports": ["output", "hidden"],
+            },
+        },
+        subgraphs={"network": child_graph},
+    )
+    workspace = build_default_studio_workspace(label="Subgraph boundary schema", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "target_position",
+                    "label": "Target position",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.effector_target",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 4],
+                    "metadata": {},
+                },
+                {
+                    "id": "hold",
+                    "label": "Hold/go cue",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.hold",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 1],
+                    "metadata": {},
+                },
+                {
+                    "id": "target_on",
+                    "label": "Target shown",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.target_on",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 1],
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:target_position->task_mux:in_0",
+                    "source_data_id": "target_position",
+                    "target_node_id": "task_mux",
+                    "target_port": "in_0",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:hold->task_mux:in_1",
+                    "source_data_id": "hold",
+                    "target_node_id": "task_mux",
+                    "target_port": "in_1",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:target_on->task_mux:in_2",
+                    "source_data_id": "target_on",
+                    "target_node_id": "task_mux",
+                    "target_port": "in_2",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    mux_output = next(port for port in registry.ports if port.id == "port:task_mux.output:output")
+    feedback_input = next(
+        port for port in registry.ports if port.id == "port:network.feedback:input"
+    )
+    hidden_inputs = [port for port in registry.ports if port.id == "port:network.hidden:input"]
+
+    assert mux_output.value_schema.shape == [6]
+    assert feedback_input.value_schema.dtype == "vector"
+    assert hidden_inputs == []
 
 
 def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_targets() -> None:

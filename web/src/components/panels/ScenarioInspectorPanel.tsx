@@ -863,6 +863,8 @@ function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
         source_port: string;
         target_node: string;
         target_port: string;
+        temporality?: 'instant' | 'recurrent';
+        recurrent_initializer?: Record<string, unknown> | null;
       }
     | undefined;
 
@@ -896,14 +898,21 @@ function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
   }
 
   return (
-    <div className="space-y-2 p-6">
+    <div className="space-y-3 p-6">
       <div className="text-sm font-medium text-slate-800">
         {wire
           ? `${wire.source_node}.${wire.source_port} → ${wire.target_node}.${wire.target_port}`
           : entity.label}
       </div>
-      <div className="text-xs text-slate-400">
-        Port wires are the source of truth for state merging.
+      <div className="flex items-center gap-2 text-xs text-slate-500">
+        <span className="rounded-full bg-slate-100 px-2 py-0.5">
+          {(wire?.temporality ?? 'instant') === 'recurrent' ? 'Recurrent t+1' : 'Instant'}
+        </span>
+        {(wire?.temporality ?? 'instant') === 'recurrent' && (
+          <span className="text-slate-400">
+            {wire?.recurrent_initializer ? 'initialized' : 'missing init'}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -913,12 +922,17 @@ function EntityBody({
   entity,
   registry,
   schemaRegistry,
+  activeProjection,
 }: {
   entity: StudioScenarioEntity;
   registry: StudioScenarioEntityRegistry;
   schemaRegistry: StudioSchemaRegistry | null;
+  activeProjection: string;
 }) {
-  if (GRAPH_ENTITY_KINDS.has(entity.kind)) {
+  const useGraphProperties =
+    GRAPH_ENTITY_KINDS.has(entity.kind) ||
+    (entity.kind === 'graph_port' && (activeProjection === 'model' || activeProjection === 'task'));
+  if (useGraphProperties) {
     return <PropertiesPanel />;
   }
 
@@ -974,11 +988,15 @@ export function ScenarioInspectorPanel() {
     );
   }
 
+  const graphPortUsesProperties =
+    entity.kind === 'graph_port' &&
+    (topPaneState.active_projection === 'model' || topPaneState.active_projection === 'task');
+
   return (
     <div>
-      {entity.kind !== 'graph_node' && entity.kind !== 'graph_edge' && (
-        <EntityHeader entity={entity} />
-      )}
+      {entity.kind !== 'graph_node' &&
+        entity.kind !== 'graph_edge' &&
+        !graphPortUsesProperties && <EntityHeader entity={entity} />}
       {entity.kind === 'graph_edge' ? (
         <>
           <EdgeInspector entity={entity} />
@@ -996,7 +1014,12 @@ export function ScenarioInspectorPanel() {
           </div>
         </>
       ) : (
-        <EntityBody entity={entity} registry={registry} schemaRegistry={schemaRegistry} />
+        <EntityBody
+          entity={entity}
+          registry={registry}
+          schemaRegistry={schemaRegistry}
+          activeProjection={topPaneState.active_projection}
+        />
       )}
     </div>
   );

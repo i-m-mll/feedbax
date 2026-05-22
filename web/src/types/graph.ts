@@ -75,6 +75,8 @@ export interface WireSpec {
   source_port: string;
   target_node: string;
   target_port: string;
+  temporality?: 'instant' | 'recurrent';
+  recurrent_initializer?: Record<string, unknown> | null;
 }
 
 export interface GraphSpec {
@@ -153,6 +155,12 @@ export interface GraphNodeData extends Record<string, unknown> {
   connected_outputs?: string[];
   state_in?: boolean;
   state_out?: boolean;
+  state_slots?: Array<{
+    id: string;
+    label: string;
+    shape?: unknown[] | null;
+    initializer?: Record<string, unknown> | null;
+  }>;
   /** Present only on subgraph-typed nodes; carries the nested graph preview. */
   subgraph?: SubgraphPreview;
 }
@@ -165,4 +173,8 @@ export interface GraphEdgeData extends Record<string, unknown> {
   routing?: EdgeRouting;
   primary?: boolean;
   strength?: number;
+  schema_status?: 'warning' | 'blocked' | null;
+  schema_message?: string | null;
+  temporality?: 'instant' | 'recurrent';
+  recurrent_initializer?: Record<string, unknown> | null;
 }

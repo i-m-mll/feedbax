@@ -68,6 +68,40 @@ export interface StateMergeRequest {
   hasExistingConnections: boolean;
 }
 
+function recurrentZeroInitializer(width?: number, stateSlot = 'value') {
+  return {
+    kind: 'zeros',
+    scope: 'trial',
+    source: 'state_initializer',
+    state_slot: stateSlot,
+    ...(typeof width === 'number' ? { shape: [width] } : {}),
+  };
+}
+
+function networkRecurrentWires(cellType: 'GRU' | 'LSTM', hiddenSize: number): WireSpec[] {
+  const wires: WireSpec[] = [
+    {
+      source_node: 'cell',
+      source_port: 'hidden',
+      target_node: 'cell',
+      target_port: 'hidden',
+      temporality: 'recurrent',
+      recurrent_initializer: recurrentZeroInitializer(hiddenSize, 'hidden'),
+    },
+  ];
+  if (cellType === 'LSTM') {
+    wires.push({
+      source_node: 'cell',
+      source_port: 'cell',
+      target_node: 'cell',
+      target_port: 'cell',
+      temporality: 'recurrent',
+      recurrent_initializer: recurrentZeroInitializer(hiddenSize, 'cell'),
+    });
+  }
+  return wires;
+}
+
 function wireId(wire: {
   source_node: string;
   source_port: string;
@@ -75,6 +109,37 @@ function wireId(wire: {
   target_port: string;
 }) {
   return `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`;
+}
+
+function closesInstantCycle(
+  graph: GraphSpec,
+  sourceNode: string,
+  targetNode: string
+): boolean {
+  if (sourceNode === targetNode) return true;
+  const adjacency = new Map<string, Set<string>>();
+  for (const nodeId of Object.keys(graph.nodes)) {
+    adjacency.set(nodeId, new Set());
+  }
+  for (const wire of graph.wires) {
+    if (wire.temporality === 'recurrent') continue;
+    if (!graph.nodes[wire.source_node] || !graph.nodes[wire.target_node]) continue;
+    const targets = adjacency.get(wire.source_node) ?? new Set<string>();
+    targets.add(wire.target_node);
+    adjacency.set(wire.source_node, targets);
+  }
+  const visited = new Set<string>();
+  const stack = [targetNode];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
+    if (nodeId === sourceNode) return true;
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    for (const next of adjacency.get(nodeId) ?? []) {
+      stack.push(next);
+    }
+  }
+  return false;
 }
 
 function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode: string): StateMergeRequest | null {
@@ -346,6 +411,14 @@ function createNetworkSubgraph(
 
   const graph: GraphSpec = {
     nodes: {
+      input_mux: {
+        type: 'Mux',
+        params: {
+          n_inputs: 2,
+        },
+        input_ports: ['in_0', 'in_1'],
+        output_ports: ['output'],
+      },
       cell: {
         type: cellType,
         params: {
@@ -367,30 +440,30 @@ function createNetworkSubgraph(
         output_ports: ['output'],
       },
     },
-    // Note: recurrent hidden state is managed internally by SimpleStagedNetwork
-    // (via JAX scan), not as a graph-level wire. A self-loop here would require
-    // GRU.initial_outputs() which is not yet implemented — deferred until the
-    // graph engine supports explicit cycle initialization.
     wires: [
+      {
+        source_node: 'input_mux',
+        source_port: 'output',
+        target_node: 'cell',
+        target_port: 'input',
+      },
       {
         source_node: 'cell',
         source_port: 'output',
         target_node: 'readout',
         target_port: 'input',
       },
+      ...networkRecurrentWires(cellType, hiddenSize),
     ],
     input_ports: ['input', 'feedback'],
     output_ports: ['output', 'hidden'],
     input_bindings: {
-      // Only `input` is bound to the cell's input port. `feedback` is left as
-      // an unbound subgraph input port — the concatenation of input + feedback
-      // is an implicit Python-side operation (inside SimpleStagedNetwork) that
-      // cannot be represented in the graph topology without a Concat node.
-      input: ['cell', 'input'],
+      input: ['input_mux', 'in_0'],
+      feedback: ['input_mux', 'in_1'],
     },
     output_bindings: {
       output: ['readout', 'output'],
-      hidden: ['cell', 'output'],
+      hidden: ['cell', 'hidden'],
     },
     taps: [],
     subgraphs: {},
@@ -406,6 +479,7 @@ function createNetworkSubgraph(
   const baseUiState: GraphUIState = {
     viewport: DEFAULT_VIEWPORT,
     node_states: {
+      input_mux: { position: { x: 40, y: 220 }, collapsed: false, selected: false },
       cell: { position: { x: 200, y: 200 }, collapsed: false, selected: false },
       readout: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
     },
@@ -674,6 +748,7 @@ function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
 
   for (const [nodeId, nodeSpec] of Object.entries(graph.nodes)) {
     for (const port of nodeSpec.input_ports) {
+      if (isInternalStateInput(nodeSpec, port)) continue;
       const key = `${nodeId}:${port}`;
       if (wiredInputs.has(key)) continue;
       if (Object.values(inputBindings).some(([n, p]) => n === nodeId && p === port)) {
@@ -711,6 +786,10 @@ function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
     input_bindings: inputBindings,
     output_bindings: outputBindings,
   };
+}
+
+function isInternalStateInput(nodeSpec: ComponentSpec, port: string): boolean {
+  return (nodeSpec.type === 'GRU' || nodeSpec.type === 'LSTM') && (port === 'hidden' || port === 'cell');
 }
 
 function arraysEqual<T>(left: T[], right: T[]) {
@@ -892,6 +971,7 @@ function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<Grap
         connected_outputs: Array.from(connectedOutputs.get(id) ?? []),
         state_in: stateIn.has(id),
         state_out: stateOut.has(id),
+        state_slots: stateSlotsForNodeSpec(spec),
         subgraph,
       },
       selected: ui.selected,
@@ -967,6 +1047,37 @@ function buildTapNodes(graph: GraphSpec, uiState: GraphUIState): Node<TapNodeDat
 
 function buildNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData | TapNodeData>[] {
   return [...buildComponentNodes(graph, uiState), ...buildTapNodes(graph, uiState)];
+}
+
+function stateSlotsForNodeSpec(spec: ComponentSpec): GraphNodeData['state_slots'] {
+  const hiddenSize = typeof spec.params.hidden_size === 'number' ? spec.params.hidden_size : undefined;
+  if (spec.type === 'GRU') {
+    return [
+      {
+        id: 'hidden',
+        label: 'Hidden state',
+        shape: typeof hiddenSize === 'number' ? [hiddenSize] : null,
+        initializer: recurrentZeroInitializer(hiddenSize, 'hidden'),
+      },
+    ];
+  }
+  if (spec.type === 'LSTM') {
+    return [
+      {
+        id: 'hidden',
+        label: 'Hidden state',
+        shape: typeof hiddenSize === 'number' ? [hiddenSize] : null,
+        initializer: recurrentZeroInitializer(hiddenSize, 'hidden'),
+      },
+      {
+        id: 'cell',
+        label: 'Cell state',
+        shape: typeof hiddenSize === 'number' ? [hiddenSize] : null,
+        initializer: recurrentZeroInitializer(hiddenSize, 'cell'),
+      },
+    ];
+  }
+  return [];
 }
 
 function buildStateEdges(graph: GraphSpec, uiState: GraphUIState): Edge<GraphEdgeData>[] {
@@ -1053,6 +1164,8 @@ function buildEdges(
         targetPosition: reversedNodes.has(wire.target_node) ? Position.Right : Position.Left,
         data: {
           routing: edgeStates[id]?.routing ?? { style: defaultStyle, points: [] },
+          temporality: wire.temporality ?? 'instant',
+          recurrent_initializer: wire.recurrent_initializer ?? null,
         },
       };
     });
@@ -1074,6 +1187,8 @@ function edgesToWires(edges: Edge<GraphEdgeData>[]): GraphSpec['wires'] {
       source_port: edge.sourceHandle as string,
       target_node: edge.target,
       target_port: edge.targetHandle as string,
+      temporality: edge.data?.temporality,
+      recurrent_initializer: edge.data?.recurrent_initializer ?? null,
     }));
 }
 
@@ -1094,6 +1209,96 @@ function cloneSnapshot(graph: GraphSpec, uiState: GraphUIState) {
     return structuredClone({ graph, uiState });
   }
   return JSON.parse(JSON.stringify({ graph, uiState })) as { graph: GraphSpec; uiState: GraphUIState };
+}
+
+function applyNodeParamUpdatesToGraph(
+  graph: GraphSpec,
+  updates: Array<{ nodeId: string; param: string; value: ComponentSpec['params'][string] }>
+): GraphSpec {
+  if (updates.length === 0) return graph;
+  let changed = false;
+  const nodes = { ...graph.nodes };
+  for (const update of updates) {
+    const node = nodes[update.nodeId];
+    if (!node || node.params[update.param] === update.value) continue;
+    nodes[update.nodeId] = {
+      ...node,
+      params: {
+        ...node.params,
+        [update.param]: update.value,
+      },
+    };
+    changed = true;
+  }
+  return changed ? { ...graph, nodes } : graph;
+}
+
+function renameBoundaryPortInGraph(
+  graph: GraphSpec,
+  direction: 'input' | 'output',
+  previousPort: string,
+  nextPort: string
+): GraphSpec | null {
+  const portsKey = direction === 'input' ? 'input_ports' : 'output_ports';
+  const bindingsKey = direction === 'input' ? 'input_bindings' : 'output_bindings';
+  const ports = graph[portsKey];
+  if (!ports.includes(previousPort) || ports.includes(nextPort)) return null;
+
+  const bindings = { ...graph[bindingsKey] };
+  if (bindings[previousPort]) {
+    bindings[nextPort] = bindings[previousPort];
+    delete bindings[previousPort];
+  }
+  return {
+    ...graph,
+    [portsKey]: ports.map((port) => (port === previousPort ? nextPort : port)),
+    [bindingsKey]: bindings,
+  };
+}
+
+function renameNodePortReferences(
+  graph: GraphSpec,
+  nodeId: string,
+  direction: 'input' | 'output',
+  previousPort: string,
+  nextPort: string
+): GraphSpec {
+  const wires = graph.wires.map((wire) => {
+    if (
+      direction === 'input' &&
+      wire.target_node === nodeId &&
+      wire.target_port === previousPort
+    ) {
+      return { ...wire, target_port: nextPort };
+    }
+    if (
+      direction === 'output' &&
+      wire.source_node === nodeId &&
+      wire.source_port === previousPort
+    ) {
+      return { ...wire, source_port: nextPort };
+    }
+    return wire;
+  });
+  const input_bindings =
+    direction === 'input'
+      ? Object.fromEntries(
+          Object.entries(graph.input_bindings).map(([key, value]) => [
+            key,
+            [value[0], value[0] === nodeId && value[1] === previousPort ? nextPort : value[1]],
+          ])
+        ) as Record<string, [string, string]>
+      : graph.input_bindings;
+  const output_bindings =
+    direction === 'output'
+      ? Object.fromEntries(
+          Object.entries(graph.output_bindings).map(([key, value]) => [
+            key,
+            [value[0], value[0] === nodeId && value[1] === previousPort ? nextPort : value[1]],
+          ])
+        ) as Record<string, [string, string]>
+      : graph.output_bindings;
+  return { ...graph, wires, input_bindings, output_bindings };
 }
 
 export interface GraphSnapshot {
@@ -1150,14 +1355,29 @@ interface GraphStoreState {
   wrapInParentGraph: () => void;
   exitToBreadcrumb: (index: number) => void;
   renameNode: (nodeId: string, nextId: string) => void;
+  renameSubgraphBoundaryPort: (
+    nodeId: string,
+    direction: 'input' | 'output',
+    previousPort: string,
+    nextPort: string
+  ) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
-  onConnect: (connection: Connection, styleOverride?: 'bezier' | 'elbow') => void;
+  onConnect: (
+    connection: Connection,
+    styleOverride?: 'bezier' | 'elbow',
+    paramUpdates?: Array<{ nodeId: string; param: string; value: ComponentSpec['params'][string] }>,
+    wireOptions?: Pick<WireSpec, 'temporality' | 'recurrent_initializer'>
+  ) => void;
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
   updateNodeParams: (
     nodeId: string,
     paramName: string,
     value: ComponentSpec['params'][string],
+    taskBindingSpec?: StudioTaskBindingSpec | null
+  ) => void;
+  updateNodeParamsBatch: (
+    updates: Array<{ nodeId: string; param: string; value: ComponentSpec['params'][string] }>,
     taskBindingSpec?: StudioTaskBindingSpec | null
   ) => void;
   setSelectedNode: (nodeId: string | null) => void;
@@ -1892,6 +2112,55 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
+  renameSubgraphBoundaryPort: (nodeId, direction, previousPort, nextPort) => {
+    set((state) => {
+      const trimmed = nextPort.trim();
+      if (!trimmed || trimmed === previousPort) return state;
+      const nodeSpec = state.graph.nodes[nodeId];
+      const subgraph = state.graph.subgraphs?.[nodeId];
+      if (!nodeSpec || !subgraph) return state;
+
+      const renamedSubgraph = renameBoundaryPortInGraph(
+        subgraph,
+        direction,
+        previousPort,
+        trimmed
+      );
+      if (!renamedSubgraph) return state;
+
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      let graph: GraphSpec = {
+        ...state.graph,
+        nodes: {
+          ...state.graph.nodes,
+          [nodeId]: {
+            ...nodeSpec,
+            input_ports: renamedSubgraph.input_ports,
+            output_ports: renamedSubgraph.output_ports,
+          },
+        },
+        subgraphs: {
+          ...(state.graph.subgraphs ?? {}),
+          [nodeId]: renamedSubgraph,
+        },
+      };
+      graph = renameNodePortReferences(graph, nodeId, direction, previousPort, trimmed);
+      const edge_states = buildEdgeStates(graph, state.uiState, state.edgeStyle);
+      const uiState = {
+        ...state.uiState,
+        edge_states,
+      };
+      return {
+        graph,
+        uiState,
+        nodes: buildNodes(graph, uiState),
+        edges: buildEdges(graph, uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
   onNodesChange: (changes) => {
     set((state) => {
       const removedRawIds = changes
@@ -2129,7 +2398,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
     });
   },
-  onConnect: (connection, styleOverride) => {
+  onConnect: (connection, styleOverride, paramUpdates = [], wireOptions) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
     const isState =
@@ -2183,6 +2452,15 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     );
     if (alreadyUsed) return;
     const edgeStyle = styleOverride ?? get().edgeStyle;
+    const temporality =
+      wireOptions?.temporality ??
+      (closesInstantCycle(get().graph, connection.source, connection.target)
+        ? 'recurrent'
+        : 'instant');
+    const recurrent_initializer =
+      temporality === 'recurrent'
+        ? (wireOptions?.recurrent_initializer ?? recurrentZeroInitializer())
+        : null;
     const edge: Edge<GraphEdgeData> = {
       ...connection,
       id: wireId({
@@ -2197,6 +2475,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           style: edgeStyle,
           points: [],
         },
+        temporality,
+        recurrent_initializer,
       },
     };
     set((state) => {
@@ -2208,6 +2488,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       };
       graph = expandMuxForPort(graph, connection.target!, connection.targetHandle!);
       graph = normalizeDynamicPorts(graph);
+      graph = applyNodeParamUpdatesToGraph(graph, paramUpdates);
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
       }
@@ -2320,6 +2601,25 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
       };
       graph = normalizeDynamicPorts(graph, taskBindingSpec);
+      return {
+        graph,
+        nodes: buildNodes(graph, state.uiState),
+        edges: buildEdges(graph, state.uiState, state.edgeStyle),
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  updateNodeParamsBatch: (updates, taskBindingSpec) => {
+    if (updates.length === 0) return;
+    set((state) => {
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      let graph = applyNodeParamUpdatesToGraph(state.graph, updates);
+      graph = normalizeDynamicPorts(graph, taskBindingSpec);
+      if (state.graphStack.length > 0) {
+        graph = deriveSubgraphPorts(graph);
+      }
       return {
         graph,
         nodes: buildNodes(graph, state.uiState),

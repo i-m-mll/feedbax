@@ -50,16 +50,12 @@ class SimpleFeedbackState(Module):
 
 
 def _convert_feedback_spec(
-    feedback_spec: Union[
-        PyTree[ChannelSpec, "T"], PyTree[Mapping[str, Any], "T"]
-    ]
+    feedback_spec: Union[PyTree[ChannelSpec, "T"], PyTree[Mapping[str, Any], "T"]],
 ) -> PyTree[ChannelSpec, "T"]:
     if isinstance(feedback_spec, ChannelSpec):
         return feedback_spec
 
-    leaves = jt.leaves(
-        feedback_spec, is_leaf=lambda x: isinstance(x, (ChannelSpec, Mapping))
-    )
+    leaves = jt.leaves(feedback_spec, is_leaf=lambda x: isinstance(x, (ChannelSpec, Mapping)))
     if leaves and all(isinstance(x, ChannelSpec) for x in leaves):
         return feedback_spec
     if leaves and all(isinstance(x, Mapping) for x in leaves):
@@ -90,9 +86,7 @@ class FeedbackChannels(Component):
     ) -> tuple[dict[str, PyTree], eqx.nn.State]:
         mechanics_state = inputs["mechanics"]
 
-        channels_flat, treedef = jt.flatten(
-            self.channels, is_leaf=lambda x: isinstance(x, Channel)
-        )
+        channels_flat, treedef = jt.flatten(self.channels, is_leaf=lambda x: isinstance(x, Channel))
         specs_flat = jt.leaves(self.specs, is_leaf=lambda x: isinstance(x, ChannelSpec))
         keys = jr.split(key, len(channels_flat)) if channels_flat else ()
 
@@ -106,9 +100,7 @@ class FeedbackChannels(Component):
         return {"feedback": outputs}, state
 
     def state_view(self, state: eqx.nn.State) -> PyTree[ChannelState]:
-        channels_flat, treedef = jt.flatten(
-            self.channels, is_leaf=lambda x: isinstance(x, Channel)
-        )
+        channels_flat, treedef = jt.flatten(self.channels, is_leaf=lambda x: isinstance(x, Channel))
         states_flat = [state.get(ch.state_index) for ch in channels_flat]
         return jt.unflatten(treedef, states_flat)
 
@@ -117,9 +109,7 @@ class FeedbackChannels(Component):
         state: eqx.nn.State,
         mechanics_state: MechanicsState,
     ) -> eqx.nn.State:
-        channels_flat, treedef = jt.flatten(
-            self.channels, is_leaf=lambda x: isinstance(x, Channel)
-        )
+        channels_flat, treedef = jt.flatten(self.channels, is_leaf=lambda x: isinstance(x, Channel))
         specs_flat = jt.leaves(self.specs, is_leaf=lambda x: isinstance(x, ChannelSpec))
 
         for channel, spec in zip(channels_flat, specs_flat):
@@ -144,9 +134,7 @@ class SimpleFeedback(Graph):
         self,
         net: Component,
         mechanics: Mechanics,
-        feedback_spec: Union[
-            PyTree[ChannelSpec], PyTree[Mapping[str, Any]]
-        ] = ChannelSpec(
+        feedback_spec: Union[PyTree[ChannelSpec], PyTree[Mapping[str, Any]]] = ChannelSpec(
             where=lambda mechanics_state: mechanics_state.plant.skeleton,  # type: ignore
         ),
         motor_delay: int = 0,
@@ -220,7 +208,7 @@ class SimpleFeedback(Graph):
         # Use the "state" output (full MechanicsState) so that
         # feedback channel spec.where() can navigate the full structure
         # (e.g. state.plant.skeleton.pos).
-        wires.append(Wire("mechanics", "state", "feedback", "mechanics"))
+        wires.append(Wire("mechanics", "state", "feedback", "mechanics", temporality="recurrent"))
 
         def _state_view(node_states):
             force_filter_state = node_states.get(
@@ -236,9 +224,7 @@ class SimpleFeedback(Graph):
 
         def _consistency_update(state):
             mechanics_state: MechanicsState = state.get(mechanics.state_index)
-            new_skeleton = mechanics.plant.skeleton.inverse_kinematics(
-                mechanics_state.effector
-            )
+            new_skeleton = mechanics.plant.skeleton.inverse_kinematics(mechanics_state.effector)
             mechanics_state = eqx.tree_at(
                 lambda s: s.plant.skeleton,
                 mechanics_state,
@@ -286,9 +272,7 @@ class SimpleFeedback(Graph):
         mechanics: Mechanics,
         feedback_spec: Union[
             PyTree[ChannelSpec[MechanicsState]], PyTree[Mapping[str, Any]]
-        ] = ChannelSpec(
-            where=lambda mechanics_state: mechanics_state.plant.skeleton
-        ),
+        ] = ChannelSpec(where=lambda mechanics_state: mechanics_state.plant.skeleton),
     ) -> int:
         plant_state = mechanics.plant.init(key=jr.PRNGKey(0))
         effector = mechanics.plant.skeleton.effector(plant_state.skeleton)
@@ -303,8 +287,6 @@ class SimpleFeedback(Graph):
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
         n_feedback = tree_sum_n_features(example_feedback)
-        example_trial_spec = task.get_train_trial_with_intervenor_params(
-            key=jr.PRNGKey(0)
-        )
+        example_trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
         n_task_inputs = tree_sum_n_features(example_trial_spec.inputs)
         return n_feedback + n_task_inputs

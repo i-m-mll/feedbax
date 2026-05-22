@@ -46,11 +46,16 @@ import {
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import {
-  hasBlockingSchemaIssue,
   projectStudioSchema,
   validateConnectionAgainstSchema,
+  validateTaskDataBindingAgainstSchema,
 } from '@/features/schema/project';
-import { isNextMuxInputPort } from '@/features/graph/dynamicPorts';
+import {
+  applyBoundaryOverrides,
+  deriveDimensionConstraints,
+  deriveSubgraphBoundaryOverrides,
+} from '@/features/schema/dimensions';
+import { expandMuxForPort, isNextMuxInputPort, normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -58,8 +63,14 @@ import { StateFlowEdge } from './StateFlowEdge';
 import { TapNode } from './TapNode';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
-import type { GraphEdgeData, GraphNodeData, TapNodeData } from '@/types/graph';
-import type { StudioTaskBinding } from '@/types/workspace';
+import type { ComponentSpec, GraphEdgeData, GraphNodeData, GraphSpec, TapNodeData } from '@/types/graph';
+import type { ComponentDefinition } from '@/types/components';
+import type {
+  StudioTaskBinding,
+  StudioTaskBindingSpec,
+  StudioValidationIssue,
+  ValueSchema,
+} from '@/types/workspace';
 import { ChevronsDown, ChevronsUp, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 
 interface TaskSourceNodeData extends Record<string, unknown> {
@@ -76,6 +87,18 @@ interface TaskBindingEdgeData extends Record<string, unknown> {
   target_node_id?: string;
   target_port?: string;
 }
+
+type DimensionParamUpdate = {
+  nodeId: string;
+  param: string;
+  value: ComponentSpec['params'][string];
+};
+
+type ConnectionFeedback = {
+  status: 'valid' | 'warning' | 'blocked';
+  message: string;
+  signature: string;
+} | null;
 
 function TaskSourceNode({ data }: NodeProps) {
   const nodeData = data as TaskSourceNodeData;
@@ -105,6 +128,112 @@ function TaskSourceNode({ data }: NodeProps) {
       />
     </div>
   );
+}
+
+function isDraftableDimensionIssue(issue: StudioValidationIssue): boolean {
+  return (
+    issue.type.endsWith('_shape_mismatch') ||
+    issue.type.endsWith('_rank_mismatch')
+  );
+}
+
+function hasBlockingConnectionIssue(issues: StudioValidationIssue[]): boolean {
+  return issues.some(
+    (issue) => issue.severity === 'error' && !isDraftableDimensionIssue(issue)
+  );
+}
+
+function firstConcreteIssue(issues: StudioValidationIssue[]): StudioValidationIssue | null {
+  return (
+    issues.find((issue) => issue.severity === 'error') ??
+    issues.find((issue) => issue.severity === 'warning') ??
+    null
+  );
+}
+
+function feedbackFromIssues(
+  issues: StudioValidationIssue[],
+  validMessage: string,
+  signature: string
+): ConnectionFeedback {
+  const issue = firstConcreteIssue(issues);
+  if (hasBlockingConnectionIssue(issues)) {
+    return {
+      status: 'blocked',
+      message: issue?.message ?? 'This connection is not available',
+      signature,
+    };
+  }
+  if (issues.some(isDraftableDimensionIssue)) {
+    return {
+      status: 'warning',
+      message: issue?.message ?? 'Dimension conflict; drop to keep as an invalid draft',
+      signature,
+    };
+  }
+  return { status: 'valid', message: validMessage, signature };
+}
+
+function graphWithConnection(graph: GraphSpec, connection: Connection): GraphSpec {
+  if (!connection.source || !connection.sourceHandle || !connection.target || !connection.targetHandle) {
+    return graph;
+  }
+  const wire = {
+    source_node: connection.source,
+    source_port: connection.sourceHandle,
+    target_node: connection.target,
+    target_port: connection.targetHandle,
+  };
+  const wires = graph.wires.filter(
+    (item) =>
+      item.source_node !== wire.source_node ||
+      item.source_port !== wire.source_port ||
+      item.target_node !== wire.target_node ||
+      item.target_port !== wire.target_port
+  );
+  return normalizeDynamicPorts(
+    expandMuxForPort({ ...graph, wires: [...wires, wire] }, connection.target, connection.targetHandle)
+  );
+}
+
+function dimensionParamUpdates(
+  graph: GraphSpec,
+  components: ComponentDefinition[],
+  taskBindingSpec: StudioTaskBindingSpec,
+  boundaryOverrides: Map<string, ValueSchema> = new Map()
+): DimensionParamUpdate[] {
+  const registry = projectStudioSchema(graph, components, taskBindingSpec);
+  const resolvedRegistry = applyBoundaryOverrides(registry, boundaryOverrides);
+  const seen = new Set<string>();
+  return deriveDimensionConstraints(graph, resolvedRegistry)
+    .filter(
+      (constraint) =>
+        typeof constraint.inferred_value === 'number' &&
+        constraint.current_value !== constraint.inferred_value
+    )
+    .flatMap((constraint) => {
+      const key = `${constraint.node_id}:${constraint.param}:${constraint.inferred_value}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{
+        nodeId: constraint.node_id,
+        param: constraint.param,
+        value: constraint.inferred_value,
+      }];
+    });
+}
+
+function subgraphBoundaryOverrides(
+  parentGraph: GraphSpec | null | undefined,
+  childNodeId: string | null | undefined,
+  components: ComponentDefinition[],
+  parentTaskBindingSpec: StudioTaskBindingSpec
+): Map<string, ValueSchema> {
+  if (!parentGraph || !childNodeId || !parentGraph.nodes[childNodeId]) {
+    return new Map<string, ValueSchema>();
+  }
+  const parentRegistry = projectStudioSchema(parentGraph, components, parentTaskBindingSpec);
+  return deriveSubgraphBoundaryOverrides(parentGraph, childNodeId, parentRegistry);
 }
 
 function TaskBindingEdge({
@@ -464,6 +593,7 @@ export function Canvas() {
     onNodesChange,
     onEdgesChange,
     onConnect,
+    updateNodeParamsBatch,
     addNodeFromComponent,
     markDirty,
     setSelectedNode,
@@ -507,6 +637,10 @@ export function Canvas() {
     Record<string, { x: number; y: number }>
   >({});
   const [taskConnectionAutoPan, setTaskConnectionAutoPan] = useState(true);
+  const [connectionFeedback, setConnectionFeedback] = useState<ConnectionFeedback>(null);
+  const [connectionPointer, setConnectionPointer] = useState<{ x: number; y: number } | null>(null);
+  const connectionActive = useRef(false);
+  const connectionFeedbackSignature = useRef<string | null>(null);
   const trainingScenario = getTrainingScenario(workspace);
   const taskBindingSpec = useMemo(
     () =>
@@ -517,6 +651,21 @@ export function Canvas() {
       ),
     [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
   );
+  const parentBoundaryOverrides = useMemo(() => {
+    const parentLayer = graphStack[graphStack.length - 1];
+    if (!parentLayer?.childNodeId) return new Map<string, ValueSchema>();
+    const parentTaskBindingSpec = ensureTaskBindingSpec(
+      trainingScenario?.task_binding_spec,
+      parentLayer.graph,
+      trainingScenario?.task_spec
+    );
+    return subgraphBoundaryOverrides(
+      parentLayer.graph,
+      parentLayer.childNodeId,
+      components,
+      parentTaskBindingSpec
+    );
+  }, [components, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
   const taskDataSignature = taskBindingSpec.exposed_data
     .map((data) => `${data.id}:${data.label}:${data.role}:${data.bindable ? '1' : '0'}`)
     .join('|');
@@ -848,7 +997,7 @@ export function Canvas() {
     () => [...nodes, ...taskSourceNodes],
     [nodes, taskSourceNodes]
   );
-  const displayEdges = useMemo(
+  const baseDisplayEdges = useMemo(
     () => [...edges, ...taskBindingEdges],
     [edges, taskBindingEdges]
   );
@@ -882,9 +1031,53 @@ export function Canvas() {
   }, [reactFlow]);
 
   const schemaRegistry = useMemo(
-    () => projectStudioSchema(graph, components, taskBindingSpec),
-    [components, graph, taskBindingSpec]
+    () => applyBoundaryOverrides(projectStudioSchema(graph, components, taskBindingSpec), parentBoundaryOverrides),
+    [components, graph, parentBoundaryOverrides, taskBindingSpec]
   );
+
+  const displayEdges = useMemo(
+    () =>
+      baseDisplayEdges.map((edge) => {
+        if (edge.type !== 'routed' || !edge.source || !edge.sourceHandle || !edge.target || !edge.targetHandle) {
+          return edge;
+        }
+        const issues = validateConnectionAgainstSchema(
+          schemaRegistry,
+          edge.source,
+          edge.sourceHandle,
+          edge.target,
+          edge.targetHandle
+        );
+        const status = hasBlockingConnectionIssue(issues)
+          ? 'blocked'
+          : issues.some(isDraftableDimensionIssue)
+            ? 'warning'
+            : null;
+        if (!status) return edge;
+        const issue = firstConcreteIssue(issues);
+        return {
+          ...edge,
+          data: {
+            ...(edge.data ?? {}),
+            schema_status: status,
+            schema_message: issue?.message ?? null,
+          },
+        };
+      }),
+    [baseDisplayEdges, schemaRegistry]
+  );
+
+  useEffect(() => {
+    if (components.length === 0) return;
+    const updates = dimensionParamUpdates(
+      graph,
+      components,
+      taskBindingSpec,
+      parentBoundaryOverrides
+    );
+    if (updates.length === 0) return;
+    updateNodeParamsBatch(updates, taskBindingSpec);
+  }, [components, graph, parentBoundaryOverrides, taskBindingSpec, updateNodeParamsBatch]);
 
   const breadcrumbs = useMemo(
     () => [...graphStack.map((layer) => layer.label), currentGraphLabel],
@@ -903,6 +1096,18 @@ export function Canvas() {
       ),
     [graphId, graphStack, currentGraphLabel]
   );
+  const connectionLineStyle = useMemo(() => {
+    if (connectionFeedback?.status === 'valid') {
+      return { stroke: '#10b981', strokeWidth: 2.5 };
+    }
+    if (connectionFeedback?.status === 'warning') {
+      return { stroke: '#f59e0b', strokeWidth: 2.5 };
+    }
+    if (connectionFeedback?.status === 'blocked') {
+      return { stroke: '#ef4444', strokeWidth: 2.5 };
+    }
+    return { stroke: '#64748b', strokeWidth: 2 };
+  }, [connectionFeedback?.status]);
 
   useEffect(() => {
     if (nodes.length === 0 || fittedGraphKey.current === graphViewKey) {
@@ -957,7 +1162,7 @@ export function Canvas() {
         role: taskData.role,
         metadata: {},
       };
-      updateTaskBindingSpec({
+      const nextTaskBindingSpec: StudioTaskBindingSpec = {
         ...taskBindingSpec,
         bindings: [
           ...taskBindingSpec.bindings.filter(
@@ -965,7 +1170,15 @@ export function Canvas() {
           ),
           nextBinding,
         ],
-      });
+      };
+      const paramUpdates = dimensionParamUpdates(
+        graph,
+        components,
+        nextTaskBindingSpec,
+        parentBoundaryOverrides
+      );
+      updateTaskBindingSpec(nextTaskBindingSpec);
+      updateNodeParamsBatch(paramUpdates, nextTaskBindingSpec);
       markDirty();
       setSelectedEdge(null);
       setSelectedNode(null);
@@ -973,21 +1186,100 @@ export function Canvas() {
       selectTopPaneEntity(taskBindingEntityId(nextBinding.id));
     },
     [
+      components,
       graph,
       markDirty,
       selectTopPaneEntity,
       setSelectedEdge,
       setSelectedNode,
       setSelectedTap,
+      parentBoundaryOverrides,
       taskBindingSpec,
+      updateNodeParamsBatch,
       updateTaskBindingSpec,
     ]
   );
 
-  const hasBlockingCanvasConnectionIssue = useCallback(
-    (connection: Connection) => {
-      if (!connection.source || !connection.sourceHandle) return true;
-      if (!connection.target || !connection.targetHandle) return true;
+  const setFeedbackForConnection = useCallback((feedback: ConnectionFeedback) => {
+    const signature = feedback?.signature ?? null;
+    if (connectionFeedbackSignature.current === signature) return;
+    connectionFeedbackSignature.current = signature;
+    setConnectionFeedback(feedback);
+  }, []);
+
+  const clearConnectionFeedback = useCallback(() => {
+    connectionActive.current = false;
+    connectionFeedbackSignature.current = null;
+    setConnectionFeedback(null);
+    setConnectionPointer(null);
+  }, []);
+
+  const evaluateConnection = useCallback(
+    (connection: Connection): ConnectionFeedback => {
+      if (!connection.source || !connection.sourceHandle) return null;
+      if (!connection.target || !connection.targetHandle) return null;
+      const signature = [
+        connection.source,
+        connection.sourceHandle,
+        connection.target,
+        connection.targetHandle,
+      ].join(':');
+      const taskDataId = taskDataIdFromSourceNodeId(connection.source);
+      if (taskDataId) {
+        if (isStateHandle(connection.targetHandle)) {
+          return {
+            status: 'blocked',
+            message: 'Task Data cannot bind to state handles',
+            signature,
+          };
+        }
+        if (targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)) {
+          return {
+            status: 'blocked',
+            message: `${connection.target}.${connection.targetHandle} is already occupied`,
+            signature,
+          };
+        }
+        const issues = validateTaskDataBindingAgainstSchema(
+          schemaRegistry,
+          taskDataId,
+          connection.target,
+          connection.targetHandle
+        );
+        const dynamicMuxTarget = isNextMuxInputPort(
+          graph,
+          connection.target,
+          connection.targetHandle,
+          taskBindingSpec
+        );
+        const filteredIssues = dynamicMuxTarget
+          ? issues.filter((issue) => issue.type !== 'unknown_target_port')
+          : issues;
+        return feedbackFromIssues(filteredIssues, 'Task Data can bind here', signature);
+      }
+
+      const sourceIsState = isStateHandle(connection.sourceHandle);
+      const targetIsState = isStateHandle(connection.targetHandle);
+      if (sourceIsState || targetIsState) {
+        const valid =
+          sourceIsState &&
+          targetIsState &&
+          connection.sourceHandle === '__state_out' &&
+          connection.targetHandle === '__state_in' &&
+          connection.source !== connection.target;
+        return {
+          status: valid ? 'valid' : 'blocked',
+          message: valid ? 'State flow can connect here' : 'State flow requires state output to state input',
+          signature,
+        };
+      }
+      if (targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)) {
+        return {
+          status: 'blocked',
+          message: `${connection.target}.${connection.targetHandle} is already occupied`,
+          signature,
+        };
+      }
       const issues = validateConnectionAgainstSchema(
         schemaRegistry,
         connection.source,
@@ -1001,48 +1293,29 @@ export function Canvas() {
         connection.targetHandle,
         taskBindingSpec
       );
-      if (!dynamicMuxTarget) return hasBlockingSchemaIssue(issues);
-      return hasBlockingSchemaIssue(
-        issues.filter((issue) => issue.type !== 'unknown_target_port')
-      );
+      const filteredIssues = dynamicMuxTarget
+        ? issues.filter((issue) => issue.type !== 'unknown_target_port')
+        : issues;
+      return feedbackFromIssues(filteredIssues, 'Ports are compatible', signature);
     },
     [graph, schemaRegistry, taskBindingSpec]
   );
 
+  const hasBlockingCanvasConnectionIssue = useCallback(
+    (connection: Connection) => {
+      const feedback = evaluateConnection(connection);
+      return feedback?.status === 'blocked';
+    },
+    [evaluateConnection]
+  );
+
   const isValidConnection = useCallback(
     (connection: Connection) => {
-      if (!connection.target || !connection.targetHandle) return false;
-      if (!connection.source || !connection.sourceHandle) return false;
-      const taskDataId = taskDataIdFromSourceNodeId(connection.source);
-      if (taskDataId) {
-        if (isStateHandle(connection.targetHandle)) return false;
-        return !targetInputOccupied(
-          graph,
-          taskBindingSpec,
-          connection.target,
-          connection.targetHandle
-        );
-      }
-      const sourceIsState = isStateHandle(connection.sourceHandle);
-      const targetIsState = isStateHandle(connection.targetHandle);
-      if (sourceIsState || targetIsState) {
-        return (
-          sourceIsState &&
-          targetIsState &&
-          connection.sourceHandle === '__state_out' &&
-          connection.targetHandle === '__state_in'
-        );
-      }
-      const inputTaken = targetInputOccupied(
-        graph,
-        taskBindingSpec,
-        connection.target,
-        connection.targetHandle
-      );
-      if (inputTaken) return false;
-      return !hasBlockingCanvasConnectionIssue(connection);
+      const feedback = evaluateConnection(connection);
+      if (connectionActive.current) setFeedbackForConnection(feedback);
+      return feedback !== null && feedback.status !== 'blocked';
     },
-    [graph, hasBlockingCanvasConnectionIssue, taskBindingSpec]
+    [evaluateConnection, setFeedbackForConnection]
   );
 
   const handleConnect = useCallback(
@@ -1070,9 +1343,24 @@ export function Canvas() {
       ) {
         return;
       }
-      onConnect(connection);
+      const nextGraph = graphWithConnection(graph, connection);
+      const paramUpdates = dimensionParamUpdates(
+        nextGraph,
+        components,
+        taskBindingSpec,
+        parentBoundaryOverrides
+      );
+      onConnect(connection, undefined, paramUpdates);
     },
-    [graph, hasBlockingCanvasConnectionIssue, onConnect, taskBindingSpec, upsertTaskBinding]
+    [
+      components,
+      graph,
+      hasBlockingCanvasConnectionIssue,
+      onConnect,
+      parentBoundaryOverrides,
+      taskBindingSpec,
+      upsertTaskBinding,
+    ]
   );
 
   const handleNodesChange = useCallback(
@@ -1196,6 +1484,12 @@ export function Canvas() {
       ref={containerRef}
       data-studio-canvas-root="true"
       className="relative w-full h-full overflow-hidden bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f7_45%,_#eef1f6_100%)]"
+      onPointerMove={(event) => {
+        if (!connectionActive.current) return;
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setConnectionPointer({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+      }}
     >
       {topPane.active_projection === 'task' && (
         <TaskBindingVisualOverlay
@@ -1215,15 +1509,22 @@ export function Canvas() {
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         isValidConnection={isValidConnection}
+        connectionLineStyle={connectionLineStyle}
         autoPanOnConnect={taskConnectionAutoPan}
         onConnectStart={(_, params) => {
+          connectionActive.current = true;
+          connectionFeedbackSignature.current = null;
+          setConnectionFeedback(null);
           if (taskDataIdFromSourceNodeId(params.nodeId)) {
             beginTaskConnection();
             return;
           }
           stopTaskConnection();
         }}
-        onConnectEnd={stopTaskConnection}
+        onConnectEnd={() => {
+          stopTaskConnection();
+          clearConnectionFeedback();
+        }}
         onMoveEnd={() => updateTaskSourcePositions()}
         onPaneClick={() => {
           setSelectedNode(null);
@@ -1287,6 +1588,26 @@ export function Canvas() {
         snapGrid={[16, 16]}
         proOptions={{ hideAttribution: true }}
       >
+        {connectionFeedback && connectionPointer && (
+          <Panel position="top-left" className="pointer-events-none !m-0">
+            <div
+              className={clsx(
+                'absolute z-50 max-w-[260px] rounded-md border px-2 py-1 text-[11px] font-medium shadow-soft',
+                connectionFeedback.status === 'valid' &&
+                  'border-emerald-200 bg-emerald-50 text-emerald-700',
+                connectionFeedback.status === 'warning' &&
+                  'border-amber-200 bg-amber-50 text-amber-800',
+                connectionFeedback.status === 'blocked' &&
+                  'border-rose-200 bg-rose-50 text-rose-700'
+              )}
+              style={{
+                transform: `translate(${connectionPointer.x + 14}px, ${connectionPointer.y + 14}px)`,
+              }}
+            >
+              {connectionFeedback.message}
+            </div>
+          </Panel>
+        )}
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5f5" />
         <Controls>
           <ControlButton
