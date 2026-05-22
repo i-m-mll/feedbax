@@ -45,8 +45,8 @@ export function projectStudioSchema(
 ): StudioSchemaRegistry {
   const componentMap = new Map(components.map((component) => [component.name, component]));
   const schemaGraph = normalizeDynamicPorts(graph, taskBindingSpec);
-  const ports = enumerateGraphPorts(schemaGraph, componentMap);
   const taskData = enumerateTaskData(taskBindingSpec);
+  const ports = enumerateGraphPorts(schemaGraph, componentMap, taskBindingSpec, taskData);
   markBoundPorts(ports, taskBindingSpec);
   const selectorTargets = [
     ...portSelectorTargets(ports),
@@ -117,23 +117,87 @@ export function validateConnectionAgainstSchema(
   return issues;
 }
 
+export function validateTaskDataBindingAgainstSchema(
+  registry: Pick<StudioSchemaRegistry, 'ports' | 'task_data'>,
+  sourceDataId: string,
+  targetNode: string,
+  targetPort: string
+): SchemaValidationIssue[] {
+  const source = registry.task_data.find(
+    (item) => item.id === `task_data:${sourceDataId}` || item.id === sourceDataId
+  );
+  const target = findPort(registry.ports, targetNode, targetPort, 'input');
+  const targetAnyDirection = findPortAnyDirection(registry.ports, targetNode, targetPort);
+  const issues: SchemaValidationIssue[] = [];
+
+  if (!source) {
+    issues.push({
+      type: 'unknown_task_data',
+      message: `Task Data ${sourceDataId} is not declared`,
+      severity: 'error',
+      location: { source_data_id: sourceDataId },
+    });
+  } else if (!source.bindable) {
+    issues.push({
+      type: 'task_data_not_bindable',
+      message: `Task Data ${sourceDataId} has protocol role ${source.role} and is not bindable`,
+      severity: 'error',
+      location: { source_data_id: sourceDataId },
+    });
+  }
+  if (!target) {
+    issues.push({
+      type: targetAnyDirection ? 'wrong_target_port_direction' : 'unknown_target_port',
+      message: targetAnyDirection
+        ? `${targetNode}.${targetPort} is not an input port`
+        : `${targetNode}.${targetPort} does not exist`,
+      severity: 'error',
+      location: { node: targetNode, port: targetPort },
+    });
+  }
+  if (source && target) {
+    issues.push(
+      ...valueSchemaCompatibilityIssues(
+        source.value_schema,
+        target.value_schema,
+        source.label,
+        target.label,
+        'task_binding'
+      )
+    );
+  }
+  return issues;
+}
+
 export function hasBlockingSchemaIssue(issues: SchemaValidationIssue[]): boolean {
   return issues.some((issue) => issue.severity === 'error');
 }
 
 function enumerateGraphPorts(
   graph: GraphSpec,
-  componentMap: Map<string, ComponentDefinition>
+  componentMap: Map<string, ComponentDefinition>,
+  taskBindingSpec?: StudioTaskBindingSpec | null,
+  taskData: TaskDataSchema[] = []
 ): PortSchema[] {
   const ports: PortSchema[] = [];
   for (const [nodeId, node] of Object.entries(graph.nodes)) {
     const component = componentMap.get(node.type);
+    const subgraph = graph.subgraphs?.[nodeId] ?? null;
     const inputPorts = node.input_ports.length > 0 ? node.input_ports : component?.input_ports ?? [];
     const outputPorts =
       node.output_ports.length > 0 ? node.output_ports : component?.output_ports ?? [];
     for (const port of inputPorts) {
       ports.push(
-        componentPortSchema(nodeId, node.type, port, 'input', componentInputPortType(node.type, port, component))
+        componentPortSchema(
+          nodeId,
+          node.type,
+          node.params,
+          port,
+          'input',
+          componentInputPortType(node.type, port, component),
+          subgraph,
+          componentMap
+        )
       );
     }
     for (const port of outputPorts) {
@@ -141,19 +205,23 @@ function enumerateGraphPorts(
         componentPortSchema(
           nodeId,
           node.type,
+          node.params,
           port,
           'output',
-          component?.port_types?.outputs?.[port]
+          component?.port_types?.outputs?.[port],
+          subgraph,
+          componentMap
         )
       );
     }
   }
   for (const port of graph.input_ports) {
-    ports.push(graphPortSchema(port, 'input', graph.input_bindings[port]));
+    ports.push(graphPortSchema(port, 'input', graph.input_bindings[port], ports));
   }
   for (const port of graph.output_ports) {
-    ports.push(graphPortSchema(port, 'output'));
+    ports.push(graphPortSchema(port, 'output', graph.output_bindings[port], ports));
   }
+  applyMuxOutputShapes(ports, graph, taskBindingSpec, taskData);
   return ports;
 }
 
@@ -173,12 +241,34 @@ function componentInputPortType(
 function componentPortSchema(
   nodeId: string,
   componentType: string,
+  nodeParams: Record<string, unknown>,
   port: string,
   direction: 'input' | 'output',
-  portType?: { dtype: string; shape?: number[] | null; rank?: number }
+  portType?: { dtype: string; shape?: number[] | null; rank?: number },
+  subgraph?: GraphSpec | null,
+  componentMap?: Map<string, ComponentDefinition>
 ): PortSchema {
   const portId = `port:${nodeId}.${port}:${direction}`;
-  const origin: StudioSchemaOrigin = portType ? 'declared' : 'unknown';
+  let origin: StudioSchemaOrigin = portType ? 'declared' : 'unknown';
+  let shape: unknown[] | null = portType?.shape ?? null;
+  let rank: number | null = portType?.rank ?? null;
+  const metadata: Record<string, unknown> = { component_type: componentType };
+  const inferred = componentPortDimension(componentType, nodeParams, port, direction);
+  if (inferred) {
+    shape = inferred.shape;
+    rank = inferred.shape.length;
+    origin = 'inferred_static';
+    Object.assign(metadata, inferred.metadata);
+  }
+  const boundary = subgraphBoundaryValueSchema(subgraph, port, direction, componentMap);
+  if (!shape && boundary?.shape) {
+    shape = boundary.shape;
+    rank = boundary.rank ?? boundary.shape.length;
+    origin = 'inferred_static';
+    metadata.dimension_source = 'subgraph_boundary';
+    metadata.boundary_port = port;
+  }
+  const dtype = portType?.dtype ?? boundary?.dtype ?? null;
   return {
     id: portId,
     label: `${nodeId}.${port}`,
@@ -190,24 +280,117 @@ function componentPortSchema(
       id: `value:${portId}`,
       label: `${nodeId}.${port}`,
       kind: 'graph_port',
-      dtype: portType?.dtype ?? null,
-      shape: portType?.shape ?? null,
-      rank: portType?.rank ?? null,
+      dtype,
+      shape,
+      rank,
       origin,
-      metadata: { component_type: componentType },
+      metadata,
     },
     origin,
     metadata: {},
   };
 }
 
+function componentPortDimension(
+  componentType: string,
+  nodeParams: Record<string, unknown>,
+  port: string,
+  direction: 'input' | 'output'
+): { shape: number[]; metadata: Record<string, unknown> } | null {
+  let dimensionParam: string | null = null;
+  let dimension: number | null = null;
+  if (componentType === 'Network') {
+    if (direction === 'output' && port === 'output') {
+      dimensionParam = 'out_size';
+    } else if (direction === 'output' && port === 'hidden') {
+      dimensionParam = 'hidden_size';
+    }
+  } else if (componentType === 'Linear' || componentType === 'MLP') {
+    if (direction === 'input' && port === 'input') dimensionParam = 'input_size';
+    if (direction === 'output' && port === 'output') dimensionParam = 'output_size';
+  } else if (componentType === 'GRU' || componentType === 'LSTM') {
+    if (direction === 'input' && port === 'input') dimensionParam = 'input_size';
+    if (port === 'output' || port === 'hidden' || port === 'cell') dimensionParam = 'hidden_size';
+  } else if (['TwoLinkArm', 'PointMass', 'Mechanics'].includes(componentType) && port === 'force') {
+    dimension = 2;
+  } else if (componentType === 'Arm6MuscleRigidTendon') {
+    if (port === 'excitation') dimension = 6;
+    if (port === 'angles' || port === 'angular_velocities' || port === 'torques') dimension = 2;
+    if (port === 'forces' || port === 'activations') dimension = 6;
+  } else if (componentType === 'PointMass8MuscleRelu') {
+    if (port === 'excitation' || port === 'forces' || port === 'activations') {
+      const nPairs = positiveIntParam(nodeParams, 'n_pairs');
+      dimension = nPairs === null ? null : nPairs * 2;
+    }
+    if (port === 'force_2d') dimension = 2;
+  } else if (componentType === 'FeedbackChannels' && direction === 'output' && port === 'output') {
+    dimension = feedbackChannelsWidth(nodeParams);
+  }
+  if (dimensionParam) dimension = positiveIntParam(nodeParams, dimensionParam);
+  if (dimension === null) return null;
+  return {
+    shape: [dimension],
+    metadata: {
+      dimension_source: dimensionParam ? 'component_param' : 'component_contract',
+      dimension_param: dimensionParam,
+    },
+  };
+}
+
+function feedbackChannelsWidth(params: Record<string, unknown>): number | null {
+  const channels = params.channels;
+  if (!Array.isArray(channels)) return null;
+  const width = channels.reduce((sum, channel) => {
+    if (channel === 'position' || channel === 'velocity') return sum + 2;
+    if (channel === 'force') return sum + 2;
+    return sum;
+  }, 0);
+  return width > 0 ? width : null;
+}
+
+function positiveIntParam(params: Record<string, unknown>, key: string): number | null {
+  const value = params[key];
+  return Number.isInteger(value) && typeof value === 'number' && value > 0 ? value : null;
+}
+
+function subgraphBoundaryValueSchema(
+  subgraph: GraphSpec | null | undefined,
+  port: string,
+  direction: 'input' | 'output',
+  componentMap?: Map<string, ComponentDefinition>
+): ValueSchema | null {
+  if (!subgraph || !componentMap) return null;
+  const binding = direction === 'input'
+    ? subgraph.input_bindings[port]
+    : subgraph.output_bindings[port];
+  if (!binding) return null;
+  const [nodeId, boundPort] = binding;
+  const subgraphPorts = enumerateGraphPorts(subgraph, componentMap);
+  const bound = subgraphPorts.find(
+    (item) =>
+      item.node_id === nodeId &&
+      item.port === boundPort &&
+      item.direction === direction
+  );
+  return bound?.value_schema ?? null;
+}
+
 function graphPortSchema(
   port: string,
   direction: 'input' | 'output',
-  binding?: [string, string]
+  binding?: [string, string],
+  ports: PortSchema[] = []
 ): PortSchema {
   const portId = `port:graph.${port}:${direction}`;
   const metadata = binding ? { binding: { node_id: binding[0], port: binding[1] } } : {};
+  const bound = binding
+    ? ports.find(
+        (item) =>
+          item.node_id === binding[0] &&
+          item.port === binding[1] &&
+          item.direction === direction
+      )
+    : null;
   return {
     id: portId,
     label: `graph.${port}`,
@@ -217,8 +400,14 @@ function graphPortSchema(
       id: `value:${portId}`,
       label: `graph.${port}`,
       kind: 'graph_port',
+      dtype: bound?.value_schema.dtype ?? null,
+      shape: bound?.value_schema.shape ?? null,
+      rank: bound?.value_schema.rank ?? null,
       origin: 'inferred_static',
-      metadata,
+      metadata: {
+        ...metadata,
+        ...(bound ? { dimension_source: 'graph_port_binding' } : {}),
+      },
     },
     origin: 'inferred_static',
     metadata,
@@ -230,17 +419,28 @@ function enumerateTaskData(taskBindingSpec?: StudioTaskBindingSpec | null): Task
     const value = data.value_spec;
     const role = taskDataRole(data);
     const surface = isBindableTaskData(data) ? 'graph_input' : 'protocol';
+    const shape = data.expected_shape ?? value?.shape ?? null;
+    const sampleShape = taskDataSampleShape(shape);
+    const hasTimeAxis = Boolean(shape && shape[0] === 'time' && sampleShape);
     const metadata = {
       ...data.metadata,
       task_data_role: role,
       task_data_surface: surface,
+      ...(sampleShape
+        ? {
+            sample_shape: sampleShape,
+            sample_rank: sampleShape.length,
+            ...(hasTimeAxis ? { time_axis: 0, view: 'trajectory' } : {}),
+          }
+        : {}),
     };
     const valueSchema: ValueSchema = {
       id: `value:task_data:${data.id}`,
       label: data.label,
       kind: 'task_data',
       dtype: data.dtype ?? value?.dtype ?? null,
-      shape: data.expected_shape ?? value?.shape ?? null,
+      shape,
+      rank: shape ? shape.length : null,
       units: data.units ?? value?.units ?? null,
       frame: data.frame ?? value?.frame ?? null,
       origin: 'declared',
@@ -262,6 +462,66 @@ function enumerateTaskData(taskBindingSpec?: StudioTaskBindingSpec | null): Task
       metadata,
     };
   });
+}
+
+function taskDataSampleShape(shape: unknown[] | null | undefined): unknown[] | null {
+  if (!shape) return null;
+  if (shape[0] === 'time') return shape.slice(1);
+  return [...shape];
+}
+
+function applyMuxOutputShapes(
+  ports: PortSchema[],
+  graph: GraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null,
+  taskData: TaskDataSchema[] = []
+): void {
+  const taskDataById = new Map(
+    taskData.map((item) => [item.id.replace(/^task_data:/, ''), item.value_schema])
+  );
+  const outputPorts = new Map(
+    ports
+      .filter((port) => port.direction === 'output' && port.node_id)
+      .map((port) => [`${port.node_id}.${port.port}`, port])
+  );
+  const inputSources = new Map<string, ValueSchema>();
+  for (const wire of graph.wires) {
+    const source = outputPorts.get(`${wire.source_node}.${wire.source_port}`);
+    if (source) inputSources.set(`${wire.target_node}.${wire.target_port}`, source.value_schema);
+  }
+  for (const binding of taskBindingSpec?.bindings ?? []) {
+    const source = taskDataById.get(binding.source_data_id);
+    if (source) inputSources.set(`${binding.target_node_id}.${binding.target_port}`, source);
+  }
+
+  for (const port of ports) {
+    if (port.component_type !== MUX_COMPONENT_TYPE || port.direction !== 'output' || port.port !== 'output') {
+      continue;
+    }
+    const nodeId = port.node_id;
+    const node = nodeId ? graph.nodes[nodeId] : null;
+    if (!node || !nodeId) continue;
+    const inputShapes = node.input_ports
+      .map((inputPort) => compatibilityShape(inputSources.get(`${nodeId}.${inputPort}`)))
+      .filter((shape): shape is unknown[] => Array.isArray(shape));
+    if (inputShapes.length === 0 || inputShapes.some((shape) => shape.length !== 1)) continue;
+    const dimensions = inputShapes.map((shape) => shape[0]);
+    if (!dimensions.every((dim): dim is number => Number.isInteger(dim) && typeof dim === 'number' && dim > 0)) {
+      continue;
+    }
+    port.value_schema = {
+      ...port.value_schema,
+      shape: [dimensions.reduce((sum, dim) => sum + dim, 0)],
+      rank: 1,
+      origin: 'inferred_static',
+      metadata: {
+        ...port.value_schema.metadata,
+        dimension_source: 'mux_concat_inputs',
+        input_shapes: inputShapes,
+      },
+    };
+    port.origin = 'inferred_static';
+  }
 }
 
 function taskDataRole(data: { kind: string; role?: string | null; bindable: boolean; metadata: Record<string, unknown> }): string {
@@ -378,8 +638,69 @@ function validateGraphConnections(graph: GraphSpec, ports: PortSchema[]): Schema
         wire.target_port
       )
     );
+    if (wire.temporality === 'recurrent' && !wire.recurrent_initializer) {
+      issues.push({
+        type: 'recurrent_initializer_missing',
+        message: `${wire.source_node}.${wire.source_port} -> ${wire.target_node}.${wire.target_port} needs an initial value`,
+        severity: 'error',
+        location: { path: `${path}.recurrent_initializer` },
+      });
+    }
   });
+  issues.push(...instantCycleIssues(graph));
   return issues;
+}
+
+function instantCycleIssues(graph: GraphSpec): SchemaValidationIssue[] {
+  const adjacency = new Map<string, Array<{ target: string; wireIndex: number }>>();
+  for (const nodeId of Object.keys(graph.nodes)) {
+    adjacency.set(nodeId, []);
+  }
+  graph.wires.forEach((wire, wireIndex) => {
+    if (wire.temporality === 'recurrent') return;
+    if (!graph.nodes[wire.source_node] || !graph.nodes[wire.target_node]) return;
+    adjacency.get(wire.source_node)?.push({ target: wire.target_node, wireIndex });
+  });
+
+  const visited = new Set<string>();
+  const active = new Set<string>();
+  const pathEdges: number[] = [];
+
+  const visit = (nodeId: string): number[] | null => {
+    visited.add(nodeId);
+    active.add(nodeId);
+    for (const { target, wireIndex } of adjacency.get(nodeId) ?? []) {
+      if (!visited.has(target)) {
+        pathEdges.push(wireIndex);
+        const found = visit(target);
+        if (found) return found;
+        pathEdges.pop();
+      } else if (active.has(target)) {
+        return [...pathEdges, wireIndex];
+      }
+    }
+    active.delete(nodeId);
+    return null;
+  };
+
+  for (const nodeId of Object.keys(graph.nodes)) {
+    if (visited.has(nodeId)) continue;
+    const cycle = visit(nodeId);
+    if (cycle) {
+      return [
+        {
+          type: 'instant_cycle',
+          message: 'Instant wires contain a same-step cycle; mark one cycle edge recurrent',
+          severity: 'error',
+          location: {
+            path: `wires.${cycle[0]}`,
+            cycle_wires: cycle.join(','),
+          },
+        },
+      ];
+    }
+  }
+  return [];
 }
 
 function validateTaskBindings(
@@ -547,26 +868,31 @@ function valueSchemaCompatibilityIssues(
     });
   }
 
-  if (source.rank !== undefined || target.rank !== undefined) knownConstraint = true;
+  const sourceShape = compatibilityShape(source);
+  const targetShape = compatibilityShape(target);
+  const sourceRank = sourceShape ? sourceShape.length : source.rank;
+  const targetRank = targetShape ? targetShape.length : target.rank;
+
+  if (sourceRank !== undefined || targetRank !== undefined) knownConstraint = true;
   if (
-    source.rank !== undefined &&
-    source.rank !== null &&
-    target.rank !== undefined &&
-    target.rank !== null &&
-    source.rank !== target.rank
+    sourceRank !== undefined &&
+    sourceRank !== null &&
+    targetRank !== undefined &&
+    targetRank !== null &&
+    sourceRank !== targetRank
   ) {
     issues.push({
       type: `${issuePrefix}_rank_mismatch`,
-      message: `${sourceLabel} has rank ${source.rank}, but ${targetLabel} expects rank ${target.rank}`,
+      message: `${sourceLabel} has rank ${sourceRank}, but ${targetLabel} expects rank ${targetRank}`,
       severity: 'error',
     });
   }
 
-  if (source.shape || target.shape) knownConstraint = true;
-  if (source.shape && target.shape && !shapesCompatible(source.shape, target.shape)) {
+  if (sourceShape || targetShape) knownConstraint = true;
+  if (sourceShape && targetShape && !shapesCompatible(sourceShape, targetShape)) {
     issues.push({
       type: `${issuePrefix}_shape_mismatch`,
-      message: `${sourceLabel} has shape ${JSON.stringify(source.shape)}, but ${targetLabel} expects ${JSON.stringify(target.shape)}`,
+      message: `${sourceLabel} has shape ${JSON.stringify(sourceShape)}, but ${targetLabel} expects ${JSON.stringify(targetShape)}`,
       severity: 'error',
     });
   }
@@ -616,7 +942,8 @@ function semanticNumericCompatible(schema: ValueSchema, semanticDtype: string): 
 
 function schemaIsScalar(schema: ValueSchema): boolean {
   if (schema.rank === 0) return true;
-  if (Array.isArray(schema.shape) && schema.shape.length === 0) return true;
+  const shape = compatibilityShape(schema);
+  if (Array.isArray(shape) && shape.length === 0) return true;
   return false;
 }
 
@@ -630,4 +957,11 @@ function shapesCompatible(sourceShape: unknown[], targetShape: unknown[]): boole
 
 function isWildcardDim(dim: unknown): boolean {
   return dim === null || dim === undefined || dim === 'any' || dim === '*' || dim === -1;
+}
+
+function compatibilityShape(schema: ValueSchema | undefined): unknown[] | null {
+  if (!schema) return null;
+  const sampleShape = schema.metadata.sample_shape;
+  if (Array.isArray(sampleShape)) return sampleShape;
+  return schema.shape ?? null;
 }

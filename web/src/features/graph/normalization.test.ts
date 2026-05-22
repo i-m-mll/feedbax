@@ -85,7 +85,7 @@ describe('graph authoring normalization', () => {
     expect(normalized.input_bindings).toEqual({ input: ['network', 'input'] });
     expect(normalized.subgraphs?.child.nodes.inner).toMatchObject({
       type: 'Network',
-      input_ports: ['input'],
+      input_ports: ['input', 'feedback'],
     });
     expect(normalized.subgraphs?.child.input_bindings).toEqual({ input: ['inner', 'input'] });
     expect(normalized.subgraphs?.network.nodes.cell).toMatchObject({
@@ -96,6 +96,17 @@ describe('graph authoring normalization', () => {
       type: 'Linear',
       params: { output_size: 2 },
     });
+    expect(normalized.subgraphs?.network.wires).toContainEqual(
+      expect.objectContaining({
+        source_node: 'cell',
+        source_port: 'hidden',
+        target_node: 'cell',
+        target_port: 'hidden',
+        temporality: 'recurrent',
+        recurrent_initializer: expect.objectContaining({ kind: 'zeros', shape: [100] }),
+      })
+    );
+    expect(normalized.subgraphs?.network.output_bindings.hidden).toEqual(['cell', 'hidden']);
     expect(normalized.taps).toEqual([
       {
         id: 'probe:legacy',
@@ -160,5 +171,122 @@ describe('graph authoring normalization', () => {
         metadata: {},
       },
     ]);
+  });
+
+  it('flattens legacy Network model wrapper and upgrades hidden recurrence', () => {
+    const normalizedRuntime = normalizeGraphAuthoringTypes(runtimeGraph);
+    const legacyInner = {
+      ...normalizedRuntime.subgraphs!.network,
+      wires: normalizedRuntime.subgraphs!.network.wires.map((wire) => ({
+        ...wire,
+        temporality: 'instant' as const,
+        recurrent_initializer: null,
+      })),
+      output_ports: ['output'],
+      output_bindings: { output: ['readout', 'output'] as [string, string] },
+    };
+    const graph: GraphSpec = {
+      ...normalizedRuntime,
+      subgraphs: {
+        network: {
+          nodes: {
+            model: {
+              type: 'Subgraph',
+              params: {},
+              input_ports: ['input', 'feedback'],
+              output_ports: ['output'],
+            },
+          },
+          wires: [],
+          input_ports: ['input', 'feedback'],
+          output_ports: ['output'],
+          input_bindings: {
+            input: ['model', 'input'],
+            feedback: ['model', 'feedback'],
+          },
+          output_bindings: {
+            output: ['model', 'output'],
+          },
+          subgraphs: { model: legacyInner },
+        },
+      },
+    };
+
+    const normalized = normalizeGraphAuthoringTypes(graph);
+    const subgraph = normalized.subgraphs!.network;
+    const hiddenWire = subgraph.wires.find(
+      (wire) =>
+        wire.source_node === 'cell' &&
+        wire.source_port === 'hidden' &&
+        wire.target_node === 'cell' &&
+        wire.target_port === 'hidden'
+    );
+
+    expect(subgraph.nodes.model).toBeUndefined();
+    expect(subgraph.nodes.cell.type).toBe('GRU');
+    expect(subgraph.output_bindings.hidden).toEqual(['cell', 'hidden']);
+    expect(hiddenWire).toMatchObject({
+      temporality: 'recurrent',
+      recurrent_initializer: expect.objectContaining({ kind: 'zeros' }),
+    });
+  });
+
+  it('marks legacy Network feedback cycle cuts recurrent', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        network: {
+          type: 'Network',
+          params: {},
+          input_ports: ['input', 'feedback'],
+          output_ports: ['output'],
+        },
+        mechanics: {
+          type: 'PointMass',
+          params: {},
+          input_ports: ['force'],
+          output_ports: ['effector'],
+        },
+        feedback: {
+          type: 'FeedbackChannels',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [
+        {
+          source_node: 'network',
+          source_port: 'output',
+          target_node: 'mechanics',
+          target_port: 'force',
+        },
+        {
+          source_node: 'mechanics',
+          source_port: 'effector',
+          target_node: 'feedback',
+          target_port: 'input',
+        },
+        {
+          source_node: 'feedback',
+          source_port: 'output',
+          target_node: 'network',
+          target_port: 'feedback',
+        },
+      ],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    };
+
+    expect(normalizeGraphAuthoringTypes(graph).wires[2]).toMatchObject({
+      temporality: 'recurrent',
+      recurrent_initializer: {
+        kind: 'zeros',
+        scope: 'trial',
+        source: 'state_initializer',
+        state_slot: 'feedback',
+      },
+    });
   });
 });

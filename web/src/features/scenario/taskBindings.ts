@@ -153,12 +153,14 @@ function delayedReachTaskData(): StudioTaskDataSpec[] {
       label: 'Target position',
       kind: 'signal',
       role: 'model_input',
-      path: 'inputs.effector_target.pos',
+      path: 'inputs.effector_target',
       bindable: true,
-      value: { dtype: 'float32', shape: ['time', 2], units: null, frame: 'cartesian_effector' },
+      value: { dtype: 'float32', shape: ['time', 4], units: null, frame: 'cartesian_effector' },
       metadata: {
         source: 'DelayedReachTaskInputs',
-        task_input_field: 'effector_target.pos',
+        task_input_field: 'effector_target',
+        component_fields: ['pos', 'vel'],
+        component_shapes: { pos: [2], vel: [2] },
         temporal_support: 'trajectory',
         task_data_surface: 'graph_input',
       },
@@ -267,14 +269,15 @@ function delayedReachMuxBindings(
   graph: GraphSpec,
   data: StudioTaskDataSpec[]
 ): StudioTaskBinding[] {
-  const mux = graph.nodes.task_mux;
-  if (mux?.type !== 'Mux') return [];
   const dataIds = new Set(data.map((item) => item.id));
   const portMap: Array<[string, string]> = [
     ['target_position', 'in_0'],
     ['hold', 'in_1'],
     ['target_on', 'in_2'],
   ];
+  const muxEntry = delayedReachMuxEntry(graph, portMap.map(([, port]) => port));
+  if (!muxEntry) return [];
+  const [muxNodeId, mux] = muxEntry;
   if (
     !portMap.every(
       ([dataId, port]) => dataIds.has(dataId) && mux.input_ports.includes(port)
@@ -283,13 +286,40 @@ function delayedReachMuxBindings(
     return [];
   }
   return portMap.map(([dataId, port]) => ({
-    id: taskBindingId(dataId, 'task_mux', port),
+    id: taskBindingId(dataId, muxNodeId, port),
     source_data_id: dataId,
-    target_node_id: 'task_mux',
+    target_node_id: muxNodeId,
     target_port: port,
     role: 'model_input',
     metadata: {},
   }));
+}
+
+function delayedReachMuxEntry(
+  graph: GraphSpec,
+  requiredPorts: string[]
+): [string, GraphSpec['nodes'][string]] | null {
+  const candidates = Object.entries(graph.nodes).filter(
+    ([, node]) =>
+      node.type === 'Mux' &&
+      node.output_ports.includes('output') &&
+      requiredPorts.every((port) => node.input_ports.includes(port))
+  );
+  if (candidates.length === 0) return null;
+  const networkInput = compatibleNetworkInput(graph);
+  if (networkInput) {
+    const connected = candidates.find(([nodeId]) =>
+      graph.wires.some(
+        (wire) =>
+          wire.source_node === nodeId &&
+          wire.source_port === 'output' &&
+          wire.target_node === networkInput.nodeId &&
+          wire.target_port === networkInput.port
+      )
+    );
+    if (connected) return connected;
+  }
+  return candidates.find(([nodeId]) => nodeId === 'task_mux') ?? candidates[0];
 }
 
 function shouldPreserveExtraTaskData(
@@ -350,7 +380,7 @@ export function ensureTaskBindingSpec(
   const defaultIds = new Set(defaults.map((data) => data.id));
   const byId = new Map(spec.exposed_data.map((data) => [data.id, data]));
   const exposedData = [
-    ...defaults.map((data) => ({ ...data, ...(byId.get(data.id) ?? {}) })),
+    ...defaults.map((data) => normalizeDefaultTaskData(data, byId.get(data.id))),
     ...spec.exposed_data.filter(
       (data) => !defaultIds.has(data.id) && shouldPreserveExtraTaskData(data, task)
     ),
@@ -369,6 +399,49 @@ export function ensureTaskBindingSpec(
   };
 }
 
+function normalizeDefaultTaskData(
+  canonical: StudioTaskDataSpec,
+  existing?: StudioTaskDataSpec
+): StudioTaskDataSpec {
+  if (!existing) return canonical;
+  return {
+    ...existing,
+    label: existing.label || canonical.label,
+    kind: canonical.kind,
+    role: canonical.role,
+    path: canonical.path,
+    bindable: canonical.bindable,
+    expected_shape: canonical.expected_shape,
+    dtype: canonical.dtype,
+    units: canonical.units,
+    frame: canonical.frame,
+    value_spec: normalizeTaskDataValueSpec(canonical.value_spec, existing.value_spec),
+    metadata: {
+      ...existing.metadata,
+      ...canonical.metadata,
+    },
+  };
+}
+
+function normalizeTaskDataValueSpec(
+  canonical?: StudioValueSpec,
+  existing?: StudioValueSpec
+): StudioValueSpec | undefined {
+  if (!canonical || !existing) return canonical ?? existing;
+  return {
+    ...existing,
+    dtype: canonical.dtype,
+    shape: canonical.shape,
+    units: canonical.units,
+    frame: canonical.frame,
+    metadata: {
+      ...existing.metadata,
+      value_schema: canonical.metadata.value_schema,
+      value_schema_id: canonical.metadata.value_schema_id,
+    },
+  };
+}
+
 export function retargetTaskBindingsForNodeRename(
   spec: StudioTaskBindingSpec,
   previousNodeId: string,
@@ -383,6 +456,28 @@ export function retargetTaskBindingsForNodeRename(
       ...binding,
       id: taskBindingId(binding.source_data_id, nextNodeId, binding.target_port),
       target_node_id: nextNodeId,
+    };
+  });
+  return changed ? { ...spec, bindings } : spec;
+}
+
+export function retargetTaskBindingsForNodePortRename(
+  spec: StudioTaskBindingSpec,
+  nodeId: string,
+  previousPort: string,
+  nextPort: string
+): StudioTaskBindingSpec {
+  if (previousPort === nextPort) return spec;
+  let changed = false;
+  const bindings = spec.bindings.map((binding) => {
+    if (binding.target_node_id !== nodeId || binding.target_port !== previousPort) {
+      return binding;
+    }
+    changed = true;
+    return {
+      ...binding,
+      id: taskBindingId(binding.source_data_id, nodeId, nextPort),
+      target_port: nextPort,
     };
   });
   return changed ? { ...spec, bindings } : spec;

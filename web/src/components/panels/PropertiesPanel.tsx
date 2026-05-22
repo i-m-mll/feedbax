@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
-import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
-import { buildScenarioEntityRegistry, probeEntityId } from '@/features/scenario/entities';
+import {
+  getActiveStage,
+  getScenario,
+  getTopPaneState,
+  getTrainingScenario,
+  useWorkspaceStore,
+} from '@/stores/workspaceStore';
+import {
+  buildScenarioEntityRegistry,
+  graphPortEntityId,
+  parseGraphPortEntityId,
+  probeEntityId,
+} from '@/features/scenario/entities';
 import {
   selectorDetail,
   selectorDisplayLabel,
@@ -10,7 +21,14 @@ import {
 } from '@/features/scenario/selectors';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { useComponents } from '@/hooks/useComponents';
-import type { ParamSchema, ParamValue, TapSpec } from '@/types/graph';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import {
+  applyBoundaryOverrides,
+  deriveDimensionConstraints,
+  deriveSubgraphBoundaryOverrides,
+} from '@/features/schema/dimensions';
+import { projectStudioSchema } from '@/features/schema/project';
+import type { GraphNodeData, GraphSpec, ParamSchema, ParamValue, TapSpec } from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
 import type {
   StudioInterventionOperation,
@@ -24,8 +42,12 @@ import clsx from 'clsx';
 export function PropertiesPanel() {
   const nodes = useGraphStore((state) => state.nodes);
   const graph = useGraphStore((state) => state.graph);
+  const graphStack = useGraphStore((state) => state.graphStack);
   const updateNodeParams = useGraphStore((state) => state.updateNodeParams);
   const renameNode = useGraphStore((state) => state.renameNode);
+  const renameSubgraphBoundaryPort = useGraphStore(
+    (state) => state.renameSubgraphBoundaryPort
+  );
   const addTap = useGraphStore((state) => state.addTap);
   const addTapForEdge = useGraphStore((state) => state.addTapForEdge);
   const updateTap = useGraphStore((state) => state.updateTap);
@@ -35,13 +57,18 @@ export function PropertiesPanel() {
   const retargetTaskBindingsForNodeRename = useWorkspaceStore(
     (state) => state.retargetActiveScenarioTaskBindingsForNodeRename
   );
+  const retargetTaskBindingsForNodePortRename = useWorkspaceStore(
+    (state) => state.retargetActiveScenarioTaskBindingsForNodePortRename
+  );
   const workspace = useWorkspaceStore((state) => state.workspace);
   const selectedTapId = useGraphStore((state) => state.selectedTapId);
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId);
   const edges = useGraphStore((state) => state.edges);
   const { components } = useComponents();
   const activeStage = getActiveStage(workspace);
+  const topPane = getTopPaneState(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const trainingScenario = getTrainingScenario(workspace);
   const schemaQuery = useStudioSchemaRegistry(
     workspace,
     activeStage?.scenario_id ?? activeScenario?.id ?? null
@@ -63,6 +90,55 @@ export function PropertiesPanel() {
     () => nodes.find((node) => node.selected && node.type !== 'tap'),
     [nodes]
   );
+  const taskBindingSpec = useMemo(
+    () =>
+      ensureTaskBindingSpec(
+        trainingScenario?.task_binding_spec,
+        graph,
+        trainingScenario?.task_spec
+      ),
+    [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+  );
+  const parentBoundaryOverrides = useMemo(() => {
+    const parentLayer = graphStack[graphStack.length - 1];
+    if (!parentLayer?.childNodeId) return new Map();
+    const parentTaskBindingSpec = ensureTaskBindingSpec(
+      trainingScenario?.task_binding_spec,
+      parentLayer.graph,
+      trainingScenario?.task_spec
+    );
+    const parentRegistry = projectStudioSchema(
+      parentLayer.graph,
+      components,
+      parentTaskBindingSpec
+    );
+    return deriveSubgraphBoundaryOverrides(
+      parentLayer.graph,
+      parentLayer.childNodeId,
+      parentRegistry
+    );
+  }, [components, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
+  const localSchemaRegistry = useMemo(
+    () =>
+      applyBoundaryOverrides(
+        projectStudioSchema(graph, components, taskBindingSpec),
+        parentBoundaryOverrides
+      ),
+    [components, graph, parentBoundaryOverrides, taskBindingSpec]
+  );
+  const nodeDimensionConstraints = useMemo(
+    () =>
+      selectedNode
+        ? deriveDimensionConstraints(graph, localSchemaRegistry).filter(
+            (constraint) => constraint.node_id === selectedNode.id
+          )
+        : [],
+    [graph, localSchemaRegistry, selectedNode]
+  );
+  const constraintsByParam = useMemo(
+    () => new Map(nodeDimensionConstraints.map((constraint) => [constraint.param, constraint])),
+    [nodeDimensionConstraints]
+  );
   const taps = graph.taps ?? [];
   const selectedTap = selectedTapId
     ? taps.find((tap) => tap.id === selectedTapId)
@@ -70,6 +146,7 @@ export function PropertiesPanel() {
   const selectedEdge = selectedEdgeId
     ? edges.find((edge) => edge.id === selectedEdgeId)
     : undefined;
+  const selectedPort = parseGraphPortEntityId(topPane.selected_entity_id);
 
   const [nameValue, setNameValue] = useState('');
 
@@ -121,17 +198,111 @@ export function PropertiesPanel() {
   }
 
   if (selectedEdge && selectedEdge.type !== 'state-flow') {
+    const edgeData = selectedEdge.data;
+    const temporality = edgeData?.temporality ?? 'instant';
+    const init = edgeData?.recurrent_initializer as Record<string, unknown> | null | undefined;
     return (
-      <div className="space-y-2 p-6">
-        <div className="text-sm font-medium text-slate-800">
-          {selectedEdge.source}.{selectedEdge.sourceHandle} → {selectedEdge.target}.
-          {selectedEdge.targetHandle}
+      <div className="space-y-5 p-6">
+        <div>
+          <div className="text-sm font-medium text-slate-800">
+            {selectedEdge.source}.{selectedEdge.sourceHandle} → {selectedEdge.target}.
+            {selectedEdge.targetHandle}
+          </div>
+          <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+            <span
+              className={clsx(
+                'rounded-full px-2 py-0.5 font-medium',
+                temporality === 'recurrent'
+                  ? 'bg-sky-50 text-sky-700'
+                  : 'bg-slate-100 text-slate-600'
+              )}
+            >
+              {temporality === 'recurrent' ? 'Recurrent t+1' : 'Instant'}
+            </span>
+            {edgeData?.schema_status && (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
+                {edgeData.schema_status}
+              </span>
+            )}
+          </div>
         </div>
+        {temporality === 'recurrent' ? (
+          <div className="space-y-2 border-t border-slate-100 pt-4">
+            <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Initializer</div>
+            <div className="text-sm text-slate-600">
+              {init?.kind === 'zeros'
+                ? `Zeros${Array.isArray(init.shape) ? ` ${JSON.stringify(init.shape)}` : ''}`
+                : init
+                  ? String(init.kind ?? 'Custom initializer')
+                  : 'Missing recurrent initial value'}
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400">
+            Same-step dataflow. Same-step cycles must be cut by a recurrent edge.
+          </div>
+        )}
+        {edgeData?.schema_message && (
+          <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {edgeData.schema_message}
+          </div>
+        )}
         <div className="text-xs text-slate-400">
-          Port wires are the source of truth for state merging.
+          Port wires carry data; component-owned state stays in node state slots.
         </div>
       </div>
     );
+  }
+
+  if (selectedPort) {
+    const nodeSpec = graph.nodes[selectedPort.nodeId];
+    const subgraph = graph.subgraphs?.[selectedPort.nodeId];
+    const boundaryPorts =
+      selectedPort.direction === 'input' ? subgraph?.input_ports : subgraph?.output_ports;
+    const isBoundaryAlias = Boolean(boundaryPorts?.includes(selectedPort.port));
+    const binding =
+      selectedPort.direction === 'input'
+        ? subgraph?.input_bindings[selectedPort.port]
+        : subgraph?.output_bindings[selectedPort.port];
+    const ports =
+      selectedPort.direction === 'input' ? nodeSpec?.input_ports : nodeSpec?.output_ports;
+    if (nodeSpec && ports?.includes(selectedPort.port)) {
+      return (
+        <PortPropertiesPanel
+          nodeId={selectedPort.nodeId}
+          nodeType={nodeSpec.type}
+          direction={selectedPort.direction}
+          port={selectedPort.port}
+          binding={binding}
+          isBoundaryAlias={isBoundaryAlias}
+          onRename={(nextPort) => {
+            const trimmed = nextPort.trim();
+            if (!trimmed || trimmed === selectedPort.port || !isBoundaryAlias) return;
+            const existingPorts = selectedPort.direction === 'input'
+              ? subgraph?.input_ports ?? []
+              : subgraph?.output_ports ?? [];
+            if (existingPorts.includes(trimmed)) return;
+            if (selectedPort.direction === 'input') {
+              retargetTaskBindingsForNodePortRename(
+                selectedPort.nodeId,
+                selectedPort.port,
+                trimmed
+              );
+            }
+            renameSubgraphBoundaryPort(
+              selectedPort.nodeId,
+              selectedPort.direction,
+              selectedPort.port,
+              trimmed
+            );
+            selectTopPaneEntity(
+              graphPortEntityId(selectedPort.nodeId, selectedPort.direction, trimmed),
+              'graph_port_alias_renamed'
+            );
+          }}
+        />
+      );
+    }
   }
 
   if (!selectedNode) {
@@ -143,11 +314,11 @@ export function PropertiesPanel() {
   }
 
   const nodeSpec = graph.nodes[selectedNode.id];
+  const selectedSubgraph = graph.subgraphs?.[selectedNode.id];
   const component = nodeSpec
     ? components.find((item) => item.name === nodeSpec.type)
     : undefined;
   const nodeTaps = taps.filter((tap) => tap.position.afterNode === selectedNode.id);
-
   // Check for analysis-specific metadata on the node spec
   const analysisMeta = nodeSpec?.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
 
@@ -157,6 +328,23 @@ export function PropertiesPanel() {
       retargetTaskBindingsForNodeRename(selectedNode.id, nextNodeId);
       renameNode(selectedNode.id, nextNodeId);
     }
+  };
+
+  const commitBoundaryPortRename = (
+    direction: 'input' | 'output',
+    previousPort: string,
+    nextPort: string
+  ) => {
+    const trimmed = nextPort.trim();
+    if (!selectedSubgraph || !trimmed || trimmed === previousPort) return;
+    const existingPorts = direction === 'input'
+      ? selectedSubgraph.input_ports
+      : selectedSubgraph.output_ports;
+    if (existingPorts.includes(trimmed)) return;
+    if (direction === 'input') {
+      retargetTaskBindingsForNodePortRename(selectedNode.id, previousPort, trimmed);
+    }
+    renameSubgraphBoundaryPort(selectedNode.id, direction, previousPort, trimmed);
   };
 
   if (!nodeSpec) {
@@ -195,19 +383,27 @@ export function PropertiesPanel() {
         <div className="space-y-3">
           <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Parameters</div>
           {(component?.param_schema ?? []).map((param) => (
-            <ParamInput
-              key={param.name}
-              schema={param}
-              value={nodeSpec.params[param.name] ?? param.default ?? null}
-              onChange={(value) =>
-                updateNodeParams(
-                  selectedNode.id,
-                  param.name,
-                  value,
-                  activeScenario?.task_binding_spec
-                )
-              }
-            />
+            <div key={param.name} className="space-y-1">
+              <ParamInput
+                schema={param}
+                value={nodeSpec.params[param.name] ?? param.default ?? null}
+                onChange={(value) =>
+                  updateNodeParams(
+                    selectedNode.id,
+                    param.name,
+                    value,
+                    taskBindingSpec
+                  )
+                }
+              />
+              {constraintsByParam.has(param.name) && (
+                <DimensionConstraintHint
+                  status={constraintsByParam.get(param.name)!.status}
+                  value={constraintsByParam.get(param.name)!.inferred_value}
+                  message={constraintsByParam.get(param.name)!.message}
+                />
+              )}
+            </div>
           ))}
           {!component && (
             <div className="text-sm text-slate-400">No schema for this component yet.</div>
@@ -217,25 +413,60 @@ export function PropertiesPanel() {
 
       <div className="border-t border-slate-100 pt-4">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400 mb-2">Ports</div>
-        <div className="grid grid-cols-2 gap-4 text-xs text-slate-600 break-words">
-          <div>
-            <div className="font-semibold text-slate-500 mb-1">Inputs</div>
-            <ul className="space-y-1">
-              {nodeSpec.input_ports.map((port) => (
-                <li key={port}>{port}</li>
-              ))}
-            </ul>
+        {selectedSubgraph ? (
+          <BoundaryPortsSection
+            graph={selectedSubgraph}
+            onRename={commitBoundaryPortRename}
+          />
+        ) : (
+          <div className="grid grid-cols-2 gap-4 text-xs text-slate-600 break-words">
+            <div>
+              <div className="font-semibold text-slate-500 mb-1">Inputs</div>
+              <ul className="space-y-1">
+                {nodeSpec.input_ports.map((port) => (
+                  <li key={port}>{port}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <div className="font-semibold text-slate-500 mb-1">Outputs</div>
+              <ul className="space-y-1">
+                {nodeSpec.output_ports.map((port) => (
+                  <li key={port}>{port}</li>
+                ))}
+              </ul>
+            </div>
           </div>
-          <div>
-            <div className="font-semibold text-slate-500 mb-1">Outputs</div>
-            <ul className="space-y-1">
-              {nodeSpec.output_ports.map((port) => (
-                <li key={port}>{port}</li>
-              ))}
-            </ul>
+        )}
+      </div>
+
+      {((selectedNode.data as { state_slots?: GraphNodeData['state_slots'] }).state_slots ?? []).length > 0 && (
+        <div className="border-t border-slate-100 pt-4">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400 mb-2">
+            Recurrence
+          </div>
+          <div className="space-y-2">
+            {((selectedNode.data as { state_slots?: GraphNodeData['state_slots'] }).state_slots ?? []).map((slot) => (
+              <div
+                key={slot.id}
+                className="rounded-md border border-slate-100 px-3 py-2 text-xs text-slate-600"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-slate-700">{slot.label}</span>
+                  <span className="text-slate-400">
+                    {Array.isArray(slot.shape) ? JSON.stringify(slot.shape) : 'shape unknown'}
+                  </span>
+                </div>
+                <div className="mt-1 text-slate-400">
+                  {slot.initializer?.kind === 'zeros'
+                    ? 'Zeros before first timestep'
+                    : 'Custom initializer'}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
-      </div>
+      )}
 
       <div className="border-t border-slate-100 pt-4 space-y-3">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Taps</div>
@@ -294,6 +525,185 @@ export function PropertiesPanel() {
         </>
       )}
     </div>
+  );
+}
+
+function BoundaryPortsSection({
+  graph,
+  onRename,
+}: {
+  graph: GraphSpec;
+  onRename: (direction: 'input' | 'output', previousPort: string, nextPort: string) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-4 text-xs text-slate-600">
+      <div>
+        <div className="font-semibold text-slate-500 mb-2">Inputs</div>
+        <div className="space-y-2">
+          {graph.input_ports.length === 0 ? (
+            <div className="text-slate-400">None</div>
+          ) : (
+            graph.input_ports.map((port) => (
+              <BoundaryPortRow
+                key={port}
+                port={port}
+                binding={graph.input_bindings[port]}
+                direction="input"
+                onRename={onRename}
+              />
+            ))
+          )}
+        </div>
+      </div>
+      <div>
+        <div className="font-semibold text-slate-500 mb-2">Outputs</div>
+        <div className="space-y-2">
+          {graph.output_ports.length === 0 ? (
+            <div className="text-slate-400">None</div>
+          ) : (
+            graph.output_ports.map((port) => (
+              <BoundaryPortRow
+                key={port}
+                port={port}
+                binding={graph.output_bindings[port]}
+                direction="output"
+                onRename={onRename}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PortPropertiesPanel({
+  nodeId,
+  nodeType,
+  direction,
+  port,
+  binding,
+  isBoundaryAlias,
+  onRename,
+}: {
+  nodeId: string;
+  nodeType: string;
+  direction: 'input' | 'output';
+  port: string;
+  binding?: [string, string];
+  isBoundaryAlias: boolean;
+  onRename: (nextPort: string) => void;
+}) {
+  const [value, setValue] = useState(port);
+
+  useEffect(() => {
+    setValue(port);
+  }, [port]);
+
+  const commit = () => {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === port) {
+      setValue(port);
+      return;
+    }
+    onRename(trimmed);
+  };
+
+  return (
+    <div className="space-y-5 p-6">
+      <div>
+        <div className="text-sm font-medium text-slate-800">
+          {nodeId}.{port}
+        </div>
+        <div className="mt-1 text-xs text-slate-500">
+          {direction === 'input' ? 'Input' : 'Output'} port on {nodeType}
+        </div>
+      </div>
+      <div className="space-y-2 border-t border-slate-100 pt-4">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Alias</div>
+        {isBoundaryAlias ? (
+          <label className="block space-y-1">
+            <input
+              aria-label={`${direction} port alias ${port}`}
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              onBlur={commit}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur();
+                }
+                if (event.key === 'Escape') {
+                  setValue(port);
+                  event.currentTarget.blur();
+                }
+              }}
+              className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700 outline-none focus:border-brand-300"
+            />
+            <div
+              className="truncate text-[10px] text-slate-400"
+              title={binding?.join('.') ?? 'Unbound'}
+            >
+              {binding ? `Internal: ${binding[0]}.${binding[1]}` : 'Internal: unbound'}
+            </div>
+          </label>
+        ) : (
+          <div className="rounded-md border border-slate-100 bg-slate-50 px-2 py-1.5 text-sm text-slate-600">
+            {port}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BoundaryPortRow({
+  port,
+  binding,
+  direction,
+  onRename,
+}: {
+  port: string;
+  binding?: [string, string];
+  direction: 'input' | 'output';
+  onRename: (direction: 'input' | 'output', previousPort: string, nextPort: string) => void;
+}) {
+  const [value, setValue] = useState(port);
+
+  useEffect(() => {
+    setValue(port);
+  }, [port]);
+
+  const commit = () => {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === port) {
+      setValue(port);
+      return;
+    }
+    onRename(direction, port, trimmed);
+  };
+
+  return (
+    <label className="block space-y-1">
+      <input
+        aria-label={`${direction} port ${port}`}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          }
+          if (event.key === 'Escape') {
+            setValue(port);
+            event.currentTarget.blur();
+          }
+        }}
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-700 outline-none focus:border-brand-300"
+      />
+      <div className="truncate text-[10px] text-slate-400" title={binding?.join('.') ?? 'Unbound'}>
+        {binding ? `${binding[0]}.${binding[1]}` : 'Unbound'}
+      </div>
+    </label>
   );
 }
 
@@ -743,6 +1153,30 @@ function TapPathRow({
       >
         Remove
       </button>
+    </div>
+  );
+}
+
+function DimensionConstraintHint({
+  status,
+  value,
+  message,
+}: {
+  status: 'inferred' | 'conflict' | 'unknown';
+  value: number | null;
+  message: string;
+}) {
+  return (
+    <div
+      className={clsx(
+        'rounded border px-2 py-1 text-[11px]',
+        status === 'inferred' && 'border-emerald-200 bg-emerald-50 text-emerald-700',
+        status === 'conflict' && 'border-amber-200 bg-amber-50 text-amber-800',
+        status === 'unknown' && 'border-slate-200 bg-slate-50 text-slate-500'
+      )}
+      title={message}
+    >
+      {status === 'inferred' && value !== null ? `Synced: ${value}` : message}
     </div>
   );
 }

@@ -114,6 +114,30 @@ function signalValueSchema(
   kind: StudioTaskTimelineSignalSpec['kind'],
   path: string
 ): ValueSchema {
+  if (id === 'target_position') {
+    return timelineValueSchema(
+      id,
+      label,
+      'task_signal',
+      path,
+      { dtype: 'float32', shape: ['time', 4], units: null, frame: 'cartesian_effector' },
+      {
+        temporal_support: 'trajectory',
+        component_fields: ['pos', 'vel'],
+        component_shapes: { pos: [2], vel: [2] },
+      }
+    );
+  }
+  if (id === 'hold' || id === 'target_on') {
+    return timelineValueSchema(
+      id,
+      label,
+      'task_signal',
+      path,
+      { dtype: 'float32', shape: ['time', 1], units: null, frame: 'task_time' },
+      { temporal_support: 'epoch_masked_signal' }
+    );
+  }
   if (kind === 'target') {
     return timelineValueSchema(
       id,
@@ -247,7 +271,7 @@ export function delayedReachTaskDataValueSpec(
   if (taskDataId === 'target_position') {
     const schema =
       valueSchemaOverride ??
-      signalValueSchema('target_position', 'Target position', 'signal', 'inputs.effector_target.pos');
+      signalValueSchema('target_position', 'Target position', 'signal', 'inputs.effector_target');
     return functionValue(
       'delayed_reach_target_position',
       endpointParameters,
@@ -328,7 +352,7 @@ export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimeline
         'target_position',
         'Target position',
         'signal',
-        'inputs.effector_target.pos',
+        'inputs.effector_target',
         asIndexSet(params.target_on_epochs),
         task
       ),

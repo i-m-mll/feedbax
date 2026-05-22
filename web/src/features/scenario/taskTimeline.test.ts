@@ -164,7 +164,7 @@ describe('delayed reach task timeline helpers', () => {
           label: 'Target position',
           kind: 'signal',
           role: 'model_input',
-          path: 'inputs.effector_target.pos',
+          path: 'inputs.effector_target',
           bindable: true,
           metadata: {},
         },

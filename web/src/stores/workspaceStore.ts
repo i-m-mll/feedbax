@@ -7,6 +7,7 @@ import {
   createDefaultTaskBindingSpec,
   ensureTaskBindingSpec,
   retargetTaskBindingsForNodeRename,
+  retargetTaskBindingsForNodePortRename,
 } from '@/features/scenario/taskBindings';
 import {
   normalizeGraphForStudioAuthoring,
@@ -580,6 +581,11 @@ interface WorkspaceStoreState {
     previousNodeId: string,
     nextNodeId: string
   ) => void;
+  retargetActiveScenarioTaskBindingsForNodePortRename: (
+    nodeId: string,
+    previousPort: string,
+    nextPort: string
+  ) => void;
   updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
   setTopPaneProjection: (projection: StudioTopPaneProjection) => void;
   selectTopPaneEntity: (entityId: string | null, reason?: string) => void;
@@ -881,6 +887,41 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
             },
           },
           metadata: markDraftMetadata(state.workspace.metadata, 'task_binding_target_renamed'),
+        },
+      };
+    }),
+
+  retargetActiveScenarioTaskBindingsForNodePortRename: (nodeId, previousPort, nextPort) =>
+    set((state) => {
+      const scenarioId = activeTrainScenario(state.workspace);
+      if (!state.workspace || !scenarioId) return {};
+      const scenario = state.workspace.scenarios[scenarioId];
+      if (!scenario?.task_binding_spec) return {};
+      const taskBindingSpec = retargetTaskBindingsForNodePortRename(
+        scenario.task_binding_spec,
+        nodeId,
+        previousPort,
+        nextPort
+      );
+      if (taskBindingSpec === scenario.task_binding_spec) return {};
+      return {
+        workspace: {
+          ...state.workspace,
+          scenarios: {
+            ...state.workspace.scenarios,
+            [scenarioId]: {
+              ...scenario,
+              task_binding_spec: taskBindingSpec,
+              metadata: markDraftMetadata(
+                {
+                  ...scenario.metadata,
+                  draft_owner: 'studio_workspace',
+                },
+                'task_binding_target_port_renamed'
+              ),
+            },
+          },
+          metadata: markDraftMetadata(state.workspace.metadata, 'task_binding_target_port_renamed'),
         },
       };
     }),

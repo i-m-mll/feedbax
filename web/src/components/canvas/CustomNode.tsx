@@ -129,8 +129,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const collapsedTaskHintStartX = reversed ? TASK_SOURCE_NODE_GAP : TASK_SOURCE_NODE_WIDTH;
   const connectedInputs = new Set(nodeData.connected_inputs ?? []);
   const connectedOutputs = new Set(nodeData.connected_outputs ?? []);
-  const hasStateIn = nodeData.state_in ?? false;
-  const hasStateOut = nodeData.state_out ?? false;
+  const hasRecurrentSlots = (nodeData.state_slots ?? []).length > 0;
   const rowCount = Math.max(1, inputCount, outputCount);
   const defaultHeight = HEADER_HEIGHT + BODY_PADDING * 2 + rowCount * ROW_HEIGHT;
   const width = nodeData.size?.width ?? DEFAULT_WIDTH;
@@ -340,12 +339,24 @@ export function CustomNode({ id, data, selected }: NodeProps) {
         {/* Left slot: name (normal) or type string (reversed) */}
         {reversed ? (
           <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
+            {hasRecurrentSlots && (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
+                title="Has recurrent value slots"
+              />
+            )}
             <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
               {label}
             </div>
           </div>
         ) : (
           <div className="min-w-0 flex-1 flex items-center gap-2 pr-2">
+            {hasRecurrentSlots && (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-500"
+                title="Has recurrent value slots"
+              />
+            )}
             <div className="text-sm font-medium text-slate-800 truncate w-full" title={label}>
               {label}
             </div>

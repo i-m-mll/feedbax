@@ -479,7 +479,15 @@ describe('buildWorkspaceSnapshot', () => {
     expect(restored.graph?.nodes.network).toMatchObject({
       type: 'Network',
       params: { out_size: 2 },
-      input_ports: ['input'],
+      input_ports: ['input', 'feedback'],
+    });
+    expect(restored.graph?.subgraphs?.network.nodes.input_mux).toMatchObject({
+      type: 'Mux',
+      input_ports: ['in_0', 'in_1'],
+    });
+    expect(restored.graph?.subgraphs?.network.input_bindings).toMatchObject({
+      input: ['input_mux', 'in_0'],
+      feedback: ['input_mux', 'in_1'],
     });
     expect(restored.graph?.subgraphs?.network.nodes.cell).toMatchObject({
       type: 'GRU',

@@ -114,17 +114,23 @@ def _render_graph_spec(
     if project_cycles:
         from feedbax._graph import detect_cycles_and_sort
 
-        adjacency: dict[str, set[str]] = {
-            name: set() for name in graph_spec.nodes.keys()
-        }
+        adjacency: dict[str, set[str]] = {name: set() for name in graph_spec.nodes.keys()}
         for wire in graph_spec.wires:
+            if wire.temporality == "recurrent":
+                cycles.append(
+                    CycleAnnotationModel(
+                        source=f"{wire.source_node}.{wire.source_port}",
+                        target=f"{wire.target_node}.{wire.target_port}",
+                    )
+                )
+                continue
             if wire.source_node not in adjacency or wire.target_node not in adjacency:
                 continue
             adjacency[wire.source_node].add(wire.target_node)
 
         order, back_edges = detect_cycles_and_sort(adjacency)
         execution_order = list(order)
-        has_cycles = len(back_edges) > 0
+        has_cycles = len(back_edges) > 0 or len(cycles) > 0
 
         for src, tgt in back_edges:
             for wire in graph_spec.wires:

@@ -32,6 +32,7 @@ from feedbax._streaming import (
 
 def init_state_from_component(component: "Component") -> State:
     """Collect initial state from all StateIndex instances in a component tree."""
+
     def _state_index_init(idx: StateIndex):
         for name in ("value", "init", "initial_value", "_value", "_init"):
             if hasattr(idx, name):
@@ -82,9 +83,7 @@ def init_state_from_component(component: "Component") -> State:
             for idx in indices:
                 _set_index(idx, _state_index_init(idx))
 
-        children, _ = jax.tree_util.tree_flatten(
-            x, is_leaf=lambda y: isinstance(y, StateIndex)
-        )
+        children, _ = jax.tree_util.tree_flatten(x, is_leaf=lambda y: isinstance(y, StateIndex))
         if len(children) == 1 and children[0] is x:
             return
         for child in children:
@@ -150,15 +149,26 @@ class Wire(Module):
     source_port: str
     target_node: str
     target_port: str
+    temporality: str = field(default="instant", static=True)
+    recurrent_initializer: Optional[dict] = field(default=None, static=True)
 
     def __repr__(self) -> str:
+        arrow = "-[recurrent]->" if self.temporality == "recurrent" else "->"
         return (
-            f"Wire({self.source_node}.{self.source_port} -> "
+            f"Wire({self.source_node}.{self.source_port} {arrow} "
             f"{self.target_node}.{self.target_port})"
         )
 
     def __hash__(self) -> int:
-        return hash((self.source_node, self.source_port, self.target_node, self.target_port))
+        return hash(
+            (
+                self.source_node,
+                self.source_port,
+                self.target_node,
+                self.target_port,
+                self.temporality,
+            )
+        )
 
 
 class GraphState(Module):
@@ -192,7 +202,9 @@ class Graph(Component):
     state_consistency_fn: Optional[callable] = field(default=None, static=True)
     checkpoint: bool = eqx.field(default=False, static=True)
 
-    def __check_init__(self):  # Bug: 4e75416 — ensures validation runs even when subclass overrides __init__
+    def __check_init__(
+        self,
+    ):  # Bug: 4e75416 — ensures validation runs even when subclass overrides __init__
         self._validate_graph()
 
     def _validate_graph(self) -> None:
@@ -212,9 +224,7 @@ class Graph(Component):
             if node_name not in self.nodes:
                 raise ValueError(f"Input binding node '{node_name}' does not exist")
             if node_port not in self.nodes[node_name].input_ports:
-                raise ValueError(
-                    f"Input binding port '{node_name}.{node_port}' does not exist"
-                )
+                raise ValueError(f"Input binding port '{node_name}.{node_port}' does not exist")
 
         for ext_port, (node_name, node_port) in self.output_bindings.items():
             if ext_port not in self.output_ports:
@@ -222,9 +232,7 @@ class Graph(Component):
             if node_name not in self.nodes:
                 raise ValueError(f"Output binding node '{node_name}' does not exist")
             if node_port not in self.nodes[node_name].output_ports:
-                raise ValueError(
-                    f"Output binding port '{node_name}.{node_port}' does not exist"
-                )
+                raise ValueError(f"Output binding port '{node_name}.{node_port}' does not exist")
 
     @cached_property
     def _cycle_analysis(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
@@ -255,16 +263,20 @@ class Graph(Component):
 
     def _analyze_cycles(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
         adjacency = {name: set() for name in self.nodes}
-        wire_lookup: dict[tuple[str, str], list[Wire]] = {}
         for wire in self.wires:
+            if wire.temporality == "recurrent":
+                continue
             adjacency[wire.source_node].add(wire.target_node)
-            wire_lookup.setdefault((wire.source_node, wire.target_node), []).append(wire)
 
         execution_order, back_edges = detect_cycles_and_sort(adjacency)
+        if back_edges:
+            cycle_text = ", ".join(f"{src}->{tgt}" for src, tgt in back_edges)
+            raise ValueError(
+                "Instant graph wires contain a same-step cycle. "
+                f"Mark one cycle edge recurrent: {cycle_text}"
+            )
 
-        cycle_wires: list[Wire] = []
-        for src, tgt in back_edges:
-            cycle_wires.extend(wire_lookup.get((src, tgt), []))
+        cycle_wires = [wire for wire in self.wires if wire.temporality == "recurrent"]
 
         return tuple(execution_order), tuple(cycle_wires)
 
@@ -346,11 +358,7 @@ class Graph(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        keys = (
-            jax.random.split(key, len(self._execution_order))
-            if self._execution_order
-            else ()
-        )
+        keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
 
         port_values: dict[tuple[str, str], PyTree] = {}
 
@@ -455,11 +463,7 @@ class Graph(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
-        keys = (
-            jax.random.split(key, len(self._execution_order))
-            if self._execution_order
-            else ()
-        )
+        keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
 
         for node_name, node_key in zip(self._execution_order, keys):
             node = self.nodes[node_name]
@@ -575,7 +579,7 @@ class Graph(Component):
         # Broadcast scalar input leaves to (n_steps, ...) so they can be
         # indexed by step.  Non-scalar leaves pass through as-is.
         def _broadcast_scalar(x):
-            if hasattr(x, 'ndim') and x.ndim == 0:
+            if hasattr(x, "ndim") and x.ndim == 0:
                 return jnp.broadcast_to(x, (n_steps,))
             return x
 
@@ -655,10 +659,12 @@ class Graph(Component):
             # Prepend initial state to history
             init_state_view = self.state_view(state)
             init_state_view = eqx.filter(init_state_view, state_filter)
+
             def _prepend(x0, x):
                 if x0 is None or x is None:
                     return None
                 return jnp.concatenate([x0[None], x], axis=0)
+
             state_history = jt.map(_prepend, init_state_view, state_history)
 
             return outputs_seq, final_state, state_history
@@ -687,15 +693,9 @@ class Graph(Component):
             raise ValueError(f"Node '{name}' does not exist")
 
         new_nodes = {k: v for k, v in self.nodes.items() if k != name}
-        new_wires = tuple(
-            w for w in self.wires if w.source_node != name and w.target_node != name
-        )
-        new_input_bindings = {
-            k: v for k, v in self.input_bindings.items() if v[0] != name
-        }
-        new_output_bindings = {
-            k: v for k, v in self.output_bindings.items() if v[0] != name
-        }
+        new_wires = tuple(w for w in self.wires if w.source_node != name and w.target_node != name)
+        new_input_bindings = {k: v for k, v in self.input_bindings.items() if v[0] != name}
+        new_output_bindings = {k: v for k, v in self.output_bindings.items() if v[0] != name}
 
         return eqx.tree_at(
             lambda g: (g.nodes, g.wires, g.input_bindings, g.output_bindings),
@@ -786,6 +786,7 @@ class Graph(Component):
         Example:
             >>> graph.select_nodes_of_type(LinearLayer, MLPLayer).apply(reinit_fn)
         """
+
         # Build a filter spec for the nodes dict
         def type_predicate(x: Component) -> bool:
             return isinstance(x, types)

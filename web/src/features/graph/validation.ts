@@ -126,6 +126,7 @@ function detectCycles(graph: GraphSpec): string[][] {
     adjacency[nodeName] = new Set();
   }
   for (const wire of graph.wires) {
+    if (wire.temporality === 'recurrent') continue;
     adjacency[wire.source_node].add(wire.target_node);
   }
 

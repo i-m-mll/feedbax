@@ -53,6 +53,27 @@ const graphWithTaskMux: GraphSpec = {
   ],
 };
 
+const graphWithNamedMux: GraphSpec = {
+  ...graphWithTaskMux,
+  nodes: {
+    mux: {
+      type: 'Mux',
+      params: { n_inputs: 3 },
+      input_ports: ['in_0', 'in_1', 'in_2'],
+      output_ports: ['output'],
+    },
+    network: graphWithTaskMux.nodes.network,
+  },
+  wires: [
+    {
+      source_node: 'mux',
+      source_port: 'output',
+      target_node: 'network',
+      target_port: 'input',
+    },
+  ],
+};
+
 const delayedTask: TaskSpec = { type: 'DelayedReaches', params: {} };
 
 describe('task data bindings', () => {
@@ -68,9 +89,9 @@ describe('task data bindings', () => {
       ['intervene', 'Intervention', false],
     ]);
     expect(data.find((item) => item.id === 'target_position')).toMatchObject({
-      path: 'inputs.effector_target.pos',
+      path: 'inputs.effector_target',
       role: 'model_input',
-      expected_shape: ['time', 2],
+      expected_shape: ['time', 4],
       value_spec: {
         mode: 'function',
         function_id: 'delayed_reach_target_position',
@@ -108,6 +129,41 @@ describe('task data bindings', () => {
       ['target_on', 'in_2'],
     ]);
     expect(spec.bindings.every((binding) => binding.target_node_id === 'task_mux')).toBe(true);
+  });
+
+  it('discovers delayed-reach task muxes by graph role rather than node id', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithNamedMux, delayedTask);
+
+    expect(spec.bindings.map((binding) => [binding.source_data_id, binding.target_node_id, binding.target_port])).toEqual([
+      ['target_position', 'mux', 'in_0'],
+      ['hold', 'mux', 'in_1'],
+      ['target_on', 'mux', 'in_2'],
+    ]);
+  });
+
+  it('refreshes canonical delayed-reach task data schemas in saved specs', () => {
+    const savedSpec = createDefaultTaskBindingSpec(graphWithNamedMux, delayedTask);
+    savedSpec.exposed_data = savedSpec.exposed_data.map((data) =>
+      data.id === 'target_position'
+        ? {
+            ...data,
+            path: 'inputs.effector_target.pos',
+            expected_shape: ['time', 2],
+            value_spec: data.value_spec
+              ? { ...data.value_spec, shape: ['time', 2] }
+              : data.value_spec,
+          }
+        : data
+    );
+
+    const normalized = ensureTaskBindingSpec(savedSpec, graphWithNamedMux, delayedTask);
+    const targetPosition = normalized.exposed_data.find((data) => data.id === 'target_position');
+
+    expect(targetPosition).toMatchObject({
+      path: 'inputs.effector_target',
+      expected_shape: ['time', 4],
+      value_spec: { shape: ['time', 4] },
+    });
   });
 
   it('drops legacy generic Inputs bindings when delayed-reach task data is normalized', () => {

@@ -87,6 +87,7 @@ describe('dynamic graph ports', () => {
     const visible = visibleMuxInputPorts(graph(), 'mux', bindings);
 
     expect(normalized.nodes.mux.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
+    expect(nextMuxInputPort(graph(), 'mux', bindings)).toBe('in_3');
     expect(visible?.ports).toEqual(['in_0', 'in_1', 'in_2', 'in_3']);
     expect(visible?.nextPort).toBe('in_3');
   });

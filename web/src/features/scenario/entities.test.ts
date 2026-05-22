@@ -8,6 +8,7 @@ import {
   graphPortEntityId,
   mechanicsEntityId,
   objectiveEntityId,
+  parseGraphPortEntityId,
   probeEntityId,
   selectorToEntityId,
   stateFlowEdgeId,
@@ -138,6 +139,17 @@ const scenario: StudioScenarioSpec = {
   metadata: {},
 };
 
+describe('graph port entity ids', () => {
+  it('parses graph port entity ids with colon-containing ports', () => {
+    expect(parseGraphPortEntityId('graph_port:network:input:feedback:alias')).toEqual({
+      nodeId: 'network',
+      direction: 'input',
+      port: 'feedback:alias',
+    });
+    expect(parseGraphPortEntityId('graph_node:network')).toBeNull();
+  });
+});
+
 describe('scenario entity registry', () => {
   it('derives graph, task, mechanics, probe, and objective entities', () => {
     const registry = buildScenarioEntityRegistry({ scenario });
@@ -154,6 +166,11 @@ describe('scenario entity registry', () => {
     });
     expect(registry.entities[graphEdgeEntityId(graphEdgeId(wire))]).toMatchObject({
       kind: 'graph_edge',
+      metadata: {
+        edge_type: 'port_wire',
+        temporality: 'instant',
+        recurrent_initializer: null,
+      },
     });
     expect(registry.entities[graphEdgeEntityId(stateFlowEdgeId('network', 'mechanics'))]).toMatchObject({
       kind: 'graph_edge',

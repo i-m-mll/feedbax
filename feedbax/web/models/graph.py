@@ -43,6 +43,8 @@ class WireSpec(BaseModel):
     source_port: str
     target_node: str
     target_port: str
+    temporality: Literal["instant", "recurrent"] = "instant"
+    recurrent_initializer: Optional[Dict[str, Any]] = None
 
 
 class UserPortSpec(BaseModel):
@@ -164,9 +166,7 @@ class AnalysisPageSpec(BaseModel):
     name: str
     graph_spec: Dict[str, Any] = Field(default_factory=dict)
     eval_params: Dict[str, Any] = Field(default_factory=dict)
-    viewport: Dict[str, float] = Field(
-        default_factory=lambda: {"x": 0, "y": 0, "zoom": 1}
-    )
+    viewport: Dict[str, float] = Field(default_factory=lambda: {"x": 0, "y": 0, "zoom": 1})
     eval_run_id: Optional[str] = None
     expanded_field_paths: List[str] = Field(default_factory=list)
 

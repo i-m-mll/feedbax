@@ -203,9 +203,7 @@ def enumerate_studio_schema_registry(
                 SchemaValidationIssue(
                     type="workspace_schema_error",
                     message=str(error.get("msg", "Invalid workspace value")),
-                    location={
-                        "path": "/" + "/".join(str(part) for part in error.get("loc", ()))
-                    },
+                    location={"path": "/" + "/".join(str(part) for part in error.get("loc", ()))},
                 )
                 for error in exc.errors()
             ],
@@ -268,7 +266,7 @@ def enumerate_studio_schema_registry(
             authoring_graph,
             task_binding_spec,
         )
-        registry.ports = _enumerate_graph_ports(schema_graph)
+        registry.ports = _enumerate_graph_ports(schema_graph, task_binding_spec)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
         registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
         registry.issues.extend(
@@ -333,11 +331,7 @@ def validate_graph_connection_schema(
         for port in ports
         if port.node_id is not None
     }
-    by_node_port = {
-        (port.node_id, port.port): port
-        for port in ports
-        if port.node_id is not None
-    }
+    by_node_port = {(port.node_id, port.port): port for port in ports if port.node_id is not None}
     occupied: dict[tuple[str, str], int] = {}
     for binding in graph.input_bindings.values():
         occupied[(binding[0], binding[1])] = -1
@@ -367,8 +361,7 @@ def validate_graph_connection_schema(
                     SchemaValidationIssue(
                         type="unknown_source_port",
                         message=(
-                            f"Wire source port "
-                            f"{wire.source_node}.{wire.source_port} does not exist"
+                            f"Wire source port {wire.source_node}.{wire.source_port} does not exist"
                         ),
                         location={"path": f"{wire_path}/source_port"},
                     )
@@ -399,8 +392,7 @@ def validate_graph_connection_schema(
                     SchemaValidationIssue(
                         type="unknown_target_port",
                         message=(
-                            f"Wire target port "
-                            f"{wire.target_node}.{wire.target_port} does not exist"
+                            f"Wire target port {wire.target_node}.{wire.target_port} does not exist"
                         ),
                         location={"path": f"{wire_path}/target_port"},
                     )
@@ -431,6 +423,17 @@ def validate_graph_connection_schema(
 
         if source is None or target is None:
             continue
+        if wire.temporality == "recurrent" and wire.recurrent_initializer is None:
+            issues.append(
+                SchemaValidationIssue(
+                    type="recurrent_initializer_missing",
+                    message=(
+                        f"Recurrent wire {wire.source_node}.{wire.source_port} -> "
+                        f"{wire.target_node}.{wire.target_port} needs an initial value"
+                    ),
+                    location={"path": f"{wire_path}/recurrent_initializer"},
+                )
+            )
         issues.extend(
             _value_schema_compatibility_issues(
                 source.value_schema,
@@ -442,7 +445,55 @@ def validate_graph_connection_schema(
             )
         )
 
+    issues.extend(_instant_cycle_issues(graph, base_path))
     return issues
+
+
+def _instant_cycle_issues(graph: GraphSpec, base_path: str) -> list[SchemaValidationIssue]:
+    adjacency: dict[str, list[tuple[str, int]]] = {node_id: [] for node_id in graph.nodes}
+    for index, wire in enumerate(graph.wires):
+        if wire.temporality == "recurrent":
+            continue
+        if wire.source_node not in graph.nodes or wire.target_node not in graph.nodes:
+            continue
+        adjacency.setdefault(wire.source_node, []).append((wire.target_node, index))
+
+    visited: set[str] = set()
+    active: set[str] = set()
+    path_edges: list[int] = []
+
+    def visit(node_id: str) -> Optional[list[int]]:
+        visited.add(node_id)
+        active.add(node_id)
+        for target_id, wire_index in adjacency.get(node_id, []):
+            if target_id not in visited:
+                path_edges.append(wire_index)
+                found = visit(target_id)
+                if found is not None:
+                    return found
+                path_edges.pop()
+            elif target_id in active:
+                return [*path_edges, wire_index]
+        active.remove(node_id)
+        return None
+
+    for node_id in graph.nodes:
+        if node_id in visited:
+            continue
+        cycle = visit(node_id)
+        if cycle is not None:
+            first_index = cycle[0]
+            return [
+                SchemaValidationIssue(
+                    type="instant_cycle",
+                    message="Instant wires contain a same-step cycle; mark one cycle edge recurrent",
+                    location={
+                        "path": f"{base_path}/wires/{first_index}",
+                        "cycle_wires": ",".join(str(index) for index in cycle),
+                    },
+                )
+            ]
+    return []
 
 
 def _runtime_introspection_options(
@@ -555,8 +606,7 @@ def _workspace_reference_issues(workspace: StudioWorkspaceSpec) -> list[SchemaVa
                 SchemaValidationIssue(
                     type="stage_missing_scenario",
                     message=(
-                        f"Stage {stage.id!r} references missing scenario "
-                        f"{stage.scenario_id!r}"
+                        f"Stage {stage.id!r} references missing scenario {stage.scenario_id!r}"
                     ),
                     location={"path": f"/stages/{index}/scenario_id"},
                 )
@@ -589,7 +639,7 @@ def _normalize_dynamic_graph_ports(
             index = _mux_input_index(wire.target_port)
             if index is not None:
                 max_index = max(max_index, index)
-        for binding in (task_binding_spec.bindings if task_binding_spec is not None else []):
+        for binding in task_binding_spec.bindings if task_binding_spec is not None else []:
             if binding.target_node_id != node_id:
                 continue
             index = _mux_input_index(binding.target_port)
@@ -612,13 +662,17 @@ def _normalize_dynamic_graph_ports(
     return graph.model_copy(update={"nodes": nodes}) if changed else graph
 
 
-def _enumerate_graph_ports(graph: GraphSpec) -> list[PortSchema]:
+def _enumerate_graph_ports(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec] = None,
+) -> list[PortSchema]:
     from feedbax.web.services.component_registry import ComponentRegistry
 
     registry = ComponentRegistry()
     ports: list[PortSchema] = []
     for node_id, node in graph.nodes.items():
         meta = registry.get(node.type)
+        subgraph = graph.subgraphs.get(node_id) if graph.subgraphs else None
         input_ports = list(node.input_ports or (meta.input_ports if meta is not None else []))
         output_ports = list(node.output_ports or (meta.output_ports if meta is not None else []))
         for port_name in input_ports:
@@ -627,9 +681,11 @@ def _enumerate_graph_ports(graph: GraphSpec) -> list[PortSchema]:
                 _port_schema(
                     node_id=node_id,
                     component_type=node.type,
+                    node_params=node.params,
                     port=port_name,
                     direction="input",
                     port_type=port_type,
+                    subgraph=subgraph,
                 )
             )
         for port_name in output_ports:
@@ -638,21 +694,38 @@ def _enumerate_graph_ports(graph: GraphSpec) -> list[PortSchema]:
                 _port_schema(
                     node_id=node_id,
                     component_type=node.type,
+                    node_params=node.params,
                     port=port_name,
                     direction="output",
                     port_type=port_type,
+                    subgraph=subgraph,
                 )
             )
     for port_name in graph.input_ports:
         ports.append(
-            _graph_port_schema(port=port_name, direction="input", bound=node_input_binding(graph, port_name))
+            _graph_port_schema(
+                port=port_name,
+                direction="input",
+                bound=node_input_binding(graph, port_name),
+                ports=ports,
+            )
         )
     for port_name in graph.output_ports:
-        ports.append(_graph_port_schema(port=port_name, direction="output"))
+        ports.append(
+            _graph_port_schema(
+                port=port_name,
+                direction="output",
+                bound=node_output_binding(graph, port_name),
+                ports=ports,
+            )
+        )
+    _apply_mux_output_shapes(ports, graph, task_binding_spec)
     return ports
 
 
-def _component_input_port_type(meta: Any, component_type: str, port_name: str) -> Optional[PortType]:
+def _component_input_port_type(
+    meta: Any, component_type: str, port_name: str
+) -> Optional[PortType]:
     if meta is None or meta.port_types is None:
         return None
     port_type = meta.port_types.inputs.get(port_name)
@@ -670,13 +743,38 @@ def _port_schema(
     *,
     node_id: str,
     component_type: str,
+    node_params: dict[str, Any],
     port: str,
     direction: Literal["input", "output"],
     port_type: Optional[PortType],
+    subgraph: Optional[GraphSpec] = None,
 ) -> PortSchema:
     port_id = f"port:{node_id}.{port}:{direction}"
     dtype = port_type.dtype if port_type is not None else None
     origin: SchemaOrigin = "declared" if port_type is not None else "unknown"
+    shape = list(port_type.shape) if port_type is not None and port_type.shape else None
+    rank = port_type.rank if port_type is not None else None
+    metadata: dict[str, Any] = {"component_type": component_type}
+    inferred = _component_port_dimension(
+        component_type=component_type,
+        node_params=node_params,
+        port=port,
+        direction=direction,
+    )
+    if inferred is not None:
+        shape = inferred["shape"]
+        rank = len(inferred["shape"])
+        origin = "inferred_static"
+        metadata.update(inferred["metadata"])
+    boundary = _subgraph_boundary_value_schema(subgraph, port, direction)
+    if shape is None and boundary is not None and boundary.shape is not None:
+        shape = boundary.shape
+        rank = boundary.rank if boundary.rank is not None else len(boundary.shape)
+        origin = "inferred_static"
+        metadata["dimension_source"] = "subgraph_boundary"
+        metadata["boundary_port"] = port
+    if dtype is None and boundary is not None:
+        dtype = boundary.dtype
     return PortSchema(
         id=port_id,
         label=f"{node_id}.{port}",
@@ -689,13 +787,179 @@ def _port_schema(
             label=f"{node_id}.{port}",
             kind="graph_port",
             dtype=dtype,
-            shape=list(port_type.shape) if port_type is not None and port_type.shape else None,
-            rank=port_type.rank if port_type is not None else None,
+            shape=shape,
+            rank=rank,
             origin=origin,
-            metadata={"component_type": component_type},
+            metadata=metadata,
         ),
         origin=origin,
     )
+
+
+def _component_port_dimension(
+    *,
+    component_type: str,
+    node_params: dict[str, Any],
+    port: str,
+    direction: Literal["input", "output"],
+) -> Optional[dict[str, Any]]:
+    dimension_param: Optional[str] = None
+    dimension: Optional[int] = None
+    if component_type == "Network":
+        if direction == "output" and port == "output":
+            dimension_param = "out_size"
+        elif direction == "output" and port == "hidden":
+            dimension_param = "hidden_size"
+    elif component_type in {"Linear", "MLP"}:
+        if direction == "input" and port == "input":
+            dimension_param = "input_size"
+        elif direction == "output" and port == "output":
+            dimension_param = "output_size"
+    elif component_type in {"GRU", "LSTM"}:
+        if direction == "input" and port == "input":
+            dimension_param = "input_size"
+        elif port in {"output", "hidden", "cell"}:
+            dimension_param = "hidden_size"
+    elif component_type in {"TwoLinkArm", "PointMass", "Mechanics"} and port == "force":
+        dimension = 2
+    elif component_type == "Arm6MuscleRigidTendon":
+        if port == "excitation":
+            dimension = 6
+        elif port in {"angles", "angular_velocities", "torques"}:
+            dimension = 2
+        elif port in {"forces", "activations"}:
+            dimension = 6
+    elif component_type == "PointMass8MuscleRelu":
+        if port == "excitation":
+            n_pairs = _positive_int_param(node_params, "n_pairs")
+            dimension = n_pairs * 2 if n_pairs is not None else None
+        elif port == "force_2d":
+            dimension = 2
+        elif port in {"forces", "activations"}:
+            n_pairs = _positive_int_param(node_params, "n_pairs")
+            dimension = n_pairs * 2 if n_pairs is not None else None
+    elif component_type == "FeedbackChannels" and direction == "output" and port == "output":
+        dimension = _feedback_channels_width(node_params)
+
+    if dimension_param is not None:
+        dimension = _positive_int_param(node_params, dimension_param)
+    if dimension is None:
+        return None
+    return {
+        "shape": [dimension],
+        "metadata": {
+            "dimension_source": "component_param" if dimension_param else "component_contract",
+            "dimension_param": dimension_param,
+        },
+    }
+
+
+def _feedback_channels_width(params: dict[str, Any]) -> Optional[int]:
+    channels = params.get("channels")
+    if not isinstance(channels, list):
+        return None
+    width = 0
+    for channel in channels:
+        if channel in {"position", "velocity", "force"}:
+            width += 2
+    return width if width > 0 else None
+
+
+def _positive_int_param(params: dict[str, Any], key: str) -> Optional[int]:
+    value = params.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
+
+
+def _subgraph_boundary_value_schema(
+    subgraph: Optional[GraphSpec],
+    port: str,
+    direction: Literal["input", "output"],
+) -> Optional[ValueSchema]:
+    if subgraph is None:
+        return None
+    binding = (
+        subgraph.input_bindings.get(port)
+        if direction == "input"
+        else subgraph.output_bindings.get(port)
+    )
+    if binding is None:
+        return None
+    node_id, bound_port = binding
+    for schema in _enumerate_graph_ports(subgraph):
+        if (
+            schema.node_id == node_id
+            and schema.port == bound_port
+            and schema.direction == direction
+        ):
+            return schema.value_schema
+    return None
+
+
+def _apply_mux_output_shapes(
+    ports: list[PortSchema],
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+) -> None:
+    task_data_schemas = (
+        {
+            item.id.removeprefix("task_data:"): item.value_schema
+            for item in _enumerate_task_data(task_binding_spec)
+        }
+        if task_binding_spec is not None
+        else {}
+    )
+    output_ports = {
+        (port.node_id, port.port): port
+        for port in ports
+        if port.direction == "output" and port.node_id is not None
+    }
+    input_sources: dict[tuple[str, str], ValueSchema] = {}
+    for wire in graph.wires:
+        source = output_ports.get((wire.source_node, wire.source_port))
+        if source is not None:
+            input_sources[(wire.target_node, wire.target_port)] = source.value_schema
+    for binding in task_binding_spec.bindings if task_binding_spec is not None else []:
+        source = task_data_schemas.get(binding.source_data_id)
+        if source is not None:
+            input_sources[(binding.target_node_id, binding.target_port)] = source
+
+    for port in ports:
+        if port.component_type != "Mux" or port.direction != "output" or port.port != "output":
+            continue
+        node = graph.nodes.get(port.node_id or "")
+        if node is None:
+            continue
+        input_shapes = [
+            _compatibility_shape(input_sources[(port.node_id, input_port)])
+            for input_port in node.input_ports
+            if (port.node_id, input_port) in input_sources
+        ]
+        if not input_shapes or any(shape is None or len(shape) != 1 for shape in input_shapes):
+            continue
+        dimensions = [shape[0] for shape in input_shapes if shape is not None]
+        if not all(isinstance(dim, int) and dim > 0 for dim in dimensions):
+            continue
+        width = sum(dimensions)
+        metadata = dict(port.value_schema.metadata)
+        metadata.update(
+            {
+                "dimension_source": "mux_concat_inputs",
+                "input_shapes": input_shapes,
+            }
+        )
+        port.value_schema = port.value_schema.model_copy(
+            update={
+                "shape": [width],
+                "rank": 1,
+                "origin": "inferred_static",
+                "metadata": metadata,
+            }
+        )
+        port.origin = "inferred_static"
 
 
 def _graph_port_schema(
@@ -703,11 +967,27 @@ def _graph_port_schema(
     port: str,
     direction: Literal["input", "output"],
     bound: Optional[tuple[str, str]] = None,
+    ports: list[PortSchema] | None = None,
 ) -> PortSchema:
     port_id = f"port:graph.{port}:{direction}"
     metadata: dict[str, Any] = {}
     if bound is not None:
         metadata["binding"] = {"node_id": bound[0], "port": bound[1]}
+    bound_schema = None
+    if bound is not None and ports is not None:
+        bound_schema = next(
+            (
+                schema
+                for schema in ports
+                if schema.node_id == bound[0]
+                and schema.port == bound[1]
+                and schema.direction == direction
+            ),
+            None,
+        )
+    value_metadata = dict(metadata)
+    if bound_schema is not None:
+        value_metadata["dimension_source"] = "graph_port_binding"
     return PortSchema(
         id=port_id,
         label=f"graph.{port}",
@@ -717,8 +997,11 @@ def _graph_port_schema(
             id=f"value:{port_id}",
             label=f"graph.{port}",
             kind="graph_port",
+            dtype=bound_schema.value_schema.dtype if bound_schema is not None else None,
+            shape=bound_schema.value_schema.shape if bound_schema is not None else None,
+            rank=bound_schema.value_schema.rank if bound_schema is not None else None,
             origin="inferred_static",
-            metadata=metadata,
+            metadata=value_metadata,
         ),
         origin="inferred_static",
         metadata=metadata,
@@ -730,17 +1013,30 @@ def node_input_binding(graph: GraphSpec, port_name: str) -> Optional[tuple[str, 
     return tuple(binding) if binding is not None else None
 
 
+def node_output_binding(graph: GraphSpec, port_name: str) -> Optional[tuple[str, str]]:
+    binding = graph.output_bindings.get(port_name)
+    return tuple(binding) if binding is not None else None
+
+
 def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskDataSchema]:
     task_data: list[TaskDataSchema] = []
     for data in task_binding_spec.exposed_data:
         value = data.value_spec
         role = task_data_role(data)
         surface = task_data_surface(data)
+        shape = data.expected_shape or (value.shape if value is not None else None)
+        sample_shape = _task_data_sample_shape(shape)
         metadata = {
             **data.metadata,
             "task_data_role": role,
             "task_data_surface": surface,
         }
+        if sample_shape is not None:
+            metadata["sample_shape"] = sample_shape
+            metadata["sample_rank"] = len(sample_shape)
+            if shape is not None and sample_shape != shape:
+                metadata["time_axis"] = 0
+                metadata["view"] = "trajectory"
         task_data.append(
             TaskDataSchema(
                 id=f"task_data:{data.id}",
@@ -754,7 +1050,8 @@ def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskD
                     label=data.label,
                     kind="task_data",
                     dtype=data.dtype or (value.dtype if value is not None else None),
-                    shape=data.expected_shape or (value.shape if value is not None else None),
+                    shape=shape,
+                    rank=len(shape) if shape is not None else None,
                     units=data.units or (value.units if value is not None else None),
                     frame=data.frame or (value.frame if value is not None else None),
                     origin="declared",
@@ -773,13 +1070,19 @@ def _enumerate_task_data(task_binding_spec: StudioTaskBindingSpec) -> list[TaskD
     return task_data
 
 
+def _task_data_sample_shape(shape: Optional[list[Any]]) -> Optional[list[Any]]:
+    if shape is None:
+        return None
+    if len(shape) > 0 and shape[0] == "time":
+        return list(shape[1:])
+    return list(shape)
+
+
 def _mark_bound_ports(
     ports: list[PortSchema],
     task_binding_spec: StudioTaskBindingSpec,
 ) -> None:
-    task_data_ids = {
-        data.id: f"task_data:{data.id}" for data in task_binding_spec.exposed_data
-    }
+    task_data_ids = {data.id: f"task_data:{data.id}" for data in task_binding_spec.exposed_data}
     by_target = {
         (port.node_id, port.port): port
         for port in ports
@@ -833,15 +1136,14 @@ def validate_task_binding_schema(
     }
     port_schemas = {
         (port.node_id, port.port): port
-        for port in _enumerate_graph_ports(graph)
+        for port in _enumerate_graph_ports(graph, task_binding_spec)
         if port.direction == "input" and port.node_id is not None
     }
     binding_targets: set[tuple[str, str]] = set()
     for index, binding in enumerate(task_binding_spec.bindings):
         binding_path = f"{base_path}/bindings/{index}"
         expected_id = (
-            f"task:{binding.source_data_id}->"
-            f"{binding.target_node_id}:{binding.target_port}"
+            f"task:{binding.source_data_id}->{binding.target_node_id}:{binding.target_port}"
         )
         if binding.id in seen_bindings:
             issues.append(
@@ -1029,11 +1331,7 @@ def validate_intervention_schema(
         schema_target_id = None
         if target_selector is not None:
             schema_target_id = target_selector.metadata.get("schema_target_id")
-        target = (
-            by_id.get(schema_target_id)
-            if isinstance(schema_target_id, str)
-            else None
-        )
+        target = by_id.get(schema_target_id) if isinstance(schema_target_id, str) else None
         if target is None and target_selector is not None:
             target = by_selector.get(target_selector.compact)
         if target is None:
@@ -1042,8 +1340,7 @@ def validate_intervention_schema(
                 SchemaValidationIssue(
                     type="intervention_unknown_target",
                     message=(
-                        f"Intervention target {compact!r} is not in the selector "
-                        "schema registry"
+                        f"Intervention target {compact!r} is not in the selector schema registry"
                     ),
                     location={"path": f"{path}/target_selector"},
                 )
@@ -1231,7 +1528,7 @@ def _value_schema_compatibility_issues(
         and target_dtype
         and source_dtype != "any"
         and target_dtype != "any"
-        and source_dtype != target_dtype
+        and not _dtypes_compatible(source, target)
     ):
         issues.append(
             SchemaValidationIssue(
@@ -1244,22 +1541,25 @@ def _value_schema_compatibility_issues(
             )
         )
 
-    if source.rank is not None or target.rank is not None:
+    source_shape = _compatibility_shape(source)
+    target_shape = _compatibility_shape(target)
+    source_rank = len(source_shape) if source_shape is not None else source.rank
+    target_rank = len(target_shape) if target_shape is not None else target.rank
+
+    if source_rank is not None or target_rank is not None:
         known_constraint = True
-    if source.rank is not None and target.rank is not None and source.rank != target.rank:
+    if source_rank is not None and target_rank is not None and source_rank != target_rank:
         issues.append(
             SchemaValidationIssue(
                 type=f"{issue_prefix}_rank_mismatch",
                 message=(
-                    f"{source_label} has rank {source.rank}, but "
-                    f"{target_label} expects rank {target.rank}"
+                    f"{source_label} has rank {source_rank}, but "
+                    f"{target_label} expects rank {target_rank}"
                 ),
                 location={"path": path},
             )
         )
 
-    source_shape = source.shape
-    target_shape = target.shape
     if source_shape is not None or target_shape is not None:
         known_constraint = True
     if source_shape is not None and target_shape is not None:
@@ -1309,6 +1609,58 @@ def _shape_dim_matches(source_dim: Any, target_dim: Any) -> bool:
     if source_dim in (None, "any", "*", -1) or target_dim in (None, "any", "*", -1):
         return True
     return source_dim == target_dim
+
+
+def _compatibility_shape(schema: ValueSchema) -> Optional[list[Any]]:
+    sample_shape = schema.metadata.get("sample_shape")
+    if isinstance(sample_shape, list):
+        return sample_shape
+    return schema.shape
+
+
+def _dtypes_compatible(source: ValueSchema, target: ValueSchema) -> bool:
+    source_dtype = _normalize_dtype(source.dtype)
+    target_dtype = _normalize_dtype(target.dtype)
+    if source_dtype is None or target_dtype is None:
+        return True
+    if source_dtype == target_dtype:
+        return True
+    if source_dtype == "any" or target_dtype == "any":
+        return True
+    if _is_concrete_numeric_dtype(source_dtype) and _semantic_numeric_compatible(
+        source, target_dtype
+    ):
+        return True
+    if _is_concrete_numeric_dtype(target_dtype) and _semantic_numeric_compatible(
+        target, source_dtype
+    ):
+        return True
+    if source_dtype == "state" and target_dtype == "vector":
+        return True
+    if source_dtype == "vector" and target_dtype == "state":
+        return True
+    return False
+
+
+def _normalize_dtype(dtype: Optional[str]) -> Optional[str]:
+    return dtype.strip().lower() if dtype else None
+
+
+def _is_concrete_numeric_dtype(dtype: str) -> bool:
+    return dtype == "number" or dtype.startswith(("float", "int", "uint", "complex"))
+
+
+def _semantic_numeric_compatible(schema: ValueSchema, semantic_dtype: str) -> bool:
+    if semantic_dtype == "scalar":
+        return _schema_is_scalar(schema)
+    if semantic_dtype in {"vector", "matrix", "tensor"}:
+        return not _schema_is_scalar(schema)
+    return semantic_dtype == "state"
+
+
+def _schema_is_scalar(schema: ValueSchema) -> bool:
+    shape = _compatibility_shape(schema)
+    return schema.rank == 0 or shape == []
 
 
 def _port_selector_targets(ports: list[PortSchema]) -> list[SelectorTargetSchema]:

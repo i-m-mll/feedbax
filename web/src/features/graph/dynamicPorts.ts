@@ -154,9 +154,14 @@ export function nextMuxInputPort(
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): string | null {
-  const spec = graph.nodes[nodeId];
+  const materializedSpec = materializeMuxSpecForBindings(graph, nodeId, taskBindingSpec);
+  const spec = materializedSpec ?? graph.nodes[nodeId];
   if (!isMuxSpec(spec)) return null;
-  if (muxHasSpareInput(graph, nodeId, taskBindingSpec)) return null;
+  const materializedGraph =
+    materializedSpec && materializedSpec !== graph.nodes[nodeId]
+      ? { ...graph, nodes: { ...graph.nodes, [nodeId]: materializedSpec } }
+      : graph;
+  if (muxHasSpareInput(materializedGraph, nodeId, taskBindingSpec)) return null;
   return muxInputPort(muxPortCountFromSpec(spec));
 }
 
