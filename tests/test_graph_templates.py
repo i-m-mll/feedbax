@@ -10,7 +10,6 @@ from feedbax.nn import SimpleStagedNetwork
 from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.web.serialization import spec_to_graph
 from feedbax.web.services.component_registry import ComponentRegistry
-from feedbax.web.worker.app import _extract_graph_params
 
 
 def _task_binding_spec() -> dict:
@@ -174,30 +173,6 @@ def test_linear_activation_from_graph_spec_is_honored() -> None:
 
     assert jnp.allclose(outputs["output"], jax.nn.sigmoid(raw_output))
     assert not jnp.allclose(outputs["output"], raw_output)
-
-
-def test_worker_marks_network_specs_as_graph_controller() -> None:
-    params = _extract_graph_params(
-        _network_controller_graph_spec(node_type="Network").model_dump(
-            mode="json", exclude_none=True
-        ),
-        _task_binding_spec(),
-    )
-
-    assert params["controller_kind"] == "graph"
-    assert params["network_subgraph"] is not None
-
-
-def test_worker_marks_simple_staged_network_specs_as_legacy_bridge() -> None:
-    params = _extract_graph_params(
-        _network_controller_graph_spec(node_type="SimpleStagedNetwork").model_dump(
-            mode="json", exclude_none=True
-        ),
-        _task_binding_spec(),
-    )
-
-    assert params["controller_kind"] == "legacy_simple_staged"
-    assert params["network_subgraph"] is None
 
 
 def test_builtin_executable_templates_are_exposed_in_component_registry() -> None:

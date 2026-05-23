@@ -422,6 +422,8 @@ def write_training_run_manifest(
     graph_spec: Optional[dict[str, Any]] = None,
     checkpoint_path: Optional[Path | str] = None,
     history_events: Optional[list[dict[str, Any]]] = None,
+    retention_plan: Optional[dict[str, Any]] = None,
+    retained_observables: Optional[dict[str, Any] | list[dict[str, Any]]] = None,
     status: ManifestStatus = "completed",
     final_loss: Optional[float] = None,
     root: Path | str | None = None,
@@ -450,6 +452,28 @@ def write_training_run_manifest(
                 logical_name=f"feedbax_training_history_{job_id}.json"
                 if job_id
                 else "feedbax_training_history.json",
+            )
+        )
+    if retention_plan is not None:
+        artifacts.append(
+            store_json_artifact(
+                retention_plan,
+                root=root_path,
+                role="retention_plan",
+                logical_name=f"feedbax_retention_plan_{job_id}.json"
+                if job_id
+                else "feedbax_retention_plan.json",
+            )
+        )
+    if retained_observables is not None:
+        artifacts.append(
+            store_json_artifact(
+                retained_observables,
+                root=root_path,
+                role="retained_observables",
+                logical_name=f"feedbax_retained_observables_{job_id}.json"
+                if job_id
+                else "feedbax_retained_observables.json",
             )
         )
 

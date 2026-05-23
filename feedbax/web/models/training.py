@@ -19,7 +19,7 @@ class OptimizerSpec(BaseModel):
 class TimeAggregationSpec(BaseModel):
     """Specification for time aggregation in loss computation."""
 
-    mode: Literal["all", "final", "range", "segment", "custom"] = "all"
+    mode: Literal["all", "mean", "sum", "final", "range", "segment", "custom"] = "all"
     start: Optional[int] = None
     end: Optional[int] = None
     segment_name: Optional[str] = None

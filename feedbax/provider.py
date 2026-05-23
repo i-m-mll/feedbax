@@ -256,6 +256,8 @@ def provider_manifest() -> ProviderManifest:
         artifact_roles=[
             "training_checkpoint",
             "training_history",
+            "retention_plan",
+            "retained_observables",
             "trajectory_dataset",
             "evaluation_result",
             "analysis_table",
@@ -533,6 +535,19 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                 _validate_graph(subgraph, f"{prefix}/subgraphs/{subgraph_node}")
 
     _validate_graph(spec)
+    if spec.retained_observables:
+        from feedbax.retained_observables import RetentionPlanError, lower_retention_plan
+
+        try:
+            lower_retention_plan(spec)
+        except RetentionPlanError as exc:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_retained_observable",
+                    message=str(exc),
+                    location={"path": exc.path, "selector": exc.selector or ""},
+                )
+            )
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
@@ -617,22 +632,21 @@ def validate_training_spec(
         errors.extend(graph_result.errors)
         warnings.extend(graph_result.warnings)
         if graph_result.valid:
-            from feedbax.web.services.loss_service import loss_service
+            from feedbax.retained_observables import RetentionPlanError, lower_retention_plan
 
             graph = (
                 graph_spec
                 if isinstance(graph_spec, GraphSpec)
                 else GraphSpec.model_validate(graph_spec)
             )
-            for error in loss_service.validate_loss_spec(spec.loss, graph):
+            try:
+                lower_retention_plan(graph, spec)
+            except RetentionPlanError as exc:
                 errors.append(
                     ValidationIssue(
                         type="loss_graph_mismatch",
-                        message=error["message"],
-                        location={
-                            "path": "/loss/" + "/".join(error.get("path", [])),
-                            "field": error.get("field", ""),
-                        },
+                        message=str(exc),
+                        location={"path": exc.path, "selector": exc.selector or ""},
                     )
                 )
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)

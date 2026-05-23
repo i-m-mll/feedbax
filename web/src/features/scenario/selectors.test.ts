@@ -87,6 +87,57 @@ function schemaRegistry(): StudioSchemaRegistry {
         },
         metadata: { detail: 'provider schema' },
       },
+      {
+        id: 'selector:edge:decoder.readout->mechanics.force',
+        label: 'decoder.readout -> mechanics.force',
+        kind: 'edge',
+        selector: 'edge:decoder.readout->mechanics.force',
+        value_schema: {
+          id: 'value:edge:decoder.readout->mechanics.force',
+          label: 'decoder.readout',
+          kind: 'graph_edge',
+          dtype: 'float32',
+          shape: ['time', 4],
+          rank: 2,
+          units: 'a.u.',
+          frame: null,
+          origin: 'declared',
+          metadata: {},
+        },
+        origin: 'declared',
+        source: {
+          source_node: 'decoder',
+          source_port: 'readout',
+          target_node: 'mechanics',
+          target_port: 'force',
+        },
+        metadata: { default_retention: { mode: 'trajectory' } },
+      },
+      {
+        id: 'selector:graph_output:effector',
+        label: 'Graph output effector',
+        kind: 'graph_output',
+        selector: 'graph_output:effector',
+        value_schema: {
+          id: 'value:graph_output:effector',
+          label: 'effector',
+          kind: 'graph_output',
+          dtype: 'float32',
+          shape: ['time', 2],
+          rank: 2,
+          units: 'cm',
+          frame: null,
+          origin: 'declared',
+          metadata: {},
+        },
+        origin: 'declared',
+        source: {
+          output_name: 'effector',
+          node_id: 'mechanics',
+          port: 'effector',
+        },
+        metadata: { default_retention: { mode: 'trajectory' } },
+      },
     ],
     issues: [],
     metadata: {},
@@ -197,6 +248,40 @@ describe('scenario selector options', () => {
         options
       ).map((candidate) => candidate.label)
     ).toEqual(['Decoder readout']);
+  });
+
+  it('represents graph structural selector target kinds from provider schema', () => {
+    const options = selectorOptionsForRegistry({
+      registry: registry(),
+      schemaRegistry: schemaRegistry(),
+    });
+
+    expect(options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          group: 'observables',
+          label: 'decoder.readout -> mechanics.force',
+          selector: expect.objectContaining({
+            namespace: 'graph_edge',
+            compact: 'edge:decoder.readout->mechanics.force',
+            target_id: 'decoder:readout->mechanics:force',
+          }),
+        }),
+        expect.objectContaining({
+          group: 'observables',
+          label: 'Graph output effector',
+          selector: expect.objectContaining({
+            namespace: 'graph_output',
+            compact: 'graph_output:effector',
+            target_id: 'effector',
+            metadata: expect.objectContaining({
+              graph_port_node_id: 'mechanics',
+              graph_port_name: 'effector',
+            }),
+          }),
+        }),
+      ])
+    );
   });
 
   it('uses curated state hints as explicit fallback entries without provider schema targets', () => {

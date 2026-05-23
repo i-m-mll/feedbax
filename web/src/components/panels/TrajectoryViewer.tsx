@@ -10,6 +10,15 @@ function toSvg(x: number, y: number): [number, number] {
   return [sx, sy];
 }
 
+function latestTargetPoint(
+  target: [number, number][] | [number, number] | null | undefined
+): [number, number] | null {
+  if (!target) return null;
+  if (typeof target[0] === 'number') return target as [number, number];
+  const points = target as [number, number][];
+  return points.length > 0 ? points[points.length - 1] : null;
+}
+
 export function TrajectoryViewer() {
   const latestTrajectory = useTrainingStore((s) => s.latestTrajectory);
 
@@ -22,12 +31,24 @@ export function TrajectoryViewer() {
   }
 
   const { effector, target, batch } = latestTrajectory;
+  const targetPoint = latestTargetPoint(target);
+
+  if (effector.length === 0) {
+    const count =
+      Object.keys(latestTrajectory.observables ?? {}).length +
+      Object.keys(latestTrajectory.outputs ?? {}).length;
+    return (
+      <div className="flex items-center justify-center h-[190px] text-xs text-slate-400">
+        {count > 0 ? `${count} retained streams captured` : 'Trajectory snapshot captured'}
+      </div>
+    );
+  }
 
   // Build SVG path string
   const points = effector.map(([x, y]) => toSvg(x, y));
   const pathD = points.map(([sx, sy], i) => `${i === 0 ? 'M' : 'L'} ${sx.toFixed(1)} ${sy.toFixed(1)}`).join(' ');
 
-  const [tx, ty] = toSvg(target[0], target[1]);
+  const [tx, ty] = targetPoint ? toSvg(targetPoint[0], targetPoint[1]) : [null, null];
 
   return (
     <div className="flex flex-col gap-1">
@@ -52,8 +73,12 @@ export function TrajectoryViewer() {
         {/* End point */}
         <circle cx={points[points.length-1][0]} cy={points[points.length-1][1]} r={3} fill="#6366f1" />
         {/* Target */}
-        <circle cx={tx} cy={ty} r={5} fill="none" stroke="#f59e0b" strokeWidth={2} />
-        <circle cx={tx} cy={ty} r={2} fill="#f59e0b" />
+        {tx !== null && ty !== null && (
+          <>
+            <circle cx={tx} cy={ty} r={5} fill="none" stroke="#f59e0b" strokeWidth={2} />
+            <circle cx={tx} cy={ty} r={2} fill="#f59e0b" />
+          </>
+        )}
       </svg>
     </div>
   );

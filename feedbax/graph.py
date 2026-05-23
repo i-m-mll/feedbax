@@ -11,7 +11,7 @@ import dataclasses
 from functools import cached_property
 from operator import attrgetter
 from collections.abc import Callable
-from typing import ClassVar, Optional
+from typing import ClassVar, Literal, Optional
 
 import equinox as eqx
 from equinox import Module, field
@@ -28,6 +28,16 @@ from feedbax._streaming import (
     init_streaming_state_window,
     update_streaming_state_window,
 )
+
+_NESTED_CYCLE_NODE = "__nested__"
+
+
+def _nested_cycle_key(node_name: str) -> tuple[str, str]:
+    return (_NESTED_CYCLE_NODE, node_name)
+
+
+def _is_nested_cycle_key(key: tuple[str, str]) -> bool:
+    return key[0] == _NESTED_CYCLE_NODE
 
 
 def init_state_from_component(component: "Component") -> State:
@@ -184,6 +194,41 @@ class GraphState(Module):
         raise AttributeError(name)
 
 
+def _select_state_path(state_view: PyTree, path: str) -> PyTree:
+    """Select a dotted path from a graph state view."""
+    current = state_view
+    for part in path.split("."):
+        if part == "":
+            continue
+        if isinstance(current, dict):
+            current = current[part]
+            continue
+        if hasattr(current, part):
+            current = getattr(current, part)
+            continue
+        if part == "nodes" and isinstance(current, GraphState):
+            current = current.nodes
+            continue
+        raise ValueError(f"State path {path!r} could not resolve segment {part!r}")
+    return current
+
+
+@dataclasses.dataclass(frozen=True)
+class GraphTraceRequest:
+    """A single graph-boundary value to retain during execution."""
+
+    kind: Literal["port", "edge", "graph_output", "recurrent_carry", "state_path"]
+    selector: str
+    node: str | None = None
+    port: str | None = None
+    source_node: str | None = None
+    source_port: str | None = None
+    target_node: str | None = None
+    target_port: str | None = None
+    path: str | None = None
+    timing: Literal["input", "output", "step", "initial", "final"] | None = None
+
+
 class Graph(Component):
     """A computational graph of components."""
 
@@ -252,7 +297,10 @@ class Graph(Component):
 
     @property
     def _needs_iteration(self) -> bool:
-        return len(self._cycle_wires) > 0
+        return len(self._cycle_wires) > 0 or any(
+            isinstance(node, Graph) and node._needs_iteration
+            for node in self.nodes.values()
+        )
 
     @cached_property
     def _outgoing_wires(self) -> dict[tuple[str, str], list[Wire]]:
@@ -403,9 +451,9 @@ class Graph(Component):
         cycle-wire values across calls so callers can drive a cyclic graph
         one step at a time without reinventing the cycle-wiring logic.
 
-        For acyclic graphs (``_needs_iteration == False``), ``step`` reduces
-        to ``_call_single_step`` and the returned ``cycle_port_values`` is
-        an empty dict. For cyclic graphs, the caller should pass the
+        For graphs without local or nested recurrence, ``step`` reduces to
+        ``_call_single_step`` and the returned ``cycle_port_values`` is an
+        empty dict. For cyclic graphs, the caller should pass the
         ``cycle_port_values`` returned from the previous call as the
         ``cycle_port_values`` argument of the next call. On the first call,
         pass ``None`` to use defaults derived from ``state`` (mirrors the
@@ -448,6 +496,9 @@ class Graph(Component):
             source_key = (wire.source_node, wire.source_port)
             target_key = (wire.target_node, wire.target_port)
             new_cycle_port_values[target_key] = port_values[source_key]
+        for key, value in port_values.items():
+            if _is_nested_cycle_key(key):
+                new_cycle_port_values[key] = value
 
         outputs = {
             ext_port: port_values[(node_name, node_port)]
@@ -455,6 +506,62 @@ class Graph(Component):
         }
 
         return outputs, new_state, new_cycle_port_values
+
+    def step_with_trace(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        cycle_port_values: Optional[dict[tuple[str, str], PyTree]] = None,
+        *,
+        key: PRNGKeyArray,
+        trace: tuple[GraphTraceRequest, ...] = (),
+    ) -> tuple[
+        dict[str, PyTree],
+        State,
+        dict[tuple[str, str], PyTree],
+        dict[str, PyTree],
+    ]:
+        """Advance the graph one timestep and return selected boundary values.
+
+        This API records values that are already visible at the graph boundary:
+        node ports, wires/edges, graph outputs, recurrent carries, and state
+        paths. Leaf component internals remain opaque; acausal/equational
+        components only need executable ports and state views.
+        """
+        if self._needs_iteration:
+            if cycle_port_values is None:
+                cycle_port_values = self._get_initial_cycle_values(state)
+            port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
+        else:
+            port_values = {}
+
+        for ext_port, (node_name, node_port) in self.input_bindings.items():
+            if ext_port in inputs:
+                port_values[(node_name, node_port)] = inputs[ext_port]
+
+        port_values, new_state = self._execute_step(port_values, state, key=key)
+
+        new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
+        for wire in self._cycle_wires:
+            source_key = (wire.source_node, wire.source_port)
+            target_key = (wire.target_node, wire.target_port)
+            new_cycle_port_values[target_key] = port_values[source_key]
+        for key, value in port_values.items():
+            if _is_nested_cycle_key(key):
+                new_cycle_port_values[key] = value
+
+        outputs = {
+            ext_port: port_values[(node_name, node_port)]
+            for ext_port, (node_name, node_port) in self.output_bindings.items()
+        }
+        trace_values = self._collect_trace_values(
+            trace,
+            outputs=outputs,
+            port_values=port_values,
+            cycle_port_values=new_cycle_port_values,
+            state=new_state,
+        )
+        return outputs, new_state, new_cycle_port_values, trace_values
 
     def _execute_step(
         self,
@@ -464,6 +571,11 @@ class Graph(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
         keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
+        nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
+        for port_key in tuple(port_values):
+            if _is_nested_cycle_key(port_key):
+                nested_cycle_values[port_key[1]] = port_values.pop(port_key)
+        next_nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
 
         for node_name, node_key in zip(self._execution_order, keys):
             node = self.nodes[node_name]
@@ -473,7 +585,14 @@ class Graph(Component):
                 if (node_name, port_name) in port_values
             }
             if isinstance(node, Graph):
-                node_outputs, state, _ = node.step(node_inputs, state, None, key=node_key)
+                node_outputs, state, node_cycle_values = node.step(
+                    node_inputs,
+                    state,
+                    nested_cycle_values.get(node_name),
+                    key=node_key,
+                )
+                if node_cycle_values:
+                    next_nested_cycle_values[node_name] = node_cycle_values
             else:
                 node_outputs, state = node(node_inputs, state, key=node_key)
 
@@ -484,7 +603,100 @@ class Graph(Component):
                         continue
                     port_values[(wire.target_node, wire.target_port)] = value
 
+        for node_name, node_cycle_values in next_nested_cycle_values.items():
+            port_values[_nested_cycle_key(node_name)] = node_cycle_values
+
         return port_values, state
+
+    def _collect_trace_values(
+        self,
+        trace: tuple[GraphTraceRequest, ...],
+        *,
+        outputs: dict[str, PyTree],
+        port_values: dict[tuple[str, str], PyTree],
+        cycle_port_values: dict[tuple[str, str], PyTree],
+        state: State,
+    ) -> dict[str, PyTree]:
+        values: dict[str, PyTree] = {}
+        for request in trace:
+            if request.kind == "port":
+                if request.node is None or request.port is None:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} is missing node/port"
+                    )
+                key = (request.node, request.port)
+                if key not in port_values:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} did not produce "
+                        f"port {request.node}.{request.port}"
+                    )
+                values[request.selector] = port_values[key]
+                continue
+
+            if request.kind == "edge":
+                source_node = request.source_node or request.node
+                source_port = request.source_port or request.port
+                if source_node is None or source_port is None:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} is missing edge source"
+                    )
+                key = (source_node, source_port)
+                if key not in port_values:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} did not produce "
+                        f"edge source {source_node}.{source_port}"
+                    )
+                if request.target_node is not None and request.target_port is not None:
+                    matching = [
+                        wire
+                        for wire in self.wires
+                        if wire.source_node == source_node
+                        and wire.source_port == source_port
+                        and wire.target_node == request.target_node
+                        and wire.target_port == request.target_port
+                    ]
+                    if not matching:
+                        raise ValueError(
+                            f"Trace selector {request.selector!r} references missing "
+                            f"edge {source_node}.{source_port} -> "
+                            f"{request.target_node}.{request.target_port}"
+                        )
+                values[request.selector] = port_values[key]
+                continue
+
+            if request.kind == "graph_output":
+                output_name = request.port or request.path or request.selector.removeprefix(
+                    "graph_output:"
+                )
+                if output_name not in outputs:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} references missing "
+                        f"graph output {output_name!r}"
+                    )
+                values[request.selector] = outputs[output_name]
+                continue
+
+            if request.kind == "recurrent_carry":
+                if request.node is None or request.port is None:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} is missing recurrent carry node/port"
+                    )
+                key = (request.node, request.port)
+                if key not in cycle_port_values:
+                    raise ValueError(
+                        f"Trace selector {request.selector!r} references missing "
+                        f"recurrent carry {request.node}.{request.port}"
+                    )
+                values[request.selector] = cycle_port_values[key]
+                continue
+
+            if request.kind == "state_path":
+                path = request.path or request.selector.removeprefix("state_path:")
+                values[request.selector] = _select_state_path(self.state_view(state), path)
+                continue
+
+            raise ValueError(f"Unsupported trace request kind {request.kind!r}")
+        return values
 
     def initial_cycle_port_values(
         self,
@@ -511,8 +723,6 @@ class Graph(Component):
             ValueError: If a cycle-wire target has neither a ``cycle_init``
                 override nor a state-derivable default.
         """
-        if not self._needs_iteration:
-            return {}
         return self._get_initial_cycle_values(state, cycle_init)
 
     def _get_initial_cycle_values(
@@ -549,6 +759,13 @@ class Graph(Component):
             metadata_value = self._initial_value_from_recurrent_initializer(wire)
             if metadata_value is not None:
                 init_values[target_key] = metadata_value
+
+        for node_name, node in self.nodes.items():
+            if not isinstance(node, Graph) or not node._needs_iteration:
+                continue
+            key = _nested_cycle_key(node_name)
+            if key not in init_values:
+                init_values[key] = node._get_initial_cycle_values(state)
 
         missing = [
             (wire.target_node, wire.target_port)

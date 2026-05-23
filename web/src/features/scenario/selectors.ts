@@ -15,6 +15,7 @@ export type SelectorOptionGroup =
   | 'task'
   | 'mechanics'
   | 'probes'
+  | 'observables'
   | 'analysis';
 
 export interface StudioSelectorOption {
@@ -35,6 +36,7 @@ const GROUP_LABELS: Record<SelectorOptionGroup, string> = {
   task: 'Task',
   mechanics: 'Mechanics',
   probes: 'Probes',
+  observables: 'Retained observables',
   analysis: 'Analysis',
 };
 
@@ -332,6 +334,21 @@ function parsePortSelector(selector: string): { nodeId: string; port: string } |
   return { nodeId: match[1], port: match[2] };
 }
 
+function parseEdgeSelector(
+  selector: string
+): { sourceNode: string; sourcePort: string; targetNode: string; targetPort: string; edgeId: string } | null {
+  const match = /^edge:([^.\s]+)\.([^-\s]+)->([^.\s]+)\.(.+)$/.exec(selector);
+  if (!match) return null;
+  const edgeId = `${match[1]}:${match[2]}->${match[3]}:${match[4]}`;
+  return {
+    sourceNode: match[1],
+    sourcePort: match[2],
+    targetNode: match[3],
+    targetPort: match[4],
+    edgeId,
+  };
+}
+
 function schemaPortForTarget(
   target: SelectorTargetSchema,
   schemaRegistry: StudioSchemaRegistry | null | undefined
@@ -371,12 +388,16 @@ function schemaTargetGraphMetadata(
     stringValue(target.source.graph_port_node_id) ??
     port?.node_id ??
     parsedPort?.nodeId ??
+    stringValue(target.source.node_id) ??
+    stringValue(target.source.source_node) ??
     hint?.graph_port_node_id ??
     null;
   const graphPortName =
     stringValue(target.source.graph_port_name) ??
     port?.port ??
     parsedPort?.port ??
+    stringValue(target.source.port) ??
+    stringValue(target.source.source_port) ??
     hint?.graph_port_name ??
     null;
   const graphPortDirection =
@@ -401,9 +422,13 @@ function schemaTargetSelectorRef(
   const port = schemaPortForTarget(target, schemaRegistry);
   const taskData = schemaTaskDataForTarget(target, schemaRegistry);
   const parsedPort = parsePortSelector(target.selector);
+  const parsedEdge = parseEdgeSelector(target.selector);
   const graphMetadata = schemaTargetGraphMetadata(target, schemaRegistry);
   const pathSelector = target.selector.startsWith('path:')
     ? target.selector.replace(/^path:/, '')
+    : null;
+  const graphOutput = target.selector.startsWith('graph_output:')
+    ? target.selector.replace(/^graph_output:/, '')
     : null;
   const taskDataPath = target.selector.startsWith('task_data:')
     ? target.selector.replace(/^task_data:/, '')
@@ -426,6 +451,18 @@ function schemaTargetSelectorRef(
     targetId = port?.node_id ?? parsedPort?.nodeId ?? targetId;
     path = port?.port ?? parsedPort?.port ?? null;
     role = graphPortDirection === 'input' ? 'editable' : 'observed';
+  } else if (target.kind === 'edge' || parsedEdge) {
+    namespace = 'graph_edge';
+    targetId = stringValue(target.source.edge_id) ?? parsedEdge?.edgeId ?? targetId;
+    path = null;
+  } else if (target.kind === 'recurrent_carry') {
+    namespace = 'recurrent_carry';
+    targetId = stringValue(target.source.edge_id) ?? parsedEdge?.edgeId ?? targetId;
+    path = null;
+  } else if (target.kind === 'graph_output' || graphOutput) {
+    namespace = 'graph_output';
+    targetId = graphOutput ?? stringValue(target.source.output_name) ?? targetId;
+    path = graphOutput ?? stringValue(target.source.output_name);
   } else if (target.kind === 'task_data' || taskDataPath) {
     namespace = 'task_data';
     targetId = schemaRegistry?.scenario_id ?? targetId;
@@ -462,6 +499,7 @@ function schemaTargetSelectorRef(
       schema_origin: target.origin,
       selector_source: target.source,
       value_schema: valueSchema,
+      ...(parsedEdge ? { edge_id: parsedEdge.edgeId } : {}),
       ...(hint?.subpath ? { subpath: hint.subpath } : {}),
       ...(graphPortDirection ? { direction: graphPortDirection } : {}),
     },
@@ -473,6 +511,18 @@ function schemaTargetGroup(
   selector: StudioSelectorRef
 ): SelectorOptionGroup {
   if (target.kind === 'port' || selector.namespace === 'graph_port') return 'ports';
+  if (
+    target.kind === 'edge' ||
+    target.kind === 'graph_output' ||
+    target.kind === 'recurrent_carry' ||
+    target.kind === 'retained_observable' ||
+    selector.namespace === 'graph_edge' ||
+    selector.namespace === 'graph_output' ||
+    selector.namespace === 'recurrent_carry' ||
+    selector.namespace === 'retained_observable'
+  ) {
+    return 'observables';
+  }
   if (target.kind === 'task_data' || selector.namespace === 'task_data') return 'task';
   if (target.kind === 'probe' || selector.namespace === 'probe') return 'probes';
   if (target.kind === 'objective') return 'analysis';

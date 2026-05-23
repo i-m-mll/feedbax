@@ -15,8 +15,10 @@ import type {
 export interface TrajectorySnapshot {
   batch: number;
   effector: [number, number][];
-  target: [number, number];
+  target?: [number, number][] | [number, number] | null;
   t: number[];
+  observables?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
 }
 
 export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';

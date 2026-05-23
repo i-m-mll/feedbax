@@ -1,6 +1,6 @@
 import { useTrainingStore } from '@/stores/trainingStore';
 import { TrajectoryViewer } from './TrajectoryViewer';
-import { useTraining, extractNetworkParams } from '@/hooks/useTraining';
+import { useTraining } from '@/hooks/useTraining';
 import { useWorkerConfig } from '@/hooks/useWorkerConfig';
 import { useOrchestration } from '@/hooks/useOrchestration';
 import {
@@ -93,8 +93,6 @@ export function TrainingPanel() {
     (state) => state.setPipelineMaterializationResult
   );
 
-  // Derived network params for the config summary chip row
-  const networkParams = useMemo(() => extractNetworkParams(graph), [graph]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     buildDefaultExpanded(trainingSpec.loss)
   );
@@ -866,8 +864,6 @@ export function TrainingPanel() {
 
       {/* Training config summary — shows what will be sent to the backend */}
       <TrainingConfigSummary
-        networkType={networkParams.network_type}
-        hiddenDim={networkParams.hidden_dim}
         nBatches={trainingSpec.n_batches}
         batchSize={trainingSpec.batch_size}
         learningRate={
@@ -1312,8 +1308,6 @@ function sanitizeSymbol(label: string): string {
 // ---------------------------------------------------------------------------
 
 interface TrainingConfigSummaryProps {
-  networkType: string;
-  hiddenDim: number;
   nBatches: number;
   batchSize: number;
   learningRate: number;
@@ -1324,15 +1318,12 @@ interface TrainingConfigSummaryProps {
  * Gives the user visual confirmation that Studio has parsed their graph.
  */
 function TrainingConfigSummary({
-  networkType,
-  hiddenDim,
   nBatches,
   batchSize,
   learningRate,
 }: TrainingConfigSummaryProps) {
   const chips: { label: string; value: string }[] = [
-    { label: 'net', value: networkType },
-    { label: 'dim', value: String(hiddenDim) },
+    { label: 'executor', value: 'graph' },
     { label: 'batches', value: String(nBatches) },
     { label: 'batch size', value: String(batchSize) },
     { label: 'lr', value: learningRate.toExponential(1) },

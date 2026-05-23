@@ -10,6 +10,7 @@ import {
   objectiveEntityId,
   parseGraphPortEntityId,
   probeEntityId,
+  retainedObservableEntityId,
   selectorToEntityId,
   stateFlowEdgeId,
   taskBindingEntityId,
@@ -52,6 +53,32 @@ const graph: GraphSpec = {
       type: 'probe',
       position: { afterNode: 'mechanics' },
       paths: { effector: 'effector' },
+    },
+  ],
+  retained_observables: [
+    {
+      id: 'obs:effector',
+      label: 'Effector trajectory',
+      target: {
+        kind: 'graph_output',
+        selector: 'graph_output:effector',
+        node_id: 'mechanics',
+        port: 'effector',
+        metadata: {},
+      },
+      retention: {
+        mode: 'trajectory',
+        metadata: {},
+      },
+      value_schema: {
+        id: 'value:obs:effector',
+        label: 'Effector trajectory',
+        kind: 'retained_observable',
+        shape: ['time', 2],
+        origin: 'declared',
+        metadata: {},
+      },
+      metadata: {},
     },
   ],
 };
@@ -186,6 +213,21 @@ describe('scenario entity registry', () => {
       kind: 'probe',
       summary: 'effector',
     });
+    expect(registry.entities[retainedObservableEntityId('obs:effector')]).toMatchObject({
+      kind: 'retained_observable',
+      label: 'Effector trajectory',
+      summary: 'trajectory',
+      selector: {
+        namespace: 'graph_output',
+        compact: 'graph_output:effector',
+        metadata: {
+          retention: { mode: 'trajectory' },
+          graph_port_node_id: 'mechanics',
+          graph_port_name: 'effector',
+        },
+      },
+      relations: [{ kind: 'target', entity_id: graphPortEntityId('mechanics', 'output', 'effector') }],
+    });
     expect(registry.entities[taskEntityId('scenario:train')]).toMatchObject({
       kind: 'task_object',
       label: 'ReachingTask',
@@ -274,6 +316,30 @@ describe('scenario entity registry', () => {
       path: 'state',
       metadata: { state_flow_edge_id: 'state:network->mechanics' },
     })).toBe(graphEdgeEntityId('state:network->mechanics'));
+    expect(selectorToEntityId({
+      namespace: 'graph_edge',
+      compact: 'edge:network.output->mechanics.force',
+      target_id: 'network:output->mechanics:force',
+      path: null,
+      metadata: {},
+    })).toBe(graphEdgeEntityId(graphEdgeId(graph.wires[0])));
+    expect(selectorToEntityId({
+      namespace: 'graph_output',
+      compact: 'graph_output:effector',
+      target_id: 'effector',
+      path: 'effector',
+      metadata: {
+        graph_port_node_id: 'mechanics',
+        graph_port_name: 'effector',
+      },
+    })).toBe(graphPortEntityId('mechanics', 'output', 'effector'));
+    expect(selectorToEntityId({
+      namespace: 'retained_observable',
+      compact: 'probe:obs:effector',
+      target_id: 'obs:effector',
+      path: null,
+      metadata: {},
+    })).toBe(retainedObservableEntityId('obs:effector'));
     expect(selectorToEntityId({
       namespace: 'task_data',
       compact: 'task_data:inputs',

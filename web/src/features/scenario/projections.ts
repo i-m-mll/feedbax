@@ -30,13 +30,20 @@ export function workspaceProjectionItems(
     'task_data',
     'task_binding',
     'mechanics_object',
+    'retained_observable',
   ]);
   const objectiveItems = Object.values(registry.entities)
     .filter((entity) => entity.kind === 'objective_term')
     .filter((entity) =>
       entity.relations.some((relation) => {
         const related = registry.entities[relation.entity_id];
-        return related?.kind === 'graph_port' || related?.kind === 'mechanics_object';
+        return (
+          related?.kind === 'graph_port' ||
+          related?.kind === 'graph_edge' ||
+          related?.kind === 'mechanics_object' ||
+          related?.kind === 'retained_observable' ||
+          related?.kind === 'task_data'
+        );
       })
     );
 
