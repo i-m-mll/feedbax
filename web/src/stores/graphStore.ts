@@ -2548,6 +2548,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ...state.graph.nodes,
           [name]: spec,
         },
+        subgraphs: hasTemplate
+          ? {
+              ...(state.graph.subgraphs ?? {}),
+              [name]: component.template_graph!,
+            }
+          : state.graph.subgraphs,
       };
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
@@ -2562,6 +2568,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             selected: true,
           },
         },
+        subgraph_states: hasTemplate
+          ? {
+              ...(state.uiState.subgraph_states ?? {}),
+              [name]: component.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} },
+            }
+          : state.uiState.subgraph_states,
       };
       const nodes = buildNodes(graph, uiState).map((node) => ({
         ...node,

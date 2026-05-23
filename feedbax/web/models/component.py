@@ -39,3 +39,5 @@ class ComponentDefinition(BaseModel):
     is_composite: bool = False
     template_graph: Optional[GraphSpec] = None
     template_ui_state: Optional[GraphUIState] = None
+    template_id: Optional[str] = None
+    template_kind: Optional[str] = None

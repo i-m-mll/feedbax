@@ -26,4 +26,8 @@ export interface ComponentDefinition {
   template_graph?: GraphSpec;
   /** Default UI positions for nodes in template_graph. */
   template_ui_state?: GraphUIState;
+  /** Stable backend template id when this definition represents a built-in graph template. */
+  template_id?: string;
+  /** Backend-declared executability of template_graph. */
+  template_kind?: 'executable' | 'display';
 }

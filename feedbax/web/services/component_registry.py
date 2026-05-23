@@ -6,6 +6,11 @@ import importlib.util
 
 from feedbax.web.models.component import ComponentDefinition, PortTypeSpec, PortType
 from feedbax.web.models.graph import ComponentSpec, GraphSpec, GraphUIState, NodeUIState, ParamSchema, WireSpec
+from feedbax.graph_templates import (
+    BUILTIN_GRAPH_TEMPLATES,
+    simple_feedback_template_graph,
+    standard_network_subgraph,
+)
 
 if TYPE_CHECKING:
     from feedbax.web.models.graph import ParamValue
@@ -24,10 +29,26 @@ class ComponentMeta:
     is_composite: bool = False
     template_graph: Optional[GraphSpec] = None
     template_ui_state: Optional[GraphUIState] = None
+    template_id: Optional[str] = None
+    template_kind: Optional[str] = None
 
     @property
     def default_params(self) -> Dict[str, ParamValue]:
         return {schema.name: schema.default for schema in self.param_schema}
+
+
+def _template_ui_state(
+    positions: Dict[str, tuple[float, float]],
+    *,
+    subgraph_states: Optional[Dict[str, GraphUIState]] = None,
+) -> GraphUIState:
+    return GraphUIState(
+        node_states={
+            node_id: NodeUIState(position={"x": x, "y": y})
+            for node_id, (x, y) in positions.items()
+        },
+        subgraph_states=subgraph_states,
+    )
 
 
 class ComponentRegistry:
@@ -35,6 +56,90 @@ class ComponentRegistry:
         self._components: Dict[str, ComponentMeta] = {}
         self._register_builtins()
         self.load_user_components(Path.home() / '.feedbax' / 'components')
+
+    def _register_builtin_graph_templates(self) -> None:
+        metadata = {template.id: template for template in BUILTIN_GRAPH_TEMPLATES}
+
+        network_meta = metadata["feedbax.templates.network"]
+        network_graph = standard_network_subgraph(
+            input_size=6,
+            hidden_size=100,
+            out_size=2,
+            cell_type="GRU",
+            out_nonlinearity="tanh",
+        )
+        self.register(
+            ComponentMeta(
+                name=network_meta.name,
+                category=network_meta.category,
+                description=network_meta.description,
+                param_schema=[],
+                input_ports=list(network_graph.input_ports),
+                output_ports=list(network_graph.output_ports),
+                icon='CircuitBoard',
+                is_composite=True,
+                port_types=PortTypeSpec(
+                    inputs={
+                        'input': PortType(dtype='vector'),
+                        'feedback': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'output': PortType(dtype='vector'),
+                        'hidden': PortType(dtype='vector'),
+                    },
+                ),
+                template_graph=network_graph,
+                template_ui_state=_template_ui_state(
+                    {
+                        'input_mux': (80, 160),
+                        'cell': (280, 160),
+                        'readout': (500, 160),
+                    }
+                ),
+                template_id=network_meta.id,
+                template_kind=network_meta.kind,
+            )
+        )
+
+        feedback_meta = metadata["feedbax.templates.simple_feedback"]
+        feedback_graph = simple_feedback_template_graph()
+        self.register(
+            ComponentMeta(
+                name=feedback_meta.name,
+                category=feedback_meta.category,
+                description=feedback_meta.description,
+                param_schema=[],
+                input_ports=list(feedback_graph.input_ports),
+                output_ports=list(feedback_graph.output_ports),
+                icon='Radar',
+                is_composite=True,
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='vector')},
+                    outputs={'effector': PortType(dtype='state')},
+                ),
+                template_graph=feedback_graph,
+                template_ui_state=_template_ui_state(
+                    {
+                        'feedback': (120, 260),
+                        'feedback_ravel': (120, 110),
+                        'network': (340, 180),
+                        'efferent': (560, 180),
+                        'mechanics': (780, 180),
+                    },
+                    subgraph_states={
+                        'network': _template_ui_state(
+                            {
+                                'input_mux': (80, 160),
+                                'cell': (280, 160),
+                                'readout': (500, 160),
+                            }
+                        )
+                    },
+                ),
+                template_id=feedback_meta.id,
+                template_kind=feedback_meta.kind,
+            )
+        )
 
     def _register_builtins(self) -> None:
         self.register(
@@ -110,6 +215,7 @@ class ComponentRegistry:
                 is_composite=True,
             )
         )
+        self._register_builtin_graph_templates()
         self.register(
             ComponentMeta(
                 name='PenzaiAdapter',
@@ -603,6 +709,7 @@ class ComponentRegistry:
                     ParamSchema(name='delay', type='int', default=5, min=0, required=True),
                     ParamSchema(name='noise_std', type='float', default=0.01, min=0, required=False),
                     ParamSchema(name='add_noise', type='bool', default=True, required=False),
+                    ParamSchema(name='input_shape', type='array', default=[1], required=False),
                 ],
                 input_ports=['input'],
                 output_ports=['output'],
@@ -1221,6 +1328,21 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='Ravel',
+                category='Signal Processing',
+                description='Flatten a PyTree value into a vector.',
+                param_schema=[],
+                input_ports=['input'],
+                output_ports=['output'],
+                icon='Layers',
+                port_types=PortTypeSpec(
+                    inputs={'input': PortType(dtype='any')},
+                    outputs={'output': PortType(dtype='vector')},
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='Demux',
                 category='Signal Processing',
                 description='Split vector into multiple outputs.',
@@ -1464,6 +1586,8 @@ class ComponentRegistry:
                 output_ports=_cde_output_ports,
             ),
             template_ui_state=standard_ui,
+            template_id='feedbax.templates.cde_standard',
+            template_kind='display',
         ))
 
         # ------------------------------------------------------------------ #
@@ -1526,6 +1650,8 @@ class ComponentRegistry:
                 output_ports=_cde_output_ports,
             ),
             template_ui_state=decay_ui,
+            template_id='feedbax.templates.cde_decay',
+            template_kind='display',
         ))
 
         # ------------------------------------------------------------------ #
@@ -1595,6 +1721,8 @@ class ComponentRegistry:
                 output_ports=_cde_output_ports,
             ),
             template_ui_state=antinf_ui,
+            template_id='feedbax.templates.cde_anti_nf',
+            template_kind='display',
         ))
 
         # ------------------------------------------------------------------ #
@@ -1668,6 +1796,8 @@ class ComponentRegistry:
                 output_ports=_cde_output_ports,
             ),
             template_ui_state=hybrid_ui,
+            template_id='feedbax.templates.cde_hybrid_v9b',
+            template_kind='display',
         ))
 
     def register(self, meta: ComponentMeta) -> None:
@@ -1742,4 +1872,6 @@ class ComponentRegistry:
             is_composite=meta.is_composite,
             template_graph=meta.template_graph,
             template_ui_state=meta.template_ui_state,
+            template_id=meta.template_id,
+            template_kind=meta.template_kind,
         )

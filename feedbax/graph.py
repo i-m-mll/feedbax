@@ -472,7 +472,10 @@ class Graph(Component):
                 for port_name in node.input_ports
                 if (node_name, port_name) in port_values
             }
-            node_outputs, state = node(node_inputs, state, key=node_key)
+            if isinstance(node, Graph):
+                node_outputs, state, _ = node.step(node_inputs, state, None, key=node_key)
+            else:
+                node_outputs, state = node(node_inputs, state, key=node_key)
 
             for port_name, value in node_outputs.items():
                 port_values[(node_name, port_name)] = value
@@ -534,11 +537,18 @@ class Graph(Component):
                 continue
             source_state = node_states.get(wire.source_node, None)
             if source_state is None:
+                metadata_value = self._initial_value_from_recurrent_initializer(wire)
+                if metadata_value is not None:
+                    init_values[target_key] = metadata_value
                 continue
             source_node = self.nodes[wire.source_node]
             node_outputs = source_node.initial_outputs(source_state)
             if wire.source_port in node_outputs:
                 init_values[target_key] = node_outputs[wire.source_port]
+                continue
+            metadata_value = self._initial_value_from_recurrent_initializer(wire)
+            if metadata_value is not None:
+                init_values[target_key] = metadata_value
 
         missing = [
             (wire.target_node, wire.target_port)
@@ -552,6 +562,22 @@ class Graph(Component):
             )
 
         return init_values
+
+    def _initial_value_from_recurrent_initializer(self, wire: Wire) -> PyTree | None:
+        initializer = wire.recurrent_initializer
+        if initializer is None:
+            return None
+        kind = initializer.get("kind")
+        if kind == "zeros":
+            shape = initializer.get("shape")
+            if shape is None:
+                return None
+            return jnp.zeros(tuple(int(dim) for dim in shape))
+        if kind == "constant":
+            if "value" not in initializer:
+                return None
+            return jnp.asarray(initializer["value"])
+        return None
 
     def _call_with_iteration(
         self,

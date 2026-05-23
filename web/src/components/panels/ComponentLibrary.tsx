@@ -102,10 +102,12 @@ const iconMap = {
   Cog,
 };
 
-export function ComponentLibrary() {
+type ComponentLibraryMode = 'components' | 'templates';
+
+export function ComponentLibrary({ mode = 'components' }: { mode?: ComponentLibraryMode }) {
   const [search, setSearch] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['Neural Networks'])
+    new Set(['Neural Networks', 'CDE Controllers', 'Sensorimotor'])
   );
   const { components, isLoading } = useComponents();
   const currentContext = useGraphStore((state) => state.currentContext);
@@ -115,11 +117,18 @@ export function ComponentLibrary() {
     [components]
   );
 
+  const templateComponents = useMemo(
+    () => components.filter((component) => Boolean(component.template_graph)),
+    [components]
+  );
+
   const { suggestedCategories, otherCategories } = useMemo<{
     suggestedCategories: Record<string, ComponentDefinition[]>;
     otherCategories: Record<string, ComponentDefinition[]>;
   }>(() => {
-    const modelComponents = components.filter((component) => component.category !== 'Tasks');
+    const modelComponents = components.filter(
+      (component) => component.category !== 'Tasks' && !component.template_graph
+    );
     const filtered = search
       ? modelComponents.filter((component) =>
           component.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -128,10 +137,7 @@ export function ComponentLibrary() {
       : modelComponents;
 
     const withoutPinned = filtered.filter((component) => !SUBGRAPH_TYPES.has(component.name));
-    const withoutCdeInExclusiveContext = isExclusiveContext
-      ? withoutPinned.filter((component) => !component.template_graph)
-      : withoutPinned;
-    const all = groupComponentsByCategory(withoutCdeInExclusiveContext);
+    const all = groupComponentsByCategory(withoutPinned);
 
     const suggested = CONTEXT_SUGGESTED_CATEGORIES[currentContext] ?? [];
 
@@ -163,6 +169,19 @@ export function ComponentLibrary() {
     return { suggestedCategories, otherCategories };
   }, [components, search, currentContext, isExclusiveContext]);
 
+  const templateCategories = useMemo(() => {
+    if (currentContext === 'penzai') {
+      return {};
+    }
+    const filtered = search
+      ? templateComponents.filter((component) =>
+          component.name.toLowerCase().includes(search.toLowerCase()) ||
+          component.description.toLowerCase().includes(search.toLowerCase())
+        )
+      : templateComponents;
+    return groupComponentsByCategory(filtered);
+  }, [currentContext, search, templateComponents]);
+
   const hasSuggestedCategories = Object.keys(suggestedCategories).length > 0;
   const hasOtherCategories = Object.keys(otherCategories).length > 0;
   const suggestedHeaderLabel = isExclusiveContext ? 'Available' : 'Suggested';
@@ -184,7 +203,7 @@ export function ComponentLibrary() {
       <div className="px-4 pb-4">
         <input
           type="text"
-          placeholder="Search components..."
+          placeholder={mode === 'templates' ? 'Search templates...' : 'Search components...'}
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
@@ -202,7 +221,7 @@ export function ComponentLibrary() {
             </p>
           </div>
         )}
-        {coreComponents.length > 0 && currentContext !== 'penzai' && (
+        {mode === 'components' && coreComponents.length > 0 && currentContext !== 'penzai' && (
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-[0.2em]">
               Structure
@@ -214,8 +233,21 @@ export function ComponentLibrary() {
             </div>
           </div>
         )}
-        {/* Suggested for context */}
-        {hasSuggestedCategories && (
+        {mode === 'templates' && Object.keys(templateCategories).length === 0 && !isLoading && (
+          <div className="rounded-lg border border-slate-100 bg-slate-50/80 p-3 text-xs text-slate-500">
+            No graph templates are available from the component registry.
+          </div>
+        )}
+        {mode === 'templates' && Object.entries(templateCategories).map(([category, comps]) => (
+          <CategorySection
+            key={category}
+            category={category}
+            components={comps}
+            expanded={expandedCategories.has(category)}
+            onToggle={() => toggleCategory(category)}
+          />
+        ))}
+        {mode === 'components' && hasSuggestedCategories && (
           <>
             <div className="text-[10px] text-brand-500 uppercase tracking-widest">
               {suggestedHeaderLabel}
@@ -232,16 +264,16 @@ export function ComponentLibrary() {
             {hasOtherCategories && <div className="border-t border-slate-100 my-1" />}
           </>
         )}
-        {/* Other categories */}
-        {Object.entries(otherCategories).map(([category, comps]) => (
-          <CategorySection
-            key={category}
-            category={category}
-            components={comps}
-            expanded={expandedCategories.has(category)}
-            onToggle={() => toggleCategory(category)}
-          />
-        ))}
+        {mode === 'components' &&
+          Object.entries(otherCategories).map(([category, comps]) => (
+            <CategorySection
+              key={category}
+              category={category}
+              components={comps}
+              expanded={expandedCategories.has(category)}
+              onToggle={() => toggleCategory(category)}
+            />
+          ))}
       </div>
     </div>
   );
@@ -282,8 +314,17 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
   const Icon = iconMap[component.icon as keyof typeof iconMap] ?? CircuitBoard;
   // Blank subgraph type containers (Subgraph, AcausalSystem) get purple "Type" badge.
   const isSubgraphType = SUBGRAPH_TYPES.has(component.name);
-  // Components with a template_graph are CDE presets: use violet accent to match old styling.
-  const isCdeTemplate = Boolean(component.template_graph);
+  const isTemplate = Boolean(component.template_graph);
+  const isDisplayTemplate = component.template_kind === 'display';
+  const isExecutableTemplate = component.template_kind === 'executable';
+  const templateBadgeLabel = isDisplayTemplate
+    ? 'Display'
+    : isExecutableTemplate
+      ? 'Executable'
+      : 'Template';
+  const templateSummary = component.template_graph
+    ? `${Object.keys(component.template_graph.nodes).length} nodes, ${component.template_graph.wires.length} wires`
+    : null;
 
   const onDragStart = (event: DragEvent<HTMLDivElement>) => {
     event.dataTransfer.setData('application/feedbax-component', component.name);
@@ -298,8 +339,10 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
         'rounded-xl bg-white/90 p-3 shadow-soft cursor-grab transition',
         isSubgraphType
           ? 'border border-violet-200 hover:border-violet-400 hover:-translate-y-0.5 hover:shadow'
-          : isCdeTemplate
-            ? 'border border-violet-100 hover:border-violet-300 hover:-translate-y-0.5 hover:shadow'
+          : isDisplayTemplate
+            ? 'border border-amber-100 hover:border-amber-300 hover:-translate-y-0.5 hover:shadow'
+            : isTemplate
+              ? 'border border-teal-100 hover:border-teal-300 hover:-translate-y-0.5 hover:shadow'
             : 'border border-slate-100 hover:border-slate-200 hover:-translate-y-0.5'
       )}
     >
@@ -307,11 +350,26 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
         <div
           className={clsx(
             'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
-            isSubgraphType ? 'bg-violet-100' : isCdeTemplate ? 'bg-violet-50' : 'bg-slate-100'
+            isSubgraphType
+              ? 'bg-violet-100'
+              : isDisplayTemplate
+                ? 'bg-amber-50'
+                : isTemplate
+                  ? 'bg-teal-50'
+                  : 'bg-slate-100'
           )}
         >
           <Icon
-            className={clsx('w-5 h-5', isSubgraphType ? 'text-violet-600' : isCdeTemplate ? 'text-violet-500' : 'text-slate-600')}
+            className={clsx(
+              'w-5 h-5',
+              isSubgraphType
+                ? 'text-violet-600'
+                : isDisplayTemplate
+                  ? 'text-amber-500'
+                  : isTemplate
+                    ? 'text-teal-600'
+                    : 'text-slate-600'
+            )}
           />
         </div>
         <div className="min-w-0">
@@ -322,18 +380,30 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
                 Type
               </span>
             )}
-            {!isSubgraphType && isCdeTemplate && (
-              <span className="shrink-0 rounded-full bg-violet-50 border border-violet-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-violet-500">
-                Preset
+            {!isSubgraphType && isTemplate && (
+              <span
+                className={clsx(
+                  'shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide',
+                  isDisplayTemplate
+                    ? 'border-amber-100 bg-amber-50 text-amber-600'
+                    : 'border-teal-100 bg-teal-50 text-teal-600'
+                )}
+              >
+                {templateBadgeLabel}
               </span>
             )}
-            {!isSubgraphType && !isCdeTemplate && component.is_composite && (
+            {!isSubgraphType && !isTemplate && component.is_composite && (
               <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
                 Composite
               </span>
             )}
           </div>
           <div className="text-xs text-slate-500 line-clamp-2">{component.description}</div>
+          {templateSummary && (
+            <div className="mt-1 text-[11px] uppercase tracking-wide text-slate-400">
+              {templateSummary}
+            </div>
+          )}
         </div>
       </div>
     </div>

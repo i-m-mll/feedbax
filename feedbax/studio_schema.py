@@ -91,9 +91,13 @@ class SelectorTargetSchema(StudioSchemaModel):
     label: str
     kind: Literal[
         "port",
+        "edge",
+        "graph_output",
+        "recurrent_carry",
         "task_data",
         "objective",
         "probe",
+        "state_path",
         "state_hint",
         "sample_leaf",
     ]
@@ -268,6 +272,7 @@ def enumerate_studio_schema_registry(
         )
         registry.ports = _enumerate_graph_ports(schema_graph, task_binding_spec)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
+        registry.selector_targets.extend(_graph_structural_selector_targets(schema_graph))
         registry.selector_targets.extend(_graph_probe_selector_targets(schema_graph))
         registry.issues.extend(
             validate_graph_connection_schema(
@@ -737,6 +742,41 @@ def _component_input_port_type(
     ):
         port_type = meta.port_types.inputs.get("in_0") or meta.port_types.inputs.get("in_1")
     return port_type
+
+
+def _value_schema_for_graph_port(
+    graph: GraphSpec,
+    node_id: str,
+    port: str,
+    direction: Literal["input", "output"],
+) -> ValueSchema:
+    from feedbax.web.services.component_registry import ComponentRegistry
+
+    node = graph.nodes.get(node_id)
+    if node is None:
+        return ValueSchema(
+            id=f"value:missing:{node_id}.{port}:{direction}",
+            label=f"{node_id}.{port}",
+            kind="unknown",
+            origin="unknown",
+        )
+    registry = ComponentRegistry()
+    meta = registry.get(node.type)
+    subgraph = graph.subgraphs.get(node_id) if graph.subgraphs else None
+    port_type = (
+        _component_input_port_type(meta, node.type, port)
+        if direction == "input"
+        else (meta.port_types.outputs.get(port) if meta and meta.port_types else None)
+    )
+    return _port_schema(
+        node_id=node_id,
+        component_type=node.type,
+        node_params=node.params,
+        port=port,
+        direction=direction,
+        port_type=port_type,
+        subgraph=subgraph,
+    ).value_schema
 
 
 def _port_schema(
@@ -1678,8 +1718,100 @@ def _port_selector_targets(ports: list[PortSchema]) -> list[SelectorTargetSchema
                 value_schema=port.value_schema,
                 origin=port.origin,
                 source={"port_id": port.id, "direction": port.direction},
+                metadata={
+                    "retention_target": {
+                        "kind": "port",
+                        "selector": selector,
+                        "node_id": port.node_id,
+                        "port": port.port,
+                        "timing": port.direction,
+                    },
+                    "default_retention": {"mode": "trajectory"},
+                },
             )
         )
+    return targets
+
+
+def _graph_structural_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema]:
+    targets: list[SelectorTargetSchema] = []
+    for output_name, binding in graph.output_bindings.items():
+        node_id, port = binding
+        selector = f"graph_output:{output_name}"
+        port_schema = _value_schema_for_graph_port(graph, node_id, port, "output")
+        targets.append(
+            SelectorTargetSchema(
+                id=f"selector:{selector}",
+                label=f"Graph output {output_name}",
+                kind="graph_output",
+                selector=selector,
+                value_schema=port_schema,
+                origin=port_schema.origin,
+                source={"output_name": output_name, "node_id": node_id, "port": port},
+                metadata={
+                    "retention_target": {
+                        "kind": "graph_output",
+                        "selector": selector,
+                        "node_id": node_id,
+                        "port": port,
+                    },
+                    "default_retention": {"mode": "trajectory"},
+                },
+            )
+        )
+    for index, wire in enumerate(graph.wires):
+        edge_selector = (
+            f"edge:{wire.source_node}.{wire.source_port}->"
+            f"{wire.target_node}.{wire.target_port}"
+        )
+        source_schema = _value_schema_for_graph_port(
+            graph,
+            wire.source_node,
+            wire.source_port,
+            "output",
+        )
+        kind: Literal["edge", "recurrent_carry"] = (
+            "recurrent_carry" if wire.temporality == "recurrent" else "edge"
+        )
+        targets.append(
+            SelectorTargetSchema(
+                id=f"selector:{edge_selector}",
+                label=(
+                    f"{wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port}"
+                ),
+                kind=kind,
+                selector=edge_selector,
+                value_schema=source_schema,
+                origin=source_schema.origin,
+                source={
+                    "wire_index": index,
+                    "source_node": wire.source_node,
+                    "source_port": wire.source_port,
+                    "target_node": wire.target_node,
+                    "target_port": wire.target_port,
+                    "temporality": wire.temporality,
+                },
+                metadata={
+                    "retention_target": {
+                        "kind": kind,
+                        "selector": edge_selector,
+                        "edge_id": edge_selector,
+                        "node_id": wire.source_node,
+                        "port": wire.source_port,
+                        "timing": "step",
+                    },
+                    "default_retention": {
+                        "mode": "window" if wire.temporality == "recurrent" else "trajectory",
+                        "window_size": 1 if wire.temporality == "recurrent" else None,
+                    },
+                },
+            )
+        )
+    if graph.retained_observables:
+        for observable in graph.retained_observables:
+            selector = _retained_observable_selector(observable)
+            targets.append(_selector_target_from_retained_observable(observable, selector))
     return targets
 
 
@@ -1844,34 +1976,107 @@ def _objective_selector_targets(
 
 
 def _explicit_probe_selector_targets(
-    probe_specs: list[dict[str, Any]],
+    probe_specs: list[Any],
 ) -> list[SelectorTargetSchema]:
     targets: list[SelectorTargetSchema] = []
     for index, probe in enumerate(probe_specs):
-        selector = probe.get("selector") or probe.get("id")
+        probe_dict = (
+            probe.model_dump(mode="json", exclude_none=True)
+            if hasattr(probe, "model_dump")
+            else probe
+        )
+        if not isinstance(probe_dict, dict):
+            continue
+        selector = _retained_observable_selector(probe_dict)
         if not isinstance(selector, str) or not selector:
             continue
-        if ":" not in selector:
-            selector = f"probe:{selector}"
-        targets.append(
-            SelectorTargetSchema(
-                id=f"selector:{selector}",
-                label=str(probe.get("label") or selector),
-                kind="probe",
-                selector=selector,
-                value_schema=ValueSchema(
-                    id=f"value:{selector}",
-                    label=str(probe.get("label") or selector),
-                    kind="probe",
-                    dtype=probe.get("dtype") if isinstance(probe.get("dtype"), str) else None,
-                    origin="declared",
-                ),
-                origin="declared",
-                source={"probe_specs_index": index},
-                metadata={key: value for key, value in probe.items() if key != "selector"},
-            )
-        )
+        target = _selector_target_from_retained_observable(probe_dict, selector)
+        target.source["probe_specs_index"] = index
+        targets.append(target)
     return targets
+
+
+def _retained_observable_selector(observable: Any) -> str:
+    if hasattr(observable, "model_dump"):
+        observable = observable.model_dump(mode="json", exclude_none=True)
+    if not isinstance(observable, dict):
+        return ""
+    target = observable.get("target")
+    if isinstance(target, dict) and isinstance(target.get("selector"), str):
+        return target["selector"]
+    selector = observable.get("selector") or observable.get("id")
+    if not isinstance(selector, str):
+        return ""
+    if ":" not in selector:
+        return f"probe:{selector}"
+    return selector
+
+
+def _selector_target_from_retained_observable(
+    observable: Any,
+    selector: str,
+) -> SelectorTargetSchema:
+    if hasattr(observable, "model_dump"):
+        observable = observable.model_dump(mode="json", exclude_none=True)
+    observable = observable if isinstance(observable, dict) else {}
+    target = observable.get("target") if isinstance(observable.get("target"), dict) else {}
+    value_schema = observable.get("value_schema")
+    retention = observable.get("retention") if isinstance(observable.get("retention"), dict) else {}
+    label = str(observable.get("label") or selector)
+    target_kind = str(target.get("kind") or "")
+    selector_kind: Literal["probe", "port", "edge", "graph_output", "recurrent_carry", "state_path", "task_data"]
+    if target_kind in {
+        "port",
+        "edge",
+        "graph_output",
+        "recurrent_carry",
+        "state_path",
+        "task_data",
+    }:
+        selector_kind = target_kind  # type: ignore[assignment]
+    elif selector.startswith("port:"):
+        selector_kind = "port"
+    elif selector.startswith("edge:"):
+        selector_kind = "edge"
+    elif selector.startswith("graph_output:"):
+        selector_kind = "graph_output"
+    elif selector.startswith("path:"):
+        selector_kind = "state_path"
+    elif selector.startswith("task_data:"):
+        selector_kind = "task_data"
+    else:
+        selector_kind = "probe"
+    return SelectorTargetSchema(
+        id=f"selector:{selector}",
+        label=label,
+        kind=selector_kind,
+        selector=selector,
+        value_schema=ValueSchema(
+            id=f"value:{selector}",
+            label=label,
+            kind="retained_observable",
+            dtype=value_schema.get("dtype") if isinstance(value_schema, dict) else None,
+            shape=value_schema.get("shape") if isinstance(value_schema, dict) else None,
+            units=value_schema.get("units") if isinstance(value_schema, dict) else None,
+            frame=value_schema.get("frame") if isinstance(value_schema, dict) else None,
+            origin="declared",
+            metadata={"retention": retention},
+        ),
+        origin="declared",
+        source={
+            "retained_observable_id": observable.get("id"),
+            "target": target,
+        },
+        metadata={
+            "retention_target": target or {"kind": selector_kind, "selector": selector},
+            "retention": retention,
+            **{
+                key: value
+                for key, value in observable.items()
+                if key not in {"selector", "target", "retention", "value_schema"}
+            },
+        },
+    )
 
 
 def _known_state_hint_targets() -> list[SelectorTargetSchema]:

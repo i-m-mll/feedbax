@@ -8,6 +8,7 @@ import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 import jax
+from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -19,6 +20,8 @@ def _activation_fn(name: str) -> Callable:
     mapping = {
         "relu": jax.nn.relu,
         "tanh": jax.nn.tanh,
+        "sigmoid": jax.nn.sigmoid,
+        "softmax": jax.nn.softmax,
         "identity": lambda x: x,
     }
     return mapping.get(name, jax.nn.relu)
@@ -92,6 +95,17 @@ class Constant(Component):
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         return {"output": self.value}, state
+
+
+class Ravel(Component):
+    """Flatten a PyTree input to a vector."""
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        output, _ = ravel_pytree(inputs["input"])
+        return {"output": output}, state
 
 
 class _StepSource(Component):
@@ -289,18 +303,30 @@ class Linear(Component):
     output_ports = ("output",)
 
     layer: eqx.nn.Linear
+    activation: Callable = field(static=True)
+    activation_name: str = field(static=True)
     input_size: int = field(static=True)
     output_size: int = field(static=True)
     use_bias: bool = field(static=True)
 
-    def __init__(self, input_size: int, output_size: int, use_bias: bool = True, *, key: PRNGKeyArray):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        use_bias: bool = True,
+        activation: str = "identity",
+        *,
+        key: PRNGKeyArray,
+    ):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.use_bias = bool(use_bias)
+        self.activation_name = activation
+        self.activation = _activation_fn(self.activation_name)
         self.layer = eqx.nn.Linear(self.input_size, self.output_size, use_bias=self.use_bias, key=key)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        output = self.layer(inputs["input"])
+        output = self.activation(self.layer(inputs["input"]))
         return {"output": output}, state
 
 
@@ -354,6 +380,13 @@ class MLP(Component):
         return {"output": x}, state
 
 
+class GRUState(Module):
+    """State view for a leaf GRU cell."""
+
+    hidden: Array
+    output: Array
+
+
 class GRU(Component):
     """Standalone GRU cell."""
 
@@ -363,16 +396,31 @@ class GRU(Component):
     cell: eqx.nn.GRUCell
     input_size: int = field(static=True)
     hidden_size: int = field(static=True)
+    state_index: StateIndex
+    _initial_state: GRUState = field(static=True)
 
     def __init__(self, input_size: int, hidden_size: int, *, key: PRNGKeyArray):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
         self.cell = eqx.nn.GRUCell(self.input_size, self.hidden_size, key=key)
+        hidden = jnp.zeros(self.hidden_size)
+        self._initial_state = GRUState(hidden=hidden, output=hidden)
+        self.state_index = StateIndex(self._initial_state)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        hidden = inputs["hidden"]
+        current_state: GRUState = state.get(self.state_index)
+        hidden = inputs.get("hidden", current_state.hidden)
         new_hidden = self.cell(inputs["input"], hidden)
+        state = state.set(self.state_index, GRUState(hidden=new_hidden, output=new_hidden))
         return {"output": new_hidden, "hidden": new_hidden}, state
+
+
+class LSTMState(Module):
+    """State view for a leaf LSTM cell."""
+
+    hidden: Array
+    cell: Array
+    output: Array
 
 
 class LSTM(Component):
@@ -384,16 +432,27 @@ class LSTM(Component):
     cell: eqx.nn.LSTMCell
     input_size: int = field(static=True)
     hidden_size: int = field(static=True)
+    state_index: StateIndex
+    _initial_state: LSTMState = field(static=True)
 
     def __init__(self, input_size: int, hidden_size: int, *, key: PRNGKeyArray):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
         self.cell = eqx.nn.LSTMCell(self.input_size, self.hidden_size, key=key)
+        hidden = jnp.zeros(self.hidden_size)
+        cell = jnp.zeros(self.hidden_size)
+        self._initial_state = LSTMState(hidden=hidden, cell=cell, output=hidden)
+        self.state_index = StateIndex(self._initial_state)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        hidden = inputs["hidden"]
-        cell_state = inputs["cell"]
-        new_hidden, new_cell = self.cell(inputs["input"], hidden, cell_state)
+        current_state: LSTMState = state.get(self.state_index)
+        hidden = inputs.get("hidden", current_state.hidden)
+        cell_state = inputs.get("cell", current_state.cell)
+        new_hidden, new_cell = self.cell(inputs["input"], (hidden, cell_state), key=key)
+        state = state.set(
+            self.state_index,
+            LSTMState(hidden=new_hidden, cell=new_cell, output=new_hidden),
+        )
         return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
 
 
@@ -423,7 +482,15 @@ class Mux(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        parts = [jnp.atleast_1d(inputs[f"in_{i}"]) for i in range(self.n_inputs)]
+        parts = []
+        for i in range(self.n_inputs):
+            port = f"in_{i}"
+            if port not in inputs:
+                continue
+            flat, _ = ravel_pytree(inputs[port])
+            parts.append(jnp.atleast_1d(flat))
+        if not parts:
+            raise ValueError("Mux requires at least one connected input")
         output = jnp.concatenate(parts, axis=-1)
         return {"output": output}, state
 

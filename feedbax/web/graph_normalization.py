@@ -170,6 +170,13 @@ def _network_output_ports(output_ports: list[str]) -> list[str]:
     return list(dict.fromkeys(ports))
 
 
+def _is_auto_generated_network_subgraph(subgraph: GraphSpec) -> bool:
+    return bool(
+        subgraph.metadata
+        and subgraph.metadata.description == "Auto-generated Network subgraph"
+    )
+
+
 def _unwrap_legacy_network_model_layer(subgraph: GraphSpec) -> GraphSpec:
     """Collapse the old Network -> model wrapper when it is only a boundary proxy."""
     if set(subgraph.nodes) != {"model"}:
@@ -406,6 +413,8 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
         for node_id, subgraph in subgraphs.items():
             node = nodes.get(node_id)
             if node is not None and node.type == "Network":
+                if node_id in generated_subgraphs or _is_auto_generated_network_subgraph(subgraph):
+                    continue
                 nodes[node_id] = node.model_copy(
                     update={
                         "input_ports": list(subgraph.input_ports),

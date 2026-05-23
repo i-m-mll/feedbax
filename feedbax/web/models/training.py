@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from feedbax.web.models.graph import ParamValue
+from feedbax.web.models.graph import ParamValue, RetentionPolicySpec
 
 
 class OptimizerSpec(BaseModel):
@@ -35,6 +35,9 @@ class LossTermSpec(BaseModel):
     label: str
     weight: float = 1.0
     selector: Optional[str] = None
+    target_selector: Optional[str] = None
+    target_value: Optional[Any] = None
+    retention: Optional[RetentionPolicySpec] = None
     norm: Optional[Literal["squared_l2", "l2", "l1", "huber"]] = None
     time_agg: Optional[TimeAggregationSpec] = None
     children: Optional[Dict[str, "LossTermSpec"]] = None

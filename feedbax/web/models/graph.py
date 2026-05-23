@@ -84,6 +84,54 @@ class BarnacleSpec(BaseModel):
     transform: str = ""
 
 
+class RetentionPolicySpec(BaseModel):
+    """How long a selected observable must be retained during execution."""
+
+    mode: Literal["stream", "window", "trajectory"] = "trajectory"
+    window_size: Optional[int] = None
+    order: Optional[int] = None
+    reason: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RetainedObservableTargetSpec(BaseModel):
+    """Target of a retained observable/probe."""
+
+    kind: Literal[
+        "port",
+        "edge",
+        "graph_output",
+        "recurrent_carry",
+        "state_path",
+        "task_data",
+    ]
+    selector: str
+    node_id: Optional[str] = None
+    port: Optional[str] = None
+    edge_id: Optional[str] = None
+    path: Optional[str] = None
+    timing: Optional[Literal["input", "output", "step", "initial", "final"]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RetainedObservableSpec(BaseModel):
+    """Declarative probe/data-retention request.
+
+    This replaces treating probes as default graph nodes. A retained
+    observable may attach to a port, edge, graph output, recurrent carry,
+    state path, or task data selector, and can be consumed by losses,
+    rollout artifacts, Studio Data projection, or analysis.
+    """
+
+    id: str = Field(default_factory=lambda: f"observable:{uuid.uuid4().hex}")
+    label: Optional[str] = None
+    selector: Optional[str] = None
+    target: Optional[RetainedObservableTargetSpec] = None
+    retention: RetentionPolicySpec = Field(default_factory=RetentionPolicySpec)
+    value_schema: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class GraphMetadata(BaseModel):
     """Metadata for a graph."""
 
@@ -109,6 +157,7 @@ class GraphSpec(BaseModel):
     barnacles: Optional[Dict[str, List[BarnacleSpec]]] = None
     user_ports: Optional[Dict[str, UserPortSpec]] = None
     taps: Optional[List[TapSpec]] = None
+    retained_observables: Optional[List[RetainedObservableSpec]] = None
     metadata: Optional[GraphMetadata] = None
 
 
@@ -412,6 +461,8 @@ class StudioScenarioSpec(BaseModel):
     these typed fields rather than replacing this workspace boundary.
     """
 
+    model_config = ConfigDict(validate_assignment=True)
+
     id: str
     schema_version: str = STUDIO_SCENARIO_SCHEMA_VERSION
     label: str
@@ -423,7 +474,7 @@ class StudioScenarioSpec(BaseModel):
     task_spec: Optional[Dict[str, Any]] = None
     task_binding_spec: Optional[StudioTaskBindingSpec] = None
     objective_spec: Optional[Dict[str, Any]] = None
-    probe_specs: List[Dict[str, Any]] = Field(default_factory=list)
+    probe_specs: List[RetainedObservableSpec] = Field(default_factory=list)
     temporal_spec: Optional[Dict[str, Any]] = None
     biomechanics_spec: Optional[Dict[str, Any]] = None
     analysis_spec: Optional[Dict[str, Any]] = None

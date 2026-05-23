@@ -751,6 +751,10 @@ def _extract_graph_params(
         "mechanics_node_id": lowering.mechanics_node_id,
         "mechanics_input_port": lowering.mechanics_input_port,
         "action_path": lowering.action_path,
+        "controller_kind": "legacy_simple_staged"
+        if network_node.get("type") == "SimpleStagedNetwork"
+        else "graph",
+        "network_subgraph": None,
     }
 
     outer_params = network_node.get("params", {})
@@ -807,6 +811,7 @@ def _extract_graph_params(
             f"Network node {network_node_id!r} has no subgraph. "
             "Open it in Studio to generate the internal architecture, then save again."
         )
+    result["network_subgraph"] = network_subgraph
 
     sub_nodes = network_subgraph.get("nodes", {})
     # Find the hidden cell node (GRU or LSTM)
@@ -909,6 +914,9 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         from feedbax.mechanics.skeleton.pointmass import PointMass
         from feedbax.nn import SimpleStagedNetwork
         from feedbax.training.rl.tasks import reach_task_params, target_at_t
+        from feedbax.graph import init_state_from_component
+        from feedbax.web.models.graph import GraphSpec
+        from feedbax.web.serialization import spec_to_graph
 
     except ImportError as exc:
         _emit(
@@ -1017,14 +1025,32 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
     # ------------------------------------------------------------------
 
     hidden_size = graph_params["hidden_size"]
-    controller = SimpleStagedNetwork(
-        input_size=OBS_DIM,
-        hidden_size=hidden_size,
-        out_size=graph_params["out_size"],
-        hidden_type=graph_params["hidden_type"],
-        out_nonlinearity=graph_params["out_nonlinearity"],
-        key=ctrl_key,
-    )
+    controller_kind = graph_params.get("controller_kind", "legacy_simple_staged")
+    if controller_kind == "graph":
+        network_subgraph = graph_params.get("network_subgraph")
+        if not isinstance(network_subgraph, dict):
+            raise ValueError("Network graph bridge requires a serialized Network subgraph")
+        controller = spec_to_graph(GraphSpec.model_validate(network_subgraph), {})
+        initial_controller_state_template = init_state_from_component(controller)
+        initial_controller_cycles_template = controller.initial_cycle_port_values(
+            initial_controller_state_template
+        )
+    else:
+        if graph_params["hidden_type"] is eqx.nn.LSTMCell:
+            raise ValueError(
+                "Legacy SimpleStagedNetwork worker bridge does not support LSTM; "
+                "use a Network graph subgraph so recurrent carries are explicit."
+            )
+        controller = SimpleStagedNetwork(
+            input_size=OBS_DIM,
+            hidden_size=hidden_size,
+            out_size=graph_params["out_size"],
+            hidden_type=graph_params["hidden_type"],
+            out_nonlinearity=graph_params["out_nonlinearity"],
+            key=ctrl_key,
+        )
+        initial_controller_state_template = None
+        initial_controller_cycles_template = {}
 
     # ------------------------------------------------------------------
     # Apply spec overrides BEFORE JIT (cfg mutations must precede any
@@ -1104,14 +1130,23 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
             init_target_vel,
             init_phase,
         )
-        # Controller hidden state: initialize to zeros
         init_hidden = jnp.zeros(hidden_size)
+        if controller_kind == "graph":
+            init_controller_state = initial_controller_state_template
+            init_cycle_values = initial_controller_cycles_template
+        else:
+            init_controller_state = None
+            init_cycle_values = {}
 
         scan_keys = jr.split(episode_key, N_STEPS)
 
         def _step(carry, inputs):
             t_idx, _step_key = inputs
-            phys_s, act, hidden, _obs_prev = carry
+            if controller_kind == "graph":
+                phys_s, act, controller_state, controller_cycles, _obs_prev = carry
+                hidden = init_hidden
+            else:
+                phys_s, act, hidden, _obs_prev = carry
 
             phase = jnp.array([t_idx / N_STEPS])
             target_pos, target_vel = target_at_t(task_params, t_idx)
@@ -1123,15 +1158,23 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
                 phase,
             )
 
-            # GRU step: SimpleStagedNetwork wraps eqx.nn.GRUCell
-            # We call the GRU cell directly to get new hidden state
-            new_hidden = ctrl.hidden(obs, hidden)
-            # Readout
-            if ctrl.readout is not None:
-                raw_out = ctrl.readout(new_hidden)
-                action = ctrl.out_nonlinearity(raw_out)
+            if controller_kind == "graph":
+                controller_outputs, controller_state, controller_cycles = ctrl.step(
+                    {"input": obs},
+                    controller_state,
+                    controller_cycles,
+                    key=_step_key,
+                )
+                action = controller_outputs["output"]
+                new_hidden = controller_outputs.get("hidden", jnp.zeros(hidden_size))
             else:
-                action = ctrl.out_nonlinearity(new_hidden)
+                # Legacy compatibility bridge for old SimpleStagedNetwork specs.
+                new_hidden = ctrl.hidden(obs, hidden)
+                if ctrl.readout is not None:
+                    raw_out = ctrl.readout(new_hidden)
+                    action = ctrl.out_nonlinearity(raw_out)
+                else:
+                    action = ctrl.out_nonlinearity(new_hidden)
 
             # Physics substep
             def _substep(ps, _):
@@ -1147,11 +1190,17 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
                 aux=new_phys.aux,
             )
 
-            new_carry = (new_phys, action, new_hidden, obs)
+            if controller_kind == "graph":
+                new_carry = (new_phys, action, controller_state, controller_cycles, obs)
+            else:
+                new_carry = (new_phys, action, new_hidden, obs)
             output = (new_effector.pos, action, new_hidden, target_pos)
             return new_carry, output
 
-        init_carry = (phys, init_act, init_hidden, init_obs)
+        if controller_kind == "graph":
+            init_carry = (phys, init_act, init_controller_state, init_cycle_values, init_obs)
+        else:
+            init_carry = (phys, init_act, init_hidden, init_obs)
         t_idxs = jnp.arange(N_STEPS)
         _, (eff_traj, act_traj, hidden_traj, target_pos_traj) = jax.lax.scan(
             _step,

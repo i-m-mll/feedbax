@@ -15,6 +15,13 @@ from feedbax._model import (
 )
 from feedbax._selectors import Selection, select
 from feedbax.graph import Component, Graph, Wire, init_state_from_component
+from feedbax.graph_templates import (
+    BUILTIN_GRAPH_TEMPLATES,
+    GraphTemplateMetadata,
+    network_template_graph,
+    simple_feedback_template_graph,
+    standard_network_subgraph,
+)
 from feedbax._tree import (
     get_ensemble,
     is_type,
@@ -52,10 +59,12 @@ from feedbax.misc import is_module
 
 __all__ = [
     "AbstractModel",
+    "BUILTIN_GRAPH_TEMPLATES",
     "CDENetwork",
     "CDENetworkState",
     "Component",
     "Graph",
+    "GraphTemplateMetadata",
     "LOG_LEVEL",
     "Selection",
     "Wire",
@@ -72,9 +81,12 @@ __all__ = [
     "make_named_dict_subclass",
     "make_named_tuple_subclass",
     "move_level_to_outside",
+    "network_template_graph",
     "random_split_like_tree",
     "save",
     "select",
+    "simple_feedback_template_graph",
+    "standard_network_subgraph",
     "tree_array_bytes",
     "tree_call",
     "tree_concatenate",

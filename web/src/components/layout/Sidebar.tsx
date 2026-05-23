@@ -17,7 +17,7 @@ import {
 import { objectiveProjectionItems, workspaceProjectionItems } from '@/features/scenario/projections';
 import clsx from 'clsx';
 
-type ActiveTab = 'components';
+type ActiveTab = 'components' | 'templates';
 
 export function Sidebar() {
   const { leftSidebarWidth, leftSidebarVisible, setLeftSidebarWidth } =
@@ -42,21 +42,30 @@ export function Sidebar() {
       className="border-r border-slate-100 bg-white/90 backdrop-blur-sm flex flex-col relative shrink-0"
     >
       <div className="px-4 pt-4 pb-2 flex items-center">
-        <div className="flex gap-1">
-          <button
-            onClick={() => setActiveTab('components')}
-            className={clsx(
-              'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
-              isModelProjection && activeTab === 'components'
-                ? 'bg-slate-100 text-slate-700 font-semibold'
-                : 'text-slate-400 hover:text-slate-600'
-            )}
-          >
-            {isModelProjection ? 'Components' : topPane.active_projection}
-          </button>
-        </div>
+        {isModelProjection ? (
+          <div className="flex gap-1">
+            {(['components', 'templates'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={clsx(
+                  'text-xs uppercase tracking-[0.2em] px-2 py-1 rounded transition-colors',
+                  activeTab === tab
+                    ? 'bg-slate-100 text-slate-700 font-semibold'
+                    : 'text-slate-400 hover:text-slate-600'
+                )}
+              >
+                {tab === 'components' ? 'Components' : 'Templates'}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs uppercase tracking-[0.2em] px-2 py-1 text-slate-400">
+            {topPane.active_projection}
+          </div>
+        )}
       </div>
-      {isModelProjection && activeTab === 'components' && <ComponentLibrary />}
+      {isModelProjection && <ComponentLibrary mode={activeTab} />}
       {(topPane.active_projection === 'workspace' ||
         topPane.active_projection === 'objectives') && (
         <ProjectionSidebar projection={topPane.active_projection} />
