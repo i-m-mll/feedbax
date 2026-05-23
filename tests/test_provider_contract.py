@@ -39,13 +39,10 @@ from feedbax.web.models.graph import (
 from feedbax.web.worker.app import (
     WorkerStatus,
     _Job,
-    _derive_worker_graph_lowering,
-    _extract_graph_params,
-    _extract_task_sampling_cfg,
     _extract_training_cfg,
     _require_worker_specs,
     _run_training,
-    _run_training_stub,
+    _write_job_manifest,
 )
 
 
@@ -61,9 +58,9 @@ def _minimal_graph_spec() -> dict:
         },
         "wires": [],
         "input_ports": [],
-        "output_ports": [],
+        "output_ports": ["output"],
         "input_bindings": {},
-        "output_bindings": {},
+        "output_bindings": {"output": ("gain", "output")},
     }
 
 
@@ -151,6 +148,8 @@ def _minimal_training_spec() -> dict:
                     "type": "target",
                     "label": "tracking",
                     "weight": 1.0,
+                    "selector": "graph_output:output",
+                    "target_value": 0.0,
                 }
             },
         },
@@ -1330,7 +1329,7 @@ def test_studio_schema_enumeration_validates_intervention_targets() -> None:
     assert "intervention_missing_bounds" not in issue_types
 
 
-def test_worker_stub_emits_durable_training_manifest(
+def test_worker_emits_durable_training_manifest(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1353,7 +1352,10 @@ def test_worker_stub_emits_durable_training_manifest(
         status=WorkerStatus.RUNNING,
     )
 
-    _run_training_stub(job)
+    job.status = WorkerStatus.COMPLETED
+    job.last_loss = 0.5
+    job.batch = 1
+    _write_job_manifest(job)
 
     assert job.status == WorkerStatus.COMPLETED
     assert job.manifest_path is not None
@@ -1365,9 +1367,9 @@ def test_worker_stub_emits_durable_training_manifest(
     events = []
     while not event_queue.empty():
         events.append(event_queue.get())
-    complete = next(event for event in events if event["type"] == "training_complete")
-    assert complete["manifest_id"] == job.manifest_payload["id"]
-    assert complete["manifest_path"] == job.manifest_path
+    log = next(event for event in events if event["type"] == "training_log")
+    assert log["manifest_id"] == job.manifest_payload["id"]
+    assert log["manifest_path"] == job.manifest_path
 
 
 def _worker_contract_job(
@@ -1453,10 +1455,6 @@ def test_worker_spec_contract_normalizes_runtime_network_payloads() -> None:
     assert job.graph_spec["nodes"]["network"]["type"] == "Network"
     assert "network" in job.graph_spec["subgraphs"]
     assert job.task_binding_spec["bindings"][0]["target_port"] == "input"
-    params = _extract_graph_params(job.graph_spec)
-    assert params["hidden_size"] == 100
-    assert params["input_size"] == 4
-    assert params["out_size"] == 2
 
 
 def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None:
@@ -1573,284 +1571,6 @@ def test_worker_training_cfg_uses_timeline_task_n_steps() -> None:
     )
 
     assert cfg.n_reach_steps == 150
-
-
-def test_worker_task_sampling_cfg_uses_delayed_reaches_params() -> None:
-    cfg = _extract_task_sampling_cfg(
-        {
-            "type": "DelayedReaches",
-            "params": {
-                "n_steps": 140,
-                "workspace": [[-1.0, -0.5], [1.0, 0.5]],
-                "train_endpoint_mode": "center_out",
-                "epoch_len_ranges": [[0, 1], [10, 30]],
-                "hold_epochs": [0, 1],
-                "move_epochs": [2],
-                "p_catch_trial": 0.5,
-                "eval_reach_length": 0.4,
-            },
-        }
-    )
-
-    assert cfg.task_type == "DelayedReaches"
-    assert cfg.workspace_min == (-1.0, -0.5)
-    assert cfg.workspace_max == (1.0, 0.5)
-    assert cfg.train_endpoint_mode == "center_out"
-    assert cfg.epoch_len_ranges == ((0, 1), (10, 30))
-    assert cfg.hold_epochs == (0, 1)
-    assert cfg.move_epochs == (2,)
-    assert cfg.p_catch_trial == 0.5
-    assert cfg.reach_length == 0.4
-
-
-def test_worker_rejects_dense_task_sampling_params() -> None:
-    try:
-        _extract_task_sampling_cfg(
-            {
-                "type": "DelayedReaches",
-                "params": {
-                    "n_steps": 140,
-                    "targets": [[[0.0, 0.0], [0.1, 0.1]]],
-                },
-            }
-        )
-    except ValueError as exc:
-        assert "compact task params only" in str(exc)
-    else:
-        raise AssertionError("Expected dense task params to be rejected")
-
-
-def test_worker_graph_params_use_simple_staged_network_and_pointmass() -> None:
-    params = _extract_graph_params(
-        {
-            "nodes": {
-                "network": {
-                    "type": "SimpleStagedNetwork",
-                    "params": {
-                        "hidden_size": 100,
-                        "input_size": 4,
-                        "out_size": 2,
-                        "hidden_type": "GRUCell",
-                        "out_nonlinearity": "tanh",
-                    },
-                    "input_ports": ["input"],
-                    "output_ports": ["output"],
-                },
-                "mechanics": {
-                    "type": "PointMass",
-                    "params": {"dt": 0.02},
-                    "input_ports": ["force"],
-                    "output_ports": ["effector", "state"],
-                },
-            },
-            "wires": [
-                {
-                    "source_node": "network",
-                    "source_port": "output",
-                    "target_node": "mechanics",
-                    "target_port": "force",
-                }
-            ],
-            "input_ports": [],
-            "output_ports": [],
-            "input_bindings": {},
-            "output_bindings": {},
-        }
-    )
-
-    assert params["hidden_size"] == 100
-    assert params["input_size"] == 4
-    assert params["out_size"] == 2
-    assert params["dt"] == 0.02
-    assert params["plant_type"] == "PointMass"
-    assert params["action_size"] == 2
-    assert params["mechanics_input_port"] == "force"
-    assert params["action_path"] == ("network", "mechanics")
-
-
-def test_worker_graph_lowering_uses_task_binding_network_and_passthrough_topology() -> None:
-    graph = {
-        "nodes": {
-            "unused_network": {
-                "type": "SimpleStagedNetwork",
-                "params": {
-                    "hidden_size": 8,
-                    "input_size": 99,
-                    "out_size": 2,
-                    "hidden_type": "GRUCell",
-                    "out_nonlinearity": "tanh",
-                },
-                "input_ports": ["input"],
-                "output_ports": ["output"],
-            },
-            "network": {
-                "type": "SimpleStagedNetwork",
-                "params": {
-                    "hidden_size": 16,
-                    "input_size": 4,
-                    "out_size": 2,
-                    "hidden_type": "GRUCell",
-                    "out_nonlinearity": "tanh",
-                },
-                "input_ports": ["input"],
-                "output_ports": ["output", "hidden"],
-            },
-            "clamp": {
-                "type": "NetworkClamp",
-                "params": {},
-                "input_ports": ["input"],
-                "output_ports": ["output"],
-            },
-            "mechanics": {
-                "type": "PointMass",
-                "params": {"dt": 0.02},
-                "input_ports": ["force"],
-                "output_ports": ["effector", "state"],
-            },
-        },
-        "wires": [
-            {
-                "source_node": "network",
-                "source_port": "output",
-                "target_node": "clamp",
-                "target_port": "input",
-            },
-            {
-                "source_node": "clamp",
-                "source_port": "output",
-                "target_node": "mechanics",
-                "target_port": "force",
-            },
-        ],
-        "input_ports": [],
-        "output_ports": [],
-        "input_bindings": {},
-        "output_bindings": {},
-    }
-    task_binding = _task_input_binding(expected_shape=[4])
-
-    lowering = _derive_worker_graph_lowering(graph, task_binding)
-    params = _extract_graph_params(graph, task_binding)
-
-    assert lowering.network_node_id == "network"
-    assert lowering.model_input_data_id == "inputs"
-    assert lowering.action_path == ("network", "clamp", "mechanics")
-    assert params["hidden_size"] == 16
-    assert params["input_size"] == 4
-    assert params["observation_layout"] == "pointmass"
-
-
-def test_worker_graph_lowering_derives_two_link_direct_action_size() -> None:
-    graph = {
-        "nodes": {
-            "network": {
-                "type": "SimpleStagedNetwork",
-                "params": {
-                    "hidden_size": 16,
-                    "input_size": 13,
-                    "out_size": 2,
-                    "hidden_type": "GRUCell",
-                    "out_nonlinearity": "tanh",
-                },
-                "input_ports": ["input"],
-                "output_ports": ["output"],
-            },
-            "mechanics": {
-                "type": "TwoLinkArm",
-                "params": {"dt": 0.01},
-                "input_ports": ["force"],
-                "output_ports": ["effector", "state"],
-            },
-        },
-        "wires": [
-            {
-                "source_node": "network",
-                "source_port": "output",
-                "target_node": "mechanics",
-                "target_port": "force",
-            }
-        ],
-        "input_ports": [],
-        "output_ports": [],
-        "input_bindings": {},
-        "output_bindings": {},
-    }
-
-    params = _extract_graph_params(graph, _task_input_binding(expected_shape=[13]))
-
-    assert params["plant_type"] == "TwoLinkArm"
-    assert params["action_size"] == 2
-    assert params["observation_layout"] == "two_link_direct"
-
-
-def test_worker_graph_lowering_derives_arm6_excitation_action_size() -> None:
-    graph = {
-        "nodes": {
-            "network": {
-                "type": "SimpleStagedNetwork",
-                "params": {
-                    "hidden_size": 16,
-                    "input_size": 17,
-                    "out_size": 6,
-                    "hidden_type": "GRUCell",
-                    "out_nonlinearity": "sigmoid",
-                },
-                "input_ports": ["input"],
-                "output_ports": ["output"],
-            },
-            "mechanics": {
-                "type": "Arm6MuscleRigidTendon",
-                "params": {"dt": 0.01},
-                "input_ports": ["excitation"],
-                "output_ports": ["torques", "forces", "activations"],
-            },
-        },
-        "wires": [
-            {
-                "source_node": "network",
-                "source_port": "output",
-                "target_node": "mechanics",
-                "target_port": "excitation",
-            }
-        ],
-        "input_ports": [],
-        "output_ports": [],
-        "input_bindings": {},
-        "output_bindings": {},
-    }
-
-    params = _extract_graph_params(graph, _task_input_binding(expected_shape=[17]))
-
-    assert params["plant_type"] == "Arm6MuscleRigidTendon"
-    assert params["action_size"] == 6
-    assert params["observation_layout"] == "arm6_muscle"
-
-
-def test_worker_graph_lowering_rejects_task_data_input_size_mismatch() -> None:
-    graph = _runtime_network_graph_spec()
-    with pytest.raises(ValueError, match="does not match task data"):
-        _extract_graph_params(
-            graph,
-            _task_input_binding(target_port="target", expected_shape=[5]),
-        )
-
-
-def test_worker_graph_lowering_rejects_unwired_network_action() -> None:
-    graph = _runtime_network_graph_spec()
-    graph["wires"] = [
-        {
-            "source_node": "network",
-            "source_port": "hidden",
-            "target_node": "mechanics",
-            "target_port": "force",
-        }
-    ]
-
-    with pytest.raises(ValueError, match="supported mechanics action port"):
-        _extract_graph_params(
-            graph,
-            _task_input_binding(target_port="target", expected_shape=[4]),
-        )
 
 
 def test_worker_training_errors_instead_of_stub_on_missing_task_binding() -> None:

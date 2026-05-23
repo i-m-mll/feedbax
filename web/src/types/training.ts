@@ -1,4 +1,4 @@
-import type { ParamValue } from '@/types/graph';
+import type { ParamValue, RetentionPolicySpec } from '@/types/graph';
 
 export interface OptimizerSpec {
   type: string;
@@ -6,7 +6,7 @@ export interface OptimizerSpec {
 }
 
 export interface TimeAggregationSpec {
-  mode: 'all' | 'final' | 'range' | 'segment' | 'custom';
+  mode: 'all' | 'mean' | 'sum' | 'final' | 'range' | 'segment' | 'custom';
   start?: number;
   end?: number;
   segment_name?: string;
@@ -20,6 +20,9 @@ export interface LossTermSpec {
   label: string;
   weight: number;
   selector?: string;
+  target_selector?: string | null;
+  target_value?: unknown;
+  retention?: RetentionPolicySpec | null;
   norm?: 'squared_l2' | 'l2' | 'l1' | 'huber';
   time_agg?: TimeAggregationSpec;
   children?: Record<string, LossTermSpec>;
@@ -87,7 +90,7 @@ export interface LossValidationResult {
 
 export type NormFunction = 'squared_l2' | 'l2' | 'l1' | 'huber';
 
-export type TimeAggregationMode = 'all' | 'final' | 'range' | 'segment' | 'custom';
+export type TimeAggregationMode = 'all' | 'mean' | 'sum' | 'final' | 'range' | 'segment' | 'custom';
 
 export type DiscountType = 'none' | 'power' | 'linear';
 
@@ -100,6 +103,8 @@ export const NORM_LABELS: Record<NormFunction, string> = {
 
 export const TIME_AGG_LABELS: Record<TimeAggregationMode, string> = {
   all: 'All steps',
+  mean: 'Mean',
+  sum: 'Sum',
   final: 'Final step',
   range: 'Time range',
   segment: 'Segment',
@@ -114,20 +119,13 @@ export const DISCOUNT_LABELS: Record<DiscountType, string> = {
 
 // --- Training request payload types (Phase 6) ---
 
-/**
- * Derived training configuration extracted from the graph and UI controls.
- * Sent alongside the full graph_spec so the backend can use it directly
- * without re-parsing the graph on every start.
- */
+/** Runtime controls sent alongside the canonical GraphSpec. */
 export interface TrainingConfig {
   n_batches: number;
   batch_size: number;
   learning_rate: number;
   grad_clip: number;
-  hidden_dim: number;
-  network_type: string;
   n_reach_steps: number;
-  effort_weight: number;
 }
 
 /**

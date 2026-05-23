@@ -4,68 +4,18 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
-import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec, TrainingConfig } from '@/types/training';
 
 /**
- * Map from the Network node's hidden_type param to the canonical network_type
- * string expected by the backend training script.
- */
-const HIDDEN_TYPE_TO_NETWORK_TYPE: Record<string, string> = {
-  GRUCell: 'gru',
-  LSTMCell: 'lstm',
-  SimpleRNNCell: 'rnn',
-  CDECell: 'cde',
-  LeakyRNNCell: 'leaky_rnn',
-};
-
-/**
- * Extract network hyperparameters from a graph spec by finding the first node
- * whose component type is "Network".
- */
-function extractNetworkParams(
-  graph: GraphSpec
-): { hidden_dim: number; network_type: string } {
-  const networkNode = Object.values(graph.nodes).find(
-    (node) => node.type === 'Network'
-  );
-
-  if (!networkNode) {
-    return { hidden_dim: 64, network_type: 'gru' };
-  }
-
-  const hiddenDim =
-    typeof networkNode.params.hidden_size === 'number'
-      ? networkNode.params.hidden_size
-      : typeof networkNode.params.hidden_dim === 'number'
-      ? networkNode.params.hidden_dim
-      : 64;
-
-  const hiddenType =
-    typeof networkNode.params.hidden_type === 'string'
-      ? networkNode.params.hidden_type
-      : typeof networkNode.params.cell_type === 'string'
-      ? networkNode.params.cell_type
-      : 'GRUCell';
-
-  const networkType = HIDDEN_TYPE_TO_NETWORK_TYPE[hiddenType] ?? hiddenType.toLowerCase();
-
-  return { hidden_dim: hiddenDim, network_type: networkType };
-}
-
-/**
- * Build a TrainingConfig from the current graph and training spec.
- * Hardcoded fields (grad_clip, n_reach_steps, effort_weight) will be
- * configurable via UI in a future phase.
+ * Build runtime worker controls from task/training specs. Graph topology and
+ * model leaves are carried by GraphSpec, not inferred here.
  */
 function buildTrainingConfig(
-  graph: GraphSpec,
   task: TaskSpec,
   n_batches: number,
   batch_size: number,
   learning_rate: number
 ): TrainingConfig {
-  const { hidden_dim, network_type } = extractNetworkParams(graph);
   const n_reach_steps =
     typeof task.params?.n_steps === 'number'
       ? task.params.n_steps
@@ -76,10 +26,7 @@ function buildTrainingConfig(
     batch_size,
     learning_rate,
     grad_clip: 1.0,
-    hidden_dim,
-    network_type,
     n_reach_steps,
-    effort_weight: 2.5,
   };
 }
 
@@ -136,9 +83,11 @@ export function useTraining() {
           if (traj) {
             setLatestTrajectory({
               batch: payload.batch,
-              effector: traj.effector,
-              target: traj.target,
-              t: traj.t,
+              effector: Array.isArray(traj.effector) ? traj.effector : [],
+              target: Array.isArray(traj.target) ? traj.target : null,
+              t: Array.isArray(traj.t) ? traj.t : [],
+              observables: traj.observables ?? {},
+              outputs: traj.outputs ?? {},
             });
           }
         }
@@ -171,7 +120,6 @@ export function useTraining() {
           ? trainingSpec.optimizer.params.learning_rate
           : 0.001;
       const trainingConfig = buildTrainingConfig(
-        graph,
         taskSpec,
         trainingSpec.n_batches,
         trainingSpec.batch_size,
@@ -221,4 +169,4 @@ export function useTraining() {
 
 // Re-export for consumers that want to display a config summary without
 // triggering a full training start.
-export { extractNetworkParams, buildTrainingConfig };
+export { buildTrainingConfig };

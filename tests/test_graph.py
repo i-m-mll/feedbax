@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from feedbax._tree import filter_spec_leaves
-from feedbax.graph import Component, Graph, Wire, init_state_from_component
+from feedbax.graph import Component, Graph, GraphTraceRequest, Wire, init_state_from_component
 from feedbax.iterate import iterate_component
 from feedbax.misc import attr_str_tree_to_where_func
 
@@ -312,3 +312,79 @@ def test_graph_step_equivalent_to_call_with_iteration():
     out_manual = jnp.stack(out_history, axis=0)
 
     assert jnp.allclose(outputs_ref["out"], out_manual, atol=1e-7), (outputs_ref["out"], out_manual)
+
+
+def test_graph_step_with_trace_returns_selected_boundary_values():
+    graph = _make_cyclic_graph()
+    state = init_state_from_component(graph)
+    seed_cycle = {("a", "x"): jnp.array(0.0)}
+
+    outputs, state, cycle, trace = graph.step_with_trace(
+        {"input": jnp.array(4.0)},
+        state,
+        seed_cycle,
+        key=jax.random.PRNGKey(0),
+        trace=(
+            GraphTraceRequest(kind="port", selector="port:a.y", node="a", port="y"),
+            GraphTraceRequest(
+                kind="edge",
+                selector="edge:a.y->b.x",
+                source_node="a",
+                source_port="y",
+                target_node="b",
+                target_port="x",
+            ),
+            GraphTraceRequest(kind="graph_output", selector="graph_output:out", port="out"),
+            GraphTraceRequest(
+                kind="recurrent_carry",
+                selector="recurrent_carry:a.x",
+                node="a",
+                port="x",
+            ),
+        ),
+    )
+
+    assert outputs["out"] == jnp.array(3.0)
+    assert cycle[("a", "x")] == jnp.array(3.0)
+    assert trace["port:a.y"] == jnp.array(2.0)
+    assert trace["edge:a.y->b.x"] == jnp.array(2.0)
+    assert trace["graph_output:out"] == jnp.array(3.0)
+    assert trace["recurrent_carry:a.x"] == jnp.array(3.0)
+
+
+def test_parent_graph_threads_nested_recurrent_carry():
+    inner = Graph(
+        nodes={"inc": _AddOne()},
+        wires=(
+            Wire(
+                "inc",
+                "y",
+                "inc",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "constant", "value": 0.0},
+            ),
+        ),
+        input_ports=(),
+        output_ports=("out",),
+        input_bindings={},
+        output_bindings={"out": ("inc", "y")},
+    )
+    parent = Graph(
+        nodes={"inner": inner},
+        wires=(),
+        input_ports=(),
+        output_ports=("out",),
+        input_bindings={},
+        output_bindings={"out": ("inner", "out")},
+    )
+
+    assert parent._needs_iteration
+    outputs, _ = parent(
+        {},
+        init_state_from_component(parent),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert jnp.allclose(outputs["out"], jnp.array([1.0, 2.0, 3.0]))

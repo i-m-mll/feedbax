@@ -1,0 +1,343 @@
+"""Tests for retained-observable lowering and loss evaluation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import jax.numpy as jnp
+import pytest
+
+from feedbax.manifest import Provenance, load_manifest, write_training_run_manifest
+from feedbax.provider import provider_manifest, validate_graph_spec, validate_training_spec
+from feedbax.retained_observables import (
+    RetentionPlanError,
+    evaluate_loss_plan,
+    lower_retention_plan,
+    normalize_selector_ref,
+    retention_plan_to_json,
+)
+from feedbax.web.models.graph import (
+    ComponentSpec,
+    GraphSpec,
+    RetainedObservableSpec,
+    RetainedObservableTargetSpec,
+    RetentionPolicySpec,
+    WireSpec,
+)
+from feedbax.web.models.training import (
+    LossTermSpec,
+    OptimizerSpec,
+    TimeAggregationSpec,
+    TrainingSpec,
+)
+
+
+def _graph() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "network": ComponentSpec(
+                type="Network",
+                params={},
+                input_ports=["input"],
+                output_ports=["output", "hidden"],
+            ),
+            "plant": ComponentSpec(
+                type="PointMass",
+                params={},
+                input_ports=["force"],
+                output_ports=["effector"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="network",
+                source_port="output",
+                target_node="plant",
+                target_port="force",
+            ),
+            WireSpec(
+                source_node="network",
+                source_port="hidden",
+                target_node="network",
+                target_port="input",
+                temporality="recurrent",
+            ),
+        ],
+        output_ports=["effector"],
+        output_bindings={"effector": ("plant", "effector")},
+    )
+
+
+def _provider_graph() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 2.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("gain", "output")},
+    )
+
+
+def _training(loss: LossTermSpec) -> TrainingSpec:
+    return TrainingSpec(
+        optimizer=OptimizerSpec(type="adamw", params={"learning_rate": 0.001}),
+        loss=loss,
+        n_batches=1,
+        batch_size=2,
+    )
+
+
+def test_normalize_selector_refs_from_strings_and_dicts() -> None:
+    port = normalize_selector_ref("port:network.output")
+    task = normalize_selector_ref({"namespace": "task_data", "path": "targets.effector"})
+    state = normalize_selector_ref(
+        {"compact": "path:states.mechanics.effector.pos", "namespace": "state_path"}
+    )
+
+    assert port.kind == "port"
+    assert port.node_id == "network"
+    assert port.port == "output"
+    assert task.selector == "task_data:targets.effector"
+    assert task.kind == "task_data"
+    assert state.path == "states.mechanics.effector.pos"
+
+
+def test_lowering_merges_explicit_and_loss_retention_requirements() -> None:
+    graph = _graph()
+    graph.retained_observables = [
+        RetainedObservableSpec(
+            id="obs:network-output",
+            label="Network output",
+            target=RetainedObservableTargetSpec(
+                kind="port",
+                selector="port:network.output",
+                node_id="network",
+                port="output",
+            ),
+            retention=RetentionPolicySpec(mode="stream", reason="probe"),
+        )
+    ]
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Output tracking",
+            selector="port:network.output",
+            target_selector="task_data:targets.effector",
+            retention=RetentionPolicySpec(mode="trajectory", reason="loss"),
+            norm="squared_l2",
+        )
+    )
+
+    plan = lower_retention_plan(graph, training)
+    by_selector = plan.by_selector
+
+    assert set(by_selector) == {"port:network.output", "task_data:targets.effector"}
+    output = by_selector["port:network.output"]
+    assert output.id == "obs:network-output"
+    assert output.explicit is True
+    assert output.retention.mode == "trajectory"
+    assert output.retention.reasons == ("probe", "loss")
+    assert plan.loss_terms[0].source.selector == "port:network.output"
+    assert plan.loss_terms[0].target is not None
+    assert plan.loss_terms[0].target.selector == "task_data:targets.effector"
+
+
+def test_lowering_supports_structural_selector_kinds() -> None:
+    graph = _graph()
+    graph.retained_observables = [
+        RetainedObservableSpec(
+            selector="edge:network.output->plant.force",
+            retention=RetentionPolicySpec(mode="trajectory"),
+        ),
+        RetainedObservableSpec(
+            target=RetainedObservableTargetSpec(
+                kind="recurrent_carry",
+                selector="edge:network.hidden->network.input",
+            ),
+            retention=RetentionPolicySpec(mode="window", window_size=2),
+        ),
+        RetainedObservableSpec(selector="graph_output:effector"),
+        RetainedObservableSpec(selector="path:states.plant.effector.pos"),
+        RetainedObservableSpec(selector="task_data:targets.effector"),
+    ]
+
+    plan = lower_retention_plan(graph)
+
+    assert {
+        observable.selector.kind for observable in plan.observables
+    } == {"edge", "recurrent_carry", "graph_output", "state_path", "task_data"}
+
+
+def test_lowering_reports_pathful_errors_for_unknown_selectors() -> None:
+    graph = _graph()
+    graph.retained_observables = [RetainedObservableSpec(selector="port:missing.output")]
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph)
+
+    assert exc_info.value.selector == "port:missing.output"
+    assert exc_info.value.path == "/graph"
+    assert "Unknown node" in str(exc_info.value)
+
+
+def test_loss_target_value_norms_and_time_aggregation() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Final target",
+            selector="graph_output:effector",
+            target_value=[1.0, 1.0],
+            norm="l1",
+            time_agg=TimeAggregationSpec(mode="final"),
+        )
+    )
+    plan = lower_retention_plan(graph, training)
+
+    total, terms = evaluate_loss_plan(
+        plan.loss_terms,
+        {"graph_output:effector": jnp.asarray([[0.0, 1.0], [2.0, 3.0]])},
+    )
+
+    assert float(total) == pytest.approx(3.0)
+    assert float(terms["loss"]) == pytest.approx(3.0)
+
+
+def test_loss_target_selector_norms_and_range_aggregation() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Range target",
+            selector="port:network.output",
+            target_selector="task_data:targets.effector",
+            norm="squared_l2",
+            time_agg=TimeAggregationSpec(mode="range", start=1, end=3),
+        )
+    )
+    plan = lower_retention_plan(graph, training)
+
+    total, _terms = evaluate_loss_plan(
+        plan.loss_terms,
+        {
+            "port:network.output": jnp.asarray(
+                [[0.0, 0.0], [1.0, 1.0], [3.0, 2.0], [10.0, 10.0]]
+            ),
+            "task_data:targets.effector": jnp.asarray(
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 2.0], [10.0, 10.0]]
+            ),
+        },
+    )
+
+    # Selected timesteps are [1, 3): squared errors are 1 and 4; range uses mean.
+    assert float(total) == pytest.approx(2.5)
+
+
+def test_loss_supports_l2_huber_and_sum_modes() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="Composite",
+            label="Composite",
+            children={
+                "l2": LossTermSpec(
+                    type="TargetStateLoss",
+                    label="L2",
+                    selector="graph_output:effector",
+                    target_value=[0.0, 0.0],
+                    norm="l2",
+                    time_agg=TimeAggregationSpec(mode="sum"),
+                ),
+                "huber": LossTermSpec(
+                    type="TargetStateLoss",
+                    label="Huber",
+                    selector="port:network.output",
+                    target_value=[0.0, 0.0],
+                    norm="huber",
+                    time_agg=TimeAggregationSpec(mode="mean"),
+                ),
+            },
+        )
+    )
+    plan = lower_retention_plan(graph, training)
+
+    total, terms = evaluate_loss_plan(
+        plan.loss_terms,
+        {
+            "graph_output:effector": jnp.asarray([[3.0, 4.0], [0.0, 5.0]]),
+            "port:network.output": jnp.asarray([[0.5, 2.0], [0.0, 0.0]]),
+        },
+    )
+
+    assert float(terms["loss.children.l2"]) == pytest.approx(10.0)
+    assert float(terms["loss.children.huber"]) == pytest.approx((0.125 + 1.5) / 2)
+    assert float(total) == pytest.approx(10.8125)
+
+
+def test_provider_validation_uses_retention_lowering_for_loss_selectors() -> None:
+    graph = _provider_graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Output",
+            selector="graph_output:missing",
+            target_value=0.0,
+        )
+    )
+
+    result = validate_training_spec(training, graph_spec=graph)
+
+    assert result.valid is False
+    assert result.errors[0].type == "loss_graph_mismatch"
+    assert result.errors[0].location is not None
+    assert result.errors[0].location["selector"] == "graph_output:missing"
+
+
+def test_provider_validation_accepts_retained_observables_and_exposes_artifact_roles() -> None:
+    graph = _provider_graph()
+    graph.retained_observables = [RetainedObservableSpec(selector="graph_output:output")]
+
+    result = validate_graph_spec(graph)
+    manifest = provider_manifest()
+
+    assert result.valid is True
+    assert "retention_plan" in manifest.artifact_roles
+    assert "retained_observables" in manifest.artifact_roles
+
+
+def test_training_manifest_stores_retention_plan_and_observable_artifacts(tmp_path: Path) -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Output",
+            selector="graph_output:effector",
+            target_value=0.0,
+        )
+    )
+    plan = lower_retention_plan(graph, training)
+
+    _manifest, path = write_training_run_manifest(
+        job_id="job-retained",
+        total_batches=1,
+        training_spec=training.model_dump(mode="json", exclude_none=True),
+        graph_spec=graph.model_dump(mode="json", exclude_none=True),
+        retention_plan=retention_plan_to_json(plan),
+        retained_observables={"graph_output:effector": [[0.0, 1.0]]},
+        root=tmp_path / "runs",
+        provenance=Provenance(source_commit="abc123", dirty=False),
+    )
+
+    loaded = load_manifest(path)
+    roles = {artifact.role for artifact in loaded.artifacts}
+    assert {"retention_plan", "retained_observables"}.issubset(roles)
+    for artifact in loaded.artifacts:
+        if artifact.role in {"retention_plan", "retained_observables"}:
+            assert artifact.media_type == "application/json"
+            assert artifact.uri is not None
+            assert Path(artifact.uri).exists()

@@ -115,7 +115,7 @@ function validateTimeAggregation(
   path: string[],
   errors: ValidationError[]
 ): void {
-  const validModes = ['all', 'final', 'range', 'segment', 'custom'];
+  const validModes = ['all', 'mean', 'sum', 'final', 'range', 'segment', 'custom'];
   if (!validModes.includes(timeAgg.mode)) {
     errors.push({
       path,

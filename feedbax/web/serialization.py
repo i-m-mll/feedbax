@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
@@ -15,6 +14,7 @@ from feedbax.components import (
     Sum,
     Multiply,
     Constant,
+    Ravel,
     Ramp,
     Sine,
     Pulse,
@@ -23,10 +23,14 @@ from feedbax.components import (
     Noise,
     Linear,
     MLP,
+    Mux,
     GRU,
     LSTM,
     Spring,
     Damper,
+)
+from feedbax.graph_templates import (
+    standard_network_subgraph,
 )
 from feedbax.filters import FirstOrderFilter
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
@@ -62,7 +66,6 @@ from feedbax.penzai_component import (
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.web.models.graph import (
     ComponentSpec,
-    GraphMetadata,
     GraphSpec,
     WireSpec,
 )
@@ -125,45 +128,26 @@ def _lookup_defaults(component_registry: Any, name: str) -> dict[str, Any]:
     return {}
 
 
-def _recurrent_zero_initializer(width: int, *, state_slot: str) -> dict[str, Any]:
-    return {
-        "kind": "zeros",
-        "scope": "trial",
-        "shape": [width],
-        "source": "state_initializer",
-        "state_slot": state_slot,
-    }
-
-
-def _network_recurrent_wires(cell_type: str, hidden_size: int) -> list[WireSpec]:
-    wires = [
-        WireSpec(
-            source_node="cell",
-            source_port="hidden",
-            target_node="cell",
-            target_port="hidden",
-            temporality="recurrent",
-            recurrent_initializer=_recurrent_zero_initializer(
-                hidden_size,
-                state_slot="hidden",
-            ),
-        )
-    ]
-    if cell_type == "LSTM":
-        wires.append(
-            WireSpec(
-                source_node="cell",
-                source_port="cell",
-                target_node="cell",
-                target_port="cell",
-                temporality="recurrent",
-                recurrent_initializer=_recurrent_zero_initializer(
-                    hidden_size,
-                    state_slot="cell",
-                ),
-            )
-        )
-    return wires
+def _standard_network_subgraph_from_params(params: Mapping[str, Any]) -> GraphSpec | None:
+    try:
+        input_size = int(params["input_size"])
+        hidden_size = int(params["hidden_size"])
+        out_size_raw = params.get("out_size", params.get("output_size"))
+        if out_size_raw is None:
+            return None
+        out_size = int(out_size_raw)
+    except (KeyError, TypeError, ValueError):
+        return None
+    hidden_type = str(params.get("hidden_type", "GRUCell"))
+    cell_type = "LSTM" if hidden_type in {"LSTM", "LSTMCell"} else "GRU"
+    return standard_network_subgraph(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        out_size=out_size,
+        cell_type=cell_type,
+        out_nonlinearity=str(params.get("out_nonlinearity", "identity")),
+        description="Migrated legacy Network subgraph",
+    )
 
 
 def _migrate_spec(spec: GraphSpec) -> GraphSpec:
@@ -219,8 +203,14 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
     subgraphs = (
         {node_id: _migrate_spec(subgraph) for node_id, subgraph in spec.subgraphs.items()}
         if spec.subgraphs
-        else None
+        else {}
     )
+    for node_id, node_spec in nodes.items():
+        if node_spec.type != "Network" or node_id in subgraphs:
+            continue
+        subgraph = _standard_network_subgraph_from_params(node_spec.params)
+        if subgraph is not None:
+            subgraphs[node_id] = subgraph
     user_ports = dict(spec.user_ports) if spec.user_ports else None
     taps = list(spec.taps) if spec.taps else None
 
@@ -231,10 +221,11 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         output_ports=list(spec.output_ports),
         input_bindings=input_bindings,
         output_bindings=dict(spec.output_bindings),
-        subgraphs=subgraphs,
+        subgraphs=subgraphs or None,
         barnacles=spec.barnacles,
         user_ports=user_ports,
         taps=taps,
+        retained_observables=spec.retained_observables,
         metadata=spec.metadata,
     )
 
@@ -267,72 +258,14 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             hidden_type_name = type(component.hidden).__name__
             cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
             out_nonlinearity = _nonlinearity_name(component.out_nonlinearity)
-            now = datetime.now().isoformat()
-
-            # Standard Network subgraph: cell node + readout node
-            sub_nodes = {
-                "input_mux": ComponentSpec(
-                    type="Mux",
-                    params={"n_inputs": 2},
-                    input_ports=["in_0", "in_1"],
-                    output_ports=["output"],
-                ),
-                "cell": ComponentSpec(
-                    type=cell_type,
-                    params={
-                        "input_size": component.input_size,
-                        "hidden_size": component.hidden_size,
-                    },
-                    input_ports=["input", "hidden", "cell"]
-                    if cell_type == "LSTM"
-                    else ["input", "hidden"],
-                    output_ports=["output", "hidden", "cell"]
-                    if cell_type == "LSTM"
-                    else ["output", "hidden"],
-                ),
-                "readout": ComponentSpec(
-                    type="Linear",
-                    params={
-                        "input_size": component.hidden_size,
-                        "output_size": component.out_size,
-                        "use_bias": True,
-                        "activation": out_nonlinearity,
-                    },
-                    input_ports=["input"],
-                    output_ports=["output"],
-                ),
-            }
-            subgraphs[name] = GraphSpec(
-                nodes=sub_nodes,
-                wires=[
-                    WireSpec(
-                        source_node="input_mux",
-                        source_port="output",
-                        target_node="cell",
-                        target_port="input",
-                    ),
-                    WireSpec(
-                        source_node="cell",
-                        source_port="output",
-                        target_node="readout",
-                        target_port="input",
-                    ),
-                    *_network_recurrent_wires(cell_type, int(component.hidden_size)),
-                ],
-                input_ports=["input", "feedback"],
-                output_ports=["output", "hidden"],
-                input_bindings={"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")},
-                output_bindings={
-                    "output": ("readout", "output"),
-                    "hidden": ("cell", "hidden"),
-                },
-                metadata=GraphMetadata(
-                    name=f"{name} internals",
-                    description="Auto-generated Network subgraph",
-                    created_at=now,
-                    updated_at=now,
-                    version="1.0.0",
-                ),
+            subgraphs[name] = standard_network_subgraph(
+                input_size=component.input_size,
+                hidden_size=component.hidden_size,
+                out_size=component.out_size,
+                cell_type=cell_type,
+                out_nonlinearity=out_nonlinearity,
+                name=f"{name} internals",
+                description="Auto-generated Network subgraph",
             )
 
             params = {
@@ -382,6 +315,14 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="Constant",
                 params={"value": value},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Ravel):
+            nodes[name] = ComponentSpec(
+                type="Ravel",
+                params={},
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -463,7 +404,16 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                     "input_size": component.input_size,
                     "output_size": component.output_size,
                     "use_bias": component.use_bias,
+                    "activation": component.activation_name,
                 },
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Mux):
+            nodes[name] = ComponentSpec(
+                type="Mux",
+                params={"n_inputs": component.n_inputs},
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -582,6 +532,9 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "noise_std": noise_std,
                 "add_noise": component.add_noise,
             }
+            input_proto_leaves = jt.leaves(component.input_proto)
+            if len(input_proto_leaves) == 1 and hasattr(input_proto_leaves[0], "shape"):
+                params["input_shape"] = [int(dim) for dim in input_proto_leaves[0].shape]
             nodes[name] = ComponentSpec(
                 type="Channel",
                 params=params,
@@ -779,6 +732,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
         input_bindings=dict(graph.input_bindings),
         output_bindings=dict(graph.output_bindings),
         subgraphs=subgraphs or None,
+        retained_observables=getattr(graph, "retained_observables", None),
         metadata=None,
     )
 
@@ -814,7 +768,7 @@ def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     if plant_type == "TwoLinkArm":
         plant = DirectForceInput(TwoLinkArm())
     elif plant_type == "PointMass":
-        plant = DirectForceInput(PointMass())
+        plant = DirectForceInput(PointMass(mass=float(params.get("mass", 1.0))))
     else:
         raise ValueError(f"Unsupported plant_type '{plant_type}'")
     return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
@@ -827,7 +781,16 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     noise_func = None
     if add_noise and noise_std not in (None, 0, 0.0):
         noise_func = Normal(std=float(noise_std))
-    return Channel(delay=delay, noise_func=noise_func, add_noise=add_noise)
+    input_proto = None
+    input_shape = params.get("input_shape")
+    if isinstance(input_shape, (list, tuple)):
+        input_proto = jnp.zeros(tuple(int(dim) for dim in input_shape))
+    return Channel(
+        delay=delay,
+        noise_func=noise_func,
+        add_noise=add_noise,
+        input_proto=input_proto,
+    )
 
 
 def _build_filter(params: Mapping[str, Any]) -> FirstOrderFilter:
@@ -973,8 +936,13 @@ def _build_linear(params: Mapping[str, Any]) -> Linear:
         input_size=int(params.get("input_size", 1)),
         output_size=int(params.get("output_size", 1)),
         use_bias=bool(params.get("use_bias", True)),
+        activation=str(params.get("activation", "identity")),
         key=jr.PRNGKey(0),
     )
+
+
+def _build_mux(params: Mapping[str, Any]) -> Mux:
+    return Mux(n_inputs=int(params.get("n_inputs", 2)))
 
 
 def _build_gru(params: Mapping[str, Any]) -> GRU:
@@ -1092,8 +1060,10 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
                     f"Network node {node_name!r} has no subgraph. "
                     "Open it in Studio to generate the internal architecture, then save again."
                 )
-            build_params = _params_from_network_subgraph(subgraph, params)
-            nodes[node_name] = _build_network(build_params)
+            nodes[node_name] = spec_to_graph(subgraph, component_registry)
+            continue
+        if spec.subgraphs and node_name in spec.subgraphs:
+            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], component_registry)
             continue
         if node_spec.type == "Gain":
             nodes[node_name] = _build_gain(params)
@@ -1106,6 +1076,9 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             continue
         if node_spec.type == "Constant":
             nodes[node_name] = _build_constant(params)
+            continue
+        if node_spec.type == "Ravel":
+            nodes[node_name] = Ravel()
             continue
         if node_spec.type == "Ramp":
             nodes[node_name] = _build_ramp(params)
@@ -1130,6 +1103,9 @@ def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
             continue
         if node_spec.type == "MLP":
             nodes[node_name] = _build_mlp(params)
+            continue
+        if node_spec.type == "Mux":
+            nodes[node_name] = _build_mux(params)
             continue
         if node_spec.type == "GRU":
             nodes[node_name] = _build_gru(params)

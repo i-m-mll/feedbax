@@ -31,6 +31,8 @@ export const OBJECTIVE_TEMPORAL_MODE_OPTIONS: Array<{
   label: string;
 }> = [
   { value: 'all', label: 'Full trajectory' },
+  { value: 'mean', label: 'Mean' },
+  { value: 'sum', label: 'Sum' },
   { value: 'final', label: 'Final step' },
   { value: 'range', label: 'Range' },
   { value: 'segment', label: 'Segment' },
@@ -155,6 +157,7 @@ export function enrichObjectiveTermWithSelectorSchema(
       ...prefixedSelectorMetadata('source', term.source_selector),
       ...prefixedSelectorMetadata('target', term.target_selector),
       temporal_selector: term.temporal_selector ?? null,
+      retention: term.retention ?? term.metadata.retention ?? null,
     },
   };
 }
@@ -324,6 +327,19 @@ function timeAggregationFromObjective(
   return value as TimeAggregationSpec;
 }
 
+function retentionFromObjective(term: StudioObjectiveTermSpec): LossTermSpec['retention'] | undefined {
+  if (term.retention) return term.retention;
+  const metadataRetention = term.metadata.retention;
+  if (
+    metadataRetention &&
+    typeof metadataRetention === 'object' &&
+    'mode' in metadataRetention
+  ) {
+    return metadataRetention as LossTermSpec['retention'];
+  }
+  return undefined;
+}
+
 export function lossSpecFromObjectiveSpec(spec: StudioObjectiveSpec): LossTermSpec {
   const children: Record<string, LossTermSpec> = {};
   spec.terms.forEach((term, index) => {
@@ -334,6 +350,9 @@ export function lossSpecFromObjectiveSpec(spec: StudioObjectiveSpec): LossTermSp
       label: term.label,
       weight: term.weight,
       selector: term.source_selector?.compact,
+      target_selector: term.target_selector?.compact ?? null,
+      ...(term.target_value !== undefined ? { target_value: term.target_value } : {}),
+      retention: retentionFromObjective(term) ?? null,
       norm: normFromPenalty(term.penalty),
       time_agg: timeAggregationFromObjective(term.temporal_selector),
     };

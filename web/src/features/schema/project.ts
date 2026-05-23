@@ -1,5 +1,5 @@
 import type { ComponentDefinition } from '@/types/components';
-import type { GraphSpec } from '@/types/graph';
+import type { GraphSpec, RetainedObservableSpec } from '@/types/graph';
 import type {
   PortSchema,
   SelectorTargetSchema,
@@ -50,6 +50,7 @@ export function projectStudioSchema(
   markBoundPorts(ports, taskBindingSpec);
   const selectorTargets = [
     ...portSelectorTargets(ports),
+    ...graphStructuralSelectorTargets(schemaGraph, ports),
     ...taskDataSelectorTargets(taskData),
     ...knownStateHintTargets(),
   ];
@@ -580,6 +581,116 @@ function taskDataSelectorTargets(taskData: TaskDataSchema[]): SelectorTargetSche
     source: { task_data_id: item.id },
     metadata: {},
   }));
+}
+
+function graphStructuralSelectorTargets(
+  graph: GraphSpec,
+  ports: PortSchema[]
+): SelectorTargetSchema[] {
+  const targets: SelectorTargetSchema[] = [];
+  for (const [outputName, [nodeId, portName]] of Object.entries(graph.output_bindings)) {
+    const port = findPort(ports, nodeId, portName, 'output');
+    if (!port) continue;
+    const selector = `graph_output:${outputName}`;
+    targets.push({
+      id: `selector:${selector}`,
+      label: `Graph output ${outputName}`,
+      kind: 'graph_output',
+      selector,
+      value_schema: port.value_schema,
+      origin: port.origin,
+      source: { output_name: outputName, node_id: nodeId, port: portName },
+      metadata: {
+        retention_target: {
+          kind: 'graph_output',
+          selector,
+          node_id: nodeId,
+          port: portName,
+        },
+        default_retention: { mode: 'trajectory' },
+      },
+    });
+  }
+  graph.wires.forEach((wire, index) => {
+    const port = findPort(ports, wire.source_node, wire.source_port, 'output');
+    if (!port) return;
+    const selector = `edge:${wire.source_node}.${wire.source_port}->${wire.target_node}.${wire.target_port}`;
+    const kind = wire.temporality === 'recurrent' ? 'recurrent_carry' : 'edge';
+    targets.push({
+      id: `selector:${selector}`,
+      label: `${wire.source_node}.${wire.source_port} -> ${wire.target_node}.${wire.target_port}`,
+      kind,
+      selector,
+      value_schema: port.value_schema,
+      origin: port.origin,
+      source: {
+        wire_index: index,
+        source_node: wire.source_node,
+        source_port: wire.source_port,
+        target_node: wire.target_node,
+        target_port: wire.target_port,
+        temporality: wire.temporality ?? 'instant',
+      },
+      metadata: {
+        retention_target: {
+          kind,
+          selector,
+          edge_id: selector,
+          node_id: wire.source_node,
+          port: wire.source_port,
+          timing: 'step',
+        },
+        default_retention: {
+          mode: wire.temporality === 'recurrent' ? 'window' : 'trajectory',
+          window_size: wire.temporality === 'recurrent' ? 1 : null,
+        },
+      },
+    });
+  });
+  for (const observable of graph.retained_observables ?? []) {
+    targets.push(retainedObservableSelectorTarget(observable));
+  }
+  return targets;
+}
+
+function retainedObservableSelectorTarget(
+  observable: RetainedObservableSpec
+): SelectorTargetSchema {
+  const selector = observable.target?.selector ?? observable.selector ?? observable.id;
+  const compact = selector.includes(':') ? selector : `probe:${selector}`;
+  const targetKind = observable.target?.kind;
+  const kind =
+    targetKind === 'port' ||
+    targetKind === 'edge' ||
+    targetKind === 'graph_output' ||
+    targetKind === 'recurrent_carry' ||
+    targetKind === 'state_path' ||
+    targetKind === 'task_data'
+      ? targetKind
+      : 'retained_observable';
+  const valueSchema = observable.value_schema as ValueSchema | null | undefined;
+  return {
+    id: `selector:${compact}`,
+    label: observable.label ?? compact,
+    kind,
+    selector: compact,
+    value_schema: valueSchema ?? {
+      id: `value:${compact}`,
+      label: observable.label ?? compact,
+      kind: 'retained_observable',
+      origin: 'declared',
+      metadata: { retention: observable.retention },
+    },
+    origin: 'declared',
+    source: {
+      retained_observable_id: observable.id,
+      target: observable.target ?? null,
+    },
+    metadata: {
+      retention_target: observable.target ?? { kind, selector: compact },
+      retention: observable.retention,
+    },
+  };
 }
 
 function knownStateHintTargets(): SelectorTargetSchema[] {

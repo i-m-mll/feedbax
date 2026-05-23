@@ -87,6 +87,54 @@ describe('scenario objective operations', () => {
     });
   });
 
+  it('preserves target selectors, target values, and retention when lowering to training loss', () => {
+    const sourceSelector = {
+      namespace: 'graph_output' as const,
+      compact: 'graph_output:effector',
+      target_id: 'effector',
+      path: 'effector',
+      role: 'observed' as const,
+      metadata: {
+        graph_port_node_id: 'mechanics',
+        graph_port_name: 'effector',
+      },
+    };
+    const targetSelector = {
+      namespace: 'task_data' as const,
+      compact: 'task_data:targets.effector',
+      target_id: 'scenario:train',
+      path: 'targets.effector',
+      role: 'observed' as const,
+      metadata: {},
+    };
+    const term = createObjectiveTerm({
+      spec: baseSpec,
+      label: 'Reach target',
+      sourceSelector,
+      targetSelector,
+    });
+    const withTerm = updateObjectiveTerm(addObjectiveTerm(baseSpec, term), term.id, {
+      target_value: [0, 0],
+      retention: {
+        mode: 'trajectory',
+        reason: 'loss',
+        metadata: {},
+      },
+      temporal_selector: { mode: 'sum' },
+    });
+
+    expect(lossSpecFromObjectiveSpec(withTerm).children?.[term.id]).toMatchObject({
+      selector: 'graph_output:effector',
+      target_selector: 'task_data:targets.effector',
+      target_value: [0, 0],
+      retention: {
+        mode: 'trajectory',
+        reason: 'loss',
+      },
+      time_agg: { mode: 'sum' },
+    });
+  });
+
   it('keeps schema-backed selector metadata on objective terms', () => {
     const sourceSelector = {
       namespace: 'state_path' as const,

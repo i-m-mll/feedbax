@@ -457,7 +457,7 @@ class LSTMCell(Component):
     ) -> tuple[dict[str, PyTree], State]:
         hidden = inputs["hidden"]
         cell_state = inputs["cell"]
-        new_hidden, new_cell = self.layer(inputs["input"], hidden, cell_state)
+        new_hidden, new_cell = self.layer(inputs["input"], (hidden, cell_state), key=key)
         return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
 
 # ============================================================

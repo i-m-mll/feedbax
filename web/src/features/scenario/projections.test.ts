@@ -63,6 +63,17 @@ const registry: StudioScenarioEntityRegistry = {
       ],
       metadata: {},
     },
+    'retained_observable:obs:effector': {
+      id: 'retained_observable:obs:effector',
+      kind: 'retained_observable',
+      label: 'Effector trajectory',
+      summary: 'trajectory',
+      scenario_id: 'scenario:train',
+      stage_id: 'stage:train',
+      selector: null,
+      relations: [{ kind: 'target', entity_id: 'mechanics_object:scenario:train:mechanics', metadata: {} }],
+      metadata: {},
+    },
   },
 };
 
@@ -71,6 +82,7 @@ describe('scenario projection helpers', () => {
     expect(workspaceProjectionItems(registry).map((item) => item.entity_id)).toEqual([
       'mechanics_object:scenario:train:mechanics',
       'task_object:scenario:train:task',
+      'retained_observable:obs:effector',
       objectiveEntityId('endpoint'),
     ]);
   });
@@ -81,6 +93,10 @@ describe('scenario projection helpers', () => {
       relatedProjectionItems(registry, 'mechanics_object:scenario:train:mechanics').map(
         (item) => item.entity_id
       )
-    ).toEqual([graphNodeEntityId('mechanics'), objectiveEntityId('endpoint')]);
+    ).toEqual([
+      graphNodeEntityId('mechanics'),
+      objectiveEntityId('endpoint'),
+      'retained_observable:obs:effector',
+    ]);
   });
 });

@@ -1,4 +1,9 @@
-import type { GraphSpec, GraphUIState } from '@/types/graph';
+import type {
+  GraphSpec,
+  GraphUIState,
+  RetainedObservableSpec,
+  RetentionPolicySpec,
+} from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TimeAggregationSpec, TrainingSpec } from '@/types/training';
 
 export type StudioStageKind =
@@ -77,6 +82,10 @@ export interface StudioCollectionRef {
 
 export type StudioSelectorNamespace =
   | 'graph_port'
+  | 'graph_edge'
+  | 'graph_output'
+  | 'recurrent_carry'
+  | 'retained_observable'
   | 'probe'
   | 'state_path'
   | 'task_object'
@@ -112,6 +121,7 @@ export interface StudioObjectiveTermSpec {
   operator?: string | null;
   penalty?: string | null;
   temporal_selector?: TimeAggregationSpec | Record<string, unknown> | null;
+  retention?: RetentionPolicySpec | null;
   weight: number;
   units?: string | null;
   validation?: StudioValidationState | null;
@@ -284,7 +294,18 @@ export interface TaskDataSchema {
 export interface SelectorTargetSchema {
   id: string;
   label: string;
-  kind: 'port' | 'task_data' | 'objective' | 'probe' | 'state_hint' | 'sample_leaf';
+  kind:
+    | 'port'
+    | 'edge'
+    | 'graph_output'
+    | 'recurrent_carry'
+    | 'state_path'
+    | 'task_data'
+    | 'objective'
+    | 'probe'
+    | 'retained_observable'
+    | 'state_hint'
+    | 'sample_leaf';
   selector: string;
   value_schema: ValueSchema;
   origin: StudioSchemaOrigin;
@@ -342,6 +363,7 @@ export type StudioScenarioEntityKind =
   | 'task_binding'
   | 'mechanics_object'
   | 'objective_term'
+  | 'retained_observable'
   | 'probe'
   | 'metric'
   | 'temporal_event'
@@ -406,7 +428,7 @@ export interface StudioScenarioSpec {
   task_spec?: TaskSpec | null;
   task_binding_spec?: StudioTaskBindingSpec | null;
   objective_spec?: StudioObjectiveSpec | Record<string, unknown> | null;
-  probe_specs: Array<Record<string, unknown>>;
+  probe_specs?: RetainedObservableSpec[] | Array<Record<string, unknown>>;
   temporal_spec?: Record<string, unknown> | null;
   biomechanics_spec?: Record<string, unknown> | null;
   analysis_spec?: Record<string, unknown> | null;

@@ -1,4 +1,10 @@
-import type { GraphSpec, TapSpec, WireSpec } from '@/types/graph';
+import type {
+  GraphSpec,
+  RetainedObservableSpec,
+  RetainedObservableTargetSpec,
+  TapSpec,
+  WireSpec,
+} from '@/types/graph';
 import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
@@ -56,6 +62,10 @@ export function graphEdgeEntityId(edgeId: string): string {
   return `graph_edge:${edgeId}`;
 }
 
+export function retainedObservableEntityId(observableId: string): string {
+  return `retained_observable:${observableId}`;
+}
+
 export function stateFlowEdgeId(sourceNodeId: string, targetNodeId: string): string {
   return `state:${sourceNodeId}->${targetNodeId}`;
 }
@@ -99,6 +109,8 @@ export function entityKindLabel(kind: StudioScenarioEntityKind): string {
       return 'Mechanics';
     case 'objective_term':
       return 'Objective';
+    case 'retained_observable':
+      return 'Retained Observable';
     case 'probe':
       return 'Probe';
     case 'metric':
@@ -134,6 +146,27 @@ export function selectorToEntityId(selector: StudioSelectorRef | null | undefine
     const direction = selector.metadata.direction === 'input' ? 'input' : 'output';
     return graphPortEntityId(selector.target_id, direction, selector.path);
   }
+  if (
+    selector.namespace === 'graph_output' &&
+    typeof selector.metadata.graph_port_node_id === 'string' &&
+    typeof selector.metadata.graph_port_name === 'string'
+  ) {
+    return graphPortEntityId(
+      selector.metadata.graph_port_node_id,
+      'output',
+      selector.metadata.graph_port_name
+    );
+  }
+  if (selector.namespace === 'graph_edge' || selector.namespace === 'recurrent_carry') {
+    const edgeId =
+      typeof selector.metadata.edge_id === 'string'
+        ? selector.metadata.edge_id
+        : edgeIdFromSelector(selector.compact);
+    return edgeId ? graphEdgeEntityId(edgeId) : null;
+  }
+  if (selector.namespace === 'retained_observable' && selector.target_id) {
+    return retainedObservableEntityId(selector.target_id);
+  }
   if (selector.namespace === 'probe' && selector.target_id) {
     return probeEntityId(selector.target_id);
   }
@@ -159,6 +192,12 @@ export function selectorToEntityId(selector: StudioSelectorRef | null | undefine
     return selector.target_id ? `mechanics_object:${selector.target_id}` : null;
   }
   return null;
+}
+
+function edgeIdFromSelector(selector: string | null | undefined): string | null {
+  const match = /^edge:([^.\s]+)\.([^-\s]+)->([^.\s]+)\.(.+)$/.exec(selector ?? '');
+  if (!match) return null;
+  return `${match[1]}:${match[2]}->${match[3]}:${match[4]}`;
 }
 
 export function entityIdFromGraphSelection(selection: {
@@ -268,6 +307,7 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSp
 
   for (const wire of graph.wires) {
     const edgeId = graphEdgeId(wire);
+    const edgeSelector = `edge:${wire.source_node}.${wire.source_port}->${wire.target_node}.${wire.target_port}`;
     addEntity(registry, {
       id: graphEdgeEntityId(edgeId),
       kind: 'graph_edge',
@@ -275,7 +315,21 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSp
       summary: 'Port wire',
       scenario_id: registry.scenario_id,
       stage_id: registry.stage_id,
-      selector: null,
+      selector: {
+        namespace: wire.temporality === 'recurrent' ? 'recurrent_carry' : 'graph_edge',
+        compact: edgeSelector,
+        target_id: edgeId,
+        path: null,
+        role: 'observed',
+        metadata: {
+          edge_id: edgeId,
+          temporality: wire.temporality ?? 'instant',
+          source_node_id: wire.source_node,
+          source_port: wire.source_port,
+          target_node_id: wire.target_node,
+          target_port: wire.target_port,
+        },
+      },
       relations: [
         relation('source', graphPortEntityId(wire.source_node, 'output', wire.source_port)),
         relation('target', graphPortEntityId(wire.target_node, 'input', wire.target_port)),
@@ -337,6 +391,132 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSp
   for (const tap of graph.taps ?? []) {
     addProbeEntity(registry, tap);
   }
+
+  for (const observable of graph.retained_observables ?? []) {
+    addRetainedObservableEntity(registry, observable);
+  }
+}
+
+function selectorFromRetainedObservable(
+  observable: RetainedObservableSpec
+): StudioSelectorRef {
+  const target = observable.target ?? null;
+  const selector = target?.selector ?? observable.selector ?? observable.id;
+  const baseMetadata = {
+    label: observable.label ?? observable.id,
+    source: 'retained_observable',
+    retained_observable_id: observable.id,
+    retention: observable.retention,
+    retention_target: target,
+    value_schema: observable.value_schema ?? null,
+  };
+  if (target?.kind === 'port') {
+    const parsed = /^port:([^.\s]+)\.(.+)$/.exec(selector);
+    return {
+      namespace: 'graph_port',
+      compact: selector,
+      target_id: target.node_id ?? parsed?.[1] ?? null,
+      path: target.port ?? parsed?.[2] ?? null,
+      role: 'observed',
+      metadata: {
+        ...baseMetadata,
+        direction: target.timing === 'input' ? 'input' : 'output',
+        graph_port_node_id: target.node_id ?? parsed?.[1] ?? null,
+        graph_port_name: target.port ?? parsed?.[2] ?? null,
+        graph_port_direction: target.timing === 'input' ? 'input' : 'output',
+      },
+    };
+  }
+  if (target?.kind === 'edge' || target?.kind === 'recurrent_carry') {
+    const edgeId = target.edge_id ?? edgeIdFromSelector(selector);
+    return {
+      namespace: target.kind === 'recurrent_carry' ? 'recurrent_carry' : 'graph_edge',
+      compact: selector,
+      target_id: edgeId,
+      path: null,
+      role: 'observed',
+      metadata: { ...baseMetadata, edge_id: edgeId },
+    };
+  }
+  if (target?.kind === 'graph_output') {
+    return {
+      namespace: 'graph_output',
+      compact: selector,
+      target_id: target.path ?? target.port ?? selector.replace(/^graph_output:/, ''),
+      path: target.path ?? target.port ?? selector.replace(/^graph_output:/, ''),
+      role: 'observed',
+      metadata: {
+        ...baseMetadata,
+        graph_port_node_id: target.node_id ?? null,
+        graph_port_name: target.port ?? null,
+      },
+    };
+  }
+  if (target?.kind === 'task_data') {
+    return {
+      namespace: 'task_data',
+      compact: selector,
+      target_id: null,
+      path: target.path ?? selector.replace(/^task_data:/, ''),
+      role: 'observed',
+      metadata: baseMetadata,
+    };
+  }
+  if (target?.kind === 'state_path' || selector.startsWith('path:')) {
+    return {
+      namespace: 'state_path',
+      compact: selector,
+      target_id: target?.node_id ?? null,
+      path: target?.path ?? selector.replace(/^path:/, ''),
+      role: 'observed',
+      metadata: baseMetadata,
+    };
+  }
+  return {
+    namespace: 'retained_observable',
+    compact: selector.includes(':') ? selector : `probe:${selector}`,
+    target_id: observable.id,
+    path: null,
+    role: 'observed',
+    metadata: baseMetadata,
+  };
+}
+
+function retainedObservableTargetEntityId(target: RetainedObservableTargetSpec | null | undefined): string | null {
+  if (!target) return null;
+  if (target.kind === 'port' && target.node_id && target.port) {
+    return graphPortEntityId(
+      target.node_id,
+      target.timing === 'input' ? 'input' : 'output',
+      target.port
+    );
+  }
+  if ((target.kind === 'edge' || target.kind === 'recurrent_carry') && target.selector) {
+    const edgeId = target.edge_id ?? edgeIdFromSelector(target.selector);
+    return edgeId ? graphEdgeEntityId(edgeId) : null;
+  }
+  if (target.kind === 'graph_output' && target.node_id && target.port) {
+    return graphPortEntityId(target.node_id, 'output', target.port);
+  }
+  return null;
+}
+
+function addRetainedObservableEntity(
+  registry: StudioScenarioEntityRegistry,
+  observable: RetainedObservableSpec
+) {
+  const targetEntityId = retainedObservableTargetEntityId(observable.target);
+  addEntity(registry, {
+    id: retainedObservableEntityId(observable.id),
+    kind: 'retained_observable',
+    label: observable.label ?? observable.id,
+    summary: observable.retention.mode,
+    scenario_id: registry.scenario_id,
+    stage_id: registry.stage_id,
+    selector: selectorFromRetainedObservable(observable),
+    relations: targetEntityId ? [relation('target', targetEntityId)] : [],
+    metadata: { observable },
+  }, true);
 }
 
 function addProbeEntity(registry: StudioScenarioEntityRegistry, tap: TapSpec) {

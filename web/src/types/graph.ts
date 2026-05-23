@@ -1,4 +1,4 @@
-import type { StudioInterventionTransformSpec } from '@/types/workspace';
+import type { StudioInterventionTransformSpec, ValueSchema } from '@/types/workspace';
 
 export type ParamPrimitive = number | string | boolean | null;
 
@@ -79,6 +79,35 @@ export interface WireSpec {
   recurrent_initializer?: Record<string, unknown> | null;
 }
 
+export interface RetentionPolicySpec {
+  mode: 'stream' | 'window' | 'trajectory';
+  window_size?: number | null;
+  order?: number | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RetainedObservableTargetSpec {
+  kind: 'port' | 'edge' | 'graph_output' | 'recurrent_carry' | 'state_path' | 'task_data';
+  selector: string;
+  node_id?: string | null;
+  port?: string | null;
+  edge_id?: string | null;
+  path?: string | null;
+  timing?: 'input' | 'output' | 'step' | 'initial' | 'final' | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RetainedObservableSpec {
+  id: string;
+  label?: string | null;
+  selector?: string | null;
+  target?: RetainedObservableTargetSpec | null;
+  retention: RetentionPolicySpec;
+  value_schema?: ValueSchema | Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface GraphSpec {
   nodes: Record<string, ComponentSpec>;
   wires: WireSpec[];
@@ -90,6 +119,7 @@ export interface GraphSpec {
   barnacles?: Record<string, BarnacleSpec[]>;
   user_ports?: Record<string, UserPortSpec>;
   taps?: TapSpec[];
+  retained_observables?: RetainedObservableSpec[] | null;
   metadata?: GraphMetadata;
 }
 
