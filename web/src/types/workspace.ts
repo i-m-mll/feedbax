@@ -181,6 +181,8 @@ export interface StudioTaskDataSpec {
 export interface StudioTaskBinding {
   id: string;
   source_data_id: string;
+  /** Node-id path from the root graph to the graph layer that owns this binding. */
+  target_graph_path?: string[];
   target_node_id: string;
   target_port: string;
   role: 'model_input' | 'target' | 'initial_state' | 'intervention' | string;
