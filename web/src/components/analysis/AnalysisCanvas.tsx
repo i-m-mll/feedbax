@@ -55,6 +55,8 @@ export function AnalysisCanvas() {
     onEdgesChange,
     setSelectedNode,
     setSelectedTransform,
+    setSelectedEdge,
+    clearSelection,
     addAnalysisNode,
     connectNodes,
     analysisClasses,
@@ -144,16 +146,16 @@ export function AnalysisCanvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
-        onPaneClick={() => {
-          setSelectedNode(null);
-          setSelectedTransform(null);
-        }}
+        onPaneClick={clearSelection}
         onNodeClick={(_, node) => {
           if (node.type === 'transform') {
             setSelectedTransform(node.id);
           } else {
             setSelectedNode(node.id);
           }
+        }}
+        onEdgeClick={(_, edge) => {
+          setSelectedEdge(edge.id);
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}

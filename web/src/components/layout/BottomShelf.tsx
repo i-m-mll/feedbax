@@ -117,6 +117,16 @@ export function BottomShelf({
         className="flex items-end gap-3 border-b border-slate-200 px-3 pr-14"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
+        {isAnalysisMode && (
+          <button
+            type="button"
+            onClick={toggleBottomSidebar}
+            className="mb-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            title={bottomSidebarCollapsed ? 'Show analysis library' : 'Hide analysis library'}
+          >
+            <LeftSidebarIcon className="h-4 w-4" />
+          </button>
+        )}
         <div className="relative flex-1 min-w-0">
           <div ref={tabsRef} className="flex items-end overflow-x-auto pr-6">
             {stages.map((stage) => {
@@ -167,14 +177,6 @@ export function BottomShelf({
           <div className="flex h-full shrink-0 items-end gap-1 pb-1">
             <button
               type="button"
-              onClick={toggleBottomSidebar}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-              title={bottomSidebarCollapsed ? 'Show analysis library' : 'Hide analysis library'}
-            >
-              <LeftSidebarIcon className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
               onClick={toggleBottomRightSidebar}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
               title={
@@ -200,7 +202,10 @@ export function BottomShelf({
           <div className="flex-1 min-w-0 h-full">
             {activeContent}
           </div>
-          {mode === 'stage' && activeStage?.kind !== 'train' && activeStage?.kind !== 'eval' && (
+          {mode === 'stage' &&
+            activeStage?.kind !== 'train' &&
+            activeStage?.kind !== 'eval' &&
+            activeStage?.kind !== 'analysis' && (
             <StageProvenancePanel
               stage={activeStage}
               scenario={activeScenario}

@@ -8,16 +8,26 @@
  * Includes a compact sub-tab bar at the top for multi-page navigation.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ReactFlowProvider } from '@xyflow/react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ReactFlowProvider, type Edge } from '@xyflow/react';
 import { AnalysisCanvas } from '@/components/analysis/AnalysisCanvas';
 import { AnalysisPageSettings } from '@/components/panels/AnalysisPageSettings';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useLayoutStore } from '@/stores/layoutStore';
 import { useDemandStore } from '@/stores/demandStore';
 import { fetchAnalysisClasses } from '@/api/analysisAPI';
 import { generateFigure, getFigureStatus, getFigureData } from '@/api/figureAPI';
-import type { AnalysisNodeData } from '@/stores/analysisStore';
-import type { AnalysisParamValue, AnalysisParamObject } from '@/types/analysis';
+import type {
+  AnalysisEdgeData,
+  AnalysisNodeData,
+  TransformNodeData,
+} from '@/stores/analysisStore';
+import type {
+  AnalysisParamValue,
+  AnalysisParamObject,
+  StateFieldNode,
+} from '@/types/analysis';
+import type { StudioSelectorRef } from '@/types/workspace';
 import { Plus, X, Play, Loader2, Image, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -48,10 +58,96 @@ function isNumberArray(arr: unknown[]): boolean {
 /** Height of the page sub-tab bar in pixels. */
 const PAGE_TAB_BAR_HEIGHT = 32;
 
+function titleCase(value: string): string {
+  return value
+    .replace(/[_:.>-]+/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function compactValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) {
+    return value.length === 0 ? null : value.map((item) => String(item)).join(' x ');
+  }
+  if (typeof value === 'string') return value.length > 0 ? value : null;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
+}
+
+function selectorKindLabel(selector: StudioSelectorRef | undefined): string {
+  switch (selector?.namespace) {
+    case 'graph_port':
+      return 'Model port';
+    case 'graph_edge':
+      return 'Model wire';
+    case 'graph_output':
+      return 'Model output';
+    case 'recurrent_carry':
+    case 'state_path':
+      return 'Model state';
+    case 'task_data':
+      return 'Task data';
+    case 'task_binding':
+      return 'Task binding';
+    default:
+      return 'Analysis input';
+  }
+}
+
+function selectorOwner(selector: StudioSelectorRef | undefined): string | null {
+  if (!selector) return null;
+  const metadata = selector.metadata ?? {};
+  const owner =
+    metadata.graph_port_node_id ??
+    metadata.node_id ??
+    metadata.source_node_id ??
+    selector.target_id;
+  return typeof owner === 'string' && owner.length > 0 ? titleCase(owner) : null;
+}
+
+function selectorDirection(selector: StudioSelectorRef | undefined): string | null {
+  if (!selector) return null;
+  const metadata = selector.metadata ?? {};
+  const direction = metadata.graph_port_direction ?? metadata.direction ?? metadata.role;
+  return typeof direction === 'string' && direction.length > 0 ? titleCase(direction) : null;
+}
+
+function DetailRow({ label, value }: { label: string; value: unknown }) {
+  const rendered = compactValue(value);
+  if (!rendered) return null;
+  return (
+    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-2 py-1.5 text-xs">
+      <dt className="text-slate-400">{label}</dt>
+      <dd className="min-w-0 break-words text-slate-600">{rendered}</dd>
+    </div>
+  );
+}
+
+function DetailSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="border-t border-slate-100 px-4 py-3">
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+        {title}
+      </div>
+      <dl>{children}</dl>
+    </section>
+  );
+}
+
 export function AnalysisPanel() {
   const {
     nodes,
+    edges,
     selectedNodeId,
+    selectedTransformId,
+    selectedEdgeId,
+    selectedDataSourceField,
     analysisClasses,
     setAnalysisClasses,
     graphSpec,
@@ -64,6 +160,7 @@ export function AnalysisPanel() {
     switchPage,
     evalRunId,
   } = useAnalysisStore();
+  const bottomRightSidebarCollapsed = useLayoutStore((s) => s.bottomRightSidebarCollapsed);
 
   // Load analysis classes on mount
   useEffect(() => {
@@ -99,6 +196,16 @@ export function AnalysisPanel() {
   }, [selectedNodeId, nodes]);
 
   const selectedData = selectedNode?.data as AnalysisNodeData | null;
+  const selectedTransform = useMemo(() => {
+    if (!selectedTransformId) return null;
+    return nodes.find((node) => node.id === selectedTransformId && node.type === 'transform') ?? null;
+  }, [nodes, selectedTransformId]);
+  const selectedTransformData = selectedTransform?.data as TransformNodeData | null;
+  const selectedEdge = useMemo(() => {
+    if (!selectedEdgeId) return null;
+    return edges.find((edge) => edge.id === selectedEdgeId) ?? null;
+  }, [edges, selectedEdgeId]);
+  const selectedEdgeData = selectedEdge?.data as AnalysisEdgeData | null;
 
   return (
     <div className="flex flex-col h-full">
@@ -129,14 +236,19 @@ export function AnalysisPanel() {
           )}
         </div>
 
-        {/* Right sidebar — node properties or page settings */}
-        <div className="w-64 border-l border-slate-100 bg-white/90 overflow-y-auto shrink-0">
-          {selectedData ? (
-            <NodeDetailPanel selectedData={selectedData} selectedNodeId={selectedNodeId} />
-          ) : (
-            <AnalysisPageSettings />
-          )}
-        </div>
+        {!bottomRightSidebarCollapsed && (
+          <div className="w-80 shrink-0 overflow-y-auto border-l border-slate-100 bg-white/90">
+            <AnalysisInspector
+              selectedDataSourceField={selectedDataSourceField}
+              selectedData={selectedData}
+              selectedNodeId={selectedNodeId}
+              selectedTransformData={selectedTransformData}
+              selectedTransformId={selectedTransformId}
+              selectedEdge={selectedEdge}
+              selectedEdgeData={selectedEdgeData}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -285,6 +397,167 @@ function AnalysisPageTabBar({
       >
         <Plus className="w-3.5 h-3.5" />
       </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Right inspector
+// ---------------------------------------------------------------------------
+
+function AnalysisInspector({
+  selectedDataSourceField,
+  selectedData,
+  selectedNodeId,
+  selectedTransformData,
+  selectedTransformId,
+  selectedEdge,
+  selectedEdgeData,
+}: {
+  selectedDataSourceField: StateFieldNode | null;
+  selectedData: AnalysisNodeData | null;
+  selectedNodeId: string | null;
+  selectedTransformData: TransformNodeData | null;
+  selectedTransformId: string | null;
+  selectedEdge: Edge | null;
+  selectedEdgeData: AnalysisEdgeData | null;
+}) {
+  if (selectedDataSourceField) {
+    return <DataSourceFieldInspector field={selectedDataSourceField} />;
+  }
+  if (selectedEdge) {
+    return <AnalysisEdgeInspector edge={selectedEdge} edgeData={selectedEdgeData} />;
+  }
+  if (selectedTransformData) {
+    return (
+      <TransformDetailPanel
+        selectedData={selectedTransformData}
+        selectedTransformId={selectedTransformId}
+      />
+    );
+  }
+  if (selectedData) {
+    return <NodeDetailPanel selectedData={selectedData} selectedNodeId={selectedNodeId} />;
+  }
+  return <AnalysisPageSettings />;
+}
+
+function DataSourceFieldInspector({ field }: { field: StateFieldNode }) {
+  const selector = field.selector;
+  const schema = selector?.metadata.value_schema as
+    | {
+        label?: string;
+        kind?: string;
+        dtype?: string | null;
+        shape?: unknown[] | null;
+        units?: string | null;
+        frame?: string | null;
+        role?: string | null;
+      }
+    | undefined;
+  return (
+    <div>
+      <div className="px-4 py-4">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-emerald-600">
+          {selectorKindLabel(selector)}
+        </div>
+        <div className="mt-1 text-base font-semibold text-slate-800">{field.label}</div>
+        <div className="mt-1 break-words font-mono text-[11px] text-slate-400">
+          {selector?.compact ?? field.path}
+        </div>
+      </div>
+      <DetailSection title="Source">
+        <DetailRow label="Owner" value={selectorOwner(selector)} />
+        <DetailRow label="Direction" value={selectorDirection(selector)} />
+        <DetailRow label="Path" value={selector?.path} />
+        <DetailRow label="Role" value={selector?.role} />
+      </DetailSection>
+      <DetailSection title="Value">
+        <DetailRow label="Type" value={schema?.kind} />
+        <DetailRow label="Dtype" value={selector?.dtype ?? schema?.dtype} />
+        <DetailRow label="Shape" value={selector?.expected_shape ?? schema?.shape} />
+        <DetailRow label="Units" value={selector?.units ?? schema?.units} />
+        <DetailRow label="Frame" value={selector?.frame ?? schema?.frame} />
+        <DetailRow label="Detail" value={field.detail} />
+      </DetailSection>
+      <div className="border-t border-slate-100 px-4 py-3 text-xs leading-5 text-slate-500">
+        Wiring this variable into an analysis requests the corresponding evaluation-run data
+        automatically. The analysis graph keeps this semantic variable even when a specific run
+        can materialize it as an alias of another variable.
+      </div>
+    </div>
+  );
+}
+
+function AnalysisEdgeInspector({
+  edge,
+  edgeData,
+}: {
+  edge: {
+    id: string;
+    source: string;
+    target: string;
+    sourceHandle?: string | null;
+    targetHandle?: string | null;
+  };
+  edgeData: AnalysisEdgeData | null;
+}) {
+  const requirement = edgeData?.inputRequirement;
+  return (
+    <div>
+      <div className="px-4 py-4">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+          Analysis wire
+        </div>
+        <div className="mt-1 text-base font-semibold text-slate-800">
+          {requirement?.label ?? edgeData?.fieldPath ?? edge.id}
+        </div>
+        <div className="mt-1 break-words font-mono text-[11px] text-slate-400">
+          {edge.source}.{edge.sourceHandle ?? 'out'} {'->'} {edge.target}.
+          {edge.targetHandle ?? 'in'}
+        </div>
+      </div>
+      <DetailSection title="Connection">
+        <DetailRow label="Source" value={edge.source} />
+        <DetailRow label="Source port" value={edge.sourceHandle} />
+        <DetailRow label="Target" value={edge.target} />
+        <DetailRow label="Target port" value={edge.targetHandle} />
+        <DetailRow label="Implicit" value={edgeData?.implicit ? 'yes' : 'no'} />
+      </DetailSection>
+      <DetailSection title="Input">
+        <DetailRow label="Selector" value={requirement?.selector ?? edgeData?.fieldPath} />
+        <DetailRow label="Retention" value={requirement?.retention?.mode} />
+        <DetailRow label="Consumer" value={requirement?.consumer?.analysis_type} />
+      </DetailSection>
+    </div>
+  );
+}
+
+function TransformDetailPanel({
+  selectedData,
+  selectedTransformId,
+}: {
+  selectedData: TransformNodeData;
+  selectedTransformId: string | null;
+}) {
+  const transform = selectedData.transform;
+  return (
+    <div>
+      <div className="px-4 py-4">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+          Transform
+        </div>
+        <div className="mt-1 text-base font-semibold text-slate-800">{transform.label}</div>
+        <div className="mt-1 break-words font-mono text-[11px] text-slate-400">
+          {selectedTransformId ?? transform.id}
+        </div>
+      </div>
+      <DetailSection title="Configuration">
+        <DetailRow label="Type" value={transform.type} />
+        {Object.entries(transform.params).map(([key, value]) => (
+          <DetailRow key={key} label={key} value={value} />
+        ))}
+      </DetailSection>
     </div>
   );
 }

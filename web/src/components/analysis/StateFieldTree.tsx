@@ -74,6 +74,10 @@ interface StateFieldTreeProps {
   expandedPaths: ReadonlySet<string>;
   /** Called when a branch chevron is toggled. */
   onToggle: (path: string) => void;
+  /** Called when a connectable field row is selected for inspection. */
+  onSelect?: (node: StateFieldNode) => void;
+  /** Currently selected field path, used for row highlighting. */
+  selectedPath?: string | null;
   /** Vertical padding offset from top of the body div (px). */
   bodyPadding: number;
 }
@@ -82,6 +86,8 @@ export function StateFieldTree({
   nodes,
   expandedPaths,
   onToggle,
+  onSelect,
+  selectedPath,
   bodyPadding,
 }: StateFieldTreeProps) {
   const entries = flattenVisible(nodes, expandedPaths);
@@ -92,12 +98,14 @@ export function StateFieldTree({
         const { node, depth, isLeaf } = entry;
         const hasChildren = !isLeaf;
         const isExpanded = expandedPaths.has(node.path);
+        const isConnectable = node.connectable !== false;
+        const isSelected = selectedPath === node.path;
         const top = bodyPadding + FIELD_ROW_HEIGHT * (index + 0.5);
 
         return (
           <div key={node.path}>
             {/* Connectable handle — present on selectable rows. */}
-            {node.connectable !== false && (
+            {isConnectable && (
               <Handle
                 type="source"
                 position={Position.Right}
@@ -118,18 +126,29 @@ export function StateFieldTree({
 
             {/* Label row */}
             <div
-              className="absolute flex items-center text-[11px] select-none"
+              className={clsx(
+                'absolute flex items-center rounded text-[11px] select-none',
+                isSelected ? 'bg-emerald-50 text-emerald-700' : ''
+              )}
               style={{
                 top,
-                left: depth * INDENT_PX + 4,
+                left: depth * INDENT_PX + 2,
                 right: 18,
                 transform: 'translateY(-50%)',
                 height: FIELD_ROW_HEIGHT,
               }}
+              onClick={(event) => {
+                if (!isConnectable || !onSelect) return;
+                event.stopPropagation();
+                onSelect(node);
+              }}
             >
               {hasChildren ? (
                 <button
-                  className="flex items-center gap-0.5 text-slate-500 hover:text-slate-700 cursor-pointer"
+                  className={clsx(
+                    'flex min-w-0 items-center gap-0.5 cursor-pointer',
+                    isSelected ? 'text-emerald-700' : 'text-slate-500 hover:text-slate-700'
+                  )}
                   onClick={(e) => {
                     e.stopPropagation();
                     onToggle(node.path);
@@ -140,11 +159,15 @@ export function StateFieldTree({
                   ) : (
                     <ChevronRight className="w-3 h-3 shrink-0" />
                   )}
-                  <span className="truncate text-slate-500 font-medium">{node.label}</span>
+                  <span className={clsx('truncate font-medium', isSelected ? 'text-emerald-700' : 'text-slate-500')}>
+                    {node.label}
+                  </span>
                 </button>
               ) : (
                 <span className="ml-3.5 min-w-0">
-                  <span className="block truncate text-slate-500">{node.label}</span>
+                  <span className={clsx('block truncate', isSelected ? 'text-emerald-700' : 'text-slate-500')}>
+                    {node.label}
+                  </span>
                 </span>
               )}
             </div>

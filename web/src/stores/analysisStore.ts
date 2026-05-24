@@ -23,6 +23,7 @@ import type {
   EvalParametrization,
   AnalysisPageSpec,
   AnalysisSnapshot,
+  StateFieldNode,
   StateFieldPath,
 } from '@/types/analysis';
 import type { AnalysisPageWire, StudioCollectionRef, StudioManifestRef } from '@/types/workspace';
@@ -396,6 +397,8 @@ interface AnalysisStoreState {
   // Selection
   selectedNodeId: string | null;
   selectedTransformId: string | null;
+  selectedEdgeId: string | null;
+  selectedDataSourceField: StateFieldNode | null;
 
   // Available analysis classes (from palette)
   analysisClasses: AnalysisClassDef[];
@@ -415,6 +418,9 @@ interface AnalysisStoreState {
   loadGraph: (spec: AnalysisGraphSpec) => void;
   setSelectedNode: (id: string | null) => void;
   setSelectedTransform: (id: string | null) => void;
+  setSelectedEdge: (id: string | null) => void;
+  setSelectedDataSourceField: (field: StateFieldNode | null) => void;
+  clearSelection: () => void;
   addAnalysisNode: (classDef: AnalysisClassDef, position: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
   connectNodes: (connection: Connection) => void;
@@ -496,6 +502,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   edges: [],
   selectedNodeId: null,
   selectedTransformId: null,
+  selectedEdgeId: null,
+  selectedDataSourceField: null,
   analysisClasses: [],
   pages: [],
   activePageId: null,
@@ -551,11 +559,48 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   setSelectedNode: (id) => {
-    set({ selectedNodeId: id, selectedTransformId: null });
+    set({
+      selectedNodeId: id,
+      selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
+    });
   },
 
   setSelectedTransform: (id) => {
-    set({ selectedTransformId: id, selectedNodeId: null });
+    set({
+      selectedTransformId: id,
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
+    });
+  },
+
+  setSelectedEdge: (id) => {
+    set({
+      selectedEdgeId: id,
+      selectedNodeId: null,
+      selectedTransformId: null,
+      selectedDataSourceField: null,
+    });
+  },
+
+  setSelectedDataSourceField: (field) => {
+    set({
+      selectedDataSourceField: field,
+      selectedNodeId: null,
+      selectedTransformId: null,
+      selectedEdgeId: null,
+    });
+  },
+
+  clearSelection: () => {
+    set({
+      selectedNodeId: null,
+      selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
+    });
   },
 
   addAnalysisNode: (classDef, position) => {
@@ -596,6 +641,12 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       nodes: state.nodes.filter((n) => n.id !== id),
       edges: state.edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
+      selectedTransformId: state.selectedTransformId === id ? null : state.selectedTransformId,
+      selectedEdgeId:
+        state.selectedEdgeId &&
+        state.edges.some((edge) => edge.id === state.selectedEdgeId && (edge.source === id || edge.target === id))
+          ? null
+          : state.selectedEdgeId,
     }));
     markProjectDirty();
     syncAnalysisStageDraft(get(), 'analysis_graph_node_removed');
@@ -857,6 +908,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
     markProjectDirty();
   },
@@ -877,6 +930,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         expandedFieldPaths: [],
         selectedNodeId: null,
         selectedTransformId: null,
+        selectedEdgeId: null,
+        selectedDataSourceField: null,
       });
       markProjectDirty();
       return;
@@ -930,6 +985,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           expandedFieldPaths: target.expandedFieldPaths ? [...target.expandedFieldPaths] : [],
           selectedNodeId: null,
           selectedTransformId: null,
+          selectedEdgeId: null,
+          selectedDataSourceField: null,
         });
       } else {
         set({
@@ -944,6 +1001,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           expandedFieldPaths: [],
           selectedNodeId: null,
           selectedTransformId: null,
+          selectedEdgeId: null,
+          selectedDataSourceField: null,
         });
       }
     } else {
@@ -1010,6 +1069,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: target.expandedFieldPaths ? [...target.expandedFieldPaths] : [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
     markProjectDirty();
   },
@@ -1076,6 +1137,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         expandedFieldPaths: [],
         selectedNodeId: null,
         selectedTransformId: null,
+        selectedEdgeId: null,
+        selectedDataSourceField: null,
       });
       return;
     }
@@ -1122,6 +1185,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: activePage.expandedFieldPaths ? [...activePage.expandedFieldPaths] : [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
   },
 
@@ -1138,6 +1203,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
   },
 }));

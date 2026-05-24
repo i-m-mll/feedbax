@@ -91,6 +91,54 @@ describe('selectorTreeFromScenarioOptions', () => {
     ]);
   });
 
+  it('filters legacy model owners that are not present in the current graph', () => {
+    const tree = selectorTreeFromScenarioOptions(
+      [
+        option(
+          'Cell output',
+          'ports',
+          selector('graph_port', 'port:cell.output', {
+            target_id: 'cell',
+            path: 'output',
+            metadata: { direction: 'output' },
+          }),
+        ),
+        option(
+          'Network output',
+          'state',
+          selector('state_path', 'path:states.net.output', {
+            target_id: 'network',
+            path: 'states.net.output',
+            metadata: { graph_port_node_id: 'network' },
+          }),
+        ),
+        option(
+          'Effector position',
+          'state',
+          selector('state_path', 'path:states.mechanics.effector.pos', {
+            target_id: 'mechanics',
+            path: 'states.mechanics.effector.pos',
+            metadata: { graph_port_node_id: 'mechanics' },
+          }),
+        ),
+        option(
+          'cell -> cell',
+          'state',
+          selector('state_path', 'path:cell->cell', {
+            target_id: 'cell',
+            path: 'state',
+            metadata: { source: 'state_flow_edge' },
+          }),
+        ),
+      ],
+      new Set(['input_mux', 'cell', 'readout']),
+    );
+
+    expect(tree[0]?.label).toBe('Model variables');
+    expect(tree[0]?.children?.map((node) => node.label)).toEqual(['Cell']);
+    expect(tree[0]?.children?.[0]?.children?.map((node) => node.label)).toEqual(['Output']);
+  });
+
   it('deduplicates task data and omits the top-level task object row', () => {
     const tree = selectorTreeFromScenarioOptions([
       option(

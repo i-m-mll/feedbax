@@ -24,6 +24,7 @@ import {
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { useGraphStore } from '@/stores/graphStore';
 import { getStageByKind, getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
+import type { GraphSpec } from '@/types/graph';
 import { StateFieldTree, countVisibleRows, FIELD_ROW_HEIGHT } from './StateFieldTree';
 import { Database } from 'lucide-react';
 import clsx from 'clsx';
@@ -35,7 +36,6 @@ const BODY_PADDING = 8;
 const MODEL_VARIABLE_NAMESPACES = new Set([
   'graph_port',
   'graph_output',
-  'retained_observable',
   'state_path',
 ]);
 
@@ -125,8 +125,13 @@ function selectorNode(option: StudioSelectorOption, label = option.label): State
   };
 }
 
+function graphNodeIds(graph: GraphSpec): Set<string> {
+  return new Set(Object.keys(graph.nodes));
+}
+
 export function selectorTreeFromScenarioOptions(
   options: ReturnType<typeof selectorOptionsForRegistry>,
+  validModelOwnerIds?: ReadonlySet<string>,
 ): StateFieldNode[] {
   const modelOptionsByOwner = new Map<string, Map<string, StudioSelectorOption>>();
   const taskOptionsByKey = new Map<string, StudioSelectorOption>();
@@ -141,8 +146,10 @@ export function selectorTreeFromScenarioOptions(
     }
 
     if (!MODEL_VARIABLE_NAMESPACES.has(option.selector.namespace)) continue;
+    if (option.selector.metadata.source === 'state_flow_edge') continue;
     const ownerId = modelOwnerId(option);
     if (!ownerId) continue;
+    if (validModelOwnerIds && !validModelOwnerIds.has(ownerId)) continue;
 
     const ownerOptions = modelOptionsByOwner.get(ownerId) ?? new Map<string, StudioSelectorOption>();
     const key = compactPathKey(option);
@@ -198,7 +205,9 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
   const trainingScenario = getTrainingScenario(workspace);
   const schemaQuery = useStudioSchemaRegistry(workspace, trainingStage?.scenario_id ?? null);
   const expandedFieldPaths = useAnalysisStore((s) => s.expandedFieldPaths);
+  const selectedDataSourceField = useAnalysisStore((s) => s.selectedDataSourceField);
   const toggleFieldExpansion = useAnalysisStore((s) => s.toggleFieldExpansion);
+  const setSelectedDataSourceField = useAnalysisStore((s) => s.setSelectedDataSourceField);
   const expandedPaths = useMemo(() => new Set(expandedFieldPaths), [expandedFieldPaths]);
   const fieldTree = useMemo(() => {
     if (!workspace || !trainingScenario) return STATE_FIELD_TREE;
@@ -209,7 +218,7 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
       schemaRegistry: schemaQuery.data ?? null,
       objectiveSpec,
     });
-    const selectorTree = selectorTreeFromScenarioOptions(selectorOptions);
+    const selectorTree = selectorTreeFromScenarioOptions(selectorOptions, graphNodeIds(graph));
     return selectorTree.length > 0 ? selectorTree : STATE_FIELD_TREE;
   }, [graph, schemaQuery.data, trainingScenario, workspace]);
   const visibleCount = countVisibleRows(fieldTree, expandedPaths);
@@ -247,6 +256,8 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
           nodes={fieldTree}
           expandedPaths={expandedPaths}
           onToggle={toggleFieldExpansion}
+          onSelect={setSelectedDataSourceField}
+          selectedPath={selectedDataSourceField?.path ?? null}
           bodyPadding={BODY_PADDING}
         />
       </div>
