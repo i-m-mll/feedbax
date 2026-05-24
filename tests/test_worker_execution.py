@@ -436,6 +436,56 @@ def test_compile_training_run_rejects_unsupported_task_data_function() -> None:
         )
 
 
+def test_compile_training_run_lowers_segment_aggregation_with_task_timeline() -> None:
+    training = _training_spec(
+        loss={
+            "type": "TargetStateLoss",
+            "label": "movement_segment",
+            "selector": "graph_output:output",
+            "target_value": [0.0],
+            "time_agg": {"mode": "segment", "segment_name": "movement"},
+        }
+    )
+    task = {
+        "type": "DelayedReaches",
+        "params": {"n_steps": 4},
+        "timeline": {
+            "schema_version": "feedbax.studio.task_timeline.v1",
+            "epochs": [
+                {
+                    "id": "epoch:0",
+                    "label": "hold",
+                    "index": 0,
+                    "length": {"mode": "constant", "value": {"steps": 1}, "metadata": {}},
+                    "metadata": {},
+                },
+                {
+                    "id": "epoch:1",
+                    "label": "movement",
+                    "index": 1,
+                    "length": {
+                        "mode": "constant",
+                        "value": None,
+                        "metadata": {"inferred_from_remaining_steps": True},
+                    },
+                    "metadata": {},
+                },
+            ],
+            "metadata": {"n_steps": 4},
+        },
+    }
+
+    compiled = compile_training_run(
+        graph_spec=_linear_graph_spec(),
+        training_spec=training,
+        task_spec=task,
+        task_binding_spec=_task_binding_spec(),
+        cfg=_cfg(n_reach_steps=4),
+    )
+
+    assert compiled.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:1"]
+
+
 def test_compile_training_run_allows_absent_optional_task_data_value_spec_default() -> None:
     task_binding_spec = deepcopy(_task_binding_spec())
     task_binding_spec["exposed_data"][0].pop("value_spec")

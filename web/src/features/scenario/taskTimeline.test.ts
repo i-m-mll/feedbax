@@ -5,6 +5,7 @@ import {
   delayedReachTimelinePreview,
   delayedReachTimelineFromTask,
   toggleDelayedReachSignalEpoch,
+  updateTaskTimelineSignalValueSpec,
   updateDelayedReachEpochRange,
 } from './taskTimeline';
 import type { TaskSpec } from '@/types/training';
@@ -91,6 +92,12 @@ describe('delayed reach task timeline helpers', () => {
       storage: 'compact_task_params',
       materializes_targets: true,
     });
+    expect(timeline.segments).toMatchObject([
+      { id: 'hold', epoch_ids: ['epoch:0'] },
+      { id: 'target_on', epoch_ids: ['epoch:1'] },
+      { id: 'movement', epoch_ids: ['epoch:2'] },
+      { id: 'cue_window', epoch_ids: ['epoch:0', 'epoch:1'] },
+    ]);
   });
 
   it('writes timeline edits back into backend-compatible delayed reach params', () => {
@@ -181,5 +188,53 @@ describe('delayed reach task timeline helpers', () => {
       function_id: 'delayed_reach_target_position',
     });
     expect(edited.task_binding_spec?.metadata.updated_from).toBe('task_timeline_editor');
+  });
+
+  it('updates signal value specs without changing epoch membership', () => {
+    const timeline = delayedReachTimelineFromTask(task)!;
+    const signal = timeline.signals.find((item) => item.id === 'target_on')!;
+
+    const edited = updateTaskTimelineSignalValueSpec(timeline, signal.id, {
+      ...signal.value_spec!,
+      mode: 'schedule',
+      schedule: { domain: 'epoch', function_id: 'step' },
+      sampling_scope: 'epoch',
+    });
+
+    expect(edited.signals.find((item) => item.id === 'target_on')).toMatchObject({
+      epoch_ids: ['epoch:1', 'epoch:2'],
+      value_spec: {
+        mode: 'schedule',
+        sampling_scope: 'epoch',
+      },
+      metadata: {
+        value_spec_updated_from: 'task_timeline_value_editor',
+      },
+    });
+  });
+
+  it('preserves authored timeline value specs stored on the task', () => {
+    const timeline = delayedReachTimelineFromTask(task)!;
+    const signal = timeline.signals.find((item) => item.id === 'target_position')!;
+    const editedTimeline = updateTaskTimelineSignalValueSpec(timeline, signal.id, {
+      ...signal.value_spec!,
+      mode: 'distribution',
+      distribution: { family: 'uniform', parameters: { min: 0, max: 1 } },
+      sampling_scope: 'trial',
+    });
+
+    const roundTripped = delayedReachTimelineFromTask({
+      ...task,
+      timeline: editedTimeline as unknown as TaskSpec['timeline'],
+    })!;
+
+    expect(roundTripped.signals.find((item) => item.id === 'target_position')).toMatchObject({
+      value_spec: {
+        mode: 'distribution',
+        distribution: { family: 'uniform' },
+        sampling_scope: 'trial',
+      },
+    });
+    expect(roundTripped.segments?.find((item) => item.id === 'movement')).toBeTruthy();
   });
 });

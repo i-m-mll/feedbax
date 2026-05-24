@@ -5,6 +5,7 @@ import type {
   StudioTaskTimelineSpec,
   StudioValueSpec,
   StudioTaskBindingSpec,
+  StudioTaskTimelineSegmentSpec,
   TaskDataSchema,
   ValueSchema,
 } from '@/types/workspace';
@@ -252,8 +253,51 @@ function signal(
       value_schema_id: valueSchema.id,
       task_data_schema_id: `task_data:${id}`,
       temporal_support: valueSchema.metadata.temporal_support,
+      value_spec_modes:
+        id === 'target_position' || id === 'movement_target'
+          ? ['function', 'constant', 'distribution', 'schedule', 'expression']
+          : ['constant', 'function', 'schedule', 'distribution', 'expression'],
+      value_spec_scopes:
+        id === 'target_position' || id === 'movement_target'
+          ? ['trial', 'epoch', 'timestep', 'replicate']
+          : ['trial', 'epoch', 'timestep'],
     },
   };
+}
+
+function existingTimelineFromTask(task: TaskSpec): StudioTaskTimelineSpec | null {
+  const timeline = task.timeline;
+  if (!timeline || typeof timeline !== 'object' || Array.isArray(timeline)) return null;
+  const record = timeline as unknown as Partial<StudioTaskTimelineSpec>;
+  if (!Array.isArray(record.epochs) || !Array.isArray(record.signals)) return null;
+  return {
+    schema_version: record.schema_version ?? TASK_TIMELINE_SCHEMA_VERSION,
+    epochs: record.epochs,
+    signals: record.signals,
+    segments: record.segments,
+    metadata: {
+      ...(record.metadata ?? {}),
+      n_steps: task.params?.n_steps ?? record.metadata?.n_steps ?? null,
+    },
+  };
+}
+
+function delayedReachSegments(epochCount: number): StudioTaskTimelineSegmentSpec[] {
+  const base = DELAYED_REACH_EPOCH_LABELS.slice(0, epochCount).map((label, index) => ({
+    id: label,
+    label,
+    epoch_ids: [`epoch:${index}`],
+    metadata: { source: 'delayed_reach_epoch' },
+  }));
+  if (epochCount >= 2) {
+    base.push({
+      id: 'cue_window',
+      label: 'cue window',
+      epoch_ids: Array.from({ length: Math.min(epochCount, 2) }, (_, index) => `epoch:${index}`),
+      metadata: { source: 'delayed_reach_group' },
+    });
+  }
+  return base;
 }
 
 export function delayedReachTaskDataValueSpec(
@@ -319,6 +363,13 @@ export function delayedReachTaskDataValueSpec(
 
 export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimelineSpec | null {
   if (task.type !== 'DelayedReaches') return null;
+  const existingTimeline = existingTimelineFromTask(task);
+  if (existingTimeline) {
+    return {
+      ...existingTimeline,
+      segments: existingTimeline.segments ?? delayedReachSegments(existingTimeline.epochs.length),
+    };
+  }
   const params = task.params ?? {};
   const ranges = asRanges(params.epoch_len_ranges);
   const epochCount = Math.max(DELAYED_REACH_EPOCH_LABELS.length, ranges.length + 1);
@@ -381,6 +432,7 @@ export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimeline
         task
       ),
     ],
+    segments: delayedReachSegments(epochCount),
     metadata: {
       task_type: task.type,
       n_steps: params.n_steps ?? null,
@@ -487,6 +539,27 @@ export function toggleDelayedReachSignalEpoch(
       return {
         ...item,
         epoch_ids: [...epochIds].sort(),
+      };
+    }),
+  };
+}
+
+export function updateTaskTimelineSignalValueSpec(
+  timeline: StudioTaskTimelineSpec,
+  signalId: string,
+  valueSpec: StudioValueSpec
+): StudioTaskTimelineSpec {
+  return {
+    ...timeline,
+    signals: timeline.signals.map((item) => {
+      if (item.id !== signalId) return item;
+      return {
+        ...item,
+        value_spec: valueSpec,
+        metadata: {
+          ...item.metadata,
+          value_spec_updated_from: 'task_timeline_value_editor',
+        },
       };
     }),
   };

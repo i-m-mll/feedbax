@@ -385,8 +385,154 @@ def test_segment_time_aggregation_rejected_during_lowering() -> None:
     with pytest.raises(RetentionPlanError) as exc_info:
         lower_retention_plan(graph, training)
 
-    assert exc_info.value.path == "/loss/time_agg"
+    assert exc_info.value.path == "/task_spec/timeline"
     assert "timeline mask" in str(exc_info.value)
+
+
+def _fixed_task_timeline() -> dict:
+    return {
+        "type": "DelayedReaches",
+        "params": {"n_steps": 5},
+        "timeline": {
+            "schema_version": "feedbax.studio.task_timeline.v1",
+            "epochs": [
+                {
+                    "id": "epoch:0",
+                    "label": "hold",
+                    "index": 0,
+                    "length": {
+                        "schema_version": "feedbax.studio.value.v1",
+                        "mode": "constant",
+                        "value": {"steps": 1},
+                        "metadata": {"scope": "trial"},
+                    },
+                    "metadata": {},
+                },
+                {
+                    "id": "epoch:1",
+                    "label": "target_on",
+                    "index": 1,
+                    "length": {
+                        "schema_version": "feedbax.studio.value.v1",
+                        "mode": "constant",
+                        "value": {"steps": 2},
+                        "metadata": {"scope": "trial"},
+                    },
+                    "metadata": {},
+                },
+                {
+                    "id": "epoch:2",
+                    "label": "movement",
+                    "index": 2,
+                    "length": {
+                        "schema_version": "feedbax.studio.value.v1",
+                        "mode": "constant",
+                        "value": None,
+                        "metadata": {"inferred_from_remaining_steps": True},
+                    },
+                    "metadata": {},
+                },
+            ],
+            "segments": [
+                {"id": "cue_window", "label": "cue_window", "epoch_ids": ["epoch:0", "epoch:1"]},
+            ],
+            "metadata": {"n_steps": 5},
+        },
+    }
+
+
+def test_segment_time_aggregation_lowers_fixed_task_timeline_mask() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Movement only",
+            selector="graph_output:effector",
+            target_value=[0.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="segment", segment_name="movement"),
+        )
+    )
+
+    plan = lower_retention_plan(graph, training, task_spec=_fixed_task_timeline())
+    assert plan.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:2"]
+
+    total, _terms = evaluate_loss_plan(
+        plan.loss_terms,
+        {
+            "graph_output:effector": jnp.asarray(
+                [[1.0, 0.0], [10.0, 0.0], [20.0, 0.0], [3.0, 0.0], [4.0, 0.0]]
+            ),
+        },
+    )
+
+    assert float(total) == pytest.approx((9.0 + 16.0) / 2.0)
+
+
+def test_segment_time_aggregation_supports_named_segment_groups() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Cue window",
+            selector="graph_output:effector",
+            target_value=[0.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="segment", segment_name="cue_window"),
+        )
+    )
+
+    plan = lower_retention_plan(graph, training, task_spec=_fixed_task_timeline())
+    total, _terms = evaluate_loss_plan(
+        plan.loss_terms,
+        {
+            "graph_output:effector": jnp.asarray(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [30.0, 0.0], [40.0, 0.0]]
+            ),
+        },
+    )
+
+    assert plan.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:0", "epoch:1"]
+    assert float(total) == pytest.approx((1.0 + 4.0 + 9.0) / 3.0)
+
+
+def test_segment_time_aggregation_rejects_unknown_segment_names() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Missing segment",
+            selector="graph_output:effector",
+            target_value=[0.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="segment", segment_name="post_go"),
+        )
+    )
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph, training, task_spec=_fixed_task_timeline())
+
+    assert exc_info.value.path == "/task_spec/timeline/segment_name"
+    assert "available segments" in str(exc_info.value)
+    assert "movement" in str(exc_info.value)
+
+
+def test_segment_time_aggregation_rejects_variable_timeline_without_resolved_bounds() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Movement only",
+            selector="graph_output:effector",
+            target_value=[0.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="segment", segment_name="movement"),
+        )
+    )
+    task = _fixed_task_timeline()
+    task["timeline"]["epochs"][1]["length"]["value"] = {"min": 1, "max": 4}
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph, training, task_spec=task)
+
+    assert exc_info.value.path == "/task_spec/timeline/epochs/1/length"
+    assert "Variable-length timeline epochs" in str(exc_info.value)
 
 
 def test_loss_supports_l2_huber_and_sum_modes() -> None:

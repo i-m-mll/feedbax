@@ -205,6 +205,16 @@ export type StudioValueSpecMode =
   | 'schedule'
   | string;
 
+export type StudioValueSpecSamplingScope =
+  | 'snapshot'
+  | 'run'
+  | 'replicate'
+  | 'trial'
+  | 'epoch'
+  | 'timestep'
+  | 'sweep'
+  | string;
+
 export interface StudioValueSpec {
   schema_version: 'feedbax.studio.value.v1' | string;
   mode: StudioValueSpecMode;
@@ -215,16 +225,7 @@ export interface StudioValueSpec {
   parameters?: Record<string, unknown> | null;
   distribution?: Record<string, unknown> | null;
   schedule?: Record<string, unknown> | null;
-  sampling_scope?:
-    | 'snapshot'
-    | 'run'
-    | 'replicate'
-    | 'trial'
-    | 'epoch'
-    | 'timestep'
-    | 'sweep'
-    | string
-    | null;
+  sampling_scope?: StudioValueSpecSamplingScope | null;
   dtype?: string | null;
   shape?: unknown[] | null;
   units?: string | null;
@@ -355,10 +356,18 @@ export interface StudioTaskTimelineSignalSpec {
   metadata: Record<string, unknown>;
 }
 
+export interface StudioTaskTimelineSegmentSpec {
+  id: string;
+  label: string;
+  epoch_ids: string[];
+  metadata: Record<string, unknown>;
+}
+
 export interface StudioTaskTimelineSpec {
   schema_version: 'feedbax.studio.task_timeline.v1' | string;
   epochs: StudioTaskEpochSpec[];
   signals: StudioTaskTimelineSignalSpec[];
+  segments?: StudioTaskTimelineSegmentSpec[];
   metadata: Record<string, unknown>;
 }
 

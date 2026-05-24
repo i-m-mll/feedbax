@@ -146,7 +146,7 @@ def compile_training_run(
     n_steps = int(getattr(cfg, "n_reach_steps", None) or training_model.n_batches or 1)
     task_data = _materialize_task_data(binding_model, task_spec, n_steps)
     try:
-        retention_plan = lower_retention_plan(graph_model, training_model)
+        retention_plan = lower_retention_plan(graph_model, training_model, task_spec=task_spec)
     except RetentionPlanError as exc:
         raise ValueError(
             f"Invalid retention plan for graph execution at {exc.path}: {exc}"

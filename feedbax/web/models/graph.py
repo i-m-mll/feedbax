@@ -398,7 +398,20 @@ class StudioTaskTimelineSignalSpec(BaseModel):
     id: str
     label: str
     kind: str
+    task_data_id: Optional[str] = None
     path: str
+    epoch_ids: List[str] = Field(default_factory=list)
+    value_spec: Optional[StudioValueSpec] = None
+    value_schema: Optional[Dict[str, Any]] = None
+    task_data_schema: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTaskTimelineSegmentSpec(BaseModel):
+    """Named group of task timeline epochs for objectives and analyses."""
+
+    id: str
+    label: str
     epoch_ids: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -409,6 +422,7 @@ class StudioTaskTimelineSpec(BaseModel):
     schema_version: str = "feedbax.studio.task_timeline.v1"
     epochs: List[StudioTaskEpochSpec] = Field(default_factory=list)
     signals: List[StudioTaskTimelineSignalSpec] = Field(default_factory=list)
+    segments: List[StudioTaskTimelineSegmentSpec] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

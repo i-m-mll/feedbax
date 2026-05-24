@@ -5,7 +5,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Settings2 } from 'lucide-react';
+import { Settings2, SlidersHorizontal } from 'lucide-react';
 import {
   createDefaultTaskBindingSpec,
   ensureTaskBindingSpec,
@@ -17,8 +17,22 @@ import {
   delayedReachTimelineFromTask,
   isDelayedReachTimelineParam,
   toggleDelayedReachSignalEpoch,
+  updateTaskTimelineSignalValueSpec,
   updateDelayedReachEpochRange,
 } from '@/features/scenario/taskTimeline';
+import {
+  VALUE_SPEC_DISTRIBUTIONS,
+  VALUE_SPEC_FUNCTION_TEMPLATES,
+  VALUE_SPEC_MODE_OPTIONS,
+  VALUE_SPEC_SCOPE_OPTIONS,
+  setValueSpecDistributionFamily,
+  setValueSpecFunction,
+  setValueSpecMode,
+  setValueSpecScope,
+  valueSpecAllowedModes,
+  valueSpecAllowedScopes,
+  valueSpecChipLabel,
+} from '@/features/scenario/valueSpecs';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getTopPaneState,
@@ -144,21 +158,178 @@ function ParamEditor({
 }
 
 function formatValueSpec(valueSpec: StudioValueSpec | null | undefined): string {
-  if (!valueSpec) return 'value';
-  if (valueSpec.mode === 'function') {
-    return 'function';
+  return valueSpecChipLabel(valueSpec);
+}
+
+function ValueSpecPreview({ valueSpec }: { valueSpec: StudioValueSpec }) {
+  const mode = valueSpec.mode;
+  if (mode === 'distribution') {
+    return (
+      <div className="grid grid-cols-8 gap-1">
+        {Array.from({ length: 8 }, (_, index) => (
+          <span
+            key={index}
+            className="block rounded-sm bg-emerald-100"
+            style={{ height: `${8 + ((index * 7) % 18)}px` }}
+          />
+        ))}
+      </div>
+    );
   }
-  if (valueSpec.mode === 'constant') {
-    const value = valueSpec.value;
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const record = value as Record<string, unknown>;
-      if ('active' in record && 'inactive' in record) {
-        return `${record.active}/${record.inactive}`;
-      }
-    }
-    return formatValue(value);
+  if (mode === 'function' || mode === 'schedule') {
+    return (
+      <div className="flex h-9 items-end gap-1">
+        {[0.15, 0.2, 0.35, 0.55, 0.75, 0.9, 0.9, 0.9].map((height, index) => (
+          <span
+            key={index}
+            className="block flex-1 rounded-sm bg-emerald-500/70"
+            style={{ height: `${height * 100}%` }}
+          />
+        ))}
+      </div>
+    );
   }
-  return valueSpec.mode;
+  return (
+    <div className="h-9 rounded-sm bg-slate-100 px-2 py-2 font-mono text-[11px] text-slate-500">
+      {formatValueSpec(valueSpec)}
+    </div>
+  );
+}
+
+function ValueSpecInlineEditor({
+  signal,
+  onChange,
+  onClose,
+}: {
+  signal: StudioTaskTimelineSpec['signals'][number];
+  onChange: (valueSpec: StudioValueSpec) => void;
+  onClose: () => void;
+}) {
+  const valueSpec = signal.value_spec;
+  if (!valueSpec) return null;
+  const modes = valueSpecAllowedModes(signal);
+  const scopes = valueSpecAllowedScopes(signal);
+  return (
+    <div className="fixed left-4 top-28 z-50 w-[min(26rem,calc(100vw-2rem))] rounded border border-slate-200 bg-white/95 px-3 py-2 shadow-lg backdrop-blur">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 truncate text-xs font-semibold text-slate-700">
+          {signal.label}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-white"
+        >
+          Done
+        </button>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {VALUE_SPEC_MODE_OPTIONS.filter((option) => modes.includes(option.value)).map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(setValueSpecMode(valueSpec, option.value))}
+            className={
+              valueSpec.mode === option.value
+                ? 'rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700'
+                : 'rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-500 hover:border-emerald-200'
+            }
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_7.5rem] gap-3">
+        <div className="min-w-0 space-y-2">
+          {valueSpec.mode === 'function' && (
+            <label className="grid gap-1 text-xs text-slate-500">
+              <span>Function</span>
+              <select
+                value={valueSpec.function_id ?? VALUE_SPEC_FUNCTION_TEMPLATES[0].id}
+                onChange={(event) => onChange(setValueSpecFunction(valueSpec, event.target.value))}
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700"
+              >
+                {VALUE_SPEC_FUNCTION_TEMPLATES.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {valueSpec.mode === 'distribution' && (
+            <label className="grid gap-1 text-xs text-slate-500">
+              <span>Distribution</span>
+              <select
+                value={String(valueSpec.distribution?.family ?? 'uniform')}
+                onChange={(event) =>
+                  onChange(setValueSpecDistributionFamily(valueSpec, event.target.value))
+                }
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700"
+              >
+                {VALUE_SPEC_DISTRIBUTIONS.map((family) => (
+                  <option key={family} value={family}>
+                    {family}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {valueSpec.mode === 'schedule' && (
+            <label className="grid gap-1 text-xs text-slate-500">
+              <span>Domain</span>
+              <select
+                value={String(valueSpec.schedule?.domain ?? 'epoch')}
+                onChange={(event) =>
+                  onChange({
+                    ...valueSpec,
+                    schedule: { ...(valueSpec.schedule ?? {}), domain: event.target.value },
+                  })
+                }
+                className="h-8 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700"
+              >
+                <option value="epoch">epoch</option>
+                <option value="time">time</option>
+                <option value="trial">trial</option>
+              </select>
+            </label>
+          )}
+          {valueSpec.mode === 'expression' && (
+            <label className="grid gap-1 text-xs text-slate-500">
+              <span>Expression</span>
+              <input
+                value={valueSpec.expression ?? ''}
+                onChange={(event) => onChange({ ...valueSpec, expression: event.target.value })}
+                className="h-8 rounded border border-slate-200 bg-white px-2 font-mono text-xs text-slate-700"
+              />
+            </label>
+          )}
+          <label className="grid gap-1 text-xs text-slate-500">
+            <span>Scope</span>
+            <select
+              value={valueSpec.sampling_scope ?? scopes[0] ?? 'trial'}
+              onChange={(event) => onChange(setValueSpecScope(valueSpec, event.target.value))}
+              className="h-8 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700"
+            >
+              {VALUE_SPEC_SCOPE_OPTIONS.filter((option) => scopes.includes(option.value)).map(
+                (option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                )
+              )}
+            </select>
+          </label>
+        </div>
+        <div className="rounded border border-slate-200 bg-white p-2">
+          <ValueSpecPreview valueSpec={valueSpec} />
+          <div className="mt-1 truncate text-[10px] text-slate-400">
+            {formatValueSpec(valueSpec)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function DelayedReachTimelineEditor({
@@ -168,8 +339,10 @@ function DelayedReachTimelineEditor({
   timeline: StudioTaskTimelineSpec;
   onChange: (timeline: StudioTaskTimelineSpec) => void;
 }) {
+  const [editingSignalId, setEditingSignalId] = useState<string | null>(null);
   const editableEpochs = timeline.epochs.slice(0, -1);
   const signalRows = timeline.signals.filter((signal) => signal.kind === 'signal');
+  const editingSignal = timeline.signals.find((signal) => signal.id === editingSignalId);
   const timelineGridColumns = `7rem 5.75rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
   const timelineMinWidth = `${12.75 + timeline.epochs.length * 4.875}rem`;
   const updateVisibleRange = (
@@ -197,6 +370,15 @@ function DelayedReachTimelineEditor({
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
         Timeline
       </div>
+      {editingSignal && (
+        <ValueSpecInlineEditor
+          signal={editingSignal}
+          onChange={(valueSpec) =>
+            onChange(updateTaskTimelineSignalValueSpec(timeline, editingSignal.id, valueSpec))
+          }
+          onClose={() => setEditingSignalId(null)}
+        />
+      )}
       <div className="overflow-hidden rounded border border-slate-100">
         <div className="local-x-scrollbar overflow-x-scroll pb-2">
           <div className="w-full" style={{ minWidth: timelineMinWidth }}>
@@ -287,8 +469,18 @@ function DelayedReachTimelineEditor({
                 <div className="truncate px-2.5 py-1.5 font-medium text-slate-600">
                   {signal.label}
                 </div>
-                <div className="truncate border-l border-slate-100 px-2 py-1.5 text-center text-[10px] font-medium text-slate-500">
-                  {formatValueSpec(signal.value_spec)}
+                <div className="border-l border-slate-100 px-1.5 py-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEditingSignalId((current) => (current === signal.id ? null : signal.id))
+                    }
+                    className="flex h-6 w-full min-w-0 items-center justify-center gap-1 rounded border border-slate-200 bg-white px-1.5 text-[10px] font-medium text-slate-600 hover:border-emerald-200 hover:text-slate-800"
+                    title={`Edit ${signal.label} value spec`}
+                  >
+                    <SlidersHorizontal className="h-3 w-3 shrink-0" />
+                    <span className="min-w-0 truncate">{formatValueSpec(signal.value_spec)}</span>
+                  </button>
                 </div>
                 {timeline.epochs.map((epoch) => (
                   <label
