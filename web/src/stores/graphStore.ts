@@ -23,7 +23,7 @@ import type {
   TapUIState,
   TapNodeData,
   SubgraphPreview,
-  ParamValue,
+  RetainedObservableSpec,
 } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
@@ -883,48 +883,6 @@ function normalizeUiState(
   };
 }
 
-/**
- * Convert a backend GraphSpec + optional GraphUIState into a SubgraphPreview so
- * that a component with template_graph can be instantiated as a subgraph node.
- */
-function templateGraphToSubgraphPreview(
-  graph: GraphSpec,
-  uiState?: GraphUIState
-): SubgraphPreview {
-  const DEFAULT_X = 200;
-  const DEFAULT_Y = 200;
-  const SPACING_X = 160;
-  const nodes = Object.entries(graph.nodes).map(([id, spec], index) => {
-    const nodeUiState = uiState?.node_states?.[id];
-    const position = nodeUiState?.position ?? { x: DEFAULT_X + index * SPACING_X, y: DEFAULT_Y };
-    return {
-      id,
-      type: 'component',
-      position,
-      data: {
-        label: id,
-        spec,
-        collapsed: nodeUiState?.collapsed ?? false,
-        reversed: nodeUiState?.reversed ?? false,
-      },
-    };
-  });
-  const edges = graph.wires.map((wire) => ({
-    id: `${wire.source_node}:${wire.source_port}->${wire.target_node}:${wire.target_port}`,
-    source: wire.source_node,
-    target: wire.target_node,
-    sourceHandle: wire.source_port,
-    targetHandle: wire.target_port,
-    type: 'routed',
-  }));
-  return {
-    nodes,
-    edges,
-    inputPorts: graph.input_ports,
-    outputPorts: graph.output_ports,
-  };
-}
-
 function buildComponentNodes(graph: GraphSpec, uiState: GraphUIState): Node<GraphNodeData>[] {
   const connectedInputs = new Map<string, Set<string>>();
   const connectedOutputs = new Map<string, Set<string>>();
@@ -1204,6 +1162,254 @@ function createNodeName(graph: GraphSpec, base: string) {
   return `${sanitized}${index}`;
 }
 
+function cloneGraphSpec<T>(value: T): T {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function sanitizeNodeId(value: string, fallback = 'node'): string {
+  const sanitized = value
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return sanitized || fallback;
+}
+
+function uniqueImportedNodeId(
+  used: Set<string>,
+  preferred: string,
+  fallbackPrefix: string
+): string {
+  const cleanPreferred = sanitizeNodeId(preferred);
+  if (!used.has(cleanPreferred)) {
+    used.add(cleanPreferred);
+    return cleanPreferred;
+  }
+
+  const base = `${sanitizeNodeId(fallbackPrefix, 'template')}_${cleanPreferred}`;
+  let candidate = base;
+  let index = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}_${index}`;
+    index += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function uniqueImportedId(used: Set<string>, preferred: string, fallbackPrefix: string): string {
+  if (!used.has(preferred)) {
+    used.add(preferred);
+    return preferred;
+  }
+  const base = `${fallbackPrefix}:${preferred}`;
+  let candidate = base;
+  let index = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}:${index}`;
+    index += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function remapNodeSelector(selector: string, nodeMap: Record<string, string>): string {
+  const remapNodePort = (value: string) => {
+    const [node, ...rest] = value.split('.');
+    if (!node || rest.length === 0) return value;
+    return `${nodeMap[node] ?? node}.${rest.join('.')}`;
+  };
+  const remapEdgeEndpoint = (value: string) => {
+    if (value.includes('.')) return remapNodePort(value);
+    const [node, ...rest] = value.split(':');
+    if (!node || rest.length === 0) return value;
+    return `${nodeMap[node] ?? node}:${rest.join(':')}`;
+  };
+  const remapEdgeId = (value: string) => {
+    const [source, target] = value.split('->');
+    if (!source || !target) return value;
+    return `${remapEdgeEndpoint(source)}->${remapEdgeEndpoint(target)}`;
+  };
+  const remapStatePath = (value: string) => {
+    const [node, ...rest] = value.split('.');
+    if (!node || rest.length === 0) return value;
+    return `${nodeMap[node] ?? node}.${rest.join('.')}`;
+  };
+
+  if (selector.startsWith('port:')) {
+    return `port:${remapNodePort(selector.slice('port:'.length))}`;
+  }
+  if (selector.startsWith('edge:') || selector.startsWith('recurrent_carry:')) {
+    const prefix = selector.startsWith('edge:') ? 'edge:' : 'recurrent_carry:';
+    return `${prefix}${remapEdgeId(selector.slice(prefix.length))}`;
+  }
+  if (selector.includes('->')) {
+    return remapEdgeId(selector);
+  }
+  if (selector.startsWith('path:states.')) {
+    return `path:states.${remapStatePath(selector.slice('path:states.'.length))}`;
+  }
+  if (selector.startsWith('state_path:states.')) {
+    return `state_path:states.${remapStatePath(selector.slice('state_path:states.'.length))}`;
+  }
+  if (selector.startsWith('states.')) {
+    return `states.${remapStatePath(selector.slice('states.'.length))}`;
+  }
+  return selector;
+}
+
+function remapRetainedObservable(
+  observable: RetainedObservableSpec,
+  nodeMap: Record<string, string>,
+  usedIds: Set<string>,
+  fallbackPrefix: string
+): RetainedObservableSpec {
+  const id = uniqueImportedId(usedIds, observable.id, `${fallbackPrefix}:observable`);
+  const selector = observable.selector
+    ? remapNodeSelector(observable.selector, nodeMap)
+    : observable.selector;
+  const target = observable.target
+    ? {
+        ...observable.target,
+        selector: remapNodeSelector(observable.target.selector, nodeMap),
+        node_id: observable.target.node_id
+          ? nodeMap[observable.target.node_id] ?? observable.target.node_id
+          : observable.target.node_id,
+        edge_id: observable.target.edge_id
+          ? remapNodeSelector(observable.target.edge_id, nodeMap)
+          : observable.target.edge_id,
+        path: observable.target.path
+          ? remapNodeSelector(observable.target.path, nodeMap)
+          : observable.target.path,
+      }
+    : observable.target;
+  return {
+    ...observable,
+    id,
+    selector,
+    target,
+  };
+}
+
+function importTemplateGraphIntoGraph(
+  graph: GraphSpec,
+  uiState: GraphUIState,
+  templateGraph: GraphSpec,
+  templateUiState: GraphUIState | undefined,
+  dropPosition: { x: number; y: number },
+  templateName: string
+): { graph: GraphSpec; uiState: GraphUIState; importedNodeIds: string[] } {
+  const imported = cloneGraphSpec(templateGraph);
+  const usedNodeIds = new Set(Object.keys(graph.nodes));
+  const fallbackPrefix = sanitizeNodeId(templateName, 'template');
+  const nodeMap: Record<string, string> = {};
+  for (const nodeId of Object.keys(imported.nodes)) {
+    nodeMap[nodeId] = uniqueImportedNodeId(usedNodeIds, nodeId, fallbackPrefix);
+  }
+
+  const templatePositions = Object.entries(imported.nodes).map(([nodeId], index) => {
+    const position = templateUiState?.node_states?.[nodeId]?.position;
+    return {
+      nodeId,
+      position: position ?? {
+        x: DEFAULT_POSITION.x + index * (DEFAULT_NODE_WIDTH + 40),
+        y: DEFAULT_POSITION.y,
+      },
+    };
+  });
+  const minX = Math.min(...templatePositions.map((item) => item.position.x));
+  const minY = Math.min(...templatePositions.map((item) => item.position.y));
+
+  const importedNodes = Object.fromEntries(
+    Object.entries(imported.nodes).map(([nodeId, spec]) => [nodeMap[nodeId], cloneGraphSpec(spec)])
+  );
+  const importedWires = imported.wires.map((wire) => ({
+    ...wire,
+    source_node: nodeMap[wire.source_node] ?? wire.source_node,
+    target_node: nodeMap[wire.target_node] ?? wire.target_node,
+  }));
+
+  const importedSubgraphs: Record<string, GraphSpec> = {};
+  for (const [nodeId, subgraph] of Object.entries(imported.subgraphs ?? {})) {
+    const remappedNodeId = nodeMap[nodeId];
+    if (remappedNodeId) {
+      importedSubgraphs[remappedNodeId] = cloneGraphSpec(subgraph);
+    }
+  }
+
+  const nodeStates: GraphUIState['node_states'] = Object.fromEntries(
+    Object.entries(uiState.node_states).map(([nodeId, state]) => [
+      nodeId,
+      { ...state, selected: false },
+    ])
+  );
+  for (const { nodeId, position } of templatePositions) {
+    const remappedNodeId = nodeMap[nodeId];
+    const sourceUi = templateUiState?.node_states?.[nodeId];
+    nodeStates[remappedNodeId] = {
+      position: {
+        x: dropPosition.x + (position.x - minX),
+        y: dropPosition.y + (position.y - minY),
+      },
+      collapsed: sourceUi?.collapsed ?? false,
+      selected: true,
+      reversed: sourceUi?.reversed ?? false,
+      size: sourceUi?.size,
+    };
+  }
+
+  const subgraphStates: GraphUIState['subgraph_states'] = {
+    ...(uiState.subgraph_states ?? {}),
+  };
+  for (const [nodeId, state] of Object.entries(templateUiState?.subgraph_states ?? {})) {
+    const remappedNodeId = nodeMap[nodeId];
+    if (remappedNodeId) {
+      subgraphStates[remappedNodeId] = cloneGraphSpec(state);
+    }
+  }
+
+  const usedObservableIds = new Set((graph.retained_observables ?? []).map((item) => item.id));
+  const retained_observables = [
+    ...(graph.retained_observables ?? []),
+    ...(imported.retained_observables ?? []).map((observable) =>
+      remapRetainedObservable(observable, nodeMap, usedObservableIds, fallbackPrefix)
+    ),
+  ];
+
+  const nextGraph: GraphSpec = {
+    ...graph,
+    nodes: {
+      ...graph.nodes,
+      ...importedNodes,
+    },
+    wires: [...graph.wires, ...importedWires],
+    subgraphs:
+      Object.keys(importedSubgraphs).length > 0 || graph.subgraphs
+        ? {
+            ...(graph.subgraphs ?? {}),
+            ...importedSubgraphs,
+          }
+        : graph.subgraphs,
+    retained_observables:
+      retained_observables.length > 0 ? retained_observables : graph.retained_observables,
+  };
+
+  const nextUiState: GraphUIState = {
+    ...uiState,
+    node_states: nodeStates,
+    subgraph_states:
+      Object.keys(subgraphStates).length > 0 ? subgraphStates : uiState.subgraph_states,
+  };
+
+  return {
+    graph: nextGraph,
+    uiState: nextUiState,
+    importedNodeIds: Object.values(nodeMap),
+  };
+}
+
 function cloneSnapshot(graph: GraphSpec, uiState: GraphUIState) {
   if (typeof structuredClone === 'function') {
     return structuredClone({ graph, uiState });
@@ -1390,6 +1596,12 @@ interface GraphStoreState {
   addTap: (afterNode: string, type: TapSpec['type']) => void;
   updateTap: (tapId: string, updates: Partial<TapSpec>) => void;
   removeTap: (tapId: string) => void;
+  addRetainedObservable: (observable: RetainedObservableSpec) => void;
+  updateRetainedObservable: (
+    observableId: string,
+    updates: Partial<RetainedObservableSpec>
+  ) => void;
+  removeRetainedObservable: (observableId: string) => void;
   confirmStateMerge: (mapping: Record<string, string>) => void;
   cancelStateMerge: () => void;
   setCompositeTypes: (types: Set<string>) => void;
@@ -2516,28 +2728,47 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   addNodeFromComponent: (component, position) => {
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      if (component.template_graph) {
+        const imported = importTemplateGraphIntoGraph(
+          state.graph,
+          state.uiState,
+          component.template_graph,
+          component.template_ui_state,
+          position,
+          component.template_id ?? component.name
+        );
+        let graph = imported.graph;
+        if (state.graphStack.length > 0) {
+          graph = deriveSubgraphPorts(graph);
+        }
+        const edge_states = buildEdgeStates(graph, imported.uiState, state.edgeStyle);
+        const uiState: GraphUIState = {
+          ...imported.uiState,
+          edge_states,
+        };
+        const importedIds = new Set(imported.importedNodeIds);
+        const nodes = buildNodes(graph, uiState).map((node) => ({
+          ...node,
+          selected: importedIds.has(node.id),
+        }));
+        return {
+          graph,
+          uiState,
+          nodes,
+          edges: buildEdges(graph, uiState, state.edgeStyle),
+          past,
+          future: [],
+          isDirty: true,
+        };
+      }
+
       const name = createNodeName(state.graph, component.name);
-      // If the component definition carries a template_graph (CDE presets etc.),
-      // instantiate it as a subgraph node so it gets the nested preview canvas.
-      const hasTemplate = Boolean(component.template_graph);
-      const subgraphPreview = hasTemplate
-        ? templateGraphToSubgraphPreview(component.template_graph!, component.template_ui_state)
-        : undefined;
-      let spec: ComponentSpec = hasTemplate
-        ? {
-            type: component.name,  // Use the actual component name as the type
-            params: {
-              _subgraph: subgraphPreview as unknown as ParamValue,
-            },
-            input_ports: component.input_ports,
-            output_ports: component.output_ports,
-          }
-        : {
-            type: component.name,
-            params: { ...component.default_params },
-            input_ports: component.input_ports,
-            output_ports: component.output_ports,
-          };
+      let spec: ComponentSpec = {
+        type: component.name,
+        params: { ...component.default_params },
+        input_ports: component.input_ports,
+        output_ports: component.output_ports,
+      };
       spec = normalizeMuxSpec(
         spec,
         Number(spec.params.n_inputs) || spec.input_ports.length || 2
@@ -2548,12 +2779,6 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ...state.graph.nodes,
           [name]: spec,
         },
-        subgraphs: hasTemplate
-          ? {
-              ...(state.graph.subgraphs ?? {}),
-              [name]: component.template_graph!,
-            }
-          : state.graph.subgraphs,
       };
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
@@ -2568,12 +2793,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
             selected: true,
           },
         },
-        subgraph_states: hasTemplate
-          ? {
-              ...(state.uiState.subgraph_states ?? {}),
-              [name]: component.template_ui_state ?? { viewport: DEFAULT_VIEWPORT, node_states: {} },
-            }
-          : state.uiState.subgraph_states,
+        subgraph_states: state.uiState.subgraph_states,
       };
       const nodes = buildNodes(graph, uiState).map((node) => ({
         ...node,
@@ -2583,6 +2803,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         graph,
         uiState,
         nodes,
+        edges: buildEdges(graph, uiState, state.edgeStyle),
         past,
         future: [],
         isDirty: true,
@@ -2997,6 +3218,67 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         edges: buildEdges(graph, uiState, state.edgeStyle),
         isDirty: true,
         selectedTapId: state.selectedTapId === tapId ? null : state.selectedTapId,
+      };
+    });
+  },
+  addRetainedObservable: (observable) => {
+    set((state) => {
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const observables = [...(state.graph.retained_observables ?? []), observable];
+      return {
+        graph: {
+          ...state.graph,
+          retained_observables: observables,
+        },
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  updateRetainedObservable: (observableId, updates) => {
+    set((state) => {
+      const current = (state.graph.retained_observables ?? []).find(
+        (observable) => observable.id === observableId
+      );
+      if (!current) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      return {
+        graph: {
+          ...state.graph,
+          retained_observables: (state.graph.retained_observables ?? []).map((observable) =>
+            observable.id === observableId
+              ? {
+                  ...observable,
+                  ...updates,
+                  id: observable.id,
+                  metadata: {
+                    ...observable.metadata,
+                    ...(updates.metadata ?? {}),
+                  },
+                }
+              : observable
+          ),
+        },
+        past,
+        future: [],
+        isDirty: true,
+      };
+    });
+  },
+  removeRetainedObservable: (observableId) => {
+    set((state) => {
+      const current = state.graph.retained_observables ?? [];
+      if (!current.some((observable) => observable.id === observableId)) return state;
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      return {
+        graph: {
+          ...state.graph,
+          retained_observables: current.filter((observable) => observable.id !== observableId),
+        },
+        past,
+        future: [],
+        isDirty: true,
       };
     });
   },

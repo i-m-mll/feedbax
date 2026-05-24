@@ -510,7 +510,7 @@ function addRetainedObservableEntity(
     id: retainedObservableEntityId(observable.id),
     kind: 'retained_observable',
     label: observable.label ?? observable.id,
-    summary: observable.retention.mode,
+    summary: 'Captured observable',
     scenario_id: registry.scenario_id,
     stage_id: registry.stage_id,
     selector: selectorFromRetainedObservable(observable),

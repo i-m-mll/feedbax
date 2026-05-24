@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useGraphStore } from './graphStore';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
+import type { ComponentDefinition } from '@/types/components';
 
 const uiState: GraphUIState = {
   viewport: { x: 0, y: 0, zoom: 1 },
@@ -171,5 +172,337 @@ describe('graphStore recurrent connections', () => {
     expect(wire?.temporality).toBe('recurrent');
     expect(wire?.recurrent_initializer?.kind).toBe('zeros');
     expect(edge?.data?.temporality).toBe('recurrent');
+  });
+});
+
+describe('graphStore retained observables', () => {
+  beforeEach(() => {
+    useGraphStore.getState().hydrateGraph(graphWithNetworkSubgraph(), uiState);
+  });
+
+  it('adds, updates, and removes explicit retained observables on the graph spec', () => {
+    useGraphStore.getState().addRetainedObservable({
+      id: 'obs:network_output',
+      label: 'Network output',
+      selector: 'port:network.output',
+      target: {
+        kind: 'port',
+        selector: 'port:network.output',
+        node_id: 'network',
+        port: 'output',
+        timing: 'output',
+      },
+      retention: { mode: 'trajectory' },
+      metadata: {},
+    });
+
+    expect(useGraphStore.getState().graph.retained_observables).toEqual([
+      expect.objectContaining({
+        id: 'obs:network_output',
+        retention: { mode: 'trajectory' },
+      }),
+    ]);
+
+    useGraphStore.getState().updateRetainedObservable('obs:network_output', {
+      label: 'Network output window',
+      retention: { mode: 'window', window_size: 16 },
+    });
+
+    expect(useGraphStore.getState().graph.retained_observables?.[0]).toMatchObject({
+      label: 'Network output window',
+      retention: { mode: 'window', window_size: 16 },
+    });
+
+    useGraphStore.getState().removeRetainedObservable('obs:network_output');
+
+    expect(useGraphStore.getState().graph.retained_observables).toEqual([]);
+  });
+});
+
+describe('graphStore template insertion', () => {
+  const baseGraph: GraphSpec = {
+    nodes: {
+      source: {
+        type: 'Constant',
+        params: {},
+        input_ports: [],
+        output_ports: ['output'],
+      },
+    },
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+  };
+  const baseUi: GraphUIState = {
+    viewport: { x: 0, y: 0, zoom: 1 },
+    node_states: {
+      source: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+    },
+  };
+  const templateComponent: ComponentDefinition = {
+    name: 'Network Template',
+    category: 'Neural Networks',
+    description: 'Template',
+    param_schema: [],
+    input_ports: ['input', 'feedback'],
+    output_ports: ['output'],
+    icon: 'network',
+    default_params: {},
+    template_id: 'feedbax.templates.network',
+    template_kind: 'executable',
+    template_graph: {
+      nodes: {
+        input_mux: {
+          type: 'Mux',
+          params: { n_inputs: 2 },
+          input_ports: ['in_0', 'in_1'],
+          output_ports: ['output'],
+        },
+        cell: {
+          type: 'GRU',
+          params: { input_size: 2, hidden_size: 3 },
+          input_ports: ['input', 'hidden'],
+          output_ports: ['output', 'hidden'],
+        },
+        readout: {
+          type: 'Linear',
+          params: { input_size: 3, output_size: 1 },
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [
+        {
+          source_node: 'input_mux',
+          source_port: 'output',
+          target_node: 'cell',
+          target_port: 'input',
+        },
+        {
+          source_node: 'cell',
+          source_port: 'output',
+          target_node: 'readout',
+          target_port: 'input',
+        },
+      ],
+      input_ports: ['input', 'feedback'],
+      output_ports: ['output'],
+      input_bindings: {
+        input: ['input_mux', 'in_0'],
+        feedback: ['input_mux', 'in_1'],
+      },
+      output_bindings: {
+        output: ['readout', 'output'],
+      },
+      retained_observables: [
+        {
+          id: 'obs:cell_output',
+          label: 'Cell output',
+          selector: 'port:cell.output',
+          target: {
+            kind: 'port',
+            selector: 'port:cell.output',
+            node_id: 'cell',
+            port: 'output',
+            timing: 'output',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:cell_to_readout',
+          label: 'Cell to readout',
+          selector: 'edge:cell.output->readout.input',
+          target: {
+            kind: 'edge',
+            selector: 'edge:cell.output->readout.input',
+            edge_id: 'cell:output->readout:input',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:cell_hidden_carry',
+          label: 'Cell hidden carry',
+          selector: 'recurrent_carry:cell.hidden->cell.hidden',
+          target: {
+            kind: 'recurrent_carry',
+            selector: 'recurrent_carry:cell.hidden->cell.hidden',
+            edge_id: 'cell:hidden->cell:hidden',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:graph_output',
+          label: 'Graph output',
+          selector: 'graph_output:output',
+          target: {
+            kind: 'graph_output',
+            selector: 'graph_output:output',
+            node_id: 'readout',
+            port: 'output',
+            path: 'output',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:cell_state',
+          label: 'Cell state',
+          selector: 'path:states.cell.hidden',
+          target: {
+            kind: 'state_path',
+            selector: 'path:states.cell.hidden',
+            node_id: 'cell',
+            path: 'states.cell.hidden',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+      ],
+      subgraphs: {
+        cell: {
+          nodes: {
+            inner: {
+              type: 'Linear',
+              params: { input_size: 3, output_size: 3 },
+              input_ports: ['input'],
+              output_ports: ['output'],
+            },
+          },
+          wires: [],
+          input_ports: ['input'],
+          output_ports: ['output'],
+          input_bindings: { input: ['inner', 'input'] },
+          output_bindings: { output: ['inner', 'output'] },
+        },
+      },
+    },
+    template_ui_state: {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        input_mux: { position: { x: 100, y: 50 }, collapsed: false, selected: false },
+        cell: { position: { x: 340, y: 50 }, collapsed: false, selected: false },
+        readout: { position: { x: 580, y: 50 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        cell: {
+          viewport: { x: 0, y: 0, zoom: 1 },
+          node_states: {
+            inner: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+          },
+        },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    useGraphStore.getState().hydrateGraph(baseGraph, baseUi);
+  });
+
+  it('imports template graphs into the active graph level without replacing existing nodes', () => {
+    useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 200, y: 160 });
+
+    const state = useGraphStore.getState();
+    expect(Object.keys(state.graph.nodes)).toEqual(['source', 'input_mux', 'cell', 'readout']);
+    expect(state.graph.nodes['Network Template']).toBeUndefined();
+    expect(state.graph.nodes.cell.params._subgraph).toBeUndefined();
+    expect(state.graph.wires).toEqual([
+      {
+        source_node: 'input_mux',
+        source_port: 'output',
+        target_node: 'cell',
+        target_port: 'input',
+      },
+      {
+        source_node: 'cell',
+        source_port: 'output',
+        target_node: 'readout',
+        target_port: 'input',
+      },
+    ]);
+    expect(state.graph.subgraphs?.cell?.nodes.inner.type).toBe('Linear');
+    expect(state.uiState.subgraph_states?.cell?.node_states.inner).toBeDefined();
+    expect(state.uiState.node_states.input_mux.position).toEqual({ x: 200, y: 160 });
+    expect(state.nodes.find((node) => node.id === 'cell')?.type).toBe('component');
+    expect(state.edges.some((edge) => edge.source === 'input_mux' && edge.target === 'cell')).toBe(true);
+  });
+
+  it('keeps later normal component insertion synchronous after template import', () => {
+    const gain: ComponentDefinition = {
+      name: 'Gain',
+      category: 'Math',
+      description: 'Gain',
+      param_schema: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      icon: 'math',
+      default_params: { gain: 1 },
+    };
+
+    useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 200, y: 160 });
+    useGraphStore.getState().addNodeFromComponent(gain, { x: 900, y: 160 });
+
+    const state = useGraphStore.getState();
+    expect(state.graph.nodes.gain).toMatchObject({
+      type: 'Gain',
+      input_ports: ['input'],
+      output_ports: ['output'],
+    });
+    expect(state.uiState.node_states.gain.position).toEqual({ x: 900, y: 160 });
+    expect(state.nodes.some((node) => node.id === 'gain')).toBe(true);
+  });
+
+  it('remaps retained observable selectors when imported template nodes collide', () => {
+    useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 200, y: 160 });
+    useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 600, y: 160 });
+
+    const observables = useGraphStore.getState().graph.retained_observables ?? [];
+    const secondImport = observables.filter((observable) =>
+      observable.id.startsWith('feedbax_templates_network:observable:')
+    );
+    expect(secondImport).toHaveLength(5);
+
+    expect(secondImport.find((observable) => observable.label === 'Cell output')).toMatchObject({
+      selector: 'port:feedbax_templates_network_cell.output',
+      target: {
+        selector: 'port:feedbax_templates_network_cell.output',
+        node_id: 'feedbax_templates_network_cell',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Cell to readout')).toMatchObject({
+      selector: 'edge:feedbax_templates_network_cell.output->feedbax_templates_network_readout.input',
+      target: {
+        selector: 'edge:feedbax_templates_network_cell.output->feedbax_templates_network_readout.input',
+        edge_id: 'feedbax_templates_network_cell:output->feedbax_templates_network_readout:input',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Cell hidden carry')).toMatchObject({
+      selector: 'recurrent_carry:feedbax_templates_network_cell.hidden->feedbax_templates_network_cell.hidden',
+      target: {
+        edge_id: 'feedbax_templates_network_cell:hidden->feedbax_templates_network_cell:hidden',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Graph output')).toMatchObject({
+      selector: 'graph_output:output',
+      target: {
+        node_id: 'feedbax_templates_network_readout',
+        port: 'output',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Cell state')).toMatchObject({
+      selector: 'path:states.feedbax_templates_network_cell.hidden',
+      target: {
+        node_id: 'feedbax_templates_network_cell',
+        path: 'states.feedbax_templates_network_cell.hidden',
+      },
+    });
   });
 });

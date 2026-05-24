@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import {
+  Database,
   GitBranch,
   ListChecks,
   Map as MapIcon,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Canvas } from '@/components/canvas/Canvas';
 import {
+  retainedObservableEntityId,
   buildScenarioEntityRegistry,
 } from '@/features/scenario/entities';
 import {
@@ -25,12 +27,23 @@ import {
   OBJECTIVE_PENALTY_OPTIONS,
   OBJECTIVE_TEMPORAL_MODE_OPTIONS,
   objectiveTermEnabled,
-  objectiveSelectorSubpath,
   removeObjectiveTerm,
   setObjectiveTermEnabled,
   updateObjectiveTerm,
 } from '@/features/scenario/objectives';
-import { selectorDetail, selectorDisplayLabel } from '@/features/scenario/selectors';
+import {
+  selectorDetail,
+  selectorDisplayLabel,
+  selectorGroupLabel,
+  selectorOptionsForRegistry,
+  type StudioSelectorOption,
+} from '@/features/scenario/selectors';
+import {
+  createRetainedObservable,
+  retainedObservableSelectorPatch,
+  retainedObservableTargetKindLabel,
+  selectorToRetainedObservableTarget,
+} from '@/features/scenario/observables';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getActiveStage,
@@ -39,11 +52,16 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { useLayoutStore } from '@/stores/layoutStore';
+import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
+import type {
+  RetainedObservableSpec,
+} from '@/types/graph';
 import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
   StudioScenarioEntity,
   StudioScenarioEntityRegistry,
+  StudioSchemaRegistry,
   StudioTopPaneProjection,
 } from '@/types/workspace';
 import type { TimeAggregationSpec } from '@/types/training';
@@ -56,6 +74,7 @@ const PROJECTIONS: Array<{
   { id: 'model', label: 'Model', icon: GitBranch },
   { id: 'task', label: 'Task', icon: Settings2 },
   { id: 'workspace', label: 'Workspace', icon: MapIcon },
+  { id: 'observables', label: 'Observables', icon: Database },
   { id: 'objectives', label: 'Objectives', icon: ListChecks },
 ];
 
@@ -287,6 +306,185 @@ function updateTemporalSelector(
   };
 }
 
+function optionLabel(option: StudioSelectorOption): string {
+  return `${selectorGroupLabel(option.group)} / ${option.label}`;
+}
+
+function ObservableSelectorSelect({
+  value,
+  options,
+  onChange,
+  className,
+}: {
+  value: string | null | undefined;
+  options: StudioSelectorOption[];
+  onChange: (option: StudioSelectorOption | null) => void;
+  className?: string;
+}) {
+  return (
+    <select
+      value={value ?? ''}
+      onChange={(event) => {
+        const option = options.find((candidate) => candidate.selector.compact === event.target.value);
+        onChange(option ?? null);
+      }}
+      className={clsx('h-8 rounded border border-slate-200 bg-white px-2 text-xs', className)}
+    >
+      <option value="">Select source</option>
+      {options.map((option) => (
+        <option key={option.id} value={option.selector.compact}>
+          {optionLabel(option)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ObservablesProjection({
+  registry,
+  selectedId,
+  graph,
+  objectiveSpec,
+  schemaRegistry,
+  onSelect,
+  onAdd,
+  onUpdate,
+  onRemove,
+}: {
+  registry: StudioScenarioEntityRegistry;
+  selectedId: string | null;
+  graph: { retained_observables?: RetainedObservableSpec[] | null };
+  objectiveSpec: StudioObjectiveSpec;
+  schemaRegistry: StudioSchemaRegistry | null;
+  onSelect: (entityId: string | null) => void;
+  onAdd: (observable: RetainedObservableSpec) => void;
+  onUpdate: (observableId: string, updates: Partial<RetainedObservableSpec>) => void;
+  onRemove: (observableId: string) => void;
+}) {
+  const observables = graph.retained_observables ?? [];
+  const selectorOptions = useMemo(
+    () => selectorOptionsForRegistry({ registry, schemaRegistry, objectiveSpec }),
+    [objectiveSpec, registry, schemaRegistry]
+  );
+  const captureOptions = useMemo(
+    () =>
+      selectorOptions.filter((option) => {
+        if (option.selector.namespace === 'retained_observable') return false;
+        if (option.selector.namespace === 'probe') return false;
+        return selectorToRetainedObservableTarget(option.selector) !== null;
+      }),
+    [selectorOptions]
+  );
+  const [draftSelector, setDraftSelector] = useState<string>(() => captureOptions[0]?.selector.compact ?? '');
+
+  useEffect(() => {
+    if (!draftSelector && captureOptions[0]) {
+      setDraftSelector(captureOptions[0].selector.compact);
+    }
+  }, [captureOptions, draftSelector]);
+
+  const addObservable = () => {
+    const option =
+      captureOptions.find((candidate) => candidate.selector.compact === draftSelector) ??
+      captureOptions[0];
+    if (!option) return;
+    const observable = createRetainedObservable({
+      selector: option.selector,
+      existingIds: new Set(observables.map((item) => item.id)),
+    });
+    if (!observable) return;
+    onAdd(observable);
+    onSelect(retainedObservableEntityId(observable.id));
+  };
+
+  return (
+    <div className="h-full overflow-y-auto bg-slate-50 p-5">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <div className="rounded-md border border-slate-200 bg-white p-4">
+          <div className="grid grid-cols-[minmax(12rem,1fr)_9rem] gap-3">
+            <ObservableSelectorSelect
+              value={draftSelector}
+              options={captureOptions}
+              onChange={(option) => setDraftSelector(option?.selector.compact ?? '')}
+              className="w-full"
+            />
+            <button
+              type="button"
+              onClick={addObservable}
+              disabled={captureOptions.length === 0}
+              className="inline-flex h-8 items-center justify-center rounded-md bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              Add capture
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
+          <div className="grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_4rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+            <div>Observable</div>
+            <div>Kind</div>
+            <div>Source</div>
+            <div />
+          </div>
+          {observables.map((observable) => {
+            const active = selectedId === retainedObservableEntityId(observable.id);
+            const source = observable.selector ?? observable.target?.selector ?? '';
+            return (
+              <div
+                key={observable.id}
+                onClick={() => onSelect(retainedObservableEntityId(observable.id))}
+                className={clsx(
+                  'grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0',
+                  active ? 'bg-brand-50 text-slate-900' : 'bg-white text-slate-600 hover:bg-slate-50'
+                )}
+              >
+                <div className="min-w-0">
+                  <input
+                    value={observable.label ?? observable.id}
+                    onChange={(event) => onUpdate(observable.id, { label: event.target.value })}
+                    onClick={(event) => event.stopPropagation()}
+                    className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div className="text-slate-500">
+                  {retainedObservableTargetKindLabel(observable.target)}
+                </div>
+                <ObservableSelectorSelect
+                  value={source}
+                  options={captureOptions}
+                  onChange={(option) => {
+                    if (!option) return;
+                    const patch = retainedObservableSelectorPatch(option.selector);
+                    if (patch) onUpdate(observable.id, patch);
+                  }}
+                  className="w-full"
+                />
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemove(observable.id);
+                    if (active) onSelect(null);
+                  }}
+                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  title="Delete retained observable"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+          {observables.length === 0 && (
+            <div className="px-4 py-8 text-center text-sm text-slate-400">
+              No explicit retained observables authored.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ObjectivesProjection({
   registry,
   selectedId,
@@ -462,10 +660,17 @@ export function ScenarioProjectionWorkspace() {
     (state) => state.updateActiveScenarioObjectiveSpec
   );
   const graph = useGraphStore((state) => state.graph);
+  const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
+  const updateRetainedObservable = useGraphStore((state) => state.updateRetainedObservable);
+  const removeRetainedObservable = useGraphStore((state) => state.removeRetainedObservable);
   const topPane = getTopPaneState(workspace);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const schemaQuery = useStudioSchemaRegistry(
+    workspace,
+    activeStage?.scenario_id ?? activeScenario?.id ?? null
+  );
   const registry = useMemo(
     () => buildScenarioEntityRegistry({ scenario: activeScenario, graph }),
     [activeScenario, graph]
@@ -486,6 +691,19 @@ export function ScenarioProjectionWorkspace() {
             registry={registry}
             selectedId={topPane.selected_entity_id}
             onSelect={selectTopPaneEntity}
+          />
+        )}
+        {topPane.active_projection === 'observables' && (
+          <ObservablesProjection
+            registry={registry}
+            selectedId={topPane.selected_entity_id}
+            graph={graph}
+            objectiveSpec={objectiveSpec}
+            schemaRegistry={schemaQuery.data ?? null}
+            onSelect={selectTopPaneEntity}
+            onAdd={addRetainedObservable}
+            onUpdate={updateRetainedObservable}
+            onRemove={removeRetainedObservable}
           />
         )}
         {topPane.active_projection === 'objectives' && (

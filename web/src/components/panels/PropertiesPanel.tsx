@@ -10,15 +10,24 @@ import {
 import {
   buildScenarioEntityRegistry,
   graphPortEntityId,
+  objectiveEntityId,
   parseGraphPortEntityId,
   probeEntityId,
+  retainedObservableEntityId,
 } from '@/features/scenario/entities';
+import {
+  addObjectiveTerm,
+  createObjectiveTerm,
+  ensureObjectiveSpec,
+  targetSelectorForEntity,
+} from '@/features/scenario/objectives';
 import {
   selectorDetail,
   selectorDisplayLabel,
   selectorOptionsForRegistry,
   type StudioSelectorOption,
 } from '@/features/scenario/selectors';
+import { createRetainedObservable } from '@/features/scenario/observables';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { useComponents } from '@/hooks/useComponents';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
@@ -50,10 +59,17 @@ export function PropertiesPanel() {
   );
   const addTap = useGraphStore((state) => state.addTap);
   const addTapForEdge = useGraphStore((state) => state.addTapForEdge);
+  const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
+  const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
   const updateTap = useGraphStore((state) => state.updateTap);
   const removeTap = useGraphStore((state) => state.removeTap);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
+  const setSelectedEdge = useGraphStore((state) => state.setSelectedEdge);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
   const retargetTaskBindingsForNodeRename = useWorkspaceStore(
     (state) => state.retargetActiveScenarioTaskBindingsForNodeRename
   );
@@ -84,6 +100,13 @@ export function PropertiesPanel() {
         schemaRegistry: schemaQuery.data ?? null,
       }),
     [scenarioRegistry, schemaQuery.data]
+  );
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const taskEntity = useMemo(
+    () =>
+      Object.values(scenarioRegistry.entities).find((entity) => entity.kind === 'task_object') ??
+      null,
+    [scenarioRegistry]
   );
 
   const selectedNode = useMemo(
@@ -156,6 +179,22 @@ export function PropertiesPanel() {
     }
   }, [selectedNode?.id]);
 
+  const addObjectiveFromSelector = (selector: StudioSelectorRef) => {
+    if (!activeScenario) return;
+    const term = createObjectiveTerm({
+      spec: objectiveSpec,
+      label: `Objective: ${selectorDisplayLabel(selector)}`,
+      sourceSelector: selector,
+      targetSelector: targetSelectorForEntity(taskEntity),
+    });
+    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
+    setSelectedNode(null);
+    setSelectedTap(null);
+    setSelectedEdge(null);
+    setTopPaneProjection('objectives');
+    selectTopPaneEntity(objectiveEntityId(term.id));
+  };
+
   if (selectedTap) {
     return (
       <TapEditor
@@ -181,12 +220,6 @@ export function PropertiesPanel() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
-              onClick={() => addTapForEdge(selectedEdge.id, 'probe')}
-            >
-              Add Probe Tap
-            </button>
-            <button
-              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
               onClick={() => addTapForEdge(selectedEdge.id, 'intervention')}
             >
               Add Intervention Tap
@@ -201,6 +234,26 @@ export function PropertiesPanel() {
     const edgeData = selectedEdge.data;
     const temporality = edgeData?.temporality ?? 'instant';
     const init = edgeData?.recurrent_initializer as Record<string, unknown> | null | undefined;
+    const sourceHandle = String(selectedEdge.sourceHandle ?? '');
+    const targetHandle = String(selectedEdge.targetHandle ?? '');
+    const edgeSelector: StudioSelectorRef | null =
+      sourceHandle && targetHandle
+        ? {
+            namespace: temporality === 'recurrent' ? 'recurrent_carry' : 'graph_edge',
+            compact: `edge:${selectedEdge.source}.${sourceHandle}->${selectedEdge.target}.${targetHandle}`,
+            target_id: selectedEdge.id,
+            path: null,
+            role: 'observed',
+            metadata: {
+              edge_id: selectedEdge.id,
+              temporality,
+              source_node_id: selectedEdge.source,
+              source_port: sourceHandle,
+              target_node_id: selectedEdge.target,
+              target_port: targetHandle,
+            },
+          }
+        : null;
     return (
       <div className="space-y-5 p-6">
         <div>
@@ -247,6 +300,37 @@ export function PropertiesPanel() {
             {edgeData.schema_message}
           </div>
         )}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={!activeScenario || !edgeSelector}
+            onClick={() => {
+              if (!edgeSelector) return;
+              addObjectiveFromSelector(edgeSelector);
+            }}
+            className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Add objective
+          </button>
+          <button
+            type="button"
+            disabled={!edgeSelector}
+            onClick={() => {
+              if (!edgeSelector) return;
+              const observable = createRetainedObservable({
+                selector: edgeSelector,
+                existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+              });
+              if (!observable) return;
+              addRetainedObservable(observable);
+              setTopPaneProjection('observables');
+              selectTopPaneEntity(retainedObservableEntityId(observable.id));
+            }}
+            className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Capture observable
+          </button>
+        </div>
         <div className="text-xs text-slate-400">
           Port wires carry data; component-owned state stays in node state slots.
         </div>
@@ -267,6 +351,14 @@ export function PropertiesPanel() {
     const ports =
       selectedPort.direction === 'input' ? nodeSpec?.input_ports : nodeSpec?.output_ports;
     if (nodeSpec && ports?.includes(selectedPort.port)) {
+      const portSelector: StudioSelectorRef = {
+        namespace: 'graph_port',
+        compact: `port:${selectedPort.nodeId}.${selectedPort.port}`,
+        target_id: selectedPort.nodeId,
+        path: selectedPort.port,
+        role: selectedPort.direction === 'input' ? 'editable' : 'observed',
+        metadata: { direction: selectedPort.direction },
+      };
       return (
         <PortPropertiesPanel
           nodeId={selectedPort.nodeId}
@@ -275,6 +367,18 @@ export function PropertiesPanel() {
           port={selectedPort.port}
           binding={binding}
           isBoundaryAlias={isBoundaryAlias}
+          canAddObjective={Boolean(activeScenario)}
+          onAddObjective={() => addObjectiveFromSelector(portSelector)}
+          onCapture={() => {
+            const observable = createRetainedObservable({
+              selector: portSelector,
+              existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+            });
+            if (!observable) return;
+            addRetainedObservable(observable);
+            setTopPaneProjection('observables');
+            selectTopPaneEntity(retainedObservableEntityId(observable.id));
+          }}
           onRename={(nextPort) => {
             const trimmed = nextPort.trim();
             if (!trimmed || trimmed === selectedPort.port || !isBoundaryAlias) return;
@@ -472,10 +576,48 @@ export function PropertiesPanel() {
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Taps</div>
         <div className="flex flex-wrap items-center gap-2">
           <button
-            className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
-            onClick={() => addTap(selectedNode.id, 'probe')}
+            className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!activeScenario || (nodeSpec.output_ports ?? []).length === 0}
+            onClick={() => {
+              const port = nodeSpec.output_ports[0];
+              if (!port) return;
+              addObjectiveFromSelector({
+                namespace: 'graph_port',
+                compact: `port:${selectedNode.id}.${port}`,
+                target_id: selectedNode.id,
+                path: port,
+                role: 'observed',
+                metadata: { direction: 'output' },
+              });
+            }}
           >
-            Add Probe
+            Add Objective
+          </button>
+          <button
+            className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
+            disabled={(nodeSpec.output_ports ?? []).length === 0}
+            onClick={() => {
+              const port = nodeSpec.output_ports[0];
+              if (!port) return;
+              const selector = {
+                namespace: 'graph_port' as const,
+                compact: `port:${selectedNode.id}.${port}`,
+                target_id: selectedNode.id,
+                path: port,
+                role: 'observed',
+                metadata: { direction: 'output' },
+              };
+              const observable = createRetainedObservable({
+                selector,
+                existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+              });
+              if (!observable) return;
+              addRetainedObservable(observable);
+              setTopPaneProjection('observables');
+              selectTopPaneEntity(retainedObservableEntityId(observable.id));
+            }}
+          >
+            Capture Output
           </button>
           <button
             className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
@@ -584,6 +726,9 @@ function PortPropertiesPanel({
   port,
   binding,
   isBoundaryAlias,
+  canAddObjective,
+  onAddObjective,
+  onCapture,
   onRename,
 }: {
   nodeId: string;
@@ -592,6 +737,9 @@ function PortPropertiesPanel({
   port: string;
   binding?: [string, string];
   isBoundaryAlias: boolean;
+  canAddObjective: boolean;
+  onAddObjective: () => void;
+  onCapture: () => void;
   onRename: (nextPort: string) => void;
 }) {
   const [value, setValue] = useState(port);
@@ -618,6 +766,23 @@ function PortPropertiesPanel({
         <div className="mt-1 text-xs text-slate-500">
           {direction === 'input' ? 'Input' : 'Output'} port on {nodeType}
         </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={!canAddObjective}
+          onClick={onAddObjective}
+          className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Add objective
+        </button>
+        <button
+          type="button"
+          onClick={onCapture}
+          className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900"
+        >
+          Capture observable
+        </button>
       </div>
       <div className="space-y-2 border-t border-slate-100 pt-4">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Alias</div>

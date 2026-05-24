@@ -628,7 +628,7 @@ export function selectorOptionsForRegistry({
     if (entity.kind === 'graph_edge') {
       options.push(
         optionForSelector({
-          group: 'state',
+          group: entity.selector.namespace === 'state_path' ? 'state' : 'observables',
           label: entity.label,
           detail: entity.summary ?? null,
           selector: {
@@ -690,8 +690,8 @@ export function selectorOptionsForRegistry({
     })
     .sort((a, b) => {
       const groupOrder =
-        ['ports', 'state', 'task', 'mechanics', 'probes', 'analysis'].indexOf(a.group) -
-        ['ports', 'state', 'task', 'mechanics', 'probes', 'analysis'].indexOf(b.group);
+        ['ports', 'observables', 'state', 'task', 'mechanics', 'probes', 'analysis'].indexOf(a.group) -
+        ['ports', 'observables', 'state', 'task', 'mechanics', 'probes', 'analysis'].indexOf(b.group);
       return groupOrder || a.label.localeCompare(b.label);
     });
 }
