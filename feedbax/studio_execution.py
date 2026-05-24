@@ -891,6 +891,8 @@ def _materialize_analysis_stage(
             (analysis_spec_payload or {}).get("analysis_type", "feedbax.analysis.activity")
         ),
         inputs=input_refs,
+        # Contract-level forwarding; legacy analysis modules still consume eval refs.
+        input_requirements=list((analysis_spec_payload or {}).get("input_requirements", [])),
         params={
             "stage_id": analysis_stage.id,
             "scenario_id": analysis_stage.scenario_id,

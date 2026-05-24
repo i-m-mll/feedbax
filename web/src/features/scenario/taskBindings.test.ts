@@ -5,6 +5,8 @@ import {
   ensureTaskBindingSpec,
   removeTaskBindingsForTargetNodes,
   retargetTaskBindingsForNodeRename,
+  scopedTaskBindingSpec,
+  taskBindingId,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import type { GraphSpec } from '@/types/graph';
@@ -248,6 +250,51 @@ describe('task data bindings', () => {
         metadata: {},
       },
     ]);
+  });
+
+  it('keeps same local node IDs isolated by graph path', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithTaskMux, delayedTask);
+    const scopedBinding = {
+      id: taskBindingId('hold', 'task_mux', 'in_1', ['network']),
+      source_data_id: 'hold',
+      target_graph_path: ['network'],
+      target_node_id: 'task_mux',
+      target_port: 'in_1',
+      role: 'model_input',
+      metadata: {},
+    };
+    const withSubgraphBinding: StudioTaskBindingSpec = {
+      ...spec,
+      bindings: [...spec.bindings, scopedBinding],
+    };
+
+    expect(scopedTaskBindingSpec(withSubgraphBinding, []).bindings).toEqual(spec.bindings);
+    expect(scopedTaskBindingSpec(withSubgraphBinding, ['network']).bindings).toEqual([
+      scopedBinding,
+    ]);
+    expect(targetInputOccupied(graphWithTaskMux, scopedTaskBindingSpec(withSubgraphBinding, []), 'task_mux', 'in_1')).toBe(true);
+    expect(targetInputOccupied(graphWithTaskMux, scopedTaskBindingSpec(withSubgraphBinding, ['network']), 'task_mux', 'in_1')).toBe(true);
+  });
+
+  it('removes deleted-node task bindings only in the active graph path', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithTaskMux, delayedTask);
+    const subgraphBinding = {
+      id: taskBindingId('hold', 'task_mux', 'in_1', ['network']),
+      source_data_id: 'hold',
+      target_graph_path: ['network'],
+      target_node_id: 'task_mux',
+      target_port: 'in_1',
+      role: 'model_input',
+      metadata: {},
+    };
+    const withSubgraphBinding: StudioTaskBindingSpec = {
+      ...spec,
+      bindings: [...spec.bindings, subgraphBinding],
+    };
+
+    const pruned = removeTaskBindingsForTargetNodes(withSubgraphBinding, ['task_mux'], ['network']);
+
+    expect(pruned.bindings).toEqual(spec.bindings);
   });
 
   it('removes bindings that target deleted model nodes', () => {

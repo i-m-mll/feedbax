@@ -11,6 +11,7 @@ import { delayedReachTaskDataValueSpec, VALUE_SCHEMA_VERSION } from './taskTimel
 
 export const TASK_BINDING_SCHEMA_VERSION = 'feedbax.studio.task_bindings.v2';
 export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
+export const ROOT_TASK_BINDING_GRAPH_PATH: string[] = [];
 
 export const TASK_COMPONENT_TYPES = new Set([
   'ReachingTask',
@@ -226,8 +227,59 @@ export function defaultTaskData(task?: TaskSpec | null): StudioTaskDataSpec[] {
   return genericTaskData();
 }
 
-export function taskBindingId(dataId: string, nodeId: string, port: string): string {
-  return `task:${dataId}->${nodeId}:${port}`;
+export function normalizeTaskBindingGraphPath(
+  graphPath: Iterable<string | null | undefined> | null | undefined
+): string[] {
+  return Array.from(graphPath ?? []).filter(
+    (item): item is string => typeof item === 'string' && item.length > 0
+  );
+}
+
+export function taskBindingGraphPathKey(
+  graphPath: Iterable<string | null | undefined> | null | undefined
+): string {
+  const normalized = normalizeTaskBindingGraphPath(graphPath);
+  return normalized.length === 0 ? 'root' : normalized.map(encodeURIComponent).join('/');
+}
+
+export function taskBindingInGraphPath(
+  binding: Pick<StudioTaskBinding, 'target_graph_path'>,
+  graphPath: Iterable<string | null | undefined> | null | undefined
+): boolean {
+  const left = normalizeTaskBindingGraphPath(binding.target_graph_path);
+  const right = normalizeTaskBindingGraphPath(graphPath);
+  return left.length === right.length && left.every((part, index) => part === right[index]);
+}
+
+export function scopedTaskBindingSpec(
+  spec: StudioTaskBindingSpec,
+  graphPath: Iterable<string | null | undefined> | null | undefined
+): StudioTaskBindingSpec {
+  return {
+    ...spec,
+    bindings: spec.bindings.filter((binding) => taskBindingInGraphPath(binding, graphPath)),
+  };
+}
+
+function taskBindingWithGraphPath(
+  binding: StudioTaskBinding,
+  graphPath: Iterable<string | null | undefined> | null | undefined
+): StudioTaskBinding {
+  const target_graph_path = normalizeTaskBindingGraphPath(graphPath);
+  return target_graph_path.length === 0
+    ? { ...binding, target_graph_path: undefined }
+    : { ...binding, target_graph_path };
+}
+
+export function taskBindingId(
+  dataId: string,
+  nodeId: string,
+  port: string,
+  graphPath: Iterable<string | null | undefined> | null | undefined = ROOT_TASK_BINDING_GRAPH_PATH
+): string {
+  const path = normalizeTaskBindingGraphPath(graphPath);
+  const scope = path.length === 0 ? '' : `@${taskBindingGraphPathKey(path)}`;
+  return `task:${dataId}${scope}->${nodeId}:${port}`;
 }
 
 export function taskBindingTargetKey(
@@ -388,9 +440,9 @@ export function ensureTaskBindingSpec(
   const exposedDataIds = new Set(exposedData.map((data) => data.id));
   const defaultMuxBindings =
     task?.type === 'DelayedReaches' ? delayedReachMuxBindings(graph, exposedData) : [];
-  const bindings = (spec.bindings ?? []).filter((binding) =>
-    exposedDataIds.has(binding.source_data_id)
-  );
+  const bindings = (spec.bindings ?? [])
+    .filter((binding) => exposedDataIds.has(binding.source_data_id))
+    .map((binding) => taskBindingWithGraphPath(binding, binding.target_graph_path));
   return {
     schema_version: spec.schema_version ?? TASK_BINDING_SCHEMA_VERSION,
     exposed_data: exposedData,
@@ -445,16 +497,23 @@ function normalizeTaskDataValueSpec(
 export function retargetTaskBindingsForNodeRename(
   spec: StudioTaskBindingSpec,
   previousNodeId: string,
-  nextNodeId: string
+  nextNodeId: string,
+  graphPath?: Iterable<string | null | undefined> | null
 ): StudioTaskBindingSpec {
   if (previousNodeId === nextNodeId) return spec;
   let changed = false;
   const bindings = spec.bindings.map((binding) => {
+    if (graphPath !== undefined && !taskBindingInGraphPath(binding, graphPath)) return binding;
     if (binding.target_node_id !== previousNodeId) return binding;
     changed = true;
     return {
       ...binding,
-      id: taskBindingId(binding.source_data_id, nextNodeId, binding.target_port),
+      id: taskBindingId(
+        binding.source_data_id,
+        nextNodeId,
+        binding.target_port,
+        binding.target_graph_path
+      ),
       target_node_id: nextNodeId,
     };
   });
@@ -465,18 +524,20 @@ export function retargetTaskBindingsForNodePortRename(
   spec: StudioTaskBindingSpec,
   nodeId: string,
   previousPort: string,
-  nextPort: string
+  nextPort: string,
+  graphPath?: Iterable<string | null | undefined> | null
 ): StudioTaskBindingSpec {
   if (previousPort === nextPort) return spec;
   let changed = false;
   const bindings = spec.bindings.map((binding) => {
+    if (graphPath !== undefined && !taskBindingInGraphPath(binding, graphPath)) return binding;
     if (binding.target_node_id !== nodeId || binding.target_port !== previousPort) {
       return binding;
     }
     changed = true;
     return {
       ...binding,
-      id: taskBindingId(binding.source_data_id, nodeId, nextPort),
+      id: taskBindingId(binding.source_data_id, nodeId, nextPort, binding.target_graph_path),
       target_port: nextPort,
     };
   });
@@ -485,12 +546,15 @@ export function retargetTaskBindingsForNodePortRename(
 
 export function removeTaskBindingsForTargetNodes(
   spec: StudioTaskBindingSpec,
-  targetNodeIds: Iterable<string>
+  targetNodeIds: Iterable<string>,
+  graphPath?: Iterable<string | null | undefined> | null
 ): StudioTaskBindingSpec {
   const targetNodes = new Set(targetNodeIds);
   if (targetNodes.size === 0) return spec;
   const bindings = spec.bindings.filter(
-    (binding) => !targetNodes.has(binding.target_node_id)
+    (binding) =>
+      !targetNodes.has(binding.target_node_id) ||
+      (graphPath !== undefined && !taskBindingInGraphPath(binding, graphPath))
   );
   return bindings.length === spec.bindings.length ? spec : { ...spec, bindings };
 }

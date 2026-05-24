@@ -6,7 +6,11 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { useSaveGraph } from '@/hooks/useGraphs';
-import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import {
+  ensureTaskBindingSpec,
+  scopedTaskBindingSpec,
+  taskBindingInGraphPath,
+} from '@/features/scenario/taskBindings';
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -15,7 +19,7 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export function useAppShortcuts() {
-  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, markDirty, nodes } =
+  const { undo, redo, deleteSelected, graph, uiState, graphId, markSaved, markDirty, nodes, graphStack } =
     useGraphStore();
   const workspace = useWorkspaceStore((state) => state.workspace);
   const updateTaskBindingSpec = useWorkspaceStore(
@@ -39,9 +43,16 @@ export function useAppShortcuts() {
       .map((node) => node.id);
     const topPane = getTopPaneState(workspace);
     const trainingScenario = getTrainingScenario(workspace);
+    const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
     const taskBindingSpec = trainingScenario
-      ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, graph, trainingScenario.task_spec)
+      ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, rootGraph, trainingScenario.task_spec)
       : null;
+    const currentGraphPath = graphStack
+      .map((layer) => layer.childNodeId)
+      .filter((id): id is string => Boolean(id));
+    const scopedBindings = taskBindingSpec
+      ? scopedTaskBindingSpec(taskBindingSpec, currentGraphPath).bindings
+      : [];
     const selectedTaskBindingId = topPane.selected_entity_id?.startsWith('task_binding:')
       ? topPane.selected_entity_id.slice('task_binding:'.length)
       : null;
@@ -56,7 +67,7 @@ export function useAppShortcuts() {
       markDirty();
       return;
     }
-    const impactedBindings = (taskBindingSpec?.bindings ?? []).filter((binding) =>
+    const impactedBindings = scopedBindings.filter((binding) =>
       selectedNodeIds.includes(binding.target_node_id)
     );
 
@@ -76,7 +87,10 @@ export function useAppShortcuts() {
       const impactedIds = new Set(impactedBindings.map((binding) => binding.id));
       updateTaskBindingSpec({
         ...taskBindingSpec,
-        bindings: taskBindingSpec.bindings.filter((binding) => !impactedIds.has(binding.id)),
+        bindings: taskBindingSpec.bindings.filter(
+          (binding) =>
+            !impactedIds.has(binding.id) || !taskBindingInGraphPath(binding, currentGraphPath)
+        ),
       });
     }
 
@@ -84,6 +98,7 @@ export function useAppShortcuts() {
   }, [
     deleteSelected,
     graph,
+    graphStack,
     markDirty,
     nodes,
     selectTopPaneEntity,

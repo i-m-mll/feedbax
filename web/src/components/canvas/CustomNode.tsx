@@ -14,7 +14,7 @@ import {
 } from '@/stores/workspaceStore';
 import { graphPortEntityId } from '@/features/scenario/entities';
 import { objectiveGraphPortTarget } from '@/features/scenario/objectives';
-import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { visibleMuxInputPorts } from '@/features/graph/dynamicPorts';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -43,6 +43,7 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const toggleNodeReversed = useGraphStore((state) => state.toggleNodeReversed);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const graph = useGraphStore((state) => state.graph);
+  const graphStack = useGraphStore((state) => state.graphStack);
   const hasSubgraph = useGraphStore((state) => Boolean(state.graph.subgraphs?.[label]));
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
@@ -53,14 +54,23 @@ export function CustomNode({ id, data, selected }: NodeProps) {
   const hoverTopPaneEntity = useWorkspaceStore((state) => state.hoverTopPaneEntity);
   const topPane = getTopPaneState(workspace);
   const trainingScenario = getTrainingScenario(workspace);
-  const taskBindingSpec = useMemo(
+  const currentGraphPath = useMemo(
+    () => graphStack.map((layer) => layer.childNodeId).filter((item): item is string => Boolean(item)),
+    [graphStack]
+  );
+  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const allTaskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
         trainingScenario?.task_binding_spec,
-        graph,
+        rootGraph,
         trainingScenario?.task_spec
       ),
-    [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+    [rootGraph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+  );
+  const taskBindingSpec = useMemo(
+    () => scopedTaskBindingSpec(allTaskBindingSpec, currentGraphPath),
+    [allTaskBindingSpec, currentGraphPath]
   );
   const taskBoundInputs = useMemo(() => {
     const taskDataById = new Map(taskBindingSpec.exposed_data.map((item) => [item.id, item]));

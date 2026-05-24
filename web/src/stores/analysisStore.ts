@@ -17,11 +17,13 @@ import type {
   AnalysisWire,
   AnalysisGraphSpec,
   AnalysisClassDef,
+  AnalysisInputRequirement,
   TransformSpec,
   AnalysisViewport,
   EvalParametrization,
   AnalysisPageSpec,
   AnalysisSnapshot,
+  StateFieldNode,
   StateFieldPath,
 } from '@/types/analysis';
 import type { AnalysisPageWire, StudioCollectionRef, StudioManifestRef } from '@/types/workspace';
@@ -56,6 +58,7 @@ export interface AnalysisEdgeData extends Record<string, unknown> {
   /** Specific state field path this wire carries (e.g. "states.net.hidden").
    *  Undefined means the full top-level object. */
   fieldPath?: StateFieldPath;
+  inputRequirement?: AnalysisInputRequirement;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +165,7 @@ function buildEdges(wires: AnalysisWire[]): Edge[] {
       implicit: wire.implicit,
       transform: wire.transform,
       fieldPath: wire.fieldPath,
+      inputRequirement: wire.inputRequirement,
     } satisfies AnalysisEdgeData,
   }));
 }
@@ -220,11 +224,103 @@ function selectedEvalInputCollections(
   ];
 }
 
+function selectorForDataSourceHandle(handleId: string): string {
+  if (
+    handleId.startsWith('path:') ||
+    handleId.startsWith('port:') ||
+    handleId.startsWith('edge:') ||
+    handleId.startsWith('graph_output:') ||
+    handleId.startsWith('recurrent_carry:') ||
+    handleId.startsWith('task_data:')
+  ) {
+    return handleId;
+  }
+  return `path:${handleId}`;
+}
+
+function sourcePortForDataSourceHandle(handleId: string): string {
+  if (handleId.startsWith('path:')) {
+    return handleId.slice('path:'.length).split('.')[0] || 'states';
+  }
+  if (handleId.includes(':')) {
+    return handleId.split(':')[0];
+  }
+  return handleId.includes('.') ? handleId.split('.')[0] : handleId;
+}
+
+function labelForDataSourceSelector(selector: string): string {
+  return selector
+    .replace(/^(path|port|edge|graph_output|recurrent_carry|task_data):/, '')
+    .replace(/[_:.]/g, ' ');
+}
+
+function buildAnalysisInputRequirement({
+  wireId,
+  sourceHandle,
+  targetNode,
+  targetPort,
+  pageId,
+}: {
+  wireId: string;
+  sourceHandle: string;
+  targetNode: AnalysisNodeSpec | undefined;
+  targetPort: string;
+  pageId: string | null;
+}): AnalysisInputRequirement {
+  const selector = selectorForDataSourceHandle(sourceHandle);
+  return {
+    id: `analysis-input:${wireId}`,
+    label: labelForDataSourceSelector(selector),
+    selector,
+    retention: { mode: 'trajectory' },
+    value_schema: null,
+    consumer: {
+      page_id: pageId,
+      node_id: targetNode?.id ?? null,
+      input_port: targetPort,
+      analysis_type: targetNode?.type ?? null,
+      role: targetNode?.role ?? null,
+      metadata: {},
+    },
+    metadata: {
+      source: 'analysis_data_source_wire',
+      source_handle: sourceHandle,
+      target_port: targetPort,
+    },
+  };
+}
+
+function analysisInputRequirementsForPage(page: AnalysisPageSpec): AnalysisInputRequirement[] {
+  const pageId = page.id;
+  return page.graphSpec.wires
+    .filter((wire) => wire.sourceId === page.graphSpec.dataSourceId)
+    .map((wire) => {
+      if (wire.inputRequirement) {
+        return {
+          ...wire.inputRequirement,
+          consumer: {
+            ...wire.inputRequirement.consumer,
+            page_id: wire.inputRequirement.consumer.page_id ?? pageId,
+          },
+        };
+      }
+      const sourceHandle = wire.fieldPath ?? wire.sourcePort;
+      return buildAnalysisInputRequirement({
+        wireId: wire.id,
+        sourceHandle,
+        targetNode: page.graphSpec.nodes[wire.targetId],
+        targetPort: wire.targetPort,
+        pageId,
+      });
+    });
+}
+
 function analysisPageToWire(page: AnalysisPageSpec): AnalysisPageWire {
   return {
     id: page.id,
     name: page.name,
     graph_spec: page.graphSpec as unknown as Record<string, unknown>,
+    input_requirements: analysisInputRequirementsForPage(page),
     eval_params: page.evalParams,
     viewport: page.viewport,
     eval_run_id: page.evalRunId,
@@ -242,6 +338,7 @@ function syncAnalysisStageDraft(state: AnalysisStoreState, reason: string) {
   const activePage = captureActivePage(state);
   const pages = mergeActivePageIntoPages(state.pages, activePage);
   const inputCollections = selectedEvalInputCollections(state.evalRunId, evalStage.id);
+  const inputRequirements = pages.flatMap(analysisInputRequirementsForPage);
 
   workspaceStore.updateStageCollections(
     analysisStage.id,
@@ -269,6 +366,7 @@ function syncAnalysisStageDraft(state: AnalysisStoreState, reason: string) {
         schema_version: 'feedbax.studio.analysis.v1',
         pages: pages.map(analysisPageToWire),
         active_page_id: state.activePageId,
+        input_requirements: inputRequirements,
         input_collections: inputCollections,
         eval_run_id: state.evalRunId,
         eval_params: { ...state.evalParams },
@@ -299,6 +397,8 @@ interface AnalysisStoreState {
   // Selection
   selectedNodeId: string | null;
   selectedTransformId: string | null;
+  selectedEdgeId: string | null;
+  selectedDataSourceField: StateFieldNode | null;
 
   // Available analysis classes (from palette)
   analysisClasses: AnalysisClassDef[];
@@ -318,6 +418,9 @@ interface AnalysisStoreState {
   loadGraph: (spec: AnalysisGraphSpec) => void;
   setSelectedNode: (id: string | null) => void;
   setSelectedTransform: (id: string | null) => void;
+  setSelectedEdge: (id: string | null) => void;
+  setSelectedDataSourceField: (field: StateFieldNode | null) => void;
+  clearSelection: () => void;
   addAnalysisNode: (classDef: AnalysisClassDef, position: { x: number; y: number }) => void;
   removeNode: (id: string) => void;
   connectNodes: (connection: Connection) => void;
@@ -362,6 +465,15 @@ function captureActivePage(state: AnalysisStoreState): AnalysisPageSpec | null {
     id: state.activePageId,
     name: state.pages.find((p) => p.id === state.activePageId)?.name ?? 'Untitled',
     graphSpec: state.graphSpec ?? makeBlankGraphSpec(),
+    inputRequirements: analysisInputRequirementsForPage({
+      id: state.activePageId,
+      name: state.pages.find((p) => p.id === state.activePageId)?.name ?? 'Untitled',
+      graphSpec: state.graphSpec ?? makeBlankGraphSpec(),
+      evalParams: state.evalParams,
+      viewport: state.viewport,
+      evalRunId: state.evalRunId,
+      expandedFieldPaths: state.expandedFieldPaths,
+    }),
     evalParams: { ...state.evalParams },
     viewport: { ...state.viewport },
     evalRunId: state.evalRunId,
@@ -390,6 +502,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   edges: [],
   selectedNodeId: null,
   selectedTransformId: null,
+  selectedEdgeId: null,
+  selectedDataSourceField: null,
   analysisClasses: [],
   pages: [],
   activePageId: null,
@@ -445,11 +559,48 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
   },
 
   setSelectedNode: (id) => {
-    set({ selectedNodeId: id, selectedTransformId: null });
+    set({
+      selectedNodeId: id,
+      selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
+    });
   },
 
   setSelectedTransform: (id) => {
-    set({ selectedTransformId: id, selectedNodeId: null });
+    set({
+      selectedTransformId: id,
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
+    });
+  },
+
+  setSelectedEdge: (id) => {
+    set({
+      selectedEdgeId: id,
+      selectedNodeId: null,
+      selectedTransformId: null,
+      selectedDataSourceField: null,
+    });
+  },
+
+  setSelectedDataSourceField: (field) => {
+    set({
+      selectedDataSourceField: field,
+      selectedNodeId: null,
+      selectedTransformId: null,
+      selectedEdgeId: null,
+    });
+  },
+
+  clearSelection: () => {
+    set({
+      selectedNodeId: null,
+      selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
+    });
   },
 
   addAnalysisNode: (classDef, position) => {
@@ -482,6 +633,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         : null,
     }));
     markProjectDirty();
+    syncAnalysisStageDraft(get(), 'analysis_graph_node_added');
   },
 
   removeNode: (id) => {
@@ -489,8 +641,15 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       nodes: state.nodes.filter((n) => n.id !== id),
       edges: state.edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
+      selectedTransformId: state.selectedTransformId === id ? null : state.selectedTransformId,
+      selectedEdgeId:
+        state.selectedEdgeId &&
+        state.edges.some((edge) => edge.id === state.selectedEdgeId && (edge.source === id || edge.target === id))
+          ? null
+          : state.selectedEdgeId,
     }));
     markProjectDirty();
+    syncAnalysisStageDraft(get(), 'analysis_graph_node_removed');
   },
 
   connectNodes: (connection) => {
@@ -499,21 +658,31 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
     const handleId = connection.sourceHandle ?? 'out';
     const isDataSource = connection.source === DATA_SOURCE_ID;
 
-    // Extract field path from the handle ID. DataSourceNode handles use
-    // full dot-paths (e.g. "states.net.hidden"). A handle with dots is a
-    // sub-field; the root segment becomes the sourcePort for compat.
-    const isSubField = isDataSource && handleId.includes('.');
-    const sourcePort = isSubField ? handleId.split('.')[0] : handleId;
+    // DataSourceNode handles are either legacy field paths or canonical selectors.
+    // The handle itself stays available as fieldPath for UI persistence.
+    const sourcePort = isDataSource ? sourcePortForDataSourceHandle(handleId) : handleId;
     const fieldPath: StateFieldPath | undefined = isDataSource ? handleId : undefined;
+    const targetPort = connection.targetHandle ?? 'in';
+    const targetNode = get().graphSpec?.nodes[connection.target];
+    const inputRequirement = isDataSource
+      ? buildAnalysisInputRequirement({
+          wireId,
+          sourceHandle: handleId,
+          targetNode,
+          targetPort,
+          pageId: get().activePageId,
+        })
+      : undefined;
 
     const wire: AnalysisWire = {
       id: wireId,
       sourceId: connection.source,
       sourcePort,
       targetId: connection.target,
-      targetPort: connection.targetHandle ?? 'in',
+      targetPort,
       implicit: isDataSource,
       fieldPath,
+      inputRequirement,
     };
     const edge: Edge = {
       id: wireId,
@@ -525,6 +694,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       data: {
         implicit: wire.implicit,
         fieldPath: wire.fieldPath,
+        inputRequirement: wire.inputRequirement,
       } satisfies AnalysisEdgeData,
     };
 
@@ -535,6 +705,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         : null,
     }));
     markProjectDirty();
+    syncAnalysisStageDraft(get(), 'analysis_graph_wire_connected');
   },
 
   updateNodeParams: (id, params) => {
@@ -717,6 +888,7 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       id: newId,
       name,
       graphSpec: blankSpec,
+      inputRequirements: [],
       evalParams: {},
       viewport: { ...DEFAULT_VIEWPORT },
       evalRunId: null,
@@ -736,6 +908,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
     markProjectDirty();
   },
@@ -756,6 +930,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         expandedFieldPaths: [],
         selectedNodeId: null,
         selectedTransformId: null,
+        selectedEdgeId: null,
+        selectedDataSourceField: null,
       });
       markProjectDirty();
       return;
@@ -809,6 +985,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           expandedFieldPaths: target.expandedFieldPaths ? [...target.expandedFieldPaths] : [],
           selectedNodeId: null,
           selectedTransformId: null,
+          selectedEdgeId: null,
+          selectedDataSourceField: null,
         });
       } else {
         set({
@@ -823,6 +1001,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
           expandedFieldPaths: [],
           selectedNodeId: null,
           selectedTransformId: null,
+          selectedEdgeId: null,
+          selectedDataSourceField: null,
         });
       }
     } else {
@@ -889,6 +1069,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: target.expandedFieldPaths ? [...target.expandedFieldPaths] : [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
     markProjectDirty();
   },
@@ -955,6 +1137,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
         expandedFieldPaths: [],
         selectedNodeId: null,
         selectedTransformId: null,
+        selectedEdgeId: null,
+        selectedDataSourceField: null,
       });
       return;
     }
@@ -1001,6 +1185,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: activePage.expandedFieldPaths ? [...activePage.expandedFieldPaths] : [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
   },
 
@@ -1017,6 +1203,8 @@ export const useAnalysisStore = create<AnalysisStoreState>((set, get) => ({
       expandedFieldPaths: [],
       selectedNodeId: null,
       selectedTransformId: null,
+      selectedEdgeId: null,
+      selectedDataSourceField: null,
     });
   },
 }));

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import prod
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
@@ -63,6 +64,7 @@ from feedbax.penzai_component import (
     PenzaiSubgraph,
     build_penzai_subgraph,
 )
+from feedbax.state import CartesianState
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.web.models.graph import (
     ComponentSpec,
@@ -126,6 +128,339 @@ def _lookup_defaults(component_registry: Any, name: str) -> dict[str, Any]:
             if getattr(meta, "name", None) == name:
                 return dict(getattr(meta, "default_params", {}))
     return {}
+
+
+_STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
+
+
+def _array_proto_from_shape(shape: Any) -> jax.Array | None:
+    if not isinstance(shape, (list, tuple)):
+        return None
+    try:
+        return jnp.zeros(tuple(int(dim) for dim in shape))
+    except (TypeError, ValueError):
+        return None
+
+
+def _shape_from_proto(proto: Any) -> list[int] | None:
+    leaves = jt.leaves(proto)
+    if len(leaves) != 1 or not hasattr(leaves[0], "shape"):
+        return None
+    return [int(dim) for dim in leaves[0].shape]
+
+
+def _proto_from_value(value: Any) -> Any:
+    return jt.map(lambda x: jnp.zeros_like(jnp.asarray(x)), value)
+
+
+def _task_sample_shape(shape: Any) -> list[int] | None:
+    if not isinstance(shape, (list, tuple)):
+        return None
+    dims = list(shape)
+    if dims and dims[0] == "time":
+        dims = dims[1:]
+    if not dims:
+        return []
+    sample: list[int] = []
+    for dim in dims:
+        if isinstance(dim, int):
+            sample.append(dim)
+        elif isinstance(dim, float) and dim.is_integer():
+            sample.append(int(dim))
+        else:
+            return None
+    return sample
+
+
+def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str], Any]:
+    """Return node-port input prototypes derivable from Studio task bindings."""
+
+    exposed = getattr(task_binding_spec, "exposed_data", None)
+    bindings = getattr(task_binding_spec, "bindings", None)
+    if exposed is None and isinstance(task_binding_spec, Mapping):
+        exposed = task_binding_spec.get("exposed_data", [])
+    if bindings is None and isinstance(task_binding_spec, Mapping):
+        bindings = task_binding_spec.get("bindings", [])
+
+    data_by_id: dict[str, Any] = {}
+    for item in exposed or []:
+        item_id = getattr(item, "id", None) if not isinstance(item, Mapping) else item.get("id")
+        if item_id is not None:
+            data_by_id[str(item_id)] = item
+
+    prototypes: dict[tuple[str, str], Any] = {}
+    for binding in bindings or []:
+        source_id = (
+            getattr(binding, "source_data_id", None)
+            if not isinstance(binding, Mapping)
+            else binding.get("source_data_id")
+        )
+        target_node = (
+            getattr(binding, "target_node_id", None)
+            if not isinstance(binding, Mapping)
+            else binding.get("target_node_id")
+        )
+        target_port = (
+            getattr(binding, "target_port", None)
+            if not isinstance(binding, Mapping)
+            else binding.get("target_port")
+        )
+        item = data_by_id.get(str(source_id))
+        if item is None or target_node is None or target_port is None:
+            continue
+        expected_shape = (
+            getattr(item, "expected_shape", None)
+            if not isinstance(item, Mapping)
+            else item.get("expected_shape")
+        )
+        sample_shape = _task_sample_shape(expected_shape)
+        if sample_shape is not None:
+            prototypes[(str(target_node), str(target_port))] = jnp.zeros(tuple(sample_shape))
+    return prototypes
+
+
+def _explicit_proto(
+    params: Mapping[str, Any],
+    *,
+    node_name: str,
+    node_type: str,
+) -> Any | None:
+    if "input_shape" not in params:
+        return None
+    proto = _array_proto_from_shape(params.get("input_shape"))
+    if proto is None:
+        raise ValueError(
+            f"{node_type} node {node_name!r} has invalid input_shape "
+            f"{params.get('input_shape')!r}; expected a list of integer dimensions"
+        )
+    return proto
+
+
+def _validate_or_add_input_shape(
+    params: Mapping[str, Any],
+    inferred_proto: Any | None,
+    *,
+    node_name: str,
+    node_type: str,
+) -> dict[str, Any]:
+    next_params = dict(params)
+    explicit_proto = _explicit_proto(next_params, node_name=node_name, node_type=node_type)
+    if inferred_proto is not None and explicit_proto is not None:
+        inferred_shape = _shape_from_proto(inferred_proto)
+        explicit_shape = _shape_from_proto(explicit_proto)
+        if inferred_shape is not None and explicit_shape != inferred_shape:
+            raise ValueError(
+                f"{node_type} node {node_name!r} input_shape {explicit_shape!r} "
+                f"does not match inferred input prototype shape {inferred_shape!r} "
+                "for port 'input'"
+            )
+    proto = inferred_proto if inferred_proto is not None else explicit_proto
+    if proto is None:
+        raise ValueError(
+            f"{node_type} node {node_name!r} port 'input' requires an input prototype. "
+            "Connect it to a source with a known output shape or provide input_shape."
+        )
+    shape = _shape_from_proto(proto)
+    if shape is None:
+        raise ValueError(
+            f"{node_type} node {node_name!r} port 'input' prototype is not serializable "
+            "as input_shape; only single-array prototypes are currently supported"
+        )
+    next_params["input_shape"] = shape
+    return next_params
+
+
+def _output_prototypes_for_node(
+    node_name: str,
+    node_spec: ComponentSpec,
+    input_prototypes: Mapping[tuple[str, str], Any],
+    subgraphs: Mapping[str, GraphSpec],
+) -> dict[str, Any]:
+    params = node_spec.params
+    node_type = node_spec.type
+
+    if node_type == "Subgraph" or node_name in subgraphs or node_type == "Network":
+        subgraph = subgraphs.get(node_name)
+        if subgraph is None:
+            return {}
+        nested_inputs = {
+            (node, port): input_prototypes[(node_name, graph_port)]
+            for graph_port, (node, port) in subgraph.input_bindings.items()
+            if (node_name, graph_port) in input_prototypes
+        }
+        normalized = _normalize_stateful_prototypes(subgraph, nested_inputs)
+        return _bound_output_prototypes(
+            normalized,
+            subgraphs=dict(normalized.subgraphs or {}),
+            input_prototypes=nested_inputs,
+        )
+
+    if node_type == "Constant":
+        return {"output": _proto_from_value(params.get("value", 0.0))}
+    if node_type in {"Ramp", "Sine", "Pulse"}:
+        value = params.get("amplitude", params.get("slope", 1.0))
+        return {"output": _proto_from_value(value)}
+    if node_type == "Noise":
+        return {"output": jnp.zeros(tuple(int(dim) for dim in params.get("shape", [1])))}
+    if node_type in {"Gain", "Saturation"}:
+        proto = input_prototypes.get((node_name, "input"))
+        return {"output": proto} if proto is not None else {}
+    if node_type in {"Sum", "Multiply"}:
+        proto = input_prototypes.get((node_name, "a"))
+        if proto is None:
+            proto = input_prototypes.get((node_name, "b"))
+        return {"output": proto} if proto is not None else {}
+    if node_type == "Ravel":
+        proto = input_prototypes.get((node_name, "input"))
+        if proto is None:
+            return {}
+        leaves = jt.leaves(proto)
+        if not leaves or any(not hasattr(leaf, "shape") for leaf in leaves):
+            return {}
+        return {"output": jnp.zeros((sum(prod(leaf.shape) for leaf in leaves),))}
+    if node_type in _STATEFUL_PROTOTYPE_TYPES:
+        proto = input_prototypes.get((node_name, "input"))
+        if proto is None:
+            proto = _explicit_proto(params, node_name=node_name, node_type=node_type)
+        return {"output": proto} if proto is not None else {}
+    if node_type == "Linear":
+        return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
+    if node_type == "MLP":
+        return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
+    if node_type == "GRU":
+        hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+        return {"output": hidden, "hidden": hidden}
+    if node_type == "LSTM":
+        hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+        return {"output": hidden, "hidden": hidden, "cell": hidden}
+    if node_type == "Mux":
+        parts = [
+            input_prototypes[(node_name, port)]
+            for port in node_spec.input_ports
+            if (node_name, port) in input_prototypes
+        ]
+        if not parts:
+            return {}
+        shapes = [_shape_from_proto(part) for part in parts]
+        if any(shape is None or len(shape) != 1 for shape in shapes):
+            return {}
+        return {"output": jnp.zeros((sum(shape[0] for shape in shapes if shape),))}
+    if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
+        effector = CartesianState()
+        return {"effector": effector}
+    return {}
+
+
+def _bound_output_prototypes(
+    spec: GraphSpec,
+    *,
+    subgraphs: Mapping[str, GraphSpec],
+    input_prototypes: Mapping[tuple[str, str], Any],
+) -> dict[str, Any]:
+    node_inputs = _infer_node_input_prototypes(spec, input_prototypes, subgraphs)
+    outputs: dict[str, Any] = {}
+    for graph_port, (node_name, node_port) in spec.output_bindings.items():
+        node_spec = spec.nodes.get(node_name)
+        if node_spec is None:
+            continue
+        node_outputs = _output_prototypes_for_node(node_name, node_spec, node_inputs, subgraphs)
+        if node_port in node_outputs:
+            outputs[graph_port] = node_outputs[node_port]
+    return outputs
+
+
+def _infer_node_input_prototypes(
+    spec: GraphSpec,
+    external_input_prototypes: Mapping[tuple[str, str], Any],
+    subgraphs: Mapping[str, GraphSpec],
+) -> dict[tuple[str, str], Any]:
+    input_prototypes: dict[tuple[str, str], Any] = dict(external_input_prototypes)
+    for graph_port, (node_name, node_port) in spec.input_bindings.items():
+        graph_proto = external_input_prototypes.get(("__graph__", graph_port))
+        if graph_proto is not None:
+            input_prototypes[(node_name, node_port)] = graph_proto
+
+    for wire in spec.wires:
+        initializer = wire.recurrent_initializer
+        if initializer is None:
+            continue
+        init_proto = None
+        if initializer.get("kind") == "zeros":
+            init_proto = _array_proto_from_shape(initializer.get("shape"))
+        elif initializer.get("kind") == "constant" and "value" in initializer:
+            init_proto = _proto_from_value(initializer["value"])
+        if init_proto is not None:
+            input_prototypes[(wire.target_node, wire.target_port)] = init_proto
+
+    for _ in range(max(1, len(spec.nodes) + len(spec.wires) + 1)):
+        changed = False
+        for wire in spec.wires:
+            source_spec = spec.nodes.get(wire.source_node)
+            if source_spec is None:
+                continue
+            outputs = _output_prototypes_for_node(
+                wire.source_node,
+                source_spec,
+                input_prototypes,
+                subgraphs,
+            )
+            proto = outputs.get(wire.source_port)
+            if proto is None:
+                continue
+            key = (wire.target_node, wire.target_port)
+            current_shape = _shape_from_proto(input_prototypes[key]) if key in input_prototypes else None
+            next_shape = _shape_from_proto(proto)
+            if key not in input_prototypes:
+                input_prototypes[key] = proto
+                changed = True
+            elif current_shape is not None and next_shape is not None and current_shape != next_shape:
+                raise ValueError(
+                    f"Graph wiring shape mismatch at {wire.target_node}.{wire.target_port}: "
+                    f"existing prototype shape {current_shape!r}, "
+                    f"{wire.source_node}.{wire.source_port} provides {next_shape!r}"
+                )
+        if not changed:
+            break
+    return input_prototypes
+
+
+def _normalize_stateful_prototypes(
+    spec: GraphSpec,
+    input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+) -> GraphSpec:
+    subgraphs = dict(spec.subgraphs or {})
+    node_inputs = _infer_node_input_prototypes(spec, input_prototypes or {}, subgraphs)
+    nodes: dict[str, ComponentSpec] = {}
+    normalized_subgraphs: dict[str, GraphSpec] = {}
+
+    for node_name, node_spec in spec.nodes.items():
+        params = dict(node_spec.params)
+        if node_spec.type in _STATEFUL_PROTOTYPE_TYPES:
+            params = _validate_or_add_input_shape(
+                params,
+                node_inputs.get((node_name, "input")),
+                node_name=node_name,
+                node_type=node_spec.type,
+            )
+        nodes[node_name] = node_spec.model_copy(update={"params": params})
+
+        if node_name in subgraphs:
+            nested_inputs = {
+                (node, port): node_inputs[(node_name, graph_port)]
+                for graph_port, (node, port) in subgraphs[node_name].input_bindings.items()
+                if (node_name, graph_port) in node_inputs
+            }
+            normalized_subgraphs[node_name] = _normalize_stateful_prototypes(
+                subgraphs[node_name],
+                nested_inputs,
+            )
+
+    return spec.model_copy(
+        update={
+            "nodes": nodes,
+            "subgraphs": normalized_subgraphs or None,
+        }
+    )
 
 
 def _standard_network_subgraph_from_params(params: Mapping[str, Any]) -> GraphSpec | None:
@@ -390,9 +725,13 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             )
             continue
         if isinstance(component, DelayLine):
+            input_shape = _shape_from_proto(component.input_proto)
+            params = {"delay": component.delay, "init_value": component.init_value}
+            if input_shape is not None:
+                params["input_shape"] = input_shape
             nodes[name] = ComponentSpec(
                 type="DelayLine",
-                params={"delay": component.delay, "init_value": component.init_value},
+                params=params,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -550,6 +889,9 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "dt": component.dt,
                 "init_value": component.init_value,
             }
+            input_shape = _shape_from_proto(component.input_proto)
+            if input_shape is not None:
+                params["input_shape"] = input_shape
             nodes[name] = ComponentSpec(
                 type="FirstOrderFilter",
                 params=params,
@@ -794,10 +1136,12 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
 
 
 def _build_filter(params: Mapping[str, Any]) -> FirstOrderFilter:
+    input_proto = _array_proto_from_shape(params.get("input_shape"))
     return FirstOrderFilter(
         tau_rise=float(params.get("tau_rise", 0.05)),
         tau_decay=float(params.get("tau_decay", 0.05)),
         dt=float(params.get("dt", 0.001)),
+        input_proto=input_proto,
         init_value=float(params.get("init_value", 0.0)),
     )
 
@@ -911,9 +1255,11 @@ def _build_saturation(params: Mapping[str, Any]) -> Saturation:
 
 
 def _build_delay_line(params: Mapping[str, Any]) -> DelayLine:
+    input_proto = _array_proto_from_shape(params.get("input_shape"))
     return DelayLine(
         delay=int(params.get("delay", 1)),
         init_value=float(params.get("init_value", 0.0)),
+        input_proto=input_proto,
     )
 
 
@@ -1039,9 +1385,14 @@ def _params_from_network_subgraph(subgraph: GraphSpec, outer_params: dict) -> di
     return params
 
 
-def spec_to_graph(spec: GraphSpec, component_registry: dict) -> Graph:
+def spec_to_graph(
+    spec: GraphSpec,
+    component_registry: dict,
+    input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
     spec = _migrate_spec(spec)
+    spec = _normalize_stateful_prototypes(spec, input_prototypes)
 
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():

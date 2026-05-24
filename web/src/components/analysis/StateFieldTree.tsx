@@ -16,7 +16,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 
 /** Height of each row in the tree (px). */
-export const FIELD_ROW_HEIGHT = 20;
+export const FIELD_ROW_HEIGHT = 24;
 /** Indentation per depth level (px). */
 const INDENT_PX = 14;
 /** Handle diameter (px). */
@@ -74,6 +74,10 @@ interface StateFieldTreeProps {
   expandedPaths: ReadonlySet<string>;
   /** Called when a branch chevron is toggled. */
   onToggle: (path: string) => void;
+  /** Called when a connectable field row is selected for inspection. */
+  onSelect?: (node: StateFieldNode) => void;
+  /** Currently selected field path, used for row highlighting. */
+  selectedPath?: string | null;
   /** Vertical padding offset from top of the body div (px). */
   bodyPadding: number;
 }
@@ -82,6 +86,8 @@ export function StateFieldTree({
   nodes,
   expandedPaths,
   onToggle,
+  onSelect,
+  selectedPath,
   bodyPadding,
 }: StateFieldTreeProps) {
   const entries = flattenVisible(nodes, expandedPaths);
@@ -92,42 +98,57 @@ export function StateFieldTree({
         const { node, depth, isLeaf } = entry;
         const hasChildren = !isLeaf;
         const isExpanded = expandedPaths.has(node.path);
+        const isConnectable = node.connectable !== false;
+        const isSelected = selectedPath === node.path;
         const top = bodyPadding + FIELD_ROW_HEIGHT * (index + 0.5);
 
         return (
           <div key={node.path}>
-            {/* Connectable handle — present on every tree node */}
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={node.path}
-              style={{
-                top,
-                right: -6,
-                transform: 'translateY(-50%)',
-                width: `${HANDLE_SIZE}px`,
-                height: `${HANDLE_SIZE}px`,
-              } satisfies CSSProperties}
-              className={clsx(
-                'border border-white shadow-soft',
-                isLeaf ? 'bg-slate-400' : 'bg-slate-300',
-              )}
-            />
+            {/* Connectable handle — present on selectable rows. */}
+            {isConnectable && (
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={node.selector?.compact ?? node.path}
+                style={{
+                  top,
+                  right: -6,
+                  transform: 'translateY(-50%)',
+                  width: `${HANDLE_SIZE}px`,
+                  height: `${HANDLE_SIZE}px`,
+                } satisfies CSSProperties}
+                className={clsx(
+                  'border border-white shadow-soft',
+                  isLeaf ? 'bg-slate-400' : 'bg-slate-300',
+                )}
+              />
+            )}
 
             {/* Label row */}
             <div
-              className="absolute flex items-center text-[11px] select-none"
+              className={clsx(
+                'absolute flex items-center rounded text-[11px] select-none',
+                isSelected ? 'bg-emerald-50 text-emerald-700' : ''
+              )}
               style={{
                 top,
-                left: depth * INDENT_PX + 4,
+                left: depth * INDENT_PX + 2,
                 right: 18,
                 transform: 'translateY(-50%)',
                 height: FIELD_ROW_HEIGHT,
               }}
+              onClick={(event) => {
+                if (!isConnectable || !onSelect) return;
+                event.stopPropagation();
+                onSelect(node);
+              }}
             >
               {hasChildren ? (
                 <button
-                  className="flex items-center gap-0.5 text-slate-500 hover:text-slate-700 cursor-pointer"
+                  className={clsx(
+                    'flex min-w-0 items-center gap-0.5 cursor-pointer',
+                    isSelected ? 'text-emerald-700' : 'text-slate-500 hover:text-slate-700'
+                  )}
                   onClick={(e) => {
                     e.stopPropagation();
                     onToggle(node.path);
@@ -138,10 +159,16 @@ export function StateFieldTree({
                   ) : (
                     <ChevronRight className="w-3 h-3 shrink-0" />
                   )}
-                  <span className="text-slate-500 font-medium">{node.label}</span>
+                  <span className={clsx('truncate font-medium', isSelected ? 'text-emerald-700' : 'text-slate-500')}>
+                    {node.label}
+                  </span>
                 </button>
               ) : (
-                <span className="ml-3.5 text-slate-400">{node.label}</span>
+                <span className="ml-3.5 min-w-0">
+                  <span className={clsx('block truncate', isSelected ? 'text-emerald-700' : 'text-slate-500')}>
+                    {node.label}
+                  </span>
+                </span>
               )}
             </div>
           </div>

@@ -14,6 +14,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional
 import jax.numpy as jnp
 
 from feedbax.web.models.graph import (
+    AnalysisInputRequirement,
     GraphSpec,
     RetainedObservableSpec,
     RetainedObservableTargetSpec,
@@ -204,8 +205,9 @@ def lower_retention_plan(
     training: Optional[TrainingSpec | LossTermSpec] = None,
     *,
     artifact_selectors: Iterable[str | Mapping[str, Any] | SelectorRef] = (),
+    analysis_input_requirements: Iterable[AnalysisInputRequirement | Mapping[str, Any]] = (),
 ) -> RetentionPlan:
-    """Lower explicit observables, loss selectors, and artifacts into one plan."""
+    """Lower explicit observables, loss selectors, artifacts, and analysis inputs."""
 
     requirements: dict[str, _ObservableRequirement] = {}
     for index, observable in enumerate(graph.retained_observables or []):
@@ -240,6 +242,15 @@ def lower_retention_plan(
             ),
         )
 
+    for index, requirement_value in enumerate(analysis_input_requirements):
+        _merge_requirement(
+            requirements,
+            _requirement_from_analysis_input(
+                requirement_value,
+                f"/analysis/input_requirements/{index}",
+            ),
+        )
+
     observables = tuple(
         _requirement_to_plan(_validate_requirement(graph, requirement))
         for requirement in sorted(requirements.values(), key=lambda item: item.selector.selector)
@@ -250,11 +261,17 @@ def lower_retention_plan(
 def validate_retention_plan(
     graph: GraphSpec,
     training: Optional[TrainingSpec | LossTermSpec] = None,
+    *,
+    analysis_input_requirements: Iterable[AnalysisInputRequirement | Mapping[str, Any]] = (),
 ) -> list[RetentionPlanError]:
     """Return lowering errors without raising."""
 
     try:
-        lower_retention_plan(graph, training)
+        lower_retention_plan(
+            graph,
+            training,
+            analysis_input_requirements=analysis_input_requirements,
+        )
     except RetentionPlanError as exc:
         return [exc]
     return []
@@ -366,11 +383,52 @@ def _requirement_from_observable(
         id=observable.id or _stable_observable_id(selector.selector),
         label=observable.label or selector.selector,
         selector=selector,
-        retention=_policy_to_plan(observable.retention, reason="explicit"),
+        retention=_policy_to_plan(
+            observable.retention,
+            reason="explicit",
+            path=f"{path}/retention",
+        ),
         value_schema=observable.value_schema,
         explicit=True,
         sources=(path,),
         metadata=observable.metadata,
+    )
+
+
+def _requirement_from_analysis_input(
+    requirement_value: AnalysisInputRequirement | Mapping[str, Any],
+    path: str,
+) -> _ObservableRequirement:
+    requirement = (
+        requirement_value
+        if isinstance(requirement_value, AnalysisInputRequirement)
+        else AnalysisInputRequirement.model_validate(requirement_value)
+    )
+    selector_value: Any = requirement.target if requirement.target is not None else requirement.selector
+    if selector_value is None:
+        raise RetentionPlanError(
+            "Analysis input requirement is missing a selector",
+            path=f"{path}/selector",
+        )
+    selector = normalize_selector_ref(selector_value, path=f"{path}/target")
+    consumer = requirement.consumer.model_dump(mode="json", exclude_none=True)
+    return _ObservableRequirement(
+        id=requirement.id or _stable_observable_id(selector.selector),
+        label=requirement.label or selector.selector,
+        selector=selector,
+        retention=_policy_to_plan(
+            requirement.retention,
+            reason="analysis_input",
+            path=f"{path}/retention",
+        ),
+        value_schema=requirement.value_schema,
+        explicit=False,
+        sources=(path,),
+        metadata={
+            "source": "analysis_input",
+            "consumer": consumer,
+            **requirement.metadata,
+        },
     )
 
 
@@ -394,6 +452,7 @@ def _lower_loss_terms(
     retention = _policy_to_plan(
         term.retention or RetentionPolicySpec(mode="trajectory"),
         reason=f"loss:{path}",
+        path=f"{path}/retention",
     )
     _merge_requirement(
         requirements,
@@ -425,6 +484,13 @@ def _lower_loss_terms(
             path=path,
             selector=term.selector,
         )
+    time_agg = term.time_agg or TimeAggregationSpec(mode="all")
+    if time_agg.mode == "segment":
+        raise RetentionPlanError(
+            "Segment time aggregation requires task timeline mask lowering and is not supported",
+            path=f"{path}/time_agg",
+            selector=term.selector,
+        )
 
     key = _loss_key(path)
     return [
@@ -437,16 +503,21 @@ def _lower_loss_terms(
             target=target,
             target_value=term.target_value,
             norm=term.norm or "squared_l2",
-            time_agg=term.time_agg or TimeAggregationSpec(mode="all"),
+            time_agg=time_agg,
         )
     ]
 
 
-def _policy_to_plan(policy: RetentionPolicySpec, *, reason: str) -> RetentionPolicyPlan:
-    if policy.mode == "window" and policy.window_size is not None and policy.window_size <= 0:
+def _policy_to_plan(
+    policy: RetentionPolicySpec,
+    *,
+    reason: str,
+    path: str,
+) -> RetentionPolicyPlan:
+    if policy.mode == "window" and (policy.window_size is None or policy.window_size <= 0):
         raise RetentionPlanError(
             "Window retention requires a positive window_size",
-            path="/retention/window_size",
+            path=f"{path}/window_size",
         )
     order = int(policy.order or 0)
     return RetentionPolicyPlan(
@@ -500,10 +571,21 @@ def _merge_retention(
 
 def _validate_requirement(graph: GraphSpec, requirement: _ObservableRequirement) -> _ObservableRequirement:
     selector = requirement.selector
+    _validate_executable_retention(requirement)
     if selector.kind == "port":
-        _validate_port(graph, selector.node_id, selector.port, selector.selector)
+        _validate_port(
+            graph,
+            selector.node_id,
+            selector.port,
+            selector.selector,
+            path=_selector_validation_path(requirement, default="/graph"),
+        )
     elif selector.kind == "edge":
-        _validate_edge(graph, selector)
+        _validate_edge(
+            graph,
+            selector,
+            path=_selector_validation_path(requirement, default="/graph/wires"),
+        )
     elif selector.kind == "graph_output":
         output_name = selector.path or selector.selector.removeprefix("graph_output:")
         if output_name not in graph.output_bindings:
@@ -513,7 +595,12 @@ def _validate_requirement(graph: GraphSpec, requirement: _ObservableRequirement)
                 selector=selector.selector,
             )
     elif selector.kind == "recurrent_carry":
-        _validate_edge(graph, selector, recurrent=True)
+        _validate_edge(
+            graph,
+            selector,
+            recurrent=True,
+            path=_selector_validation_path(requirement, default="/graph/wires"),
+        )
     elif selector.kind == "state_path":
         if not (selector.path or selector.selector.removeprefix("path:")):
             raise RetentionPlanError(
@@ -529,6 +616,20 @@ def _validate_requirement(graph: GraphSpec, requirement: _ObservableRequirement)
                 selector=selector.selector,
             )
     return requirement
+
+
+def _validate_executable_retention(requirement: _ObservableRequirement) -> None:
+    mode = requirement.retention.mode
+    if mode == "trajectory":
+        return
+    raise RetentionPlanError(
+        (
+            f"{mode!r} retention for selector {requirement.selector.selector!r} is not "
+            "supported by the current graph worker; request trajectory retention instead"
+        ),
+        path=f"{_source_path(requirement)}/retention/mode",
+        selector=requirement.selector.selector,
+    )
 
 
 def _requirement_to_plan(requirement: _ObservableRequirement) -> RetainedObservablePlan:
@@ -549,11 +650,13 @@ def _validate_port(
     node_id: Optional[str],
     port: Optional[str],
     selector: str,
+    *,
+    path: str = "/graph",
 ) -> None:
     if not node_id or node_id not in graph.nodes:
         raise RetentionPlanError(
             f"Unknown node in selector {selector!r}",
-            path="/graph",
+            path=path,
             selector=selector,
         )
     node = graph.nodes[node_id]
@@ -571,6 +674,7 @@ def _validate_edge(
     selector: SelectorRef,
     *,
     recurrent: bool = False,
+    path: str = "/graph/wires",
 ) -> None:
     source_node, source_port, target_node, target_port = _edge_parts(selector)
     for wire in graph.wires:
@@ -583,13 +687,13 @@ def _validate_edge(
             if recurrent and wire.temporality != "recurrent":
                 raise RetentionPlanError(
                     f"Selector {selector.selector!r} targets an instant edge, not a recurrent carry",
-                    path="/graph/wires",
+                    path=path,
                     selector=selector.selector,
                 )
             return
     raise RetentionPlanError(
         f"Unknown edge selector {selector.selector!r}",
-        path="/graph/wires",
+        path=path,
         selector=selector.selector,
     )
 
@@ -687,6 +791,12 @@ def _loss_key(path: str) -> str:
 
 def _source_path(requirement: _ObservableRequirement) -> str:
     return requirement.sources[0] if requirement.sources else "/retention"
+
+
+def _selector_validation_path(requirement: _ObservableRequirement, *, default: str) -> str:
+    if requirement.metadata.get("source") == "analysis_input":
+        return _source_path(requirement)
+    return default
 
 
 def _lookup_trace(trace: Mapping[str, Any], selector: str, path: str) -> Any:

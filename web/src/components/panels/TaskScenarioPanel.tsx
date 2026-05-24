@@ -9,6 +9,7 @@ import { Settings2 } from 'lucide-react';
 import {
   createDefaultTaskBindingSpec,
   ensureTaskBindingSpec,
+  scopedTaskBindingSpec,
 } from '@/features/scenario/taskBindings';
 import {
   applyDelayedReachTimelineEdit,
@@ -332,6 +333,7 @@ export function TaskScenarioPanel() {
   const taskDataSectionRef = useRef<HTMLElement | null>(null);
   const [taskDataResizeGap, setTaskDataResizeGap] = useState({ top: 0, bottom: 0 });
   const graph = useGraphStore((state) => state.graph);
+  const graphStack = useGraphStore((state) => state.graphStack);
   const markDirty = useGraphStore((state) => state.markDirty);
   const workspace = useWorkspaceStore((state) => state.workspace);
   const updateTaskSpec = useWorkspaceStore((state) => state.updateActiveScenarioTaskSpec);
@@ -342,14 +344,23 @@ export function TaskScenarioPanel() {
   const topPane = getTopPaneState(workspace);
   const scenario = getTrainingScenario(workspace);
   const task = scenario?.task_spec ?? TASK_CATALOG[0];
-  const taskBindingSpec = useMemo(
+  const currentGraphPath = useMemo(
+    () => graphStack.map((layer) => layer.childNodeId).filter((item): item is string => Boolean(item)),
+    [graphStack]
+  );
+  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const allTaskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
-        scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(graph, task),
-        graph,
+        scenario?.task_binding_spec ?? createDefaultTaskBindingSpec(rootGraph, task),
+        rootGraph,
         task
       ),
-    [graph, scenario?.task_binding_spec, task]
+    [rootGraph, scenario?.task_binding_spec, task]
+  );
+  const taskBindingSpec = useMemo(
+    () => scopedTaskBindingSpec(allTaskBindingSpec, currentGraphPath),
+    [allTaskBindingSpec, currentGraphPath]
   );
   const timeline = useMemo(() => delayedReachTimelineFromTask(task), [task]);
   const params = Object.entries(task.params ?? {}).filter(
@@ -400,11 +411,11 @@ export function TaskScenarioPanel() {
     const next = TASK_CATALOG.find((candidate) => candidate.type === taskType);
     if (!next) return;
     updateTaskSpec(next);
-    updateTaskBindingSpec(createDefaultTaskBindingSpec(graph, next));
+    updateTaskBindingSpec(createDefaultTaskBindingSpec(rootGraph, next));
     markDirty();
   };
   const updateTimeline = (nextTimeline: StudioTaskTimelineSpec) => {
-    const edited = applyDelayedReachTimelineEdit(task, taskBindingSpec, nextTimeline);
+    const edited = applyDelayedReachTimelineEdit(task, allTaskBindingSpec, nextTimeline);
     if (scenario?.id) {
       updateScenarioDraft(
         scenario.id,
@@ -412,7 +423,7 @@ export function TaskScenarioPanel() {
           task_spec: edited.task_spec,
           task_binding_spec: ensureTaskBindingSpec(
             edited.task_binding_spec,
-            graph,
+            rootGraph,
             edited.task_spec
           ),
         },

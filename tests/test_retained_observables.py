@@ -17,6 +17,8 @@ from feedbax.retained_observables import (
     retention_plan_to_json,
 )
 from feedbax.web.models.graph import (
+    AnalysisInputConsumerSpec,
+    AnalysisInputRequirement,
     ComponentSpec,
     GraphSpec,
     RetainedObservableSpec,
@@ -147,6 +149,82 @@ def test_lowering_merges_explicit_and_loss_retention_requirements() -> None:
     assert plan.loss_terms[0].target.selector == "task_data:targets.effector"
 
 
+def test_analysis_input_requirements_lower_as_implicit_observables() -> None:
+    graph = _graph()
+
+    plan = lower_retention_plan(
+        graph,
+        analysis_input_requirements=[
+            AnalysisInputRequirement(
+                label="Hidden activity",
+                selector="port:network.hidden",
+                retention=RetentionPolicySpec(mode="trajectory"),
+                value_schema={"dtype": "float32", "shape": ["time", "hidden"]},
+                consumer=AnalysisInputConsumerSpec(
+                    page_id="page:activity",
+                    node_id="analysis-node:hidden",
+                    input_port="activity",
+                ),
+            )
+        ],
+    )
+
+    observable = plan.by_selector["port:network.hidden"]
+    assert observable.explicit is False
+    assert observable.retention.reasons == ("analysis_input",)
+    assert observable.sources == ("/analysis/input_requirements/0",)
+    assert observable.value_schema == {"dtype": "float32", "shape": ["time", "hidden"]}
+    assert observable.metadata["source"] == "analysis_input"
+    assert observable.metadata["consumer"]["page_id"] == "page:activity"
+    assert observable.metadata["consumer"]["node_id"] == "analysis-node:hidden"
+    assert observable.metadata["consumer"]["input_port"] == "activity"
+
+
+def test_analysis_inputs_do_not_require_explicit_retained_observables() -> None:
+    graph = _graph()
+
+    plan = lower_retention_plan(
+        graph,
+        analysis_input_requirements=[
+            {
+                "selector": "graph_output:effector",
+                "retention": {"mode": "trajectory"},
+            }
+        ],
+    )
+
+    observable = plan.by_selector["graph_output:effector"]
+    assert observable.explicit is False
+    assert observable.retention.mode == "trajectory"
+
+
+def test_analysis_input_requirement_merges_with_explicit_capture_without_becoming_explicit_source() -> None:
+    graph = _graph()
+    graph.retained_observables = [
+        RetainedObservableSpec(
+            selector="port:network.output",
+            retention=RetentionPolicySpec(mode="stream", reason="explicit_capture"),
+        )
+    ]
+
+    plan = lower_retention_plan(
+        graph,
+        analysis_input_requirements=[
+            AnalysisInputRequirement(
+                selector="port:network.output",
+                retention=RetentionPolicySpec(mode="trajectory"),
+                consumer=AnalysisInputConsumerSpec(page_id="page:analysis"),
+            )
+        ],
+    )
+
+    observable = plan.by_selector["port:network.output"]
+    assert observable.explicit is True
+    assert observable.retention.mode == "trajectory"
+    assert observable.retention.reasons == ("explicit_capture", "analysis_input")
+    assert observable.sources == ("/graph/retained_observables/0", "/analysis/input_requirements/0")
+
+
 def test_lowering_supports_structural_selector_kinds() -> None:
     graph = _graph()
     graph.retained_observables = [
@@ -159,7 +237,7 @@ def test_lowering_supports_structural_selector_kinds() -> None:
                 kind="recurrent_carry",
                 selector="edge:network.hidden->network.input",
             ),
-            retention=RetentionPolicySpec(mode="window", window_size=2),
+            retention=RetentionPolicySpec(mode="trajectory"),
         ),
         RetainedObservableSpec(selector="graph_output:effector"),
         RetainedObservableSpec(selector="path:states.plant.effector.pos"),
@@ -171,6 +249,41 @@ def test_lowering_supports_structural_selector_kinds() -> None:
     assert {
         observable.selector.kind for observable in plan.observables
     } == {"edge", "recurrent_carry", "graph_output", "state_path", "task_data"}
+
+
+@pytest.mark.parametrize("window_size", [None, 0, -1])
+def test_window_retention_requires_positive_window_size(window_size: int | None) -> None:
+    graph = _graph()
+    graph.retained_observables = [
+        RetainedObservableSpec(
+            selector="graph_output:effector",
+            retention=RetentionPolicySpec(mode="window", window_size=window_size),
+        )
+    ]
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph)
+
+    assert exc_info.value.path == "/graph/retained_observables/0/retention/window_size"
+    assert "positive window_size" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("mode", ["stream", "window"])
+def test_non_trajectory_retention_fails_pathfully_until_executable(mode: str) -> None:
+    graph = _graph()
+    retention = RetentionPolicySpec(mode=mode)
+    if mode == "window":
+        retention.window_size = 2
+    graph.retained_observables = [
+        RetainedObservableSpec(selector="graph_output:effector", retention=retention)
+    ]
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph)
+
+    assert exc_info.value.path == "/graph/retained_observables/0/retention/mode"
+    assert exc_info.value.selector == "graph_output:effector"
+    assert "not supported by the current graph worker" in str(exc_info.value)
 
 
 def test_lowering_reports_pathful_errors_for_unknown_selectors() -> None:
@@ -236,6 +349,44 @@ def test_loss_target_selector_norms_and_range_aggregation() -> None:
 
     # Selected timesteps are [1, 3): squared errors are 1 and 4; range uses mean.
     assert float(total) == pytest.approx(2.5)
+
+
+def test_loss_rejects_both_target_selector_and_target_value() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Invalid target",
+            selector="graph_output:effector",
+            target_selector="task_data:targets.effector",
+            target_value=[0.0, 0.0],
+        )
+    )
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph, training)
+
+    assert exc_info.value.path == "/loss"
+    assert "cannot specify both" in str(exc_info.value)
+
+
+def test_segment_time_aggregation_rejected_during_lowering() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Segment target",
+            selector="graph_output:effector",
+            target_value=[0.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="segment", segment_name="movement"),
+        )
+    )
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph, training)
+
+    assert exc_info.value.path == "/loss/time_agg"
+    assert "timeline mask" in str(exc_info.value)
 
 
 def test_loss_supports_l2_huber_and_sum_modes() -> None:

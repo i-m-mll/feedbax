@@ -48,7 +48,7 @@ from feedbax.studio_schema import (
     ValueSchema,
     validate_graph_connection_schema,
 )
-from feedbax.web.models.graph import GraphSpec
+from feedbax.web.models.graph import AnalysisInputRequirement, GraphSpec
 from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
@@ -131,6 +131,7 @@ def health() -> ProviderHealth:
 def _schema_models() -> dict[str, type[BaseModel]]:
     return {
         "GraphSpec": GraphSpec,
+        "AnalysisInputRequirement": AnalysisInputRequirement,
         "TrainingSpec": TrainingSpec,
         "TaskSpec": TaskSpec,
         "LossTermSpec": LossTermSpec,
@@ -839,7 +840,11 @@ def validate_evaluation_spec(
     return ProviderValidationResult(valid=not errors, errors=errors)
 
 
-def validate_analysis_spec(payload: dict[str, Any] | AnalysisRunSpec) -> ProviderValidationResult:
+def validate_analysis_spec(
+    payload: dict[str, Any] | AnalysisRunSpec,
+    *,
+    graph_spec: Optional[dict[str, Any] | GraphSpec] = None,
+) -> ProviderValidationResult:
     try:
         spec = (
             payload
@@ -882,6 +887,58 @@ def validate_analysis_spec(payload: dict[str, Any] | AnalysisRunSpec) -> Provide
                 location={"path": "/inputs"},
             )
         )
+    if graph_spec is not None:
+        graph_result = validate_graph_spec(graph_spec)
+        errors.extend(graph_result.errors)
+        warnings.extend(graph_result.warnings)
+        if graph_result.valid:
+            from feedbax.retained_observables import RetentionPlanError, lower_retention_plan
+
+            graph = (
+                graph_spec
+                if isinstance(graph_spec, GraphSpec)
+                else GraphSpec.model_validate(graph_spec)
+            )
+            try:
+                lower_retention_plan(
+                    graph,
+                    analysis_input_requirements=spec.input_requirements,
+                )
+            except RetentionPlanError as exc:
+                errors.append(
+                    ValidationIssue(
+                        type="analysis_input_graph_mismatch",
+                        message=str(exc),
+                        location={"path": exc.path, "selector": exc.selector or ""},
+                    )
+                )
+    else:
+        from feedbax.retained_observables import RetentionPlanError, normalize_selector_ref
+
+        for index, requirement in enumerate(spec.input_requirements):
+            selector_value = requirement.target if requirement.target is not None else requirement.selector
+            if selector_value is None:
+                errors.append(
+                    ValidationIssue(
+                        type="invalid_analysis_input",
+                        message="Analysis input requirement is missing a selector",
+                        location={"path": f"/input_requirements/{index}/selector"},
+                    )
+                )
+                continue
+            try:
+                normalize_selector_ref(
+                    selector_value,
+                    path=f"/input_requirements/{index}/target",
+                )
+            except RetentionPlanError as exc:
+                errors.append(
+                    ValidationIssue(
+                        type="invalid_analysis_input",
+                        message=str(exc),
+                        location={"path": exc.path, "selector": exc.selector or ""},
+                    )
+                )
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 

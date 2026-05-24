@@ -247,6 +247,7 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert manifest.capabilities["enumerate_studio_schemas"].output_schema == "StudioSchemaRegistry"
     assert "training_checkpoint" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
+    assert "AnalysisInputRequirement" in manifest.schemas
     assert "StudioSchemaRegistry" in manifest.schemas
     assert "TaskDataSchema" in manifest.schemas
     assert "RuntimeIntrospectionOptions" in manifest.schemas
@@ -278,8 +279,59 @@ def test_validation_functions_accept_small_vertical_slice_specs() -> None:
         {
             "analysis_type": "feedbax.analysis.plot",
             "inputs": [{"kind": "TrainingRunManifest", "id": "feedbax-training-run:test"}],
+            "input_requirements": [
+                {
+                    "selector": "graph_output:output",
+                    "consumer": {
+                        "page_id": "page:analysis",
+                        "node_id": "analysis-node:plot",
+                        "input_port": "series",
+                    },
+                }
+            ],
         }
     ).valid
+
+
+def test_analysis_validation_rejects_unknown_input_selector_with_graph_context() -> None:
+    result = validate_analysis_spec(
+        {
+            "analysis_type": "feedbax.analysis.plot",
+            "inputs": [{"kind": "TrainingRunManifest", "id": "feedbax-training-run:test"}],
+            "input_requirements": [
+                {
+                    "selector": "port:missing.output",
+                    "consumer": {"page_id": "page:analysis", "input_port": "series"},
+                }
+            ],
+        },
+        graph_spec=_minimal_graph_spec(),
+    )
+
+    assert result.valid is False
+    assert result.errors[0].type == "analysis_input_graph_mismatch"
+    assert result.errors[0].location == {
+        "path": "/analysis/input_requirements/0",
+        "selector": "port:missing.output",
+    }
+
+
+def test_analysis_validation_does_not_require_explicit_retained_observable() -> None:
+    result = validate_analysis_spec(
+        {
+            "analysis_type": "feedbax.analysis.plot",
+            "inputs": [{"kind": "EvaluationRunManifest", "id": "feedbax-eval-run:test"}],
+            "input_requirements": [
+                {
+                    "selector": "graph_output:output",
+                    "retention": {"mode": "trajectory"},
+                }
+            ],
+        },
+        graph_spec=_minimal_graph_spec(),
+    )
+
+    assert result.valid is True
 
 
 def test_task_validation_rejects_dense_delayed_reach_trajectory_params() -> None:

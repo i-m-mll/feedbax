@@ -1,5 +1,6 @@
 import type { ComponentSpec, GraphSpec, TapSpec } from '@/types/graph';
 import type { StudioTaskBindingSpec, StudioWorkspaceSpec } from '@/types/workspace';
+import { taskBindingId } from '@/features/scenario/taskBindings';
 import { normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
 
 function standardNetworkSubgraph(nodeId: string, params: ComponentSpec['params']): GraphSpec {
@@ -516,6 +517,24 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
   if (!taskBindingSpec) return taskBindingSpec;
   let changed = false;
   const bindings = taskBindingSpec.bindings.map((binding) => {
+    if (
+      binding.target_node_id === 'mux' &&
+      !graph.nodes.mux &&
+      graph.nodes.input_mux &&
+      graph.nodes.input_mux.type === 'Mux'
+    ) {
+      changed = true;
+      return {
+        ...binding,
+        id: taskBindingId(
+          binding.source_data_id,
+          'input_mux',
+          binding.target_port,
+          binding.target_graph_path
+        ),
+        target_node_id: 'input_mux',
+      };
+    }
     const target = graph.nodes[binding.target_node_id];
     if (target?.type !== 'Network' || binding.target_port !== 'target') {
       return binding;
@@ -523,7 +542,12 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
     changed = true;
     return {
       ...binding,
-      id: `task:${binding.source_data_id}->${binding.target_node_id}:input`,
+      id: taskBindingId(
+        binding.source_data_id,
+        binding.target_node_id,
+        'input',
+        binding.target_graph_path
+      ),
       target_port: 'input',
     };
   });

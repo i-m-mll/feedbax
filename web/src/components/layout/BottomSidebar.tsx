@@ -3,33 +3,21 @@
  *
  * Renders the AnalysisLibrary when the Analysis tab is active.
  * Visual language matches the top Sidebar exactly: border style, background,
- * blur, resize handle, and collapse behavior.
+ * blur, and resize handle.
  */
 
 import { AnalysisLibrary } from '@/components/panels/AnalysisLibrary';
 import { useLayoutStore } from '@/stores/layoutStore';
-import { PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 
 export function BottomSidebar() {
   const {
     bottomSidebarWidth,
     bottomSidebarCollapsed,
-    toggleBottomSidebar,
     setBottomSidebarWidth,
   } = useLayoutStore();
 
   if (bottomSidebarCollapsed) {
-    return (
-      <div className="relative flex items-center">
-        <button
-          onClick={toggleBottomSidebar}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 rounded-r bg-slate-100 hover:bg-slate-200 text-slate-400 hover:text-slate-600"
-          title="Show analysis library"
-        >
-          <PanelLeftOpen className="w-4 h-4" />
-        </button>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -41,13 +29,6 @@ export function BottomSidebar() {
         <span className="text-xs uppercase tracking-[0.2em] bg-emerald-50 text-emerald-700 font-semibold px-2 py-1 rounded">
           Analyses
         </span>
-        <button
-          onClick={toggleBottomSidebar}
-          className="p-1 rounded text-slate-400 hover:text-slate-600"
-          title="Hide sidebar"
-        >
-          <PanelLeftClose className="w-3.5 h-3.5" />
-        </button>
       </div>
       <AnalysisLibrary />
       {/* Resize handle — right edge */}

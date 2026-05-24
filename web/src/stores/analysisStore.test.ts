@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
+import type { AnalysisClassDef } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TaskSpec, TrainingSpec } from '@/types/training';
 
@@ -79,6 +80,66 @@ describe('useAnalysisStore stage ownership', () => {
         expect.objectContaining({
           name: 'Endpoint figures',
           eval_run_id: 'ev-stage-owned',
+        }),
+      ])
+    );
+  });
+
+  it('serializes data-source wires as analysis input requirements', () => {
+    const analysisClass: AnalysisClassDef = {
+      name: 'ActivityPlot',
+      description: 'Plot activity',
+      category: 'Figures',
+      inputPorts: ['series'],
+      outputPorts: [],
+      defaultParams: {},
+      icon: 'LineChart',
+    };
+
+    useAnalysisStore.getState().addPage('Activity');
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 0 });
+    const targetNode = useAnalysisStore
+      .getState()
+      .nodes.find((node) => node.type === 'analysis')!;
+
+    useAnalysisStore.getState().connectNodes({
+      source: '__data_source__',
+      sourceHandle: 'path:states.net.hidden',
+      target: targetNode.id,
+      targetHandle: 'series',
+    });
+
+    const wire = useAnalysisStore.getState().graphSpec?.wires[0];
+    expect(wire?.inputRequirement).toMatchObject({
+      id: `analysis-input:${wire?.id}`,
+      selector: 'path:states.net.hidden',
+      retention: { mode: 'trajectory' },
+      consumer: {
+        node_id: targetNode.id,
+        input_port: 'series',
+        analysis_type: 'ActivityPlot',
+      },
+    });
+
+    const workspace = useWorkspaceStore.getState().workspace;
+    const analysisStage = getStageByKind(workspace, 'analysis')!;
+    const analysisScenario = workspace?.scenarios[analysisStage.scenario_id!];
+    const analysisSpec = analysisScenario?.analysis_spec as Record<string, unknown>;
+
+    expect(analysisSpec.input_requirements).toEqual([
+      expect.objectContaining({
+        selector: 'path:states.net.hidden',
+        retention: { mode: 'trajectory' },
+      }),
+    ]);
+    expect(analysisSpec.pages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          input_requirements: [
+            expect.objectContaining({
+              selector: 'path:states.net.hidden',
+            }),
+          ],
         }),
       ])
     );

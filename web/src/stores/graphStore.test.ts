@@ -111,6 +111,34 @@ describe('graphStore boundary aliases', () => {
       target_port: 'proprioception',
     });
   });
+
+  it('deletes same-named child nodes without deleting parent graph nodes', () => {
+    const graph = graphWithNetworkSubgraph();
+    graph.nodes.input_mux = {
+      type: 'Mux',
+      params: { n_inputs: 2 },
+      input_ports: ['in_0', 'in_1'],
+      output_ports: ['output'],
+    };
+    useGraphStore.getState().hydrateGraph(graph, {
+      ...uiState,
+      node_states: {
+        ...uiState.node_states,
+        input_mux: { position: { x: 100, y: 0 }, collapsed: false, selected: false },
+      },
+    });
+
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().setSelectedNode('input_mux');
+    useGraphStore.getState().deleteSelected();
+
+    expect(useGraphStore.getState().graph.nodes.input_mux).toBeUndefined();
+    useGraphStore.getState().exitToBreadcrumb(0);
+    const parentGraph = useGraphStore.getState().graph;
+
+    expect(parentGraph.nodes.input_mux).toBeDefined();
+    expect(parentGraph.subgraphs?.network.nodes.input_mux).toBeUndefined();
+  });
 });
 
 describe('graphStore recurrent connections', () => {

@@ -834,7 +834,8 @@ function validateTaskBindings(
     const expectedId = taskBindingId(
       binding.source_data_id,
       binding.target_node_id,
-      binding.target_port
+      binding.target_port,
+      binding.target_graph_path
     );
     if (bindingIds.has(binding.id)) {
       issues.push({

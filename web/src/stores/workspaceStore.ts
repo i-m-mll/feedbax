@@ -375,6 +375,7 @@ function analysisPagesFromSnapshot(snapshot: AnalysisSnapshot | null): AnalysisP
     id: page.id,
     name: page.name,
     graph_spec: page.graphSpec as unknown as Record<string, unknown>,
+    input_requirements: page.inputRequirements ?? [],
     eval_params: page.evalParams,
     viewport: page.viewport,
     eval_run_id: page.evalRunId,
@@ -580,12 +581,14 @@ interface WorkspaceStoreState {
   updateActiveScenarioTaskBindingSpec: (taskBindingSpec: StudioTaskBindingSpec) => void;
   retargetActiveScenarioTaskBindingsForNodeRename: (
     previousNodeId: string,
-    nextNodeId: string
+    nextNodeId: string,
+    graphPath?: string[] | null
   ) => void;
   retargetActiveScenarioTaskBindingsForNodePortRename: (
     nodeId: string,
     previousPort: string,
-    nextPort: string
+    nextPort: string,
+    graphPath?: string[] | null
   ) => void;
   updateActiveScenarioObjectiveSpec: (objectiveSpec: StudioObjectiveSpec) => void;
   setTopPaneProjection: (projection: StudioTopPaneProjection) => void;
@@ -858,7 +861,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
       };
     }),
 
-  retargetActiveScenarioTaskBindingsForNodeRename: (previousNodeId, nextNodeId) =>
+  retargetActiveScenarioTaskBindingsForNodeRename: (previousNodeId, nextNodeId, graphPath) =>
     set((state) => {
       const scenarioId = activeTrainScenario(state.workspace);
       if (!state.workspace || !scenarioId) return {};
@@ -867,7 +870,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
       const taskBindingSpec = retargetTaskBindingsForNodeRename(
         scenario.task_binding_spec,
         previousNodeId,
-        nextNodeId
+        nextNodeId,
+        graphPath
       );
       if (taskBindingSpec === scenario.task_binding_spec) return {};
       return {
@@ -892,7 +896,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
       };
     }),
 
-  retargetActiveScenarioTaskBindingsForNodePortRename: (nodeId, previousPort, nextPort) =>
+  retargetActiveScenarioTaskBindingsForNodePortRename: (nodeId, previousPort, nextPort, graphPath) =>
     set((state) => {
       const scenarioId = activeTrainScenario(state.workspace);
       if (!state.workspace || !scenarioId) return {};
@@ -902,7 +906,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
         scenario.task_binding_spec,
         nodeId,
         previousPort,
-        nextPort
+        nextPort,
+        graphPath
       );
       if (taskBindingSpec === scenario.task_binding_spec) return {};
       return {

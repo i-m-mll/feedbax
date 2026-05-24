@@ -271,6 +271,7 @@ class DelayLine(Component):
 
     delay: int
     init_value: float
+    input_proto: PyTree
     state_index: StateIndex
     _initial_state: tuple[PyTree, tuple[PyTree, ...]] = field(static=True)
 
@@ -279,6 +280,7 @@ class DelayLine(Component):
         self.init_value = float(init_value)
         if input_proto is None:
             input_proto = jnp.zeros(1)
+        self.input_proto = input_proto
         output = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
         queue = self.delay * (output,)
         self._initial_state = (output, queue)

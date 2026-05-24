@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import pytest
 
-from feedbax.components import Linear
-from feedbax.graph import Graph, init_state_from_component
-from feedbax.graph_templates import network_template_graph, standard_network_subgraph
+from feedbax.channel import Channel
+from feedbax.components import DelayLine, Linear
+from feedbax.filters import FirstOrderFilter
+from feedbax.graph import Graph, Wire, init_state_from_component
+from feedbax.graph_templates import (
+    network_template_graph,
+    simple_feedback_template_graph,
+    standard_network_subgraph,
+)
 from feedbax.nn import SimpleStagedNetwork
 from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.web.serialization import spec_to_graph
+from feedbax.web.serialization import graph_to_spec, spec_to_graph
 from feedbax.web.services.component_registry import ComponentRegistry
 
 
@@ -235,3 +242,136 @@ def test_generic_template_node_instantiates_persisted_subgraph() -> None:
     )
 
     assert outputs["output"].shape == (3, 2)
+
+
+def test_delayed_channel_infers_vector_prototype_and_runs_under_scan() -> None:
+    spec = GraphSpec(
+        nodes={
+            "readout": ComponentSpec(
+                type="Linear",
+                params={"input_size": 3, "output_size": 4, "activation": "identity"},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 2, "add_noise": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="readout",
+                source_port="output",
+                target_node="delay",
+                target_port="input",
+            )
+        ],
+        input_ports=["input"],
+        output_ports=["output"],
+        input_bindings={"input": ("readout", "input")},
+        output_bindings={"output": ("delay", "output")},
+    )
+    graph = spec_to_graph(spec, {})
+    state = init_state_from_component(graph)
+
+    assert isinstance(graph.nodes["delay"], Channel)
+    assert graph.nodes["delay"].input_proto.shape == (4,)
+
+    keys = jax.random.split(jax.random.PRNGKey(0), 5)
+
+    def step(carry, args):
+        step_state = carry
+        value, key = args
+        step_outputs, step_state, _ = graph.step({"input": value}, step_state, key=key)
+        return step_state, step_outputs
+
+    _, outputs = jax.lax.scan(step, state, (jnp.ones((5, 3)), keys))
+
+    assert outputs["output"].shape == (5, 4)
+    assert jnp.allclose(outputs["output"][:2], 0.0)
+
+
+def test_simple_feedback_template_infers_feedback_motor_and_force_filter_shapes() -> None:
+    spec = simple_feedback_template_graph(
+        {
+            "feedback_delay": 2,
+            "motor_delay": 2,
+            "tau_rise": 0.05,
+            "tau_decay": 0.06,
+            "network": {
+                "input_size": 8,
+                "hidden_size": 5,
+                "out_size": 2,
+                "out_nonlinearity": "identity",
+            },
+        }
+    )
+
+    assert "input_shape" not in spec.nodes["feedback"].params
+    assert "input_shape" not in spec.nodes["efferent"].params
+    assert "input_shape" not in spec.nodes["force_filter"].params
+
+    graph = spec_to_graph(spec, {})
+    assert graph.nodes["feedback"].input_proto.shape == (6,)
+    assert graph.nodes["efferent"].input_proto.shape == (2,)
+    assert graph.nodes["force_filter"].input_proto.shape == (2,)
+
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {"input": jnp.ones((4, 2))},
+        state,
+        key=jax.random.PRNGKey(1),
+        n_steps=4,
+    )
+
+    assert outputs["effector"].pos.shape == (4, 2)
+
+
+def test_stateful_input_shape_fields_round_trip() -> None:
+    graph = Graph(
+        nodes={
+            "source": Linear(2, 3, key=jax.random.PRNGKey(0)),
+            "channel": Channel(delay=1, add_noise=False, input_proto=jnp.zeros(3)),
+            "delay": DelayLine(delay=1, input_proto=jnp.zeros(3)),
+            "filter": FirstOrderFilter(input_proto=jnp.zeros(3)),
+        },
+        wires=(
+            Wire("source", "output", "channel", "input"),
+            Wire("channel", "output", "delay", "input"),
+            Wire("delay", "output", "filter", "input"),
+        ),
+        input_ports=("input",),
+        output_ports=("output",),
+        input_bindings={"input": ("source", "input")},
+        output_bindings={"output": ("filter", "output")},
+    )
+
+    spec = graph_to_spec(graph)
+    assert spec.nodes["channel"].params["input_shape"] == [3]
+    assert spec.nodes["delay"].params["input_shape"] == [3]
+    assert spec.nodes["filter"].params["input_shape"] == [3]
+
+    restored = spec_to_graph(spec, {})
+    assert restored.nodes["channel"].input_proto.shape == (3,)
+    assert restored.nodes["delay"].input_proto.shape == (3,)
+    assert restored.nodes["filter"].input_proto.shape == (3,)
+
+
+def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
+    spec = GraphSpec(
+        nodes={
+            "delay": ComponentSpec(
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+    )
+
+    with pytest.raises(ValueError, match="DelayLine node 'delay' port 'input'"):
+        spec_to_graph(spec, {})

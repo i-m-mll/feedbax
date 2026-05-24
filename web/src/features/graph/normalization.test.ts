@@ -173,6 +173,39 @@ describe('graph authoring normalization', () => {
     ]);
   });
 
+  it('retargets saved mux task bindings after network subgraph normalization', () => {
+    const graph = normalizeGraphForStudioAuthoring(runtimeGraph).subgraphs!.network;
+    const normalized = normalizeTaskBindingSpecForStudioAuthoring(
+      {
+        schema_version: 'feedbax.studio.task_bindings.v2',
+        exposed_data: [],
+        bindings: [
+          {
+            id: 'task:hold->mux:in_1',
+            source_data_id: 'hold',
+            target_node_id: 'mux',
+            target_port: 'in_1',
+            role: 'model_input',
+            metadata: {},
+          },
+        ],
+        metadata: {},
+      },
+      graph
+    );
+
+    expect(normalized?.bindings).toEqual([
+      {
+        id: 'task:hold->input_mux:in_1',
+        source_data_id: 'hold',
+        target_node_id: 'input_mux',
+        target_port: 'in_1',
+        role: 'model_input',
+        metadata: {},
+      },
+    ]);
+  });
+
   it('flattens legacy Network model wrapper and upgrades hidden recurrence', () => {
     const normalizedRuntime = normalizeGraphAuthoringTypes(runtimeGraph);
     const legacyInner = {

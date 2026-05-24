@@ -48,7 +48,12 @@ def _workspace():
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.training_spec = {
         "optimizer": {"type": "adam", "params": {"learning_rate": 0.001}},
-        "loss": {"type": "Composite", "label": "loss", "weight": 1.0, "children": {}},
+        "loss": {
+            "type": "Composite",
+            "label": "loss",
+            "weight": 1.0,
+            "selector": "port:network.output",
+        },
         "n_batches": 25,
         "batch_size": 8,
     }
