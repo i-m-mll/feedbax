@@ -145,11 +145,6 @@ export function StateFieldTree({
               ) : (
                 <span className="ml-3.5 min-w-0">
                   <span className="block truncate text-slate-500">{node.label}</span>
-                  {node.detail && (
-                    <span className="block truncate text-[9px] leading-3 text-slate-400">
-                      {node.detail}
-                    </span>
-                  )}
                 </span>
               )}
             </div>

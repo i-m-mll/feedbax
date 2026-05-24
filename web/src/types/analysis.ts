@@ -59,7 +59,7 @@ export interface StateFieldNode {
   label: string;
   /** Full dot-separated path from root (used as handle ID). */
   path: StateFieldPath;
-  /** Secondary text shown under the label for compact schema detail. */
+  /** Secondary/schema text retained for inspector use; not rendered inline in the tree. */
   detail?: string | null;
   /** Canonical selector carried by this node when it is connectable. */
   selector?: StudioSelectorRef;
