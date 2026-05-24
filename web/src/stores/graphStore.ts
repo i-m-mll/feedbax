@@ -1221,28 +1221,41 @@ function remapNodeSelector(selector: string, nodeMap: Record<string, string>): s
     if (!node || rest.length === 0) return value;
     return `${nodeMap[node] ?? node}.${rest.join('.')}`;
   };
+  const remapEdgeEndpoint = (value: string) => {
+    if (value.includes('.')) return remapNodePort(value);
+    const [node, ...rest] = value.split(':');
+    if (!node || rest.length === 0) return value;
+    return `${nodeMap[node] ?? node}:${rest.join(':')}`;
+  };
+  const remapEdgeId = (value: string) => {
+    const [source, target] = value.split('->');
+    if (!source || !target) return value;
+    return `${remapEdgeEndpoint(source)}->${remapEdgeEndpoint(target)}`;
+  };
+  const remapStatePath = (value: string) => {
+    const [node, ...rest] = value.split('.');
+    if (!node || rest.length === 0) return value;
+    return `${nodeMap[node] ?? node}.${rest.join('.')}`;
+  };
 
   if (selector.startsWith('port:')) {
     return `port:${remapNodePort(selector.slice('port:'.length))}`;
   }
   if (selector.startsWith('edge:') || selector.startsWith('recurrent_carry:')) {
     const prefix = selector.startsWith('edge:') ? 'edge:' : 'recurrent_carry:';
-    const body = selector.slice(prefix.length);
-    const [source, target] = body.split('->');
-    if (!source || !target) return selector;
-    return `${prefix}${remapNodePort(source)}->${remapNodePort(target)}`;
+    return `${prefix}${remapEdgeId(selector.slice(prefix.length))}`;
+  }
+  if (selector.includes('->')) {
+    return remapEdgeId(selector);
   }
   if (selector.startsWith('path:states.')) {
-    const path = selector.slice('path:states.'.length);
-    const [node, ...rest] = path.split('.');
-    if (!node || rest.length === 0) return selector;
-    return `path:states.${nodeMap[node] ?? node}.${rest.join('.')}`;
+    return `path:states.${remapStatePath(selector.slice('path:states.'.length))}`;
   }
   if (selector.startsWith('state_path:states.')) {
-    const path = selector.slice('state_path:states.'.length);
-    const [node, ...rest] = path.split('.');
-    if (!node || rest.length === 0) return selector;
-    return `state_path:states.${nodeMap[node] ?? node}.${rest.join('.')}`;
+    return `state_path:states.${remapStatePath(selector.slice('state_path:states.'.length))}`;
+  }
+  if (selector.startsWith('states.')) {
+    return `states.${remapStatePath(selector.slice('states.'.length))}`;
   }
   return selector;
 }

@@ -296,6 +296,77 @@ describe('graphStore template insertion', () => {
       output_bindings: {
         output: ['readout', 'output'],
       },
+      retained_observables: [
+        {
+          id: 'obs:cell_output',
+          label: 'Cell output',
+          selector: 'port:cell.output',
+          target: {
+            kind: 'port',
+            selector: 'port:cell.output',
+            node_id: 'cell',
+            port: 'output',
+            timing: 'output',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:cell_to_readout',
+          label: 'Cell to readout',
+          selector: 'edge:cell.output->readout.input',
+          target: {
+            kind: 'edge',
+            selector: 'edge:cell.output->readout.input',
+            edge_id: 'cell:output->readout:input',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:cell_hidden_carry',
+          label: 'Cell hidden carry',
+          selector: 'recurrent_carry:cell.hidden->cell.hidden',
+          target: {
+            kind: 'recurrent_carry',
+            selector: 'recurrent_carry:cell.hidden->cell.hidden',
+            edge_id: 'cell:hidden->cell:hidden',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:graph_output',
+          label: 'Graph output',
+          selector: 'graph_output:output',
+          target: {
+            kind: 'graph_output',
+            selector: 'graph_output:output',
+            node_id: 'readout',
+            port: 'output',
+            path: 'output',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+        {
+          id: 'obs:cell_state',
+          label: 'Cell state',
+          selector: 'path:states.cell.hidden',
+          target: {
+            kind: 'state_path',
+            selector: 'path:states.cell.hidden',
+            node_id: 'cell',
+            path: 'states.cell.hidden',
+            timing: 'step',
+          },
+          retention: { mode: 'trajectory' },
+          metadata: {},
+        },
+      ],
       subgraphs: {
         cell: {
           nodes: {
@@ -387,5 +458,51 @@ describe('graphStore template insertion', () => {
     });
     expect(state.uiState.node_states.gain.position).toEqual({ x: 900, y: 160 });
     expect(state.nodes.some((node) => node.id === 'gain')).toBe(true);
+  });
+
+  it('remaps retained observable selectors when imported template nodes collide', () => {
+    useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 200, y: 160 });
+    useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 600, y: 160 });
+
+    const observables = useGraphStore.getState().graph.retained_observables ?? [];
+    const secondImport = observables.filter((observable) =>
+      observable.id.startsWith('feedbax_templates_network:observable:')
+    );
+    expect(secondImport).toHaveLength(5);
+
+    expect(secondImport.find((observable) => observable.label === 'Cell output')).toMatchObject({
+      selector: 'port:feedbax_templates_network_cell.output',
+      target: {
+        selector: 'port:feedbax_templates_network_cell.output',
+        node_id: 'feedbax_templates_network_cell',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Cell to readout')).toMatchObject({
+      selector: 'edge:feedbax_templates_network_cell.output->feedbax_templates_network_readout.input',
+      target: {
+        selector: 'edge:feedbax_templates_network_cell.output->feedbax_templates_network_readout.input',
+        edge_id: 'feedbax_templates_network_cell:output->feedbax_templates_network_readout:input',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Cell hidden carry')).toMatchObject({
+      selector: 'recurrent_carry:feedbax_templates_network_cell.hidden->feedbax_templates_network_cell.hidden',
+      target: {
+        edge_id: 'feedbax_templates_network_cell:hidden->feedbax_templates_network_cell:hidden',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Graph output')).toMatchObject({
+      selector: 'graph_output:output',
+      target: {
+        node_id: 'feedbax_templates_network_readout',
+        port: 'output',
+      },
+    });
+    expect(secondImport.find((observable) => observable.label === 'Cell state')).toMatchObject({
+      selector: 'path:states.feedbax_templates_network_cell.hidden',
+      target: {
+        node_id: 'feedbax_templates_network_cell',
+        path: 'states.feedbax_templates_network_cell.hidden',
+      },
+    });
   });
 });

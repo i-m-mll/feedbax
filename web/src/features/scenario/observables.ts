@@ -6,15 +6,6 @@ import type {
 } from '@/types/graph';
 import type { StudioSelectorRef } from '@/types/workspace';
 
-export const RETENTION_POLICY_OPTIONS: Array<{
-  value: RetentionPolicySpec['mode'];
-  label: string;
-}> = [
-  { value: 'trajectory', label: 'Full trajectory' },
-  { value: 'stream', label: 'Stream only' },
-  { value: 'window', label: 'Rolling window' },
-];
-
 function createId(label: string): string {
   const slug = label
     .trim()
@@ -36,26 +27,12 @@ function edgeIdFromSelector(selector: StudioSelectorRef): string | null {
   return `${match[1]}:${match[2]}->${match[3]}:${match[4]}`;
 }
 
-export function retentionPolicy(
-  mode: RetentionPolicySpec['mode'],
-  current?: RetentionPolicySpec | null
-): RetentionPolicySpec {
-  if (mode === 'window') {
-    return {
-      mode,
-      window_size:
-        typeof current?.window_size === 'number' && current.window_size > 0
-          ? current.window_size
-          : 32,
-      order: current?.order ?? null,
-      reason: current?.reason ?? 'explicit_observable_authoring',
-    };
-  }
+function explicitObservableRetentionPolicy(): RetentionPolicySpec {
   return {
-    mode,
+    mode: 'trajectory',
     window_size: null,
     order: null,
-    reason: current?.reason ?? 'explicit_observable_authoring',
+    reason: 'explicit_observable_authoring',
   };
 }
 
@@ -138,7 +115,7 @@ export function selectorToRetainedObservableTarget(
 export function createRetainedObservable({
   selector,
   label = selectorDisplayLabel(selector),
-  retention = retentionPolicy('trajectory'),
+  retention = explicitObservableRetentionPolicy(),
   existingIds = new Set<string>(),
 }: {
   selector: StudioSelectorRef;

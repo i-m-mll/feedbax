@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   createRetainedObservable,
   retainedObservableSelectorPatch,
-  retentionPolicy,
   selectorToRetainedObservableTarget,
 } from './observables';
 import type { StudioSelectorRef } from '@/types/workspace';
@@ -84,7 +83,7 @@ describe('scenario retained observable operations', () => {
     });
   });
 
-  it('builds update patches and normalizes retention policy controls', () => {
+  it('builds update patches for supported selector paths', () => {
     const selector: StudioSelectorRef = {
       namespace: 'state_path',
       compact: 'path:states.mechanics.effector.pos',
@@ -100,15 +99,6 @@ describe('scenario retained observable operations', () => {
         kind: 'state_path',
         path: 'states.mechanics.effector.pos',
       },
-    });
-    expect(retentionPolicy('window')).toMatchObject({
-      mode: 'window',
-      window_size: 32,
-      reason: 'explicit_observable_authoring',
-    });
-    expect(retentionPolicy('stream', { mode: 'window', window_size: 8 })).toMatchObject({
-      mode: 'stream',
-      window_size: null,
     });
   });
 });
