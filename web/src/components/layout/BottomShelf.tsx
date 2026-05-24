@@ -15,7 +15,18 @@ import {
 import { getActiveStage, getScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useGraphStore } from '@/stores/graphStore';
 import type { StudioStageKind } from '@/types/workspace';
-import { BarChart3, FileText, FlaskConical, PlayCircle, Terminal, Workflow } from 'lucide-react';
+import {
+  BarChart3,
+  FileText,
+  FlaskConical,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  PlayCircle,
+  Terminal,
+  Workflow,
+} from 'lucide-react';
 
 const stageIcons: Record<StudioStageKind, typeof PlayCircle> = {
   train: FlaskConical,
@@ -38,7 +49,14 @@ export function BottomShelf({
   availableHeight: number;
 }) {
   const [mode, setMode] = useState<WorkspaceMode>('stage');
-  const { bottomCollapsed, toggleBottom } = useLayoutStore();
+  const {
+    bottomCollapsed,
+    bottomSidebarCollapsed,
+    bottomRightSidebarCollapsed,
+    toggleBottom,
+    toggleBottomRightSidebar,
+    toggleBottomSidebar,
+  } = useLayoutStore();
   const workspace = useWorkspaceStore((state) => state.workspace);
   const stages = workspace?.stages ?? [];
   const activeStage = getActiveStage(workspace);
@@ -47,6 +65,9 @@ export function BottomShelf({
   const markDirty = useGraphStore((state) => state.markDirty);
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const [fadeState, setFadeState] = useState({ left: false, right: false });
+  const isAnalysisMode = mode === 'stage' && activeStage?.kind === 'analysis';
+  const LeftSidebarIcon = bottomSidebarCollapsed ? PanelLeftOpen : PanelLeftClose;
+  const RightSidebarIcon = bottomRightSidebarCollapsed ? PanelRightOpen : PanelRightClose;
 
   const activeContent = useMemo(() => {
     if (mode === 'console') return <ConsolePanel />;
@@ -93,7 +114,7 @@ export function BottomShelf({
       style={{ height }}
     >
       <div
-        className="flex items-end gap-3 border-b border-slate-200 px-3"
+        className="flex items-end gap-3 border-b border-slate-200 px-3 pr-14"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
         <div className="relative flex-1 min-w-0">
@@ -142,6 +163,30 @@ export function BottomShelf({
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
         </div>
+        {isAnalysisMode && (
+          <div className="flex h-full shrink-0 items-end gap-1 pb-1">
+            <button
+              type="button"
+              onClick={toggleBottomSidebar}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              title={bottomSidebarCollapsed ? 'Show analysis library' : 'Hide analysis library'}
+            >
+              <LeftSidebarIcon className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleBottomRightSidebar}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              title={
+                bottomRightSidebarCollapsed
+                  ? 'Show analysis inspector'
+                  : 'Hide analysis inspector'
+              }
+            >
+              <RightSidebarIcon className="h-4 w-4" />
+            </button>
+          </div>
+        )}
       </div>
       {!bottomCollapsed && (
         <div
