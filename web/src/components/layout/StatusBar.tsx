@@ -2,26 +2,32 @@ import { CheckCircle2, Circle, AlertTriangle } from 'lucide-react';
 import { useMemo } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import { validateGraph } from '@/features/graph/validation';
-import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { projectStudioSchema } from '@/features/schema/project';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useComponents } from '@/hooks/useComponents';
 
 export function StatusBar() {
-  const graph = useGraphStore(state => state.graph);
+  const graph = useGraphStore((state) => state.graph);
+  const graphStack = useGraphStore((state) => state.graphStack);
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
   const trainingScenario = getTrainingScenario(workspace);
-  const taskBindingSpec = useMemo(
-    () =>
+  const taskBindingSpec = useMemo(() => {
+    const currentGraphPath = graphStack
+      .map((layer) => layer.childNodeId)
+      .filter((item): item is string => Boolean(item));
+    const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+    return scopedTaskBindingSpec(
       ensureTaskBindingSpec(
         trainingScenario?.task_binding_spec,
-        graph,
+        rootGraph,
         trainingScenario?.task_spec
       ),
-    [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
-  );
+      currentGraphPath
+    );
+  }, [graph, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
   const schemaRegistry = useMemo(
     () => projectStudioSchema(graph, components, taskBindingSpec),
     [components, graph, taskBindingSpec]

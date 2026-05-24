@@ -1523,6 +1523,7 @@ export function Canvas() {
         />
       )}
       <ReactFlow
+        key={graphViewKey}
         className="relative z-10"
         style={{ zIndex: 10 }}
         nodes={displayNodes}

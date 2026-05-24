@@ -6,7 +6,7 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { validateGraph } from '@/features/graph/validation';
-import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { projectStudioSchema } from '@/features/schema/project';
 import { useComponents } from '@/hooks/useComponents';
 import clsx from 'clsx';
@@ -17,15 +17,23 @@ export function ValidationPanel() {
   // state.graph is always the currently active layer (root or nested subgraph),
   // because the store updates it whenever the user enters/exits a subgraph.
   const graph = useGraphStore((state) => state.graph);
+  const graphStack = useGraphStore((state) => state.graphStack);
   const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
-  const isInSubgraph = useGraphStore((state) => state.graphStack.length > 0);
+  const isInSubgraph = graphStack.length > 0;
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
   const selectedEntityId = getTopPaneState(workspace).selected_entity_id;
   const taskBindingSpec = useMemo(() => {
     const scenario = getTrainingScenario(workspace);
-    return ensureTaskBindingSpec(scenario?.task_binding_spec, graph, scenario?.task_spec);
-  }, [graph, workspace]);
+    const currentGraphPath = graphStack
+      .map((layer) => layer.childNodeId)
+      .filter((item): item is string => Boolean(item));
+    const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+    return scopedTaskBindingSpec(
+      ensureTaskBindingSpec(scenario?.task_binding_spec, rootGraph, scenario?.task_spec),
+      currentGraphPath
+    );
+  }, [graph, graphStack, workspace]);
   const schemaRegistry = useMemo(
     () => projectStudioSchema(graph, components, taskBindingSpec),
     [components, graph, taskBindingSpec]
