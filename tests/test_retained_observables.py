@@ -159,7 +159,7 @@ def test_lowering_supports_structural_selector_kinds() -> None:
                 kind="recurrent_carry",
                 selector="edge:network.hidden->network.input",
             ),
-            retention=RetentionPolicySpec(mode="window", window_size=2),
+            retention=RetentionPolicySpec(mode="trajectory"),
         ),
         RetainedObservableSpec(selector="graph_output:effector"),
         RetainedObservableSpec(selector="path:states.plant.effector.pos"),
@@ -171,6 +171,41 @@ def test_lowering_supports_structural_selector_kinds() -> None:
     assert {
         observable.selector.kind for observable in plan.observables
     } == {"edge", "recurrent_carry", "graph_output", "state_path", "task_data"}
+
+
+@pytest.mark.parametrize("window_size", [None, 0, -1])
+def test_window_retention_requires_positive_window_size(window_size: int | None) -> None:
+    graph = _graph()
+    graph.retained_observables = [
+        RetainedObservableSpec(
+            selector="graph_output:effector",
+            retention=RetentionPolicySpec(mode="window", window_size=window_size),
+        )
+    ]
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph)
+
+    assert exc_info.value.path == "/graph/retained_observables/0/retention/window_size"
+    assert "positive window_size" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("mode", ["stream", "window"])
+def test_non_trajectory_retention_fails_pathfully_until_executable(mode: str) -> None:
+    graph = _graph()
+    retention = RetentionPolicySpec(mode=mode)
+    if mode == "window":
+        retention.window_size = 2
+    graph.retained_observables = [
+        RetainedObservableSpec(selector="graph_output:effector", retention=retention)
+    ]
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph)
+
+    assert exc_info.value.path == "/graph/retained_observables/0/retention/mode"
+    assert exc_info.value.selector == "graph_output:effector"
+    assert "not supported by the current graph worker" in str(exc_info.value)
 
 
 def test_lowering_reports_pathful_errors_for_unknown_selectors() -> None:
@@ -236,6 +271,44 @@ def test_loss_target_selector_norms_and_range_aggregation() -> None:
 
     # Selected timesteps are [1, 3): squared errors are 1 and 4; range uses mean.
     assert float(total) == pytest.approx(2.5)
+
+
+def test_loss_rejects_both_target_selector_and_target_value() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Invalid target",
+            selector="graph_output:effector",
+            target_selector="task_data:targets.effector",
+            target_value=[0.0, 0.0],
+        )
+    )
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph, training)
+
+    assert exc_info.value.path == "/loss"
+    assert "cannot specify both" in str(exc_info.value)
+
+
+def test_segment_time_aggregation_rejected_during_lowering() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="TargetStateLoss",
+            label="Segment target",
+            selector="graph_output:effector",
+            target_value=[0.0, 0.0],
+            time_agg=TimeAggregationSpec(mode="segment", segment_name="movement"),
+        )
+    )
+
+    with pytest.raises(RetentionPlanError) as exc_info:
+        lower_retention_plan(graph, training)
+
+    assert exc_info.value.path == "/loss/time_agg"
+    assert "timeline mask" in str(exc_info.value)
 
 
 def test_loss_supports_l2_huber_and_sum_modes() -> None:

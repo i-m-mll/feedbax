@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 import threading
 
@@ -131,8 +132,8 @@ def _network_task_binding_spec() -> dict:
     }
 
 
-def _training_spec() -> dict:
-    return {
+def _training_spec(**overrides) -> dict:
+    spec = {
         "optimizer": {"type": "adam", "params": {"learning_rate": 0.1}},
         "loss": {
             "type": "TargetStateLoss",
@@ -145,6 +146,8 @@ def _training_spec() -> dict:
         "n_batches": 2,
         "batch_size": 1,
     }
+    spec.update(overrides)
+    return spec
 
 
 def _cfg(**overrides):
@@ -245,6 +248,10 @@ def test_run_training_graph_trains_tiny_full_graph() -> None:
     assert any(event["type"] == "training_progress" for event in events)
     trajectory = next(event for event in events if event["type"] == "training_trajectory")
     assert trajectory["trajectory"]["outputs"]["output"]
+    assert set(result.retained_observables) == {"observables", "outputs", "task_data"}
+    assert "graph_output:output" in result.retained_observables["outputs"]
+    assert "task_data:model_input" in result.retained_observables["task_data"]
+    assert "task_data:inputs.model" in result.retained_observables["task_data"]
 
 
 def test_compile_training_run_fails_unsupported_display_only_component() -> None:
@@ -285,8 +292,6 @@ def test_compile_training_run_rejects_task_binding_to_occupied_port() -> None:
             task_binding_spec=_task_binding_spec(),
             cfg=_cfg(),
         )
-
-
 def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     graph_spec = GraphSpec(
         nodes={
@@ -345,3 +350,102 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     assert compiled.graph.nodes["delay"].input_proto.shape == (3,)
     assert rollout["outputs"]["output"].shape == (5, 3)
     assert jnp.allclose(rollout["outputs"]["output"][:2], 0.0)
+
+
+def test_compile_training_run_rejects_batch_size_larger_than_one() -> None:
+    with pytest.raises(ValueError, match="supports batch_size=1"):
+        compile_training_run(
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(batch_size=2),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=_task_binding_spec(),
+            cfg=_cfg(),
+        )
+
+
+@pytest.mark.parametrize("mode", ["stream", "window"])
+def test_compile_training_run_rejects_unsupported_retention_modes(mode: str) -> None:
+    graph_spec = _linear_graph_spec()
+    retention = {"mode": mode}
+    if mode == "window":
+        retention["window_size"] = 2
+    graph_spec["retained_observables"] = [
+        {"selector": "port:readout.output", "retention": retention}
+    ]
+
+    with pytest.raises(ValueError, match="not supported by the current graph worker"):
+        compile_training_run(
+            graph_spec=graph_spec,
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=_task_binding_spec(),
+            cfg=_cfg(),
+        )
+
+
+def test_compile_training_run_rejects_window_retention_without_size() -> None:
+    graph_spec = _linear_graph_spec()
+    graph_spec["retained_observables"] = [
+        {"selector": "graph_output:output", "retention": {"mode": "window"}}
+    ]
+
+    with pytest.raises(ValueError, match="positive window_size"):
+        compile_training_run(
+            graph_spec=graph_spec,
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=_task_binding_spec(),
+            cfg=_cfg(),
+        )
+
+
+def test_compile_training_run_rejects_unsupported_task_data_value_spec_mode() -> None:
+    task_binding_spec = deepcopy(_task_binding_spec())
+    task_binding_spec["exposed_data"][0]["value_spec"] = {
+        "mode": "reference",
+        "reference": {"path": "inputs.model"},
+    }
+
+    with pytest.raises(ValueError, match="unsupported value_spec mode='reference'"):
+        compile_training_run(
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=task_binding_spec,
+            cfg=_cfg(),
+        )
+
+
+def test_compile_training_run_rejects_unsupported_task_data_function() -> None:
+    task_binding_spec = deepcopy(_task_binding_spec())
+    task_binding_spec["exposed_data"][0]["value_spec"] = {
+        "mode": "function",
+        "function_id": "unsupported_function",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported value_spec function_id='unsupported_function'",
+    ):
+        compile_training_run(
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=task_binding_spec,
+            cfg=_cfg(),
+        )
+
+
+def test_compile_training_run_allows_absent_optional_task_data_value_spec_default() -> None:
+    task_binding_spec = deepcopy(_task_binding_spec())
+    task_binding_spec["exposed_data"][0].pop("value_spec")
+
+    compiled = compile_training_run(
+        graph_spec=_linear_graph_spec(),
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=task_binding_spec,
+        cfg=_cfg(),
+    )
+
+    assert jnp.allclose(compiled.task_data["model_input"], 0.0)
