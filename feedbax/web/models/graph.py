@@ -132,6 +132,35 @@ class RetainedObservableSpec(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class AnalysisInputConsumerSpec(BaseModel):
+    """Studio consumer metadata for an analysis input requirement."""
+
+    page_id: Optional[str] = None
+    node_id: Optional[str] = None
+    input_port: Optional[str] = None
+    analysis_type: Optional[str] = None
+    role: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AnalysisInputRequirement(BaseModel):
+    """Observable requirement owned by an analysis consumer.
+
+    Analysis inputs use the same selector space as retained observables but
+    lower as implicit requirements for a run/artifact, rather than as explicit
+    always-captured graph observables.
+    """
+
+    id: str = Field(default_factory=lambda: f"analysis-input:{uuid.uuid4().hex}")
+    label: Optional[str] = None
+    selector: Optional[str] = None
+    target: Optional[RetainedObservableTargetSpec] = None
+    retention: RetentionPolicySpec = Field(default_factory=RetentionPolicySpec)
+    value_schema: Optional[Dict[str, Any]] = None
+    consumer: AnalysisInputConsumerSpec = Field(default_factory=AnalysisInputConsumerSpec)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class GraphMetadata(BaseModel):
     """Metadata for a graph."""
 
@@ -215,6 +244,7 @@ class AnalysisPageSpec(BaseModel):
     name: str
     graph_spec: Dict[str, Any] = Field(default_factory=dict)
     eval_params: Dict[str, Any] = Field(default_factory=dict)
+    input_requirements: List[AnalysisInputRequirement] = Field(default_factory=list)
     viewport: Dict[str, float] = Field(default_factory=lambda: {"x": 0, "y": 0, "zoom": 1})
     eval_run_id: Optional[str] = None
     expanded_field_paths: List[str] = Field(default_factory=list)
