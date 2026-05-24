@@ -18,6 +18,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from feedbax.web.models.graph import AnalysisInputRequirement
+
 try:
     from importlib.metadata import PackageNotFoundError, version
 except ImportError:  # pragma: no cover - Python 3.12 always has importlib.metadata.
@@ -188,6 +190,7 @@ class AnalysisRunSpec(StrictModel):
 
     analysis_type: str
     inputs: list[ParentRef] = Field(default_factory=list)
+    input_requirements: list[AnalysisInputRequirement] = Field(default_factory=list)
     params: dict[str, Any] = Field(default_factory=dict)
 
 

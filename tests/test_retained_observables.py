@@ -17,6 +17,8 @@ from feedbax.retained_observables import (
     retention_plan_to_json,
 )
 from feedbax.web.models.graph import (
+    AnalysisInputConsumerSpec,
+    AnalysisInputRequirement,
     ComponentSpec,
     GraphSpec,
     RetainedObservableSpec,
@@ -145,6 +147,83 @@ def test_lowering_merges_explicit_and_loss_retention_requirements() -> None:
     assert plan.loss_terms[0].source.selector == "port:network.output"
     assert plan.loss_terms[0].target is not None
     assert plan.loss_terms[0].target.selector == "task_data:targets.effector"
+
+
+def test_analysis_input_requirements_lower_as_implicit_observables() -> None:
+    graph = _graph()
+
+    plan = lower_retention_plan(
+        graph,
+        analysis_input_requirements=[
+            AnalysisInputRequirement(
+                label="Hidden activity",
+                selector="port:network.hidden",
+                retention=RetentionPolicySpec(mode="trajectory"),
+                value_schema={"dtype": "float32", "shape": ["time", "hidden"]},
+                consumer=AnalysisInputConsumerSpec(
+                    page_id="page:activity",
+                    node_id="analysis-node:hidden",
+                    input_port="activity",
+                ),
+            )
+        ],
+    )
+
+    observable = plan.by_selector["port:network.hidden"]
+    assert observable.explicit is False
+    assert observable.retention.reasons == ("analysis_input",)
+    assert observable.sources == ("/analysis/input_requirements/0",)
+    assert observable.value_schema == {"dtype": "float32", "shape": ["time", "hidden"]}
+    assert observable.metadata["source"] == "analysis_input"
+    assert observable.metadata["consumer"]["page_id"] == "page:activity"
+    assert observable.metadata["consumer"]["node_id"] == "analysis-node:hidden"
+    assert observable.metadata["consumer"]["input_port"] == "activity"
+
+
+def test_analysis_inputs_do_not_require_explicit_retained_observables() -> None:
+    graph = _graph()
+
+    plan = lower_retention_plan(
+        graph,
+        analysis_input_requirements=[
+            {
+                "selector": "graph_output:effector",
+                "retention": {"mode": "window", "window_size": 4},
+            }
+        ],
+    )
+
+    observable = plan.by_selector["graph_output:effector"]
+    assert observable.explicit is False
+    assert observable.retention.mode == "window"
+    assert observable.retention.window_size == 4
+
+
+def test_analysis_input_requirement_merges_with_explicit_capture_without_becoming_explicit_source() -> None:
+    graph = _graph()
+    graph.retained_observables = [
+        RetainedObservableSpec(
+            selector="port:network.output",
+            retention=RetentionPolicySpec(mode="stream", reason="explicit_capture"),
+        )
+    ]
+
+    plan = lower_retention_plan(
+        graph,
+        analysis_input_requirements=[
+            AnalysisInputRequirement(
+                selector="port:network.output",
+                retention=RetentionPolicySpec(mode="trajectory"),
+                consumer=AnalysisInputConsumerSpec(page_id="page:analysis"),
+            )
+        ],
+    )
+
+    observable = plan.by_selector["port:network.output"]
+    assert observable.explicit is True
+    assert observable.retention.mode == "trajectory"
+    assert observable.retention.reasons == ("explicit_capture", "analysis_input")
+    assert observable.sources == ("/graph/retained_observables/0", "/analysis/input_requirements/0")
 
 
 def test_lowering_supports_structural_selector_kinds() -> None:
