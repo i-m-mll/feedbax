@@ -14,6 +14,7 @@ interface LayoutStoreState {
   rightSidebarVisible: boolean;
   bottomSidebarWidth: number;
   bottomSidebarCollapsed: boolean;
+  bottomRightSidebarCollapsed: boolean;
   toggleTop: (availableHeight: number) => void;
   toggleBottom: (availableHeight: number) => void;
   setBottomHeight: (height: number, availableHeight: number) => void;
@@ -26,6 +27,7 @@ interface LayoutStoreState {
   toggleRightSidebar: () => void;
   setBottomSidebarWidth: (width: number) => void;
   toggleBottomSidebar: () => void;
+  toggleBottomRightSidebar: () => void;
 }
 
 const DEFAULT_BOTTOM_HEIGHT = 320;
@@ -84,6 +86,7 @@ export const useLayoutStore = create<LayoutStoreState>()(
       rightSidebarVisible: true,
       bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
       bottomSidebarCollapsed: false,
+      bottomRightSidebarCollapsed: false,
       toggleTop: (availableHeight) => {
         if (availableHeight <= 0) return;
         set((state) => {
@@ -165,6 +168,9 @@ export const useLayoutStore = create<LayoutStoreState>()(
       toggleBottomSidebar: () => {
         set((state) => ({ bottomSidebarCollapsed: !state.bottomSidebarCollapsed }));
       },
+      toggleBottomRightSidebar: () => {
+        set((state) => ({ bottomRightSidebarCollapsed: !state.bottomRightSidebarCollapsed }));
+      },
     }),
     {
       name: 'feedbax-studio-layout',
@@ -179,6 +185,7 @@ export const useLayoutStore = create<LayoutStoreState>()(
         rightSidebarVisible: state.rightSidebarVisible,
         bottomSidebarWidth: state.bottomSidebarWidth,
         bottomSidebarCollapsed: state.bottomSidebarCollapsed,
+        bottomRightSidebarCollapsed: state.bottomRightSidebarCollapsed,
       }),
     },
   )
