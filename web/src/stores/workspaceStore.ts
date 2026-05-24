@@ -114,6 +114,7 @@ function normalizeTopPaneState(value: unknown): StudioTopPaneState {
   const activeProjection =
     record.active_projection === 'task' ||
     record.active_projection === 'workspace' ||
+    record.active_projection === 'observables' ||
     record.active_projection === 'objectives'
       ? record.active_projection
       : 'model';

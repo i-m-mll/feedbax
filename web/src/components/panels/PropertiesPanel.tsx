@@ -12,6 +12,7 @@ import {
   graphPortEntityId,
   parseGraphPortEntityId,
   probeEntityId,
+  retainedObservableEntityId,
 } from '@/features/scenario/entities';
 import {
   selectorDetail,
@@ -19,6 +20,7 @@ import {
   selectorOptionsForRegistry,
   type StudioSelectorOption,
 } from '@/features/scenario/selectors';
+import { createRetainedObservable } from '@/features/scenario/observables';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { useComponents } from '@/hooks/useComponents';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
@@ -50,10 +52,12 @@ export function PropertiesPanel() {
   );
   const addTap = useGraphStore((state) => state.addTap);
   const addTapForEdge = useGraphStore((state) => state.addTapForEdge);
+  const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
   const updateTap = useGraphStore((state) => state.updateTap);
   const removeTap = useGraphStore((state) => state.removeTap);
   const setSelectedTap = useGraphStore((state) => state.setSelectedTap);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const retargetTaskBindingsForNodeRename = useWorkspaceStore(
     (state) => state.retargetActiveScenarioTaskBindingsForNodeRename
   );
@@ -181,12 +185,6 @@ export function PropertiesPanel() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
-              onClick={() => addTapForEdge(selectedEdge.id, 'probe')}
-            >
-              Add Probe Tap
-            </button>
-            <button
-              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
               onClick={() => addTapForEdge(selectedEdge.id, 'intervention')}
             >
               Add Intervention Tap
@@ -247,6 +245,40 @@ export function PropertiesPanel() {
             {edgeData.schema_message}
           </div>
         )}
+        <button
+          type="button"
+          onClick={() => {
+            const sourceHandle = String(selectedEdge.sourceHandle ?? '');
+            const targetHandle = String(selectedEdge.targetHandle ?? '');
+            if (!sourceHandle || !targetHandle) return;
+            const selector = {
+              namespace: temporality === 'recurrent' ? ('recurrent_carry' as const) : ('graph_edge' as const),
+              compact: `edge:${selectedEdge.source}.${sourceHandle}->${selectedEdge.target}.${targetHandle}`,
+              target_id: selectedEdge.id,
+              path: null,
+              role: 'observed',
+              metadata: {
+                edge_id: selectedEdge.id,
+                temporality,
+                source_node_id: selectedEdge.source,
+                source_port: sourceHandle,
+                target_node_id: selectedEdge.target,
+                target_port: targetHandle,
+              },
+            };
+            const observable = createRetainedObservable({
+              selector,
+              existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+            });
+            if (!observable) return;
+            addRetainedObservable(observable);
+            setTopPaneProjection('observables');
+            selectTopPaneEntity(retainedObservableEntityId(observable.id));
+          }}
+          className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900"
+        >
+          Capture observable
+        </button>
         <div className="text-xs text-slate-400">
           Port wires carry data; component-owned state stays in node state slots.
         </div>
@@ -275,6 +307,24 @@ export function PropertiesPanel() {
           port={selectedPort.port}
           binding={binding}
           isBoundaryAlias={isBoundaryAlias}
+          onCapture={() => {
+            const selector = {
+              namespace: 'graph_port' as const,
+              compact: `port:${selectedPort.nodeId}.${selectedPort.port}`,
+              target_id: selectedPort.nodeId,
+              path: selectedPort.port,
+              role: selectedPort.direction === 'input' ? 'editable' : 'observed',
+              metadata: { direction: selectedPort.direction },
+            };
+            const observable = createRetainedObservable({
+              selector,
+              existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+            });
+            if (!observable) return;
+            addRetainedObservable(observable);
+            setTopPaneProjection('observables');
+            selectTopPaneEntity(retainedObservableEntityId(observable.id));
+          }}
           onRename={(nextPort) => {
             const trimmed = nextPort.trim();
             if (!trimmed || trimmed === selectedPort.port || !isBoundaryAlias) return;
@@ -473,9 +523,29 @@ export function PropertiesPanel() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
-            onClick={() => addTap(selectedNode.id, 'probe')}
+            disabled={(nodeSpec.output_ports ?? []).length === 0}
+            onClick={() => {
+              const port = nodeSpec.output_ports[0];
+              if (!port) return;
+              const selector = {
+                namespace: 'graph_port' as const,
+                compact: `port:${selectedNode.id}.${port}`,
+                target_id: selectedNode.id,
+                path: port,
+                role: 'observed',
+                metadata: { direction: 'output' },
+              };
+              const observable = createRetainedObservable({
+                selector,
+                existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+              });
+              if (!observable) return;
+              addRetainedObservable(observable);
+              setTopPaneProjection('observables');
+              selectTopPaneEntity(retainedObservableEntityId(observable.id));
+            }}
           >
-            Add Probe
+            Capture Output
           </button>
           <button
             className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
@@ -584,6 +654,7 @@ function PortPropertiesPanel({
   port,
   binding,
   isBoundaryAlias,
+  onCapture,
   onRename,
 }: {
   nodeId: string;
@@ -592,6 +663,7 @@ function PortPropertiesPanel({
   port: string;
   binding?: [string, string];
   isBoundaryAlias: boolean;
+  onCapture: () => void;
   onRename: (nextPort: string) => void;
 }) {
   const [value, setValue] = useState(port);
@@ -619,6 +691,13 @@ function PortPropertiesPanel({
           {direction === 'input' ? 'Input' : 'Output'} port on {nodeType}
         </div>
       </div>
+      <button
+        type="button"
+        onClick={onCapture}
+        className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900"
+      >
+        Capture observable
+      </button>
       <div className="space-y-2 border-t border-slate-100 pt-4">
         <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Alias</div>
         {isBoundaryAlias ? (

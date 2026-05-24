@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import {
   buildScenarioEntityRegistry,
   getScenarioEntity,
+  retainedObservableEntityId,
 } from '@/features/scenario/entities';
 import {
   addObjectiveTerm,
@@ -29,6 +30,13 @@ import {
   selectorOptionsForRegistry,
   type StudioSelectorOption,
 } from '@/features/scenario/selectors';
+import {
+  createRetainedObservable,
+  RETENTION_POLICY_OPTIONS,
+  retainedObservableSelectorPatch,
+  retainedObservableTargetKindLabel,
+  retentionPolicy,
+} from '@/features/scenario/observables';
 import { useGraphStore } from '@/stores/graphStore';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import {
@@ -46,7 +54,7 @@ import type {
 } from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { Plus, Trash2 } from 'lucide-react';
-import type { ParamValue } from '@/types/graph';
+import type { ParamValue, RetainedObservableSpec, RetentionPolicySpec } from '@/types/graph';
 import type { TimeAggregationSpec } from '@/types/training';
 
 const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'probe']);
@@ -759,6 +767,145 @@ function ObjectiveInspector({
   );
 }
 
+function RetainedObservableInspector({
+  entity,
+  registry,
+  schemaRegistry,
+}: {
+  entity: StudioScenarioEntity;
+  registry: StudioScenarioEntityRegistry;
+  schemaRegistry: StudioSchemaRegistry | null;
+}) {
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const graph = useGraphStore((state) => state.graph);
+  const updateRetainedObservable = useGraphStore((state) => state.updateRetainedObservable);
+  const removeRetainedObservable = useGraphStore((state) => state.removeRetainedObservable);
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const activeStage = getActiveStage(workspace);
+  const activeScenario = getScenario(workspace, activeStage?.scenario_id);
+  const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
+  const observableId = entity.id.replace(/^retained_observable:/, '');
+  const observable = (graph.retained_observables ?? []).find(
+    (candidate) => candidate.id === observableId
+  );
+  const selectorOptions = useMemo(
+    () =>
+      selectorOptionsForRegistry({ registry, schemaRegistry, objectiveSpec }).filter(
+        (option) =>
+          option.selector.namespace !== 'retained_observable' &&
+          option.selector.namespace !== 'probe'
+      ),
+    [objectiveSpec, registry, schemaRegistry]
+  );
+
+  if (!observable) {
+    return <div className="text-sm text-slate-400">Retained observable is no longer available.</div>;
+  }
+
+  const updateObservable = (updates: Partial<RetainedObservableSpec>) => {
+    updateRetainedObservable(observable.id, updates);
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
+          Retained Observable
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            if (!confirm('Delete this retained observable?')) return;
+            removeRetainedObservable(observable.id);
+            selectTopPaneEntity(null);
+          }}
+          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+          title="Delete retained observable"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+      <label className="block space-y-1 text-xs text-slate-500">
+        <span>Label</span>
+        <input
+          value={observable.label ?? observable.id}
+          onChange={(event) => updateObservable({ label: event.target.value })}
+          className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+        />
+      </label>
+      <div className="block space-y-1 text-xs text-slate-500">
+        <span>Capture source</span>
+        <SelectorPicker
+          value={entity.selector}
+          options={selectorOptions}
+          onChange={(selector) => {
+            if (!selector) return;
+            const patch = retainedObservableSelectorPatch(selector);
+            if (patch) updateObservable(patch);
+          }}
+        />
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
+        <label className="block space-y-1 text-xs text-slate-500">
+          <span>Retention</span>
+          <select
+            value={observable.retention.mode}
+            onChange={(event) =>
+              updateObservable({
+                retention: retentionPolicy(
+                  event.target.value as RetentionPolicySpec['mode'],
+                  observable.retention
+                ),
+              })
+            }
+            className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+          >
+            {RETENTION_POLICY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {observable.retention.mode === 'window' && (
+          <label className="block space-y-1 text-xs text-slate-500">
+            <span>Window</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={observable.retention.window_size ?? 32}
+              onChange={(event) => {
+                const windowSize = Number.parseInt(event.target.value, 10);
+                if (!Number.isFinite(windowSize) || windowSize <= 0) return;
+                updateObservable({
+                  retention: {
+                    ...observable.retention,
+                    window_size: windowSize,
+                  },
+                });
+              }}
+              className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
+            />
+          </label>
+        )}
+      </div>
+      <div className="space-y-2 text-xs text-slate-600">
+        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
+          <div className="font-medium text-slate-500">Kind</div>
+          <div className="break-words">{retainedObservableTargetKindLabel(observable.target)}</div>
+        </div>
+        <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
+          <div className="font-medium text-slate-500">Selector</div>
+          <div className="break-words font-mono text-[11px]">
+            {observable.selector ?? observable.target?.selector ?? 'None'}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SourceInspector({
   entity,
   registry,
@@ -772,6 +919,8 @@ function SourceInspector({
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioObjectiveSpec
   );
+  const graph = useGraphStore((state) => state.graph);
+  const addRetainedObservable = useGraphStore((state) => state.addRetainedObservable);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
@@ -820,6 +969,20 @@ function SourceInspector({
     setTopPaneProjection('objectives');
     selectTopPaneEntity(`objective_term:${term.id}`);
   };
+  const addObservable = () => {
+    if (!selectedSourceSelector) return;
+    const observable = createRetainedObservable({
+      selector: selectedSourceSelector,
+      existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
+    });
+    if (!observable) return;
+    addRetainedObservable(observable);
+    setSelectedNode(null);
+    setSelectedTap(null);
+    setSelectedEdge(null);
+    setTopPaneProjection('observables');
+    selectTopPaneEntity(retainedObservableEntityId(observable.id));
+  };
 
   return (
     <section className="space-y-3">
@@ -849,6 +1012,15 @@ function SourceInspector({
         <Plus className="h-3.5 w-3.5" />
         Add objective from {selectorDisplayLabel(selectedSourceSelector)}
       </button>
+      <button
+        type="button"
+        disabled={!selectedSourceSelector}
+        onClick={addObservable}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Capture observable from {selectorDisplayLabel(selectedSourceSelector)}
+      </button>
     </section>
   );
 }
@@ -877,13 +1049,6 @@ function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
         </div>
         {edgeId && (
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
-              onClick={() => addTapForEdge(edgeId, 'probe')}
-            >
-              Add Probe Tap
-            </button>
             <button
               type="button"
               className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
@@ -942,6 +1107,13 @@ function EntityBody({
       {entity.kind === 'mechanics_object' && <MechanicsInspector entity={entity} />}
       {entity.kind === 'objective_term' && (
         <ObjectiveInspector entity={entity} registry={registry} schemaRegistry={schemaRegistry} />
+      )}
+      {entity.kind === 'retained_observable' && (
+        <RetainedObservableInspector
+          entity={entity}
+          registry={registry}
+          schemaRegistry={schemaRegistry}
+        />
       )}
       {entity.kind === 'graph_port' && (
         <SourceInspector entity={entity} registry={registry} schemaRegistry={schemaRegistry} />
