@@ -52,3 +52,14 @@
   errors rather than preserving fallback paths or compatibility shims.
 - Studio needs both processes: frontend `cd web && npm run dev` and backend
   `uv run uvicorn feedbax.web.app:app --port 8000`.
+
+### Cloud/Remote Training Practices
+
+- Never kill processes on TPU VMs via SSH; `kill`, `pkill`, or signals sent
+  during SSH commands can disrupt the SSH session itself. If a process has
+  crashed, clear `/tmp/libtpu_lockfile` and launch a new one.
+- Always verify the latest code is deployed before running on cloud instances.
+  Stale code on TPU/GPU is a recurring source of wasted time.
+- Module instances are frozen: never assign to `self.field` after `__init__`.
+  Use `eqx.tree_at` for out-of-place updates. Never use `dataclasses.replace`
+  on Modules with computed fields.
