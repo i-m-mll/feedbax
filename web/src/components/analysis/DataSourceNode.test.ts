@@ -149,19 +149,21 @@ describe('selectorTreeFromScenarioOptions', () => {
         }),
       ),
       option(
-        'Inputs object',
+        'Target position entity',
         'task',
-        selector('task_data', 'task_data:inputs', {
+        selector('task_data', 'task_data:target_position', {
           target_id: 'train',
-          path: 'inputs',
+          path: 'target_position',
+          metadata: { task_data_id: 'target_position' },
         }),
       ),
       option(
-        'Inputs schema',
+        'Target position schema',
         'task',
-        selector('task_data', 'task_data:inputs', {
+        selector('task_data', 'task_data:inputs.effector_target', {
           target_id: 'train',
-          path: 'inputs',
+          path: 'inputs.effector_target',
+          metadata: { selector_source: { task_data_id: 'task_data:target_position' } },
         }),
         { origin: 'declared', schema_target_id: 'selector:task_data:inputs' },
       ),
@@ -170,9 +172,9 @@ describe('selectorTreeFromScenarioOptions', () => {
     expect(tree.map((node) => node.label)).toEqual(['Task data']);
     expect(tree[0]?.children).toEqual([
       expect.objectContaining({
-        label: 'Inputs schema',
-        path: 'task_data:inputs',
-        selector: expect.objectContaining({ compact: 'task_data:inputs' }),
+        label: 'Target position schema',
+        path: 'task_data:inputs.effector_target',
+        selector: expect.objectContaining({ compact: 'task_data:inputs.effector_target' }),
       }),
     ]);
   });

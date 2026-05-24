@@ -49,6 +49,28 @@ function compactPathKey(option: StudioSelectorOption): string {
   return option.selector.path ?? option.selector.compact;
 }
 
+function taskDataKey(option: StudioSelectorOption): string {
+  const metadata = option.selector.metadata ?? {};
+  const selectorSource = metadata.selector_source;
+  const sourceTaskDataId =
+    selectorSource && typeof selectorSource === 'object' && 'task_data_id' in selectorSource
+      ? (selectorSource as { task_data_id?: unknown }).task_data_id
+      : null;
+  const valueSchema = metadata.value_schema;
+  const valueSchemaId =
+    valueSchema && typeof valueSchema === 'object' && 'id' in valueSchema
+      ? (valueSchema as { id?: unknown }).id
+      : null;
+  const candidates = [metadata.task_data_id, sourceTaskDataId, valueSchemaId];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    return candidate
+      .replace(/^value:task_data:/, '')
+      .replace(/^task_data:/, '');
+  }
+  return compactPathKey(option).replace(/^task_data:/, '');
+}
+
 function metadataString(option: StudioSelectorOption, key: string): string | null {
   const value = option.selector.metadata[key];
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -139,7 +161,7 @@ export function selectorTreeFromScenarioOptions(
   for (const option of options) {
     if (option.group === 'task') {
       if (option.selector.namespace !== 'task_data') continue;
-      const key = compactPathKey(option);
+      const key = taskDataKey(option);
       const existing = taskOptionsByKey.get(key);
       taskOptionsByKey.set(key, existing ? preferTaskOption(existing, option) : option);
       continue;
