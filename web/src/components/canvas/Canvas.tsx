@@ -42,7 +42,9 @@ import {
 import {
   ensureTaskBindingSpec,
   removeTaskBindingsForTargetNodes,
+  scopedTaskBindingSpec,
   taskBindingId,
+  taskBindingGraphPathKey,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import {
@@ -642,22 +644,30 @@ export function Canvas() {
   const connectionActive = useRef(false);
   const connectionFeedbackSignature = useRef<string | null>(null);
   const trainingScenario = getTrainingScenario(workspace);
-  const taskBindingSpec = useMemo(
+  const currentGraphPath = useMemo(
+    () => graphStack.map((layer) => layer.childNodeId).filter((id): id is string => Boolean(id)),
+    [graphStack]
+  );
+  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const allTaskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
         trainingScenario?.task_binding_spec,
-        graph,
+        rootGraph,
         trainingScenario?.task_spec
       ),
-    [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+    [rootGraph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+  );
+  const taskBindingSpec = useMemo(
+    () => scopedTaskBindingSpec(allTaskBindingSpec, currentGraphPath),
+    [allTaskBindingSpec, currentGraphPath]
   );
   const parentBoundaryOverrides = useMemo(() => {
     const parentLayer = graphStack[graphStack.length - 1];
     if (!parentLayer?.childNodeId) return new Map<string, ValueSchema>();
-    const parentTaskBindingSpec = ensureTaskBindingSpec(
-      trainingScenario?.task_binding_spec,
-      parentLayer.graph,
-      trainingScenario?.task_spec
+    const parentTaskBindingSpec = scopedTaskBindingSpec(
+      allTaskBindingSpec,
+      currentGraphPath.slice(0, -1)
     );
     return subgraphBoundaryOverrides(
       parentLayer.graph,
@@ -665,14 +675,14 @@ export function Canvas() {
       components,
       parentTaskBindingSpec
     );
-  }, [components, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
+  }, [allTaskBindingSpec, components, currentGraphPath, graphStack]);
   const taskDataSignature = taskBindingSpec.exposed_data
     .map((data) => `${data.id}:${data.label}:${data.role}:${data.bindable ? '1' : '0'}`)
     .join('|');
   const taskBindingSignature = taskBindingSpec.bindings
     .map(
       (binding) =>
-        `${binding.id}:${binding.source_data_id}:${binding.target_node_id}:${binding.target_port}:${binding.role}`
+        `${binding.id}:${taskBindingGraphPathKey(binding.target_graph_path)}:${binding.source_data_id}:${binding.target_node_id}:${binding.target_port}:${binding.role}`
     )
     .join('|');
   const taskBindings = useMemo(() => taskBindingSpec.bindings, [taskBindingSignature]);
@@ -1140,7 +1150,7 @@ export function Canvas() {
     (dataId: string, targetNodeId: string, targetPort: string) => {
       const taskData = taskBindingSpec.exposed_data.find((data) => data.id === dataId);
       if (!taskData?.bindable) return;
-      const nextBindingId = taskBindingId(dataId, targetNodeId, targetPort);
+      const nextBindingId = taskBindingId(dataId, targetNodeId, targetPort, currentGraphPath);
       const existingBinding = taskBindingSpec.bindings.find(
         (binding) => binding.id === nextBindingId
       );
@@ -1157,12 +1167,13 @@ export function Canvas() {
       const nextBinding: StudioTaskBinding = {
         id: nextBindingId,
         source_data_id: dataId,
+        target_graph_path: currentGraphPath.length > 0 ? currentGraphPath : undefined,
         target_node_id: targetNodeId,
         target_port: targetPort,
         role: taskData.role,
         metadata: {},
       };
-      const nextTaskBindingSpec: StudioTaskBindingSpec = {
+      const nextScopedTaskBindingSpec: StudioTaskBindingSpec = {
         ...taskBindingSpec,
         bindings: [
           ...taskBindingSpec.bindings.filter(
@@ -1171,14 +1182,23 @@ export function Canvas() {
           nextBinding,
         ],
       };
+      const nextTaskBindingSpec: StudioTaskBindingSpec = {
+        ...allTaskBindingSpec,
+        bindings: [
+          ...allTaskBindingSpec.bindings.filter(
+            (binding) => binding.id !== nextBinding.id
+          ),
+          nextBinding,
+        ],
+      };
       const paramUpdates = dimensionParamUpdates(
         graph,
         components,
-        nextTaskBindingSpec,
+        nextScopedTaskBindingSpec,
         parentBoundaryOverrides
       );
       updateTaskBindingSpec(nextTaskBindingSpec);
-      updateNodeParamsBatch(paramUpdates, nextTaskBindingSpec);
+      updateNodeParamsBatch(paramUpdates, nextScopedTaskBindingSpec);
       markDirty();
       setSelectedEdge(null);
       setSelectedNode(null);
@@ -1186,7 +1206,9 @@ export function Canvas() {
       selectTopPaneEntity(taskBindingEntityId(nextBinding.id));
     },
     [
+      allTaskBindingSpec,
       components,
+      currentGraphPath,
       graph,
       markDirty,
       selectTopPaneEntity,
@@ -1372,10 +1394,11 @@ export function Canvas() {
         .filter((change) => change.type === 'remove' && 'id' in change)
         .map((change) => (change as { id: string }).id);
       const nextTaskBindingSpec = removeTaskBindingsForTargetNodes(
-        taskBindingSpec,
-        removedNodeIds
+        allTaskBindingSpec,
+        removedNodeIds,
+        currentGraphPath
       );
-      if (nextTaskBindingSpec !== taskBindingSpec) {
+      if (nextTaskBindingSpec !== allTaskBindingSpec) {
         updateTaskBindingSpec(nextTaskBindingSpec);
         markDirty();
         if (
@@ -1388,11 +1411,12 @@ export function Canvas() {
       if (graphChanges.length > 0) onNodesChange(graphChanges);
     },
     [
+      allTaskBindingSpec,
+      currentGraphPath,
       markDirty,
       onNodesChange,
       selectTopPaneEntity,
       selectedTaskBindingId,
-      taskBindingSpec,
       updateTaskBindingSpec,
     ]
   );
@@ -1401,8 +1425,8 @@ export function Canvas() {
     (bindingIds: Set<string>) => {
       if (bindingIds.size === 0) return;
       updateTaskBindingSpec({
-        ...taskBindingSpec,
-        bindings: taskBindingSpec.bindings.filter((binding) => !bindingIds.has(binding.id)),
+        ...allTaskBindingSpec,
+        bindings: allTaskBindingSpec.bindings.filter((binding) => !bindingIds.has(binding.id)),
       });
       markDirty();
       if (selectedTaskBindingId && bindingIds.has(selectedTaskBindingId)) {
@@ -1410,10 +1434,10 @@ export function Canvas() {
       }
     },
     [
+      allTaskBindingSpec,
       markDirty,
       selectTopPaneEntity,
       selectedTaskBindingId,
-      taskBindingSpec,
       updateTaskBindingSpec,
     ]
   );

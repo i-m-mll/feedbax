@@ -30,7 +30,7 @@ import {
 import { createRetainedObservable } from '@/features/scenario/observables';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import { useComponents } from '@/hooks/useComponents';
-import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
 import {
   applyBoundaryOverrides,
   deriveDimensionConstraints,
@@ -113,22 +113,30 @@ export function PropertiesPanel() {
     () => nodes.find((node) => node.selected && node.type !== 'tap'),
     [nodes]
   );
+  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
   const taskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
         trainingScenario?.task_binding_spec,
-        graph,
+        rootGraph,
         trainingScenario?.task_spec
       ),
-    [graph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+    [rootGraph, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]
+  );
+  const currentGraphPath = useMemo(
+    () => graphStack.map((layer) => layer.childNodeId).filter((id): id is string => Boolean(id)),
+    [graphStack]
+  );
+  const scopedTaskBindingSpecForCurrentGraph = useMemo(
+    () => scopedTaskBindingSpec(taskBindingSpec, currentGraphPath),
+    [currentGraphPath, taskBindingSpec]
   );
   const parentBoundaryOverrides = useMemo(() => {
     const parentLayer = graphStack[graphStack.length - 1];
     if (!parentLayer?.childNodeId) return new Map();
-    const parentTaskBindingSpec = ensureTaskBindingSpec(
-      trainingScenario?.task_binding_spec,
-      parentLayer.graph,
-      trainingScenario?.task_spec
+    const parentTaskBindingSpec = scopedTaskBindingSpec(
+      taskBindingSpec,
+      currentGraphPath.slice(0, -1)
     );
     const parentRegistry = projectStudioSchema(
       parentLayer.graph,
@@ -140,14 +148,14 @@ export function PropertiesPanel() {
       parentLayer.childNodeId,
       parentRegistry
     );
-  }, [components, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
+  }, [components, currentGraphPath, graphStack, taskBindingSpec]);
   const localSchemaRegistry = useMemo(
     () =>
       applyBoundaryOverrides(
-        projectStudioSchema(graph, components, taskBindingSpec),
+        projectStudioSchema(graph, components, scopedTaskBindingSpecForCurrentGraph),
         parentBoundaryOverrides
       ),
-    [components, graph, parentBoundaryOverrides, taskBindingSpec]
+    [components, graph, parentBoundaryOverrides, scopedTaskBindingSpecForCurrentGraph]
   );
   const nodeDimensionConstraints = useMemo(
     () =>
@@ -390,7 +398,8 @@ export function PropertiesPanel() {
               retargetTaskBindingsForNodePortRename(
                 selectedPort.nodeId,
                 selectedPort.port,
-                trimmed
+                trimmed,
+                currentGraphPath
               );
             }
             renameSubgraphBoundaryPort(
@@ -429,7 +438,7 @@ export function PropertiesPanel() {
   const commitRename = () => {
     const nextNodeId = nameValue.trim();
     if (nextNodeId && nextNodeId !== selectedNode.id && !graph.nodes[nextNodeId]) {
-      retargetTaskBindingsForNodeRename(selectedNode.id, nextNodeId);
+      retargetTaskBindingsForNodeRename(selectedNode.id, nextNodeId, currentGraphPath);
       renameNode(selectedNode.id, nextNodeId);
     }
   };
@@ -446,7 +455,7 @@ export function PropertiesPanel() {
       : selectedSubgraph.output_ports;
     if (existingPorts.includes(trimmed)) return;
     if (direction === 'input') {
-      retargetTaskBindingsForNodePortRename(selectedNode.id, previousPort, trimmed);
+      retargetTaskBindingsForNodePortRename(selectedNode.id, previousPort, trimmed, currentGraphPath);
     }
     renameSubgraphBoundaryPort(selectedNode.id, direction, previousPort, trimmed);
   };
