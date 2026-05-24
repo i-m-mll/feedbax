@@ -285,3 +285,63 @@ def test_compile_training_run_rejects_task_binding_to_occupied_port() -> None:
             task_binding_spec=_task_binding_spec(),
             cfg=_cfg(),
         )
+
+
+def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
+    graph_spec = GraphSpec(
+        nodes={
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 2, "add_noise": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+    ).model_dump(mode="json", exclude_none=True)
+    task_binding_spec = {
+        "schema_version": "feedbax.studio.task_bindings.v2",
+        "exposed_data": [
+            {
+                "id": "model_input",
+                "label": "Model input",
+                "kind": "signal",
+                "role": "model_input",
+                "path": "inputs.model",
+                "bindable": True,
+                "expected_shape": ["time", 3],
+                "value_spec": {
+                    "mode": "constant",
+                    "value": [1.0, 2.0, 3.0],
+                    "dtype": "float32",
+                    "shape": ["time", 3],
+                },
+                "metadata": {},
+            }
+        ],
+        "bindings": [
+            {
+                "id": "task:model_input->delay:input",
+                "source_data_id": "model_input",
+                "target_node_id": "delay",
+                "target_port": "input",
+                "role": "model_input",
+                "metadata": {},
+            }
+        ],
+        "metadata": {},
+    }
+
+    compiled = compile_training_run(
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=task_binding_spec,
+        cfg=_cfg(n_reach_steps=5),
+    )
+    rollout = rollout_graph(compiled.graph, compiled, key=jax.random.PRNGKey(4))
+
+    assert compiled.graph.nodes["delay"].input_proto.shape == (3,)
+    assert rollout["outputs"]["output"].shape == (5, 3)
+    assert jnp.allclose(rollout["outputs"]["output"][:2], 0.0)

@@ -32,7 +32,7 @@ from feedbax.web.models.graph import (
     StudioTaskDataSpec,
 )
 from feedbax.web.models.training import TrainingSpec
-from feedbax.web.serialization import spec_to_graph
+from feedbax.web.serialization import prototypes_from_task_bindings, spec_to_graph
 
 
 _DEFAULT_TRAINABLE_COMPONENT_TYPES = {
@@ -126,7 +126,11 @@ def compile_training_run(
         raise ValueError(f"Invalid task_binding_spec for graph execution: {summary}")
 
     try:
-        graph = spec_to_graph(graph_model, {})
+        graph = spec_to_graph(
+            graph_model,
+            {},
+            input_prototypes=prototypes_from_task_bindings(binding_model),
+        )
     except NotImplementedError as exc:
         raise ValueError(f"GraphSpec contains unsupported executable component: {exc}") from exc
     except Exception as exc:
