@@ -188,15 +188,14 @@ def test_analysis_inputs_do_not_require_explicit_retained_observables() -> None:
         analysis_input_requirements=[
             {
                 "selector": "graph_output:effector",
-                "retention": {"mode": "window", "window_size": 4},
+                "retention": {"mode": "trajectory"},
             }
         ],
     )
 
     observable = plan.by_selector["graph_output:effector"]
     assert observable.explicit is False
-    assert observable.retention.mode == "window"
-    assert observable.retention.window_size == 4
+    assert observable.retention.mode == "trajectory"
 
 
 def test_analysis_input_requirement_merges_with_explicit_capture_without_becoming_explicit_source() -> None:

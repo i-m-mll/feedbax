@@ -416,7 +416,11 @@ def _requirement_from_analysis_input(
         id=requirement.id or _stable_observable_id(selector.selector),
         label=requirement.label or selector.selector,
         selector=selector,
-        retention=_policy_to_plan(requirement.retention, reason="analysis_input"),
+        retention=_policy_to_plan(
+            requirement.retention,
+            reason="analysis_input",
+            path=f"{path}/retention",
+        ),
         value_schema=requirement.value_schema,
         explicit=False,
         sources=(path,),
