@@ -375,6 +375,7 @@ function analysisPagesFromSnapshot(snapshot: AnalysisSnapshot | null): AnalysisP
     id: page.id,
     name: page.name,
     graph_spec: page.graphSpec as unknown as Record<string, unknown>,
+    input_requirements: page.inputRequirements ?? [],
     eval_params: page.evalParams,
     viewport: page.viewport,
     eval_run_id: page.evalRunId,
