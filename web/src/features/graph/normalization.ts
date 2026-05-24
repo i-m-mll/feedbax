@@ -516,6 +516,19 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
   if (!taskBindingSpec) return taskBindingSpec;
   let changed = false;
   const bindings = taskBindingSpec.bindings.map((binding) => {
+    if (
+      binding.target_node_id === 'mux' &&
+      !graph.nodes.mux &&
+      graph.nodes.input_mux &&
+      graph.nodes.input_mux.type === 'Mux'
+    ) {
+      changed = true;
+      return {
+        ...binding,
+        id: `task:${binding.source_data_id}->input_mux:${binding.target_port}`,
+        target_node_id: 'input_mux',
+      };
+    }
     const target = graph.nodes[binding.target_node_id];
     if (target?.type !== 'Network' || binding.target_port !== 'target') {
       return binding;
