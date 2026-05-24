@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import {
   buildScenarioEntityRegistry,
   getScenarioEntity,
+  objectiveEntityId,
   retainedObservableEntityId,
 } from '@/features/scenario/entities';
 import {
@@ -32,10 +33,8 @@ import {
 } from '@/features/scenario/selectors';
 import {
   createRetainedObservable,
-  RETENTION_POLICY_OPTIONS,
   retainedObservableSelectorPatch,
   retainedObservableTargetKindLabel,
-  retentionPolicy,
 } from '@/features/scenario/observables';
 import { useGraphStore } from '@/stores/graphStore';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
@@ -54,7 +53,7 @@ import type {
 } from '@/types/workspace';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { Plus, Trash2 } from 'lucide-react';
-import type { ParamValue, RetainedObservableSpec, RetentionPolicySpec } from '@/types/graph';
+import type { ParamValue, RetainedObservableSpec } from '@/types/graph';
 import type { TimeAggregationSpec } from '@/types/training';
 
 const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'probe']);
@@ -780,7 +779,11 @@ function RetainedObservableInspector({
   const graph = useGraphStore((state) => state.graph);
   const updateRetainedObservable = useGraphStore((state) => state.updateRetainedObservable);
   const removeRetainedObservable = useGraphStore((state) => state.removeRetainedObservable);
+  const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
+    (state) => state.updateActiveScenarioObjectiveSpec
+  );
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const activeStage = getActiveStage(workspace);
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
@@ -804,6 +807,20 @@ function RetainedObservableInspector({
 
   const updateObservable = (updates: Partial<RetainedObservableSpec>) => {
     updateRetainedObservable(observable.id, updates);
+  };
+  const taskEntity =
+    Object.values(registry.entities).find((candidate) => candidate.kind === 'task_object') ?? null;
+  const addObjective = () => {
+    if (!activeScenario || !entity.selector) return;
+    const term = createObjectiveTerm({
+      spec: objectiveSpec,
+      label: `Objective: ${selectorDisplayLabel(entity.selector)}`,
+      sourceSelector: entity.selector,
+      targetSelector: targetSelectorForEntity(taskEntity),
+    });
+    updateActiveScenarioObjectiveSpec(addObjectiveTerm(objectiveSpec, term));
+    setTopPaneProjection('objectives');
+    selectTopPaneEntity(objectiveEntityId(term.id));
   };
 
   return (
@@ -845,51 +862,15 @@ function RetainedObservableInspector({
           }}
         />
       </div>
-      <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
-        <label className="block space-y-1 text-xs text-slate-500">
-          <span>Retention</span>
-          <select
-            value={observable.retention.mode}
-            onChange={(event) =>
-              updateObservable({
-                retention: retentionPolicy(
-                  event.target.value as RetentionPolicySpec['mode'],
-                  observable.retention
-                ),
-              })
-            }
-            className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
-          >
-            {RETENTION_POLICY_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        {observable.retention.mode === 'window' && (
-          <label className="block space-y-1 text-xs text-slate-500">
-            <span>Window</span>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={observable.retention.window_size ?? 32}
-              onChange={(event) => {
-                const windowSize = Number.parseInt(event.target.value, 10);
-                if (!Number.isFinite(windowSize) || windowSize <= 0) return;
-                updateObservable({
-                  retention: {
-                    ...observable.retention,
-                    window_size: windowSize,
-                  },
-                });
-              }}
-              className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm text-slate-800"
-            />
-          </label>
-        )}
-      </div>
+      <button
+        type="button"
+        disabled={!activeScenario || !entity.selector}
+        onClick={addObjective}
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Add objective from {selectorDisplayLabel(entity.selector)}
+      </button>
       <div className="space-y-2 text-xs text-slate-600">
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
           <div className="font-medium text-slate-500">Kind</div>

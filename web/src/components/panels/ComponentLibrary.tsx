@@ -316,12 +316,7 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
   const isSubgraphType = SUBGRAPH_TYPES.has(component.name);
   const isTemplate = Boolean(component.template_graph);
   const isDisplayTemplate = component.template_kind === 'display';
-  const isExecutableTemplate = component.template_kind === 'executable';
-  const templateBadgeLabel = isDisplayTemplate
-    ? 'Display'
-    : isExecutableTemplate
-      ? 'Executable'
-      : 'Template';
+  const templateBadgeLabel = isDisplayTemplate ? 'Preview only' : null;
   const templateSummary = component.template_graph
     ? `${Object.keys(component.template_graph.nodes).length} nodes, ${component.template_graph.wires.length} wires`
     : null;
@@ -380,13 +375,11 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
                 Type
               </span>
             )}
-            {!isSubgraphType && isTemplate && (
+            {!isSubgraphType && templateBadgeLabel && (
               <span
                 className={clsx(
                   'shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide',
-                  isDisplayTemplate
-                    ? 'border-amber-100 bg-amber-50 text-amber-600'
-                    : 'border-teal-100 bg-teal-50 text-teal-600'
+                  'border-amber-100 bg-amber-50 text-amber-600'
                 )}
               >
                 {templateBadgeLabel}

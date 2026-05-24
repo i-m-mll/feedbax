@@ -67,7 +67,7 @@ const registry: StudioScenarioEntityRegistry = {
       id: 'retained_observable:obs:effector',
       kind: 'retained_observable',
       label: 'Effector trajectory',
-      summary: 'trajectory',
+      summary: 'Captured observable',
       scenario_id: 'scenario:train',
       stage_id: 'stage:train',
       selector: null,

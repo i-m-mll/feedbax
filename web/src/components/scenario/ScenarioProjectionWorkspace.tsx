@@ -40,10 +40,8 @@ import {
 } from '@/features/scenario/selectors';
 import {
   createRetainedObservable,
-  RETENTION_POLICY_OPTIONS,
   retainedObservableSelectorPatch,
   retainedObservableTargetKindLabel,
-  retentionPolicy,
   selectorToRetainedObservableTarget,
 } from '@/features/scenario/observables';
 import { useGraphStore } from '@/stores/graphStore';
@@ -57,7 +55,6 @@ import { useLayoutStore } from '@/stores/layoutStore';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import type {
   RetainedObservableSpec,
-  RetentionPolicySpec,
 } from '@/types/graph';
 import type {
   StudioObjectiveSpec,
@@ -400,13 +397,6 @@ function ObservablesProjection({
     onSelect(retainedObservableEntityId(observable.id));
   };
 
-  const updateRetentionMode = (
-    observable: RetainedObservableSpec,
-    mode: RetentionPolicySpec['mode']
-  ) => {
-    onUpdate(observable.id, { retention: retentionPolicy(mode, observable.retention) });
-  };
-
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-5">
       <div className="mx-auto max-w-6xl space-y-4">
@@ -430,11 +420,10 @@ function ObservablesProjection({
         </div>
 
         <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
-          <div className="grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_8rem_4rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+          <div className="grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_4rem] border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
             <div>Observable</div>
             <div>Kind</div>
             <div>Source</div>
-            <div>Retention</div>
             <div />
           </div>
           {observables.map((observable) => {
@@ -445,7 +434,7 @@ function ObservablesProjection({
                 key={observable.id}
                 onClick={() => onSelect(retainedObservableEntityId(observable.id))}
                 className={clsx(
-                  'grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_8rem_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0',
+                  'grid grid-cols-[minmax(10rem,1fr)_8rem_minmax(12rem,1.2fr)_4rem] items-center gap-2 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0',
                   active ? 'bg-brand-50 text-slate-900' : 'bg-white text-slate-600 hover:bg-slate-50'
                 )}
               >
@@ -456,9 +445,6 @@ function ObservablesProjection({
                     onClick={(event) => event.stopPropagation()}
                     className="h-8 w-full rounded border border-transparent bg-transparent px-2 font-medium text-slate-800 hover:border-slate-200 focus:border-brand-300 focus:bg-white focus:outline-none"
                   />
-                  <div className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
-                    {observable.id}
-                  </div>
                 </div>
                 <div className="text-slate-500">
                   {retainedObservableTargetKindLabel(observable.target)}
@@ -473,23 +459,6 @@ function ObservablesProjection({
                   }}
                   className="w-full"
                 />
-                <select
-                  value={observable.retention.mode}
-                  onChange={(event) =>
-                    updateRetentionMode(
-                      observable,
-                      event.target.value as RetentionPolicySpec['mode']
-                    )
-                  }
-                  onClick={(event) => event.stopPropagation()}
-                  className="h-8 rounded border border-slate-200 bg-white px-2 text-xs"
-                >
-                  {RETENTION_POLICY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
                 <button
                   type="button"
                   onClick={(event) => {

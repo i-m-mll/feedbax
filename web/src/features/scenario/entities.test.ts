@@ -216,7 +216,7 @@ describe('scenario entity registry', () => {
     expect(registry.entities[retainedObservableEntityId('obs:effector')]).toMatchObject({
       kind: 'retained_observable',
       label: 'Effector trajectory',
-      summary: 'trajectory',
+      summary: 'Captured observable',
       selector: {
         namespace: 'graph_output',
         compact: 'graph_output:effector',
