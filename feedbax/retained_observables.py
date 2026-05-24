@@ -366,7 +366,11 @@ def _requirement_from_observable(
         id=observable.id or _stable_observable_id(selector.selector),
         label=observable.label or selector.selector,
         selector=selector,
-        retention=_policy_to_plan(observable.retention, reason="explicit"),
+        retention=_policy_to_plan(
+            observable.retention,
+            reason="explicit",
+            path=f"{path}/retention",
+        ),
         value_schema=observable.value_schema,
         explicit=True,
         sources=(path,),
@@ -394,6 +398,7 @@ def _lower_loss_terms(
     retention = _policy_to_plan(
         term.retention or RetentionPolicySpec(mode="trajectory"),
         reason=f"loss:{path}",
+        path=f"{path}/retention",
     )
     _merge_requirement(
         requirements,
@@ -425,6 +430,13 @@ def _lower_loss_terms(
             path=path,
             selector=term.selector,
         )
+    time_agg = term.time_agg or TimeAggregationSpec(mode="all")
+    if time_agg.mode == "segment":
+        raise RetentionPlanError(
+            "Segment time aggregation requires task timeline mask lowering and is not supported",
+            path=f"{path}/time_agg",
+            selector=term.selector,
+        )
 
     key = _loss_key(path)
     return [
@@ -437,16 +449,21 @@ def _lower_loss_terms(
             target=target,
             target_value=term.target_value,
             norm=term.norm or "squared_l2",
-            time_agg=term.time_agg or TimeAggregationSpec(mode="all"),
+            time_agg=time_agg,
         )
     ]
 
 
-def _policy_to_plan(policy: RetentionPolicySpec, *, reason: str) -> RetentionPolicyPlan:
-    if policy.mode == "window" and policy.window_size is not None and policy.window_size <= 0:
+def _policy_to_plan(
+    policy: RetentionPolicySpec,
+    *,
+    reason: str,
+    path: str,
+) -> RetentionPolicyPlan:
+    if policy.mode == "window" and (policy.window_size is None or policy.window_size <= 0):
         raise RetentionPlanError(
             "Window retention requires a positive window_size",
-            path="/retention/window_size",
+            path=f"{path}/window_size",
         )
     order = int(policy.order or 0)
     return RetentionPolicyPlan(
@@ -500,6 +517,7 @@ def _merge_retention(
 
 def _validate_requirement(graph: GraphSpec, requirement: _ObservableRequirement) -> _ObservableRequirement:
     selector = requirement.selector
+    _validate_executable_retention(requirement)
     if selector.kind == "port":
         _validate_port(graph, selector.node_id, selector.port, selector.selector)
     elif selector.kind == "edge":
@@ -529,6 +547,20 @@ def _validate_requirement(graph: GraphSpec, requirement: _ObservableRequirement)
                 selector=selector.selector,
             )
     return requirement
+
+
+def _validate_executable_retention(requirement: _ObservableRequirement) -> None:
+    mode = requirement.retention.mode
+    if mode == "trajectory":
+        return
+    raise RetentionPlanError(
+        (
+            f"{mode!r} retention for selector {requirement.selector.selector!r} is not "
+            "supported by the current graph worker; request trajectory retention instead"
+        ),
+        path=f"{_source_path(requirement)}/retention/mode",
+        selector=requirement.selector.selector,
+    )
 
 
 def _requirement_to_plan(requirement: _ObservableRequirement) -> RetainedObservablePlan:

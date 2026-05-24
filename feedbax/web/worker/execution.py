@@ -20,6 +20,7 @@ from feedbax.graph import Graph, GraphTraceRequest, init_state_from_component
 from feedbax.retained_observables import (
     LossTermPlan,
     RetentionPlan,
+    RetentionPlanError,
     SelectorRef,
     evaluate_loss_plan,
     lower_retention_plan,
@@ -107,6 +108,11 @@ def compile_training_run(
         if isinstance(training_spec, TrainingSpec)
         else TrainingSpec.model_validate(training_spec)
     )
+    if training_model.batch_size != 1:
+        raise ValueError(
+            "Generic graph worker currently supports batch_size=1; "
+            f"got batch_size={training_model.batch_size}"
+        )
     binding_model = (
         task_binding_spec
         if isinstance(task_binding_spec, StudioTaskBindingSpec)
@@ -135,7 +141,12 @@ def compile_training_run(
     graph, task_inputs = _expose_task_inputs(graph, binding_model)
     n_steps = int(getattr(cfg, "n_reach_steps", None) or training_model.n_batches or 1)
     task_data = _materialize_task_data(binding_model, task_spec, n_steps)
-    retention_plan = lower_retention_plan(graph_model, training_model)
+    try:
+        retention_plan = lower_retention_plan(graph_model, training_model)
+    except RetentionPlanError as exc:
+        raise ValueError(
+            f"Invalid retention plan for graph execution at {exc.path}: {exc}"
+        ) from exc
     loss_terms = retention_plan.loss_terms
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
     trainable_nodes = _derive_trainable_nodes(graph_model)
@@ -382,20 +393,33 @@ def _materialize_one_task_data(
 ) -> jax.Array:
     value_spec = item.value_spec
     shape = _runtime_shape(item.expected_shape, n_steps)
-    if value_spec is not None and value_spec.mode == "constant" and value_spec.value is not None:
+    if value_spec is None:
+        return jnp.zeros(shape, dtype=jnp.float32)
+    if value_spec.mode == "constant":
+        if value_spec.value is None:
+            raise ValueError(
+                f"Task data {item.id!r} at {item.path!r} has constant value_spec without value"
+            )
         value = value_spec.value
         if isinstance(value, dict):
             fill = float(value.get("inactive", value.get("value", 0.0)))
             return jnp.full(shape, fill, dtype=jnp.float32)
         arr = jnp.asarray(value, dtype=jnp.float32)
         return jnp.broadcast_to(arr, shape)
-    if value_spec is not None and value_spec.mode == "function":
+    if value_spec.mode == "function":
         if value_spec.function_id == "delayed_reach_target_position":
             return _delayed_reach_target_position(task_spec, n_steps, shape)
         if value_spec.function_id == "delayed_reach_movement_target":
             target = _delayed_reach_target_position(task_spec, n_steps, (n_steps, 4))[..., :2]
             return jnp.broadcast_to(target, shape)
-    return jnp.zeros(shape, dtype=jnp.float32)
+        raise ValueError(
+            f"Task data {item.id!r} at {item.path!r} uses unsupported value_spec "
+            f"function_id={value_spec.function_id!r}"
+        )
+    raise ValueError(
+        f"Task data {item.id!r} at {item.path!r} uses unsupported value_spec "
+        f"mode={value_spec.mode!r}"
+    )
 
 
 def _runtime_shape(expected_shape: list[Any] | None, n_steps: int) -> tuple[int, ...]:
