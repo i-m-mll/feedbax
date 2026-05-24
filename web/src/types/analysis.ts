@@ -1,5 +1,7 @@
 /** Types for the analysis DAG system and figure generation. */
 
+import type { StudioSelectorRef, ValueSchema } from '@/types/workspace';
+
 /** A scalar parameter value on an analysis or transform node. */
 export type AnalysisParamScalar = number | string | boolean | null;
 
@@ -57,6 +59,12 @@ export interface StateFieldNode {
   label: string;
   /** Full dot-separated path from root (used as handle ID). */
   path: StateFieldPath;
+  /** Secondary text shown under the label for compact schema detail. */
+  detail?: string | null;
+  /** Canonical selector carried by this node when it is connectable. */
+  selector?: StudioSelectorRef;
+  /** Whether this row exposes a connectable source handle. Defaults to true. */
+  connectable?: boolean;
   /** Child fields; absent for leaf nodes. */
   children?: StateFieldNode[];
 }
@@ -151,6 +159,26 @@ export const STATE_FIELD_TREE: StateFieldNode[] = [
 // Wire types
 // ---------------------------------------------------------------------------
 
+export interface AnalysisInputConsumerSpec {
+  page_id?: string | null;
+  node_id?: string | null;
+  input_port?: string | null;
+  analysis_type?: string | null;
+  role?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AnalysisInputRequirement {
+  id: string;
+  label?: string | null;
+  selector?: string | null;
+  target?: Record<string, unknown> | null;
+  retention: Record<string, unknown>;
+  value_schema?: ValueSchema | Record<string, unknown> | null;
+  consumer: AnalysisInputConsumerSpec;
+  metadata: Record<string, unknown>;
+}
+
 /** A wire in the analysis DAG. */
 export interface AnalysisWire {
   id: string;
@@ -165,6 +193,8 @@ export interface AnalysisWire {
   /** Specific state field path selected for this wire, if any.
    *  Undefined means the full top-level object flows through. */
   fieldPath?: StateFieldPath;
+  /** Analysis-owned observable materialization requirement for data-source wires. */
+  inputRequirement?: AnalysisInputRequirement;
 }
 
 /** The complete analysis graph specification. */
@@ -253,6 +283,8 @@ export interface AnalysisPageSpec {
   name: string;
   /** The analysis DAG graph for this page. */
   graphSpec: AnalysisGraphSpec;
+  /** Observable input requirements consumed by this page. */
+  inputRequirements?: AnalysisInputRequirement[];
   /** Evaluation parameters for this page. */
   evalParams: EvalParametrization;
   /** Viewport position/zoom for this page. */

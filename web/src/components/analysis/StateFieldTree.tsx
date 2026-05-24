@@ -16,7 +16,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 
 /** Height of each row in the tree (px). */
-export const FIELD_ROW_HEIGHT = 20;
+export const FIELD_ROW_HEIGHT = 24;
 /** Indentation per depth level (px). */
 const INDENT_PX = 14;
 /** Handle diameter (px). */
@@ -96,23 +96,25 @@ export function StateFieldTree({
 
         return (
           <div key={node.path}>
-            {/* Connectable handle — present on every tree node */}
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={node.path}
-              style={{
-                top,
-                right: -6,
-                transform: 'translateY(-50%)',
-                width: `${HANDLE_SIZE}px`,
-                height: `${HANDLE_SIZE}px`,
-              } satisfies CSSProperties}
-              className={clsx(
-                'border border-white shadow-soft',
-                isLeaf ? 'bg-slate-400' : 'bg-slate-300',
-              )}
-            />
+            {/* Connectable handle — present on selectable rows. */}
+            {node.connectable !== false && (
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={node.selector?.compact ?? node.path}
+                style={{
+                  top,
+                  right: -6,
+                  transform: 'translateY(-50%)',
+                  width: `${HANDLE_SIZE}px`,
+                  height: `${HANDLE_SIZE}px`,
+                } satisfies CSSProperties}
+                className={clsx(
+                  'border border-white shadow-soft',
+                  isLeaf ? 'bg-slate-400' : 'bg-slate-300',
+                )}
+              />
+            )}
 
             {/* Label row */}
             <div
@@ -138,10 +140,17 @@ export function StateFieldTree({
                   ) : (
                     <ChevronRight className="w-3 h-3 shrink-0" />
                   )}
-                  <span className="text-slate-500 font-medium">{node.label}</span>
+                  <span className="truncate text-slate-500 font-medium">{node.label}</span>
                 </button>
               ) : (
-                <span className="ml-3.5 text-slate-400">{node.label}</span>
+                <span className="ml-3.5 min-w-0">
+                  <span className="block truncate text-slate-500">{node.label}</span>
+                  {node.detail && (
+                    <span className="block truncate text-[9px] leading-3 text-slate-400">
+                      {node.detail}
+                    </span>
+                  )}
+                </span>
               )}
             </div>
           </div>

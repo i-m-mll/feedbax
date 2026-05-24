@@ -4,6 +4,7 @@ import type {
   RetainedObservableSpec,
   RetentionPolicySpec,
 } from '@/types/graph';
+import type { AnalysisInputRequirement } from '@/types/analysis';
 import type { LossTermSpec, TaskSpec, TimeAggregationSpec, TrainingSpec } from '@/types/training';
 
 export type StudioStageKind =
@@ -415,6 +416,7 @@ export interface AnalysisPageWire {
   id: string;
   name: string;
   graph_spec: Record<string, unknown>;
+  input_requirements?: AnalysisInputRequirement[];
   eval_params: Record<string, unknown>;
   viewport: { x: number; y: number; zoom: number };
   eval_run_id: string | null;
