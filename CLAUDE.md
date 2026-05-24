@@ -75,6 +75,17 @@ Studio requires two processes:
 - Backend: `uv run uvicorn feedbax.web.app:app --port 8000` (FastAPI)
 Both must be running for full functionality.
 
+### Cloud/Remote Training Practices
+
+- Never kill processes on TPU VMs via SSH; `kill`, `pkill`, or signals sent
+  during SSH commands can disrupt the SSH session itself. If a process has
+  crashed, clear `/tmp/libtpu_lockfile` and launch a new one.
+- Always verify the latest code is deployed before running on cloud instances.
+  Stale code on TPU/GPU is a recurring source of wasted time.
+- Module instances are frozen: never assign to `self.field` after `__init__`.
+  Use `eqx.tree_at` for out-of-place updates. Never use `dataclasses.replace`
+  on Modules with computed fields.
+
 ## Active Feature Context
 
 - `feature/differentiable-mjx`: CDE hidden-state stability experiments (v6→v9b), AnalyticalMusculoskeletalPlant, DiffraxBackend. Latest: hybrid fixed-decay + Anti-NF gate (v9b).
