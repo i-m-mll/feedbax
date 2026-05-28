@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import equinox as eqx
 import jax.numpy as jnp
-import jax.tree as jt
+import jax.tree_util as jtu
 
 from feedbax.artifact_schema import (
     ARRAY_STORE_SCHEMA_VERSION,
@@ -32,12 +33,20 @@ def role_address_from_path(path: Sequence[Any], *, root_role: str = "model") -> 
     return validate_role_address(".".join([root_role, *(_path_part(part) for part in path)]))
 
 
+def array_role_address(tree: Any, path: Sequence[Any], *, root_role: str = "model") -> str:
+    """Convert an array-leaf path into the semantic stored role address."""
+
+    del tree
+    return role_address_from_path(path, root_role=root_role)
+
+
 def template_array_roles(tree: Any, *, root_role: str = "model") -> list[str]:
     """Return deterministic role addresses for array leaves in ``tree``."""
 
+    array_view = eqx.filter(tree, eqx.is_array)
     roles = [
         role_address_from_path(path, root_role=root_role)
-        for path, leaf in jt.leaves_with_path(eqx.filter(tree, eqx.is_array))
+        for path, leaf in jtu.tree_leaves_with_path(array_view)
         if leaf is not None
     ]
     if not roles:
@@ -63,6 +72,7 @@ def materialize_array_store(
         store.validate_roles(required_roles=expected_roles)
 
     used_roles: set[str] = set()
+    array_view = eqx.filter(template, eqx.is_array)
 
     def replace(path, leaf):
         if not eqx.is_array(leaf):
@@ -78,7 +88,8 @@ def materialize_array_store(
         used_roles.add(role)
         return jnp.asarray(value)
 
-    materialized = jt.map_with_path(replace, template)
+    materialized_arrays = jtu.tree_map_with_path(replace, array_view)
+    materialized = eqx.combine(materialized_arrays, template)
     if exact_roles:
         unexpected_roles = sorted(set(store.arrays) - used_roles)
         if unexpected_roles:
@@ -217,9 +228,17 @@ def _validate_template_leaf(role: str, template_leaf: Any, value: Any) -> None:
 
 def _path_part(part: Any) -> str:
     if hasattr(part, "name"):
-        return str(part.name)
-    if hasattr(part, "key"):
-        return str(part.key)
-    if hasattr(part, "idx"):
-        return f"{int(part.idx):04d}"
-    return str(part).replace(".", "_")
+        raw = str(part.name)
+    elif hasattr(part, "key"):
+        raw = str(part.key)
+    elif hasattr(part, "idx"):
+        raw = f"{int(part.idx):04d}"
+    else:
+        raw = str(part)
+    return _sanitize_role_part(raw)
+
+
+def _sanitize_role_part(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.:/@+-]+", "_", value.strip())
+    sanitized = sanitized.strip("._")
+    return sanitized or "unnamed"
