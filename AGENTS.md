@@ -43,8 +43,9 @@
 ## Project-Specific Rules
 
 - Protected branch: `develop`.
-- The repo root tracks `main` for releases only; start implementation work from
-  `worktrees/develop/` and create feature worktrees from there.
+- The repo root tracks the protected `develop` branch. Start implementation work
+  in feature worktrees from the repo root. When release/default `main` is needed,
+  use a named worktree such as `worktrees/main`.
 - The graph is the model. Studio canvas nodes and subgraphs are the source of
   truth; do not synthesize background architecture or silently fall back to
   stale outer params.
