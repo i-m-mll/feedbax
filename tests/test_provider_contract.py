@@ -246,7 +246,13 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert manifest.capabilities["start_training_run"].output_schema == "TrainingRunManifest"
     assert manifest.capabilities["enumerate_studio_schemas"].output_schema == "StudioSchemaRegistry"
     assert "training_checkpoint" in manifest.artifact_roles
+    assert "model_parameters" in manifest.artifact_roles
+    assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
+    assert "ModelArtifactManifest" in manifest.schemas
+    assert "ArrayStorePayload" in manifest.schemas
+    assert "ArrayStoreRef" in manifest.schemas
+    assert "ObjectiveSpec" in manifest.schemas
     assert "AnalysisInputRequirement" in manifest.schemas
     assert "StudioSchemaRegistry" in manifest.schemas
     assert "TaskDataSchema" in manifest.schemas
