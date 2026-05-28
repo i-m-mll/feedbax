@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from feedbax.nn import LeakyRNNCell
 from feedbax.artifact_materialize import (
     UnsupportedArtifactSchemaError,
     materialize_array_store,
@@ -31,6 +33,21 @@ class TinyModel(eqx.Module):
     nodes: dict[str, Nested]
 
 
+class PublicCellWrapper(eqx.Module):
+    _cell: LeakyRNNCell
+
+    @property
+    def cell(self) -> LeakyRNNCell:
+        return self._cell
+
+    def __call__(self, input, state):
+        return self._cell(input, state, jax.random.key(0))
+
+
+class RecurrentModel(eqx.Module):
+    hidden: PublicCellWrapper
+
+
 def _template() -> TinyModel:
     return TinyModel(
         nodes={
@@ -49,6 +66,20 @@ def test_template_array_roles_follow_jax_key_paths() -> None:
     ]
 
 
+def test_template_array_roles_use_public_property_for_private_cell_field() -> None:
+    model = RecurrentModel(
+        hidden=PublicCellWrapper(
+            _cell=LeakyRNNCell(2, 3, key=jax.random.key(0)),
+        ),
+    )
+
+    assert template_array_roles(model) == [
+        "model.hidden.cell.bias",
+        "model.hidden.cell.weight_hh",
+        "model.hidden.cell.weight_ih",
+    ]
+
+
 def test_materialize_array_store_replaces_template_arrays(tmp_path: Path) -> None:
     path = tmp_path / "model.arrays.npz"
     arrays = {
@@ -63,6 +94,35 @@ def test_materialize_array_store_replaces_template_arrays(tmp_path: Path) -> Non
     )
     np.testing.assert_array_equal(
         np.asarray(model.nodes["net"].bias), arrays["model.nodes.net.bias"]
+    )
+
+
+def test_materialize_array_store_uses_public_property_role_for_private_cell_field(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "model.arrays.npz"
+    arrays = {
+        "model.hidden.cell.weight_hh": np.arange(9, dtype=np.float32).reshape(3, 3),
+        "model.hidden.cell.weight_ih": np.arange(6, dtype=np.float32).reshape(3, 2),
+        "model.hidden.cell.bias": np.ones((3,), dtype=np.float32),
+    }
+    write_npz_array_store(path, arrays, store_role="params")
+    template = RecurrentModel(
+        hidden=PublicCellWrapper(
+            _cell=LeakyRNNCell(2, 3, key=jax.random.key(0)),
+        ),
+    )
+
+    model = materialize_array_store(template, read_npz_array_store(path))
+
+    np.testing.assert_array_equal(
+        np.asarray(model.hidden.cell.weight_hh), arrays["model.hidden.cell.weight_hh"]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(model.hidden.cell.weight_ih), arrays["model.hidden.cell.weight_ih"]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(model.hidden.cell.bias), arrays["model.hidden.cell.bias"]
     )
 
 
