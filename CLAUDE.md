@@ -4,9 +4,12 @@
 
 ## Worktree Layout
 
-- **Main worktree** (`/feedbax/`): tracks the `main` branch, used for releases only. **Never interact with it for feature work.** All development targets `develop`.
-- **`worktrees/develop/`**: the integration target; feature branches base off this and merge back here via auth request.
-- Feature worktrees: `worktrees/feature__<name>/` — created with `wt feature/<name>` from inside `worktrees/develop/`.
+- **Main worktree** (`/feedbax/`): tracks the protected `develop` branch and is
+  the integration target.
+- Feature worktrees: `worktrees/feature__<name>/` — created with
+  `wt feature/<name>` from the repo root.
+- Release/default `main`, when needed, lives in a named worktree such as
+  `worktrees/main`.
 
 ## Repository Structure
 
