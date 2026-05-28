@@ -77,6 +77,44 @@ class ArtifactRef(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ArrayStoreRef(StrictModel):
+    """Reference to a role-addressed parameter/state array store."""
+
+    role: Literal["params", "state", "optimizer", "history"]
+    schema_version: str
+    storage_backend: str
+    logical_name: str
+    artifact_id: Optional[str] = None
+    sha256: Optional[str] = None
+    uri: Optional[str] = None
+    array_count: int
+    roles: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactValidationRecord(StrictModel):
+    """Validation outcome for a durable artifact or migration step."""
+
+    name: str
+    status: Literal["passed", "failed", "warning"]
+    checked_at: datetime = Field(default_factory=utc_now)
+    schema_version: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactMigrationRecord(StrictModel):
+    """Provenance for a schema-to-schema artifact migration."""
+
+    migration_id: str
+    source_schema_version: str
+    target_schema_version: str
+    applied_at: datetime = Field(default_factory=utc_now)
+    tool: str = "feedbax"
+    deterministic: bool = True
+    validation: list[ArtifactValidationRecord] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class EntrypointRef(StrictModel):
     """How a manifest-producing operation was invoked."""
 
@@ -145,6 +183,18 @@ class BaseManifest(StrictModel):
 class GraphSpecManifest(BaseManifest):
     kind: Literal["GraphSpecManifest"] = "GraphSpecManifest"
     graph_spec: SpecPayload
+
+
+class ModelArtifactManifest(BaseManifest):
+    """Manifest binding a graph spec to role-addressed params/state stores."""
+
+    kind: Literal["ModelArtifactManifest"] = "ModelArtifactManifest"
+    graph_spec: ParentRef | SpecPayload
+    parameter_store: Optional[ArrayStoreRef] = None
+    state_store: Optional[ArrayStoreRef] = None
+    optimizer_store: Optional[ArrayStoreRef] = None
+    validation_records: list[ArtifactValidationRecord] = Field(default_factory=list)
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 class TrainingRunSetManifest(BaseManifest):
@@ -218,6 +268,7 @@ class ReportManifest(BaseManifest):
 
 AnyManifest = (
     GraphSpecManifest
+    | ModelArtifactManifest
     | TrainingRunSetManifest
     | TrainingRunManifest
     | EvaluationRunManifest
@@ -227,6 +278,7 @@ AnyManifest = (
 
 MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "GraphSpecManifest": GraphSpecManifest,
+    "ModelArtifactManifest": ModelArtifactManifest,
     "TrainingRunSetManifest": TrainingRunSetManifest,
     "TrainingRunManifest": TrainingRunManifest,
     "EvaluationRunManifest": EvaluationRunManifest,
@@ -364,6 +416,7 @@ def store_json_artifact(
 def _manifest_dir(root: Path, kind: str) -> Path:
     names = {
         "GraphSpecManifest": "graph_specs",
+        "ModelArtifactManifest": "model_artifacts",
         "TrainingRunSetManifest": "training_run_sets",
         "TrainingRunManifest": "training_runs",
         "EvaluationRunManifest": "evaluation_runs",
