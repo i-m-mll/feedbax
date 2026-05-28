@@ -25,6 +25,7 @@ from feedbax.manifest import (
     feedbax_version,
     utc_now,
 )
+from feedbax.objective_spec import objective_schema_models
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
@@ -164,6 +165,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "EvaluationRunManifest": EvaluationRunManifest,
         "AnalysisRunManifest": AnalysisRunManifest,
         "ReportManifest": ReportManifest,
+        **objective_schema_models(),
     }
 
 
