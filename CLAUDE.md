@@ -40,6 +40,25 @@ Corollaries that must be respected without exception:
 
 **Backward compatibility is not a concern.** There is a single developer. When the architecture improves, old saved graphs are expected to be re-created from Studio. We do not maintain legacy code paths, fallback logic, or compatibility shims for older graph formats. When something is wrong, raise a clear error rather than silently substituting a stale value.
 
+## Artifact Schema And Migrations
+
+Durable artifact/schema changes require explicit migration handling. This is
+not a request for silent backward-compatibility shims. It is a requirement that
+Feedbax-owned saved formats remain semantically migratable as the library
+evolves.
+
+If a change alters GraphSpec semantics, component type IDs, parameter or state
+roles, selector meanings, manifest formats, storage layouts, or
+checkpoint/artifact codecs, the same implementation/auth request must either:
+
+- preserve the existing semantic schema; or
+- add a versioned migration rule/API plus focused tests for the affected
+  schema transition.
+
+When changing durable formats, record the migration issue and validation
+strategy in the implementation issue or auth spec. Do not leave
+schema-affecting refactors as agent archaeology for downstream projects.
+
 ## UI Conventions
 
 **No-jitter**: Interactive/editable page elements must not change geometry (size, position, spacing) when interacted with, except as explicitly intended (e.g. expand/collapse). Hover states, focus rings, edit mode transitions must preserve element dimensions.
