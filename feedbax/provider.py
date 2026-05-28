@@ -9,13 +9,18 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 import feedbax.analysis as analysis_pkg
+from feedbax.artifact_schema import ArrayRecord, ArrayStorePayload
 from feedbax.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
+    ArrayStoreRef,
     ArtifactRef,
+    ArtifactMigrationRecord,
+    ArtifactValidationRecord,
     EvaluationRunManifest,
     EvaluationRunSpec,
     GraphSpecManifest,
+    ModelArtifactManifest,
     PROVIDER_VERSION,
     ReportManifest,
     ReportSpec,
@@ -25,6 +30,7 @@ from feedbax.manifest import (
     feedbax_version,
     utc_now,
 )
+from feedbax.objective_spec import objective_schema_models
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
@@ -139,6 +145,11 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AnalysisRunSpec": AnalysisRunSpec,
         "ReportSpec": ReportSpec,
         "ArtifactRef": ArtifactRef,
+        "ArrayRecord": ArrayRecord,
+        "ArrayStorePayload": ArrayStorePayload,
+        "ArrayStoreRef": ArrayStoreRef,
+        "ArtifactValidationRecord": ArtifactValidationRecord,
+        "ArtifactMigrationRecord": ArtifactMigrationRecord,
         "ExecutionSpec": ExecutionSpec,
         "ExecutionPlan": ExecutionPlan,
         "LocalExecutionResult": LocalExecutionResult,
@@ -159,11 +170,13 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "StudioSchemaRegistry": StudioSchemaRegistry,
         "StudioSchemaEnumerationRequest": StudioSchemaEnumerationRequest,
         "GraphSpecManifest": GraphSpecManifest,
+        "ModelArtifactManifest": ModelArtifactManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
         "EvaluationRunManifest": EvaluationRunManifest,
         "AnalysisRunManifest": AnalysisRunManifest,
         "ReportManifest": ReportManifest,
+        **objective_schema_models(),
     }
 
 
@@ -257,6 +270,11 @@ def provider_manifest() -> ProviderManifest:
         artifact_roles=[
             "training_checkpoint",
             "training_history",
+            "model_artifact_manifest",
+            "model_parameters",
+            "model_state",
+            "optimizer_state",
+            "array_store",
             "retention_plan",
             "retained_observables",
             "trajectory_dataset",

@@ -50,6 +50,13 @@
   stale outer params.
 - Backward compatibility is not a concern for saved graph formats. Raise clear
   errors rather than preserving fallback paths or compatibility shims.
+- Durable artifact/schema changes require explicit migration handling. If a
+  Feedbax change alters GraphSpec semantics, component type IDs, parameter or
+  state roles, selector meanings, manifest formats, storage layouts, or
+  checkpoint/artifact codecs, the same implementation must either preserve the
+  existing semantic schema or include versioned migration logic and focused
+  migration tests. Do not leave schema-affecting refactors as agent archaeology
+  for downstream projects.
 - Studio needs both processes: frontend `cd web && npm run dev` and backend
   `uv run uvicorn feedbax.web.app:app --port 8000`.
 
