@@ -511,6 +511,8 @@ def train_ppo_batched(
         flat_adv = advantages.reshape(-1)
         flat_ret = returns.reshape(-1)
         flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
+        batch_size = flat_obs.shape[0]
+        minibatch_size = batch_size // n_minibatches
 
         # Partition policy into dynamic (arrays) and static (activation fns,
         # etc.) so that only valid JAX types enter the fori_loop carry.
