@@ -1,7 +1,7 @@
 # External Surface Inventory
 
-Umbrella issue: `7237df6`.
-Branch: `feature/compat-internal-cleanup`.
+Umbrella issue: `ce814d1`.
+Branch: `feature/compat-internal-cleanup-residuals`.
 
 ## Preserve
 
@@ -39,6 +39,16 @@ Branch: `feature/compat-internal-cleanup`.
   `feedbax:lastProjectId`, `feedbax-studio-layout`.
 - Frontend drag MIME types: `application/feedbax-component`,
   `application/feedbax-analysis`.
+
+## Explicitly Changed Without Breaking External Contracts
+
+- Local Studio execution now uses the current interpreter path for local backend
+  runs so the worktree environment is used. Remote/cloud execution specs still
+  use `python`.
+- Development CORS now allows the inventoried Vite origin
+  `http://localhost:3008`.
+- Internal web-source aliases with no callers were removed; web source modules
+  are not published SDK surfaces.
 
 ## Explicitly Changeable
 

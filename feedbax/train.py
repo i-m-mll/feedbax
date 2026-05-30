@@ -22,7 +22,6 @@ from equinox import field
 from jax_cookbook.misc import mse
 from jax_cookbook.progress import piter, progress_piter
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
-from numpy._core.numeric import True_
 from tensorboardX import SummaryWriter  # type: ignore
 
 from feedbax import is_type
@@ -34,7 +33,7 @@ from feedbax._tree import (
     tree_take,
 )
 from feedbax.iterate import run_component
-from feedbax.loss import AbstractLoss, CompositeLoss, TermTree
+from feedbax.loss import AbstractLoss, TermTree
 from feedbax.misc import (
     BatchInfo,
     Timer,
@@ -194,17 +193,17 @@ class TaskTrainer(eqx.Module):
         ensembled: bool = False,
         ensemble_random_trials: bool = True,
         log_step: int = 100,
-        state_reset_iterations: Optional[Int[Array, "_"]] = None,
-        save_model_parameters: bool | Int[Array, "_"] = False,
-        save_trial_specs: Optional[Int[Array, "_"]] = None,
-        toggle_model_update_funcs: bool | PyTree[Int[Array, "_"]] = True,
+        state_reset_iterations: Optional[Int[Array, "_"]] = None,  # noqa: F821
+        save_model_parameters: bool | Int[Array, "_"] = False,  # noqa: F821
+        save_trial_specs: Optional[Int[Array, "_"]] = None,  # noqa: F821
+        toggle_model_update_funcs: bool | PyTree[Int[Array, "_"]] = True,  # noqa: F821
         restore_checkpoint: bool = False,
         disable_progress: bool = False,
         batch_callbacks: Optional[Mapping[int, Sequence[Callable]]] = None,
         run_label: Optional[str] = None,
         verbose_progress: bool = True,
         loss_update_func: Optional[Callable[[AbstractLoss, TermTree, PyTree], AbstractLoss]] = None,
-        loss_update_iterations: bool | Int[Array, "_"] = True,
+        loss_update_iterations: bool | Int[Array, "_"] = True,  # noqa: F821
         loss_reduction_fn: Optional[Callable[[Array], Array]] = None,
         pre_step_fn: Optional[Callable] = None,
         *,
@@ -1051,8 +1050,8 @@ def init_task_trainer_history(
     ensembled: bool,
     ensemble_random_trials: bool = True,
     start_batch: int = 0,
-    save_model_parameters: bool | Int[Array, "_"] = False,
-    save_trial_specs: Optional[Int[Array, "_"]] = None,
+    save_model_parameters: bool | Int[Array, "_"] = False,  # noqa: F821
+    save_trial_specs: Optional[Int[Array, "_"]] = None,  # noqa: F821
     task: Optional[AbstractTask] = None,
     loss_func_validation: Optional[AbstractLoss] = None,
     batch_size: Optional[int] = None,

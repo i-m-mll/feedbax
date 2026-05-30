@@ -21,6 +21,8 @@ from feedbax.web.api import (
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
 
+STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -31,7 +33,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=STUDIO_DEV_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

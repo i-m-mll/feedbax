@@ -4,6 +4,8 @@ COMMIT_MSG.txt
 .DS_Store
 node_modules/
 web/node_modules
+pnpm-lock.yaml
+web/pnpm-lock.yaml
 
 .specstory
 codebase.md
