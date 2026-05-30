@@ -78,6 +78,50 @@ class CapabilitySpec(ProviderModel):
     requires_review: bool = False
     description: str = ""
     transports: list[str] = Field(default_factory=lambda: ["python", "cli", "http"])
+    action: Optional[
+        Literal["open", "validate", "execute", "import", "export", "publish", "inspect", "handoff"]
+    ] = None
+    compatibility_predicates: list[str] = Field(default_factory=list)
+    mutates_state: bool = False
+    may_launch_compute: bool = False
+    artifact_roles: list[str] = Field(default_factory=list)
+    selected_node_kinds: list[str] = Field(default_factory=list)
+    custody_expectations: list[str] = Field(default_factory=list)
+
+
+class MandibleArtifactMapping(ProviderModel):
+    source_field: str
+    role: str
+    mandible_artifact_kind: str = "artifact"
+    preserves_local_uri: bool = True
+    optional_artifact_id: bool = True
+    custody_hint: str = "feedbax-local-with-optional-mandible-enrichment"
+    description: str = ""
+
+
+class MandibleManifestMapping(ProviderModel):
+    manifest_kind: str
+    subject_node_type: str
+    subject_id_field: str = "id"
+    title_fields: list[str] = Field(default_factory=list)
+    status_field: str = "status"
+    artifact_fields: list[MandibleArtifactMapping] = Field(default_factory=list)
+    spec_fields: list[str] = Field(default_factory=list)
+    parent_ref_fields: list[str] = Field(default_factory=list)
+    issue_provenance_field: str = "provenance.issues"
+    source_provenance_fields: list[str] = Field(
+        default_factory=lambda: [
+            "provenance.source_repo",
+            "provenance.source_branch",
+            "provenance.source_commit",
+            "provenance.dirty",
+            "provenance.entrypoint",
+        ]
+    )
+    opaque_domain_fields: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+    related_issue_refs: list[str] = Field(default_factory=list)
+    description: str = ""
 
 
 class ProviderManifest(ProviderModel):
@@ -92,6 +136,7 @@ class ProviderManifest(ProviderModel):
     capabilities: dict[str, CapabilitySpec]
     artifact_roles: list[str]
     schemas: dict[str, dict[str, Any]]
+    mandible_manifest_mappings: dict[str, MandibleManifestMapping] = Field(default_factory=dict)
     entry_points: dict[str, str] = Field(default_factory=dict)
 
 
@@ -176,6 +221,10 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "EvaluationRunManifest": EvaluationRunManifest,
         "AnalysisRunManifest": AnalysisRunManifest,
         "ReportManifest": ReportManifest,
+        "CapabilitySpec": CapabilitySpec,
+        "MandibleArtifactMapping": MandibleArtifactMapping,
+        "MandibleManifestMapping": MandibleManifestMapping,
+        "ProviderManifest": ProviderManifest,
         **objective_schema_models(),
     }
 
@@ -184,52 +233,246 @@ def _schemas() -> dict[str, dict[str, Any]]:
     return {name: model.model_json_schema() for name, model in _schema_models().items()}
 
 
+def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
+    common_actions = ["inspect_manifest", "export_manifest", "handoff_artifacts"]
+    run_actions = [
+        "inspect_manifest",
+        "open_in_feedbax_studio",
+        "export_manifest",
+        "handoff_artifacts",
+    ]
+    return {
+        "GraphSpecManifest": MandibleManifestMapping(
+            manifest_kind="GraphSpecManifest",
+            subject_node_type="feedbax.graph_spec",
+            title_fields=["graph_spec.ref", "id"],
+            spec_fields=["graph_spec"],
+            parent_ref_fields=["provenance.parents"],
+            opaque_domain_fields=["graph_spec.inline", "metadata"],
+            actions=common_actions + ["validate_graph_spec"],
+            related_issue_refs=["51832b9", "c6c6da0", "f68cf66"],
+            description=(
+                "Mandible should treat the graph payload as Feedbax-owned domain "
+                "detail and use Feedbax validation for semantics."
+            ),
+        ),
+        "ModelArtifactManifest": MandibleManifestMapping(
+            manifest_kind="ModelArtifactManifest",
+            subject_node_type="feedbax.model_artifact",
+            title_fields=["graph_spec.ref", "id"],
+            artifact_fields=[
+                MandibleArtifactMapping(
+                    source_field="parameter_store",
+                    role="model_parameters",
+                    mandible_artifact_kind="array_store",
+                    description="Role-addressed trainable/non-structural parameter arrays.",
+                ),
+                MandibleArtifactMapping(
+                    source_field="state_store",
+                    role="model_state",
+                    mandible_artifact_kind="array_store",
+                    description="Optional role-addressed state arrays.",
+                ),
+                MandibleArtifactMapping(
+                    source_field="optimizer_store",
+                    role="optimizer_state",
+                    mandible_artifact_kind="array_store",
+                    description="Optional optimizer/checkpoint state arrays.",
+                ),
+                MandibleArtifactMapping(
+                    source_field="artifacts[]",
+                    role="manifest_artifact",
+                    description="Additional files referenced by the model artifact manifest.",
+                ),
+            ],
+            spec_fields=["graph_spec"],
+            parent_ref_fields=["graph_spec", "provenance.parents"],
+            opaque_domain_fields=[
+                "parameter_store.roles",
+                "state_store.roles",
+                "optimizer_store.roles",
+                "validation_records",
+                "migration_records",
+                "metadata",
+            ],
+            actions=common_actions + ["materialize_model_artifact"],
+            related_issue_refs=["51832b9", "63c798f", "mandible/e967b9", "mandible/2322726"],
+            description=(
+                "Mandible may index array stores and custody hints, but Feedbax owns "
+                "role semantics and materialization validation."
+            ),
+        ),
+        "TrainingRunSetManifest": MandibleManifestMapping(
+            manifest_kind="TrainingRunSetManifest",
+            subject_node_type="feedbax.training_run_set",
+            title_fields=["name", "id"],
+            spec_fields=["graph_spec"],
+            parent_ref_fields=["graph_spec", "run_ids", "provenance.parents"],
+            opaque_domain_fields=["tags", "metadata"],
+            actions=run_actions,
+            related_issue_refs=["51832b9", "e33f487"],
+        ),
+        "TrainingRunManifest": MandibleManifestMapping(
+            manifest_kind="TrainingRunManifest",
+            subject_node_type="feedbax.training_run",
+            title_fields=["job_id", "id"],
+            artifact_fields=[
+                MandibleArtifactMapping(
+                    source_field="artifacts[]",
+                    role="training_artifact",
+                    description=(
+                        "Checkpoint, history, retained-observable, log, or local "
+                        "execution artifacts."
+                    ),
+                ),
+            ],
+            spec_fields=["graph_spec", "training_spec", "task_spec", "task_binding_spec"],
+            parent_ref_fields=["graph_spec", "run_set_id", "provenance.parents"],
+            opaque_domain_fields=["overrides", "summary_metrics", "metadata"],
+            actions=run_actions + ["start_evaluation_run", "run_analysis"],
+            related_issue_refs=["51832b9", "e33f487", "63c798f"],
+            description=(
+                "Mandible should link issue/source provenance and artifacts without "
+                "interpreting Feedbax training/task specs directly."
+            ),
+        ),
+        "EvaluationRunManifest": MandibleManifestMapping(
+            manifest_kind="EvaluationRunManifest",
+            subject_node_type="feedbax.evaluation_run",
+            title_fields=["evaluation_spec.inline.evaluation_type", "id"],
+            artifact_fields=[
+                MandibleArtifactMapping(
+                    source_field="artifacts[]",
+                    role="evaluation_artifact",
+                ),
+            ],
+            spec_fields=["evaluation_spec"],
+            parent_ref_fields=["input_training_runs", "provenance.parents"],
+            opaque_domain_fields=["evaluation_spec.inline", "summary_metrics", "metadata"],
+            actions=run_actions + ["run_analysis"],
+            related_issue_refs=["51832b9", "63c798f"],
+        ),
+        "AnalysisRunManifest": MandibleManifestMapping(
+            manifest_kind="AnalysisRunManifest",
+            subject_node_type="feedbax.analysis_run",
+            title_fields=["analysis_spec.inline.analysis_type", "id"],
+            artifact_fields=[
+                MandibleArtifactMapping(
+                    source_field="artifacts[]",
+                    role="analysis_artifact",
+                ),
+            ],
+            spec_fields=["analysis_spec"],
+            parent_ref_fields=["inputs", "provenance.parents"],
+            opaque_domain_fields=["analysis_spec.inline", "summary_metrics", "metadata"],
+            actions=run_actions + ["publish_report"],
+            related_issue_refs=["51832b9", "63c798f"],
+        ),
+        "ReportManifest": MandibleManifestMapping(
+            manifest_kind="ReportManifest",
+            subject_node_type="feedbax.report",
+            title_fields=["report_spec.inline.report_type", "id"],
+            artifact_fields=[
+                MandibleArtifactMapping(
+                    source_field="artifacts[]",
+                    role="report_artifact",
+                ),
+            ],
+            spec_fields=["report_spec"],
+            parent_ref_fields=["inputs", "provenance.parents"],
+            opaque_domain_fields=["report_spec.inline", "metadata"],
+            actions=run_actions + ["publish_report"],
+            related_issue_refs=["51832b9", "63c798f"],
+        ),
+    }
+
+
 def provider_manifest() -> ProviderManifest:
     capabilities = {
-        "health": CapabilitySpec(output_schema="ProviderHealth"),
-        "provider_manifest": CapabilitySpec(output_schema="ProviderManifest"),
+        "health": CapabilitySpec(output_schema="ProviderHealth", action="inspect"),
+        "provider_manifest": CapabilitySpec(output_schema="ProviderManifest", action="inspect"),
         "validate_graph_spec": CapabilitySpec(
             input_schema="GraphSpec",
             output_schema="ProviderValidationResult",
+            action="validate",
+            compatibility_predicates=["selected node payload is GraphSpec-compatible"],
+            selected_node_kinds=["feedbax.graph_spec"],
         ),
         "validate_training_spec": CapabilitySpec(
             input_schema="TrainingSpec",
             output_schema="ProviderValidationResult",
+            action="validate",
+            compatibility_predicates=["selected node has Feedbax training spec payload"],
+            selected_node_kinds=["feedbax.training_run", "feedbax.training_run_set"],
         ),
         "validate_task_spec": CapabilitySpec(
             input_schema="TaskSpec",
             output_schema="ProviderValidationResult",
+            action="validate",
+            compatibility_predicates=["selected node has Feedbax task spec payload"],
         ),
         "validate_evaluation_spec": CapabilitySpec(
             input_schema="EvaluationRunSpec",
             output_schema="ProviderValidationResult",
+            action="validate",
+            compatibility_predicates=["selected node has Feedbax evaluation spec payload"],
+            selected_node_kinds=["feedbax.evaluation_run"],
         ),
         "validate_analysis_spec": CapabilitySpec(
             input_schema="AnalysisRunSpec",
             output_schema="ProviderValidationResult",
+            action="validate",
+            compatibility_predicates=["selected node has Feedbax analysis spec payload"],
+            selected_node_kinds=["feedbax.analysis_run"],
         ),
         "start_training_run": CapabilitySpec(
             input_schema="TrainingSpec",
             output_schema="TrainingRunManifest",
             requires_review=True,
             description="Start a local or configured worker training run.",
+            action="execute",
+            compatibility_predicates=["graph and training specs validate through Feedbax"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["training_checkpoint", "training_history", "execution_log"],
+            selected_node_kinds=["feedbax.graph_spec", "feedbax.training_run_set"],
+            custody_expectations=[
+                "Feedbax writes local manifests/artifacts first.",
+                "Mandible artifact IDs are optional enrichment after handoff.",
+            ],
         ),
         "prepare_execution_plan": CapabilitySpec(
             input_schema="ExecutionSpec",
             output_schema="ExecutionPlan",
             description="Prepare a deterministic local, SSH, RunPod, or Modal execution plan.",
+            action="validate",
+            compatibility_predicates=["execution spec is provider-owned and backend-supported"],
+            artifact_roles=["execution_plan"],
         ),
         "run_local_execution": CapabilitySpec(
             input_schema="ExecutionSpec",
             output_schema="LocalExecutionResult",
             requires_review=True,
             description="Run an explicitly local execution and emit a durable manifest.",
+            action="execute",
+            compatibility_predicates=["execution spec backend is local"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["manifest", "execution_log"],
+            custody_expectations=[
+                "Local outputs remain usable without Mandible.",
+                "Mandible may ingest emitted manifest and artifacts later.",
+            ],
         ),
         "prepare_studio_training_execution": CapabilitySpec(
             input_schema="StudioTrainingExecutionRequest",
             output_schema="StudioTrainingExecutionPreparation",
             description="Lower a Studio train-stage scenario into a provider execution plan.",
             transports=["python", "http"],
+            action="validate",
+            compatibility_predicates=["selected Studio train stage has graph and training specs"],
+            artifact_roles=["execution_plan"],
+            selected_node_kinds=["feedbax.studio_stage.train"],
         ),
         "run_studio_training_local_execution": CapabilitySpec(
             input_schema="StudioTrainingLocalRunRequest",
@@ -240,6 +483,16 @@ def provider_manifest() -> ProviderManifest:
                 "boundary and return updated workspace lineage refs."
             ),
             transports=["python", "http"],
+            action="execute",
+            compatibility_predicates=["prepared Studio train stage validates through Feedbax"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["training_checkpoint", "training_history", "manifest"],
+            selected_node_kinds=["feedbax.studio_stage.train"],
+            custody_expectations=[
+                "Studio stores Feedbax-local refs in the workspace.",
+                "Mandible custody hints must not be required to reopen locally.",
+            ],
         ),
         "materialize_studio_pipeline": CapabilitySpec(
             input_schema="StudioPipelineMaterializationRequest",
@@ -249,6 +502,17 @@ def provider_manifest() -> ProviderManifest:
                 "workspace collections and return updated lineage refs."
             ),
             transports=["python", "http"],
+            action="execute",
+            compatibility_predicates=[
+                "selected Studio stage has compatible upstream manifest collection"
+            ],
+            mutates_state=True,
+            artifact_roles=["evaluation_result", "analysis_table", "report", "manifest"],
+            selected_node_kinds=[
+                "feedbax.studio_stage.eval",
+                "feedbax.studio_stage.analysis",
+                "feedbax.studio_stage.report",
+            ],
         ),
         "enumerate_studio_schemas": CapabilitySpec(
             input_schema="StudioSchemaEnumerationRequest",
@@ -258,12 +522,23 @@ def provider_manifest() -> ProviderManifest:
                 "and validation schemas without JAX compilation or training."
             ),
             transports=["python", "http"],
+            action="inspect",
+            compatibility_predicates=["graph/spec payload is optional"],
         ),
-        "list_components": CapabilitySpec(output_schema="ComponentRegistrySnapshot"),
-        "list_tasks": CapabilitySpec(output_schema="TaskRegistrySnapshot"),
-        "list_losses": CapabilitySpec(output_schema="LossRegistrySnapshot"),
-        "list_protocols": CapabilitySpec(output_schema="ProtocolRegistrySnapshot"),
-        "list_analyses": CapabilitySpec(output_schema="AnalysisRegistrySnapshot"),
+        "list_components": CapabilitySpec(
+            output_schema="ComponentRegistrySnapshot",
+            action="inspect",
+        ),
+        "list_tasks": CapabilitySpec(output_schema="TaskRegistrySnapshot", action="inspect"),
+        "list_losses": CapabilitySpec(output_schema="LossRegistrySnapshot", action="inspect"),
+        "list_protocols": CapabilitySpec(
+            output_schema="ProtocolRegistrySnapshot",
+            action="inspect",
+        ),
+        "list_analyses": CapabilitySpec(
+            output_schema="AnalysisRegistrySnapshot",
+            action="inspect",
+        ),
     }
     return ProviderManifest(
         capabilities=capabilities,
@@ -287,6 +562,7 @@ def provider_manifest() -> ProviderManifest:
             "execution_log",
         ],
         schemas=_schemas(),
+        mandible_manifest_mappings=_mandible_manifest_mappings(),
         entry_points={
             "python": "feedbax.provider:provider_manifest",
             "cli": "feedbax-provider manifest",
@@ -729,9 +1005,7 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
     """Validate compact DelayedReaches task params at the Studio boundary."""
     errors: list[ValidationIssue] = []
     dense_keys = [
-        key
-        for key in ("targets", "target_pos", "target_vel", "validation_trials")
-        if key in params
+        key for key in ("targets", "target_pos", "target_vel", "validation_trials") if key in params
     ]
     for key in dense_keys:
         errors.append(
@@ -934,7 +1208,9 @@ def validate_analysis_spec(
         from feedbax.retained_observables import RetentionPlanError, normalize_selector_ref
 
         for index, requirement in enumerate(spec.input_requirements):
-            selector_value = requirement.target if requirement.target is not None else requirement.selector
+            selector_value = (
+                requirement.target if requirement.target is not None else requirement.selector
+            )
             if selector_value is None:
                 errors.append(
                     ValidationIssue(
