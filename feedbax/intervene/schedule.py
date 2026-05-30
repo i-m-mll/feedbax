@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, Tuple, TypeAlias
+from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeAlias
 
 import equinox as eqx
-from equinox import Module
 import jax
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.misc import BatchInfo, get_unique_label, is_module
+
+if TYPE_CHECKING:
+    from feedbax.task import AbstractTask
 
 
 logger = logging.getLogger(__name__)

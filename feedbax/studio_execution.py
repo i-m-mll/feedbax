@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -584,6 +586,7 @@ def _build_execution_spec(
     repos = request.repos
     if repos is None and request.backend != "local":
         repos = default_feedbax_sources(feedbax_ref=request.feedbax_ref or "develop")
+    python_cmd = shlex.quote(sys.executable) if request.backend == "local" else "python"
     metadata = {
         **request.metadata,
         "studio": {
@@ -623,7 +626,7 @@ def _build_execution_spec(
         job_id=job_id,
         backend=request.backend,
         command=(
-            "python -m feedbax.bin.studio_pipeline materialize-training "
+            f"{python_cmd} -m feedbax.bin.studio_pipeline materialize-training "
             "--graph graph-spec.json "
             "--training training-spec.json "
             "--task task-spec.json "

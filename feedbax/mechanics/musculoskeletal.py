@@ -19,23 +19,18 @@ import logging
 from typing import Optional, Type
 
 import diffrax as dfx
-import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
-import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.graph import Component, init_state_from_component
-from feedbax.mechanics.dae import DAEComponent, DAEState
-from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry, AbstractMuscleGeometry
+from feedbax.graph import Component
+from feedbax.mechanics.dae import DAEComponent
+from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.hill_muscles import (
     HillMuscleParams,
-    HillMuscleState,
-    RigidTendonHillMuscle,
-    CompliantTendonHillMuscle,
     ActivationDynamics,
     ForceLengthCurve,
     PassiveForceLengthCurve,
@@ -66,10 +61,10 @@ class MusculoskeletalState(Module):
     """
 
     arm: TwoLinkArmState
-    activations: Float[Array, "n_muscles"]
-    fiber_lengths: Float[Array, "n_muscles"]
-    fiber_velocities: Float[Array, "n_muscles"]
-    forces: Float[Array, "n_muscles"]
+    activations: Float[Array, "n_muscles"]  # noqa: F821
+    fiber_lengths: Float[Array, "n_muscles"]  # noqa: F821
+    fiber_velocities: Float[Array, "n_muscles"]  # noqa: F821
+    forces: Float[Array, "n_muscles"]  # noqa: F821
 
 
 # ============================================================================

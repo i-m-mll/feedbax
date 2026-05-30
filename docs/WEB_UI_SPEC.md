@@ -139,7 +139,7 @@ The UI is a visual interface to the existing `feedbax.graph` module:
 
 | Tool | Purpose |
 |------|---------|
-| **pnpm** | Package management (faster, stricter than npm) |
+| **npm** | Package management using the committed `package-lock.json` |
 | **ESLint + Prettier** | Linting, formatting |
 | **Vitest** | Unit testing |
 | **Playwright** | E2E testing |
@@ -694,7 +694,7 @@ def create_app() -> FastAPI:
     # CORS for development
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],  # Vite dev server
+        allow_origins=["http://localhost:3008"],  # Vite dev server
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -2354,7 +2354,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 3008,
     proxy: {
       '/api': 'http://localhost:8000',
       '/ws': {

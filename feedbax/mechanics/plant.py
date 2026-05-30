@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 import logging
-from typing import Generic, Optional, Tuple
+from typing import Generic, Optional
 
 import equinox as eqx
 from equinox import Module, field
@@ -21,7 +21,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
+from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton
 from feedbax.state import StateBounds, StateT, clip_state
 
 
@@ -183,8 +183,8 @@ class MuscledArm(AbstractMuscledPlant):
     n_muscles: int
     moment_arms: Float[Array, "links=2 muscles"]
     theta0: Float[Array, "links=2 muscles"]
-    l0: Float[Array, "muscles"]
-    f0: Float[Array, "muscles"]
+    l0: Float[Array, "muscles"]  # noqa: F821
+    f0: Float[Array, "muscles"]  # noqa: F821
 
     def __init__(
         self,
@@ -211,10 +211,10 @@ class MuscledArm(AbstractMuscledPlant):
             )
             / 360.0
         ),
-        l0: Float[Array, "muscles"] | Sequence[float] = jnp.array(
+        l0: Float[Array, "muscles"] | Sequence[float] = jnp.array(  # noqa: F821
             (7.32, 3.26, 6.4, 4.26, 5.95, 4.04)
         ),
-        f0: Float[Array, "muscles"] | Sequence[float] = jnp.array(
+        f0: Float[Array, "muscles"] | Sequence[float] = jnp.array(  # noqa: F821
             (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
         ),
         *,

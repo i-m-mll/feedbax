@@ -247,10 +247,3 @@ export function EvalRunSelector({ selectedEvalRunId, onSelectEvalRun }: EvalRunS
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Legacy re-export for backward compatibility
-// ---------------------------------------------------------------------------
-
-/** @deprecated Use TrainingRunSelector and EvalRunSelector separately. */
-export const RunSelector = TrainingRunSelector;

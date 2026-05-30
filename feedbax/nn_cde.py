@@ -28,7 +28,7 @@ gate can partially counteract the decay for important state dimensions.
 """
 
 import logging
-from typing import Optional, Union
+from typing import Union
 
 import equinox as eqx
 import jax
@@ -55,10 +55,10 @@ class CDENetworkState(Module):
             compute the observation increment dX = obs - obs_prev.
     """
 
-    input: Float[Array, "inputs"]
-    hidden: Float[Array, "hidden_dim"]
-    output: Float[Array, "action_dim"]
-    obs_prev: Float[Array, "obs_dim"]
+    input: Float[Array, "inputs"]  # noqa: F821
+    hidden: Float[Array, "hidden_dim"]  # noqa: F821
+    output: Float[Array, "action_dim"]  # noqa: F821
+    obs_prev: Float[Array, "obs_dim"]  # noqa: F821
 
 
 class CDENetwork(Component):
@@ -242,7 +242,7 @@ class CDENetwork(Component):
 
         return h_new
 
-    def _get_action(self, h: Float[Array, "hidden_dim"]) -> Float[Array, "action_dim"]:
+    def _get_action(self, h: Float[Array, "hidden_dim"]) -> Float[Array, "action_dim"]:  # noqa: F821
         """Compute bounded action from hidden state.
 
         Args:

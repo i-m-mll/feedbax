@@ -1,17 +1,17 @@
 {"header" : {
   "cloc_url"           : "github.com/AlDanial/cloc",
   "cloc_version"       : "2.04",
-  "elapsed_seconds"    : 0.309823989868164,
+  "elapsed_seconds"    : 0.261168003082275,
   "n_files"            : 218,
-  "n_lines"            : 75614,
-  "files_per_second"   : 703.625307042115,
-  "lines_per_second"   : 244054.697094874,
+  "n_lines"            : 75604,
+  "files_per_second"   : 834.711746566151,
+  "lines_per_second"   : 289484.160033887,
   "report_file"        : ".unfrack/final-feedbax.json"},
 "Python" :{
   "nFiles": 209,
-  "blank": 12212,
+  "blank": 12214,
   "comment": 13290,
-  "code": 49707},
+  "code": 49695},
 "CSS" :{
   "nFiles": 1,
   "blank": 37,
@@ -33,7 +33,7 @@
   "comment": 1,
   "code": 13},
 "SUM": {
-  "blank": 12293,
+  "blank": 12295,
   "comment": 13299,
-  "code": 50022,
+  "code": 50010,
   "nFiles": 218} }
