@@ -8,7 +8,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.manifest import Provenance, load_manifest, sha256_file, write_training_run_manifest
+from feedbax.manifest import (
+    ArrayStoreRef,
+    ArtifactRef,
+    EntrypointRef,
+    ModelArtifactManifest,
+    ParentRef,
+    Provenance,
+    TrainingRunManifest,
+    load_manifest,
+    sha256_file,
+    spec_payload,
+    write_training_run_manifest,
+)
 from feedbax.manifest_index import rebuild_manifest_index
 from feedbax.provider import (
     component_registry_snapshot,
@@ -244,6 +256,11 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert manifest.provider == "feedbax"
     assert manifest.capabilities["validate_graph_spec"].input_schema == "GraphSpec"
     assert manifest.capabilities["start_training_run"].output_schema == "TrainingRunManifest"
+    assert manifest.capabilities["start_training_run"].action == "execute"
+    assert manifest.capabilities["start_training_run"].requires_review
+    assert manifest.capabilities["start_training_run"].mutates_state
+    assert manifest.capabilities["start_training_run"].may_launch_compute
+    assert "training_checkpoint" in manifest.capabilities["start_training_run"].artifact_roles
     assert manifest.capabilities["enumerate_studio_schemas"].output_schema == "StudioSchemaRegistry"
     assert "training_checkpoint" in manifest.artifact_roles
     assert "model_parameters" in manifest.artifact_roles
@@ -258,6 +275,158 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "TaskDataSchema" in manifest.schemas
     assert "RuntimeIntrospectionOptions" in manifest.schemas
     assert "RuntimeSampleLeafSchema" in manifest.schemas
+    assert "MandibleManifestMapping" in manifest.schemas
+
+
+def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
+    manifest = provider_manifest()
+    mappings = manifest.mandible_manifest_mappings
+
+    assert set(mappings) == {
+        "GraphSpecManifest",
+        "ModelArtifactManifest",
+        "TrainingRunSetManifest",
+        "TrainingRunManifest",
+        "EvaluationRunManifest",
+        "AnalysisRunManifest",
+        "ReportManifest",
+    }
+
+    training = mappings["TrainingRunManifest"]
+    assert training.subject_node_type == "feedbax.training_run"
+    assert training.issue_provenance_field == "provenance.issues"
+    assert "graph_spec" in training.spec_fields
+    assert "training_spec" in training.spec_fields
+    assert "artifacts[]" in {field.source_field for field in training.artifact_fields}
+    assert "summary_metrics" in training.opaque_domain_fields
+    assert "open_in_feedbax_studio" in training.actions
+    assert "handoff_artifacts" in training.actions
+
+    model_artifact = mappings["ModelArtifactManifest"]
+    store_roles = {
+        field.source_field: field.role
+        for field in model_artifact.artifact_fields
+        if field.source_field.endswith("_store")
+    }
+    assert model_artifact.subject_node_type == "feedbax.model_artifact"
+    assert store_roles == {
+        "parameter_store": "model_parameters",
+        "state_store": "model_state",
+        "optimizer_store": "optimizer_state",
+    }
+    assert all(
+        field.preserves_local_uri and field.optional_artifact_id
+        for field in model_artifact.artifact_fields
+    )
+    assert "parameter_store.roles" in model_artifact.opaque_domain_fields
+    assert "mandible/2322726" in model_artifact.related_issue_refs
+
+
+def test_training_run_manifest_mandible_mapping_fixture_preserves_local_refs() -> None:
+    run = TrainingRunManifest(
+        id="feedbax-training-run:demo",
+        status="completed",
+        run_set_id="feedbax-training-run-set:demo",
+        job_id="demo-job",
+        graph_spec=spec_payload("GraphSpec", _minimal_graph_spec(), ref="manifest://graph/demo"),
+        training_spec=spec_payload("TrainingSpec", _minimal_training_spec()),
+        provenance=Provenance(
+            source_repo="https://example.invalid/feedbax-demo.git",
+            source_branch="feature/demo",
+            source_commit="abc123",
+            dirty=False,
+            entrypoint=EntrypointRef(kind="feedbax-provider", command="feedbax-provider run-local"),
+            issues=["51832b9"],
+            parents=[
+                ParentRef(
+                    kind="GraphSpecManifest",
+                    id="feedbax-graph-spec:demo",
+                    role="graph_spec",
+                    uri="manifests/graph_specs/demo.json",
+                )
+            ],
+        ),
+        artifacts=[
+            ArtifactRef(
+                role="training_history",
+                logical_name="history.npz",
+                uri="artifacts/demo-job/history.npz",
+                storage_backend="feedbax-local",
+                metadata={"mandible": {"custody": "handoff-eligible"}},
+            )
+        ],
+        summary_metrics={"final_loss": 0.25},
+    )
+    mapping = provider_manifest().mandible_manifest_mappings[run.kind]
+
+    assert mapping.subject_node_type == "feedbax.training_run"
+    assert mapping.parent_ref_fields == ["graph_spec", "run_set_id", "provenance.parents"]
+    assert run.provenance.issues == ["51832b9"]
+    assert run.artifacts[0].artifact_id is None
+    assert run.artifacts[0].uri == "artifacts/demo-job/history.npz"
+    assert run.artifacts[0].metadata["mandible"]["custody"] == "handoff-eligible"
+
+
+def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores() -> None:
+    manifest = ModelArtifactManifest(
+        id="feedbax-model-artifact:demo",
+        status="completed",
+        graph_spec=ParentRef(
+            kind="GraphSpecManifest",
+            id="feedbax-graph-spec:demo",
+            role="graph_spec",
+            uri="manifests/graph_specs/demo.json",
+        ),
+        parameter_store=ArrayStoreRef(
+            role="params",
+            schema_version="feedbax.array_store.v1",
+            storage_backend="npz.v1",
+            logical_name="model.arrays.npz",
+            artifact_id="mandible-artifact:params-demo",
+            uri="artifacts/demo/model.arrays.npz",
+            array_count=2,
+            roles=[
+                "model.network.cell.weight_hh",
+                "model.network.readout.bias",
+            ],
+            metadata={"custody": {"local_uri_authoritative": True}},
+        ),
+        state_store=ArrayStoreRef(
+            role="state",
+            schema_version="feedbax.array_store.v1",
+            storage_backend="npz.v1",
+            logical_name="model.state.npz",
+            uri="artifacts/demo/model.state.npz",
+            array_count=1,
+            roles=["state.mechanics.position"],
+        ),
+        optimizer_store=ArrayStoreRef(
+            role="optimizer",
+            schema_version="feedbax.array_store.v1",
+            storage_backend="npz.v1",
+            logical_name="optimizer.npz",
+            uri="artifacts/demo/optimizer.npz",
+            array_count=1,
+            roles=["optimizer.adam.momentum"],
+        ),
+        provenance=Provenance(
+            issues=["51832b9"],
+            parents=[ParentRef(kind="TrainingRunManifest", id="feedbax-training-run:demo")],
+        ),
+    )
+    mapping = provider_manifest().mandible_manifest_mappings[manifest.kind]
+
+    mapped_fields = {field.source_field: field for field in mapping.artifact_fields}
+    assert mapped_fields["parameter_store"].role == "model_parameters"
+    assert mapped_fields["parameter_store"].mandible_artifact_kind == "array_store"
+    assert mapped_fields["parameter_store"].optional_artifact_id
+    assert manifest.parameter_store is not None
+    assert manifest.parameter_store.artifact_id == "mandible-artifact:params-demo"
+    assert manifest.parameter_store.uri == "artifacts/demo/model.arrays.npz"
+    assert manifest.state_store is not None
+    assert manifest.state_store.roles == ["state.mechanics.position"]
+    assert manifest.optimizer_store is not None
+    assert manifest.optimizer_store.roles == ["optimizer.adam.momentum"]
 
 
 def test_component_registry_snapshot_wraps_existing_registry() -> None:
