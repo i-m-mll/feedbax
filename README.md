@@ -58,11 +58,11 @@ Or run them separately:
 # Backend (FastAPI on port 8000)
 uv run uvicorn feedbax.web.app:app --reload --port 8000
 
-# Frontend (Vite/React on port 5173)
-cd web && pnpm dev
+# Frontend (Vite/React on port 3008)
+cd web && npm run dev
 ```
 
-Then open http://localhost:5173 in your browser.
+Then open http://localhost:3008 in your browser.
 
 ## Building application packages on feedbax
 

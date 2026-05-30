@@ -5,21 +5,43 @@
 """
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Optional
 
 import jax.numpy as jnp
 
 from feedbax.loss import (
+    AbstractLoss,
     CompositeLoss,
     TargetSpec,
     TargetStateLoss,
-    power_discount,
     target_final_state,
     target_zero,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class EffectorFixationLoss(AbstractLoss):
+    """Penalize effector position error while a delayed-reach trial is in hold."""
+
+    label: str = "Effector maintains fixation"
+
+    def term(self, states, trial_specs, model):
+        assert states is not None, "EffectorFixationLoss requires states"
+        assert trial_specs is not None, "EffectorFixationLoss requires trial_specs"
+
+        target_spec = trial_specs.targets.get("mechanics.effector.pos")
+        if not isinstance(target_spec, TargetSpec) or target_spec.value is None:
+            raise ValueError("EffectorFixationLoss requires an effector position TargetSpec")
+
+        effector_pos = states.mechanics.effector.pos[:, 1:]
+        loss = jnp.sum((effector_pos - target_spec.value) ** 2, axis=-1)
+
+        hold = trial_specs.inputs.hold
+        if hold.ndim == loss.ndim + 1 and hold.shape[-1] == 1:
+            hold = jnp.squeeze(hold, axis=-1)
+        return jnp.sum(loss * hold.astype(loss.dtype), axis=-1)
 
 
 def simple_reach_loss(
