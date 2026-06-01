@@ -15,9 +15,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 import logging
-from typing import Optional
 
-import equinox as eqx
 from equinox import Module, field
 import jax
 import jax.numpy as jnp
@@ -99,7 +97,7 @@ class ConstantMomentArmGeometry(AbstractMuscleGeometry):
         reference_length: MT length at zero joint angles [m].
     """
 
-    moment_arms: Float[Array, "n_joints"] = field(converter=jnp.asarray)
+    moment_arms: Float[Array, "n_joints"] = field(converter=jnp.asarray)  # noqa: F821
     reference_length: float
 
     def musculotendon_length(self, angles: Array) -> Array:

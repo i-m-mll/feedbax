@@ -634,6 +634,60 @@ class ComponentRegistry:
         )
         self.register(
             ComponentMeta(
+                name='LinearStateSpace',
+                category='Mechanics',
+                description='Discrete linear state-space mechanics.',
+                param_schema=[
+                    ParamSchema(
+                        name='A',
+                        type='array',
+                        default=[
+                            [1.0, 0.0, 0.01, 0.0],
+                            [0.0, 1.0, 0.0, 0.01],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                        required=True,
+                    ),
+                    ParamSchema(
+                        name='B',
+                        type='array',
+                        default=[
+                            [0.0, 0.0],
+                            [0.0, 0.0],
+                            [0.01, 0.0],
+                            [0.0, 0.01],
+                        ],
+                        required=True,
+                    ),
+                    ParamSchema(name='B_w', type='array', default=None, required=False),
+                    ParamSchema(name='dt', type='float', default=0.01, min=0.0, required=False),
+                    ParamSchema(
+                        name='initial_state',
+                        type='array',
+                        default=[0.0, 0.0, 0.0, 0.0],
+                        required=False,
+                    ),
+                    ParamSchema(name='pos_slice', type='array', default=[0, 2], required=False),
+                    ParamSchema(name='vel_slice', type='array', default=[2, 4], required=False),
+                ],
+                input_ports=['force', 'epsilon'],
+                output_ports=['effector', 'state'],
+                icon='Grid3x3',
+                port_types=PortTypeSpec(
+                    inputs={
+                        'force': PortType(dtype='vector'),
+                        'epsilon': PortType(dtype='vector'),
+                    },
+                    outputs={
+                        'effector': PortType(dtype='state'),
+                        'state': PortType(dtype='vector'),
+                    },
+                ),
+            )
+        )
+        self.register(
+            ComponentMeta(
                 name='MomentArmProjection',
                 category='Mechanics',
                 description='Projects muscle forces to joint torques via moment arm matrix (R^T @ forces). Also computes musculotendon lengths and velocities from joint kinematics.',

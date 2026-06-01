@@ -1,49 +1,34 @@
 {"header" : {
   "cloc_url"           : "github.com/AlDanial/cloc",
   "cloc_version"       : "2.04",
-  "elapsed_seconds"    : 0.0914740562438965,
-  "n_files"            : 149,
-  "n_lines"            : 56194,
-  "files_per_second"   : 1628.8771496338,
-  "lines_per_second"   : 614316.258701488,
+  "elapsed_seconds"    : 0.0966188907623291,
+  "n_files"            : 153,
+  "n_lines"            : 48783,
+  "files_per_second"   : 1583.54125981804,
+  "lines_per_second"   : 504901.263252963,
   "report_file"        : ".unfrack/baseline-web.json"},
 "TypeScript" :{
-  "nFiles": 139,
-  "blank": 2719,
-  "comment": 1286,
-  "code": 36897},
-"JSON" :{
-  "nFiles": 4,
-  "blank": 0,
-  "comment": 0,
-  "code": 9188},
-"YAML" :{
-  "nFiles": 1,
-  "blank": 1239,
-  "comment": 0,
-  "code": 4699},
+  "nFiles": 148,
+  "blank": 3056,
+  "comment": 1271,
+  "code": 44281},
 "CSS" :{
   "nFiles": 1,
   "blank": 15,
   "comment": 0,
   "code": 76},
-"JavaScript" :{
-  "nFiles": 2,
+"JSON" :{
+  "nFiles": 3,
   "blank": 0,
   "comment": 0,
-  "code": 47},
-"HTML" :{
-  "nFiles": 1,
-  "blank": 0,
-  "comment": 0,
-  "code": 15},
+  "code": 71},
 "SVG" :{
   "nFiles": 1,
   "blank": 0,
   "comment": 0,
   "code": 13},
 "SUM": {
-  "blank": 3973,
-  "comment": 1286,
-  "code": 50935,
-  "nFiles": 149} }
+  "blank": 3071,
+  "comment": 1271,
+  "code": 44441,
+  "nFiles": 153} }

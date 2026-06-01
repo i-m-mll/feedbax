@@ -6,17 +6,9 @@
 
 import logging
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from functools import cached_property
-from typing import (
-    Literal,
-    Optional,
-    Protocol,
-    Self,
-    Type,
-    Union,
-    runtime_checkable,
-)
+from typing import Literal, Optional
 
 import equinox as eqx
 import jax
@@ -33,7 +25,6 @@ from feedbax.misc import (
     interleave_unequal,
     n_positional_args,
 )
-from feedbax.state import StateT
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +81,8 @@ class NetworkState(Module):
         encoding: The activity of the encoding layer, if the network has one.
     """
 
-    input: Float[Array, "inputs"]
-    hidden: PyTree[Float[Array, "unit"]]
+    input: Float[Array, "inputs"]  # noqa: F821
+    hidden: PyTree[Float[Array, "unit"]]  # noqa: F821
     output: Optional[PyTree[Array]] = None
     encoding: Optional[PyTree[Array]] = None
 

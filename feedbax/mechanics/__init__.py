@@ -1,4 +1,5 @@
 from .mechanics import Mechanics, MechanicsState
+from .linear_state_space import LinearStateSpace, LinearStateSpaceState
 
 # Physics backend abstraction
 from .backend import PhysicsBackend, PhysicsState, DiffraxBackend, MJXBackend

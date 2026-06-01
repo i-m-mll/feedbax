@@ -418,39 +418,6 @@ export async function fetchAnalysisClasses(): Promise<AnalysisClassDef[]> {
 }
 
 /**
- * Fetch the current analysis graph for a project/graph.
- * Returns null if no analysis graph exists yet.
- *
- * @deprecated Use fetchAnalysisPages instead for multi-page support.
- */
-export async function fetchAnalysisGraph(
-  graphId: string
-): Promise<AnalysisGraphSpec | null> {
-  return tryFetch<AnalysisGraphSpec>(`/api/graphs/${graphId}/analysis`);
-}
-
-/**
- * Save the analysis graph for a project/graph.
- *
- * @deprecated Use saveAnalysisPages instead for multi-page support.
- */
-export async function saveAnalysisGraph(
-  graphId: string,
-  spec: AnalysisGraphSpec
-): Promise<boolean> {
-  try {
-    const response = await fetch(`/api/graphs/${graphId}/analysis`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(spec),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Fetch analysis pages for a project from the graph endpoint.
  * Returns null if no analysis pages exist yet.
  */

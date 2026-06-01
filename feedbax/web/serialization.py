@@ -53,6 +53,7 @@ from feedbax.intervene.intervene import (
 )
 from feedbax.loss import CompositeLoss
 from feedbax.mechanics.mechanics import Mechanics
+from feedbax.mechanics.linear_state_space import LinearStateSpace
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -862,6 +863,24 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             )
             continue
 
+        if isinstance(component, LinearStateSpace):
+            params = {
+                "A": component.A.tolist(),
+                "B": component.B.tolist(),
+                "B_w": component.B_w.tolist(),
+                "dt": component.dt,
+                "initial_state": list(component.initial_state),
+                "pos_slice": list(component.pos_slice),
+                "vel_slice": list(component.vel_slice),
+            }
+            nodes[name] = ComponentSpec(
+                type="LinearStateSpace",
+                params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
         if isinstance(component, Channel):
             noise_std = 0.0
             if isinstance(component.noise_func, Normal):
@@ -1114,6 +1133,20 @@ def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     else:
         raise ValueError(f"Unsupported plant_type '{plant_type}'")
     return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
+
+
+def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
+    return LinearStateSpace(
+        A=jnp.asarray(params["A"]),
+        B=jnp.asarray(params["B"]),
+        B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
+        dt=float(params.get("dt", 1.0)),
+        initial_state=None
+        if params.get("initial_state") is None
+        else jnp.asarray(params["initial_state"]),
+        pos_slice=tuple(params.get("pos_slice", [0, 2])),
+        vel_slice=tuple(params.get("vel_slice", [2, 4])),
+    )
 
 
 def _build_channel(params: Mapping[str, Any]) -> Channel:
@@ -1507,6 +1540,9 @@ def spec_to_graph(
             next_params = dict(params)
             next_params["plant_type"] = node_spec.type
             nodes[node_name] = _build_mechanics(next_params)
+            continue
+        if node_spec.type == "LinearStateSpace":
+            nodes[node_name] = _build_linear_state_space(params)
             continue
         if node_spec.type == "Channel":
             nodes[node_name] = _build_channel(params)

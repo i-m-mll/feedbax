@@ -4,6 +4,8 @@ Derived from the JAX [implementation](https://github.com/google-research/computa
 of Fixed Point Finder, by David Sussillo et al.
 """
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable
 from functools import partial
@@ -30,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 class FPFilteredResults(Module):
     fps: Float[Array, "candidates state"]
-    losses: Float[Array, "candidates"]
-    masks: dict[str, Bool[Array, "candidates"]]
+    losses: Float[Array, "candidates"]  # noqa: F821
+    masks: dict[str, Bool[Array, "candidates"]]  # noqa: F821
     counts: dict[str, int]
 
 
@@ -61,14 +63,14 @@ class FixedPointFinder(Module):
     @eqx.filter_jit
     def __call__(
         self,
-        func: Callable[[Float[Array, "state"]], Float[Array, "state"]],
+        func: Callable[[Float[Array, "state"]], Float[Array, "state"]],  # noqa: F821
         candidates: Float[Array, "n_candidates state"],
         loss_tol: Float[Array, "1"],
         n_batches: int = 10_000,
         n_batches_per_iter: int = 200,
         *,
         key: PRNGKeyArray,
-    ) -> tuple[int, Float[Array, "n_candidates state"], Float[Array, "n_candidates"]]:
+    ) -> tuple[int, Float[Array, "n_candidates state"], Float[Array, "n_candidates"]]:  # noqa: F821
         # NOTE: Like the original Fixed Point Finder, this implementation
         #   1. Optimizes the mean loss of a batch of candidates simultaneously,
         #      rather than optimizing each candidate individually. This seems to be
@@ -122,7 +124,7 @@ class FixedPointFinder(Module):
     @eqx.filter_jit
     def find_and_filter(
         self,
-        func: Callable[[Float[Array, "state"]], Float[Array, "state"]],
+        func: Callable[[Float[Array, "state"]], Float[Array, "state"]],  # noqa: F821
         candidates: Float[Array, "n_candidates state"],
         loss_tol: Float[Array, "1"] = jnp.array(1e-6),
         n_batches: int = 10_000,
@@ -157,7 +159,7 @@ class FixedPointFinder(Module):
 
 def exclude_points(
     points: Float[Array, "points dims"],
-    values: Float[Array, "points"],
+    values: Float[Array, "points"],  # noqa: F821
     value_tol: Float[Array, "1"],
     outlier_tol: Optional[float] = None,
     unique_tol: Optional[float] = None,

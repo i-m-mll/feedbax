@@ -555,7 +555,7 @@ def nan_bypass(
 
 
 def batch_reshape(
-    func: Optional[Callable[[Shaped[Array, "batch *n"]], Shaped[Array, "batch *m"]]] = None,
+    func: Optional[Callable[[Shaped[Array, "batch *n"]], Shaped[Array, "batch *m"]]] = None,  # noqa: F821
     *,
     n_nonbatch: int | Sequence[int] = 1,
 ):

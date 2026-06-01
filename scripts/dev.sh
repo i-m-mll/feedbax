@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  echo "pnpm is required. Install with: npm install -g pnpm" >&2
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to run the Studio frontend" >&2
   exit 1
 fi
 
@@ -14,10 +14,9 @@ else
   uvicorn feedbax.web.app:app --reload --port 8000 &
 fi
 UVICORN_PID=$!
+trap 'kill "$UVICORN_PID" 2>/dev/null || true' EXIT
 
 pushd "$ROOT_DIR/web" >/dev/null
-pnpm install
-pnpm dev
+npm install
+npm run dev
 popd >/dev/null
-
-kill $UVICORN_PID

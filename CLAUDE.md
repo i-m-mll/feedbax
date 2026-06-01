@@ -4,9 +4,12 @@
 
 ## Worktree Layout
 
-- **Main worktree** (`/feedbax/`): tracks the `main` branch, used for releases only. **Never interact with it for feature work.** All development targets `develop`.
-- **`worktrees/develop/`**: the integration target; feature branches base off this and merge back here via auth request.
-- Feature worktrees: `worktrees/feature__<name>/` — created with `wt feature/<name>` from inside `worktrees/develop/`.
+- **Main worktree** (`/feedbax/`): tracks the protected `develop` branch and is
+  the integration target.
+- Feature worktrees: `worktrees/feature__<name>/` — created with
+  `wt feature/<name>` from the repo root.
+- Release/default `main`, when needed, lives in a named worktree such as
+  `worktrees/main`.
 
 ## Repository Structure
 
@@ -39,6 +42,25 @@ Corollaries that must be respected without exception:
 ## Backward Compatibility
 
 **Backward compatibility is not a concern.** There is a single developer. When the architecture improves, old saved graphs are expected to be re-created from Studio. We do not maintain legacy code paths, fallback logic, or compatibility shims for older graph formats. When something is wrong, raise a clear error rather than silently substituting a stale value.
+
+## Artifact Schema And Migrations
+
+Durable artifact/schema changes require explicit migration handling. This is
+not a request for silent backward-compatibility shims. It is a requirement that
+Feedbax-owned saved formats remain semantically migratable as the library
+evolves.
+
+If a change alters GraphSpec semantics, component type IDs, parameter or state
+roles, selector meanings, manifest formats, storage layouts, or
+checkpoint/artifact codecs, the same implementation/auth request must either:
+
+- preserve the existing semantic schema; or
+- add a versioned migration rule/API plus focused tests for the affected
+  schema transition.
+
+When changing durable formats, record the migration issue and validation
+strategy in the implementation issue or auth spec. Do not leave
+schema-affecting refactors as agent archaeology for downstream projects.
 
 ## UI Conventions
 
@@ -74,6 +96,17 @@ Studio requires two processes:
 - Frontend: `cd web && npm run dev` (Vite, default port 3008)
 - Backend: `uv run uvicorn feedbax.web.app:app --port 8000` (FastAPI)
 Both must be running for full functionality.
+
+### Cloud/Remote Training Practices
+
+- Never kill processes on TPU VMs via SSH; `kill`, `pkill`, or signals sent
+  during SSH commands can disrupt the SSH session itself. If a process has
+  crashed, clear `/tmp/libtpu_lockfile` and launch a new one.
+- Always verify the latest code is deployed before running on cloud instances.
+  Stale code on TPU/GPU is a recurring source of wasted time.
+- Module instances are frozen: never assign to `self.field` after `__init__`.
+  Use `eqx.tree_at` for out-of-place updates. Never use `dataclasses.replace`
+  on Modules with computed fields.
 
 ## Active Feature Context
 
