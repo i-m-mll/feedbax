@@ -33,34 +33,50 @@ export const VALUE_SPEC_SCOPE_OPTIONS: Array<{
 export const VALUE_SPEC_FUNCTION_TEMPLATES: Array<{
   id: string;
   label: string;
-  kind: 'constant' | 'step' | 'pulse' | 'ramp' | 'piecewise' | 'trajectory';
+  kind: 'step' | 'pulse' | 'ramp' | 'piecewise' | 'trajectory';
+  domains: StudioValueSpecSamplingScope[];
   defaultParameters: Record<string, unknown>;
 }> = [
-  { id: 'constant', label: 'Constant', kind: 'constant', defaultParameters: { value: 1 } },
-  { id: 'step', label: 'Step', kind: 'step', defaultParameters: { before: 0, after: 1 } },
+  {
+    id: 'step',
+    label: 'Step',
+    kind: 'step',
+    domains: ['epoch', 'timestep'],
+    defaultParameters: { domain: 'epoch', switch_at: 1, before: 0, after: 1 },
+  },
   {
     id: 'pulse',
     label: 'Pulse',
     kind: 'pulse',
-    defaultParameters: { baseline: 0, amplitude: 1, width: 1 },
+    domains: ['epoch', 'timestep'],
+    defaultParameters: { domain: 'epoch', center: 1, width: 1, baseline: 0, amplitude: 1 },
   },
-  { id: 'ramp', label: 'Ramp', kind: 'ramp', defaultParameters: { start: 0, end: 1 } },
+  {
+    id: 'ramp',
+    label: 'Ramp',
+    kind: 'ramp',
+    domains: ['epoch', 'timestep'],
+    defaultParameters: { domain: 'epoch', start_at: 0, end_at: 1, start: 0, end: 1 },
+  },
   {
     id: 'piecewise_linear',
     label: 'Piecewise',
     kind: 'piecewise',
-    defaultParameters: { points: [[0, 0], [1, 1]] },
+    domains: ['epoch', 'timestep'],
+    defaultParameters: { domain: 'epoch', points: [[0, 0], [1, 1]] },
   },
   {
     id: 'delayed_reach_target_position',
     label: 'Target trajectory',
     kind: 'trajectory',
+    domains: ['trial', 'epoch', 'timestep'],
     defaultParameters: {},
   },
   {
     id: 'delayed_reach_movement_target',
     label: 'Movement target',
     kind: 'trajectory',
+    domains: ['trial', 'epoch', 'timestep'],
     defaultParameters: {},
   },
 ];
@@ -71,6 +87,20 @@ export const VALUE_SPEC_DISTRIBUTIONS = [
   'log_uniform',
   'categorical',
 ] as const;
+
+export const INDEXED_VALUE_SPEC_SCOPES: StudioValueSpecSamplingScope[] = [
+  'replicate',
+  'trial',
+  'epoch',
+  'timestep',
+  'sweep',
+];
+
+export function valueSpecUsesIndexedValues(
+  valueSpec: StudioValueSpec | null | undefined
+): boolean {
+  return valueSpec?.metadata.indexed_constant === true;
+}
 
 export function valueSpecAllowedModes(
   signal: StudioTaskTimelineSignalSpec
@@ -124,11 +154,37 @@ export function valueSpecChipLabel(valueSpec: StudioValueSpec | null | undefined
       return `${record.min}-${record.max}`;
     }
   }
+  if (Array.isArray(value)) {
+    if (valueSpec.metadata.indexed_constant) return `${value.length} values`;
+    return JSON.stringify(value);
+  }
   if (value === null || value === undefined) return 'Constant';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
   return 'Constant';
+}
+
+function defaultConstantValue(valueSpec: StudioValueSpec): unknown {
+  const shape = valueSpec.shape ?? [];
+  const trailing = shape[shape.length - 1];
+  if (typeof trailing === 'number' && trailing > 1) {
+    return Array.from({ length: trailing }, () => 0);
+  }
+  return { active: 1, inactive: 0 };
+}
+
+function normalizeConstantForScope(valueSpec: StudioValueSpec): StudioValueSpec {
+  if (valueSpec.metadata.indexed_constant === true) {
+    const values = Array.isArray(valueSpec.value) ? valueSpec.value : [];
+    const { indexed_constant: _indexedConstant, ...metadata } = valueSpec.metadata;
+    return {
+      ...valueSpec,
+      value: values[0] ?? defaultConstantValue(valueSpec),
+      metadata,
+    };
+  }
+  return valueSpec;
 }
 
 export function setValueSpecMode(
@@ -148,11 +204,11 @@ export function setValueSpecMode(
     },
   };
   if (mode === 'constant') {
-    return {
+    return normalizeConstantForScope({
       ...base,
-      value: valueSpec.value ?? { active: 1, inactive: 0 },
-      sampling_scope: valueSpec.sampling_scope ?? 'trial',
-    };
+      value: valueSpec.value ?? defaultConstantValue(valueSpec),
+      sampling_scope: null,
+    });
   }
   if (mode === 'function') {
     const template =
@@ -180,7 +236,8 @@ export function setValueSpecMode(
       ...base,
       schedule: valueSpec.schedule ?? {
         domain: 'epoch',
-        function_id: valueSpec.function_id ?? 'step',
+        points: [[0, valueSpec.value ?? defaultConstantValue(valueSpec)]],
+        interpolation: 'hold',
       },
       sampling_scope: valueSpec.sampling_scope ?? 'epoch',
     };
@@ -203,12 +260,56 @@ export function setValueSpecScope(
   valueSpec: StudioValueSpec,
   samplingScope: StudioValueSpecSamplingScope
 ): StudioValueSpec {
-  return {
+  const next = {
     ...valueSpec,
     sampling_scope: samplingScope,
     metadata: {
       ...valueSpec.metadata,
       authored_as: 'value_spec_editor',
+    },
+  };
+  return next.mode === 'constant' ? { ...normalizeConstantForScope(next), sampling_scope: null } : next;
+}
+
+export function setValueSpecConstantValue(
+  valueSpec: StudioValueSpec,
+  value: unknown,
+  index?: number
+): StudioValueSpec {
+  const base = setValueSpecMode(valueSpec, 'constant');
+  if (index === undefined) return { ...base, value };
+  const values = Array.isArray(base.value) ? [...base.value] : [base.value];
+  values[index] = value;
+  return { ...base, value: values };
+}
+
+export function appendValueSpecConstantValue(valueSpec: StudioValueSpec): StudioValueSpec {
+  const base = setValueSpecMode(valueSpec, 'constant');
+  const values = Array.isArray(base.value) ? [...base.value] : [base.value];
+  values.push(values[values.length - 1] ?? defaultConstantValue(base));
+  return {
+    ...base,
+    value: values,
+    metadata: {
+      ...base.metadata,
+      indexed_constant: true,
+    },
+  };
+}
+
+export function removeValueSpecConstantValue(
+  valueSpec: StudioValueSpec,
+  index: number
+): StudioValueSpec {
+  const base = setValueSpecMode(valueSpec, 'constant');
+  const values = Array.isArray(base.value) ? [...base.value] : [base.value];
+  values.splice(index, 1);
+  return {
+    ...base,
+    value: values.length > 0 ? values : [defaultConstantValue(base)],
+    metadata: {
+      ...base.metadata,
+      indexed_constant: true,
     },
   };
 }
@@ -227,6 +328,21 @@ export function setValueSpecFunction(
   };
 }
 
+export function setValueSpecFunctionParameter(
+  valueSpec: StudioValueSpec,
+  name: string,
+  value: unknown
+): StudioValueSpec {
+  const base = setValueSpecMode(valueSpec, 'function');
+  return {
+    ...base,
+    parameters: {
+      ...(base.parameters ?? {}),
+      [name]: value,
+    },
+  };
+}
+
 export function setValueSpecDistributionFamily(
   valueSpec: StudioValueSpec,
   family: string
@@ -242,6 +358,25 @@ export function setValueSpecDistributionFamily(
     distribution: {
       family,
       parameters: defaults[family] ?? {},
+    },
+  };
+}
+
+export function setValueSpecDistributionParameter(
+  valueSpec: StudioValueSpec,
+  name: string,
+  value: unknown
+): StudioValueSpec {
+  const base = setValueSpecMode(valueSpec, 'distribution');
+  return {
+    ...base,
+    distribution: {
+      ...(base.distribution ?? {}),
+      family: base.distribution?.family ?? 'uniform',
+      parameters: {
+        ...((base.distribution?.parameters as Record<string, unknown> | undefined) ?? {}),
+        [name]: value,
+      },
     },
   };
 }

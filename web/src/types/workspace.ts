@@ -351,6 +351,7 @@ export interface StudioTaskTimelineSignalSpec {
   path: string;
   epoch_ids: string[];
   value_spec?: StudioValueSpec | null;
+  epoch_value_specs?: Record<string, StudioValueSpec | null>;
   value_schema?: ValueSchema | null;
   task_data_schema?: TaskDataSchema | null;
   metadata: Record<string, unknown>;

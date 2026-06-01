@@ -34,7 +34,10 @@ describe('delayed reach task timeline helpers', () => {
       'target_on',
       'movement',
     ]);
-    expect(timeline.epochs[0].length.value).toEqual({ min: 0, max: 1 });
+    expect(timeline.epochs[0].length.distribution).toEqual({
+      family: 'uniform',
+      parameters: { min: 0, max: 1 },
+    });
     expect(timeline.epochs[0].length).toMatchObject({
       dtype: 'int32',
       units: 'steps',

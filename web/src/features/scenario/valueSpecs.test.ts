@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   setValueSpecDistributionFamily,
+  setValueSpecDistributionParameter,
+  setValueSpecConstantValue,
   setValueSpecFunction,
+  setValueSpecFunctionParameter,
   setValueSpecMode,
   setValueSpecScope,
   valueSpecChipLabel,
+  valueSpecUsesIndexedValues,
 } from './valueSpecs';
 import type { StudioValueSpec } from '@/types/workspace';
 
@@ -38,7 +42,7 @@ describe('value spec helpers', () => {
     expect(setValueSpecFunction(base, 'ramp')).toMatchObject({
       mode: 'function',
       function_id: 'ramp',
-      parameters: { start: 0, end: 1 },
+      parameters: { domain: 'epoch', start_at: 0, end_at: 1, start: 0, end: 1 },
       sampling_scope: 'timestep',
     });
     expect(setValueSpecDistributionFamily(base, 'normal')).toMatchObject({
@@ -57,6 +61,35 @@ describe('value spec helpers', () => {
         sampling_scope: 'trial',
       })
     ).toBe('uniform/trial');
-    expect(setValueSpecScope(base, 'epoch').sampling_scope).toBe('epoch');
+    expect(setValueSpecScope(setValueSpecMode(base, 'distribution'), 'epoch').sampling_scope).toBe(
+      'epoch'
+    );
+  });
+
+  it('keeps constants literal instead of inventing local axis counts', () => {
+    const replicated = setValueSpecScope(base, 'replicate');
+
+    expect(valueSpecUsesIndexedValues(replicated)).toBe(false);
+    expect(replicated.value).toEqual({ active: 1, inactive: 0 });
+    expect(replicated.sampling_scope).toBeNull();
+
+    const edited = setValueSpecConstantValue(replicated, { active: 0.5, inactive: 0 });
+
+    expect(edited.value).toEqual({ active: 0.5, inactive: 0 });
+    expect(setValueSpecScope(edited, 'run').sampling_scope).toBeNull();
+  });
+
+  it('edits function and distribution parameters directly', () => {
+    expect(setValueSpecFunctionParameter(setValueSpecFunction(base, 'step'), 'after', 2)).toMatchObject({
+      mode: 'function',
+      function_id: 'step',
+      parameters: { domain: 'epoch', switch_at: 1, before: 0, after: 2 },
+    });
+    expect(
+      setValueSpecDistributionParameter(setValueSpecDistributionFamily(base, 'uniform'), 'max', 4)
+    ).toMatchObject({
+      mode: 'distribution',
+      distribution: { family: 'uniform', parameters: { min: 0, max: 4 } },
+    });
   });
 });

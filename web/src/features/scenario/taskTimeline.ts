@@ -185,6 +185,30 @@ function constantValue(
   };
 }
 
+function distributionValue(
+  family: string,
+  parameters: Record<string, unknown>,
+  samplingScope: string,
+  metadata: Record<string, unknown> = {},
+  valueSchema: ValueSchema | null = null
+): StudioValueSpec {
+  return {
+    schema_version: VALUE_SCHEMA_VERSION,
+    mode: 'distribution',
+    distribution: { family, parameters },
+    sampling_scope: samplingScope,
+    dtype: valueSchema?.dtype ?? null,
+    shape: valueSchema?.shape ?? null,
+    units: valueSchema?.units ?? null,
+    frame: valueSchema?.frame ?? null,
+    metadata: {
+      ...metadata,
+      value_schema: valueSchema,
+      value_schema_id: valueSchema?.id ?? null,
+    },
+  };
+}
+
 function functionValue(
   functionId: string,
   parameters: Record<string, unknown>,
@@ -206,6 +230,54 @@ function functionValue(
       value_schema_id: valueSchema?.id ?? null,
     },
   };
+}
+
+function cloneValueSpecWithValue(valueSpec: StudioValueSpec | null | undefined, value: unknown) {
+  const metadata = valueSpec?.metadata ?? {};
+  return constantValue(value, metadata, (metadata.value_schema as ValueSchema | null) ?? null);
+}
+
+function inactiveValueForSignal(valueSpec: StudioValueSpec | null | undefined): unknown {
+  const value = valueSpec?.value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if ('inactive' in record) return record.inactive;
+  }
+  if (Array.isArray(value)) return value.map(() => 0);
+  if (typeof value === 'boolean') return false;
+  return 0;
+}
+
+function activeValueForSignal(valueSpec: StudioValueSpec | null | undefined): unknown {
+  const value = valueSpec?.value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if ('active' in record) return record.active;
+  }
+  if (value !== undefined && value !== null) return value;
+  return 1;
+}
+
+function activeEpochValueSpec(valueSpec: StudioValueSpec | null | undefined): StudioValueSpec | null {
+  if (!valueSpec) return null;
+  if (valueSpec.mode !== 'constant') return valueSpec;
+  return cloneValueSpecWithValue(valueSpec, activeValueForSignal(valueSpec));
+}
+
+function inactiveEpochValueSpec(valueSpec: StudioValueSpec | null | undefined): StudioValueSpec | null {
+  if (!valueSpec) return null;
+  return cloneValueSpecWithValue(valueSpec, inactiveValueForSignal(valueSpec));
+}
+
+function isActiveEpochValueSpec(valueSpec: StudioValueSpec | null | undefined): boolean {
+  if (!valueSpec) return false;
+  if (valueSpec.mode !== 'constant') return true;
+  const value = valueSpec.value;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (Array.isArray(value)) return value.some((item) => Number(item) !== 0);
+  if (value && typeof value === 'object') return true;
+  return Boolean(value);
 }
 
 function asIndexSet(value: unknown): Set<number> {
@@ -238,14 +310,26 @@ function signal(
 ): StudioTaskTimelineSignalSpec {
   const valueSchema = signalValueSchema(id, label, kind, path);
   const valueSpec = delayedReachTaskDataValueSpec(id, task, valueSchema);
+  const epochIds = [...epochSet].sort((a, b) => a - b).map((index) => `epoch:${index}`);
   return {
     id,
     label,
     kind,
     task_data_id: id,
     path,
-    epoch_ids: [...epochSet].sort((a, b) => a - b).map((index) => `epoch:${index}`),
+    epoch_ids: epochIds,
     value_spec: valueSpec,
+    epoch_value_specs: Object.fromEntries(
+      Array.from({ length: DELAYED_REACH_EPOCH_LABELS.length }, (_, index) => {
+        const epochId = `epoch:${index}`;
+        return [
+          epochId,
+          epochIds.includes(epochId)
+            ? activeEpochValueSpec(valueSpec)
+            : inactiveEpochValueSpec(valueSpec),
+        ];
+      })
+    ),
     value_schema: valueSchema,
     task_data_schema: timelineTaskDataSchema(id, label, kind, path, valueSchema),
     metadata: {
@@ -255,12 +339,12 @@ function signal(
       temporal_support: valueSchema.metadata.temporal_support,
       value_spec_modes:
         id === 'target_position' || id === 'movement_target'
-          ? ['function', 'constant', 'distribution', 'schedule', 'expression']
-          : ['constant', 'function', 'schedule', 'distribution', 'expression'],
+          ? ['constant', 'function', 'distribution', 'schedule', 'expression']
+          : ['constant', 'function', 'distribution', 'schedule', 'expression'],
       value_spec_scopes:
         id === 'target_position' || id === 'movement_target'
-          ? ['trial', 'epoch', 'timestep', 'replicate']
-          : ['trial', 'epoch', 'timestep'],
+          ? ['run', 'sweep', 'trial', 'epoch', 'timestep']
+          : ['run', 'sweep', 'trial', 'epoch', 'timestep'],
     },
   };
 }
@@ -273,7 +357,22 @@ function existingTimelineFromTask(task: TaskSpec): StudioTaskTimelineSpec | null
   return {
     schema_version: record.schema_version ?? TASK_TIMELINE_SCHEMA_VERSION,
     epochs: record.epochs,
-    signals: record.signals,
+    signals: record.signals.map((signalSpec) => {
+      if (signalSpec.epoch_value_specs) return signalSpec;
+      return {
+        ...signalSpec,
+        epoch_value_specs: Object.fromEntries(
+          record.epochs.map((epoch) => {
+            return [
+              epoch.id,
+              signalSpec.epoch_ids.includes(epoch.id)
+                ? activeEpochValueSpec(signalSpec.value_spec)
+                : inactiveEpochValueSpec(signalSpec.value_spec),
+            ];
+          })
+        ),
+      };
+    }),
     segments: record.segments,
     metadata: {
       ...(record.metadata ?? {}),
@@ -380,11 +479,22 @@ export function delayedReachTimelineFromTask(task: TaskSpec): StudioTaskTimeline
       id: `epoch:${index}`,
       label: DELAYED_REACH_EPOCH_LABELS[index] ?? `epoch ${index + 1}`,
       index,
-      length: constantValue(
-        isInferred ? null : { min: range[0], max: range[1] },
+      length: isInferred ? constantValue(
+        null,
         {
           scope: 'trial',
           inferred_from_remaining_steps: isInferred,
+          temporal_window: { mode: 'epoch', epoch_id: `epoch:${index}` },
+        },
+        EPOCH_LENGTH_VALUE_SCHEMA
+      ) : distributionValue(
+        'uniform',
+        { min: range[0], max: range[1] },
+        'trial',
+        {
+          scope: 'trial',
+          inferred_from_remaining_steps: isInferred,
+          range_upper_bound: 'exclusive',
           temporal_window: { mode: 'epoch', epoch_id: `epoch:${index}` },
         },
         EPOCH_LENGTH_VALUE_SCHEMA
@@ -458,6 +568,20 @@ function signalEpochIndexes(
 }
 
 function rangeFromValue(value: StudioValueSpec): [number, number] | null {
+  if (value.mode === 'distribution') {
+    const distribution = value.distribution;
+    if (distribution && typeof distribution === 'object' && !Array.isArray(distribution)) {
+      const record = distribution as Record<string, unknown>;
+      const parameters = record.parameters as Record<string, unknown> | undefined;
+      if (record.family === 'uniform' && parameters) {
+        const min = Number(parameters.min);
+        const max = Number(parameters.max);
+        if (Number.isFinite(min) && Number.isFinite(max)) {
+          return [Math.max(0, Math.round(min)), Math.max(0, Math.round(max))];
+        }
+      }
+    }
+  }
   const raw = value.value;
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     const record = raw as Record<string, unknown>;
@@ -510,7 +634,13 @@ export function updateDelayedReachEpochRange(
       const max = Math.max(min, Math.round(Math.max(next[0], next[1])));
       return {
         ...epoch,
-        length: constantValue({ min, max }, epoch.length.metadata, EPOCH_LENGTH_VALUE_SCHEMA),
+        length: distributionValue(
+          'uniform',
+          { min, max },
+          'trial',
+          { ...epoch.length.metadata, range_upper_bound: 'exclusive' },
+          EPOCH_LENGTH_VALUE_SCHEMA
+        ),
       };
     }),
   };
@@ -539,6 +669,51 @@ export function toggleDelayedReachSignalEpoch(
       return {
         ...item,
         epoch_ids: [...epochIds].sort(),
+      };
+    }),
+  };
+}
+
+export function signalEpochValueSpec(
+  signalSpec: StudioTaskTimelineSignalSpec,
+  epochId: string
+): StudioValueSpec | null {
+  if (signalSpec.epoch_value_specs?.[epochId]) return signalSpec.epoch_value_specs[epochId] ?? null;
+  return signalSpec.epoch_ids.includes(epochId)
+    ? activeEpochValueSpec(signalSpec.value_spec)
+    : inactiveEpochValueSpec(signalSpec.value_spec);
+}
+
+export function updateTaskTimelineSignalEpochValueSpec(
+  timeline: StudioTaskTimelineSpec,
+  signalId: string,
+  epochId: string,
+  valueSpec: StudioValueSpec
+): StudioTaskTimelineSpec {
+  const linkedSignalIds =
+    signalId === 'target_on' || signalId === 'target_position'
+      ? new Set(['target_on', 'target_position'])
+      : new Set([signalId]);
+  return {
+    ...timeline,
+    signals: timeline.signals.map((item) => {
+      if (!linkedSignalIds.has(item.id)) return item;
+      const epochValueSpecs = {
+        ...(item.epoch_value_specs ?? {}),
+        [epochId]: valueSpec,
+      };
+      const epochIds = Object.entries(epochValueSpecs)
+        .filter(([, candidate]) => isActiveEpochValueSpec(candidate))
+        .map(([id]) => id)
+        .sort();
+      return {
+        ...item,
+        epoch_ids: epochIds,
+        epoch_value_specs: epochValueSpecs,
+        metadata: {
+          ...item.metadata,
+          epoch_value_specs_updated_from: 'task_timeline_epoch_value_editor',
+        },
       };
     }),
   };
