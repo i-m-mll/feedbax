@@ -16,9 +16,16 @@ import {
   delayedReachTaskWithTimeline,
   delayedReachTimelineFromTask,
   isDelayedReachTimelineParam,
-  toggleDelayedReachSignalEpoch,
-  updateDelayedReachEpochRange,
+  signalEpochValueSpec,
+  updateTaskTimelineSignalEpochValueSpec,
 } from '@/features/scenario/taskTimeline';
+import {
+  ValueSpecField,
+  descriptorForTaskSignal,
+  humanizeLabel,
+  isStudioValueSpec,
+  type ValueSpecFieldDescriptor,
+} from '@/components/values/ValueSpecField';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   getTopPaneState,
@@ -28,7 +35,7 @@ import {
 import { useLayoutStore } from '@/stores/layoutStore';
 import type { ParamValue } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
-import type { StudioTaskTimelineSpec, StudioValueSpec } from '@/types/workspace';
+import type { StudioTaskTimelineSpec } from '@/types/workspace';
 
 const TASK_CATALOG: TaskSpec[] = [
   {
@@ -70,34 +77,6 @@ const TASK_CATALOG: TaskSpec[] = [
   },
 ];
 
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return 'None';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function coerceParamValue(rawValue: string, currentValue: unknown): ParamValue {
-  if (typeof currentValue === 'number') {
-    const parsed = Number.parseFloat(rawValue);
-    return Number.isFinite(parsed) ? parsed : currentValue;
-  }
-  if (typeof currentValue === 'boolean') return rawValue === 'true';
-  if (Array.isArray(currentValue) || (currentValue && typeof currentValue === 'object')) {
-    try {
-      return JSON.parse(rawValue) as ParamValue;
-    } catch {
-      return currentValue as ParamValue;
-    }
-  }
-  if (currentValue === null) return rawValue;
-  return rawValue;
-}
-
 function ParamEditor({
   name,
   value,
@@ -107,58 +86,77 @@ function ParamEditor({
   value: unknown;
   onChange: (value: ParamValue) => void;
 }) {
-  const structured = Array.isArray(value) || (value !== null && typeof value === 'object');
-  if (typeof value === 'boolean') {
-    return (
-      <label className="flex items-center justify-between gap-3 text-xs">
-        <span className="min-w-0 truncate font-medium text-slate-500">{name}</span>
-        <input
-          type="checkbox"
-          checked={value}
-          onChange={(event) => onChange(event.target.checked)}
-          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-        />
-      </label>
-    );
-  }
+  const descriptor: ValueSpecFieldDescriptor = {
+    id: `task_param:${name}`,
+    label: humanizeLabel(name),
+    ownerKind: 'task_param',
+    semanticKind: isStaticShapeParam(name) ? 'static_shape' : 'static_leaf',
+    allowedModes: ['constant', 'expression', 'distribution'],
+    allowedScopes: ['run', 'sweep'],
+    defaultScope: 'run',
+    loweringTarget: isStaticShapeParam(name) ? 'run_manifest' : 'sweep_axis',
+  };
   return (
-    <label className="grid gap-1 text-xs">
-      <span className="truncate font-medium text-slate-500">{name}</span>
-      {structured ? (
-        <textarea
-          value={formatValue(value)}
-          onChange={(event) => onChange(coerceParamValue(event.target.value, value))}
-          className="min-h-14 rounded border border-slate-200 px-2 py-1.5 font-mono text-[11px] text-slate-700"
-        />
-      ) : (
-        <input
-          type={typeof value === 'number' ? 'number' : 'text'}
-          value={formatValue(value)}
-          step={typeof value === 'number' ? 'any' : undefined}
-          onChange={(event) => onChange(coerceParamValue(event.target.value, value))}
-          className="h-8 rounded border border-slate-200 px-2 text-xs text-slate-700"
-        />
-      )}
-    </label>
+    <div className="grid gap-1 text-xs">
+      <span className="truncate font-medium text-slate-500">{humanizeLabel(name)}</span>
+      <ValueSpecField
+        descriptor={descriptor}
+        value={value}
+        onChange={(nextValue) => onChange(nextValue as ParamValue)}
+      />
+    </div>
   );
 }
 
-function formatValueSpec(valueSpec: StudioValueSpec | null | undefined): string {
-  if (!valueSpec) return 'value';
-  if (valueSpec.mode === 'function') {
-    return 'function';
-  }
-  if (valueSpec.mode === 'constant') {
-    const value = valueSpec.value;
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const record = value as Record<string, unknown>;
-      if ('active' in record && 'inactive' in record) {
-        return `${record.active}/${record.inactive}`;
-      }
-    }
-    return formatValue(value);
-  }
-  return valueSpec.mode;
+function isStaticShapeParam(name: string) {
+  return /(^|_)(size|sizes|shape|count|dim|dims|n|num)(_|\b)/i.test(name);
+}
+
+function epochLengthDescriptor(
+  epoch: StudioTaskTimelineSpec['epochs'][number]
+): ValueSpecFieldDescriptor {
+  return {
+    id: `epoch_length:${epoch.id}`,
+    label: `${epoch.label} length`,
+    ownerKind: 'epoch_length',
+    semanticKind: 'epoch_length',
+    valueSchema:
+      (epoch.metadata.value_schema as Record<string, unknown> | undefined) ??
+      (epoch.length.metadata.value_schema as Record<string, unknown> | undefined) ??
+      null,
+    allowedModes: ['constant', 'distribution', 'expression'],
+    allowedScopes: ['run', 'sweep', 'trial', 'epoch'],
+    defaultScope: 'trial',
+    loweringTarget: 'timeline_mask',
+  };
+}
+
+function signalEpochDescriptor(
+  signal: StudioTaskTimelineSpec['signals'][number],
+  epoch: StudioTaskTimelineSpec['epochs'][number]
+): ValueSpecFieldDescriptor {
+  const base = descriptorForTaskSignal(signal);
+  return {
+    ...base,
+    id: `${base.id}:epoch:${epoch.id}`,
+    label: humanizeLabel(`${signal.label} in ${epoch.label}`),
+    defaultScope: 'epoch',
+    loweringTarget: 'timeline_mask',
+  };
+}
+
+function updateEpochLengthValueSpec(
+  timeline: StudioTaskTimelineSpec,
+  epochId: string,
+  nextValue: unknown
+): StudioTaskTimelineSpec {
+  if (!isStudioValueSpec(nextValue)) return timeline;
+  return {
+    ...timeline,
+    epochs: timeline.epochs.map((epoch) =>
+      epoch.id === epochId ? { ...epoch, length: nextValue } : epoch
+    ),
+  };
 }
 
 function DelayedReachTimelineEditor({
@@ -170,28 +168,8 @@ function DelayedReachTimelineEditor({
 }) {
   const editableEpochs = timeline.epochs.slice(0, -1);
   const signalRows = timeline.signals.filter((signal) => signal.kind === 'signal');
-  const timelineGridColumns = `7rem 5.75rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
-  const timelineMinWidth = `${12.75 + timeline.epochs.length * 4.875}rem`;
-  const updateVisibleRange = (
-    epoch: StudioTaskTimelineSpec['epochs'][number],
-    key: 'min' | 'max',
-    nextValue: number
-  ) => {
-    const current = epoch.length.value as { min?: unknown; max?: unknown } | null;
-    const currentMin = Number(current?.min ?? 0);
-    const currentMaxExclusive = Number(current?.max ?? currentMin + 1);
-    const currentMaxInclusive = Math.max(currentMin, currentMaxExclusive - 1);
-    const nextMin = Math.max(
-      0,
-      Math.round(key === 'min' ? nextValue : currentMin)
-    );
-    const nextMaxInclusive = Math.max(
-      nextMin,
-      Math.round(key === 'max' ? nextValue : currentMaxInclusive)
-    );
-    const withMin = updateDelayedReachEpochRange(timeline, epoch.id, 'min', nextMin);
-    return updateDelayedReachEpochRange(withMin, epoch.id, 'max', nextMaxInclusive + 1);
-  };
+  const timelineGridColumns = `7rem repeat(${timeline.epochs.length}, minmax(4.875rem, 1fr))`;
+  const timelineMinWidth = `${7 + timeline.epochs.length * 4.875}rem`;
   return (
     <section className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-400">
@@ -205,7 +183,6 @@ function DelayedReachTimelineEditor({
               style={{ gridTemplateColumns: timelineGridColumns }}
             >
               <div className="px-3 py-1.5">Signal</div>
-              <div className="border-l border-slate-100 px-2 py-1.5 text-center">Value</div>
               {timeline.epochs.map((epoch) => (
                 <div key={epoch.id} className="border-l border-slate-100 px-2 py-1.5 text-center">
                   {epoch.index}
@@ -219,21 +196,8 @@ function DelayedReachTimelineEditor({
               <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">
                 Length
               </div>
-              <div className="border-l border-slate-100 px-2 py-1.5 text-center text-[10px] leading-3 text-slate-400">
-                min-max
-                <br />
-                steps/trial
-              </div>
               {timeline.epochs.map((epoch) => {
-                const value = epoch.length.value as { min?: unknown; max?: unknown } | null;
                 const inferred = Boolean(epoch.length.metadata.inferred_from_remaining_steps);
-                const storedMin = Number(value?.min ?? 0);
-                const storedMaxExclusive = Number(value?.max ?? 0);
-                const visibleMin = Number.isFinite(storedMin) ? storedMin : 0;
-                const visibleMax = Math.max(
-                  visibleMin,
-                  Number.isFinite(storedMaxExclusive) ? storedMaxExclusive - 1 : visibleMin
-                );
                 return (
                   <div key={epoch.id} className="border-l border-slate-100 px-1.5 py-1.5">
                     {inferred ? (
@@ -241,38 +205,15 @@ function DelayedReachTimelineEditor({
                         remaining
                       </div>
                     ) : (
-                      <div className="grid gap-1">
-                        <div className="grid grid-cols-[1.25rem_2.45rem] justify-center gap-1">
-                          <span className="self-center text-right text-[9px] font-medium uppercase tracking-[0.08em] text-slate-300">
-                            min
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            value={visibleMin}
-                            onChange={(event) =>
-                              onChange(updateVisibleRange(epoch, 'min', Number(event.target.value)))
-                            }
-                            className="h-6 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
-                            aria-label={`${epoch.label} min length`}
-                          />
-                        </div>
-                        <div className="grid grid-cols-[1.25rem_2.45rem] justify-center gap-1">
-                          <span className="self-center text-right text-[9px] font-medium uppercase tracking-[0.08em] text-slate-300">
-                            max
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            value={visibleMax}
-                            onChange={(event) =>
-                              onChange(updateVisibleRange(epoch, 'max', Number(event.target.value)))
-                            }
-                            className="h-6 rounded border border-slate-200 px-1 text-center text-[11px] text-slate-700"
-                            aria-label={`${epoch.label} max length`}
-                          />
-                        </div>
-                      </div>
+                      <ValueSpecField
+                        descriptor={epochLengthDescriptor(epoch)}
+                        value={epoch.length}
+                        forceValueSpec
+                        compact
+                        onChange={(nextValue) =>
+                          onChange(updateEpochLengthValueSpec(timeline, epoch.id, nextValue))
+                        }
+                      />
                     )}
                   </div>
                 );
@@ -287,31 +228,30 @@ function DelayedReachTimelineEditor({
                 <div className="truncate px-2.5 py-1.5 font-medium text-slate-600">
                   {signal.label}
                 </div>
-                <div className="truncate border-l border-slate-100 px-2 py-1.5 text-center text-[10px] font-medium text-slate-500">
-                  {formatValueSpec(signal.value_spec)}
-                </div>
                 {timeline.epochs.map((epoch) => (
-                  <label
+                  <div
                     key={epoch.id}
-                    className="flex h-8 items-center justify-center border-l border-slate-100"
+                    className="flex h-8 items-center justify-center border-l border-slate-100 px-1.5"
                     title={`${signal.label} during ${epoch.label}`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={signal.epoch_ids.includes(epoch.id)}
-                      onChange={(event) =>
+                    <ValueSpecField
+                      descriptor={signalEpochDescriptor(signal, epoch)}
+                      value={signalEpochValueSpec(signal, epoch.id)}
+                      forceValueSpec
+                      compact
+                      onChange={(nextValue) => {
+                        if (!isStudioValueSpec(nextValue)) return;
                         onChange(
-                          toggleDelayedReachSignalEpoch(
+                          updateTaskTimelineSignalEpochValueSpec(
                             timeline,
                             signal.id,
                             epoch.id,
-                            event.target.checked
+                            nextValue
                           )
-                        )
-                      }
-                      className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        );
+                      }}
                     />
-                  </label>
+                  </div>
                 ))}
               </div>
             ))}

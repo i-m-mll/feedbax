@@ -20,6 +20,11 @@ from feedbax.web.models.graph import (
     RetainedObservableTargetSpec,
     RetentionPolicySpec,
 )
+from feedbax.task_timeline_masks import (
+    TaskTimelineMaskError,
+    align_time_mask,
+    build_task_timeline_mask,
+)
 from feedbax.web.models.training import LossTermSpec, TimeAggregationSpec, TrainingSpec
 
 
@@ -101,6 +106,7 @@ class LossTermPlan:
     target_value: Any = None
     norm: Literal["squared_l2", "l2", "l1", "huber"] = "squared_l2"
     time_agg: TimeAggregationSpec = field(default_factory=TimeAggregationSpec)
+    time_mask: Optional[Any] = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -204,6 +210,7 @@ def lower_retention_plan(
     graph: GraphSpec,
     training: Optional[TrainingSpec | LossTermSpec] = None,
     *,
+    task_spec: Optional[Mapping[str, Any] | Any] = None,
     artifact_selectors: Iterable[str | Mapping[str, Any] | SelectorRef] = (),
     analysis_input_requirements: Iterable[AnalysisInputRequirement | Mapping[str, Any]] = (),
 ) -> RetentionPlan:
@@ -223,7 +230,7 @@ def lower_retention_plan(
         loss_spec = training
     loss_terms: list[LossTermPlan] = []
     if loss_spec is not None:
-        loss_terms.extend(_lower_loss_terms(loss_spec, "/loss", requirements))
+        loss_terms.extend(_lower_loss_terms(loss_spec, "/loss", requirements, task_spec=task_spec))
 
     for index, selector_value in enumerate(artifact_selectors):
         selector = normalize_selector_ref(selector_value, path=f"/artifacts/{index}/selector")
@@ -262,6 +269,7 @@ def validate_retention_plan(
     graph: GraphSpec,
     training: Optional[TrainingSpec | LossTermSpec] = None,
     *,
+    task_spec: Optional[Mapping[str, Any] | Any] = None,
     analysis_input_requirements: Iterable[AnalysisInputRequirement | Mapping[str, Any]] = (),
 ) -> list[RetentionPlanError]:
     """Return lowering errors without raising."""
@@ -270,6 +278,7 @@ def validate_retention_plan(
         lower_retention_plan(
             graph,
             training,
+            task_spec=task_spec,
             analysis_input_requirements=analysis_input_requirements,
         )
     except RetentionPlanError as exc:
@@ -306,7 +315,12 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
 
     diff = jnp.asarray(source) - jnp.asarray(target)
     per_step = _norm_values(diff, term.norm)
-    return _aggregate_time(per_step, term.time_agg, f"/loss/{term.key}/time_agg")
+    return _aggregate_time(
+        per_step,
+        term.time_agg,
+        f"/loss/{term.key}/time_agg",
+        time_mask=term.time_mask,
+    )
 
 
 def retention_plan_to_json(plan: RetentionPlan) -> dict[str, Any]:
@@ -351,6 +365,11 @@ def retention_plan_to_json(plan: RetentionPlan) -> dict[str, Any]:
                 "target_value": item.target_value,
                 "norm": item.norm,
                 "time_agg": item.time_agg.model_dump(mode="json", exclude_none=True),
+                "time_mask": (
+                    jnp.asarray(item.time_mask, dtype=bool).tolist()
+                    if item.time_mask is not None
+                    else None
+                ),
                 "metadata": dict(item.metadata),
             }
             for item in plan.loss_terms
@@ -436,11 +455,20 @@ def _lower_loss_terms(
     term: LossTermSpec,
     path: str,
     requirements: dict[str, _ObservableRequirement],
+    *,
+    task_spec: Optional[Mapping[str, Any] | Any],
 ) -> list[LossTermPlan]:
     if term.children:
         lowered: list[LossTermPlan] = []
         for child_key, child in term.children.items():
-            lowered.extend(_lower_loss_terms(child, f"{path}/children/{child_key}", requirements))
+            lowered.extend(
+                _lower_loss_terms(
+                    child,
+                    f"{path}/children/{child_key}",
+                    requirements,
+                    task_spec=task_spec,
+                )
+            )
         return lowered
 
     if not term.selector:
@@ -485,11 +513,36 @@ def _lower_loss_terms(
             selector=term.selector,
         )
     time_agg = term.time_agg or TimeAggregationSpec(mode="all")
+    time_mask = None
+    metadata: dict[str, Any] = {}
     if time_agg.mode == "segment":
-        raise RetentionPlanError(
-            "Segment time aggregation requires task timeline mask lowering and is not supported",
-            path=f"{path}/time_agg",
-            selector=term.selector,
+        try:
+            timeline_mask = build_task_timeline_mask(
+                task_spec,
+                segment_name=time_agg.segment_name or "",
+                n_steps=_task_n_steps(task_spec),
+                path="/task_spec/timeline",
+            )
+        except TaskTimelineMaskError as exc:
+            raise RetentionPlanError(
+                str(exc),
+                path=exc.path,
+                selector=term.selector,
+            ) from exc
+        time_mask = timeline_mask.mask
+        metadata["time_mask"] = {
+            "segment_name": timeline_mask.segment_name,
+            "epoch_ids": list(timeline_mask.epoch_ids),
+            "n_steps": timeline_mask.n_steps,
+            **dict(timeline_mask.metadata),
+        }
+        retention = _merge_retention(
+            retention,
+            RetentionPolicyPlan(
+                mode="trajectory",
+                reasons=("segment_time_aggregation",),
+                metadata={"segment_name": time_agg.segment_name},
+            ),
         )
 
     key = _loss_key(path)
@@ -504,8 +557,30 @@ def _lower_loss_terms(
             target_value=term.target_value,
             norm=term.norm or "squared_l2",
             time_agg=time_agg,
+            time_mask=time_mask,
+            metadata=metadata,
         )
     ]
+
+
+def _task_n_steps(task_spec: Optional[Mapping[str, Any] | Any]) -> int:
+    if task_spec is None:
+        return 0
+    if isinstance(task_spec, Mapping):
+        task = task_spec
+    elif hasattr(task_spec, "model_dump"):
+        task = task_spec.model_dump(mode="json", exclude_none=True)
+    else:
+        task = {}
+    timeline = task.get("timeline")
+    if isinstance(timeline, Mapping):
+        metadata = timeline.get("metadata")
+        if isinstance(metadata, Mapping) and metadata.get("n_steps") is not None:
+            return int(metadata["n_steps"])
+    params = task.get("params")
+    if isinstance(params, Mapping) and params.get("n_steps") is not None:
+        return int(params["n_steps"])
+    return 0
 
 
 def _policy_to_plan(
@@ -835,7 +910,13 @@ def _norm_values(values: Any, norm: str) -> Any:
     return reduced
 
 
-def _aggregate_time(values: Any, time_agg: TimeAggregationSpec, path: str) -> Any:
+def _aggregate_time(
+    values: Any,
+    time_agg: TimeAggregationSpec,
+    path: str,
+    *,
+    time_mask: Optional[Any] = None,
+) -> Any:
     arr = jnp.asarray(values)
     mode = time_agg.mode
     if mode in {"all", "mean"}:
@@ -867,8 +948,14 @@ def _aggregate_time(values: Any, time_agg: TimeAggregationSpec, path: str) -> An
             raise RetentionPlanError("Custom time aggregation requires time_idxs", path=path)
         return jnp.mean(arr[jnp.asarray(time_agg.time_idxs)])
     if mode == "segment":
-        raise RetentionPlanError(
-            "Segment time aggregation requires task timeline masks and is not lowered here",
-            path=path,
-        )
+        if time_mask is None:
+            raise RetentionPlanError(
+                "Segment time aggregation requires task timeline masks",
+                path=path,
+            )
+        try:
+            mask = align_time_mask(time_mask, arr, path=path)
+        except TaskTimelineMaskError as exc:
+            raise RetentionPlanError(str(exc), path=exc.path) from exc
+        return jnp.mean(arr[mask])
     raise RetentionPlanError(f"Unsupported time aggregation {mode!r}", path=path)

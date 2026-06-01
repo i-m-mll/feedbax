@@ -46,6 +46,11 @@ import type {
   StudioValueSpec,
 } from '@/types/workspace';
 import { FigOpsSection, DependencyPortsSection } from '@/components/analysis/FigOpsSection';
+import {
+  ValueSpecField,
+  humanizeLabel,
+  type ValueSpecFieldDescriptor,
+} from '@/components/values/ValueSpecField';
 import clsx from 'clsx';
 
 export function PropertiesPanel() {
@@ -1355,6 +1360,38 @@ function DimensionConstraintHint({
   );
 }
 
+function isStaticShapeParamName(name: string) {
+  return /(^|_)(size|sizes|shape|count|dim|dims|n|num)(_|\b)/i.test(name);
+}
+
+function descriptorForParamSchema(schema: ParamSchema): ValueSpecFieldDescriptor {
+  const staticShape = isStaticShapeParamName(schema.name);
+  return {
+    id: `component_param:${schema.name}`,
+    label: humanizeLabel(schema.name),
+    ownerKind: 'component_param',
+    semanticKind: staticShape ? 'static_shape' : 'static_leaf',
+    valueSchema: {
+      dtype:
+        schema.type === 'int'
+          ? 'int32'
+          : schema.type === 'float'
+            ? 'float32'
+            : schema.type === 'bool'
+              ? 'bool'
+              : 'object',
+      shape: schema.type === 'array' || schema.type === 'bounds2d' ? ['...'] : [],
+      units: null,
+      frame: null,
+    },
+    allowedModes:
+      schema.type === 'enum' ? ['constant', 'expression'] : ['constant', 'expression', 'distribution'],
+    allowedScopes: ['run', 'sweep'],
+    defaultScope: 'run',
+    loweringTarget: staticShape ? 'run_manifest' : 'sweep_axis',
+  };
+}
+
 function ParamInput({
   schema,
   value,
@@ -1364,182 +1401,13 @@ function ParamInput({
   value: ParamValue;
   onChange: (value: ParamValue) => void;
 }) {
-  const [jsonValue, setJsonValue] = useState<string>(
-    schema.type === 'array' || schema.type === 'object'
-      ? JSON.stringify(value ?? schema.default ?? null, null, 2)
-      : ''
-  );
-
-  useEffect(() => {
-    if (schema.type === 'array' || schema.type === 'object') {
-      setJsonValue(JSON.stringify(value ?? schema.default ?? null, null, 2));
-    }
-  }, [schema.type, schema.default, value]);
-
-  const parseBounds2d = (raw: ParamValue, fallback: ParamValue | undefined) => {
-    const fallbackValue: number[][] = Array.isArray(fallback)
-      ? (fallback as number[][])
-      : [
-          [0, 0],
-          [1, 1],
-        ];
-    const source: number[][] = Array.isArray(raw) ? (raw as number[][]) : fallbackValue;
-    const minRaw = Array.isArray(source[0]) ? (source[0] as number[]) : fallbackValue[0];
-    const maxRaw = Array.isArray(source[1]) ? (source[1] as number[]) : fallbackValue[1];
-    const safe = (item: unknown, defaultValue: number) =>
-      typeof item === 'number' && Number.isFinite(item) ? item : defaultValue;
-    return {
-      minX: safe(minRaw?.[0], fallbackValue[0][0]),
-      minY: safe(minRaw?.[1], fallbackValue[0][1]),
-      maxX: safe(maxRaw?.[0], fallbackValue[1][0]),
-      maxY: safe(maxRaw?.[1], fallbackValue[1][1]),
-    };
-  };
-
-  if (schema.type === 'int' || schema.type === 'float') {
-    const numericValue =
-      typeof value === 'number'
-        ? value
-        : typeof schema.default === 'number'
-          ? schema.default
-          : 0;
-    return (
-      <label className="flex flex-col gap-1 text-xs text-slate-500">
-        {schema.name}
-        <input
-          type="number"
-          value={numericValue}
-          min={schema.min}
-          max={schema.max}
-          step={schema.step ?? (schema.type === 'int' ? 1 : 0.01)}
-          onChange={(event) => onChange(Number(event.target.value))}
-          className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-        />
-      </label>
-    );
-  }
-
-  if (schema.type === 'bool') {
-    return (
-      <label className="flex items-center gap-2 text-sm text-slate-600">
-        <input
-          type="checkbox"
-          checked={Boolean(value)}
-          onChange={(event) => onChange(event.target.checked)}
-          className="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-500"
-        />
-        {schema.name}
-      </label>
-    );
-  }
-
-  if (schema.type === 'enum') {
-    return (
-      <label className="flex flex-col gap-1 text-xs text-slate-500">
-        {schema.name}
-        <select
-          value={String(value ?? schema.default ?? '')}
-          onChange={(event) => onChange(event.target.value)}
-          className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-        >
-          {(schema.options ?? []).map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
-      </label>
-    );
-  }
-
-  if (schema.type === 'bounds2d') {
-    const bounds = parseBounds2d(value, schema.default);
-    const update = (next: Partial<typeof bounds>) => {
-      const merged = { ...bounds, ...next };
-      onChange([
-        [merged.minX, merged.minY],
-        [merged.maxX, merged.maxY],
-      ]);
-    };
-    return (
-      <div className="flex flex-col gap-2 text-xs text-slate-500">
-        <div>{schema.name}</div>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1">
-            Min X
-            <input
-              type="number"
-              value={bounds.minX}
-              step={schema.step ?? 0.1}
-              onChange={(event) => update({ minX: Number(event.target.value) })}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            Min Y
-            <input
-              type="number"
-              value={bounds.minY}
-              step={schema.step ?? 0.1}
-              onChange={(event) => update({ minY: Number(event.target.value) })}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            Max X
-            <input
-              type="number"
-              value={bounds.maxX}
-              step={schema.step ?? 0.1}
-              onChange={(event) => update({ maxX: Number(event.target.value) })}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            Max Y
-            <input
-              type="number"
-              value={bounds.maxY}
-              step={schema.step ?? 0.1}
-              onChange={(event) => update({ maxY: Number(event.target.value) })}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800"
-            />
-          </label>
-        </div>
-      </div>
-    );
-  }
-
-  if (schema.type === 'array' || schema.type === 'object') {
-    return (
-      <label className="flex flex-col gap-1 text-xs text-slate-500">
-        {schema.name}
-        <textarea
-          rows={3}
-          value={jsonValue}
-          onChange={(event) => setJsonValue(event.target.value)}
-          onBlur={() => {
-            try {
-              const parsed = JSON.parse(jsonValue);
-              onChange(parsed);
-            } catch {
-              // leave value unchanged on parse error
-            }
-          }}
-          className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 font-mono"
-        />
-      </label>
-    );
-  }
-
   return (
     <label className="flex flex-col gap-1 text-xs text-slate-500">
-      {schema.name}
-      <input
-        type="text"
-        value={String(value ?? '')}
-        onChange={(event) => onChange(event.target.value)}
-        className={clsx('rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800')}
+      <span>{humanizeLabel(schema.name)}</span>
+      <ValueSpecField
+        descriptor={descriptorForParamSchema(schema)}
+        value={value}
+        onChange={(nextValue) => onChange(nextValue as ParamValue)}
       />
     </label>
   );

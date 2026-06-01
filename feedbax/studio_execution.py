@@ -470,7 +470,7 @@ def _validate_training_scenario(
     from feedbax.provider import validate_graph_spec, validate_task_spec, validate_training_spec
 
     graph_result = validate_graph_spec(graph)
-    training_result = validate_training_spec(training_spec, graph_spec=graph)
+    training_result = validate_training_spec(training_spec, graph_spec=graph, task_spec=task_spec)
     task_result = validate_task_spec(task_spec)
     task_binding_errors = _validate_task_binding_spec(graph, task_binding_spec)
 

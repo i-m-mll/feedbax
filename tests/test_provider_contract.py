@@ -669,7 +669,52 @@ def test_studio_task_timeline_spec_validates_value_specs() -> None:
                     "id": "hold",
                     "label": "Hold cue",
                     "kind": "signal",
+                    "task_data_id": "inputs",
                     "path": "inputs.hold",
+                    "epoch_ids": ["epoch:0"],
+                    "value_spec": {
+                        "schema_version": "feedbax.studio.value.v1",
+                        "mode": "distribution",
+                        "distribution": {
+                            "family": "uniform",
+                            "parameters": {"min": 0.0, "max": 1.0},
+                        },
+                        "sampling_scope": "trial",
+                        "metadata": {},
+                    },
+                    "value_schema": {
+                        "id": "schema:inputs",
+                        "label": "Inputs",
+                        "kind": "array",
+                        "dtype": "float",
+                        "shape": [2],
+                        "origin": "declared",
+                        "metadata": {},
+                    },
+                    "task_data_schema": {
+                        "id": "task_data:inputs",
+                        "label": "Inputs",
+                        "kind": "signal",
+                        "role": "model_input",
+                        "path": "inputs",
+                        "bindable": True,
+                        "value_schema": {
+                            "id": "schema:inputs",
+                            "label": "Inputs",
+                            "kind": "array",
+                            "origin": "declared",
+                            "metadata": {},
+                        },
+                        "origin": "declared",
+                        "metadata": {},
+                    },
+                    "metadata": {"value_spec_modes": ["constant", "distribution"]},
+                }
+            ],
+            "segments": [
+                {
+                    "id": "cue_window",
+                    "label": "cue window",
                     "epoch_ids": ["epoch:0"],
                     "metadata": {},
                 }
@@ -680,6 +725,11 @@ def test_studio_task_timeline_spec_validates_value_specs() -> None:
 
     assert timeline.epochs[0].length.mode == "constant"
     assert timeline.signals[0].epoch_ids == ["epoch:0"]
+    assert timeline.signals[0].value_spec is not None
+    assert timeline.signals[0].value_spec.mode == "distribution"
+    assert timeline.signals[0].value_schema["shape"] == [2]
+    assert timeline.signals[0].task_data_schema["role"] == "model_input"
+    assert timeline.segments[0].id == "cue_window"
 
 
 def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path) -> None:

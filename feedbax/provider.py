@@ -885,6 +885,7 @@ def validate_training_spec(
     payload: dict[str, Any] | TrainingSpec,
     *,
     graph_spec: Optional[dict[str, Any] | GraphSpec] = None,
+    task_spec: Optional[dict[str, Any] | TaskSpec] = None,
 ) -> ProviderValidationResult:
     try:
         spec = (
@@ -935,7 +936,7 @@ def validate_training_spec(
                 else GraphSpec.model_validate(graph_spec)
             )
             try:
-                lower_retention_plan(graph, spec)
+                lower_retention_plan(graph, spec, task_spec=task_spec)
             except RetentionPlanError as exc:
                 errors.append(
                     ValidationIssue(
