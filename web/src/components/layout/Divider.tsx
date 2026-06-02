@@ -1,13 +1,12 @@
 import React from 'react';
 import { useLayoutStore, DIVIDER_HEIGHT } from '@/stores/layoutStore';
-import { ChevronUp, ChevronDown } from 'lucide-react';
 
 interface DividerProps {
   availableHeight: number;
 }
 
 export function Divider({ availableHeight }: DividerProps) {
-  const { topCollapsed, bottomCollapsed, toggleTop, toggleBottom, setBottomHeight, bottomHeight } =
+  const { topCollapsed, bottomCollapsed, setBottomHeight, bottomHeight } =
     useLayoutStore();
 
   const isDraggable = !topCollapsed && !bottomCollapsed;
@@ -31,42 +30,10 @@ export function Divider({ availableHeight }: DividerProps) {
 
   return (
     <div
-      className="relative flex items-center border-t border-slate-200 bg-white z-10"
-      style={{ height: DIVIDER_HEIGHT, overflow: 'visible' }}
-    >
-      {/* Drag pill — center, only shown when both expanded */}
-      {isDraggable && (
-        <div
-          className="absolute left-1/2 -translate-x-1/2 w-12 h-full cursor-row-resize flex items-center justify-center"
-          onPointerDown={handleDragStart}
-        >
-          <div className="w-10 h-1 rounded-full bg-slate-200 hover:bg-slate-300" />
-        </div>
-      )}
-
-      {/* Collapse/expand buttons — right side, straddle the divider line */}
-      <div className="absolute right-3 top-1/2 -translate-y-1/2" style={{ overflow: 'visible' }}>
-        {/* ChevronUp — sits above the line; hidden when top pane is already collapsed */}
-        {!topCollapsed && (
-          <button
-            className="absolute bottom-[10px] right-0 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-slate-400 text-white shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-500"
-            title={bottomCollapsed ? 'Expand bottom pane' : 'Collapse top pane'}
-            onClick={() => bottomCollapsed ? toggleBottom(availableHeight) : toggleTop(availableHeight)}
-          >
-            <ChevronUp className="w-3 h-3" />
-          </button>
-        )}
-        {/* ChevronDown — sits below the line; hidden when bottom pane is already collapsed */}
-        {!bottomCollapsed && (
-          <button
-            className="absolute top-[10px] right-0 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 bg-slate-400 text-white shadow-sm transition-colors hover:border-slate-400 hover:bg-slate-500"
-            title={topCollapsed ? 'Expand top pane' : 'Collapse bottom pane'}
-            onClick={() => topCollapsed ? toggleTop(availableHeight) : toggleBottom(availableHeight)}
-          >
-            <ChevronDown className="w-3 h-3" />
-          </button>
-        )}
-      </div>
-    </div>
+      className={isDraggable ? 'z-10 border-t border-slate-200 cursor-row-resize' : 'z-10 border-t border-slate-200'}
+      style={{ height: DIVIDER_HEIGHT }}
+      onPointerDown={handleDragStart}
+      title={isDraggable ? 'Drag to resize panes' : undefined}
+    />
   );
 }

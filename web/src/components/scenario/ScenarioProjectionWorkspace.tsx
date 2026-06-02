@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import {
   Database,
+  FoldVertical,
+  UnfoldVertical,
   GitBranch,
   ListChecks,
   Map as MapIcon,
@@ -97,18 +99,21 @@ function isSelectedOrRelated(
   return item.entity_id === selectedId || relatedIds.has(item.entity_id);
 }
 
-export function ScenarioProjectionToolbar() {
+export function ScenarioProjectionToolbar({ availableHeight }: { availableHeight: number }) {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const setTopPaneProjection = useWorkspaceStore((state) => state.setTopPaneProjection);
   const {
     leftSidebarVisible,
     rightSidebarVisible,
+    topCollapsed,
     toggleLeftSidebar,
     toggleRightSidebar,
+    toggleTop,
   } = useLayoutStore();
   const topPane = getTopPaneState(workspace);
   const LeftIcon = leftSidebarVisible ? PanelLeftClose : PanelLeftOpen;
   const RightIcon = rightSidebarVisible ? PanelRightClose : PanelRightOpen;
+  const TopIcon = topCollapsed ? UnfoldVertical : FoldVertical;
 
   return (
     <div className="flex h-11 shrink-0 items-end justify-between border-b border-slate-200 bg-white px-3">
@@ -128,7 +133,10 @@ export function ScenarioProjectionToolbar() {
             <button
               key={projection.id}
               type="button"
-              onClick={() => setTopPaneProjection(projection.id)}
+              onClick={() => {
+                setTopPaneProjection(projection.id);
+                if (topCollapsed) toggleTop(availableHeight);
+              }}
               className={clsx(
                 'inline-flex h-10 items-center gap-2 border-b-2 px-4 text-xs font-semibold uppercase tracking-[0.12em] transition-colors',
                 selected
@@ -142,14 +150,24 @@ export function ScenarioProjectionToolbar() {
           );
         })}
       </div>
-      <button
-        type="button"
-        onClick={toggleRightSidebar}
-        className="mb-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-        title={rightSidebarVisible ? 'Hide properties panel' : 'Show properties panel'}
-      >
-        <RightIcon className="h-4 w-4" />
-      </button>
+      <div className="flex h-full shrink-0 items-end gap-1 pb-1">
+        <button
+          type="button"
+          onClick={() => toggleTop(availableHeight)}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          title={topCollapsed ? 'Expand top pane' : 'Collapse top pane'}
+        >
+          <TopIcon className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={toggleRightSidebar}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+          title={rightSidebarVisible ? 'Hide properties panel' : 'Show properties panel'}
+        >
+          <RightIcon className="h-4 w-4" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -656,6 +674,8 @@ function ObjectivesProjection({
 export function ScenarioProjectionWorkspace() {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
+  const rightSidebarVisible = useLayoutStore((state) => state.rightSidebarVisible);
+  const toggleRightSidebar = useLayoutStore((state) => state.toggleRightSidebar);
   const updateActiveScenarioObjectiveSpec = useWorkspaceStore(
     (state) => state.updateActiveScenarioObjectiveSpec
   );
@@ -677,6 +697,12 @@ export function ScenarioProjectionWorkspace() {
   );
   const stageSummary =
     typeof activeStage?.metadata.summary === 'string' ? activeStage.metadata.summary : null;
+
+  useEffect(() => {
+    if (topPane.selected_entity_id && !rightSidebarVisible) {
+      toggleRightSidebar();
+    }
+  }, [rightSidebarVisible, toggleRightSidebar, topPane.selected_entity_id]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

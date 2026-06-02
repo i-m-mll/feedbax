@@ -30,14 +30,29 @@ interface LayoutStoreState {
   toggleBottomRightSidebar: () => void;
 }
 
+type PersistedLayoutState = Pick<
+  LayoutStoreState,
+  | 'topCollapsed'
+  | 'bottomCollapsed'
+  | 'bottomHeight'
+  | 'leftSidebarWidth'
+  | 'taskSidebarWidth'
+  | 'rightSidebarWidth'
+  | 'leftSidebarVisible'
+  | 'rightSidebarVisible'
+  | 'bottomSidebarWidth'
+  | 'bottomSidebarCollapsed'
+  | 'bottomRightSidebarCollapsed'
+>;
+
 const DEFAULT_BOTTOM_HEIGHT = 320;
 export const SHELF_HEADER_HEIGHT = 44;
-export const DIVIDER_HEIGHT = 8;
+export const DIVIDER_HEIGHT = 1;
 export const MIN_BOTTOM_HEIGHT = SHELF_HEADER_HEIGHT;
 export const MIN_TOP_HEIGHT = 80;
 export const MAX_BOTTOM_HEIGHT = Number.MAX_SAFE_INTEGER;
 export const BOTTOM_COLLAPSED_HEIGHT = SHELF_HEADER_HEIGHT;
-export const TOP_COLLAPSED_HEIGHT = 8;
+export const TOP_COLLAPSED_HEIGHT = SHELF_HEADER_HEIGHT;
 const DEFAULT_SPLIT_RATIO = 0.5;
 
 export const MIN_LEFT_WIDTH = 200;
@@ -52,6 +67,20 @@ export const DEFAULT_RIGHT_WIDTH = 320;
 export const MIN_BOTTOM_SIDEBAR_WIDTH = 200;
 export const MAX_BOTTOM_SIDEBAR_WIDTH = 400;
 export const DEFAULT_BOTTOM_SIDEBAR_WIDTH = 256;
+
+const DEFAULT_PERSISTED_LAYOUT: PersistedLayoutState = {
+  topCollapsed: false,
+  bottomCollapsed: false,
+  bottomHeight: DEFAULT_BOTTOM_HEIGHT,
+  leftSidebarWidth: DEFAULT_LEFT_WIDTH,
+  taskSidebarWidth: DEFAULT_TASK_SIDEBAR_WIDTH,
+  rightSidebarWidth: DEFAULT_RIGHT_WIDTH,
+  leftSidebarVisible: true,
+  rightSidebarVisible: false,
+  bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
+  bottomSidebarCollapsed: false,
+  bottomRightSidebarCollapsed: false,
+};
 
 const clampBottomHeight = (height: number, availableHeight: number) => {
   const maxBottom = Math.max(availableHeight - MIN_TOP_HEIGHT, BOTTOM_COLLAPSED_HEIGHT);
@@ -83,7 +112,7 @@ export const useLayoutStore = create<LayoutStoreState>()(
       taskSidebarWidth: DEFAULT_TASK_SIDEBAR_WIDTH,
       rightSidebarWidth: DEFAULT_RIGHT_WIDTH,
       leftSidebarVisible: true,
-      rightSidebarVisible: true,
+      rightSidebarVisible: false,
       bottomSidebarWidth: DEFAULT_BOTTOM_SIDEBAR_WIDTH,
       bottomSidebarCollapsed: false,
       bottomRightSidebarCollapsed: false,
@@ -174,6 +203,21 @@ export const useLayoutStore = create<LayoutStoreState>()(
     }),
     {
       name: 'feedbax-studio-layout',
+      version: 2,
+      migrate: (persistedState, version): PersistedLayoutState => {
+        const persisted =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<PersistedLayoutState>)
+            : {};
+        return {
+          ...DEFAULT_PERSISTED_LAYOUT,
+          ...persisted,
+          rightSidebarVisible:
+            version < 2
+              ? false
+              : persisted.rightSidebarVisible ?? DEFAULT_PERSISTED_LAYOUT.rightSidebarVisible,
+        };
+      },
       partialize: (state) => ({
         topCollapsed: state.topCollapsed,
         bottomCollapsed: state.bottomCollapsed,

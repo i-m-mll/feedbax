@@ -869,7 +869,7 @@ function RetainedObservableInspector({
         className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add objective from {selectorDisplayLabel(entity.selector)}
+        Add objective
       </button>
       <div className="space-y-2 text-xs text-slate-600">
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3">
@@ -991,7 +991,7 @@ function SourceInspector({
         className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add objective from {selectorDisplayLabel(selectedSourceSelector)}
+        Add objective
       </button>
       <button
         type="button"
@@ -1000,7 +1000,7 @@ function SourceInspector({
         className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Plus className="h-3.5 w-3.5" />
-        Capture observable from {selectorDisplayLabel(selectedSourceSelector)}
+        Capture observable
       </button>
     </section>
   );

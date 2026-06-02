@@ -198,7 +198,7 @@ export function PortContextMenu({
         className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
       >
         <ListPlus className="w-4 h-4 text-brand-500" />
-        <span className="min-w-0 truncate">Add objective from {sourceLabel}</span>
+        <span className="min-w-0 truncate">Add objective</span>
       </button>
       {portType === 'output' && (
         <button
