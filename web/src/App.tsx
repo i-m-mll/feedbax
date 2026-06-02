@@ -233,7 +233,10 @@ export default function App() {
           }}
         >
           <div className="min-w-0 min-h-0 overflow-hidden">
-            <TopShelf height={topHeight ?? TOP_COLLAPSED_HEIGHT} />
+            <TopShelf
+              height={topHeight ?? TOP_COLLAPSED_HEIGHT}
+              availableHeight={availableHeight}
+            />
           </div>
           <Divider availableHeight={availableHeight} />
           <BottomShelf

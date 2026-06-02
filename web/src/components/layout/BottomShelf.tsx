@@ -19,6 +19,8 @@ import {
   BarChart3,
   FileText,
   FlaskConical,
+  FoldVertical,
+  UnfoldVertical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -68,6 +70,7 @@ export function BottomShelf({
   const isAnalysisMode = mode === 'stage' && activeStage?.kind === 'analysis';
   const LeftSidebarIcon = bottomSidebarCollapsed ? PanelLeftOpen : PanelLeftClose;
   const RightSidebarIcon = bottomRightSidebarCollapsed ? PanelRightOpen : PanelRightClose;
+  const BottomIcon = bottomCollapsed ? UnfoldVertical : FoldVertical;
 
   const activeContent = useMemo(() => {
     if (mode === 'console') return <ConsolePanel />;
@@ -114,7 +117,7 @@ export function BottomShelf({
       style={{ height }}
     >
       <div
-        className="flex items-end gap-3 border-b border-slate-200 px-3 pr-14"
+        className="flex items-end gap-3 border-b border-slate-200 px-3"
         style={{ height: SHELF_HEADER_HEIGHT }}
       >
         {isAnalysisMode && (
@@ -128,7 +131,7 @@ export function BottomShelf({
           </button>
         )}
         <div className="relative flex-1 min-w-0">
-          <div ref={tabsRef} className="flex items-end overflow-x-auto pr-6">
+          <div ref={tabsRef} className="flex items-end overflow-x-auto">
             {stages.map((stage) => {
               const Icon = stageIcons[stage.kind] ?? Workflow;
               const active = mode === 'stage' && stage.id === activeStage?.id;
@@ -173,8 +176,16 @@ export function BottomShelf({
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-white/90 to-transparent" />
           )}
         </div>
-        {isAnalysisMode && (
-          <div className="flex h-full shrink-0 items-end gap-1 pb-1">
+        <div className="flex h-full shrink-0 items-end gap-1 pb-1">
+          <button
+            type="button"
+            onClick={() => toggleBottom(availableHeight)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            title={bottomCollapsed ? 'Expand bottom pane' : 'Collapse bottom pane'}
+          >
+            <BottomIcon className="h-4 w-4" />
+          </button>
+          {isAnalysisMode && (
             <button
               type="button"
               onClick={toggleBottomRightSidebar}
@@ -187,8 +198,8 @@ export function BottomShelf({
             >
               <RightSidebarIcon className="h-4 w-4" />
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       {!bottomCollapsed && (
         <div

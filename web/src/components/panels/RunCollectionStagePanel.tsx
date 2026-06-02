@@ -163,7 +163,10 @@ export function TrainCollectionPanel() {
     <div className="relative h-full overflow-hidden bg-slate-50/40">
       <div className="h-full overflow-y-auto">
         <div className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-5 px-6 py-5 text-sm text-slate-600">
-        <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+        <section className="grid gap-3 lg:grid-cols-[20rem_minmax(0,1fr)] lg:items-start">
+          <div className="space-y-3">
+            <ExecutionTarget value={protocol.computeTarget} onChange={setTarget} />
+          </div>
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -190,9 +193,6 @@ export function TrainCollectionPanel() {
                 onProtocolChange={updateProtocol}
               />
             </div>
-          </div>
-          <div className="space-y-3">
-            <ExecutionTarget value={protocol.computeTarget} onChange={setTarget} />
           </div>
         </section>
 
