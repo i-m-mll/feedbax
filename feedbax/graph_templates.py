@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
-from feedbax.web.models.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
+from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
 
 
 TemplateKind = Literal["executable", "display"]

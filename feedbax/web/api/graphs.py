@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from typing import Optional
 
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphSpec,
     GraphUIState,

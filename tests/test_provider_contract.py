@@ -37,9 +37,9 @@ from feedbax.studio_schema import (
     enumerate_studio_schema_registry,
     validate_graph_connection_schema,
 )
-from feedbax.web.graph_normalization import normalize_graph_for_studio_authoring
+from feedbax.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     GraphMetadata,
     GraphSpec,
     StudioStageSpec,

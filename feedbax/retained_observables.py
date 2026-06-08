@@ -13,7 +13,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional
 
 import jax.numpy as jnp
 
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     GraphSpec,
     RetainedObservableSpec,
@@ -25,7 +25,7 @@ from feedbax.task_timeline_masks import (
     align_time_mask,
     build_task_timeline_mask,
 )
-from feedbax.web.models.training import LossTermSpec, TimeAggregationSpec, TrainingSpec
+from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec, TrainingSpec
 
 
 SelectorKind = Literal[

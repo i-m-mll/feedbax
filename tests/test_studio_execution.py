@@ -15,7 +15,7 @@ from feedbax.studio_execution import (
     run_studio_training_local_execution,
 )
 from feedbax.web.app import create_app
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     GraphMetadata,
     GraphSpec,
     StudioStageSpec,

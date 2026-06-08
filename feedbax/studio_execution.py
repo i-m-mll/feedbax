@@ -41,7 +41,7 @@ from feedbax.manifest import (
     write_manifest,
 )
 from feedbax.studio_schema import SchemaValidationIssue, validate_task_binding_schema
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     GraphSpec,
     StudioArtifactRef,
     StudioCollectionRef,

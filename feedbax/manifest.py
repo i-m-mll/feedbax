@@ -18,7 +18,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from feedbax.web.models.graph import AnalysisInputRequirement
+from feedbax.contracts.graph import AnalysisInputRequirement
 
 try:
     from importlib.metadata import PackageNotFoundError, version
