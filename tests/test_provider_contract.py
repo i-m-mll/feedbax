@@ -40,6 +40,7 @@ from feedbax.studio_schema import (
 from feedbax.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
+    AnalysisInputRequirement,
     GraphMetadata,
     GraphSpec,
     StudioStageSpec,
@@ -48,6 +49,7 @@ from feedbax.contracts.graph import (
     TapSpec,
     build_default_studio_workspace,
 )
+from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
 from feedbax.web.worker.app import (
     WorkerStatus,
     _Job,
@@ -276,6 +278,20 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "RuntimeIntrospectionOptions" in manifest.schemas
     assert "RuntimeSampleLeafSchema" in manifest.schemas
     assert "MandibleManifestMapping" in manifest.schemas
+
+
+def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
+    manifest = provider_manifest()
+    contract_models = {
+        "AnalysisInputRequirement": AnalysisInputRequirement,
+        "GraphSpec": GraphSpec,
+        "LossTermSpec": LossTermSpec,
+        "TaskSpec": TaskSpec,
+        "TrainingSpec": TrainingSpec,
+    }
+
+    for schema_name, model_type in contract_models.items():
+        assert manifest.schemas[schema_name] == model_type.model_json_schema()
 
 
 def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
