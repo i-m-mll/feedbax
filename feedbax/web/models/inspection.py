@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from feedbax.web.models.graph import GraphSpec
+from feedbax.contracts.graph import GraphSpec
 
 
 class CycleAnnotationModel(BaseModel):

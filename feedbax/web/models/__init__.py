@@ -1,6 +1,7 @@
 """Pydantic models for the Feedbax web API."""
 
-from feedbax.web.models.graph import (
+from feedbax.contracts import (
+    ComponentDefinition,
     ComponentSpec,
     GraphMetadata,
     GraphProject,
@@ -8,6 +9,8 @@ from feedbax.web.models.graph import (
     GraphUIState,
     NodeUIState,
     ParamSchema,
+    PortType,
+    PortTypeSpec,
     StudioCollectionRef,
     StudioArtifactRef,
     StudioInterventionTransformSpec,
@@ -23,13 +26,6 @@ from feedbax.web.models.graph import (
     ValidationResult,
     ValidationWarning,
     WireSpec,
-)
-from feedbax.web.models.component import (
-    ComponentDefinition,
-    PortType,
-    PortTypeSpec,
-)
-from feedbax.web.models.training import (
     LossTermSpec,
     OptimizerSpec,
     TaskSpec,
