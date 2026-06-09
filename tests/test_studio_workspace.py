@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     GraphMetadata,
     GraphSpec,
     GraphUIState,

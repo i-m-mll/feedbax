@@ -1,15 +1,15 @@
 """Tests for the loss service."""
 
 import pytest
-from feedbax.web.services.loss_service import LossService, ProbeInfo
-from feedbax.web.models.graph import (
+from feedbax.loss_service import LossService, ProbeInfo
+from feedbax.contracts.graph import (
     GraphSpec,
     ComponentSpec,
     WireSpec,
     BarnacleSpec,
     TapSpec,
 )
-from feedbax.web.models.training import LossTermSpec, TimeAggregationSpec
+from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec
 
 
 @pytest.fixture

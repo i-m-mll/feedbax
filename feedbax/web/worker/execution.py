@@ -27,13 +27,13 @@ from feedbax.retained_observables import (
     retention_plan_to_json,
 )
 from feedbax.studio_schema import validate_task_binding_schema
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     GraphSpec,
     StudioTaskBindingSpec,
     StudioTaskDataSpec,
 )
-from feedbax.web.models.training import TrainingSpec
-from feedbax.web.serialization import prototypes_from_task_bindings, spec_to_graph
+from feedbax.contracts.training import TrainingSpec
+from feedbax.serialization import prototypes_from_task_bindings, spec_to_graph
 
 
 _DEFAULT_TRAINABLE_COMPONENT_TYPES = {

@@ -18,12 +18,12 @@ from feedbax.studio_protocol import (
     task_data_surface,
     task_data_uses_protocol_path,
 )
-from feedbax.web.graph_normalization import (
+from feedbax.graph_normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
-from feedbax.web.models.component import PortType
-from feedbax.web.models.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
+from feedbax.contracts.component import PortType
+from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
 SchemaOrigin = Literal[
     "declared",
@@ -671,7 +671,7 @@ def _enumerate_graph_ports(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
 ) -> list[PortSchema]:
-    from feedbax.web.services.component_registry import ComponentRegistry
+    from feedbax.component_registry import ComponentRegistry
 
     registry = ComponentRegistry()
     ports: list[PortSchema] = []
@@ -750,7 +750,7 @@ def _value_schema_for_graph_port(
     port: str,
     direction: Literal["input", "output"],
 ) -> ValueSchema:
-    from feedbax.web.services.component_registry import ComponentRegistry
+    from feedbax.component_registry import ComponentRegistry
 
     node = graph.nodes.get(node_id)
     if node is None:
@@ -1919,7 +1919,7 @@ def _infer_list_shape(value: list[Any]) -> list[Any]:
 
 
 def _graph_probe_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema]:
-    from feedbax.web.services.loss_service import loss_service
+    from feedbax.loss_service import loss_service
 
     targets: list[SelectorTargetSchema] = []
     for probe in loss_service.get_available_probes(graph):

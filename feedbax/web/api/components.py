@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pathlib import Path
 
-from feedbax.web.services.component_registry import ComponentRegistry
+from feedbax.component_registry import ComponentRegistry
 
 router = APIRouter()
 registry = ComponentRegistry()

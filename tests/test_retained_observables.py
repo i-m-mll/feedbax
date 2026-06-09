@@ -16,7 +16,7 @@ from feedbax.retained_observables import (
     normalize_selector_ref,
     retention_plan_to_json,
 )
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     AnalysisInputConsumerSpec,
     AnalysisInputRequirement,
     ComponentSpec,
@@ -26,7 +26,7 @@ from feedbax.web.models.graph import (
     RetentionPolicySpec,
     WireSpec,
 )
-from feedbax.web.models.training import (
+from feedbax.contracts.training import (
     LossTermSpec,
     OptimizerSpec,
     TimeAggregationSpec,

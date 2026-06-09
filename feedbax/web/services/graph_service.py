@@ -7,12 +7,12 @@ import json
 import uuid
 
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
-from feedbax.web.graph_normalization import (
+from feedbax.graph_normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,
 )
-from feedbax.web.models.graph import (
+from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphProject,
     GraphSpec,

@@ -54,8 +54,8 @@ from feedbax.studio_schema import (
     ValueSchema,
     validate_graph_connection_schema,
 )
-from feedbax.web.models.graph import AnalysisInputRequirement, GraphSpec
-from feedbax.web.models.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.contracts.graph import AnalysisInputRequirement, GraphSpec
+from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -572,7 +572,7 @@ def provider_manifest() -> ProviderManifest:
 
 
 def component_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.web.services.component_registry import ComponentRegistry
+    from feedbax.component_registry import ComponentRegistry
 
     registry = ComponentRegistry()
     entries: list[RegistryEntry] = []
@@ -630,7 +630,7 @@ def task_registry_snapshot() -> RegistrySnapshot:
 
 
 def loss_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.web.services.loss_service import NORM_FUNCTIONS
+    from feedbax.loss_service import NORM_FUNCTIONS
 
     return RegistrySnapshot(
         kind="losses",
@@ -746,8 +746,8 @@ def _schema_issues_to_provider(
 
 
 def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidationResult:
-    from feedbax.web.graph_normalization import normalize_graph_for_studio_authoring
-    from feedbax.web.services.component_registry import ComponentRegistry
+    from feedbax.graph_normalization import normalize_graph_for_studio_authoring
+    from feedbax.component_registry import ComponentRegistry
 
     try:
         parsed = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)

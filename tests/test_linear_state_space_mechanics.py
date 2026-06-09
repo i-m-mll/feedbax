@@ -5,9 +5,9 @@ import jax.numpy as jnp
 
 from feedbax.graph import Graph, init_state_from_component
 from feedbax.mechanics import LinearStateSpace
-from feedbax.web.models.graph import ComponentSpec, GraphSpec
-from feedbax.web.serialization import graph_to_spec, spec_to_graph
-from feedbax.web.services.component_registry import ComponentRegistry
+from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.serialization import graph_to_spec, spec_to_graph
+from feedbax.component_registry import ComponentRegistry
 
 
 def test_linear_state_space_steps_without_epsilon() -> None:

@@ -14,9 +14,9 @@ from feedbax.graph_templates import (
     standard_network_subgraph,
 )
 from feedbax.nn import SimpleStagedNetwork
-from feedbax.web.models.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.web.serialization import graph_to_spec, spec_to_graph
-from feedbax.web.services.component_registry import ComponentRegistry
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.serialization import graph_to_spec, spec_to_graph
+from feedbax.component_registry import ComponentRegistry
 
 
 def _task_binding_spec() -> dict:

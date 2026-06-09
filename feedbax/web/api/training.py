@@ -8,9 +8,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from feedbax.web.models.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
+from feedbax.contracts.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
 from feedbax.web.services.graph_service import GraphService
-from feedbax.web.services.loss_service import loss_service
+from feedbax.loss_service import loss_service
 from feedbax.web.services.training_service import training_service
 
 router = APIRouter()

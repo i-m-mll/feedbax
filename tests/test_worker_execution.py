@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.graph_templates import network_template_graph
-from feedbax.web.models.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.web.worker.execution import (
     compile_training_run,
     rollout_graph,
