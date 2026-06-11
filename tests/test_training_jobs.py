@@ -151,8 +151,8 @@ def test_training_api_routes_pass_path_job_id(monkeypatch) -> None:
 
     client = TestClient(app)
 
-    assert client.get("/api/training/job-a").json()["status"]["job_id"] == "job-a"
-    assert client.delete("/api/training/job-b").json() == {"success": True}
+    assert client.get("/api/training/job-a").json()["data"]["status"]["job_id"] == "job-a"
+    assert client.delete("/api/training/job-b").json() == {"data": {"success": True}}
     assert calls == [("status", "job-a"), ("stop", "job-b")]
 
 
