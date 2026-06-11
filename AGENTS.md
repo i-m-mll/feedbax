@@ -63,6 +63,22 @@
 
 ### Cloud/Remote Training Practices
 
+- For Feedbax/RLRMP RunPod work, use the repository scripts first:
+  `scripts/deploy/runpod_deploy.sh` for deployment/training launch and
+  `scripts/deploy/poll_run.sh` for status polling. These scripts encode the
+  expected pod creation/reuse, Docker tag checks, train-spec confirmation gate,
+  SSH and GPU readiness checks, rsync paths, local editable path patching,
+  CUDA JAX bootstrapping, remote GPU/JAX verification, train-spec sync, and
+  sentinel/nohup launch behavior.
+- Treat hand-rolled `runpodctl` calls, custom SSH readiness loops, ad hoc
+  rsync/path patching, manual CUDA JAX install steps, direct nohup/sentinel
+  launch snippets, and bespoke polling cadence instructions as fallback,
+  debugging, or script-refactor context. If the scripts miss a required
+  Feedbax/RLRMP RunPod case, improve the script rather than bypassing it
+  long-term.
+- Use `scripts/deploy/poll_run.sh` wherever possible for RunPod monitoring; it
+  owns the default early/steady polling cadence and deterministic status-line
+  output expected by agents.
 - Never kill processes on TPU VMs via SSH; `kill`, `pkill`, or signals sent
   during SSH commands can disrupt the SSH session itself. If a process has
   crashed, clear `/tmp/libtpu_lockfile` and launch a new one.
