@@ -102,6 +102,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "mujoco>=3.0.0",
+    "mujoco-mjx>=0.1.0",
     "pyright>=1.1.407",
     "pytest>=9.0.2",
     "ruff>=0.12.11",

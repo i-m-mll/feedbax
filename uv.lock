@@ -686,6 +686,8 @@ plotlyviewer = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "mujoco" },
+    { name = "mujoco-mjx" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
@@ -736,6 +738,8 @@ provides-extras = ["dashboard", "notebook", "plotlyviewer", "mjx"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "mujoco", specifier = ">=3.0.0" },
+    { name = "mujoco-mjx", specifier = ">=0.1.0" },
     { name = "pyright", specifier = ">=1.1.407" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.12.11" },

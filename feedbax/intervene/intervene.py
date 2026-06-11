@@ -17,6 +17,14 @@ from feedbax.graph import Component
 from feedbax.noise import Normal
 
 
+def _float_param(value):
+    return jnp.asarray(value, dtype=jnp.float32)
+
+
+def _bool_param(value):
+    return jnp.asarray(value, dtype=bool)
+
+
 def _merge_params_override(
     base_params: "InterventionParams",
     override: "InterventionParams",
@@ -35,8 +43,8 @@ def _merge_params_override(
 
 
 class InterventionParams(eqx.Module):
-    scale: float = 1.0
-    active: bool = True
+    scale: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
+    active: Array = field(default_factory=lambda: _bool_param(True), converter=_bool_param)
 
 
 def _strong_typed(params: InterventionParams) -> InterventionParams:
@@ -57,12 +65,12 @@ def _strong_typed(params: InterventionParams) -> InterventionParams:
 
 
 class CurlFieldParams(InterventionParams):
-    amplitude: float = 1.0
+    amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
 
 
 class FixedFieldParams(InterventionParams):
-    amplitude: float = 1.0
-    field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0]))
+    amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
+    field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
 
 
 class DynamicsMatrixPerturbParams(InterventionParams):
@@ -80,7 +88,7 @@ class DynamicsMatrixPerturbParams(InterventionParams):
     """
 
     delta_A: Array = field(
-        default_factory=lambda: jnp.zeros((2, 4))
+        default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32)
     )
 
 
