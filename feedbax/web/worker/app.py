@@ -7,6 +7,7 @@ import collections
 import json
 import queue
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -34,6 +35,9 @@ class WorkerStatus(str, Enum):
 
 # Maximum number of past events to buffer per job for from_seq replay.
 _EVENT_BUFFER_MAX = 1000
+
+# Maximum number of terminal jobs retained for status/manifest lookup.
+_TERMINAL_JOB_RETENTION_MAX = 32
 
 
 @dataclass
@@ -66,6 +70,8 @@ class _Job:
     batch: int = 0
     last_loss: float = 0.0
     snapshot_interval: int = 100
+    terminal_at: Optional[float] = None
+    _state_lock: threading.RLock = field(default_factory=threading.RLock)
     # Monotonically increasing sequence counter; protected by _seq_lock.
     _seq: int = 0
     _seq_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -78,10 +84,55 @@ class _Job:
             return seq
 
 
+def _is_terminal_status(status: WorkerStatus) -> bool:
+    """Return whether *status* represents a finished registry entry."""
+    return status in {WorkerStatus.IDLE, WorkerStatus.COMPLETED, WorkerStatus.ERROR}
+
+
+def _mark_job_terminal(job: _Job, status: WorkerStatus) -> None:
+    """Set *job* to a terminal status and record retention ordering metadata."""
+    if not _is_terminal_status(status):
+        raise ValueError(f"Worker status {status.value!r} is not terminal")
+    with job._state_lock:
+        job.status = status
+        job.terminal_at = time.monotonic()
+
+
+def _job_status(job: _Job) -> WorkerStatus:
+    """Return a consistent status value for *job*."""
+    with job._state_lock:
+        return job.status
+
+
+def _job_status_payload(job: _Job) -> dict[str, Any]:
+    """Return the status route payload from one state snapshot."""
+    with job._state_lock:
+        return {
+            "status": job.status,
+            "batch": job.batch,
+            "total_batches": job.total_batches,
+            "last_loss": job.last_loss,
+            "job_id": job.job_id,
+            "manifest_path": job.manifest_path,
+        }
+
+
+def _job_checkpoint_payload(job: _Job) -> dict[str, Any]:
+    """Return the checkpoint metadata payload from one state snapshot."""
+    with job._state_lock:
+        return {
+            "batch": job.batch,
+            "loss": job.last_loss,
+            "weights_available": job.checkpoint_path is not None,
+            "job_id": job.job_id,
+        }
+
+
 def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
     """Return compact event history suitable for a durable JSON artifact."""
     history_types = {"training_progress", "training_log", "training_error", "training_complete"}
-    return [dict(event) for _, event in job.event_buffer if event.get("type") in history_types]
+    with job._state_lock:
+        return [dict(event) for _, event in job.event_buffer if event.get("type") in history_types]
 
 
 def _write_job_manifest(job: _Job) -> None:
@@ -89,41 +140,49 @@ def _write_job_manifest(job: _Job) -> None:
     try:
         from feedbax.manifest import write_training_run_manifest
 
-        manifest, path = write_training_run_manifest(
-            job_id=job.job_id,
-            total_batches=job.total_batches,
-            training_spec=job.training_spec,
-            task_spec=job.task_spec,
-            task_binding_spec=job.task_binding_spec,
-            graph_spec=job.graph_spec,
-            checkpoint_path=job.checkpoint_path,
-            history_events=_manifest_history_events(job),
-            retention_plan=job.retention_plan_payload,
-            retained_observables=job.retained_observables_payload,
-            status=job.status.value,
-            final_loss=job.last_loss,
-        )
-        job.manifest_path = str(path)
-        job.manifest_payload = manifest.model_dump(mode="json", exclude_none=True)
+        history_events = _manifest_history_events(job)
+        with job._state_lock:
+            manifest_kwargs = {
+                "job_id": job.job_id,
+                "total_batches": job.total_batches,
+                "training_spec": job.training_spec,
+                "task_spec": job.task_spec,
+                "task_binding_spec": job.task_binding_spec,
+                "graph_spec": job.graph_spec,
+                "checkpoint_path": job.checkpoint_path,
+                "history_events": history_events,
+                "retention_plan": job.retention_plan_payload,
+                "retained_observables": job.retained_observables_payload,
+                "status": job.status.value,
+                "final_loss": job.last_loss,
+            }
+        manifest, path = write_training_run_manifest(**manifest_kwargs)
+        manifest_payload = manifest.model_dump(mode="json", exclude_none=True)
+        with job._state_lock:
+            job.manifest_path = str(path)
+            job.manifest_payload = manifest_payload
+            batch = job.batch
         _emit(
             job,
             {
                 "type": "training_log",
                 "job_id": job.job_id,
-                "batch": job.batch,
+                "batch": batch,
                 "level": "info",
                 "message": "Training manifest saved",
-                "manifest_path": job.manifest_path,
+                "manifest_path": str(path),
                 "manifest_id": manifest.id,
             },
         )
     except Exception as exc:
+        with job._state_lock:
+            batch = job.batch
         _emit(
             job,
             {
                 "type": "training_log",
                 "job_id": job.job_id,
-                "batch": job.batch,
+                "batch": batch,
                 "level": "warning",
                 "message": f"Failed to save training manifest: {exc}",
             },
@@ -269,36 +328,44 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg") -> None:
         stop_event=job.stop_event,
         emit=lambda event: _emit(job, event),
     )
-    job.last_loss = result.final_loss
-    job.batch = job.total_batches
-    job.checkpoint_path = result.checkpoint_path
-    job.retention_plan_payload = result.retention_plan
-    job.retained_observables_payload = result.retained_observables
-    job.status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
+    terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
+    with job._state_lock:
+        job.last_loss = result.final_loss
+        job.batch = job.total_batches
+        job.checkpoint_path = result.checkpoint_path
+        job.retention_plan_payload = result.retention_plan
+        job.retained_observables_payload = result.retained_observables
+        job.status = terminal_status
+        job.terminal_at = time.monotonic()
+        batch = job.batch
+        last_loss = job.last_loss
     if result.checkpoint_path is not None:
         _emit(
             job,
             {
                 "type": "training_log",
                 "job_id": job.job_id,
-                "batch": job.batch,
+                "batch": batch,
                 "level": "info",
                 "message": "Checkpoint saved",
                 "execution": "generic_graph",
             },
         )
     _write_job_manifest(job)
+    with job._state_lock:
+        manifest_path = job.manifest_path
+        manifest_payload = job.manifest_payload
     complete_event = {
         "type": "training_complete",
         "job_id": job.job_id,
-        "batch": job.batch,
-        "loss": job.last_loss,
+        "batch": batch,
+        "loss": last_loss,
         "execution": "generic_graph",
     }
-    if job.manifest_path is not None:
-        complete_event["manifest_path"] = job.manifest_path
-    if job.manifest_payload is not None:
-        complete_event["manifest_id"] = job.manifest_payload.get("id")
+    if manifest_path is not None:
+        complete_event["manifest_path"] = manifest_path
+    if manifest_payload is not None:
+        complete_event["manifest_id"] = manifest_payload.get("id")
     _emit(job, complete_event)
 
 
@@ -313,14 +380,19 @@ def _run_training(job: _Job) -> None:
         cfg = _extract_training_cfg(job.training_config, job.task_spec)
         _run_training_real(job, cfg)
     except Exception as exc:
-        if job.status == WorkerStatus.RUNNING:
-            job.status = WorkerStatus.ERROR
+        with job._state_lock:
+            should_emit = job.status == WorkerStatus.RUNNING
+            if should_emit:
+                job.status = WorkerStatus.ERROR
+                job.terminal_at = time.monotonic()
+                batch = job.batch
+        if should_emit:
             _emit(
                 job,
                 {
                     "type": "training_error",
                     "job_id": job.job_id,
-                    "batch": job.batch,
+                    "batch": batch,
                     "error": str(exc),
                 },
             )
@@ -333,7 +405,8 @@ def _emit(job: _Job, event: dict) -> None:
     """Assign a seq number to *event*, buffer it, and enqueue it for SSE delivery."""
     seq = job.next_seq()
     event["seq"] = seq
-    job.event_buffer.append((seq, event))
+    with job._state_lock:
+        job.event_buffer.append((seq, event))
     job.event_queue.put(event)
 
 
@@ -372,6 +445,27 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
 
     _jobs: Dict[str, _Job] = {}
     _jobs_lock = threading.Lock()
+
+    def _evict_terminal_jobs_locked() -> None:
+        """Drop oldest terminal jobs beyond the bounded retention window."""
+        retained = max(0, _TERMINAL_JOB_RETENTION_MAX)
+        terminal_jobs: list[tuple[float, str]] = []
+        for job_id, job in _jobs.items():
+            with job._state_lock:
+                if _is_terminal_status(job.status):
+                    terminal_jobs.append((job.terminal_at or 0.0, job_id))
+        overflow = len(terminal_jobs) - retained
+        if overflow <= 0:
+            return
+        for _, job_id in sorted(terminal_jobs)[:overflow]:
+            del _jobs[job_id]
+
+    def _running_job_id_locked() -> Optional[str]:
+        """Return the active job id if the single-worker slot is occupied."""
+        for job in _jobs.values():
+            if _job_status(job) == WorkerStatus.RUNNING:
+                return job.job_id
+        return None
 
     def _get_job(job_id: str) -> _Job:
         with _jobs_lock:
@@ -415,9 +509,27 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             status=WorkerStatus.RUNNING,
             snapshot_interval=snapshot_interval,
         )
-        thread = threading.Thread(target=_run_training, args=(job,), daemon=True)
+
+        def _run_training_and_evict() -> None:
+            try:
+                _run_training(job)
+            finally:
+                with job._state_lock:
+                    if _is_terminal_status(job.status) and job.terminal_at is None:
+                        job.terminal_at = time.monotonic()
+                with _jobs_lock:
+                    _evict_terminal_jobs_locked()
+
+        thread = threading.Thread(target=_run_training_and_evict, daemon=True)
         job.thread = thread
         with _jobs_lock:
+            _evict_terminal_jobs_locked()
+            running_job_id = _running_job_id_locked()
+            if running_job_id is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Worker is already running job {running_job_id}",
+                )
             _jobs[job_id] = job
         thread.start()
         return {"job_id": job_id}
@@ -426,20 +538,18 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     def stop(job_id: str):
         job = _get_job(job_id)
         job.stop_event.set()
-        job.status = WorkerStatus.IDLE
+        with job._state_lock:
+            thread = job.thread
+        if thread is None or not thread.is_alive():
+            _mark_job_terminal(job, WorkerStatus.IDLE)
+            with _jobs_lock:
+                _evict_terminal_jobs_locked()
         return {"ok": True}
 
     @app.get("/jobs/{job_id}/status", dependencies=[_auth_dep])
     def status(job_id: str):
         job = _get_job(job_id)
-        return {
-            "status": job.status,
-            "batch": job.batch,
-            "total_batches": job.total_batches,
-            "last_loss": job.last_loss,
-            "job_id": job.job_id,
-            "manifest_path": job.manifest_path,
-        }
+        return _job_status_payload(job)
 
     @app.get("/jobs/{job_id}/stream", dependencies=[_auth_dep])
     def stream(job_id: str, from_seq: Optional[int] = Query(default=None, alias="from_seq")):
@@ -456,7 +566,8 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         # Collect any buffered events to replay before the live stream.
         replay_events: list[dict] = []
         if from_seq is not None:
-            replay_events = [evt for seq, evt in job.event_buffer if seq >= from_seq]
+            with job._state_lock:
+                replay_events = [evt for seq, evt in job.event_buffer if seq >= from_seq]
 
         async def _generate():
             loop = asyncio.get_running_loop()
@@ -476,7 +587,8 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
                     )
                 except queue.Empty:
                     # Worker still alive; keep the connection open.
-                    t = job.thread
+                    with job._state_lock:
+                        t = job.thread
                     if t is None or not t.is_alive():
                         break
                     continue
@@ -497,12 +609,7 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     def checkpoint(job_id: str):
         """Return checkpoint metadata for a job."""
         job = _get_job(job_id)
-        return {
-            "batch": job.batch,
-            "loss": job.last_loss,
-            "weights_available": job.checkpoint_path is not None,
-            "job_id": job.job_id,
-        }
+        return _job_checkpoint_payload(job)
 
     @app.get("/jobs/{job_id}/checkpoint/download", dependencies=[_auth_dep])
     def checkpoint_download(job_id: str):
@@ -510,12 +617,14 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         import os
 
         job = _get_job(job_id)
-        if job.checkpoint_path is None:
+        with job._state_lock:
+            checkpoint_path = job.checkpoint_path
+        if checkpoint_path is None:
             raise HTTPException(status_code=404, detail="No checkpoint available")
-        if not os.path.exists(job.checkpoint_path):
+        if not os.path.exists(checkpoint_path):
             raise HTTPException(status_code=410, detail="Checkpoint file gone")
         return FileResponse(
-            job.checkpoint_path,
+            checkpoint_path,
             media_type="application/octet-stream",
             filename=f"feedbax_checkpoint_{job.job_id}.eqx",
         )
@@ -524,8 +633,10 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     def manifest(job_id: str):
         """Return the durable manifest for a job."""
         job = _get_job(job_id)
-        if job.manifest_payload is None:
+        with job._state_lock:
+            manifest_payload = job.manifest_payload
+        if manifest_payload is None:
             raise HTTPException(status_code=404, detail="No manifest available")
-        return job.manifest_payload
+        return manifest_payload
 
     return app

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from typing import Any
 
 from fastapi import FastAPI
@@ -13,19 +15,36 @@ from feedbax.web.services.training_service import TrainingService
 from feedbax.web.worker.app import WorkerStatus
 
 
+def _wait_for_worker_status(
+    client: TestClient,
+    job_id: str,
+    status: WorkerStatus,
+    *,
+    timeout: float = 2.0,
+):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = client.get(f"/jobs/{job_id}/status")
+        if response.status_code == 200 and response.json()["status"] == status.value:
+            return response
+        time.sleep(0.01)
+    return client.get(f"/jobs/{job_id}/status")
+
+
 def test_worker_routes_keep_terminal_state_for_distinct_job_ids(monkeypatch) -> None:
     def fake_run_training(job: worker_app._Job) -> None:
         loss = float(job.total_batches)
-        job.batch = job.total_batches
-        job.last_loss = loss
-        job.status = WorkerStatus.COMPLETED
-        job.manifest_payload = {"kind": "TrainingRunManifest", "job_id": job.job_id}
+        with job._state_lock:
+            job.batch = job.total_batches
+            job.last_loss = loss
+            job.manifest_payload = {"kind": "TrainingRunManifest", "job_id": job.job_id}
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
         worker_app._emit(
             job,
             {
                 "type": "training_complete",
                 "job_id": job.job_id,
-                "batch": job.batch,
+                "batch": job.total_batches,
                 "loss": loss,
             },
         )
@@ -35,10 +54,10 @@ def test_worker_routes_keep_terminal_state_for_distinct_job_ids(monkeypatch) -> 
 
     client = TestClient(worker_app.create_app())
     first = client.post("/start", json={"total_batches": 1}).json()["job_id"]
+    first_status = _wait_for_worker_status(client, first, WorkerStatus.COMPLETED)
     second = client.post("/start", json={"total_batches": 2}).json()["job_id"]
+    second_status = _wait_for_worker_status(client, second, WorkerStatus.COMPLETED)
 
-    first_status = client.get(f"/jobs/{first}/status")
-    second_status = client.get(f"/jobs/{second}/status")
     first_manifest = client.get(f"/jobs/{first}/manifest")
     second_manifest = client.get(f"/jobs/{second}/manifest")
 
@@ -51,6 +70,79 @@ def test_worker_routes_keep_terminal_state_for_distinct_job_ids(monkeypatch) -> 
     assert first_manifest.json()["job_id"] == first
     assert second_manifest.json()["job_id"] == second
     assert client.get("/jobs/missing/status").status_code == 404
+
+
+def test_worker_rejects_start_while_job_running(monkeypatch) -> None:
+    release = threading.Event()
+    entered = threading.Event()
+
+    def fake_run_training(job: worker_app._Job) -> None:
+        entered.set()
+        assert release.wait(timeout=2)
+        with job._state_lock:
+            job.batch = job.total_batches
+            job.last_loss = 1.0
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        worker_app._emit(
+            job,
+            {
+                "type": "training_complete",
+                "job_id": job.job_id,
+                "batch": job.total_batches,
+                "loss": 1.0,
+            },
+        )
+        job.event_queue.put(None)
+
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    client = TestClient(worker_app.create_app())
+    first = client.post("/start", json={"total_batches": 1}).json()["job_id"]
+    assert entered.wait(timeout=2)
+
+    conflict = client.post("/start", json={"total_batches": 1})
+    assert conflict.status_code == 409
+    assert "already running job" in conflict.json()["detail"]
+
+    release.set()
+    assert _wait_for_worker_status(client, first, WorkerStatus.COMPLETED).status_code == 200
+
+    second = client.post("/start", json={"total_batches": 1})
+    assert second.status_code == 200
+
+
+def test_worker_evicts_oldest_terminal_jobs(monkeypatch) -> None:
+    def fake_run_training(job: worker_app._Job) -> None:
+        with job._state_lock:
+            job.batch = job.total_batches
+            job.last_loss = float(job.total_batches)
+            job.manifest_payload = {"kind": "TrainingRunManifest", "job_id": job.job_id}
+        worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
+        worker_app._emit(
+            job,
+            {
+                "type": "training_complete",
+                "job_id": job.job_id,
+                "batch": job.total_batches,
+                "loss": float(job.total_batches),
+            },
+        )
+        job.event_queue.put(None)
+
+    monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 2)
+    monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
+
+    client = TestClient(worker_app.create_app())
+    first = client.post("/start", json={"total_batches": 1}).json()["job_id"]
+    assert _wait_for_worker_status(client, first, WorkerStatus.COMPLETED).status_code == 200
+    second = client.post("/start", json={"total_batches": 2}).json()["job_id"]
+    assert _wait_for_worker_status(client, second, WorkerStatus.COMPLETED).status_code == 200
+    third = client.post("/start", json={"total_batches": 3}).json()["job_id"]
+    assert _wait_for_worker_status(client, third, WorkerStatus.COMPLETED).status_code == 200
+
+    assert client.get(f"/jobs/{first}/status").status_code == 404
+    assert client.get(f"/jobs/{second}/status").status_code == 200
+    assert client.get(f"/jobs/{third}/manifest").json()["job_id"] == third
 
 
 def test_training_service_passes_job_id_to_worker_client(monkeypatch, tmp_path) -> None:
