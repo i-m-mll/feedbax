@@ -93,10 +93,8 @@ documentation = "https://docs.lprt.ca/feedbax"
 [tool.uv]
 config-settings = { editable-mode = "compat" }
 
-#! TODO: Replace at release
-[tool.uv.sources.jax-cookbook]
-path = "/Users/mll/Main/10 Projects/05 Utils/jax-cookbook"
-editable = true
+[tool.uv.sources]
+jax-cookbook = { git = "https://github.com/i-m-mll/jax-cookbook.git", rev = "e1cb0e69849ec3aa83b50da4de3f11c2fda61ac9" }
 
 [build-system]
 requires = ["hatchling"]
@@ -104,6 +102,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.407",
     "pytest>=9.0.2",
     "ruff>=0.12.11",
 ]
@@ -129,6 +128,12 @@ target-version = ['py310', 'py311', 'py312']
 include = 'feedbax\/.*\.pyi?$'
 line-length = 88
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "slow: tests that are too expensive for every local or CI pass",
+]
 
 [tool.ruff]
 cache-dir = "~/.cache/ruff"
