@@ -31,11 +31,16 @@ jobs:
       - name: Check lockfile
         run: uv lock --check
 
-      - name: Run bootstrap regression tests
-        run: uv run pytest tests/test_batch_reshape_nan_bypass.py -q
+      - name: Check generated Studio contracts
+        run: |
+          uv run python scripts/generate_studio_contracts.py
+          git diff --exit-code web/src/generated/studioContracts.ts
+
+      - name: Run bootstrap regression and contract tests
+        run: uv run pytest tests/test_batch_reshape_nan_bypass.py tests/test_studio_api_contracts.py -q
 
       - name: Run ruff
-        run: uv run ruff check tests/test_batch_reshape_nan_bypass.py
+        run: uv run ruff check scripts/generate_studio_contracts.py tests/test_batch_reshape_nan_bypass.py tests/test_studio_api_contracts.py
 
       - name: Run pyright
         run: uv run pyright tests/test_batch_reshape_nan_bypass.py
