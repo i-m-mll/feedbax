@@ -1,5 +1,6 @@
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
+import { parseContract } from '@/generated/studioContracts';
 import type {
   StudioPipelineMaterializationResult,
   StudioSchemaRegistry,
@@ -28,7 +29,7 @@ import type {
   DiagnosticsResponse,
 } from '@/types/statistics';
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function requestJson(path: string, options?: RequestInit): Promise<unknown> {
   const response = await fetch(path, {
     headers: {
       'Content-Type': 'application/json',
@@ -42,16 +43,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(message || `Request failed: ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  return response.json() as Promise<unknown>;
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  return requestJson(path, options) as Promise<T>;
 }
 
 export async function fetchComponents(): Promise<ComponentDefinition[]> {
-  const data = await request<{ components: ComponentDefinition[] }>('/api/components');
-  return data.components;
+  const response = parseContract('ComponentListResponse', await requestJson('/api/components'));
+  return response.data.components as unknown as ComponentDefinition[];
 }
 
 export async function fetchGraphs() {
-  return request<{ graphs: { id: string; metadata: { name: string; description?: string; created_at: string; updated_at: string; version: string } }[] }>('/api/graphs');
+  const response = parseContract('GraphListResponse', await requestJson('/api/graphs'));
+  return response.data;
 }
 
 export interface DemoTrainingData {
@@ -64,7 +70,11 @@ export interface DemoTrainingData {
 }
 
 export async function fetchGraph(graphId: string) {
-  return request<{
+  const response = parseContract(
+    'GraphDetailResponse',
+    await requestJson(`/api/graphs/${graphId}`),
+  );
+  return response.data as unknown as {
     graph: GraphSpec;
     ui_state: GraphUIState | null;
     demo_training_data: DemoTrainingData | null;
@@ -79,7 +89,7 @@ export async function fetchGraph(graphId: string) {
     }> | null;
     active_analysis_page_id: string | null;
     workspace: StudioWorkspaceSpec | null;
-  }>(`/api/graphs/${graphId}`);
+  };
 }
 
 export async function createGraph(
@@ -89,10 +99,14 @@ export async function createGraph(
 ) {
   const payload: Record<string, unknown> = { graph, ui_state: uiState };
   if (workspace !== undefined) payload.workspace = workspace;
-  return request<{ id: string; metadata: { name: string } }>(`/api/graphs`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  const response = parseContract(
+    'GraphCreateResponse',
+    await requestJson(`/api/graphs`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  );
+  return response.data;
 }
 
 export async function updateGraph(
@@ -109,10 +123,14 @@ export async function updateGraph(
   if (analysisPages !== undefined) payload.analysis_pages = analysisPages;
   if (activeAnalysisPageId !== undefined) payload.active_analysis_page_id = activeAnalysisPageId;
   if (workspace !== undefined) payload.workspace = workspace;
-  return request<{ success: boolean }>(`/api/graphs/${graphId}`, {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
+  const response = parseContract(
+    'SuccessResponse',
+    await requestJson(`/api/graphs/${graphId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  );
+  return response.data;
 }
 
 export async function prepareStudioTrainingExecution(payload: {
@@ -172,10 +190,14 @@ export async function fetchStudioSchemaRegistry(payload: {
 }
 
 export async function exportGraph(graphId: string, format: 'json' | 'python') {
-  return request<{ content: string; filename: string }>(`/api/graphs/${graphId}/export`, {
-    method: 'POST',
-    body: JSON.stringify({ format }),
-  });
+  const response = parseContract('GraphExportResponse', await requestJson(
+    `/api/graphs/${graphId}/export`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ format }),
+    },
+  ));
+  return response.data;
 }
 
 export async function startTraining(
@@ -186,7 +208,7 @@ export async function startTraining(
   trainingConfig?: TrainingConfig,
   taskBindingSpec?: StudioWorkspaceSpec['scenarios'][string]['task_binding_spec'],
 ) {
-  return request<{ job_id: string }>('/api/training', {
+  const response = parseContract('TrainingStartResponse', await requestJson('/api/training', {
     method: 'POST',
     body: JSON.stringify({
       graph_id: graphId,
@@ -198,24 +220,35 @@ export async function startTraining(
       ...(graphSpec !== undefined ? { graph_spec: graphSpec } : {}),
       ...(trainingConfig !== undefined ? { training_config: trainingConfig } : {}),
     }),
-  });
+  }));
+  return response.data;
 }
 
 export async function stopTraining(jobId: string) {
-  return request<{ success: boolean }>(`/api/training/${jobId}`, { method: 'DELETE' });
+  const response = parseContract(
+    'SuccessResponse',
+    await requestJson(`/api/training/${jobId}`, { method: 'DELETE' }),
+  );
+  return response.data;
 }
 
 export async function connectWorker(url: string, authToken: string | null) {
-  return request<{ ok: boolean; url: string }>('/api/training/worker/connect', {
-    method: 'POST',
-    body: JSON.stringify({ url, auth_token: authToken }),
-  });
+  const response = parseContract('WorkerConnectEnvelope', await requestJson(
+    '/api/training/worker/connect',
+    {
+      method: 'POST',
+      body: JSON.stringify({ url, auth_token: authToken }),
+    },
+  ));
+  return response.data;
 }
 
 export async function fetchWorkerStatus() {
-  return request<{ mode: 'local' | 'remote'; url: string | null; connected: boolean }>(
-    '/api/training/worker/status'
+  const response = parseContract(
+    'WorkerStatusEnvelope',
+    await requestJson('/api/training/worker/status'),
   );
+  return response.data;
 }
 
 // --- Probe and Loss API ---

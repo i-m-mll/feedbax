@@ -119,7 +119,7 @@ async def list_training_runs() -> list[TrainingRunInfo]:
     (expt_name, hash) group in a single query, avoiding N+1 per-row
     lookups.
     """
-    from sqlalchemy import func, over
+    from sqlalchemy import func
 
     with db_session(autocommit=False) as session:
         # Use ROW_NUMBER to pick one representative record per group while
@@ -237,7 +237,7 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
 
     This endpoint registers the intent to run an evaluation with the
     given parameters.  The actual evaluation computation is triggered
-    separately (via ``POST /api/analysis/generate``).
+    separately (via ``POST /api/analyses/jobs``).
 
     If the database supports it, a new ``EvaluationRecord`` is created.
     Otherwise a stub response is returned so the frontend can proceed.

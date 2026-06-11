@@ -13,7 +13,8 @@ import type {
   AnalysisClassDef,
   AnalysisSnapshot,
 } from '@/types/analysis';
-import { updateGraph } from '@/api/client';
+import { fetchGraph, updateGraph } from '@/api/client';
+import { parseContract } from '@/generated/studioContracts';
 
 // ---------------------------------------------------------------------------
 // Wire format conversion — backend uses snake_case, frontend uses camelCase
@@ -403,10 +404,13 @@ async function tryFetch<T>(path: string): Promise<T | null> {
  * backend endpoint is not available.
  */
 export async function fetchAnalysisPackages(): Promise<AnalysisPackage[]> {
-  const result = await tryFetch<{ packages: AnalysisPackage[] }>(
-    '/api/analyses/packages'
-  );
-  return result?.packages ?? STUB_PACKAGES;
+  const result = await tryFetch<unknown>('/api/analyses/packages');
+  if (result === null) return STUB_PACKAGES;
+  try {
+    return parseContract('AnalysisPackagesResponse', result).data.packages as AnalysisPackage[];
+  } catch {
+    return STUB_PACKAGES;
+  }
 }
 
 /**
@@ -425,11 +429,7 @@ export async function fetchAnalysisPages(
   graphId: string
 ): Promise<AnalysisSnapshot | null> {
   try {
-    const response = await fetch(`/api/graphs/${graphId}`, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await fetchGraph(graphId);
     const wirePages = data.analysis_pages as AnalysisPageWire[] | null;
     if (!wirePages || wirePages.length === 0) return null;
     const pages = wirePages.map(pageFromWire);

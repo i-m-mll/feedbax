@@ -1,8 +1,8 @@
 """API router for demand-driven analysis generation and job status polling.
 
 Endpoints:
-    POST /generate  -- trigger background figure generation for an analysis node
-    GET  /status/{request_id} -- poll the status of a generation job
+    POST /api/analyses/jobs -- trigger background figure generation
+    GET  /api/analyses/jobs/status/{request_id} -- poll a generation job
 """
 
 from __future__ import annotations
@@ -11,11 +11,14 @@ import asyncio
 import logging
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
+from feedbax.contracts.studio_api import (
+    AnalysisJobStatusResponse,
+    GenerateAnalysisRequest,
+    GenerateAnalysisResponse,
+)
 from feedbax.web.services.analysis_service import JobStatus, job_tracker
 
 logger = logging.getLogger(__name__)
@@ -25,35 +28,6 @@ router = APIRouter()
 # asyncio event loop.  A single worker prevents concurrent JAX compilations
 # from fighting over device memory.
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
-
-
-# ---------------------------------------------------------------------------
-# Request / response models
-# ---------------------------------------------------------------------------
-
-
-class GenerateRequest(BaseModel):
-    """Body for ``POST /generate``."""
-
-    node_id: str
-    force_rerun: bool = False
-    eval_run_id: Optional[str] = None
-
-
-class GenerateResponse(BaseModel):
-    """Returned immediately by ``POST /generate``."""
-
-    request_id: str
-    status: str
-
-
-class StatusResponse(BaseModel):
-    """Returned by ``GET /status/{request_id}``."""
-
-    request_id: str
-    status: str
-    figure_hashes: Optional[list[str]] = None
-    error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +121,8 @@ async def _run_analysis_background(request_id: str, node_id: str, force_rerun: b
 # ---------------------------------------------------------------------------
 
 
-@router.post("/generate", response_model=GenerateResponse)
-async def generate_figure(payload: GenerateRequest) -> GenerateResponse:
+@router.post("", response_model=GenerateAnalysisResponse)
+async def generate_figure(payload: GenerateAnalysisRequest) -> GenerateAnalysisResponse:
     """Trigger demand-driven figure generation for an analysis node.
 
     The computation runs in a background thread; this endpoint returns
@@ -170,18 +144,22 @@ async def generate_figure(payload: GenerateRequest) -> GenerateResponse:
     asyncio.create_task(
         _run_analysis_background(request_id, payload.node_id, payload.force_rerun),
     )
-    return GenerateResponse(request_id=request_id, status=JobStatus.PENDING.value)
+    return GenerateAnalysisResponse(
+        data={"request_id": request_id, "status": JobStatus.PENDING.value}
+    )
 
 
-@router.get("/status/{request_id}", response_model=StatusResponse)
-async def get_status(request_id: str) -> StatusResponse:
+@router.get("/status/{request_id}", response_model=AnalysisJobStatusResponse)
+async def get_status(request_id: str) -> AnalysisJobStatusResponse:
     """Poll the status of a figure generation job."""
     entry = await job_tracker.get_status(request_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Unknown request_id '{request_id}'")
-    return StatusResponse(
-        request_id=entry.request_id,
-        status=entry.status.value,
-        figure_hashes=entry.figure_hashes,
-        error=entry.error,
+    return AnalysisJobStatusResponse(
+        data={
+            "request_id": entry.request_id,
+            "status": entry.status.value,
+            "figure_hashes": entry.figure_hashes,
+            "error": entry.error,
+        }
     )
