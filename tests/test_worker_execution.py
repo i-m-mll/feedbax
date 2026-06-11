@@ -10,7 +10,8 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.graph_templates import network_template_graph
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.graph_normalization import normalize_task_binding_spec_for_studio_authoring
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec
 from feedbax.web.worker.execution import (
     compile_training_run,
     rollout_graph,
@@ -124,6 +125,80 @@ def _network_task_binding_spec() -> dict:
                 "source_data_id": "feedback",
                 "target_node_id": "network",
                 "target_port": "feedback",
+                "role": "model_input",
+                "metadata": {},
+            },
+        ],
+        "metadata": {},
+    }
+
+
+def _mux_graph_spec() -> dict:
+    return GraphSpec(
+        nodes={
+            "mux": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("mux", "output")},
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _mux_task_binding_spec() -> dict:
+    return {
+        "schema_version": "feedbax.studio.task_bindings.v2",
+        "exposed_data": [
+            {
+                "id": "position",
+                "label": "Position",
+                "kind": "signal",
+                "role": "model_input",
+                "path": "inputs.position",
+                "bindable": True,
+                "expected_shape": ["time", 2],
+                "value_spec": {
+                    "mode": "constant",
+                    "value": [1.0, 2.0],
+                    "dtype": "float32",
+                    "shape": ["time", 2],
+                },
+                "metadata": {},
+            },
+            {
+                "id": "cue",
+                "label": "Cue",
+                "kind": "signal",
+                "role": "model_input",
+                "path": "inputs.cue",
+                "bindable": True,
+                "expected_shape": ["time", 1],
+                "value_spec": {
+                    "mode": "constant",
+                    "value": [0.5],
+                    "dtype": "float32",
+                    "shape": ["time", 1],
+                },
+                "metadata": {},
+            },
+        ],
+        "bindings": [
+            {
+                "id": "task:position->mux:in_0",
+                "source_data_id": "position",
+                "target_node_id": "mux",
+                "target_port": "in_0",
+                "role": "model_input",
+                "metadata": {},
+            },
+            {
+                "id": "task:cue->mux:in_1",
+                "source_data_id": "cue",
+                "target_node_id": "mux",
+                "target_port": "in_1",
                 "role": "model_input",
                 "metadata": {},
             },
@@ -350,6 +425,42 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     assert compiled.graph.nodes["delay"].input_proto.shape == (3,)
     assert rollout["outputs"]["output"].shape == (5, 3)
     assert jnp.allclose(rollout["outputs"]["output"][:2], 0.0)
+
+
+def test_worker_materializes_task_binding_fed_mux_prototypes_after_normalization() -> None:
+    graph_spec = GraphSpec.model_validate(_mux_graph_spec())
+    task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
+        StudioTaskBindingSpec.model_validate(_mux_task_binding_spec()),
+        graph_spec,
+    )
+
+    compiled = compile_training_run(
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=task_binding_spec,
+        cfg=_cfg(n_reach_steps=5),
+    )
+    rollout = rollout_graph(compiled.graph, compiled, key=jax.random.PRNGKey(5))
+
+    assert compiled.graph.nodes["mux"].input_ports == ("in_0", "in_1")
+    assert rollout["outputs"]["output"].shape == (5, 3)
+    assert jnp.allclose(rollout["outputs"]["output"][0], jnp.array([1.0, 2.0, 0.5]))
+
+
+def test_worker_rejects_degenerate_single_input_mux_before_materialization() -> None:
+    task_binding_spec = _mux_task_binding_spec()
+    task_binding_spec["exposed_data"] = task_binding_spec["exposed_data"][:1]
+    task_binding_spec["bindings"] = task_binding_spec["bindings"][:1]
+
+    with pytest.raises(ValueError, match=r"Mux 'mux' needs at least two connected inputs"):
+        compile_training_run(
+            graph_spec=_mux_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=task_binding_spec,
+            cfg=_cfg(),
+        )
 
 
 def test_compile_training_run_rejects_batch_size_larger_than_one() -> None:

@@ -49,6 +49,7 @@ export function TrainingPanel() {
     lossHistory,
     jobId,
     latestTrajectory,
+    trainingStreamError,
     appendLog,
   } = trainingStore;
   const setAvailableProbes = useTrainingStore((state) => state.setAvailableProbes);
@@ -802,7 +803,14 @@ export function TrainingPanel() {
         <div className="text-xs text-mint-500">Training completed.</div>
       )}
       {status === 'error' && (
-        <div className="text-xs text-amber-600">Training failed. Check console.</div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          {trainingStreamError ?? 'Training failed. Check console.'}
+        </div>
+      )}
+      {status === 'running' && trainingStreamError && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          {trainingStreamError}
+        </div>
       )}
 
       {/* Checkpoint section */}

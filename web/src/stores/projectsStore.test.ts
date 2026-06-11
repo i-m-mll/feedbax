@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { GraphSpec, GraphUIState } from '@/types/graph';
 
 const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
 
@@ -181,6 +182,123 @@ describe('projectsStore local restore state', () => {
       'RLRMP movement-ramp training runs'
     );
     expect(useGraphStore.getState().graphId).toBe('movement-ramp-project');
+  });
+
+  it('reopens a saved project inside its persisted subgraph path', async () => {
+    vi.resetModules();
+    vi.stubGlobal('window', { localStorage: makeStorage() });
+    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'generated-tab') });
+
+    const { useProjectsStore } = await import('@/stores/projectsStore');
+    const { useGraphStore } = await import('@/stores/graphStore');
+    const { buildWorkspaceSnapshot } = await import('@/stores/workspaceStore');
+    const { defaultTrainingSpec, defaultTaskSpec } = await import('@/stores/trainingStore');
+
+    const graph: GraphSpec = {
+      nodes: {
+        network: {
+          type: 'Network',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+      metadata: {
+        name: 'Nested project',
+        created_at: '2026-06-11T00:00:00Z',
+        updated_at: '2026-06-11T00:00:00Z',
+        version: '1.0.0',
+      },
+      subgraphs: {
+        network: {
+          nodes: {
+            inner: {
+              type: 'Subgraph',
+              params: {},
+              input_ports: ['input'],
+              output_ports: ['output'],
+            },
+          },
+          wires: [],
+          input_ports: ['input'],
+          output_ports: ['output'],
+          input_bindings: { input: ['inner', 'input'] },
+          output_bindings: { output: ['inner', 'output'] },
+          subgraphs: {
+            inner: {
+              nodes: {
+                core: {
+                  type: 'Gain',
+                  params: { gain: 2 },
+                  input_ports: ['input'],
+                  output_ports: ['output'],
+                },
+              },
+              wires: [],
+              input_ports: ['input'],
+              output_ports: ['output'],
+              input_bindings: { input: ['core', 'input'] },
+              output_bindings: { output: ['core', 'output'] },
+            },
+          },
+        },
+      },
+    };
+    const uiState: GraphUIState = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        network: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        network: {
+          viewport: { x: 20, y: 30, zoom: 0.9 },
+          node_states: {
+            inner: { position: { x: 100, y: 50 }, collapsed: false, selected: false },
+          },
+          subgraph_states: {
+            inner: {
+              viewport: { x: 40, y: 60, zoom: 0.8 },
+              node_states: {
+                core: { position: { x: 240, y: 120 }, collapsed: false, selected: false },
+              },
+            },
+          },
+        },
+      },
+    };
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph,
+      uiState,
+      trainingSpec: defaultTrainingSpec,
+      taskSpec: defaultTaskSpec,
+      analysisSnapshot: { pages: [], activePageId: null },
+      projectName: 'Nested project',
+      graphStackPath: ['network', 'inner'],
+    });
+
+    useProjectsStore.getState().openProjectInTab(
+      'nested-project',
+      graph,
+      uiState,
+      'Nested project',
+      { pages: [], activePageId: null },
+      workspace,
+      { replaceActiveTab: true },
+    );
+
+    expect(useProjectsStore.getState().tabs[0].label).toBe('Nested project');
+    expect(useGraphStore.getState().graphStack.map((layer) => layer.childNodeId)).toEqual([
+      'network',
+      'inner',
+    ]);
+    expect(useGraphStore.getState().currentGraphLabel).toBe('inner');
+    expect(useGraphStore.getState().graph.nodes.core.params).toEqual({ gain: 2 });
   });
 
   it('drops restored clean startup placeholders when a saved project tab exists', async () => {

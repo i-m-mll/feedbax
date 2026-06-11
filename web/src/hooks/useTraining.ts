@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { startTraining, stopTraining } from '@/api/client';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
@@ -7,6 +7,30 @@ import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 import { parseContract } from '@/generated/studioContracts';
 import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
 import type { TaskSpec, TrainingConfig } from '@/types/training';
+import type { TrainingStatus } from '@/stores/trainingStore';
+
+export const TRAINING_WS_MAX_RECONNECT_ATTEMPTS = 4;
+export const TRAINING_WS_BASE_RECONNECT_DELAY_MS = 500;
+export const TRAINING_WS_MAX_RECONNECT_DELAY_MS = 4_000;
+
+export function trainingWebSocketReconnectDelayMs(attempt: number): number {
+  return Math.min(
+    TRAINING_WS_BASE_RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt),
+    TRAINING_WS_MAX_RECONNECT_DELAY_MS
+  );
+}
+
+export function shouldReconnectTrainingWebSocket({
+  attempt,
+  intentionalClose,
+  status,
+}: {
+  attempt: number;
+  intentionalClose: boolean;
+  status: TrainingStatus;
+}): boolean {
+  return !intentionalClose && status === 'running' && attempt < TRAINING_WS_MAX_RECONNECT_ATTEMPTS;
+}
 
 /**
  * Build runtime worker controls from task/training specs. Graph topology and
@@ -45,30 +69,58 @@ export function useTraining() {
     setProgress,
     appendLog,
     clearHistory,
+    setTrainingStreamError,
     setLatestTrajectory,
   } = trainingStore;
   const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
   const wsRef = useRef<WebSocket | null>(null);
+  const wsJobIdRef = useRef<string | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const intentionalCloseRef = useRef(false);
+
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
 
   const connect = useCallback(
     (nextJobId: string) => {
+      const existing = wsRef.current;
+      if (
+        existing &&
+        wsJobIdRef.current === nextJobId &&
+        (existing.readyState === WebSocket.CONNECTING || existing.readyState === WebSocket.OPEN)
+      ) {
+        return;
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const ws = new WebSocket(`${protocol}://${window.location.host}/ws/training/${nextJobId}`);
       wsRef.current = ws;
+      wsJobIdRef.current = nextJobId;
 
       ws.onmessage = (event) => {
+        reconnectAttemptRef.current = 0;
+        setTrainingStreamError(null);
         let payload: TrainingWebSocketEvent;
         try {
           payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
         } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Invalid training WebSocket payload';
+          setTrainingStreamError(message);
           appendLog({
             batch: 0,
             level: 'error',
-            message: error instanceof Error ? error.message : 'Invalid training WebSocket payload',
+            message,
             timestamp: Date.now(),
           });
           setStatus('error');
+          intentionalCloseRef.current = true;
           ws.close();
           return;
         }
@@ -112,9 +164,11 @@ export function useTraining() {
         }
         if (payload.type === 'training_complete') {
           setStatus('completed');
+          intentionalCloseRef.current = true;
           ws.close();
         }
         if (payload.type === 'training_error') {
+          setTrainingStreamError(payload.error);
           appendLog({
             batch: payload.batch ?? 0,
             level: 'error',
@@ -122,15 +176,74 @@ export function useTraining() {
             timestamp: Date.now(),
           });
           setStatus('error');
+          intentionalCloseRef.current = true;
           ws.close();
         }
       };
 
       ws.onclose = () => {
+        if (wsRef.current !== ws) return;
         wsRef.current = null;
+        const currentStatus = useTrainingStore.getState().status;
+        if (
+          !shouldReconnectTrainingWebSocket({
+            attempt: reconnectAttemptRef.current,
+            intentionalClose: intentionalCloseRef.current,
+            status: currentStatus,
+          })
+        ) {
+          if (!intentionalCloseRef.current && currentStatus === 'running') {
+            const message = 'Training stream disconnected after multiple reconnect attempts.';
+            setTrainingStreamError(message);
+            appendLog({
+              batch: 0,
+              level: 'error',
+              message,
+              timestamp: Date.now(),
+            });
+            setStatus('error');
+          }
+          return;
+        }
+
+        const attempt = reconnectAttemptRef.current;
+        reconnectAttemptRef.current += 1;
+        const delayMs = trainingWebSocketReconnectDelayMs(attempt);
+        const message = `Training stream disconnected. Reconnecting in ${Math.round(
+          delayMs / 1000
+        )}s (attempt ${attempt + 1}/${TRAINING_WS_MAX_RECONNECT_ATTEMPTS}).`;
+        setTrainingStreamError(message);
+        appendLog({
+          batch: 0,
+          level: 'warning',
+          message,
+          timestamp: Date.now(),
+        });
+        clearReconnectTimer();
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null;
+          connect(nextJobId);
+        }, delayMs);
       };
     },
-    [setProgress, setStatus, appendLog, setLatestTrajectory]
+    [
+      setProgress,
+      setStatus,
+      appendLog,
+      setTrainingStreamError,
+      setLatestTrajectory,
+      clearReconnectTimer,
+    ]
+  );
+
+  useEffect(
+    () => () => {
+      intentionalCloseRef.current = true;
+      clearReconnectTimer();
+      wsRef.current?.close();
+      wsRef.current = null;
+    },
+    [clearReconnectTimer]
   );
 
   const start = useCallback(async () => {
@@ -139,6 +252,10 @@ export function useTraining() {
       return;
     }
     try {
+      intentionalCloseRef.current = false;
+      reconnectAttemptRef.current = 0;
+      clearReconnectTimer();
+      setTrainingStreamError(null);
       clearHistory();
       const learningRate =
         typeof trainingSpec.optimizer.params.learning_rate === 'number'
@@ -162,6 +279,7 @@ export function useTraining() {
       setStatus('running');
       connect(response.job_id);
     } catch {
+      setTrainingStreamError('Failed to start training.');
       setStatus('error');
     }
   }, [
@@ -174,15 +292,21 @@ export function useTraining() {
     setStatus,
     connect,
     clearHistory,
+    clearReconnectTimer,
+    setTrainingStreamError,
   ]);
 
   const stop = useCallback(async () => {
     if (!jobId) return;
+    intentionalCloseRef.current = true;
+    clearReconnectTimer();
     await stopTraining(jobId);
     wsRef.current?.close();
+    wsJobIdRef.current = null;
     setStatus('idle');
     setJobId(null);
-  }, [jobId, setJobId, setStatus]);
+    setTrainingStreamError(null);
+  }, [jobId, setJobId, setStatus, clearReconnectTimer, setTrainingStreamError]);
 
   return {
     status,

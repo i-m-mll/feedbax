@@ -88,6 +88,109 @@ function graphWithNetworkSubgraph(): GraphSpec {
   };
 }
 
+function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIState } {
+  const innerGraph: GraphSpec = {
+    nodes: {
+      core: {
+        type: 'Linear',
+        params: {},
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [],
+    input_ports: ['input'],
+    output_ports: ['output'],
+    input_bindings: { input: ['core', 'input'] },
+    output_bindings: { output: ['core', 'output'] },
+  };
+  const blockGraph: GraphSpec = {
+    nodes: {
+      inner: {
+        type: 'Subgraph',
+        params: {},
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [],
+    input_ports: ['input'],
+    output_ports: ['output'],
+    input_bindings: { input: ['inner', 'input'] },
+    output_bindings: { output: ['inner', 'output'] },
+    subgraphs: {
+      inner: innerGraph,
+    },
+  };
+  const networkGraph: GraphSpec = {
+    nodes: {
+      block: {
+        type: 'Subgraph',
+        params: {},
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [],
+    input_ports: ['input'],
+    output_ports: ['output'],
+    input_bindings: { input: ['block', 'input'] },
+    output_bindings: { output: ['block', 'output'] },
+    subgraphs: {
+      block: blockGraph,
+    },
+  };
+  const graph: GraphSpec = {
+    nodes: {
+      network: {
+        type: 'Network',
+        params: {},
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+    subgraphs: {
+      network: networkGraph,
+    },
+  };
+  const uiState: GraphUIState = {
+    viewport: { x: 0, y: 0, zoom: 1 },
+    node_states: {
+      network: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+    },
+    subgraph_states: {
+      network: {
+        viewport: { x: 10, y: 20, zoom: 0.9 },
+        node_states: {
+          block: { position: { x: 100, y: 50 }, collapsed: false, selected: false },
+        },
+        subgraph_states: {
+          block: {
+            viewport: { x: 30, y: 40, zoom: 0.8 },
+            node_states: {
+              inner: { position: { x: 200, y: 80 }, collapsed: false, selected: false },
+            },
+            subgraph_states: {
+              inner: {
+                viewport: { x: 50, y: 60, zoom: 0.7 },
+                node_states: {
+                  core: { position: { x: 300, y: 100 }, collapsed: false, selected: false },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  return { graph, uiState };
+}
+
 describe('graphStore boundary aliases', () => {
   beforeEach(() => {
     useGraphStore.getState().hydrateGraph(graphWithNetworkSubgraph(), uiState);
@@ -169,6 +272,103 @@ describe('graphStore boundary aliases', () => {
       x: 480,
       y: 120,
     });
+  });
+
+  it('folds three active subgraph layers into the root graph snapshot', () => {
+    const { graph, uiState } = graphWithThreeLevelSubgraph();
+    const gain: ComponentDefinition = {
+      name: 'Gain',
+      category: 'Math',
+      description: 'Gain',
+      param_schema: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      icon: 'math',
+      default_params: { gain: 3 },
+    };
+
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().enterSubgraph('block');
+    useGraphStore.getState().enterSubgraph('inner');
+    useGraphStore.getState().addNodeFromComponent(gain, { x: 520, y: 160 });
+
+    const persisted = useGraphStore.getState().capturePersistedGraph();
+
+    expect(persisted.graphStackPath).toEqual(['network', 'block', 'inner']);
+    expect(
+      persisted.graph.subgraphs?.network.subgraphs?.block.subgraphs?.inner.nodes.gain
+    ).toMatchObject({
+      type: 'Gain',
+      params: { gain: 3 },
+    });
+    expect(
+      persisted.uiState.subgraph_states?.network.subgraph_states?.block.subgraph_states?.inner
+        .node_states.gain.position
+    ).toEqual({ x: 520, y: 160 });
+  });
+
+  it('restores the active subgraph path after a persisted graph reload', () => {
+    const { graph, uiState } = graphWithThreeLevelSubgraph();
+    const gain: ComponentDefinition = {
+      name: 'Gain',
+      category: 'Math',
+      description: 'Gain',
+      param_schema: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      icon: 'math',
+      default_params: { gain: 5 },
+    };
+
+    useGraphStore.getState().hydrateGraph(graph, uiState, 'graph-1');
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().enterSubgraph('block');
+    useGraphStore.getState().enterSubgraph('inner');
+    useGraphStore.getState().addNodeFromComponent(gain, { x: 640, y: 180 });
+
+    const persisted = useGraphStore.getState().capturePersistedGraph();
+    useGraphStore
+      .getState()
+      .hydrateGraph(persisted.graph, persisted.uiState, 'graph-1', persisted.graphStackPath);
+
+    const state = useGraphStore.getState();
+    expect(state.graphStack.map((layer) => layer.childNodeId)).toEqual([
+      'network',
+      'block',
+      'inner',
+    ]);
+    expect(state.currentGraphLabel).toBe('inner');
+    expect(state.graph.nodes.gain).toMatchObject({
+      type: 'Gain',
+      params: { gain: 5 },
+    });
+    expect(state.uiState.node_states.gain.position).toEqual({ x: 640, y: 180 });
+  });
+
+  it('fails loudly when a parent subgraph entry vanishes before persistence', () => {
+    const { graph, uiState } = graphWithThreeLevelSubgraph();
+    useGraphStore.getState().hydrateGraph(graph, uiState);
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().enterSubgraph('block');
+
+    useGraphStore.setState((state) => ({
+      graphStack: state.graphStack.map((layer, index) =>
+        index === 0
+          ? {
+              ...layer,
+              graph: {
+                ...layer.graph,
+                nodes: {},
+              },
+            }
+          : layer
+      ),
+    }));
+
+    expect(() => useGraphStore.getState().capturePersistedGraph()).toThrow(
+      'parent graph no longer contains subgraph node "network"'
+    );
   });
 });
 

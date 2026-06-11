@@ -1,5 +1,11 @@
 import { create } from 'zustand';
-import { useGraphStore, createInitialGraph, createBlankGraph, type GraphSnapshot, type GraphLayer, type StateMergeRequest } from '@/stores/graphStore';
+import {
+  useGraphStore,
+  createInitialGraph,
+  createBlankGraph,
+  createGraphSnapshotFromPersistedGraph,
+  type GraphSnapshot,
+} from '@/stores/graphStore';
 import { useTrainingStore, defaultTrainingSpec, defaultTaskSpec } from '@/stores/trainingStore';
 import { useTrajectoryStore } from '@/stores/trajectoryStore';
 import { useStatisticsStore } from '@/stores/statisticsStore';
@@ -189,7 +195,17 @@ function captureWorkspaceSnapshot(
     taskSpec: trainingSnapshot.taskSpec,
     analysisSnapshot,
     projectName: graphSnapshot.currentGraphLabel,
+    graphStackPath: persistedGraph.graphStackPath,
   });
+}
+
+function graphStackPathFromWorkspace(
+  workspace: StudioWorkspaceSpec | null | undefined
+): string[] {
+  const value = workspace?.ui_state.graph_stack_path;
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : [];
 }
 
 function restoreAnalysisSnapshot(snapshot: AnalysisSnapshot | null) {
@@ -466,23 +482,15 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
       const authoringGraph = normalizeGraphForStudioAuthoring(graph);
       const authoringWorkspace =
         normalizeWorkspaceGraphsForStudioAuthoring(workspaceSnapshot ?? null);
+      const tabLabel = projectName ?? authoringGraph.metadata?.name ?? 'Untitled';
 
-      const graphSnapshot: GraphSnapshot = {
+      const graphSnapshot = createGraphSnapshotFromPersistedGraph({
         graph: authoringGraph,
         uiState,
         graphId,
-        isDirty: false,
-        lastSavedAt: null,
-        graphStack: [],
-        currentGraphLabel: projectName ?? authoringGraph.metadata?.name ?? 'Untitled',
-        currentContext: 'top-level',
-        edgeStyle: 'bezier',
-        past: [],
-        future: [],
-        selectedTapId: null,
-        selectedEdgeId: null,
-        pendingStateMerge: null,
-      };
+        label: tabLabel,
+        graphStackPath: graphStackPathFromWorkspace(authoringWorkspace),
+      });
       const trainingSnapshot = trainingSnapshotFromWorkspace(authoringWorkspace);
       const restoredAnalysis = analysisSnapshot ?? makeInitialAnalysisSnapshot();
       const restoredWorkspace = buildWorkspaceSnapshot({
@@ -492,11 +500,14 @@ export const useProjectsStore = create<ProjectsStoreState>((set, get) => {
         trainingSpec: trainingSnapshot.trainingSpec,
         taskSpec: trainingSnapshot.taskSpec,
         analysisSnapshot: restoredAnalysis,
-        projectName: graphSnapshot.currentGraphLabel,
+        projectName: tabLabel,
+        graphStackPath: graphSnapshot.graphStack
+          .map((layer) => layer.childNodeId)
+          .filter((nodeId): nodeId is string => Boolean(nodeId)),
       });
       const newTab: OpenTab = {
         tabId: generateTabId(),
-        label: graphSnapshot.currentGraphLabel,
+        label: tabLabel,
         graphSnapshot,
         trainingSnapshot,
         analysisSnapshot: restoredAnalysis,

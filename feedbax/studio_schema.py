@@ -278,6 +278,7 @@ def enumerate_studio_schema_registry(
             validate_graph_connection_schema(
                 schema_graph,
                 f"/scenarios/{scenario.id}/graph",
+                task_binding_spec,
             )
         )
 
@@ -327,6 +328,7 @@ def enumerate_studio_schema_registry(
 def validate_graph_connection_schema(
     graph: GraphSpec,
     base_path: str = "",
+    task_binding_spec: Optional[StudioTaskBindingSpec] = None,
 ) -> list[SchemaValidationIssue]:
     """Validate graph wires against provider-owned port schema records."""
 
@@ -450,7 +452,49 @@ def validate_graph_connection_schema(
             )
         )
 
+    issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
     issues.extend(_instant_cycle_issues(graph, base_path))
+    return issues
+
+
+def _mux_connected_input_issues(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+    base_path: str,
+) -> list[SchemaValidationIssue]:
+    issues: list[SchemaValidationIssue] = []
+    graph_input_ports = {
+        (node_id, port)
+        for node_id, port in (tuple(binding) for binding in graph.input_bindings.values())
+    }
+    wired_ports = {(wire.target_node, wire.target_port) for wire in graph.wires}
+    task_bound_ports = (
+        {
+            (binding.target_node_id, binding.target_port)
+            for binding in task_binding_spec.bindings
+        }
+        if task_binding_spec is not None
+        else set()
+    )
+    occupied_ports = graph_input_ports | wired_ports | task_bound_ports
+
+    for node_id, node in graph.nodes.items():
+        if node.type != "Mux":
+            continue
+        connected_inputs = {
+            port
+            for port in node.input_ports
+            if (node_id, port) in occupied_ports
+        }
+        if len(connected_inputs) >= 2:
+            continue
+        issues.append(
+            SchemaValidationIssue(
+                type="mux_needs_two_connected_inputs",
+                message=f"Mux {node_id!r} needs at least two connected inputs",
+                location={"path": f"{base_path}/nodes/{node_id}"},
+            )
+        )
     return issues
 
 

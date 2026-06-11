@@ -126,6 +126,7 @@ interface TrainingStoreState {
   progress: TrainingProgress | null;
   lossHistory: TrainingProgress[];
   consoleLogs: TrainingLogLine[];
+  trainingStreamError: string | null;
   // Trajectory snapshot streamed during training
   latestTrajectory: TrajectorySnapshot | null;
   // Loss UI state
@@ -150,6 +151,7 @@ interface TrainingStoreState {
   appendProgress: (p: TrainingProgress) => void;
   appendLog: (l: TrainingLogLine) => void;
   clearHistory: () => void;
+  setTrainingStreamError: (message: string | null) => void;
   setLatestTrajectory: (snapshot: TrajectorySnapshot | null) => void;
   // Loss actions
   setAvailableProbes: (probes: ProbeInfo[]) => void;
@@ -179,6 +181,7 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
   progress: null,
   lossHistory: [],
   consoleLogs: [],
+  trainingStreamError: null,
   latestTrajectory: null,
   // Loss UI state
   availableProbes: [],
@@ -242,7 +245,14 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
         : [...state.consoleLogs, l];
       return { consoleLogs: next };
     }),
-  clearHistory: () => set({ lossHistory: [], consoleLogs: [], latestTrajectory: null }),
+  clearHistory: () =>
+    set({
+      lossHistory: [],
+      consoleLogs: [],
+      latestTrajectory: null,
+      trainingStreamError: null,
+    }),
+  setTrainingStreamError: (message) => set({ trainingStreamError: message }),
   setLatestTrajectory: (snapshot) => set({ latestTrajectory: snapshot }),
   // Loss actions
   setAvailableProbes: (probes) => set({ availableProbes: probes }),
