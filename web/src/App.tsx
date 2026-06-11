@@ -73,6 +73,7 @@ export default function App() {
         trainingSpec: useTrainingStore.getState().trainingSpec,
         taskSpec: useTrainingStore.getState().taskSpec,
         analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        graphStackPath: graphStore.captureGraphStackPath(),
       });
       useWorkspaceStore.getState().setWorkspace(workspace);
       try {
@@ -120,6 +121,7 @@ export default function App() {
         trainingSpec: useTrainingStore.getState().trainingSpec,
         taskSpec: useTrainingStore.getState().taskSpec,
         analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        graphStackPath: graphStore.captureGraphStackPath(),
       });
       useWorkspaceStore.getState().setWorkspace(workspace);
       // Cancel pending debounce timer

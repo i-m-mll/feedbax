@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createGraph, fetchGraph, fetchGraphs, updateGraph } from '@/api/client';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useGraphStore } from '@/stores/graphStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
 
@@ -32,26 +33,34 @@ export function useSaveGraph() {
   return useMutation({
     mutationFn: async ({
       graphId,
-      graph,
-      uiState,
     }: {
       graphId: string | null;
       graph: GraphSpec;
       uiState: GraphUIState | null;
     }) => {
+      const graphStore = useGraphStore.getState();
+      const persistedGraph = graphStore.capturePersistedGraph();
       const workspace = buildWorkspaceSnapshot({
         workspace: useWorkspaceStore.getState().workspace,
-        graph,
-        uiState,
+        graph: persistedGraph.graph,
+        uiState: persistedGraph.uiState,
         trainingSpec: useTrainingStore.getState().trainingSpec,
         taskSpec: useTrainingStore.getState().taskSpec,
         analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
+        graphStackPath: persistedGraph.graphStackPath,
       });
       useWorkspaceStore.getState().setWorkspace(workspace);
       if (graphId) {
-        return updateGraph(graphId, graph, uiState, undefined, undefined, workspace);
+        return updateGraph(
+          graphId,
+          persistedGraph.graph,
+          persistedGraph.uiState,
+          undefined,
+          undefined,
+          workspace
+        );
       }
-      return createGraph(graph, uiState, workspace);
+      return createGraph(persistedGraph.graph, persistedGraph.uiState, workspace);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['graphs'] });
