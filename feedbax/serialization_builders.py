@@ -1,0 +1,491 @@
+from __future__ import annotations
+
+from typing import Any, Callable, Mapping
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+
+from feedbax.channel import Channel
+from feedbax.components import (
+    Constant,
+    Damper,
+    DelayLine,
+    GRU,
+    Gain,
+    LSTM,
+    Linear,
+    MLP,
+    Multiply,
+    Mux,
+    Noise,
+    Pulse,
+    Ramp,
+    Ravel,
+    Saturation,
+    Sine,
+    Spring,
+    Sum,
+)
+from feedbax.filters import FirstOrderFilter
+from feedbax.graph import Component
+from feedbax.intervene.intervene import (
+    AddNoise,
+    AddNoiseParams,
+    ConstantInput,
+    ConstantInputParams,
+    Copy,
+    CurlField,
+    CurlFieldParams,
+    FixedField,
+    FixedFieldParams,
+    NetworkClamp,
+    NetworkConstantInput,
+    NetworkIntervenorParams,
+)
+from feedbax.loss import CompositeLoss
+from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.mechanics.mechanics import Mechanics
+from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
+from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
+from feedbax.mechanics.plant import DirectForceInput
+from feedbax.mechanics.skeleton.arm import TwoLinkArm
+from feedbax.mechanics.skeleton.pointmass import PointMass
+from feedbax.nn import SimpleStagedNetwork
+from feedbax.noise import Normal
+from feedbax.penzai_component import (
+    PENZAI_AVAILABLE,
+    build_penzai_subgraph,
+)
+from feedbax.serialization_prototypes import array_proto_from_shape
+from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
+
+
+_HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
+    "GRUCell": eqx.nn.GRUCell,
+    "LSTMCell": eqx.nn.LSTMCell,
+    "Linear": eqx.nn.Linear,
+    "GRU": eqx.nn.GRUCell,
+    "LSTM": eqx.nn.LSTMCell,
+}
+_NONLINEARITIES: dict[str, Callable[[jax.Array], jax.Array]] = {
+    "tanh": jnp.tanh,
+    "relu": jax.nn.relu,
+    "sigmoid": jax.nn.sigmoid,
+    "softmax": jax.nn.softmax,
+    "identity": lambda x: x,
+}
+
+
+def resolve_nonlinearity(name: str | None) -> Callable[[jax.Array], jax.Array]:
+    if not name:
+        return _NONLINEARITIES["identity"]
+    if name not in _NONLINEARITIES:
+        raise ValueError(f"Unknown nonlinearity: {name!r}. Valid options: {list(_NONLINEARITIES)}")
+    return _NONLINEARITIES[name]
+
+
+def nonlinearity_name(fn: Callable[[jax.Array], jax.Array]) -> str:
+    for name, func in _NONLINEARITIES.items():
+        if fn is func:
+            return name
+    name = getattr(fn, "__name__", "")
+    return name if name in _NONLINEARITIES else "identity"
+
+
+def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
+    hidden_type = _HIDDEN_TYPES.get(str(params.get("hidden_type", "GRUCell"))) or eqx.nn.GRUCell
+    hidden_nonlinearity = resolve_nonlinearity(str(params.get("hidden_nonlinearity", "tanh")))
+    out_nonlinearity = resolve_nonlinearity(str(params.get("out_nonlinearity", "tanh")))
+    encoding_size = int(params.get("encoding_size", 0) or 0)
+    encoding_size = encoding_size if encoding_size > 0 else None
+    out_size = params.get("out_size", params.get("output_size"))
+    out_size = int(out_size) if out_size not in (None, "") else None
+    if out_size is not None and out_size <= 0:
+        out_size = None
+    hidden_noise_std = params.get("hidden_noise_std", 0.0)
+    if hidden_noise_std in (None, 0, 0.0):
+        hidden_noise_std = None
+    return SimpleStagedNetwork(
+        input_size=int(params.get("input_size", 0)),
+        hidden_size=int(params.get("hidden_size", 0)),
+        out_size=out_size,
+        encoding_size=encoding_size,
+        hidden_type=hidden_type,
+        hidden_nonlinearity=hidden_nonlinearity,
+        out_nonlinearity=out_nonlinearity,
+        hidden_noise_std=hidden_noise_std,
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
+    plant_type = params.get("plant_type", "TwoLinkArm")
+    if plant_type == "TwoLinkArm":
+        plant = DirectForceInput(TwoLinkArm())
+    elif plant_type == "PointMass":
+        plant = DirectForceInput(PointMass(mass=float(params.get("mass", 1.0))))
+    else:
+        raise ValueError(f"Unsupported plant_type '{plant_type}'")
+    return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
+
+
+def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
+    return LinearStateSpace(
+        A=jnp.asarray(params["A"]),
+        B=jnp.asarray(params["B"]),
+        B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
+        dt=float(params.get("dt", 1.0)),
+        initial_state=None
+        if params.get("initial_state") is None
+        else jnp.asarray(params["initial_state"]),
+        pos_slice=tuple(params.get("pos_slice", [0, 2])),
+        vel_slice=tuple(params.get("vel_slice", [2, 4])),
+    )
+
+
+def _build_channel(params: Mapping[str, Any]) -> Channel:
+    delay = int(params.get("delay", 0))
+    add_noise = bool(params.get("add_noise", True))
+    noise_std = params.get("noise_std", 0.0)
+    noise_func = None
+    if add_noise and noise_std not in (None, 0, 0.0):
+        noise_func = Normal(std=float(noise_std))
+    input_proto = None
+    input_shape = params.get("input_shape")
+    if isinstance(input_shape, (list, tuple)):
+        input_proto = jnp.zeros(tuple(int(dim) for dim in input_shape))
+    return Channel(
+        delay=delay,
+        noise_func=noise_func,
+        add_noise=add_noise,
+        input_proto=input_proto,
+    )
+
+
+def _build_filter(params: Mapping[str, Any]) -> FirstOrderFilter:
+    input_proto = array_proto_from_shape(params.get("input_shape"))
+    return FirstOrderFilter(
+        tau_rise=float(params.get("tau_rise", 0.05)),
+        tau_decay=float(params.get("tau_decay", 0.05)),
+        dt=float(params.get("dt", 0.001)),
+        input_proto=input_proto,
+        init_value=float(params.get("init_value", 0.0)),
+    )
+
+
+def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComponent:
+    loss_func = CompositeLoss({})
+    if task_type == "SimpleReaches":
+        task = SimpleReaches(
+            loss_func=loss_func,
+            n_steps=int(params.get("n_steps", 200)),
+            workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
+            eval_n_directions=int(params.get("eval_n_directions", 7)),
+            eval_reach_length=float(params.get("eval_reach_length", 0.5)),
+            eval_grid_n=int(params.get("eval_grid_n", 1)),
+        )
+    elif task_type == "DelayedReaches":
+        task = DelayedReaches(
+            loss_func=loss_func,
+            n_steps=int(params.get("n_steps", 140)),
+            workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
+            train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
+            epoch_len_ranges=tuple(
+                tuple(int(value) for value in item)
+                for item in params.get("epoch_len_ranges", [[5, 15], [10, 20]])
+            ),
+            target_on_epochs=tuple(int(value) for value in params.get("target_on_epochs", [1, 2])),
+            hold_epochs=tuple(int(value) for value in params.get("hold_epochs", [0, 1])),
+            move_epochs=tuple(int(value) for value in params.get("move_epochs", [2])),
+            p_catch_trial=float(params.get("p_catch_trial", 0.5)),
+            eval_n_directions=int(params.get("eval_n_directions", 7)),
+            eval_reach_length=float(params.get("eval_reach_length", 0.5)),
+            eval_grid_n=int(params.get("eval_grid_n", 1)),
+        )
+    elif task_type == "Stabilization":
+        task = Stabilization(
+            loss_func=loss_func,
+            n_steps=int(params.get("n_steps", 200)),
+            workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
+        )
+    else:
+        raise ValueError(f"Unsupported task type '{task_type}'")
+
+    mode = params.get("mode", "open_loop")
+    if mode != "open_loop":
+        raise ValueError("Only open_loop TaskComponent is supported from GraphSpec")
+
+    trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
+    return TaskComponent(task=task, trial_spec=trial_spec, mode="open_loop")
+
+
+def _build_gain(params: Mapping[str, Any]) -> Gain:
+    return Gain(gain=float(params.get("gain", 1.0)))
+
+
+def _build_sum(params: Mapping[str, Any]) -> Sum:
+    return Sum()
+
+
+def _build_multiply(params: Mapping[str, Any]) -> Multiply:
+    return Multiply()
+
+
+def _build_constant(params: Mapping[str, Any]) -> Constant:
+    return Constant(value=params.get("value", 0.0))
+
+
+def _build_ramp(params: Mapping[str, Any]) -> Ramp:
+    return Ramp(
+        slope=params.get("slope", 1.0),
+        intercept=params.get("intercept", 0.0),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_sine(params: Mapping[str, Any]) -> Sine:
+    return Sine(
+        amplitude=params.get("amplitude", 1.0),
+        frequency=float(params.get("frequency", 1.0)),
+        phase=float(params.get("phase", 0.0)),
+        offset=params.get("offset", 0.0),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_pulse(params: Mapping[str, Any]) -> Pulse:
+    return Pulse(
+        amplitude=params.get("amplitude", 1.0),
+        period=float(params.get("period", 1.0)),
+        duty_cycle=float(params.get("duty_cycle", 0.5)),
+        offset=params.get("offset", 0.0),
+        dt=float(params.get("dt", 0.01)),
+    )
+
+
+def _build_noise(params: Mapping[str, Any]) -> Noise:
+    shape = params.get("shape", [1])
+    if not isinstance(shape, (list, tuple)):
+        shape = [int(shape)]
+    return Noise(
+        mean=float(params.get("mean", 0.0)),
+        std=float(params.get("std", 1.0)),
+        shape=shape,
+    )
+
+
+def _build_saturation(params: Mapping[str, Any]) -> Saturation:
+    return Saturation(
+        min_val=float(params.get("min_val", -1.0)),
+        max_val=float(params.get("max_val", 1.0)),
+    )
+
+
+def _build_delay_line(params: Mapping[str, Any]) -> DelayLine:
+    input_proto = array_proto_from_shape(params.get("input_shape"))
+    return DelayLine(
+        delay=int(params.get("delay", 1)),
+        init_value=float(params.get("init_value", 0.0)),
+        input_proto=input_proto,
+    )
+
+
+def _build_mlp(params: Mapping[str, Any]) -> MLP:
+    hidden_sizes = params.get("hidden_sizes", [64])
+    if not isinstance(hidden_sizes, (list, tuple)):
+        hidden_sizes = [int(hidden_sizes)]
+    return MLP(
+        input_size=int(params.get("input_size", 1)),
+        output_size=int(params.get("output_size", 1)),
+        hidden_sizes=hidden_sizes,
+        activation=str(params.get("activation", "relu")),
+        final_activation=str(params.get("final_activation", "identity")),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_linear(params: Mapping[str, Any]) -> Linear:
+    return Linear(
+        input_size=int(params.get("input_size", 1)),
+        output_size=int(params.get("output_size", 1)),
+        use_bias=bool(params.get("use_bias", True)),
+        activation=str(params.get("activation", "identity")),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_mux(params: Mapping[str, Any]) -> Mux:
+    return Mux(n_inputs=int(params.get("n_inputs", 2)))
+
+
+def _build_gru(params: Mapping[str, Any]) -> GRU:
+    return GRU(
+        input_size=int(params.get("input_size", 1)),
+        hidden_size=int(params.get("hidden_size", 1)),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_lstm(params: Mapping[str, Any]) -> LSTM:
+    return LSTM(
+        input_size=int(params.get("input_size", 1)),
+        hidden_size=int(params.get("hidden_size", 1)),
+        key=jr.PRNGKey(0),
+    )
+
+
+def _build_spring(params: Mapping[str, Any]) -> Spring:
+    return Spring(stiffness=float(params.get("stiffness", 1.0)))
+
+
+def _build_damper(params: Mapping[str, Any]) -> Damper:
+    return Damper(damping=float(params.get("damping", 1.0)))
+
+
+def _build_relu_muscle(params: Mapping[str, Any]) -> ReluMuscle:
+    return ReluMuscle(
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        tau_activation=float(params.get("tau_activation", 0.015)),
+        tau_deactivation=float(params.get("tau_deactivation", 0.05)),
+        min_activation=float(params.get("min_activation", 0.0)),
+        dt=float(params.get("dt", 0.01)),
+        initial_activation=float(params.get("initial_activation", 0.0)),
+    )
+
+
+def _build_rigid_tendon_hill_muscle_thelen(
+    params: Mapping[str, Any],
+) -> RigidTendonHillMuscleThelen:
+    return RigidTendonHillMuscleThelen(
+        max_isometric_force=float(params.get("max_isometric_force", 500.0)),
+        optimal_muscle_length=float(params.get("optimal_muscle_length", 0.1)),
+        tendon_slack_length=float(params.get("tendon_slack_length", 0.1)),
+        vmax_factor=float(params.get("vmax_factor", 10.0)),
+        min_activation=float(params.get("min_activation", 0.001)),
+        tau_activation=float(params.get("tau_activation", 0.015)),
+        tau_deactivation=float(params.get("tau_deactivation", 0.05)),
+        dt=float(params.get("dt", 0.01)),
+        initial_activation=float(params.get("initial_activation", 0.001)),
+    )
+
+
+_BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
+    "Gain": _build_gain,
+    "Sum": _build_sum,
+    "Multiply": _build_multiply,
+    "Constant": _build_constant,
+    "Ravel": lambda params: Ravel(),
+    "Ramp": _build_ramp,
+    "Sine": _build_sine,
+    "Pulse": _build_pulse,
+    "Noise": _build_noise,
+    "Saturation": _build_saturation,
+    "DelayLine": _build_delay_line,
+    "Linear": _build_linear,
+    "MLP": _build_mlp,
+    "Mux": _build_mux,
+    "GRU": _build_gru,
+    "LSTM": _build_lstm,
+    "Spring": _build_spring,
+    "Damper": _build_damper,
+    "ReluMuscle": _build_relu_muscle,
+    "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
+    "LinearStateSpace": _build_linear_state_space,
+    "Channel": _build_channel,
+    "FirstOrderFilter": _build_filter,
+    "CurlField": lambda params: CurlField(
+        params=CurlFieldParams(
+            scale=float(params.get("scale", 1.0)),
+            amplitude=float(params.get("amplitude", 1.0)),
+            active=bool(params.get("active", False)),
+        )
+    ),
+    "FixedField": lambda params: FixedField(
+        params=FixedFieldParams(
+            scale=float(params.get("scale", 1.0)),
+            amplitude=float(params.get("amplitude", 1.0)),
+            field=jnp.asarray(params.get("field", [0.0, 0.0])),
+            active=bool(params.get("active", False)),
+        )
+    ),
+    "AddNoise": lambda params: AddNoise(
+        params=AddNoiseParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+        )
+    ),
+    "NetworkClamp": lambda params: NetworkClamp(
+        params=NetworkIntervenorParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+        )
+    ),
+    "NetworkConstantInput": lambda params: NetworkConstantInput(
+        params=NetworkIntervenorParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+        )
+    ),
+    "ConstantInput": lambda params: ConstantInput(
+        params=ConstantInputParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+        )
+    ),
+    "Copy": lambda params: Copy(),
+}
+
+
+def build_component(node_name: str, node_type: str, params: Mapping[str, Any]) -> Component:
+    """Build a leaf component from a GraphSpec node."""
+
+    builder = _BUILDERS.get(node_type)
+    if builder is not None:
+        return builder(params)
+
+    if node_type == "MomentArmProjection":
+        raise NotImplementedError(
+            f"MomentArmProjection node {node_name!r} has no Python builder yet. "
+            "It is a display-only abstraction used in composite subgraph templates."
+        )
+    if node_type == "RadialForceProjection":
+        raise NotImplementedError(
+            f"RadialForceProjection node {node_name!r} has no Python builder yet. "
+            "It is a display-only abstraction used in composite subgraph templates."
+        )
+    if node_type == "Arm6MuscleRigidTendon":
+        raise NotImplementedError(
+            f"Arm6MuscleRigidTendon node {node_name!r} requires musculoskeletal "
+            "plant data (body presets, muscle topology) not stored in GraphSpec. "
+            "This node type is supported in the training worker but not in "
+            "local graph instantiation. For testing, use TwoLinkArm instead."
+        )
+    if node_type in {"TwoLinkArm", "PointMass"}:
+        next_params = dict(params)
+        next_params["plant_type"] = node_type
+        return _build_mechanics(next_params)
+    if node_type in {"SimpleReaches", "DelayedReaches", "Stabilization"}:
+        return _build_task_component(node_type, params)
+    if node_type == "PenzaiAdapter":
+        builder_name = str(params.get("builder_name", ""))
+        if not builder_name:
+            raise ValueError(f"PenzaiAdapter node {node_name!r} requires 'builder_name' parameter")
+        if not PENZAI_AVAILABLE:
+            raise ImportError(
+                "penzai is required to instantiate PenzaiAdapter. Install with: pip install penzai"
+            )
+        builder_params = {
+            key: value
+            for key, value in params.items()
+            if key not in ("builder_name", "input_port", "output_port")
+        }
+        return build_penzai_subgraph(
+            builder_name=builder_name,
+            params=builder_params,
+            input_port=str(params.get("input_port", "input")),
+            output_port=str(params.get("output_port", "output")),
+        )
+
+    raise ValueError(f"Unsupported component type {node_type!r} for node {node_name!r}")

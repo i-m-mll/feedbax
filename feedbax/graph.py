@@ -262,6 +262,16 @@ class Graph(Component):
                 raise ValueError(f"Source node '{wire.source_node}' does not exist")
             if wire.target_node not in self.nodes:
                 raise ValueError(f"Target node '{wire.target_node}' does not exist")
+            source = self.nodes[wire.source_node]
+            if wire.source_port not in source.output_ports:
+                raise ValueError(
+                    f"Wire source port '{wire.source_node}.{wire.source_port}' does not exist"
+                )
+            target = self.nodes[wire.target_node]
+            if wire.target_port not in target.input_ports:
+                raise ValueError(
+                    f"Wire target port '{wire.target_node}.{wire.target_port}' does not exist"
+                )
 
         for ext_port, (node_name, node_port) in self.input_bindings.items():
             if ext_port not in self.input_ports:
@@ -298,8 +308,7 @@ class Graph(Component):
     @property
     def _needs_iteration(self) -> bool:
         return len(self._cycle_wires) > 0 or any(
-            isinstance(node, Graph) and node._needs_iteration
-            for node in self.nodes.values()
+            isinstance(node, Graph) and node._needs_iteration for node in self.nodes.values()
         )
 
     @cached_property
@@ -621,9 +630,7 @@ class Graph(Component):
         for request in trace:
             if request.kind == "port":
                 if request.node is None or request.port is None:
-                    raise ValueError(
-                        f"Trace selector {request.selector!r} is missing node/port"
-                    )
+                    raise ValueError(f"Trace selector {request.selector!r} is missing node/port")
                 key = (request.node, request.port)
                 if key not in port_values:
                     raise ValueError(
@@ -637,9 +644,7 @@ class Graph(Component):
                 source_node = request.source_node or request.node
                 source_port = request.source_port or request.port
                 if source_node is None or source_port is None:
-                    raise ValueError(
-                        f"Trace selector {request.selector!r} is missing edge source"
-                    )
+                    raise ValueError(f"Trace selector {request.selector!r} is missing edge source")
                 key = (source_node, source_port)
                 if key not in port_values:
                     raise ValueError(
@@ -665,8 +670,8 @@ class Graph(Component):
                 continue
 
             if request.kind == "graph_output":
-                output_name = request.port or request.path or request.selector.removeprefix(
-                    "graph_output:"
+                output_name = (
+                    request.port or request.path or request.selector.removeprefix("graph_output:")
                 )
                 if output_name not in outputs:
                     raise ValueError(
@@ -731,6 +736,7 @@ class Graph(Component):
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
     ) -> dict[tuple[str, str], PyTree]:
         init_values: dict[tuple[str, str], PyTree] = {}
+        missing_reasons: dict[tuple[str, str], str] = {}
 
         if cycle_init is not None:
             init_values.update(cycle_init)
@@ -750,15 +756,32 @@ class Graph(Component):
                 metadata_value = self._initial_value_from_recurrent_initializer(wire)
                 if metadata_value is not None:
                     init_values[target_key] = metadata_value
+                    missing_reasons.pop(target_key, None)
+                else:
+                    missing_reasons[target_key] = (
+                        f"{wire.source_node}.{wire.source_port} -> "
+                        f"{wire.target_node}.{wire.target_port}: source node "
+                        f"{wire.source_node!r} has no initial state and "
+                        "recurrent_initializer is absent"
+                    )
                 continue
             source_node = self.nodes[wire.source_node]
             node_outputs = source_node.initial_outputs(source_state)
             if wire.source_port in node_outputs:
                 init_values[target_key] = node_outputs[wire.source_port]
+                missing_reasons.pop(target_key, None)
                 continue
             metadata_value = self._initial_value_from_recurrent_initializer(wire)
             if metadata_value is not None:
                 init_values[target_key] = metadata_value
+                missing_reasons.pop(target_key, None)
+            else:
+                missing_reasons[target_key] = (
+                    f"{wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port}: source initial_outputs "
+                    f"does not expose port {wire.source_port!r} and "
+                    "recurrent_initializer is absent"
+                )
 
         for node_name, node in self.nodes.items():
             if not isinstance(node, Graph) or not node._needs_iteration:
@@ -774,8 +797,10 @@ class Graph(Component):
         ]
         if missing:
             raise ValueError(
-                "Missing initial values for cycle targets: "
-                + ", ".join(f"{n}.{p}" for n, p in missing)
+                "Missing initial values for recurrent cycle wires: "
+                + "; ".join(
+                    missing_reasons.get((n, p), f"{n}.{p}: no value available") for n, p in missing
+                )
             )
 
         return init_values
@@ -788,13 +813,32 @@ class Graph(Component):
         if kind == "zeros":
             shape = initializer.get("shape")
             if shape is None:
-                return None
-            return jnp.zeros(tuple(int(dim) for dim in shape))
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'zeros' requires 'shape'"
+                )
+            try:
+                return jnp.zeros(tuple(int(dim) for dim in shape))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    f"has invalid shape {shape!r}"
+                ) from exc
         if kind == "constant":
             if "value" not in initializer:
-                return None
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'constant' requires 'value'"
+                )
             return jnp.asarray(initializer["value"])
-        return None
+        raise ValueError(
+            f"Wire {wire.source_node}.{wire.source_port} -> "
+            f"{wire.target_node}.{wire.target_port} has unsupported "
+            f"recurrent_initializer kind {kind!r}"
+        )
 
     def _call_with_iteration(
         self,

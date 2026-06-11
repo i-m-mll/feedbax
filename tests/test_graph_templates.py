@@ -14,7 +14,7 @@ from feedbax.graph_templates import (
     standard_network_subgraph,
 )
 from feedbax.nn import SimpleStagedNetwork
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
 from feedbax.serialization import graph_to_spec, spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
@@ -374,4 +374,105 @@ def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
     )
 
     with pytest.raises(ValueError, match="DelayLine node 'delay' port 'input'"):
+        spec_to_graph(spec, {})
+
+
+def test_spec_to_graph_rejects_unsupported_graph_spec_version() -> None:
+    spec = GraphSpec(
+        metadata=GraphMetadata(
+            name="bad",
+            created_at="2026-06-11T00:00:00Z",
+            updated_at="2026-06-11T00:00:00Z",
+            version="9.0.0",
+        )
+    )
+
+    with pytest.raises(ValueError, match="Unsupported GraphSpec version '9.0.0'"):
+        spec_to_graph(spec, {})
+
+
+def test_spec_to_graph_rejects_missing_required_registry_param() -> None:
+    registry = ComponentRegistry()
+    spec = GraphSpec(
+        nodes={
+            "gain": ComponentSpec(
+                type="Gain",
+                params={},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        input_ports=["input"],
+        output_ports=["output"],
+        input_bindings={"input": ("gain", "input")},
+        output_bindings={"output": ("gain", "output")},
+    )
+
+    with pytest.raises(ValueError, match="Gain node 'gain'.*'gain'"):
+        spec_to_graph(spec, {"Gain": registry.get("Gain")})
+
+
+def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inference() -> None:
+    spec = GraphSpec(
+        nodes={
+            "network": ComponentSpec(
+                type="Network",
+                params={"input_size": 3, "hidden_size": 5, "out_size": 2},
+                input_ports=["input", "feedback"],
+                output_ports=["output", "hidden"],
+            ),
+            "mechanics": ComponentSpec(
+                type="PointMass",
+                params={"dt": 0.02},
+                input_ports=["force"],
+                output_ports=["effector"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="network",
+                source_port="output",
+                target_node="mechanics",
+                target_port="force",
+            )
+        ],
+        input_ports=["input"],
+        output_ports=["effector"],
+        input_bindings={"input": ("network", "input")},
+        output_bindings={"effector": ("mechanics", "effector")},
+    )
+
+    with pytest.raises(ValueError, match="Network node 'network' requires a subgraph"):
+        spec_to_graph(spec, {})
+
+
+def test_spec_to_graph_rejects_missing_source_output_prototype() -> None:
+    spec = GraphSpec(
+        nodes={
+            "gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 2.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "sink": ComponentSpec(
+                type="Channel",
+                params={"delay": 1, "add_noise": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="gain",
+                source_port="output",
+                target_node="sink",
+                target_port="input",
+            )
+        ],
+        output_ports=["output"],
+        output_bindings={"output": ("sink", "output")},
+    )
+
+    with pytest.raises(ValueError, match="Gain node 'gain' port 'input'"):
         spec_to_graph(spec, {})
