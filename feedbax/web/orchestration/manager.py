@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -22,6 +23,8 @@ _INSTANCE_STARTUP_TIMEOUT = 300.0
 # Maximum seconds to wait for the worker HTTP server to respond.
 _WORKER_HEALTH_TIMEOUT = 120.0
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class OrchestrationState:
@@ -39,6 +42,8 @@ class OrchestrationState:
         project: GCP project ID stored so that terminate/refresh can use it
             without requiring the caller to track it separately.
         zone: GCP zone stored alongside the project for the same reason.
+        orphaned_instance: Instance name that could not be deleted after a
+            failed launch attempt, if cleanup failed.
     """
 
     instance: Optional[InstanceInfo] = None
@@ -47,6 +52,7 @@ class OrchestrationState:
     worker_url: Optional[str] = None
     project: Optional[str] = None
     zone: Optional[str] = None
+    orphaned_instance: Optional[str] = None
 
 
 class OrchestrationManager:
@@ -105,9 +111,12 @@ class OrchestrationManager:
                 zone=config.zone,
             )
 
+        created_instance: Optional[InstanceInfo] = None
+
         try:
             # Step 1 — create instance.
             info = await create_instance(config, instance_name)
+            created_instance = info
             async with self._lock:
                 self._state.instance = info
 
@@ -159,9 +168,23 @@ class OrchestrationManager:
                 self._state.status = "running"
 
         except Exception as exc:
+            orphaned_instance: Optional[str] = None
+            if created_instance is not None:
+                try:
+                    await delete_instance(config.project, config.zone, created_instance.name)
+                except Exception:
+                    orphaned_instance = created_instance.name
+                    logger.exception(
+                        "Failed to delete cloud instance %s after launch failure",
+                        created_instance.name,
+                    )
+
             async with self._lock:
                 self._state.status = "error"
                 self._state.error = str(exc)
+                self._state.orphaned_instance = orphaned_instance
+                if orphaned_instance is None:
+                    self._state.instance = None
 
         return self._state
 
