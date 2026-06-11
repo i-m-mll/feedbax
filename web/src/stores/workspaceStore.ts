@@ -477,6 +477,7 @@ export function buildWorkspaceSnapshot({
   taskSpec,
   analysisSnapshot,
   projectName,
+  graphStackPath,
 }: {
   workspace: StudioWorkspaceSpec | null;
   graph: GraphSpec;
@@ -485,6 +486,7 @@ export function buildWorkspaceSnapshot({
   taskSpec: TaskSpec;
   analysisSnapshot: AnalysisSnapshot | null;
   projectName?: string;
+  graphStackPath?: string[] | null;
 }): StudioWorkspaceSpec {
   assertGraphUiStateConsistency(graph, uiState);
 
@@ -579,6 +581,13 @@ export function buildWorkspaceSnapshot({
     ...withStages,
     label: withStages.label || projectName || graph.metadata?.name || 'Studio workspace',
     active_stage_id: withStages.active_stage_id ?? trainStage?.id ?? null,
+    ui_state: {
+      ...withStages.ui_state,
+      graph_stack_path:
+        graphStackPath === undefined
+          ? withStages.ui_state.graph_stack_path ?? []
+          : graphStackPath ?? [],
+    },
     scenarios,
   })!;
 }

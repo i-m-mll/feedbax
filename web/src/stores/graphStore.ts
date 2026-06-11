@@ -1527,6 +1527,7 @@ export interface GraphSnapshot {
 export interface PersistableGraphSnapshot {
   graph: GraphSpec;
   uiState: GraphUIState;
+  graphStackPath: string[];
 }
 
 interface GraphStoreState {
@@ -1549,8 +1550,14 @@ interface GraphStoreState {
   selectedTapId: string | null;
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
-  hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
+  hydrateGraph: (
+    graph: GraphSpec,
+    uiState?: GraphUIState | null,
+    graphId?: string | null,
+    graphStackPath?: string[] | null
+  ) => void;
   capturePersistedGraph: () => PersistableGraphSnapshot;
+  captureGraphStackPath: () => string[];
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
   markSaved: (graphId: string) => void;
   markDirty: () => void;
@@ -1621,6 +1628,7 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
     return {
       graph: state.graph,
       uiState: state.uiState,
+      graphStackPath: [],
     };
   }
 
@@ -1629,7 +1637,16 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
   for (let i = state.graphStack.length - 1; i >= 0; i -= 1) {
     const layer = state.graphStack[i];
     const childId = layer.childNodeId;
-    if (!childId || !layer.graph.nodes[childId]) continue;
+    if (!childId) {
+      throw new Error(
+        `Cannot persist nested graph: stack layer ${i} does not identify its parent node.`
+      );
+    }
+    if (!layer.graph.nodes[childId]) {
+      throw new Error(
+        `Cannot persist nested graph: parent graph no longer contains subgraph node "${childId}".`
+      );
+    }
     const nextGraph: GraphSpec = {
       ...layer.graph,
       nodes: {
@@ -1659,6 +1676,137 @@ function capturePersistedGraphFromState(state: GraphStoreState): PersistableGrap
   return {
     graph: childGraph,
     uiState: childUi,
+    graphStackPath: captureGraphStackPathFromState(state),
+  };
+}
+
+function captureGraphStackPathFromState(state: Pick<GraphStoreState, 'graphStack'>): string[] {
+  return state.graphStack
+    .map((layer) => layer.childNodeId)
+    .filter((nodeId): nodeId is string => Boolean(nodeId));
+}
+
+function restoreGraphStackPathFromRoot({
+  graph,
+  uiState,
+  graphId,
+  graphStackPath,
+  rootLabel,
+  edgeStyle,
+}: {
+  graph: GraphSpec;
+  uiState: GraphUIState;
+  graphId: string | null;
+  graphStackPath: string[];
+  rootLabel: string;
+  edgeStyle: 'bezier' | 'elbow';
+}): Pick<
+  GraphStoreState,
+  'graph' | 'uiState' | 'nodes' | 'edges' | 'graphStack' | 'currentGraphLabel' | 'currentContext'
+> {
+  if (graphStackPath.length === 0) {
+    return {
+      graph,
+      uiState,
+      nodes: buildNodes(graph, uiState),
+      edges: buildEdges(graph, uiState, edgeStyle),
+      graphStack: [],
+      currentGraphLabel: rootLabel,
+      currentContext: 'top-level',
+    };
+  }
+
+  const graphStack: GraphLayer[] = [];
+  let parentGraph = graph;
+  let parentUi = uiState;
+  let parentLabel = rootLabel;
+  let currentContext = 'top-level';
+
+  for (const nodeId of graphStackPath) {
+    const nodeSpec = parentGraph.nodes[nodeId];
+    if (!nodeSpec) {
+      throw new Error(
+        `Cannot restore nested graph path: parent graph no longer contains node "${nodeId}".`
+      );
+    }
+    const childGraph = parentGraph.subgraphs?.[nodeId];
+    if (!childGraph) {
+      throw new Error(
+        `Cannot restore nested graph path: node "${nodeId}" has no saved subgraph.`
+      );
+    }
+    const childUi = normalizeUiState(
+      childGraph,
+      parentUi.subgraph_states?.[nodeId] ?? { viewport: DEFAULT_VIEWPORT, node_states: {} },
+      edgeStyle
+    );
+    const context = getSubgraphContext(nodeSpec.type);
+    graphStack.push({
+      graph: parentGraph,
+      uiState: parentUi,
+      graphId,
+      label: parentLabel,
+      childNodeId: nodeId,
+      contextType: context,
+    });
+    parentGraph = childGraph;
+    parentUi = childUi;
+    parentLabel = nodeId;
+    currentContext = context;
+  }
+
+  return {
+    graph: parentGraph,
+    uiState: parentUi,
+    nodes: buildNodes(parentGraph, parentUi),
+    edges: buildEdges(parentGraph, parentUi, edgeStyle),
+    graphStack,
+    currentGraphLabel: parentLabel,
+    currentContext,
+  };
+}
+
+export function createGraphSnapshotFromPersistedGraph({
+  graph,
+  uiState,
+  graphId,
+  label,
+  graphStackPath,
+  edgeStyle = DEFAULT_EDGE_STYLE,
+}: {
+  graph: GraphSpec;
+  uiState: GraphUIState | null;
+  graphId: string | null;
+  label: string;
+  graphStackPath?: string[] | null;
+  edgeStyle?: 'bezier' | 'elbow';
+}): GraphSnapshot {
+  const migrated = normalizeGraphForStudioAuthoring(graph);
+  const normalized = normalizeUiState(migrated, uiState, edgeStyle);
+  const rootLabel = label || migrated.metadata?.name || 'Untitled';
+  const restored = restoreGraphStackPathFromRoot({
+    graph: migrated,
+    uiState: normalized,
+    graphId,
+    graphStackPath: graphStackPath ?? [],
+    rootLabel,
+    edgeStyle,
+  });
+  return {
+    graph: restored.graph,
+    uiState: restored.uiState,
+    graphId,
+    isDirty: false,
+    lastSavedAt: null,
+    graphStack: restored.graphStack,
+    currentGraphLabel: restored.currentGraphLabel,
+    currentContext: restored.currentContext,
+    edgeStyle,
+    past: [],
+    future: [],
+    selectedTapId: null,
+    selectedEdgeId: null,
+    pendingStateMerge: null,
   };
 }
 
@@ -1682,19 +1830,27 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   selectedTapId: null,
   selectedEdgeId: null,
   pendingStateMerge: null,
-  hydrateGraph: (graph, uiState, graphId) => {
+  hydrateGraph: (graph, uiState, graphId, graphStackPath = []) => {
     const edgeStyle = get().edgeStyle;
     const migrated = normalizeGraphForStudioAuthoring(graph);
     const normalized = normalizeUiState(migrated, uiState, edgeStyle);
-    set({
-      graphId: graphId ?? null,
+    const restored = restoreGraphStackPathFromRoot({
       graph: migrated,
       uiState: normalized,
-      nodes: buildNodes(migrated, normalized),
-      edges: buildEdges(migrated, normalized, edgeStyle),
-      graphStack: [],
-      currentGraphLabel: migrated.metadata?.name ?? 'Model',
-      currentContext: 'top-level',
+      graphId: graphId ?? null,
+      graphStackPath: graphStackPath ?? [],
+      rootLabel: migrated.metadata?.name ?? 'Model',
+      edgeStyle,
+    });
+    set({
+      graphId: graphId ?? null,
+      graph: restored.graph,
+      uiState: restored.uiState,
+      nodes: restored.nodes,
+      edges: restored.edges,
+      graphStack: restored.graphStack,
+      currentGraphLabel: restored.currentGraphLabel,
+      currentContext: restored.currentContext,
       isDirty: false,
       past: [],
       future: [],
@@ -1704,6 +1860,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     });
   },
   capturePersistedGraph: () => capturePersistedGraphFromState(get()),
+  captureGraphStackPath: () => captureGraphStackPathFromState(get()),
   restoreSnapshot: (snapshot) => {
     const { edgeStyle } = snapshot;
     const graph = normalizeGraphForStudioAuthoring(snapshot.graph);
@@ -2122,7 +2279,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       for (let i = stack.length - 1; i >= index; i -= 1) {
         const layer = stack[i];
         const childId = layer.childNodeId;
-        if (!childId || !layer.graph.nodes[childId]) continue;
+        if (!childId) {
+          throw new Error(
+            `Cannot exit nested graph: stack layer ${i} does not identify its parent node.`
+          );
+        }
+        if (!layer.graph.nodes[childId]) {
+          throw new Error(
+            `Cannot exit nested graph: parent graph no longer contains subgraph node "${childId}".`
+          );
+        }
         const nextGraph: GraphSpec = {
           ...layer.graph,
           nodes: {
