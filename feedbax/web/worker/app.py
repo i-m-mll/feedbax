@@ -367,10 +367,18 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
     _auth_dep = Depends(_require_auth)
 
     # ------------------------------------------------------------------
-    # Module-level state for the single active job.
+    # In-process job registry.
     # ------------------------------------------------------------------
 
-    _state: Dict[str, Optional[_Job]] = {"current": None}
+    _jobs: Dict[str, _Job] = {}
+    _jobs_lock = threading.Lock()
+
+    def _get_job(job_id: str) -> _Job:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
 
     # ------------------------------------------------------------------
     # Routes
@@ -409,52 +417,41 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
         )
         thread = threading.Thread(target=_run_training, args=(job,), daemon=True)
         job.thread = thread
-        _state["current"] = job
+        with _jobs_lock:
+            _jobs[job_id] = job
         thread.start()
         return {"job_id": job_id}
 
-    @app.post("/stop", dependencies=[_auth_dep])
-    def stop():
-        job = _state.get("current")
-        if job is not None:
-            job.stop_event.set()
-            job.status = WorkerStatus.IDLE
+    @app.post("/jobs/{job_id}/stop", dependencies=[_auth_dep])
+    def stop(job_id: str):
+        job = _get_job(job_id)
+        job.stop_event.set()
+        job.status = WorkerStatus.IDLE
         return {"ok": True}
 
-    @app.get("/status", dependencies=[_auth_dep])
-    def status():
-        job = _state.get("current")
-        if job is None:
-            return {
-                "status": WorkerStatus.IDLE,
-                "batch": 0,
-                "total_batches": 0,
-                "last_loss": 0.0,
-            }
+    @app.get("/jobs/{job_id}/status", dependencies=[_auth_dep])
+    def status(job_id: str):
+        job = _get_job(job_id)
         return {
             "status": job.status,
             "batch": job.batch,
             "total_batches": job.total_batches,
             "last_loss": job.last_loss,
+            "job_id": job.job_id,
             "manifest_path": job.manifest_path,
         }
 
-    @app.get("/stream", dependencies=[_auth_dep])
-    def stream(from_seq: Optional[int] = Query(default=None, alias="from_seq")):
-        """SSE stream of training events for the current job.
+    @app.get("/jobs/{job_id}/stream", dependencies=[_auth_dep])
+    def stream(job_id: str, from_seq: Optional[int] = Query(default=None, alias="from_seq")):
+        """SSE stream of training events for a job.
 
         Args:
+            job_id: Worker job identifier returned by ``POST /start``.
             from_seq: When provided, replay buffered events with seq >=
                 *from_seq* before streaming live ones. Used by the client for
                 reconnection.
         """
-        job = _state.get("current")
-        if job is None:
-            # No job running; return an empty stream immediately.
-            async def _empty():
-                yield "data: {}\n\n"
-
-            return StreamingResponse(_empty(), media_type="text/event-stream")
+        job = _get_job(job_id)
 
         # Collect any buffered events to replay before the live stream.
         replay_events: list[dict] = []
@@ -496,25 +493,24 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
 
-    @app.get("/checkpoint", dependencies=[_auth_dep])
-    def checkpoint():
-        """Return checkpoint metadata for the current job."""
-        job = _state.get("current")
-        if job is None:
-            return {"batch": 0, "loss": 0.0, "weights_available": False}
+    @app.get("/jobs/{job_id}/checkpoint", dependencies=[_auth_dep])
+    def checkpoint(job_id: str):
+        """Return checkpoint metadata for a job."""
+        job = _get_job(job_id)
         return {
             "batch": job.batch,
             "loss": job.last_loss,
             "weights_available": job.checkpoint_path is not None,
+            "job_id": job.job_id,
         }
 
-    @app.get("/checkpoint/download", dependencies=[_auth_dep])
-    def checkpoint_download():
-        """Download the serialized checkpoint file for the current job."""
+    @app.get("/jobs/{job_id}/checkpoint/download", dependencies=[_auth_dep])
+    def checkpoint_download(job_id: str):
+        """Download the serialized checkpoint file for a job."""
         import os
 
-        job = _state.get("current")
-        if job is None or job.checkpoint_path is None:
+        job = _get_job(job_id)
+        if job.checkpoint_path is None:
             raise HTTPException(status_code=404, detail="No checkpoint available")
         if not os.path.exists(job.checkpoint_path):
             raise HTTPException(status_code=410, detail="Checkpoint file gone")
@@ -524,11 +520,11 @@ def create_app(auth_token: Optional[str] = None) -> FastAPI:
             filename=f"feedbax_checkpoint_{job.job_id}.eqx",
         )
 
-    @app.get("/manifest", dependencies=[_auth_dep])
-    def manifest():
-        """Return the durable manifest for the current job."""
-        job = _state.get("current")
-        if job is None or job.manifest_payload is None:
+    @app.get("/jobs/{job_id}/manifest", dependencies=[_auth_dep])
+    def manifest(job_id: str):
+        """Return the durable manifest for a job."""
+        job = _get_job(job_id)
+        if job.manifest_payload is None:
             raise HTTPException(status_code=404, detail="No manifest available")
         return job.manifest_payload
 
