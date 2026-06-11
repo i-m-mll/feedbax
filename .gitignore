@@ -45,6 +45,7 @@ data/
 # temporary files
 tmp*
 .tmp*
+.zellij-session
 *.insyncdl
 _debris/
 
