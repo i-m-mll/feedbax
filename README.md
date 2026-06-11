@@ -1,5 +1,5 @@
 > [!NOTE]
-> **Feedbax is under active development, with a major release planned for Q2 2026.** Feel free to explore, but know that things will soon look somewhat different (and improved!).
+> **Feedbax is under active development while the eager graph architecture and Studio workflow stabilize.** Feel free to explore, but know that things will continue to change.
 
 # Getting started
 
@@ -153,7 +153,7 @@ paths = save_figure(
 The spec JSON receives automatic augmentation: SHA-256 digests for every input
 artifact, installed package versions, and a UTC timestamp.
 
-> **Full docs** for the integration pattern will be expanded in `bdee8d1` (docs rebuild).
+> **Full docs** for the integration pattern are tracked in the documentation tree as the plugin and figure-routing APIs evolve.
 
 ## Development
 

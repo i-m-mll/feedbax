@@ -12,6 +12,7 @@ import { graphNodeEntityId } from '@/features/scenario/entities';
 import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 import type { TrainingSpec, TaskSpec } from '@/types/training';
+import type { AnalysisSnapshot } from '@/types/analysis';
 import type {
   StudioObjectiveSpec,
   StudioTopPaneState,
@@ -95,6 +96,134 @@ describe('buildWorkspaceSnapshot', () => {
     });
     expect(scenario.objective_spec).toEqual(objectiveSpecFromLossSpec(trainingSpec.loss));
     expect(scenario.graph).toEqual(graph);
+  });
+
+  it('persists nested graph edits and analysis pages in one workspace snapshot', () => {
+    const nestedGraph: GraphSpec = {
+      ...graph,
+      nodes: {
+        network: {
+          type: 'Network',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+      },
+      subgraphs: {
+        network: {
+          nodes: {
+            gain: {
+              type: 'Gain',
+              params: { gain: 2 },
+              input_ports: ['input'],
+              output_ports: ['output'],
+            },
+          },
+          wires: [],
+          input_ports: ['input'],
+          output_ports: ['output'],
+          input_bindings: { input: ['gain', 'input'] },
+          output_bindings: { output: ['gain', 'output'] },
+        },
+      },
+    };
+    const nestedUiState: GraphUIState = {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      node_states: {
+        network: { position: { x: 100, y: 100 }, collapsed: false, selected: false },
+      },
+      subgraph_states: {
+        network: {
+          viewport: { x: 20, y: 40, zoom: 0.8 },
+          node_states: {
+            gain: { position: { x: 480, y: 120 }, collapsed: false, selected: false },
+          },
+        },
+      },
+    };
+    const analysisSnapshot: AnalysisSnapshot = {
+      pages: [
+        {
+          id: 'analysis:page:gain',
+          name: 'Gain response',
+          graphSpec: {
+            dataSourceId: '__data_source__',
+            nodes: {
+              plot: {
+                id: 'plot',
+                type: 'LinePlot',
+                label: 'Line plot',
+                category: 'Figures',
+                inputPorts: ['series'],
+                outputPorts: [],
+                params: { color: 'blue' },
+                role: 'analysis',
+              },
+            },
+            wires: [],
+          },
+          inputRequirements: [],
+          evalParams: { perturbation: 'gain' },
+          viewport: { x: 10, y: 15, zoom: 0.9 },
+          evalRunId: 'eval:gain',
+          expandedFieldPaths: ['states.network.hidden'],
+        },
+      ],
+      activePageId: 'analysis:page:gain',
+    };
+
+    const workspace = buildWorkspaceSnapshot({
+      workspace: null,
+      graph: nestedGraph,
+      uiState: nestedUiState,
+      trainingSpec,
+      taskSpec,
+      analysisSnapshot,
+      projectName: 'Workspace test',
+    });
+
+    const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
+    const trainScenario = workspace.scenarios[trainStage.scenario_id!];
+    expect(trainScenario.graph?.subgraphs?.network.nodes.gain).toMatchObject({
+      type: 'Gain',
+      params: { gain: 2 },
+    });
+    expect(
+      trainScenario.graph_ui_state?.subgraph_states?.network?.node_states.gain
+    ).toMatchObject({
+      position: { x: 480, y: 120 },
+    });
+
+    const analysisStage = workspace.stages.find((stage) => stage.kind === 'analysis')!;
+    const analysisSpec = workspace.scenarios[analysisStage.scenario_id!]
+      .analysis_spec as Record<string, any>;
+    expect(analysisSpec.active_page_id).toBe('analysis:page:gain');
+    expect(analysisSpec.pages[0]).toMatchObject({
+      id: 'analysis:page:gain',
+      name: 'Gain response',
+      eval_run_id: 'eval:gain',
+      expanded_field_paths: ['states.network.hidden'],
+    });
+    expect(analysisSpec.pages[0].graph_spec.nodes.plot.params).toEqual({ color: 'blue' });
+  });
+
+  it('rejects workspace snapshots when graph UI state references a missing node', () => {
+    expect(() =>
+      buildWorkspaceSnapshot({
+        workspace: null,
+        graph,
+        uiState: {
+          ...uiState,
+          node_states: {
+            ghost: { position: { x: 0, y: 0 }, collapsed: false, selected: false },
+          },
+        },
+        trainingSpec,
+        taskSpec,
+        analysisSnapshot: null,
+        projectName: 'Workspace test',
+      })
+    ).toThrow('UI state references missing node "ghost"');
   });
 
   it('seeds the task input binding when the graph exposes network.input', () => {

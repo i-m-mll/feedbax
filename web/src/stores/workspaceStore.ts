@@ -396,6 +396,32 @@ function mergeAnalysisSpec(
   };
 }
 
+function assertGraphUiStateConsistency(
+  graph: GraphSpec,
+  uiState: GraphUIState | null,
+  path = 'graph'
+): void {
+  if (!uiState) return;
+
+  for (const nodeId of Object.keys(uiState.node_states ?? {})) {
+    if (!graph.nodes[nodeId]) {
+      throw new Error(
+        `Cannot build workspace snapshot: ${path} UI state references missing node "${nodeId}".`
+      );
+    }
+  }
+
+  for (const [nodeId, subgraphUiState] of Object.entries(uiState.subgraph_states ?? {})) {
+    const subgraph = graph.subgraphs?.[nodeId];
+    if (!subgraph) {
+      throw new Error(
+        `Cannot build workspace snapshot: ${path} UI state references missing subgraph "${nodeId}".`
+      );
+    }
+    assertGraphUiStateConsistency(subgraph, subgraphUiState, `${path}.subgraphs.${nodeId}`);
+  }
+}
+
 function ensureDefaultStages(workspace: StudioWorkspaceSpec): StudioWorkspaceSpec {
   const existingByKind = new Map(workspace.stages.map((stage) => [stage.kind, stage]));
   const trainingRuns = collection(
@@ -460,6 +486,8 @@ export function buildWorkspaceSnapshot({
   analysisSnapshot: AnalysisSnapshot | null;
   projectName?: string;
 }): StudioWorkspaceSpec {
+  assertGraphUiStateConsistency(graph, uiState);
+
   const base: StudioWorkspaceSpec =
     workspace ??
     {

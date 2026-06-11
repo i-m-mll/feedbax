@@ -51,8 +51,6 @@ export default function App() {
   // Only fires when a graphId exists (i.e., graph was already saved at least once).
   const isDirty = useGraphStore((s) => s.isDirty);
   const graphId = useGraphStore((s) => s.graphId);
-  const graphStack = useGraphStore((s) => s.graphStack);
-  const inSubgraph = graphStack.length > 0;
 
   // Lifted timer ref so the pagehide handler can cancel a pending debounce.
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -60,12 +58,13 @@ export default function App() {
   const savingRef = useRef(false);
 
   useEffect(() => {
-    if (!isDirty || !graphId || inSubgraph) return;
+    if (!isDirty || !graphId) return;
 
     const doSave = async () => {
       if (savingRef.current) return;
       savingRef.current = true;
-      const { graph, uiState, markSaved } = useGraphStore.getState();
+      const graphStore = useGraphStore.getState();
+      const { graph, uiState } = graphStore.capturePersistedGraph();
       const analysis = getAnalysisForSave();
       const workspace = buildWorkspaceSnapshot({
         workspace: useWorkspaceStore.getState().workspace,
@@ -85,7 +84,7 @@ export default function App() {
           analysis?.activePageId,
           workspace
         );
-        markSaved(graphId);
+        graphStore.markSaved(graphId);
       } catch (e) {
         persistLocalProjectTabs();
         toast.error('Auto-save failed — changes not saved', { id: 'autosave-error' });
@@ -102,19 +101,17 @@ export default function App() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isDirty, graphId, inSubgraph]);
+  }, [isDirty, graphId]);
 
   // Flush unsaved changes on page unload via sendBeacon (more reliable than beforeunload).
   useEffect(() => {
     const handlePageHide = (event: PageTransitionEvent) => {
       if (event.persisted) return; // page going into bfcache, not unloading
       persistLocalProjectTabs();
-      const { isDirty: dirty, graphId: gid, graph, uiState, graphStack } = useGraphStore.getState();
+      const graphStore = useGraphStore.getState();
+      const { isDirty: dirty, graphId: gid } = graphStore;
       if (!dirty || !gid) return;
-      // Always save the root graph — if inside a subgraph, graphStack[0] is the root context.
-      // Saving the current (subgraph) view to the top-level ID would corrupt the project.
-      const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
-      const rootUiState = graphStack.length > 0 ? graphStack[0].uiState : uiState;
+      const { graph: rootGraph, uiState: rootUiState } = graphStore.capturePersistedGraph();
       const analysis = getAnalysisForSave();
       const workspace = buildWorkspaceSnapshot({
         workspace: useWorkspaceStore.getState().workspace,

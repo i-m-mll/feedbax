@@ -686,6 +686,9 @@ plotlyviewer = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "mujoco" },
+    { name = "mujoco-mjx" },
+    { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -704,7 +707,7 @@ requires-dist = [
     { name = "ipyfilechooser", marker = "extra == 'notebook'", specifier = ">=0.6.0" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.5" },
     { name = "jax", specifier = ">=0.5.2" },
-    { name = "jax-cookbook", editable = "../../../../../05 Utils/jax-cookbook" },
+    { name = "jax-cookbook", git = "https://github.com/i-m-mll/jax-cookbook.git?rev=e1cb0e69849ec3aa83b50da4de3f11c2fda61ac9" },
     { name = "jaxtyping", specifier = ">=0.2.38" },
     { name = "kaleido", specifier = "==0.2.1" },
     { name = "matplotlib", specifier = ">=3.10.1" },
@@ -735,6 +738,9 @@ provides-extras = ["dashboard", "notebook", "plotlyviewer", "mjx"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "mujoco", specifier = ">=3.0.0" },
+    { name = "mujoco-mjx", specifier = ">=0.1.0" },
+    { name = "pyright", specifier = ">=1.1.407" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.12.11" },
 ]
@@ -821,6 +827,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/3f/efeb7c6801c46e11bd666a5180f0d615f74f72264212f74f39586c6fda9d/glfw-2.10.0-py2.py27.py3.py30.py31.py32.py33.py34.py35.py36.py37.py38.py39.py310.py311.py312.py313.py314-none-manylinux_2_28_x86_64.whl", hash = "sha256:ce6724bb7cb3d0543dcba17206dce909f94176e68220b8eafee72e9f92bcf542", size = 243522, upload-time = "2026-01-28T05:58:03.517Z" },
     { url = "https://files.pythonhosted.org/packages/cf/b9/b04c3aa0aad2870cfe799f32f8b59789c98e1816bbce9e83f4823c5b840b/glfw-2.10.0-py2.py27.py3.py30.py31.py32.py33.py34.py35.py36.py37.py38.py39.py310.py311.py312.py313.py314-none-win32.whl", hash = "sha256:fca724a21a372731edb290841edd28a9fb1ee490f833392752844ac807c0086a", size = 552682, upload-time = "2026-01-28T05:58:05.649Z" },
     { url = "https://files.pythonhosted.org/packages/bd/e1/6d6816b296a529ac9b897ad228b1e084eb1f92319e96371880eebdc874a6/glfw-2.10.0-py2.py27.py3.py30.py31.py32.py33.py34.py35.py36.py37.py38.py39.py310.py311.py312.py313.py314-none-win_amd64.whl", hash = "sha256:823c0bd7770977d4b10e0ed0aef2f3682276b7c88b8b65cfc540afce5951392f", size = 559464, upload-time = "2026-01-28T05:58:07.261Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/a8/d4dab8a58fc2e6981fc7a58c4e56ba9d777fb24931cec6a22152edbb3540/glfw-2.10.0-py2.py3-none-macosx_10_6_intel.whl", hash = "sha256:a0d1f29f206219cc291edfb6cace663a86da2470632551c998e3db82d48ea177", size = 105288, upload-time = "2026-03-10T17:21:19.929Z" },
+    { url = "https://files.pythonhosted.org/packages/14/61/68d35e001872a7705112418da236fa2418d4f2e5419f8b2837f9b81bb3da/glfw-2.10.0-py2.py3-none-macosx_11_0_arm64.whl", hash = "sha256:d28d6f3ef217e64e35dc6fd0a7acb4cec9bfe7cd14dd9b35a7228a87002de154", size = 102139, upload-time = "2026-03-10T17:21:21.645Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/e1/ca5984081aaae07c9d371cb11dc4e4ff603510678ed9b73e58b6c351fe63/glfw-2.10.0-py2.py3-none-manylinux2014_aarch64.whl", hash = "sha256:f968b522bb6a0e04aaf4dcac30a476d7229308bb2bac406a60587debb5a61e29", size = 229998, upload-time = "2026-03-10T17:21:23.549Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/c4/82ac75fdcfba2896da7a573c0fc7f8ceb8f77ead6866d500d06c32f1c464/glfw-2.10.0-py2.py3-none-manylinux2014_x86_64.whl", hash = "sha256:68cf3752bdadb6f4bc0a876247c28c88c7251ac39f8af076ed938fdfd71e72dd", size = 241944, upload-time = "2026-03-10T17:21:26.102Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/96/9f691823cca5eb6a08f346bd0ff03b78032db9370b509a1e9c8976fb20a5/glfw-2.10.0-py2.py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:44d98de5dbf8f727e0cb29f9b29d29528ea7570f2e6f42f8430a69df05f12b48", size = 231009, upload-time = "2026-03-10T17:21:28.481Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/93/977b9e679e356871d428ae7a1139ec767dd5177bed58a6344b4d2199e00f/glfw-2.10.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:cca5158d62189e08792b1ae54f92307a282921a0e7783315b467e21b0a381c88", size = 243480, upload-time = "2026-03-10T17:21:30.538Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/bd/cea9569c8f2188b0a104472951420434a3e1f5cf26f5836ef9d7227a1a30/glfw-2.10.0-py2.py3-none-win32.whl", hash = "sha256:5e024509989740e8e7b86cc4aab508195495f79879072b0e1f68bd036a2916ad", size = 552641, upload-time = "2026-03-10T17:21:32.653Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/9b/4366ad3e1c0688146c70aa6143584d6a8d88583b9390f106250e25a3d5cd/glfw-2.10.0-py2.py3-none-win_amd64.whl", hash = "sha256:7f787ee8645781f10e8800438ce4357ab38c573ffb191aba380c1e72eba6311c", size = 559423, upload-time = "2026-03-10T17:21:34.766Z" },
 ]
 
 [[package]]
@@ -1059,7 +1073,7 @@ wheels = [
 [[package]]
 name = "jax-cookbook"
 version = "0.1.0"
-source = { editable = "../../../../../05 Utils/jax-cookbook" }
+source = { git = "https://github.com/i-m-mll/jax-cookbook.git?rev=e1cb0e69849ec3aa83b50da4de3f11c2fda61ac9#e1cb0e69849ec3aa83b50da4de3f11c2fda61ac9" }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },
@@ -1068,24 +1082,6 @@ dependencies = [
     { name = "rich" },
     { name = "tqdm" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "coverage", marker = "extra == 'tests'" },
-    { name = "equinox", specifier = ">=0.11.10" },
-    { name = "jax", specifier = ">=0.4.30" },
-    { name = "jaxtyping", specifier = ">=0.2.36" },
-    { name = "numpy", specifier = ">=2.0.2" },
-    { name = "pyright", marker = "extra == 'typing'" },
-    { name = "pytest", marker = "extra == 'tests'" },
-    { name = "rich", specifier = ">=14.1.0" },
-    { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "typeguard", marker = "extra == 'typing'" },
-]
-provides-extras = ["typing", "tests"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.5" }]
 
 [[package]]
 name = "jaxlib"
@@ -1754,6 +1750,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nodeenv"
+version = "1.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/bf/d1bda4f6168e0b2e9e5958945e01910052158313224ada5ce1fb2e1113b8/nodeenv-1.10.0.tar.gz", hash = "sha256:996c191ad80897d076bdfba80a41994c2b47c68e224c542b48feba42ba00f8bb", size = 55611, upload-time = "2025-12-20T14:08:54.006Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/b2/d0896bdcdc8d28a7fc5717c305f1a861c26e18c05047949fb371034d98bd/nodeenv-1.10.0-py2.py3-none-any.whl", hash = "sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827", size = 23438, upload-time = "2025-12-20T14:08:52.782Z" },
+]
+
+[[package]]
 name = "notebook"
 version = "7.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2324,6 +2329,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/41/f1/cf132b6cb8234fe1367389d06f44e25a6ec185a07b1174d9ba9e926a1b50/pyqtwebengine_qt5-5.15.18-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:0cea1127caa6a78ce29cc7ad1a951e99d3daf677b3261dc05f1363d5f5ff21a9", size = 74874657, upload-time = "2025-11-09T12:58:21.322Z" },
     { url = "https://files.pythonhosted.org/packages/2c/ba/9b4d1b5dc3f77988da638f49530c1d6069c6963f8fc41c3203ddffc6acbe/pyqtwebengine_qt5-5.15.18-py3-none-macosx_11_0_arm64.whl", hash = "sha256:3274a8047ae2620c431a91983d9705b7fb25bd813d731040e7af01a9dc1dd011", size = 66610069, upload-time = "2025-11-09T12:58:51.234Z" },
     { url = "https://files.pythonhosted.org/packages/cc/8e/ae2a4e9e0742b967857c10581f3313425da35c5ae31f8213a441bb46ac2c/pyqtwebengine_qt5-5.15.18-py3-none-manylinux2014_x86_64.whl", hash = "sha256:5765ee9ccdfe4841d6bac0e39da0690927c8bbcd943f2254098489c1140d6d6f", size = 90632057, upload-time = "2025-11-09T12:59:31.608Z" },
+]
+
+[[package]]
+name = "pyright"
+version = "1.1.410"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nodeenv" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/10/53/e4d8ea1391bd4355231be6f91bf239479aa0014260ed3fb5526eeb12a1f2/pyright-1.1.410.tar.gz", hash = "sha256:07a073b8ba6749826773c1269773efa11b93440d9a6aa60419d9a3172d6dc488", size = 4062013, upload-time = "2026-06-01T17:35:48.894Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/33/288b5868fa00846dacf249633719d747893e54aebd196b9968ac1878a5d3/pyright-1.1.410-py3-none-any.whl", hash = "sha256:5e961bed37cacf96b3f7cd7b1da39b350a9239aa2e69138d0e88f728cfaf296c", size = 6082448, upload-time = "2026-06-01T17:35:46.387Z" },
 ]
 
 [[package]]

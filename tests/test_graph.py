@@ -146,6 +146,30 @@ def test_graph_rejects_instant_cycles():
         )._execution_order
 
 
+def test_graph_rejects_missing_wire_source_port() -> None:
+    with pytest.raises(ValueError, match="Wire source port 'a.missing' does not exist"):
+        Graph(
+            nodes={"a": _Scaler(0.5), "b": _AddOne()},
+            wires=(Wire("a", "missing", "b", "x"),),
+            input_ports=("input",),
+            output_ports=("out",),
+            input_bindings={"input": ("a", "x")},
+            output_bindings={"out": ("b", "y")},
+        )
+
+
+def test_graph_rejects_missing_wire_target_port() -> None:
+    with pytest.raises(ValueError, match="Wire target port 'b.missing' does not exist"):
+        Graph(
+            nodes={"a": _Scaler(0.5), "b": _AddOne()},
+            wires=(Wire("a", "y", "b", "missing"),),
+            input_ports=("input",),
+            output_ports=("out",),
+            input_bindings={"input": ("a", "x")},
+            output_bindings={"out": ("b", "y")},
+        )
+
+
 def test_graph_step_acyclic_returns_empty_cycle_values():
     """For an acyclic graph, ``step`` returns an empty cycle dict and works without one."""
     a = _Scaler(2.0)
@@ -273,6 +297,20 @@ def test_graph_step_cyclic_threads_cycle_values():
     )
     assert out3["out"] == jnp.array(2.0)
     assert cyc3[("a", "x")] == jnp.array(2.0)
+
+
+def test_recurrent_cycle_init_error_names_wire_and_reason() -> None:
+    graph = _make_cyclic_graph()
+    state = init_state_from_component(graph)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Missing initial values for recurrent cycle wires: "
+            r"b\.y -> a\.x: source node 'b' has no initial state"
+        ),
+    ):
+        graph.initial_cycle_port_values(state)
 
 
 def test_graph_step_equivalent_to_call_with_iteration():

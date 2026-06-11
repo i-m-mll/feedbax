@@ -55,6 +55,7 @@ class StatusResponse(BaseModel):
     internal_ip: Optional[str] = None
     external_ip: Optional[str] = None
     error: Optional[str] = None
+    orphaned_instance: Optional[str] = None
 
 
 class TerminateResponse(BaseModel):
@@ -139,6 +140,7 @@ async def get_orchestration_status():
         internal_ip=instance.internal_ip if instance else None,
         external_ip=instance.external_ip if instance else None,
         error=state.error,
+        orphaned_instance=state.orphaned_instance,
     )
 
 
