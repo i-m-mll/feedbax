@@ -255,6 +255,14 @@ def output_prototypes_for_node(
         hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
         return {"output": hidden, "hidden": hidden, "cell": hidden}
     if node_type == "Mux":
+        available_ports = [
+            port for port in node_spec.input_ports if (node_name, port) in input_prototypes
+        ]
+        if len(available_ports) < 2:
+            return _defer_or_raise(
+                f"Mux {node_name!r} needs at least two connected inputs",
+                strict=strict,
+            )
         missing_ports = [
             port for port in node_spec.input_ports if (node_name, port) not in input_prototypes
         ]
