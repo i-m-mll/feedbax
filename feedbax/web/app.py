@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
         tags=["orchestration"],
     )
     app.include_router(figures.router, prefix="/api/figures", tags=["figures"])
-    app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
+    app.include_router(analysis.router, prefix="/api/analyses/jobs", tags=["analysis-jobs"])
 
     app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
     app.include_router(runs.router, prefix="/api/runs", tags=["runs"])

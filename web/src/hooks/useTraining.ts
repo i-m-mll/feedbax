@@ -4,6 +4,8 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { parseContract } from '@/generated/studioContracts';
+import type { TrainingWebSocketEvent } from '@/generated/studioContracts';
 import type { TaskSpec, TrainingConfig } from '@/types/training';
 
 /**
@@ -56,7 +58,20 @@ export function useTraining() {
       wsRef.current = ws;
 
       ws.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
+        let payload: TrainingWebSocketEvent;
+        try {
+          payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
+        } catch (error) {
+          appendLog({
+            batch: 0,
+            level: 'error',
+            message: error instanceof Error ? error.message : 'Invalid training WebSocket payload',
+            timestamp: Date.now(),
+          });
+          setStatus('error');
+          ws.close();
+          return;
+        }
         if (payload.type === 'training_progress') {
           setProgress({
             batch: payload.batch,
@@ -83,9 +98,13 @@ export function useTraining() {
           if (traj) {
             setLatestTrajectory({
               batch: payload.batch,
-              effector: Array.isArray(traj.effector) ? traj.effector : [],
-              target: Array.isArray(traj.target) ? traj.target : null,
-              t: Array.isArray(traj.t) ? traj.t : [],
+              effector: Array.isArray(traj.effector)
+                ? (traj.effector as [number, number][])
+                : [],
+              target: Array.isArray(traj.target)
+                ? (traj.target as [number, number][] | [number, number])
+                : null,
+              t: Array.isArray(traj.t) ? (traj.t as number[]) : [],
               observables: traj.observables ?? {},
               outputs: traj.outputs ?? {},
             });
@@ -96,6 +115,12 @@ export function useTraining() {
           ws.close();
         }
         if (payload.type === 'training_error') {
+          appendLog({
+            batch: payload.batch ?? 0,
+            level: 'error',
+            message: payload.error,
+            timestamp: Date.now(),
+          });
           setStatus('error');
           ws.close();
         }

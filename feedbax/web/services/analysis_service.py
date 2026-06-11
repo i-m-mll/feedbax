@@ -1,7 +1,7 @@
 """In-memory job tracker for demand-driven analysis generation.
 
 Tracks the lifecycle of background analysis computation jobs triggered
-by the ``POST /api/analysis/generate`` endpoint.  Storage is a plain
+by the ``POST /api/analyses/jobs`` endpoint.  Storage is a plain
 dict guarded by an ``asyncio.Lock`` -- not persistent across server
 restarts, which is acceptable for this use case.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 

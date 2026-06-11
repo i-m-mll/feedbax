@@ -1,4 +1,5 @@
 import type { GenerateFigureResponse, FigureStatusResponse } from '@/types/analysis';
+import { parseContract } from '@/generated/studioContracts';
 import type {
   FigureListResponse,
   FigureDetail,
@@ -23,6 +24,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestUnknown(path: string, options?: RequestInit): Promise<unknown> {
+  return request<unknown>(path, options);
+}
+
 // --- Demand-driven figure generation (from F-C) ---
 
 /** Trigger demand-driven figure generation for an analysis node. */
@@ -37,15 +42,20 @@ export async function generateFigure(
   if (options?.evalRunId) {
     body.eval_run_id = options.evalRunId;
   }
-  return request<GenerateFigureResponse>('/api/analysis/generate', {
+  const response = parseContract('GenerateAnalysisResponse', await requestUnknown('/api/analyses/jobs', {
     method: 'POST',
     body: JSON.stringify(body),
-  });
+  }));
+  return response.data as GenerateFigureResponse;
 }
 
 /** Check the status of a figure generation request. */
 export async function getFigureStatus(requestId: string): Promise<FigureStatusResponse> {
-  return request<FigureStatusResponse>(`/api/analysis/status/${requestId}`);
+  const response = parseContract(
+    'AnalysisJobStatusResponse',
+    await requestUnknown(`/api/analyses/jobs/status/${requestId}`),
+  );
+  return response.data as FigureStatusResponse;
 }
 
 /** Fetch the Plotly JSON for a generated figure by hash. */

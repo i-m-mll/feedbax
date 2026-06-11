@@ -3,47 +3,19 @@
 from __future__ import annotations
 
 import dataclasses
-import inspect
 import logging
 from typing import Any
-
 from fastapi import APIRouter
-from pydantic import BaseModel
+
+from feedbax.contracts.studio_api import (
+    AnalysisClassInfo,
+    AnalysisPackageInfo,
+    AnalysisPackagesResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-# ---------------------------------------------------------------------------
-# Pydantic response models
-# ---------------------------------------------------------------------------
-
-
-class AnalysisClassInfo(BaseModel):
-    """Describes a single analysis class available in a package."""
-
-    name: str
-    description: str
-    category: str
-    inputPorts: list[str]
-    outputPorts: list[str]
-    defaultParams: dict[str, Any]
-    icon: str
-
-
-class AnalysisPackageInfo(BaseModel):
-    """A group of related analysis classes."""
-
-    name: str
-    description: str
-    analyses: list[AnalysisClassInfo]
-
-
-class AnalysisPackagesResponse(BaseModel):
-    """Top-level response wrapper for the packages endpoint."""
-
-    packages: list[AnalysisPackageInfo]
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +180,7 @@ def _discover_packages() -> list[AnalysisPackageInfo]:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/packages")
+@router.get("/packages", response_model=AnalysisPackagesResponse)
 async def list_analysis_packages() -> AnalysisPackagesResponse:
     """List all available analysis packages with their analysis classes.
 
@@ -219,4 +191,4 @@ async def list_analysis_packages() -> AnalysisPackagesResponse:
     data instead of hardcoded stubs.
     """
     packages = _discover_packages()
-    return AnalysisPackagesResponse(packages=packages)
+    return AnalysisPackagesResponse(data={"packages": packages})

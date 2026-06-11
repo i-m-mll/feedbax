@@ -9,6 +9,16 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from feedbax.contracts.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
+from feedbax.contracts.studio_api import (
+    SuccessPayload,
+    SuccessResponse,
+    TrainingStartResponse,
+    TrainingStatusResponse,
+    WorkerConnectEnvelope,
+    WorkerConnectResponse,
+    WorkerStatusEnvelope,
+    WorkerStatusResponse,
+)
 from feedbax.web.services.graph_service import GraphService
 from feedbax.loss_service import loss_service
 from feedbax.web.services.training_service import training_service
@@ -27,19 +37,8 @@ class WorkerConnectRequest(BaseModel):
     auth_token: Optional[str] = None
 
 
-class WorkerConnectResponse(BaseModel):
-    ok: bool
-    url: str
-
-
-class WorkerStatusResponse(BaseModel):
-    mode: str  # "local" | "remote"
-    url: Optional[str]
-    connected: bool
-
-
-@router.post("/worker/connect", response_model=WorkerConnectResponse)
-async def connect_worker(payload: WorkerConnectRequest):
+@router.post("/worker/connect", response_model=WorkerConnectEnvelope)
+async def connect_worker(payload: WorkerConnectRequest) -> WorkerConnectEnvelope:
     """Configure the Studio backend to use a remote training worker.
 
     Body:
@@ -47,18 +46,20 @@ async def connect_worker(payload: WorkerConnectRequest):
         auth_token: Optional bearer token required by the worker.
     """
     training_service.connect_remote(payload.url, payload.auth_token)
-    return WorkerConnectResponse(ok=True, url=payload.url)
+    return WorkerConnectEnvelope(data=WorkerConnectResponse(ok=True, url=payload.url))
 
 
-@router.get("/worker/status", response_model=WorkerStatusResponse)
-async def get_worker_status():
+@router.get("/worker/status", response_model=WorkerStatusEnvelope)
+async def get_worker_status() -> WorkerStatusEnvelope:
     """Return the current worker configuration (local vs remote, URL, health)."""
     mode = training_service.worker_mode()
     url = training_service._base_url
     connected = False
     if url is not None:
         connected = await training_service.worker_connected()
-    return WorkerStatusResponse(mode=mode, url=url, connected=connected)
+    return WorkerStatusEnvelope(
+        data=WorkerStatusResponse(mode=mode, url=url, connected=connected)
+    )
 
 
 class TrainingRequest(BaseModel):
@@ -74,8 +75,8 @@ class TrainingRequest(BaseModel):
     graph_spec: Optional[dict] = None
 
 
-@router.post("")
-async def start_training(payload: TrainingRequest):
+@router.post("", response_model=TrainingStartResponse)
+async def start_training(payload: TrainingRequest) -> TrainingStartResponse:
     training_config = (
         payload.training_config.model_dump() if payload.training_config is not None else None
     )
@@ -87,24 +88,24 @@ async def start_training(payload: TrainingRequest):
         task_binding_spec=payload.task_binding_spec,
         graph_spec=payload.graph_spec,
     )
-    return {"job_id": job_id}
+    return TrainingStartResponse(data={"job_id": job_id})
 
 
-@router.get("/{job_id}")
-async def get_training_status(job_id: str):
+@router.get("/{job_id}", response_model=TrainingStatusResponse)
+async def get_training_status(job_id: str) -> TrainingStatusResponse:
     status = await training_service.get_status(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"status": status}
+    return TrainingStatusResponse(data={"status": status})
 
 
-@router.delete("/{job_id}")
-async def stop_training(job_id: str):
+@router.delete("/{job_id}", response_model=SuccessResponse)
+async def stop_training(job_id: str) -> SuccessResponse:
     try:
         await training_service.stop_training(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"success": True}
+    return SuccessResponse(data=SuccessPayload(success=True))
 
 
 @router.get("/{job_id}/checkpoint")
