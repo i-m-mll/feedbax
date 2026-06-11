@@ -139,6 +139,37 @@ describe('graphStore boundary aliases', () => {
     expect(parentGraph.nodes.input_mux).toBeDefined();
     expect(parentGraph.subgraphs?.network.nodes.input_mux).toBeUndefined();
   });
+
+  it('folds active subgraph edits into the root graph snapshot for persistence', () => {
+    const gain: ComponentDefinition = {
+      name: 'Gain',
+      category: 'Math',
+      description: 'Gain',
+      param_schema: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      icon: 'math',
+      default_params: { gain: 1 },
+    };
+
+    useGraphStore.getState().enterSubgraph('network');
+    useGraphStore.getState().addNodeFromComponent(gain, { x: 480, y: 120 });
+
+    const activeGraph = useGraphStore.getState().graph;
+    expect(activeGraph.nodes.gain).toBeDefined();
+
+    const persisted = useGraphStore.getState().capturePersistedGraph();
+
+    expect(persisted.graph.nodes.network).toBeDefined();
+    expect(persisted.graph.subgraphs?.network.nodes.gain).toMatchObject({
+      type: 'Gain',
+      params: { gain: 1 },
+    });
+    expect(persisted.uiState.subgraph_states?.network?.node_states.gain.position).toEqual({
+      x: 480,
+      y: 120,
+    });
+  });
 });
 
 describe('graphStore recurrent connections', () => {

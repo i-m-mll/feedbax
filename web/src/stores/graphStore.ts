@@ -1524,6 +1524,11 @@ export interface GraphSnapshot {
   pendingStateMerge: StateMergeRequest | null;
 }
 
+export interface PersistableGraphSnapshot {
+  graph: GraphSpec;
+  uiState: GraphUIState;
+}
+
 interface GraphStoreState {
   graphId: string | null;
   graph: GraphSpec;
@@ -1545,6 +1550,7 @@ interface GraphStoreState {
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
   hydrateGraph: (graph: GraphSpec, uiState?: GraphUIState | null, graphId?: string | null) => void;
+  capturePersistedGraph: () => PersistableGraphSnapshot;
   restoreSnapshot: (snapshot: GraphSnapshot) => void;
   markSaved: (graphId: string) => void;
   markDirty: () => void;
@@ -1610,6 +1616,52 @@ interface GraphStoreState {
 
 const initial = createInitialGraph();
 
+function capturePersistedGraphFromState(state: GraphStoreState): PersistableGraphSnapshot {
+  if (state.graphStack.length === 0) {
+    return {
+      graph: state.graph,
+      uiState: state.uiState,
+    };
+  }
+
+  let childGraph = deriveSubgraphPorts(state.graph);
+  let childUi = normalizeUiState(childGraph, state.uiState, state.edgeStyle);
+  for (let i = state.graphStack.length - 1; i >= 0; i -= 1) {
+    const layer = state.graphStack[i];
+    const childId = layer.childNodeId;
+    if (!childId || !layer.graph.nodes[childId]) continue;
+    const nextGraph: GraphSpec = {
+      ...layer.graph,
+      nodes: {
+        ...layer.graph.nodes,
+        [childId]: {
+          ...layer.graph.nodes[childId],
+          input_ports: childGraph.input_ports,
+          output_ports: childGraph.output_ports,
+        },
+      },
+      subgraphs: {
+        ...(layer.graph.subgraphs ?? {}),
+        [childId]: childGraph,
+      },
+    };
+    const nextUi: GraphUIState = {
+      ...layer.uiState,
+      subgraph_states: {
+        ...(layer.uiState.subgraph_states ?? {}),
+        [childId]: childUi,
+      },
+    };
+    childGraph = nextGraph;
+    childUi = normalizeUiState(nextGraph, nextUi, state.edgeStyle);
+  }
+
+  return {
+    graph: childGraph,
+    uiState: childUi,
+  };
+}
+
 export const useGraphStore = create<GraphStoreState>((set, get) => ({
   graphId: null,
   graph: initial.graph,
@@ -1651,6 +1703,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       pendingStateMerge: null,
     });
   },
+  capturePersistedGraph: () => capturePersistedGraphFromState(get()),
   restoreSnapshot: (snapshot) => {
     const { edgeStyle } = snapshot;
     const graph = normalizeGraphForStudioAuthoring(snapshot.graph);
