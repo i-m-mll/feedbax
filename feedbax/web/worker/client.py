@@ -110,26 +110,29 @@ async def start_job(
         return resp.json()["job_id"]
 
 
-async def stop_job(base_url: str, auth_token: Optional[str] = None) -> None:
-    """POST /stop to request the worker halt the current job.
+async def stop_job(base_url: str, job_id: str, auth_token: Optional[str] = None) -> None:
+    """POST /jobs/{job_id}/stop to request the worker halt a job.
 
     Args:
         base_url: Worker base URL.
+        job_id: Worker job identifier.
         auth_token: Optional shared secret.
     """
     async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{base_url}/stop",
+        resp = await client.post(
+            f"{base_url}/jobs/{job_id}/stop",
             headers=_auth_headers(auth_token),
             timeout=5.0,
         )
+        resp.raise_for_status()
 
 
-async def get_status(base_url: str, auth_token: Optional[str] = None) -> dict:
-    """GET /status and return the raw status dict.
+async def get_status(base_url: str, job_id: str, auth_token: Optional[str] = None) -> dict:
+    """GET /jobs/{job_id}/status and return the raw status dict.
 
     Args:
         base_url: Worker base URL.
+        job_id: Worker job identifier.
         auth_token: Optional shared secret.
 
     Returns:
@@ -137,7 +140,7 @@ async def get_status(base_url: str, auth_token: Optional[str] = None) -> dict:
     """
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{base_url}/status",
+            f"{base_url}/jobs/{job_id}/status",
             headers=_auth_headers(auth_token),
             timeout=5.0,
         )
@@ -145,11 +148,12 @@ async def get_status(base_url: str, auth_token: Optional[str] = None) -> dict:
         return resp.json()
 
 
-async def get_checkpoint(base_url: str, auth_token: Optional[str] = None) -> dict:
-    """GET /checkpoint and return the raw checkpoint metadata dict.
+async def get_checkpoint(base_url: str, job_id: str, auth_token: Optional[str] = None) -> dict:
+    """GET /jobs/{job_id}/checkpoint and return the raw checkpoint metadata dict.
 
     Args:
         base_url: Worker base URL.
+        job_id: Worker job identifier.
         auth_token: Optional shared secret.
 
     Returns:
@@ -157,7 +161,7 @@ async def get_checkpoint(base_url: str, auth_token: Optional[str] = None) -> dic
     """
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{base_url}/checkpoint",
+            f"{base_url}/jobs/{job_id}/checkpoint",
             headers=_auth_headers(auth_token),
             timeout=5.0,
         )
@@ -165,11 +169,11 @@ async def get_checkpoint(base_url: str, auth_token: Optional[str] = None) -> dic
         return resp.json()
 
 
-async def get_manifest(base_url: str, auth_token: Optional[str] = None) -> dict:
-    """GET /manifest and return the current job's durable manifest."""
+async def get_manifest(base_url: str, job_id: str, auth_token: Optional[str] = None) -> dict:
+    """GET /jobs/{job_id}/manifest and return a job's durable manifest."""
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{base_url}/manifest",
+            f"{base_url}/jobs/{job_id}/manifest",
             headers=_auth_headers(auth_token),
             timeout=5.0,
         )
@@ -179,13 +183,15 @@ async def get_manifest(base_url: str, auth_token: Optional[str] = None) -> dict:
 
 async def download_checkpoint(
     base_url: str,
+    job_id: str,
     dest_path: str,
     auth_token: Optional[str] = None,
 ) -> None:
-    """Stream GET /checkpoint/download and write to *dest_path*.
+    """Stream GET /jobs/{job_id}/checkpoint/download and write to *dest_path*.
 
     Args:
         base_url: Worker base URL.
+        job_id: Worker job identifier.
         dest_path: Local filesystem path to write the checkpoint bytes to.
         auth_token: Optional shared secret.
 
@@ -195,7 +201,7 @@ async def download_checkpoint(
     async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream(
             "GET",
-            f"{base_url}/checkpoint/download",
+            f"{base_url}/jobs/{job_id}/checkpoint/download",
             headers=_auth_headers(auth_token),
         ) as resp:
             resp.raise_for_status()
@@ -206,9 +212,10 @@ async def download_checkpoint(
 
 async def stream_events(
     base_url: str,
+    job_id: str,
     auth_token: Optional[str] = None,
 ) -> AsyncIterator[dict]:
-    """Connect to GET /stream and yield parsed JSON event dicts as they arrive.
+    """Connect to GET /jobs/{job_id}/stream and yield parsed JSON event dicts.
 
     Automatically reconnects on connection errors up to
     ``_MAX_RECONNECT_ATTEMPTS`` times, using the ``seq`` field of the last
@@ -220,6 +227,7 @@ async def stream_events(
 
     Args:
         base_url: Worker base URL.
+        job_id: Worker job identifier.
         auth_token: Optional shared secret to include in the Authorization header.
 
     Yields:
@@ -230,7 +238,7 @@ async def stream_events(
     headers = _auth_headers(auth_token)
 
     while attempt <= _MAX_RECONNECT_ATTEMPTS:
-        url = f"{base_url}/stream"
+        url = f"{base_url}/jobs/{job_id}/stream"
         params: dict = {}
         if last_seq is not None:
             params["from_seq"] = last_seq + 1

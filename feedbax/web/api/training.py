@@ -57,11 +57,7 @@ async def get_worker_status():
     url = training_service._base_url
     connected = False
     if url is not None:
-        try:
-            status = await training_service.get_status()
-            connected = status.get("status") != "error"
-        except Exception:
-            connected = False
+        connected = await training_service.worker_connected()
     return WorkerStatusResponse(mode=mode, url=url, connected=connected)
 
 
@@ -96,13 +92,18 @@ async def start_training(payload: TrainingRequest):
 
 @router.get("/{job_id}")
 async def get_training_status(job_id: str):
-    status = await training_service.get_status()
+    status = await training_service.get_status(job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Job not found")
     return {"status": status}
 
 
 @router.delete("/{job_id}")
 async def stop_training(job_id: str):
-    await training_service.stop_training()
+    try:
+        await training_service.stop_training(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
     return {"success": True}
 
 
