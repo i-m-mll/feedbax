@@ -80,6 +80,17 @@ class TestConstruction:
         assert net.input_ports == ("input", "feedback")
         assert net.output_ports == ("output", "hidden")
 
+    @pytest.mark.parametrize("decay", [-0.1, 1.1, float("inf")])
+    def test_decay_must_be_dissipative(self, decay, key):
+        with pytest.raises(ValueError, match=r"decay must be finite and in the range \[0, 1\]"):
+            CDENetwork(
+                obs_dim=OBS_DIM,
+                hidden_dim=HIDDEN_DIM,
+                out_size=OUT_SIZE,
+                decay=decay,
+                key=key,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Single step tests

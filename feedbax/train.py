@@ -60,24 +60,28 @@ LOSS_FMT = ".2e"
 logger = logging.getLogger(__name__)
 
 
-def _safe_state_set(state, idx, new_value):
-    """Set a StateIndex value, tolerating dtype/weak-type mismatches.
+def _cast_to_state_dtypes(new_value, current_value):
+    """Cast a replacement StateIndex value to the stored State leaf dtypes."""
 
-    Equinox State.set() validates exact dtype/weak-type matching via
-    jax.eval_shape.  Trial-specific params from JAX random functions may
-    have different types (strong f32) than the Python-scalar defaults
-    stored in State (weak f32).  We rebuild the State dict directly,
-    bypassing the strict validation.
-    """
-    from equinox.nn._stateful import State as _State, _Sentinel
-    new_value_converted = jtu.tree_map(jnp.asarray, new_value)
-    state_dict = state._state.copy()
-    state_dict[idx.marker] = new_value_converted
-    new_self = object.__new__(_State)
-    new_self._state = state_dict
-    # Invalidate old state (same as State.set does)
-    state._state = _Sentinel()
-    return new_self
+    def _cast_leaf(new_leaf, current_leaf):
+        if hasattr(current_leaf, "dtype"):
+            if getattr(current_leaf, "weak_type", False):
+                raise ValueError(
+                    "Cannot update a weakly typed StateIndex leaf with public "
+                    "Equinox State.set(); initialize the component StateIndex "
+                    "with an explicitly typed JAX array."
+                )
+            return jnp.asarray(new_leaf, dtype=current_leaf.dtype)
+        return new_leaf
+
+    return jt.map(_cast_leaf, new_value, current_value)
+
+
+def _state_set_matching_dtypes(state, idx, new_value):
+    """Set a StateIndex value via public Equinox API after dtype normalization."""
+
+    current_value = state.get(idx)
+    return state.set(idx, _cast_to_state_dtypes(new_value, current_value))
 
 
 WhereFunc: TypeAlias = Callable[[Component], Any]
@@ -889,7 +893,7 @@ class TaskTrainer(eqx.Module):
                         params, current,
                         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )
-                    state = _safe_state_set(state, idx, merged)
+                    state = _state_set_matching_dtypes(state, idx, merged)
 
             return model.state_consistency_update(state)
 

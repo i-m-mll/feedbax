@@ -28,6 +28,7 @@ gate can partially counteract the decay for important state dimensions.
 """
 
 import logging
+import math
 from typing import Union
 
 import equinox as eqx
@@ -136,15 +137,23 @@ class CDENetwork(Component):
                 muscles or force dimensions).
             vf_width: Width of hidden layers in the vector field MLP.
             vf_depth: Number of hidden layers in the vector field MLP.
-            decay: Hidden state decay rate (LTC-inspired dissipation). Pulls
-                h toward zero each step, preventing unbounded drift. Always
-                active as an unconditional stability floor.
+            decay: Hidden state decay rate (LTC-inspired dissipation). Must be
+                finite and in ``[0, 1]`` so the manual Euler decay term is not
+                anti-dissipative. Pulls h toward zero each step, preventing
+                unbounded drift. Always active as an unconditional stability
+                floor.
             use_anti_nf: Whether to add Anti-NF gated decay on top of
                 fixed decay (True) or use fixed decay only (False).
             alpha: Feedback strength scalar for Anti-NF gated decay.
             key: PRNG key for parameter initialization.
         """
         key_vf, key_readout, key_h0, key_gate = jr.split(key, 4)
+
+        if not math.isfinite(decay) or decay < 0.0 or decay > 1.0:
+            raise ValueError(
+                "CDENetwork decay must be finite and in the range [0, 1]; "
+                f"got {decay!r}."
+            )
 
         self.obs_dim = obs_dim
         self.hidden_dim = hidden_dim
@@ -178,7 +187,7 @@ class CDENetwork(Component):
         self.readout = eqx.nn.Linear(hidden_dim, out_size, key=key_readout)
         # Quiescent start: sigmoid(-5) ≈ 0.007, muscles start near-zero
         self.readout = eqx.tree_at(
-            lambda l: l.bias, self.readout, -5.0 * jnp.ones(out_size)
+            lambda layer: layer.bias, self.readout, -5.0 * jnp.ones(out_size)
         )
 
         # Learned initial hidden state (small random init)
