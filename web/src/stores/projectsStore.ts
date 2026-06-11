@@ -180,10 +180,11 @@ function captureWorkspaceSnapshot(
   trainingSnapshot: TrainingSnapshot,
   analysisSnapshot: AnalysisSnapshot | null,
 ): StudioWorkspaceSpec {
+  const persistedGraph = useGraphStore.getState().capturePersistedGraph();
   return buildWorkspaceSnapshot({
     workspace: useWorkspaceStore.getState().workspace,
-    graph: graphSnapshot.graph,
-    uiState: graphSnapshot.uiState,
+    graph: persistedGraph.graph,
+    uiState: persistedGraph.uiState,
     trainingSpec: trainingSnapshot.trainingSpec,
     taskSpec: trainingSnapshot.taskSpec,
     analysisSnapshot,
