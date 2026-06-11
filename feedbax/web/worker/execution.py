@@ -26,7 +26,7 @@ from feedbax.retained_observables import (
     lower_retention_plan,
     retention_plan_to_json,
 )
-from feedbax.studio_schema import validate_task_binding_schema
+from feedbax.studio_schema import validate_graph_connection_schema, validate_task_binding_schema
 from feedbax.contracts.graph import (
     GraphSpec,
     StudioTaskBindingSpec,
@@ -130,6 +130,18 @@ def compile_training_run(
     if binding_errors:
         summary = "; ".join(f"{issue.type}: {issue.message}" for issue in binding_errors)
         raise ValueError(f"Invalid task_binding_spec for graph execution: {summary}")
+    graph_errors = [
+        issue
+        for issue in validate_graph_connection_schema(
+            graph_model,
+            "/graph_spec",
+            binding_model,
+        )
+        if issue.severity == "error"
+    ]
+    if graph_errors:
+        summary = "; ".join(f"{issue.type}: {issue.message}" for issue in graph_errors)
+        raise ValueError(f"Invalid graph_spec for graph execution: {summary}")
 
     try:
         graph = spec_to_graph(

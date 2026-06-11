@@ -617,6 +617,43 @@ def test_graph_validation_rejects_task_nodes() -> None:
     assert result.errors[0].type == "task_node_not_allowed"
 
 
+def test_graph_validation_rejects_degenerate_single_input_mux() -> None:
+    graph = GraphSpec(
+        nodes={
+            "source": {
+                "type": "Constant",
+                "params": {"value": [1.0]},
+                "input_ports": [],
+                "output_ports": ["output"],
+            },
+            "mux": {
+                "type": "Mux",
+                "params": {"n_inputs": 2},
+                "input_ports": ["in_0", "in_1"],
+                "output_ports": ["output"],
+            },
+        },
+        wires=[
+            {
+                "source_node": "source",
+                "source_port": "output",
+                "target_node": "mux",
+                "target_port": "in_0",
+            }
+        ],
+        output_ports=["output"],
+        output_bindings={"output": ("mux", "output")},
+    )
+
+    result = validate_graph_spec(graph)
+
+    assert not result.valid
+    mux_error = next(
+        error for error in result.errors if error.type == "mux_needs_two_connected_inputs"
+    )
+    assert mux_error.message == "Mux 'mux' needs at least two connected inputs"
+
+
 def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch() -> None:
     graph = {
         "nodes": {
@@ -1302,6 +1339,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() 
     assert mux_output.value_schema.shape == [3]
     assert mux_output.value_schema.rank == 1
     assert mux_output.value_schema.metadata["dimension_source"] == "mux_concat_inputs"
+    assert "mux_needs_two_connected_inputs" not in {issue.type for issue in registry.issues}
 
 
 def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
