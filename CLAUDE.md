@@ -27,7 +27,7 @@
   - Bottom shelf panels: `web/src/components/panels/`
   - Zustand stores: `web/src/stores/`
 - **Docs**: `docs/WEB_UI_SPEC.md` (87 KB comprehensive spec), `docs/COLLIMATOR_COMPARISON.md`
-- **Design specs**: `feedbax_merge_spec.md`, `SPEC_EAGER_MODELS.md`
+- **Design specs**: `docs/design/feedbax_merge_spec.md`, `docs/design/SPEC_EAGER_MODELS.md`
 
 ## Core Principle
 
