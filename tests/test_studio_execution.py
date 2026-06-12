@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from feedbax.studio_execution import (
     StudioPipelineMaterializationRequest,
+    StudioExecutionPreparationError,
     StudioTrainingLocalRunRequest,
     StudioTrainingExecutionRequest,
     materialize_studio_pipeline,
@@ -113,6 +114,17 @@ def _workspace():
             metadata={"later_product_surface": {"keep": True}},
         )
     )
+    return workspace
+
+
+def _workspace_with_analysis_type(analysis_type: str):
+    workspace = _workspace()
+    analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
+    scenario = workspace.scenarios[analysis_stage.scenario_id]
+    scenario.analysis_spec = {
+        **(scenario.analysis_spec or {}),
+        "analysis_type": analysis_type,
+    }
     return workspace
 
 
@@ -418,6 +430,33 @@ def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: P
         )
 
 
+def test_materialize_studio_pipeline_requires_explicit_analysis_type(
+    tmp_path: Path,
+    studio_default_eval_recipe,
+):
+    training = run_studio_training_local_execution(
+        StudioTrainingLocalRunRequest(
+            workspace=_workspace(),
+            job_id="studio-pipeline-train-no-analysis-type",
+            root=str(tmp_path),
+            issues=["d30d4c2"],
+        )
+    )
+
+    with pytest.raises(
+        StudioExecutionPreparationError,
+        match="analysis_spec\\.analysis_type",
+    ):
+        materialize_studio_pipeline(
+            StudioPipelineMaterializationRequest(
+                workspace=training.workspace,
+                job_id="studio-pipeline-no-analysis-type",
+                root=str(tmp_path),
+                issues=["d30d4c2"],
+            )
+        )
+
+
 def test_materialize_studio_pipeline_consumes_stage_collections(
     tmp_path: Path,
     studio_default_eval_recipe,
@@ -425,7 +464,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
 ):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
-            workspace=_workspace(),
+            workspace=_workspace_with_analysis_type("feedbax.analysis.activity"),
             job_id="studio-pipeline-train",
             root=str(tmp_path),
             issues=["d30d4c2"],
@@ -500,7 +539,7 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
 ):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
-            workspace=_workspace(),
+            workspace=_workspace_with_analysis_type("feedbax.analysis.activity"),
             job_id="http-studio-pipeline-train",
             root=str(tmp_path),
             issues=["d30d4c2"],
