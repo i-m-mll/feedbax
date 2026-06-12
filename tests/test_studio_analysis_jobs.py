@@ -30,6 +30,7 @@ from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 TOY_JOB_EVAL_TYPE = "feedbax_test_studio_job_eval"
 TOY_JOB_ANALYSIS_TYPE = "feedbax_test_studio_job_analysis"
+MISMATCHED_JOB_ANALYSIS_TYPE = "feedbax_test_studio_job_mismatched_analysis"
 
 
 def _register_job_eval_recipe() -> None:
@@ -56,6 +57,18 @@ def _register_job_analysis_recipe() -> None:
         )
 
     register_analysis_recipe(TOY_JOB_ANALYSIS_TYPE, recipe, replace=True)
+
+
+def _register_mismatched_job_analysis_recipe() -> None:
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs) -> AnalysisRecipeResult:
+        value = sum(int(resolved.states["value"]) for resolved in inputs)
+        return AnalysisRecipeResult(
+            analyses={"actual_output": ToyAnalysis(variant="studio", cache_result=True)},
+            data=build_toy_analysis_data(value=value),
+            common_inputs={"studio": spec.params["studio"]},
+        )
+
+    register_analysis_recipe(MISMATCHED_JOB_ANALYSIS_TYPE, recipe, replace=True)
 
 
 def _execute_eval(root: Path):
@@ -115,9 +128,7 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
 
             status_payload = None
             for _ in range(50):
-                status_response = client.get(
-                    f"/api/analyses/jobs/status/{payload['request_id']}"
-                )
+                status_response = client.get(f"/api/analyses/jobs/status/{payload['request_id']}")
                 status_payload = status_response.json()["data"]
                 if status_payload["status"] in {"complete", "error"}:
                     break
@@ -148,6 +159,45 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
         assert rerun_manifest.id == manifest.id
     finally:
         unregister_analysis_recipe(TOY_JOB_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_JOB_EVAL_TYPE)
+
+
+def test_studio_analysis_job_errors_when_requested_node_matches_no_analysis_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    _register_job_eval_recipe()
+    _register_mismatched_job_analysis_recipe()
+    try:
+        eval_manifest, _eval_path = _execute_eval(tmp_path)
+
+        with TestClient(create_app()) as client:
+            response = client.post(
+                "/api/analyses/jobs",
+                json={
+                    "node_id": MISMATCHED_JOB_ANALYSIS_TYPE,
+                    "eval_run_id": eval_manifest.id,
+                    "force_rerun": False,
+                },
+            )
+            assert response.status_code == 200
+            payload = response.json()["data"]
+
+            status_payload = None
+            for _ in range(50):
+                status_response = client.get(f"/api/analyses/jobs/status/{payload['request_id']}")
+                status_payload = status_response.json()["data"]
+                if status_payload["status"] in {"complete", "error"}:
+                    break
+                time.sleep(0.05)
+
+        assert status_payload is not None
+        assert status_payload["status"] == "error"
+        assert f"requested_outputs=['{MISMATCHED_JOB_ANALYSIS_TYPE}']" in status_payload["error"]
+        assert "available_analysis_keys=['actual_output']" in status_payload["error"]
+    finally:
+        unregister_analysis_recipe(MISMATCHED_JOB_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_JOB_EVAL_TYPE)
 
 

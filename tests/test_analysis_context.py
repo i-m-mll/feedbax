@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.manifest import (
@@ -97,6 +99,75 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
     assert artifact_row == ("figure", "toy/toy_toy_analysis_0.json", "application/json")
 
 
+def test_requested_outputs_empty_intersection_raises_clear_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
+    eval_manifest, eval_path = execute_toy_evaluation(tmp_path)
+    eval_ref = parent_ref_from_evaluation_manifest(
+        eval_manifest.id,
+        uri=str(eval_path),
+    )
+    spec = AnalysisRunSpec(
+        analysis_type="toy_analysis",
+        inputs=[eval_ref],
+        params={"requested_outputs": ["missing"]},
+    )
+    context = AnalysisRunContext(
+        spec=spec,
+        root=tmp_path,
+        fig_dump_formats=("json",),
+    )
+
+    with pytest.raises(ValueError, match="requested_outputs=\\['missing'\\]") as excinfo:
+        run_analyses_with_context(
+            {"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            build_toy_analysis_data(),
+            context,
+            requested_outputs={"missing"},
+        )
+
+    assert "available_analysis_keys=['toy']" in str(excinfo.value)
+    assert context.manifest_path is None
+
+
+def test_requested_outputs_partial_intersection_runs_matching_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
+    eval_manifest, eval_path = execute_toy_evaluation(tmp_path)
+    eval_ref = parent_ref_from_evaluation_manifest(
+        eval_manifest.id,
+        uri=str(eval_path),
+    )
+    spec = AnalysisRunSpec(
+        analysis_type="toy_analysis",
+        inputs=[eval_ref],
+        params={"requested_outputs": ["toy", "missing"]},
+    )
+    context = AnalysisRunContext(
+        spec=spec,
+        root=tmp_path,
+        fig_dump_formats=("json",),
+    )
+
+    all_analyses, all_results, _all_figs = run_analyses_with_context(
+        {"toy": ToyAnalysis(variant="toy", cache_result=True)},
+        build_toy_analysis_data(),
+        context,
+        fig_dump_formats=["json"],
+        requested_outputs={"toy", "missing"},
+    )
+
+    assert set(all_analyses) == {"toy"}
+    assert all_results["toy"]["value"] == 3
+    manifest = load_manifest(context.manifest_path)
+    assert manifest.status == "completed"
+    assert manifest.summary_metrics["analysis_count"] == 1
+
+
 def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consumption(
     tmp_path: Path,
     monkeypatch,
@@ -145,9 +216,9 @@ def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consump
     assert summary_ref.media_type == "application/json"
     assert arrays_ref.logical_name == "toy/arrays.npz"
     assert arrays_ref.media_type == "application/x-npz"
-    assert summary_ref.metadata["artifact_group"]["id"] == arrays_ref.metadata[
-        "artifact_group"
-    ]["id"]
+    assert (
+        summary_ref.metadata["artifact_group"]["id"] == arrays_ref.metadata["artifact_group"]["id"]
+    )
     assert summary_ref.metadata["artifact_group"]["member_role"] == "summary"
     assert arrays_ref.metadata["artifact_group"]["member_role"] == "bulk_arrays"
     assert arrays_ref.metadata["arrays"]["values"]["role"] == "toy_value_series"
@@ -189,6 +260,7 @@ def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consump
     assert cached_results["artifact_consumer"] == all_results["artifact_consumer"]
     cached_manifest = load_manifest(cached_context.manifest_path)
     assert cached_manifest.summary_metrics["artifact_count"] == 2
-    assert {
-        artifact.artifact_id for artifact in cached_manifest.artifacts
-    } == {summary_ref.artifact_id, arrays_ref.artifact_id}
+    assert {artifact.artifact_id for artifact in cached_manifest.artifacts} == {
+        summary_ref.artifact_id,
+        arrays_ref.artifact_id,
+    }
