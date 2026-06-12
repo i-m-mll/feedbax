@@ -73,7 +73,10 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         rerun_manifest, rerun_path = execute_evaluation_run_spec(spec, root=tmp_path)
         assert rerun_path == path
         assert rerun_manifest.id == manifest.id
-        assert rerun_manifest.summary_metrics["states_cache_hit"] is True
+        assert rerun_manifest.summary_metrics["n_trials"] == 3
+        assert rerun_manifest.summary_metrics["input_training_runs"] == 1
+        assert "states_cache_hit" not in rerun_manifest.summary_metrics
+        assert rerun_manifest.metadata["cache"]["states_cache_hit"] is True
         assert calls == [str(tmp_path)]
 
         index_path = rebuild_manifest_index(tmp_path)
