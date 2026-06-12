@@ -359,6 +359,30 @@ def test_stateful_input_shape_fields_round_trip() -> None:
     assert restored.nodes["filter"].input_proto.shape == (3,)
 
 
+def test_spec_to_graph_round_trips_external_boundary_verbatim() -> None:
+    spec = GraphSpec(
+        nodes={
+            "gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 2.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        input_ports=["target"],
+        output_ports=["readout"],
+        input_bindings={"target": ("gain", "input")},
+        output_bindings={"readout": ("gain", "output")},
+    )
+
+    round_tripped = graph_to_spec(spec_to_graph(spec, {}))
+
+    assert round_tripped.input_ports == spec.input_ports
+    assert round_tripped.output_ports == spec.output_ports
+    assert round_tripped.input_bindings == spec.input_bindings
+    assert round_tripped.output_bindings == spec.output_bindings
+
+
 def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
     spec = GraphSpec(
         nodes={

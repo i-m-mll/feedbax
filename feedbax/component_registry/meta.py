@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 
 ComponentBuilder = Callable[[Mapping[str, Any]], "Component"]
+OutputPrototypeFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 
 
 @dataclass
@@ -31,6 +32,7 @@ class ComponentMeta:
     template_id: Optional[str] = None
     template_kind: Optional[str] = None
     builder: Optional[ComponentBuilder] = None
+    output_prototype_fn: Optional[OutputPrototypeFn] = None
     provenance: Optional[str] = None
 
     @property
