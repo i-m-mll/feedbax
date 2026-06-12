@@ -29,6 +29,7 @@ from feedbax.analysis.analysis import (
     get_validation_trial_specs,
     logger,
 )
+from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
 from feedbax.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
@@ -55,7 +56,7 @@ from feedbax.hyperparams import (
     flatten_hps,
     use_train_hps_when_none,
 )
-from feedbax.manifest import evaluation_states_cache_path
+from feedbax.manifest import AnalysisRunSpec, evaluation_states_cache_path
 from feedbax.misc import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.setup_utils import query_and_load_model
@@ -444,12 +445,13 @@ def setup_eval_for_module(
 
 
 def perform_all_analyses(
-    db_session: Session,
+    db_session: Session | None,
     analyses: dict[str, AbstractAnalysis],
     data: AnalysisInputData,
-    model_info: ModelRecord,
-    eval_info: EvaluationRecord,
+    model_info: ModelRecord | None,
+    eval_info: EvaluationRecord | None,
     *,
+    analysis_context: AnalysisRunContext | None = None,
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: List[str] = ["html"],
     custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
@@ -473,7 +475,12 @@ def perform_all_analyses(
     # Phase 1: Compute all analysis nodes (dependencies + leaves)
     logger.info("Computing results for analyses and their dependencies")
     all_dependency_results = compute_dependency_results(
-        analyses, data, custom_dependencies, requested_outputs=requested_outputs, **kwargs
+        analyses,
+        data,
+        custom_dependencies,
+        requested_outputs=requested_outputs,
+        analysis_context=analysis_context,
+        **kwargs,
     )
 
     # When requested_outputs is set, filter analyses to match what was computed.
@@ -497,18 +504,35 @@ def perform_all_analyses(
             logger.debug(f"Making figures: {analysis_key}")
             figs = analysis._make_figs_with_ops(data, result, **inputs)
 
-            analysis.save_figs(
-                db_session,
-                eval_info,
-                result,
-                figs,
-                data.hps,
-                model_info,
-                dump_path=fig_dump_path,
-                dump_formats=fig_dump_formats,
-                label=analysis_key,
-                **inputs,
-            )
+            if analysis_context is not None:
+                analysis.save_outputs(
+                    analysis_context,
+                    result,
+                    figs,
+                    data.hps,
+                    dump_path=fig_dump_path,
+                    dump_formats=fig_dump_formats,
+                    label=analysis_key,
+                    **inputs,
+                )
+            else:
+                if db_session is None or eval_info is None:
+                    raise ValueError(
+                        "perform_all_analyses requires analysis_context or both "
+                        "db_session and eval_info for figure output."
+                    )
+                analysis.save_figs(
+                    db_session,
+                    eval_info,
+                    result,
+                    figs,
+                    data.hps,
+                    model_info,
+                    dump_path=fig_dump_path,
+                    dump_formats=fig_dump_formats,
+                    label=analysis_key,
+                    **inputs,
+                )
 
         return analysis, result, figs
 
@@ -526,7 +550,41 @@ def perform_all_analyses(
         }
     )
 
+    if analysis_context is not None:
+        analysis_context.finalize(
+            summary_metrics={
+                "analysis_count": len(analyses),
+            }
+        )
+
     return all_analyses, all_results, all_figs
+
+
+def run_analyses_with_context(
+    analyses: dict[str, AbstractAnalysis],
+    data: AnalysisInputData,
+    context: AnalysisRunContext,
+    *,
+    fig_dump_path: Optional[Path] = None,
+    fig_dump_formats: list[str] = ["html"],
+    custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
+    requested_outputs: Optional[set[str]] = None,
+    **common_inputs,
+) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
+    """Run analyses and write outputs through ``AnalysisRunContext`` with no Studio DB."""
+    return perform_all_analyses(
+        None,
+        analyses,
+        data,
+        None,
+        None,
+        analysis_context=context,
+        fig_dump_path=fig_dump_path,
+        fig_dump_formats=fig_dump_formats,
+        custom_dependencies=custom_dependencies,
+        requested_outputs=requested_outputs,
+        **common_inputs,
+    )
 
 
 def check_records_for_analysis(
@@ -753,6 +811,7 @@ def run_analyses(
     *,
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: list[str] = ["html", "webp", "svg"],
+    analysis_context: AnalysisRunContext | None = None,
     requested_outputs: Optional[set[str]] = None,
 ) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
     """Run the analysis phase on already-evaluated data.
@@ -781,6 +840,7 @@ def run_analyses(
         data,
         model_info,
         eval_info,
+        analysis_context=analysis_context,
         fig_dump_path=fig_dump_path,
         fig_dump_formats=fig_dump_formats,
         custom_dependencies=getattr(analysis_module, "DEPENDENCIES", {}),
@@ -889,6 +949,26 @@ def run_analysis_module(
         return data, common_inputs, None, None, None
 
     # Phase 2: Analysis — compute results and generate figures
+    analysis_context = None
+    if evaluation_manifest_id is not None:
+        eval_ref = parent_ref_from_evaluation_manifest(evaluation_manifest_id)
+        analysis_params = {}
+        if requested_outputs is not None:
+            analysis_params["requested_outputs"] = sorted(requested_outputs)
+        analysis_context = AnalysisRunContext(
+            spec=AnalysisRunSpec(
+                analysis_type=module_key,
+                inputs=[eval_ref],
+                params=analysis_params,
+            ),
+            root=manifest_root,
+            db_session=db_session,
+            eval_info=eval_info,
+            model_info=model_info,
+            fig_dump_path=Path(fig_dump_dir),
+            fig_dump_formats=fig_dump_formats,
+        )
+
     all_analyses, all_results, all_figs = run_analyses(
         db_session,
         analysis_module,
@@ -898,6 +978,7 @@ def run_analysis_module(
         eval_info,
         fig_dump_path=Path(fig_dump_dir),
         fig_dump_formats=fig_dump_formats,
+        analysis_context=analysis_context,
         requested_outputs=requested_outputs,
     )
 

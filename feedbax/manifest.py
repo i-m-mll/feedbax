@@ -442,6 +442,12 @@ def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     return f"feedbax-evaluation-run:{digest[:32]}"
 
 
+def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
+    """Return deterministic run identity for an analysis spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-analysis-run:{digest[:32]}"
+
+
 def evaluation_states_cache_path(
     manifest_id: str,
     *,
@@ -450,6 +456,16 @@ def evaluation_states_cache_path(
     """Return the manifest-root cache path for evaluated state trajectories."""
     root_path = Path(root) if root is not None else default_manifest_root()
     return root_path / "cache" / "states" / f"{safe_manifest_key(manifest_id)}.pkl"
+
+
+def analysis_results_cache_dir(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+) -> Path:
+    """Return the manifest-root cache directory for computed analysis results."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    return root_path / "cache" / "analysis_results" / safe_manifest_key(manifest_id)
 
 
 def write_manifest(
