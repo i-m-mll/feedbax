@@ -27,6 +27,7 @@ from feedbax.manifest import (
     safe_manifest_key,
     spec_payload,
     store_artifact,
+    store_json_artifact,
     write_manifest,
 )
 from feedbax.plot_utils import savefig
@@ -42,12 +43,25 @@ _MEDIA_TYPES = {
     "jpeg": "image/jpeg",
     "webp": "image/webp",
     "pdf": "application/pdf",
+    "npz": "application/x-npz",
 }
 
 
 def _safe_name(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
     return safe or "figure"
+
+
+@dataclass(frozen=True)
+class AnalysisArtifactFile:
+    """Description of one file member in a logical analysis artifact group."""
+
+    path: Path | str
+    role: str
+    logical_name: str | None = None
+    media_type: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    group_role: str | None = None
 
 
 @dataclass
@@ -99,6 +113,110 @@ class AnalysisRunContext:
         """Return artifacts recorded so far."""
         return tuple(self._artifacts)
 
+    def record_artifact(
+        self,
+        path: Path | str,
+        *,
+        role: str,
+        logical_name: str | None = None,
+        media_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        group_id: str | None = None,
+        group_role: str | None = None,
+        group_metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRef:
+        """Persist a non-figure artifact file and record it on this analysis run."""
+        artifact_path = Path(path)
+        artifact = store_artifact(
+            artifact_path,
+            root=self.root_path,
+            role=role,
+            logical_name=logical_name or artifact_path.name,
+            media_type=media_type or _MEDIA_TYPES.get(
+                artifact_path.suffix.lstrip(".").lower(),
+                "application/octet-stream",
+            ),
+            metadata=self._artifact_metadata(
+                metadata,
+                group_id=group_id,
+                group_role=group_role,
+                group_metadata=group_metadata,
+            ),
+        )
+        self.record_artifact_refs([artifact])
+        return artifact
+
+    def record_json_artifact(
+        self,
+        value: Any,
+        *,
+        role: str,
+        logical_name: str,
+        metadata: dict[str, Any] | None = None,
+        group_id: str | None = None,
+        group_role: str | None = None,
+        group_metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRef:
+        """Persist stable JSON payload and record it on this analysis run."""
+        artifact = store_json_artifact(
+            arrays_to_lists(value),
+            root=self.root_path,
+            role=role,
+            logical_name=logical_name,
+            metadata=self._artifact_metadata(
+                metadata,
+                group_id=group_id,
+                group_role=group_role,
+                group_metadata=group_metadata,
+            ),
+        )
+        self.record_artifact_refs([artifact])
+        return artifact
+
+    def record_artifact_group(
+        self,
+        *,
+        group_id: str,
+        members: Sequence[AnalysisArtifactFile],
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[ArtifactRef, ...]:
+        """Record a logical multi-file analysis artifact group.
+
+        Feedbax records group/member identity and opaque per-file metadata only; it does
+        not interpret downstream domain schemas.
+        """
+        artifacts = [
+            self.record_artifact(
+                member.path,
+                role=member.role,
+                logical_name=member.logical_name,
+                media_type=member.media_type,
+                metadata=member.metadata,
+                group_id=group_id,
+                group_role=member.group_role,
+                group_metadata=metadata,
+            )
+            for member in members
+        ]
+        return tuple(artifacts)
+
+    def record_artifact_refs(self, artifacts: Sequence[ArtifactRef]) -> tuple[ArtifactRef, ...]:
+        """Record already-materialized artifact refs, preserving insertion order."""
+        existing = {self._artifact_key(artifact) for artifact in self._artifacts}
+        added = []
+        for artifact in artifacts:
+            key = self._artifact_key(artifact)
+            if key in existing:
+                continue
+            self._artifacts.append(artifact)
+            existing.add(key)
+            added.append(artifact)
+        return tuple(added)
+
+    def record_artifact_refs_from_value(self, value: Any) -> tuple[ArtifactRef, ...]:
+        """Find and record ``ArtifactRef`` objects embedded in a result payload."""
+        return self.record_artifact_refs(tuple(self._iter_artifact_refs(value)))
+
     def record_figure(
         self,
         *,
@@ -148,8 +266,7 @@ class AnalysisRunContext:
                 },
             )
             artifacts.append(artifact)
-        self._artifacts.extend(artifacts)
-        return artifacts
+        return list(self.record_artifact_refs(artifacts))
 
     def finalize(
         self,
@@ -169,7 +286,8 @@ class AnalysisRunContext:
             ),
             inputs=list(self.spec.inputs),
             summary_metrics={
-                "figure_count": len(self._artifacts),
+                "artifact_count": len(self._artifacts),
+                "figure_count": sum(artifact.role == "figure" for artifact in self._artifacts),
                 **(summary_metrics or {}),
             },
             provenance=provenance,
@@ -210,6 +328,43 @@ class AnalysisRunContext:
                 name=self.spec.analysis_type,
             )
         return provenance
+
+    def _artifact_metadata(
+        self,
+        metadata: dict[str, Any] | None,
+        *,
+        group_id: str | None = None,
+        group_role: str | None = None,
+        group_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        artifact_metadata = arrays_to_lists(dict(metadata or {}))
+        if group_id is not None:
+            artifact_group: dict[str, Any] = {"id": group_id}
+            if group_role is not None:
+                artifact_group["member_role"] = group_role
+            if group_metadata is not None:
+                artifact_group["metadata"] = arrays_to_lists(group_metadata)
+            artifact_metadata["artifact_group"] = artifact_group
+        return artifact_metadata
+
+    def _artifact_key(self, artifact: ArtifactRef) -> tuple[Any, ...]:
+        return (
+            artifact.role,
+            artifact.logical_name,
+            artifact.artifact_id,
+            artifact.sha256,
+            artifact.uri,
+        )
+
+    def _iter_artifact_refs(self, value: Any):
+        if isinstance(value, ArtifactRef):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from self._iter_artifact_refs(item)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                yield from self._iter_artifact_refs(item)
 
 
 def parent_ref_from_evaluation_manifest(

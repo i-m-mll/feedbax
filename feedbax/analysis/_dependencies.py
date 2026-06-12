@@ -31,6 +31,7 @@ from jaxtyping import PyTree
 
 from feedbax.analysis.analysis import (
     AbstractAnalysis,
+    AnalysisRef,
     ExpandTo,
     LiteralInput,
     NoPorts,
@@ -98,6 +99,10 @@ def resolve_dependency_node(analysis, dep_name, dep_source, dependency_lookup=No
     # Handle None inputs by skipping them
     if dep_source is None:
         return None
+
+    # Handle typed analysis pointers by resolving their target.
+    if isinstance(dep_source, AnalysisRef):
+        dep_source = dep_source.target
 
     # Handle forwarding of attributes from AnalysisInputData via the `Data` sentinel
     if isinstance(dep_source, _DataField):
