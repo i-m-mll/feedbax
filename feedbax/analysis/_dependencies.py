@@ -46,6 +46,10 @@ from feedbax.types import AnalysisInputData
 logger = logging.getLogger(__name__)
 
 
+def _format_output_keys(keys: Set[str]) -> str:
+    return ", ".join(repr(key) for key in sorted(keys))
+
+
 class _DataForwarder(AbstractAnalysis[NoPorts]):
     """Forwards a single attribute of `AnalysisInputData`.
 
@@ -540,13 +544,14 @@ def compute_dependency_results(
     # Validate requested_outputs early, but do NOT filter analyses yet —
     # we need the full graph to resolve transitive dependencies.
     if requested_outputs is not None:
-        matched = {k for k in analyses if k in requested_outputs}
+        available_outputs = set(analyses)
+        matched = available_outputs & requested_outputs
         if not matched:
-            logger.warning(
-                f"None of the requested outputs {requested_outputs} matched any "
-                "analysis keys; nothing to compute."
+            raise ValueError(
+                "None of the requested analysis outputs matched available analysis keys. "
+                f"requested_outputs=[{_format_output_keys(requested_outputs)}]; "
+                f"available_analysis_keys=[{_format_output_keys(available_outputs)}]"
             )
-            return []
 
     analyses_list = list(analyses.values())
     dependency_lookup = custom_dependencies | analyses
@@ -575,9 +580,7 @@ def compute_dependency_results(
     # Bug: 3bc89ab -- demand-driven analysis execution
     if requested_outputs is not None:
         # Determine node IDs for only the *requested* analyses (subset of leaves)
-        requested_node_ids = {
-            v.md5_str for k, v in analyses.items() if k in requested_outputs
-        }
+        requested_node_ids = {v.md5_str for k, v in analyses.items() if k in requested_outputs}
         required_nodes = _collect_ancestors(graph, requested_node_ids)
         comp_order = [nid for nid in comp_order if nid in required_nodes]
 

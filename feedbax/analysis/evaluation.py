@@ -20,6 +20,8 @@ from feedbax.manifest import (
     default_manifest_root,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
+    load_manifest,
+    safe_manifest_key,
     spec_payload,
     write_manifest,
 )
@@ -115,9 +117,16 @@ def execute_evaluation_run_spec(
     root_path = Path(root) if root is not None else default_manifest_root()
     manifest_id = evaluation_run_manifest_id(run_spec)
     states_path = evaluation_states_cache_path(manifest_id, root=root_path)
+    manifest_path = (
+        root_path / "manifests" / "evaluation_runs" / f"{safe_manifest_key(manifest_id)}.json"
+    )
     states_path.parent.mkdir(parents=True, exist_ok=True)
 
-    prov = provenance or collect_git_provenance()
+    prov = (
+        provenance.model_copy(deep=True)
+        if provenance is not None
+        else collect_git_provenance()
+    )
     prov.parents = list(run_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
@@ -137,10 +146,17 @@ def execute_evaluation_run_spec(
         if use_cache and not force and states_path.exists():
             with states_path.open("rb") as stream:
                 states = pickle.load(stream)
+            previous_manifest = _load_completed_evaluation_manifest(manifest_path, manifest_id)
+            summary_metrics = dict(previous_manifest.summary_metrics) if previous_manifest else {}
+            artifacts = list(previous_manifest.artifacts) if previous_manifest else []
+            result_metadata = (
+                dict(previous_manifest.metadata) if previous_manifest else {}
+            )
             result = EvaluationRecipeResult(
                 states=states,
-                summary_metrics={"states_cache_hit": True},
-                metadata={"states_cache_hit": True},
+                summary_metrics=summary_metrics,
+                artifacts=artifacts,
+                metadata=result_metadata,
             )
             cache_metadata["states_cache_hit"] = True
         else:
@@ -187,6 +203,20 @@ def execute_evaluation_run_spec(
         )
         path = write_manifest(manifest, root=root_path)
         raise EvaluationRecipeExecutionError(manifest, path, exc) from exc
+
+
+def _load_completed_evaluation_manifest(
+    path: Path,
+    manifest_id: str,
+) -> EvaluationRunManifest | None:
+    if not path.exists():
+        return None
+    manifest = load_manifest(path)
+    if not isinstance(manifest, EvaluationRunManifest):
+        return None
+    if manifest.id != manifest_id or manifest.status != "completed":
+        return None
+    return manifest
 
 
 def _build_evaluation_manifest(

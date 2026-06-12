@@ -84,7 +84,7 @@ def _split_bundle_key(key: str, registry: ExperimentRegistry) -> tuple[str, str]
         return single, key
 
     matches: list[str] = []
-    for package_name, metadata in registry._packages.items():
+    for package_name, metadata in registry.iter_package_metadata():
         resource_root = (
             f"{metadata.package_module.__name__}.{metadata.config_resource_root}.analysis_bundles"
         )
@@ -303,6 +303,7 @@ def execute_analysis_bundle(
                     "template": expansion.template_name,
                     "mode": expansion.mode,
                     "matched_run_ids": list(expansion.matched_run_ids),
+                    "metadata": dict(bundle.metadata),
                 }
             },
             fig_dump_path=fig_dump_path,

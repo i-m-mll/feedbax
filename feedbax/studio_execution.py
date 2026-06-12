@@ -870,10 +870,14 @@ def _materialize_analysis_stage(
     input_refs = _collection_manifest_parents(evaluation_collection)
     scenario = workspace.scenarios.get(analysis_stage.scenario_id or "")
     analysis_spec_payload = scenario.analysis_spec if scenario is not None else None
+    analysis_type = (analysis_spec_payload or {}).get("analysis_type")
+    if not analysis_type:
+        raise StudioExecutionPreparationError(
+            f"Analysis stage {analysis_stage.id!r} requires scenario "
+            f"{analysis_stage.scenario_id!r} to declare analysis_spec.analysis_type"
+        )
     spec = AnalysisRunSpec(
-        analysis_type=str(
-            (analysis_spec_payload or {}).get("analysis_type", "feedbax.analysis.activity")
-        ),
+        analysis_type=str(analysis_type),
         inputs=input_refs,
         input_requirements=list((analysis_spec_payload or {}).get("input_requirements", [])),
         params={

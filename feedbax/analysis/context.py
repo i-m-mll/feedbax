@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import plotly.graph_objects as go
 from jaxtyping import PyTree
@@ -45,6 +46,9 @@ _MEDIA_TYPES = {
     "pdf": "application/pdf",
     "npz": "application/x-npz",
 }
+
+_FIGURE_ROUTING_KEY = "figure_routing"
+_FIGURE_ROUTING_REQUIRED_KEYS = {"package", "experiment", "topic"}
 
 
 def _safe_name(value: str) -> str:
@@ -244,6 +248,14 @@ class AnalysisRunContext:
         figure_dir.mkdir(parents=True, exist_ok=True)
         filename = self._figure_filename(analysis_name, analysis_label, ordinal)
         savefig(fig, filename, figure_dir, formats, metadata=params)
+        routing_projection = self._route_figure_projection(
+            fig=fig,
+            analysis_name=analysis_name,
+            analysis_label=analysis_label,
+            ordinal=ordinal,
+            params=params,
+            filename=filename,
+        )
 
         artifacts = []
         safe_label = _safe_name(analysis_label or analysis_name)
@@ -251,19 +263,22 @@ class AnalysisRunContext:
             path = figure_dir / f"{filename}.{ext}"
             if not path.exists():
                 continue
+            metadata = {
+                "analysis_name": analysis_name,
+                "analysis_label": analysis_label,
+                "format": ext,
+                "ordinal": ordinal,
+                "params": arrays_to_lists(params),
+            }
+            if routing_projection is not None:
+                metadata[_FIGURE_ROUTING_KEY] = routing_projection
             artifact = store_artifact(
                 path,
                 root=self.root_path,
                 role="figure",
                 logical_name=f"{safe_label}/{path.name}",
                 media_type=_MEDIA_TYPES.get(ext, "application/octet-stream"),
-                metadata={
-                    "analysis_name": analysis_name,
-                    "analysis_label": analysis_label,
-                    "format": ext,
-                    "ordinal": ordinal,
-                    "params": arrays_to_lists(params),
-                },
+                metadata=metadata,
             )
             artifacts.append(artifact)
         return list(self.record_artifact_refs(artifacts))
@@ -317,8 +332,117 @@ class AnalysisRunContext:
         label = _safe_name(analysis_label) if analysis_label is not None else _safe_name(analysis_name)
         return f"{label}_{_safe_name(analysis_name)}_{ordinal}"
 
+    def _route_figure_projection(
+        self,
+        *,
+        fig: go.Figure,
+        analysis_name: str,
+        analysis_label: str | None,
+        ordinal: int,
+        params: dict[str, Any],
+        filename: str,
+    ) -> dict[str, Any] | None:
+        routing = self._figure_routing(params)
+        if routing is None:
+            return None
+
+        from feedbax.plot.io import save_figure as save_routed_figure  # noqa: PLC0415
+
+        figure_spec = self._figure_routing_spec(
+            routing,
+            analysis_name=analysis_name,
+            analysis_label=analysis_label,
+            ordinal=ordinal,
+            params=params,
+            filename=filename,
+        )
+        result = save_routed_figure(
+            fig,
+            figure_spec,
+            package=str(routing["package"]),
+            experiment=str(routing["experiment"]),
+            topic=str(routing["topic"]),
+            extra_packages=self._figure_routing_extra_packages(routing),
+        )
+        return {
+            key: str(value) if value is not None else None
+            for key, value in result.items()
+        }
+
+    def _figure_routing(self, params: dict[str, Any]) -> dict[str, Any] | None:
+        for candidate in self._figure_routing_candidates(params):
+            if candidate is None:
+                continue
+            if not isinstance(candidate, Mapping):
+                raise TypeError(f"{_FIGURE_ROUTING_KEY} must be a mapping")
+            routing = dict(candidate)
+            missing = _FIGURE_ROUTING_REQUIRED_KEYS - routing.keys()
+            if missing:
+                raise ValueError(
+                    f"{_FIGURE_ROUTING_KEY} is missing required key(s): {sorted(missing)!r}"
+                )
+            return routing
+        return None
+
+    def _figure_routing_candidates(self, params: dict[str, Any]):
+        yield params.get(_FIGURE_ROUTING_KEY)
+        presentation = params.get("presentation")
+        if isinstance(presentation, Mapping):
+            yield presentation.get(_FIGURE_ROUTING_KEY)
+
+        metadata = self.metadata or {}
+        yield metadata.get(_FIGURE_ROUTING_KEY)
+        bundle = metadata.get("bundle")
+        if isinstance(bundle, Mapping):
+            yield bundle.get(_FIGURE_ROUTING_KEY)
+            bundle_metadata = bundle.get("metadata")
+            if isinstance(bundle_metadata, Mapping):
+                yield bundle_metadata.get(_FIGURE_ROUTING_KEY)
+
+    def _figure_routing_spec(
+        self,
+        routing: Mapping[str, Any],
+        *,
+        analysis_name: str,
+        analysis_label: str | None,
+        ordinal: int,
+        params: dict[str, Any],
+        filename: str,
+    ) -> dict[str, Any]:
+        figure_spec = dict(routing.get("spec") or {})
+        figure_spec.setdefault("analysis", {})
+        if isinstance(figure_spec["analysis"], Mapping):
+            figure_spec["analysis"] = {
+                **dict(figure_spec["analysis"]),
+                "manifest_id": self.manifest_id,
+                "analysis_type": self.spec.analysis_type,
+                "analysis_name": analysis_name,
+                "analysis_label": analysis_label,
+                "ordinal": ordinal,
+                "filename": filename,
+            }
+        figure_spec.setdefault("plot_kwargs", {})
+        if isinstance(figure_spec["plot_kwargs"], Mapping):
+            figure_spec["plot_kwargs"] = {
+                **dict(figure_spec["plot_kwargs"]),
+                "params": arrays_to_lists(params),
+            }
+        return arrays_to_lists(figure_spec)
+
+    def _figure_routing_extra_packages(self, routing: Mapping[str, Any]) -> list[str] | None:
+        extra_packages = routing.get("extra_packages")
+        if extra_packages is None:
+            return None
+        if not isinstance(extra_packages, Sequence) or isinstance(extra_packages, (str, bytes)):
+            raise TypeError(f"{_FIGURE_ROUTING_KEY}.extra_packages must be a sequence")
+        return [str(package) for package in extra_packages]
+
     def _provenance(self) -> Provenance:
-        provenance = self.provenance or collect_git_provenance()
+        provenance = (
+            self.provenance.model_copy(deep=True)
+            if self.provenance is not None
+            else collect_git_provenance()
+        )
         provenance.parents = list(self.spec.inputs)
         if self.issues:
             provenance.issues.extend(issue for issue in self.issues if issue not in provenance.issues)
