@@ -595,6 +595,7 @@ def component_registry_snapshot() -> RegistrySnapshot:
                     "default_params": definition.default_params,
                     "is_composite": definition.is_composite,
                     "has_template_graph": definition.template_graph is not None,
+                    "provenance": definition.provenance,
                     "port_types": (
                         definition.port_types.model_dump(mode="json", exclude_none=True)
                         if definition.port_types is not None

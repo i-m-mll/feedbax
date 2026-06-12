@@ -221,6 +221,27 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
     return TaskComponent(task=task, trial_spec=trial_spec, mode="open_loop")
 
 
+def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
+    builder_name = str(params.get("builder_name", ""))
+    if not builder_name:
+        raise ValueError("PenzaiAdapter requires 'builder_name' parameter")
+    if not PENZAI_AVAILABLE:
+        raise ImportError(
+            "penzai is required to instantiate PenzaiAdapter. Install with: pip install penzai"
+        )
+    builder_params = {
+        key: value
+        for key, value in params.items()
+        if key not in ("builder_name", "input_port", "output_port")
+    }
+    return build_penzai_subgraph(
+        builder_name=builder_name,
+        params=builder_params,
+        input_port=str(params.get("input_port", "input")),
+        output_port=str(params.get("output_port", "output")),
+    )
+
+
 def _build_gain(params: Mapping[str, Any]) -> Gain:
     return Gain(gain=float(params.get("gain", 1.0)))
 
@@ -435,57 +456,70 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
         )
     ),
     "Copy": lambda params: Copy(),
+    "TwoLinkArm": lambda params: _build_mechanics({**dict(params), "plant_type": "TwoLinkArm"}),
+    "PointMass": lambda params: _build_mechanics({**dict(params), "plant_type": "PointMass"}),
+    "SimpleReaches": lambda params: _build_task_component("SimpleReaches", params),
+    "DelayedReaches": lambda params: _build_task_component("DelayedReaches", params),
+    "Stabilization": lambda params: _build_task_component("Stabilization", params),
+    "PenzaiAdapter": _build_penzai_adapter,
 }
 
 
-def build_component(node_name: str, node_type: str, params: Mapping[str, Any]) -> Component:
+_DISPLAY_ONLY_MESSAGES: dict[str, str] = {
+    "MomentArmProjection": (
+        "MomentArmProjection node {node_name!r} has no Python builder yet. "
+        "It is a display-only abstraction used in composite subgraph templates."
+    ),
+    "RadialForceProjection": (
+        "RadialForceProjection node {node_name!r} has no Python builder yet. "
+        "It is a display-only abstraction used in composite subgraph templates."
+    ),
+    "Arm6MuscleRigidTendon": (
+        "Arm6MuscleRigidTendon node {node_name!r} requires musculoskeletal plant data "
+        "(body presets, muscle topology) not stored in GraphSpec. This node type is "
+        "supported in the training worker but not in local graph instantiation. "
+        "For testing, use TwoLinkArm instead."
+    ),
+}
+
+
+def register_builtin_component_builders(registry: Any) -> None:
+    for name, builder in _BUILDERS.items():
+        registry.register_builder(name, builder, provenance="feedbax")
+
+
+def build_component(
+    node_name: str,
+    node_type: str,
+    params: Mapping[str, Any],
+    *,
+    component_registry: Any = None,
+) -> Component:
     """Build a leaf component from a GraphSpec node."""
 
-    builder = _BUILDERS.get(node_type)
-    if builder is not None:
-        return builder(params)
+    if component_registry is None or not hasattr(component_registry, "names"):
+        from feedbax.component_registry import get_component_registry
 
-    if node_type == "MomentArmProjection":
-        raise NotImplementedError(
-            f"MomentArmProjection node {node_name!r} has no Python builder yet. "
-            "It is a display-only abstraction used in composite subgraph templates."
+        component_registry = get_component_registry()
+    meta = component_registry.get(node_type)
+    if meta is None:
+        known = ", ".join(component_registry.names())
+        raise ValueError(
+            f"Unsupported component type {node_type!r} for node {node_name!r}. "
+            f"Known component types: {known}"
         )
-    if node_type == "RadialForceProjection":
-        raise NotImplementedError(
-            f"RadialForceProjection node {node_name!r} has no Python builder yet. "
-            "It is a display-only abstraction used in composite subgraph templates."
+    if meta.builder is None:
+        message = _DISPLAY_ONLY_MESSAGES.get(
+            node_type,
+            f"Component type {node_type!r} for node {node_name!r} is registered "
+            "for metadata but has no executable builder.",
         )
-    if node_type == "Arm6MuscleRigidTendon":
-        raise NotImplementedError(
-            f"Arm6MuscleRigidTendon node {node_name!r} requires musculoskeletal "
-            "plant data (body presets, muscle topology) not stored in GraphSpec. "
-            "This node type is supported in the training worker but not in "
-            "local graph instantiation. For testing, use TwoLinkArm instead."
-        )
-    if node_type in {"TwoLinkArm", "PointMass"}:
-        next_params = dict(params)
-        next_params["plant_type"] = node_type
-        return _build_mechanics(next_params)
-    if node_type in {"SimpleReaches", "DelayedReaches", "Stabilization"}:
-        return _build_task_component(node_type, params)
-    if node_type == "PenzaiAdapter":
-        builder_name = str(params.get("builder_name", ""))
-        if not builder_name:
-            raise ValueError(f"PenzaiAdapter node {node_name!r} requires 'builder_name' parameter")
-        if not PENZAI_AVAILABLE:
-            raise ImportError(
-                "penzai is required to instantiate PenzaiAdapter. Install with: pip install penzai"
-            )
-        builder_params = {
-            key: value
-            for key, value in params.items()
-            if key not in ("builder_name", "input_port", "output_port")
-        }
-        return build_penzai_subgraph(
-            builder_name=builder_name,
-            params=builder_params,
-            input_port=str(params.get("input_port", "input")),
-            output_port=str(params.get("output_port", "output")),
-        )
-
-    raise ValueError(f"Unsupported component type {node_type!r} for node {node_name!r}")
+        raise NotImplementedError(message.format(node_name=node_name))
+    try:
+        return meta.builder(params)
+    except ValueError as exc:
+        if node_type == "PenzaiAdapter" and "builder_name" in str(exc):
+            raise ValueError(
+                f"PenzaiAdapter node {node_name!r} requires 'builder_name' parameter"
+            ) from exc
+        raise

@@ -91,12 +91,39 @@ def _validate_jittable(n_steps: int, eb: Array | None, es: Array | None):
     return eb, es
 
 
-def _where_key_to_path(where_key) -> str:
+class PreparedTrial(Module):
+    """Prepared model inputs and initial state for one task trial.
+
+    Attributes:
+        init_state: Model state after applying trial-specific initial values and
+            time-invariant intervention parameters.
+        inputs: Model inputs after graph-port normalization and time-varying
+            intervention input merging.
+        n_steps: Number of timesteps inferred from the trial timeline or inputs.
+        intervention_inputs: Time-varying intervention inputs keyed by
+            intervention label, before ``intervene:<label>`` model-input
+            prefixing.
+    """
+
+    init_state: eqx.nn.State
+    inputs: PyTree
+    n_steps: int = field(static=True)
+    intervention_inputs: dict[str, PyTree] = field(default_factory=dict)
+
+
+def where_key_to_path(where_key) -> str:
+    """Return the state-path string represented by a ``WhereDict`` key."""
     where_str = WhereDict.key_transform(where_key)
     return where_str.split("#", maxsplit=1)[0]
 
 
-def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
+def set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
+    """Return ``state`` with a model StateIndex value replaced by dotted path.
+
+    ``path`` addresses graph nodes first, then attributes within the selected
+    node's state value. For example, ``"net.hidden"`` selects the ``hidden``
+    attribute of the state owned by graph node ``"net"``.
+    """
     parts = [p for p in path.split(".") if p]
 
     def _set_component(component: Component, parts, state):
@@ -114,6 +141,7 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
 
         if parts:
             import operator as _op
+
             comp_state = eqx.tree_at(_op.attrgetter(".".join(parts)), state.get(idx), value)
             return state.set(idx, comp_state)
         return state.set(idx, value)
@@ -121,7 +149,7 @@ def _set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
     return _set_component(model, parts, state)
 
 
-def _cast_to_state_dtypes(new_value, current_value):
+def cast_to_state_dtypes(new_value, current_value):
     """Cast a replacement StateIndex value to the stored State leaf dtypes."""
 
     def _cast_leaf(new_leaf, current_leaf):
@@ -138,11 +166,11 @@ def _cast_to_state_dtypes(new_value, current_value):
     return jt.map(_cast_leaf, new_value, current_value)
 
 
-def _state_set_matching_dtypes(state, idx, new_value):
+def set_state_matching_dtypes(state, idx, new_value):
     """Set a StateIndex value via public Equinox API after dtype normalization."""
 
     current_value = state.get(idx)
-    return state.set(idx, _cast_to_state_dtypes(new_value, current_value))
+    return state.set(idx, cast_to_state_dtypes(new_value, current_value))
 
 
 def _cast_to_state_type(value, state_value):
@@ -151,12 +179,12 @@ def _cast_to_state_type(value, state_value):
     Intervenor StateIndex initial values are stored as strong-typed JAX
     arrays.  Uses explicit ``dtype=`` to produce strong-typed arrays.
     """
-    if not hasattr(state_value, 'dtype'):
+    if not hasattr(state_value, "dtype"):
         return value
     return jnp.asarray(value, dtype=state_value.dtype)
 
 
-def _extract_timeseries_params(
+def extract_timeseries_params(
     params: PyTree,
     defaults: PyTree,
     n_steps: Optional[int] = None,
@@ -195,6 +223,10 @@ def _extract_timeseries_params(
         if isinstance(p, TimeSeriesParam):
             has_timeseries = True
             return p.value
+        if p is None:
+            if d is None:
+                return None
+            p = d
         # Broadcast scalar/static params to (T, ...) so the whole PyTree
         # can be indexed by step in lax.scan.
         if isinstance(p, (jnp.ndarray, np.ndarray)):
@@ -204,14 +236,16 @@ def _extract_timeseries_params(
         return jnp.broadcast_to(arr, (T,) + arr.shape)
 
     result = jt.map(
-        _extract, params, defaults,
+        _extract,
+        params,
+        defaults,
         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
     )
     has_timeseries = True  # We already checked inferred_n_steps is not None
     return result
 
 
-def _merge_intervene_inputs(
+def merge_intervene_inputs(
     inputs: dict[str, PyTree],
     intervene_inputs: dict[str, PyTree],
 ) -> dict[str, PyTree]:
@@ -227,16 +261,15 @@ def _merge_intervene_inputs(
     return merged
 
 
-def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
+def prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
+    """Normalize task inputs against a model's public input ports."""
     if isinstance(model, Graph):
         if isinstance(inputs, Mapping):
             if set(model.input_ports).issubset(inputs.keys()):
                 return inputs
             # If all required (non-optional) ports are present, return as-is.
             # Optional ports (e.g., "intervene:*") may be absent.
-            required_ports = {
-                p for p in model.input_ports if not p.startswith("intervene:")
-            }
+            required_ports = {p for p in model.input_ports if not p.startswith("intervene:")}
             if required_ports.issubset(inputs.keys()):
                 return inputs
             if len(required_ports) == 1:
@@ -244,16 +277,14 @@ def _prepare_inputs(model: Component, inputs: PyTree) -> PyTree:
                 return {port: inputs}
         else:
             # Non-mapping inputs: wrap in a dict for the first required port.
-            required_ports = {
-                p for p in model.input_ports if not p.startswith("intervene:")
-            }
+            required_ports = {p for p in model.input_ports if not p.startswith("intervene:")}
             if len(required_ports) == 1:
                 port = next(iter(required_ports))
                 return {port: inputs}
     return inputs
 
 
-def _infer_n_steps(inputs: PyTree, timeline=None) -> int:
+def infer_n_steps(inputs: PyTree, timeline=None) -> int:
     """Infer number of timesteps from inputs, preferring explicit timeline value.
 
     Checks ``timeline.n_steps`` first if a timeline is provided, then falls
@@ -276,6 +307,76 @@ def _infer_n_steps(inputs: PyTree, timeline=None) -> int:
     if not leaves:
         raise ValueError("Cannot infer n_steps from empty inputs")
     return int(leaves[0].shape[0])
+
+
+def prepare_trial(model: Component, trial_spec: "TaskTrialSpec") -> PreparedTrial:
+    """Prepare one trial for custom evaluation loops without running the model.
+
+    This is the public equivalent of the preparation work performed by
+    :meth:`AbstractTask.eval_trials`: it applies trial-specific state
+    initializers, merges time-invariant intervention parameters into the
+    initial state, exposes time-varying intervention parameters as model
+    inputs, normalizes graph inputs, runs model state-consistency updates, and
+    infers the number of timesteps.
+    """
+    init_state = init_state_from_component(model)
+
+    for where_substate, init_substate in trial_spec.inits.items():
+        path = where_key_to_path(where_substate)
+        init_state = set_state_by_path(model, init_state, path, init_substate)
+
+    intervention_inputs = {}
+    if trial_spec.intervene:
+        indices = model.intervention_state_indices()
+        for label, params in trial_spec.intervene.items():
+            if label not in indices:
+                raise ValueError(f"Unknown intervention label '{label}'")
+            idx = indices[label]
+            current = init_state.get(idx)
+
+            def _merge_leaf(p, c):
+                if isinstance(p, TimeSeriesParam):
+                    return c
+                if p is None:
+                    return c
+                return p
+
+            merged = jt.map(
+                _merge_leaf,
+                params,
+                current,
+                is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
+            )
+            init_state = set_state_matching_dtypes(init_state, idx, merged)
+            tv_params = extract_timeseries_params(params, current)
+            if tv_params is not None:
+                intervention_inputs[label] = tv_params
+
+    init_state = model.state_consistency_update(init_state)
+    inputs = prepare_inputs(model, trial_spec.inputs)
+    if intervention_inputs:
+        inputs = merge_intervene_inputs(inputs, intervention_inputs)
+    n_steps = infer_n_steps(inputs, trial_spec.timeline)
+    return PreparedTrial(
+        init_state=init_state,
+        inputs=inputs,
+        n_steps=n_steps,
+        intervention_inputs=intervention_inputs,
+    )
+
+
+# Backwards-compatible private aliases for existing internal callers. New code
+# should use the public names above.
+_where_key_to_path = where_key_to_path
+_set_state_by_path = set_state_by_path
+_cast_to_state_dtypes = cast_to_state_dtypes
+_state_set_matching_dtypes = set_state_matching_dtypes
+_extract_timeseries_params = extract_timeseries_params
+_merge_intervene_inputs = merge_intervene_inputs
+_prepare_inputs = prepare_inputs
+_infer_n_steps = infer_n_steps
+safe_state_set = set_state_matching_dtypes
+_safe_state_set = set_state_matching_dtypes
 
 
 class TrialTimeline(Module):
@@ -732,7 +833,7 @@ class AbstractTask(Module):
             The number of timesteps.
         """
         # Bug: c19f563 — canonical episode-length query for TaskProtocol
-        return _infer_n_steps(trial_spec.inputs, trial_spec.timeline)
+        return infer_n_steps(trial_spec.inputs, trial_spec.timeline)
 
     def compute_loss(
         self,
@@ -795,63 +896,21 @@ class AbstractTask(Module):
             trial_specs: The set of trials to evaluate the model on.
             keys: For providing randomness during model evaluation.
         """
+
         def eval_single(trial_spec, key):
-            key_init, key_run = jr.split(key)
-            init_state = init_state_from_component(model)
-
-            for where_substate, init_substate in trial_spec.inits.items():
-                path = _where_key_to_path(where_substate)
-                init_state = _set_state_by_path(model, init_state, path, init_substate)
-
-            # Apply intervention params: merge time-invariant params into
-            # State; collect time-varying (TimeSeriesParam) params to pass
-            # as per-step model inputs.
-            intervene_inputs = {}
-            if trial_spec.intervene:
-                indices = model.intervention_state_indices()
-                for label, params in trial_spec.intervene.items():
-                    if label not in indices:
-                        raise ValueError(f"Unknown intervention label '{label}'")
-                    idx = indices[label]
-                    current = init_state.get(idx)
-                    # Merge only time-invariant leaves into State.
-                    # StateIndex defaults are strongly typed, so public State.set
-                    # can validate structure while accepting trial values.
-                    def _merge_leaf(p, c):
-                        if isinstance(p, TimeSeriesParam):
-                            return c
-                        if p is None:
-                            return c
-                        return p
-
-                    merged = jt.map(
-                        _merge_leaf,
-                        params, current,
-                        is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
-                    )
-                    init_state = _state_set_matching_dtypes(init_state, idx, merged)
-                    # Collect time-varying params for per-step input
-                    tv_params = _extract_timeseries_params(params, current)
-                    if tv_params is not None:
-                        intervene_inputs[label] = tv_params
-
-            init_state = model.state_consistency_update(init_state)
-
-            inputs = _prepare_inputs(model, trial_spec.inputs)
-            # Merge time-varying intervention inputs into model inputs
-            if intervene_inputs:
-                inputs = _merge_intervene_inputs(inputs, intervene_inputs)
-            n_steps = _infer_n_steps(inputs, trial_spec.timeline)
+            _, key_run = jr.split(key)
+            prepared = prepare_trial(model, trial_spec)
             outputs, final_state, state_history = run_component(
                 model,
-                inputs,
-                init_state,
+                prepared.inputs,
+                prepared.init_state,
                 key=key_run,
-                n_steps=n_steps,
+                n_steps=prepared.n_steps,
             )
             # Strip prepended initial state so history length matches targets.
             state_history = jt.map(
-                lambda x: x[1:] if x is not None else x, state_history,
+                lambda x: x[1:] if x is not None else x,
+                state_history,
             )
             return state_history
 
@@ -1351,6 +1410,7 @@ class SimpleReaches(AbstractTask):
         self, states, trial_specs: Optional[TaskTrialSpec] = None
     ) -> dict[str, go.Figure]:
         import feedbax.plot.trajectories as plot
+
         return dict(
             effector_trajectories=plot.effector_trajectories(
                 states,
@@ -1587,6 +1647,7 @@ class DelayedReaches(AbstractTask):
         self, states, trial_specs: Optional[TaskTrialSpec] = None
     ) -> dict[str, go.Figure]:
         import feedbax.plot.trajectories as plot
+
         return dict(
             effector_trajectories=plot.effector_trajectories(
                 states,
@@ -1862,9 +1923,7 @@ class TaskComponent(Component):
     )
     get_target: Optional[Callable[[PyTree], PyTree]] = field(default=None, static=True)
     get_observation: Optional[Callable[[PyTree], PyTree]] = field(default=None, static=True)
-    get_intervention_params: Optional[Callable[[PyTree], PyTree]] = field(
-        default=None, static=True
-    )
+    get_intervention_params: Optional[Callable[[PyTree], PyTree]] = field(default=None, static=True)
 
     def __init__(
         self,
@@ -1940,9 +1999,7 @@ class TaskComponent(Component):
 
             target = self.get_target(new_env_state) if self.get_target is not None else None
             observation = (
-                self.get_observation(new_env_state)
-                if self.get_observation is not None
-                else obs
+                self.get_observation(new_env_state) if self.get_observation is not None else obs
             )
             intervention_params = (
                 self.get_intervention_params(new_env_state)
