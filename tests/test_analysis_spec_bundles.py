@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
 from pathlib import Path
 
 from feedbax.analysis.bundles import (
     ManifestPredicate,
+    execute_analysis_bundle,
     expand_analysis_bundle,
     load_analysis_bundle,
     predicate_matches_manifest,
@@ -77,6 +79,7 @@ def _write_bundle_package(tmp_path: Path, monkeypatch) -> ExperimentRegistry:
     package_root = tmp_path / "toy_bundle_pkg"
     bundle_root = package_root / "config" / "analysis_bundles"
     bundle_root.mkdir(parents=True)
+    (package_root / ".git").mkdir()
     for path in (
         package_root / "__init__.py",
         package_root / "config" / "__init__.py",
@@ -123,9 +126,39 @@ templates:
 """,
         encoding="utf-8",
     )
+    (bundle_root / "routed.yml").write_text(
+        f"""
+name: toy_routed
+description: Toy routed figure bundle
+predicate:
+  manifest_kind: EvaluationRunManifest
+  metadata_equals:
+    method: minimax
+metadata:
+  figure_routing:
+    package: toy
+    experiment: toy_experiment
+    topic: toy_topic
+    spec:
+      transform:
+        - name: toy-analysis
+templates:
+  - name: routed_cell
+    mode: per-run
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+""",
+        encoding="utf-8",
+    )
 
     monkeypatch.syspath_prepend(str(tmp_path))
     importlib.invalidate_caches()
+    for module_name in [
+        name
+        for name in sys.modules
+        if name == "toy_bundle_pkg" or name.startswith("toy_bundle_pkg.")
+    ]:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
     package = importlib.import_module("toy_bundle_pkg")
     registry = ExperimentRegistry()
     registry.register_package(
@@ -135,6 +168,12 @@ templates:
         analysis_module_root="analysis",
         training_module_root="training",
         config_resource_root="config",
+        figure_routing={
+            "spec_dir_template": "results/{experiment}/figures/{topic}",
+            "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+            "render_format": "json",
+            "create_symlink_in_spec_dir": True,
+        },
     )
     return registry
 
@@ -268,6 +307,69 @@ def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypa
             assert manifest.status == "completed"
             assert manifest.metadata["bundle"]["name"] == "toy_matrix"
             assert manifest.provenance.issues == ["81c7149"]
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_bundle_context_projects_figures_through_registered_routing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        _eval_manifest, _eval_path = _execute_toy_eval(
+            tmp_path,
+            n_trials=2,
+            method="minimax",
+        )
+        registry = _write_bundle_package(tmp_path, monkeypatch)
+        bundle = load_analysis_bundle("toy/routed", registry=registry)
+
+        import feedbax.plugins as plugins
+
+        monkeypatch.setattr(plugins, "EXPERIMENT_REGISTRY", registry)
+        outputs = execute_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            issues=["3fb7e70"],
+            fig_dump_formats=("json",),
+        )
+
+        assert len(outputs) == 1
+        _expansion, manifest, _path = outputs[0]
+        assert manifest.summary_metrics["figure_count"] == 1
+        assert manifest.summary_metrics["artifact_count"] == 1
+        canonical = manifest.artifacts[0]
+        assert canonical.role == "figure"
+        assert Path(canonical.uri).exists()
+        assert canonical.metadata["relative_path"].startswith("artifacts/")
+
+        projection = canonical.metadata["figure_routing"]
+        spec_path = Path(projection["spec_path"])
+        render_path = Path(projection["render_path"])
+        symlink_path = Path(projection["symlink_path"])
+        assert spec_path == (
+            tmp_path / "toy_bundle_pkg" / "results" / "toy_experiment" / "figures"
+            / "toy_topic" / "spec.json"
+        )
+        assert render_path == (
+            tmp_path / "toy_bundle_pkg" / "_artifacts" / "toy_experiment" / "figures"
+            / "toy_topic" / "figure.fig.json"
+        )
+        assert spec_path.exists()
+        assert render_path.exists()
+        assert symlink_path.is_symlink()
+        assert symlink_path.resolve() == render_path
+
+        routed_spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        assert routed_spec["analysis"]["manifest_id"] == manifest.id
+        assert routed_spec["analysis"]["analysis_type"] == TOY_ANALYSIS_TYPE
+        assert routed_spec["analysis"]["analysis_name"] == "toy_analysis"
+        assert routed_spec["plot_kwargs"]["params"]["result_value"] == 3
+        assert routed_spec["transform"] == [{"name": "toy-analysis"}]
+        assert manifest.metadata["bundle"]["metadata"]["figure_routing"]["package"] == "toy"
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
