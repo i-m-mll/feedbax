@@ -170,6 +170,31 @@ def test_graph_rejects_missing_wire_target_port() -> None:
         )
 
 
+def test_graph_with_state_view_attaches_view_out_of_place() -> None:
+    graph = Graph(
+        nodes={"counter": Counter()},
+        wires=(),
+        input_ports=(),
+        output_ports=("out",),
+        input_bindings={},
+        output_bindings={"out": ("counter", "output")},
+    )
+
+    def state_view(node_states):
+        return {"counter_value": node_states["counter"]}
+
+    updated = graph.with_state_view(state_view)
+
+    assert graph.state_view_fn is None
+    assert updated is not graph
+    assert updated.state_view_fn is state_view
+
+    state = init_state_from_component(updated)
+    view = updated.state_view(state)
+    assert set(view) == {"counter_value"}
+    assert jnp.array_equal(view["counter_value"], jnp.array(0))
+
+
 def test_graph_step_acyclic_returns_empty_cycle_values():
     """For an acyclic graph, ``step`` returns an empty cycle dict and works without one."""
     a = _Scaler(2.0)
