@@ -8,17 +8,29 @@ from .specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
+from .validation import (
+    AnalysisRecipeProtocol,
+    EvaluationRecipeProtocol,
+    RecipeValidationError,
+    validate_analysis_recipe,
+    validate_evaluation_recipe,
+)
 
 __all__ = [
     "AbstractAnalysis",
     "AnalysisBundleSpec",
     "AnalysisInputData",
     "AnalysisRecipeResult",
+    "AnalysisRecipeProtocol",
     "AnalysisRunContext",
     "CallWithDeps",
+    "EvaluationRecipeProtocol",
+    "RecipeValidationError",
     "execute_analysis_bundle",
     "execute_analysis_run_spec",
     "load_analysis_bundle",
     "register_analysis_recipe",
     "unregister_analysis_recipe",
+    "validate_analysis_recipe",
+    "validate_evaluation_recipe",
 ]

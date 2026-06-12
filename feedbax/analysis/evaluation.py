@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ from feedbax.manifest import (
     spec_payload,
     write_manifest,
 )
+from feedbax.analysis.validation import EvaluationRecipeProtocol, validate_evaluation_recipe
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class EvaluationRecipeResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-EvaluationRecipe = Callable[[EvaluationRunSpec, Path, Path], EvaluationRecipeResult]
+EvaluationRecipe = EvaluationRecipeProtocol
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
 
@@ -63,7 +64,7 @@ def register_evaluation_recipe(
         raise ValueError("evaluation_type must not be empty")
     if evaluation_type in _EVALUATION_RECIPES and not replace:
         raise ValueError(f"Evaluation recipe {evaluation_type!r} is already registered")
-    _EVALUATION_RECIPES[evaluation_type] = recipe
+    _EVALUATION_RECIPES[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
 
 
 def unregister_evaluation_recipe(evaluation_type: str) -> None:
