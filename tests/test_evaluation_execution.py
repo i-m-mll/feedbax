@@ -12,6 +12,7 @@ from feedbax.analysis.evaluation import (
 from feedbax.manifest import (
     EvaluationRunSpec,
     ParentRef,
+    Provenance,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
@@ -93,3 +94,48 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         assert edge == ("TrainingRunManifest", parent.id, "training_run")
     finally:
         unregister_evaluation_recipe("toy_eval")
+
+
+def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: Path):
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:copy-provenance",
+        role="training_run",
+    )
+    spec = EvaluationRunSpec(
+        evaluation_type="copy_provenance_eval",
+        inputs=[parent],
+        params={},
+    )
+    caller_provenance = Provenance(
+        source_commit="abc123",
+        dirty=False,
+        issues=["existing"],
+    )
+
+    def recipe(
+        _run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+    ) -> EvaluationRecipeResult:
+        return EvaluationRecipeResult()
+
+    register_evaluation_recipe("copy_provenance_eval", recipe, replace=True)
+    try:
+        manifest, _path = execute_evaluation_run_spec(
+            spec,
+            root=tmp_path,
+            provenance=caller_provenance,
+            issues=["new"],
+        )
+
+        assert manifest.provenance is not caller_provenance
+        assert manifest.provenance.source_commit == "abc123"
+        assert manifest.provenance.parents == [parent]
+        assert manifest.provenance.issues == ["existing", "new"]
+        assert manifest.provenance.entrypoint is not None
+        assert caller_provenance.parents == []
+        assert caller_provenance.issues == ["existing"]
+        assert caller_provenance.entrypoint is None
+    finally:
+        unregister_evaluation_recipe("copy_provenance_eval")

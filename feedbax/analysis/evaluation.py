@@ -117,7 +117,11 @@ def execute_evaluation_run_spec(
     states_path = evaluation_states_cache_path(manifest_id, root=root_path)
     states_path.parent.mkdir(parents=True, exist_ok=True)
 
-    prov = provenance or collect_git_provenance()
+    prov = (
+        provenance.model_copy(deep=True)
+        if provenance is not None
+        else collect_git_provenance()
+    )
     prov.parents = list(run_spec.inputs)
     if issues:
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)

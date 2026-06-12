@@ -81,7 +81,6 @@ def _run_analysis_sync(spec: AnalysisRunSpec) -> AnalysisJobResult:
 
     manifest, path = execute_analysis_run_spec(
         spec,
-        issues=["f77ad99"],
         fig_dump_formats=("json",),
     )
     return AnalysisJobResult(

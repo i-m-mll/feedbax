@@ -70,7 +70,7 @@ def _execute_eval(root: Path):
         ],
         params={"value": 5},
     )
-    return execute_evaluation_run_spec(spec, root=root, issues=["f77ad99"])
+    return execute_evaluation_run_spec(spec, root=root, issues=["studio-eval-fixture"])
 
 
 def test_studio_analysis_job_routes_eval_run_through_executable_spec(
@@ -134,6 +134,7 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
         assert manifest.kind == "AnalysisRunManifest"
         assert manifest.inputs[0].id == eval_manifest.id
         assert manifest.provenance.parents[0].id == eval_manifest.id
+        assert manifest.provenance.issues == []
         assert manifest.analysis_spec.inline["params"]["requested_outputs"] == [
             TOY_JOB_ANALYSIS_TYPE
         ]
@@ -142,7 +143,6 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
         rerun_manifest, _rerun_path = execute_analysis_run_spec(
             spec,
             root=tmp_path,
-            issues=["f77ad99"],
             fig_dump_formats=("json",),
         )
         assert rerun_manifest.id == manifest.id
