@@ -11,6 +11,8 @@ import asyncio
 import logging
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -19,6 +21,7 @@ from feedbax.contracts.studio_api import (
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
 )
+from feedbax.manifest import AnalysisRunSpec, ParentRef, analysis_run_manifest_id
 from feedbax.web.services.analysis_service import JobStatus, job_tracker
 
 logger = logging.getLogger(__name__)
@@ -35,78 +38,87 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
 # ---------------------------------------------------------------------------
 
 
-def _run_analysis_sync(node_id: str, force_rerun: bool) -> list[str]:
-    """Run the analysis pipeline synchronously (called inside the executor).
+@dataclass(frozen=True)
+class AnalysisJobResult:
+    """Durable result identifiers produced by one Studio analysis job."""
 
-    Returns a list of figure hashes produced during the run.
-    """
-    import jax.random as jr
+    manifest_id: str
+    manifest_path: str
+    figure_hashes: list[str]
+    artifact_ids: list[str]
+    artifact_paths: list[str]
 
-    from feedbax.analysis.execution import run_analysis_module
-    from feedbax.config import PATHS, load_config
-    from feedbax.database import FigureRecord, db_session
-    from feedbax.plugins import EXPERIMENT_REGISTRY
 
-    # The node_id from the frontend corresponds to the analysis module key
-    # (e.g. "part2.plant_perts").  Load its YAML config via the registry.
-    module_key = node_id
-    module_config = load_config(
-        module_key, config_type="analysis", registry=EXPERIMENT_REGISTRY,
-    )
-
-    # Use a deterministic PRNG key -- reproducible unless the user
-    # explicitly varies the seed via config.
-    key = jr.PRNGKey(0)
-
-    states_pkl_dir = PATHS.cache / "states"
-    states_pkl_dir.mkdir(parents=True, exist_ok=True)
-
-    # Snapshot existing figure hashes so we can identify which ones are new.
-    with db_session(autocommit=False) as session:
-        pre_hashes = {
-            r.hash
-            for r in session.query(FigureRecord.hash)
-            .filter(FigureRecord.archived == False)  # noqa: E712
-            .all()
-        }
-
-    data, common_inputs, all_analyses, all_results, all_figs = run_analysis_module(
-        module_key=module_key,
-        module_config=module_config,
-        no_pickle=force_rerun,
-        states_pkl_dir=states_pkl_dir,
-        requested_outputs={node_id},
-        key=key,
-    )
-
-    # Collect only the figure hashes that were created during this run by
-    # diffing against the pre-run snapshot.  This avoids the previous
-    # approach of grabbing the 100 most recent figures globally, which
-    # could return figures from unrelated evaluations.
-    with db_session(autocommit=False) as session:
-        post_records = (
-            session.query(FigureRecord.hash)
-            .filter(FigureRecord.archived == False)  # noqa: E712
-            .all()
+def _spec_for_analysis_request(payload: GenerateAnalysisRequest) -> AnalysisRunSpec:
+    """Build the executable analysis spec demanded by the Studio request."""
+    if not payload.eval_run_id:
+        raise HTTPException(
+            status_code=400,
+            detail="eval_run_id is required for Studio analysis execution",
         )
-        figure_hashes = [r.hash for r in post_records if r.hash not in pre_hashes]
+    return AnalysisRunSpec(
+        analysis_type=payload.node_id,
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=payload.eval_run_id,
+                role="evaluation_run",
+            )
+        ],
+        params={
+            "requested_outputs": [payload.node_id],
+            "studio": {
+                "node_id": payload.node_id,
+                "force_rerun": payload.force_rerun,
+            },
+        },
+    )
 
-    return figure_hashes
+
+def _run_analysis_sync(spec: AnalysisRunSpec) -> AnalysisJobResult:
+    """Run the executable analysis spec synchronously inside the executor."""
+    from feedbax.analysis.specs import execute_analysis_run_spec
+
+    manifest, path = execute_analysis_run_spec(
+        spec,
+        issues=["f77ad99"],
+        fig_dump_formats=("json",),
+    )
+    return AnalysisJobResult(
+        manifest_id=manifest.id,
+        manifest_path=str(path),
+        figure_hashes=[
+            artifact.sha256
+            for artifact in manifest.artifacts
+            if artifact.role == "figure" and artifact.sha256 is not None
+        ],
+        artifact_ids=[artifact.artifact_id for artifact in manifest.artifacts],
+        artifact_paths=[
+            str(Path(artifact.uri))
+            for artifact in manifest.artifacts
+            if artifact.uri is not None
+        ],
+    )
 
 
-async def _run_analysis_background(request_id: str, node_id: str, force_rerun: bool) -> None:
+async def _run_analysis_background(request_id: str, spec: AnalysisRunSpec) -> None:
     """Wrapper that updates the job tracker around the synchronous pipeline."""
     await job_tracker.update_status(request_id, JobStatus.RUNNING)
     try:
         loop = asyncio.get_running_loop()
-        figure_hashes = await loop.run_in_executor(
+        result = await loop.run_in_executor(
             _executor,
             _run_analysis_sync,
-            node_id,
-            force_rerun,
+            spec,
         )
         await job_tracker.update_status(
-            request_id, JobStatus.COMPLETE, figure_hashes=figure_hashes,
+            request_id,
+            JobStatus.COMPLETE,
+            figure_hashes=result.figure_hashes,
+            manifest_id=result.manifest_id,
+            manifest_path=result.manifest_path,
+            artifact_ids=result.artifact_ids,
+            artifact_paths=result.artifact_paths,
         )
     except Exception:
         tb = traceback.format_exc()
@@ -129,23 +141,28 @@ async def generate_figure(payload: GenerateAnalysisRequest) -> GenerateAnalysisR
     immediately with a ``request_id`` that can be polled via
     ``GET /status/{request_id}``.
 
-    If ``eval_run_id`` is provided, it identifies which evaluation run
-    to use for the analysis.  The eval_run_id is logged but currently
-    the analysis pipeline discovers data by module_key; future work
-    will route through the eval run explicitly.
+    ``eval_run_id`` identifies the evaluation manifest consumed by the analysis
+    spec. The in-memory tracker is UX-only; the returned manifest ID is the
+    durable result identity.
     """
-    if payload.eval_run_id:
-        logger.info(
-            "Generate request for node_id=%s with eval_run_id=%s",
-            payload.node_id,
-            payload.eval_run_id,
-        )
-    request_id = await job_tracker.create_job(payload.node_id)
+    spec = _spec_for_analysis_request(payload)
+    manifest_id = analysis_run_manifest_id(spec)
+    logger.info(
+        "Generate request for node_id=%s with eval_run_id=%s manifest_id=%s",
+        payload.node_id,
+        payload.eval_run_id,
+        manifest_id,
+    )
+    request_id = await job_tracker.create_job(payload.node_id, manifest_id=manifest_id)
     asyncio.create_task(
-        _run_analysis_background(request_id, payload.node_id, payload.force_rerun),
+        _run_analysis_background(request_id, spec),
     )
     return GenerateAnalysisResponse(
-        data={"request_id": request_id, "status": JobStatus.PENDING.value}
+        data={
+            "request_id": request_id,
+            "status": JobStatus.PENDING.value,
+            "manifest_id": manifest_id,
+        }
     )
 
 
@@ -160,6 +177,10 @@ async def get_status(request_id: str) -> AnalysisJobStatusResponse:
             "request_id": entry.request_id,
             "status": entry.status.value,
             "figure_hashes": entry.figure_hashes,
+            "manifest_id": entry.manifest_id,
+            "manifest_path": entry.manifest_path,
+            "artifact_ids": entry.artifact_ids,
+            "artifact_paths": entry.artifact_paths,
             "error": entry.error,
         }
     )

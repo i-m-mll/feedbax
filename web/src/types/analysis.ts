@@ -326,6 +326,7 @@ export interface FigureRequest {
 export interface GenerateFigureResponse {
   request_id: string;
   status: string;
+  manifest_id?: string | null;
 }
 
 /** Response from the figure status check endpoint. */
@@ -333,5 +334,9 @@ export interface FigureStatusResponse {
   request_id: string;
   status: 'pending' | 'running' | 'complete' | 'error';
   figure_hashes?: string[];
+  manifest_id?: string | null;
+  manifest_path?: string | null;
+  artifact_ids?: string[] | null;
+  artifact_paths?: string[] | null;
   error?: string;
 }
