@@ -23,12 +23,12 @@ from feedbax.execution import (
     prepare_execution_plan,
     run_local_execution,
 )
+from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,
     EntrypointRef,
-    EvaluationRunManifest,
     EvaluationRunSpec,
     ParentRef,
     Provenance,
@@ -818,29 +818,9 @@ def _materialize_eval_stage(
             else train_stage.scenario_id,
         },
     )
-    summary = {
-        "kind": "StudioEvaluationSummary",
-        "job_id": job_id,
-        "stage_id": eval_stage.id,
-        "input_training_runs": [ref.id for ref in input_refs],
-        "status": "completed",
-    }
-    artifact = store_json_artifact(
-        summary,
+    manifest, path = execute_evaluation_run_spec(
+        spec,
         root=root_path,
-        role="evaluation_result",
-        logical_name=f"{job_id}-evaluation-summary.json",
-        metadata={"stage_id": eval_stage.id, "job_id": job_id},
-    )
-    manifest = EvaluationRunManifest(
-        id=f"feedbax-evaluation-run:{job_id}",
-        status="completed",
-        evaluation_spec=spec_payload(
-            "EvaluationRunSpec",
-            spec.model_dump(mode="json", exclude_none=True),
-        ),
-        input_training_runs=input_refs,
-        summary_metrics={"input_training_runs": len(input_refs)},
         provenance=_stage_provenance(
             stage_kind="eval",
             issues=issues,
@@ -848,12 +828,13 @@ def _materialize_eval_stage(
             request_metadata=request_metadata,
             job_id=job_id,
         ),
-        artifacts=[artifact],
         metadata={"studio": _stage_manifest_metadata(workspace, eval_stage, job_id)},
     )
-    path = write_manifest(manifest, root=root_path)
     manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "evaluation_run", path, job_id)
-    artifact_refs = [_studio_artifact_ref(artifact, kind="EvaluationResult")]
+    artifact_refs = [
+        _studio_artifact_ref(artifact, kind="EvaluationResult")
+        for artifact in manifest.artifacts
+    ]
     _complete_stage_with_manifest(
         workspace,
         eval_stage,
