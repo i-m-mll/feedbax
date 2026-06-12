@@ -37,8 +37,12 @@ class JobEntry:
 
     request_id: str
     node_id: str
+    manifest_id: Optional[str] = None
     status: JobStatus = JobStatus.PENDING
     figure_hashes: Optional[list[str]] = None
+    manifest_path: Optional[str] = None
+    artifact_ids: Optional[list[str]] = None
+    artifact_paths: Optional[list[str]] = None
     error: Optional[str] = None
 
 
@@ -77,10 +81,10 @@ class AnalysisJobTracker:
         if n_to_evict > 0:
             logger.info("Evicted %d completed/errored jobs", min(n_to_evict, len(evictable)))
 
-    async def create_job(self, node_id: str) -> str:
+    async def create_job(self, node_id: str, *, manifest_id: Optional[str] = None) -> str:
         """Create a new pending job and return its ``request_id``."""
         request_id = str(uuid.uuid4())
-        entry = JobEntry(request_id=request_id, node_id=node_id)
+        entry = JobEntry(request_id=request_id, node_id=node_id, manifest_id=manifest_id)
         async with self._lock:
             self._evict_completed()
             self._jobs[request_id] = entry
@@ -98,6 +102,10 @@ class AnalysisJobTracker:
         status: JobStatus,
         *,
         figure_hashes: Optional[list[str]] = None,
+        manifest_id: Optional[str] = None,
+        manifest_path: Optional[str] = None,
+        artifact_ids: Optional[list[str]] = None,
+        artifact_paths: Optional[list[str]] = None,
         error: Optional[str] = None,
     ) -> None:
         """Update the status (and optional results) of a tracked job."""
@@ -111,6 +119,14 @@ class AnalysisJobTracker:
             entry.status = status
             if figure_hashes is not None:
                 entry.figure_hashes = figure_hashes
+            if manifest_id is not None:
+                entry.manifest_id = manifest_id
+            if manifest_path is not None:
+                entry.manifest_path = manifest_path
+            if artifact_ids is not None:
+                entry.artifact_ids = artifact_ids
+            if artifact_paths is not None:
+                entry.artifact_paths = artifact_paths
             if error is not None:
                 entry.error = error
         logger.info("Job %s -> %s", request_id, status.value)
