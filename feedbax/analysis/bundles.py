@@ -303,6 +303,7 @@ def execute_analysis_bundle(
                     "template": expansion.template_name,
                     "mode": expansion.mode,
                     "matched_run_ids": list(expansion.matched_run_ids),
+                    "metadata": dict(bundle.metadata),
                 }
             },
             fig_dump_path=fig_dump_path,
