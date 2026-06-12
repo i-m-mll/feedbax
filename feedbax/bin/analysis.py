@@ -5,6 +5,7 @@ Takes a single positional argument: the path to the YAML config.
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -25,6 +26,7 @@ from feedbax.analysis.execution import (
     check_records_for_analysis,
     run_analysis_module,
 )
+from feedbax.analysis.bundles import execute_analysis_bundle, load_analysis_bundle
 from feedbax.config import (
     PATHS,
     PLOTLY_CONFIG,
@@ -50,6 +52,11 @@ def build_arg_parser():
         "--batched",
         metavar="BATCH_NAME",
         help="Run batch analysis (e.g., part2/plant_perts_sweeps)",
+    )
+    mode.add_argument(
+        "--bundle",
+        metavar="BUNDLE_NAME",
+        help="Run a manifest-canonical analysis bundle (e.g., rlrmp/standard_matrix)",
     )
     parser.add_argument(
         "--fig-dump-dir",
@@ -99,6 +106,24 @@ def build_arg_parser():
         default=30.0,
         help="Warn if estimated memory usage exceeds this value (in GB).",
     )
+    parser.add_argument(
+        "--manifest-root",
+        type=str,
+        default=None,
+        help="Manifest root used by --bundle and manifest-canonical analysis outputs.",
+    )
+    parser.add_argument(
+        "--runs",
+        type=str,
+        default=None,
+        help="Comma-separated manifest IDs to constrain --bundle selection.",
+    )
+    parser.add_argument(
+        "--issue",
+        action="append",
+        default=[],
+        help="Issue ID to record on AnalysisRunManifest provenance for --bundle.",
+    )
     return parser
 
 
@@ -114,6 +139,40 @@ def main(argv: list[str] | None = None) -> None:
 
     # Parse the figure dump formats
     fig_dump_formats = args.fig_dump_formats.split(",")
+
+    if args.bundle:
+        bundle = load_analysis_bundle(args.bundle, registry=EXPERIMENT_REGISTRY)
+        run_ids = (
+            [item.strip() for item in args.runs.split(",") if item.strip()]
+            if args.runs is not None
+            else None
+        )
+        outputs = execute_analysis_bundle(
+            bundle,
+            root=Path(args.manifest_root) if args.manifest_root else None,
+            run_ids=run_ids,
+            issues=list(args.issue),
+            fig_dump_path=Path(args.fig_dump_dir),
+            fig_dump_formats=fig_dump_formats,
+        )
+        print(
+            json.dumps(
+                [
+                    {
+                        "bundle": expansion.bundle_name,
+                        "template": expansion.template_name,
+                        "mode": expansion.mode,
+                        "matched_run_ids": list(expansion.matched_run_ids),
+                        "manifest_id": manifest.id,
+                        "manifest_path": str(path),
+                    }
+                    for expansion, manifest, path in outputs
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
 
     # Set states pickle directory
     states_pkl_dir = Path(args.states_pkl_dir) if args.states_pkl_dir else PATHS.cache / "states"
