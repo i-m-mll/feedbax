@@ -4,6 +4,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Callable
 
+import jax.numpy as jnp
 import pytest
 
 from feedbax.component_registry import (
@@ -11,9 +12,19 @@ from feedbax.component_registry import (
     get_component_registry,
     register_component_type,
 )
+from feedbax.channel import Channel
 from feedbax.components import Gain
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.graph import Component
 from feedbax.serialization import spec_to_graph
+
+
+class _PrototypeSource(Component):
+    input_ports = ()
+    output_ports = ("signal",)
+
+    def __call__(self, inputs, state, *, key):
+        return {"signal": jnp.ones((3,))}, state
 
 
 def _single_node_spec(component_type: str, params: dict[str, Any] | None = None) -> GraphSpec:
@@ -69,6 +80,53 @@ def test_programmatic_component_registration_materializes_via_spec_to_graph() ->
     default_component = default_graph.nodes["component"]
     assert isinstance(default_component, Gain)
     assert default_component.gain == 3.0
+
+
+def test_registered_component_output_prototype_feeds_stateful_materialization() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_component_type(
+        "TestPrototypeSource",
+        lambda params: _PrototypeSource(),
+        category="Test",
+        description="Source with registry-owned output prototype.",
+        param_schema=[{"name": "width", "type": "int", "default": 3}],
+        input_ports=[],
+        output_ports=["signal"],
+        output_prototype_fn=lambda params, inputs: {
+            "signal": jnp.zeros((int(params.get("width", 3)),))
+        },
+    )
+    spec = GraphSpec(
+        nodes={
+            "source": ComponentSpec(
+                type="TestPrototypeSource",
+                params={},
+                input_ports=[],
+                output_ports=["signal"],
+            ),
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 1, "add_noise": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="source",
+                source_port="signal",
+                target_node="delay",
+                target_port="input",
+            )
+        ],
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+    )
+
+    graph = spec_to_graph(spec, registry)
+
+    assert isinstance(graph.nodes["delay"], Channel)
+    assert graph.nodes["delay"].input_proto.shape == (3,)
 
 
 def test_entry_point_component_registration_records_package_provenance() -> None:

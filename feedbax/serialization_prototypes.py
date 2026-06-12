@@ -174,11 +174,71 @@ def _required_input(
     return proto
 
 
+def _lookup_registry_meta(component_registry: Any, name: str) -> Any | None:
+    if component_registry is None:
+        return None
+    if isinstance(component_registry, Mapping):
+        meta = component_registry.get(name)
+    elif hasattr(component_registry, "get"):
+        meta = component_registry.get(name)
+    elif isinstance(component_registry, (list, tuple)):
+        meta = next((item for item in component_registry if getattr(item, "name", None) == name), None)
+    else:
+        meta = None
+    return meta
+
+
+def _lookup_output_prototype_fn(component_registry: Any, name: str) -> Any | None:
+    meta = _lookup_registry_meta(component_registry, name)
+    if meta is None:
+        return None
+    if isinstance(meta, Mapping):
+        return meta.get("output_prototype_fn")
+    return getattr(meta, "output_prototype_fn", None)
+
+
+def _lookup_default_params(component_registry: Any, name: str) -> dict[str, Any]:
+    meta = _lookup_registry_meta(component_registry, name)
+    if meta is None:
+        return {}
+    if isinstance(meta, Mapping):
+        return dict(meta.get("default_params", {}))
+    if hasattr(meta, "default_params"):
+        return dict(getattr(meta, "default_params"))
+    return {}
+
+
+def _registered_output_prototypes(
+    node_name: str,
+    node_spec: ComponentSpec,
+    input_prototypes: Mapping[tuple[str, str], Any],
+    component_registry: Any,
+) -> dict[str, Any] | None:
+    output_prototype_fn = _lookup_output_prototype_fn(component_registry, node_spec.type)
+    if output_prototype_fn is None:
+        return None
+    node_inputs = {
+        port: input_prototypes[(node_name, port)]
+        for port in node_spec.input_ports
+        if (node_name, port) in input_prototypes
+    }
+    params = _lookup_default_params(component_registry, node_spec.type)
+    params.update(node_spec.params)
+    outputs = output_prototype_fn(params, node_inputs)
+    if not isinstance(outputs, Mapping):
+        raise TypeError(
+            f"Output prototype function for {node_spec.type!r} node {node_name!r} "
+            "must return a mapping of output port names to prototypes"
+        )
+    return dict(outputs)
+
+
 def output_prototypes_for_node(
     node_name: str,
     node_spec: ComponentSpec,
     input_prototypes: Mapping[tuple[str, str], Any],
     subgraphs: Mapping[str, GraphSpec],
+    component_registry: Any = None,
     *,
     strict: bool = True,
 ) -> dict[str, Any]:
@@ -196,12 +256,26 @@ def output_prototypes_for_node(
             for graph_port, (node, port) in subgraph.input_bindings.items()
             if (node_name, graph_port) in input_prototypes
         }
-        normalized = normalize_stateful_prototypes(subgraph, nested_inputs)
+        normalized = normalize_stateful_prototypes(
+            subgraph,
+            nested_inputs,
+            component_registry=component_registry,
+        )
         return bound_output_prototypes(
             normalized,
             subgraphs=dict(normalized.subgraphs or {}),
             input_prototypes=nested_inputs,
+            component_registry=component_registry,
         )
+
+    registered_outputs = _registered_output_prototypes(
+        node_name,
+        node_spec,
+        input_prototypes,
+        component_registry,
+    )
+    if registered_outputs is not None:
+        return registered_outputs
 
     if node_type == "Constant":
         return {"output": proto_from_value(params.get("value", 0.0))}
@@ -298,8 +372,14 @@ def bound_output_prototypes(
     *,
     subgraphs: Mapping[str, GraphSpec],
     input_prototypes: Mapping[tuple[str, str], Any],
+    component_registry: Any = None,
 ) -> dict[str, Any]:
-    node_inputs = infer_node_input_prototypes(spec, input_prototypes, subgraphs)
+    node_inputs = infer_node_input_prototypes(
+        spec,
+        input_prototypes,
+        subgraphs,
+        component_registry=component_registry,
+    )
     outputs: dict[str, Any] = {}
     for graph_port, (node_name, node_port) in spec.output_bindings.items():
         node_spec = spec.nodes.get(node_name)
@@ -307,7 +387,13 @@ def bound_output_prototypes(
             raise ValueError(
                 f"Graph output binding {graph_port!r} references missing node {node_name!r}"
             )
-        node_outputs = output_prototypes_for_node(node_name, node_spec, node_inputs, subgraphs)
+        node_outputs = output_prototypes_for_node(
+            node_name,
+            node_spec,
+            node_inputs,
+            subgraphs,
+            component_registry=component_registry,
+        )
         if node_port not in node_outputs:
             raise ValueError(
                 f"Graph output binding {graph_port!r} references missing output port "
@@ -321,6 +407,7 @@ def infer_node_input_prototypes(
     spec: GraphSpec,
     external_input_prototypes: Mapping[tuple[str, str], Any],
     subgraphs: Mapping[str, GraphSpec],
+    component_registry: Any = None,
 ) -> dict[tuple[str, str], Any]:
     input_prototypes: dict[tuple[str, str], Any] = dict(external_input_prototypes)
     for graph_port, (node_name, node_port) in spec.input_bindings.items():
@@ -351,6 +438,7 @@ def infer_node_input_prototypes(
                 source_spec,
                 input_prototypes,
                 subgraphs,
+                component_registry=component_registry,
                 strict=False,
             )
             proto = outputs.get(wire.source_port)
@@ -389,6 +477,7 @@ def infer_node_input_prototypes(
             source_spec,
             input_prototypes,
             subgraphs,
+            component_registry=component_registry,
             strict=True,
         )
         if wire.source_port not in outputs:
@@ -404,9 +493,15 @@ def infer_node_input_prototypes(
 def normalize_stateful_prototypes(
     spec: GraphSpec,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+    component_registry: Any = None,
 ) -> GraphSpec:
     subgraphs = dict(spec.subgraphs or {})
-    node_inputs = infer_node_input_prototypes(spec, input_prototypes or {}, subgraphs)
+    node_inputs = infer_node_input_prototypes(
+        spec,
+        input_prototypes or {},
+        subgraphs,
+        component_registry=component_registry,
+    )
     nodes: dict[str, ComponentSpec] = {}
     normalized_subgraphs: dict[str, GraphSpec] = {}
 
@@ -430,6 +525,7 @@ def normalize_stateful_prototypes(
             normalized_subgraphs[node_name] = normalize_stateful_prototypes(
                 subgraphs[node_name],
                 nested_inputs,
+                component_registry=component_registry,
             )
 
     return spec.model_copy(

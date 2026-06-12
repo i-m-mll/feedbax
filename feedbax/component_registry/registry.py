@@ -12,7 +12,7 @@ from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeS
 from feedbax.contracts.graph import ParamSchema
 
 from .builtins import register_builtin_components
-from .meta import ComponentBuilder, ComponentMeta
+from .meta import ComponentBuilder, ComponentMeta, OutputPrototypeFn
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,7 @@ class ComponentRegistry:
         template_ui_state: Any = None,
         template_id: str | None = None,
         template_kind: str | None = None,
+        output_prototype_fn: OutputPrototypeFn | None = None,
         provenance: str | None = None,
     ) -> ComponentMeta:
         if not callable(builder):
@@ -102,6 +103,7 @@ class ComponentRegistry:
             template_id=template_id,
             template_kind=template_kind,
             builder=builder,
+            output_prototype_fn=output_prototype_fn,
             provenance=provenance or _current_provenance(),
         )
         self.register(meta)
@@ -201,6 +203,7 @@ class ComponentRegistry:
                         if isinstance(port_types, dict)
                         else port_types
                     ),
+                    output_prototype_fn=meta.get("output_prototype_fn"),
                     provenance=f"file:{py_file}",
                 )
 
@@ -303,6 +306,7 @@ def register_component_type(
     icon: str = "box",
     port_types: PortTypeSpec | dict[str, Any] | None = None,
     is_composite: bool = False,
+    output_prototype_fn: OutputPrototypeFn | None = None,
     provenance: str | None = None,
 ) -> ComponentMeta:
     """Register an executable component type in the process-wide registry."""
@@ -318,5 +322,6 @@ def register_component_type(
         icon=icon,
         port_types=port_types,
         is_composite=is_composite,
+        output_prototype_fn=output_prototype_fn,
         provenance=provenance,
     )

@@ -200,9 +200,8 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         for wire in spec.wires
     ]
 
-    input_ports = ["input" if port == "target" else port for port in spec.input_ports]
     input_bindings = {
-        ("input" if name == "target" else name): (
+        name: (
             node,
             _rename_port(node, port),
         )
@@ -220,7 +219,7 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
     return GraphSpec(
         nodes=nodes,
         wires=wires,
-        input_ports=input_ports,
+        input_ports=list(spec.input_ports),
         output_ports=list(spec.output_ports),
         input_bindings=input_bindings,
         output_bindings=dict(spec.output_bindings),
@@ -779,7 +778,11 @@ def spec_to_graph(
     metadata_registry = component_registry if component_registry is not None else execution_registry
     _validate_supported_spec_versions(spec)
     spec = _migrate_spec(spec)
-    spec = normalize_stateful_prototypes(spec, input_prototypes)
+    spec = normalize_stateful_prototypes(
+        spec,
+        input_prototypes,
+        component_registry=metadata_registry,
+    )
 
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
