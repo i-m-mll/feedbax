@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from feedbax.analysis.bundles import (
+    execute_analysis_bundle,
     ManifestPredicate,
     expand_analysis_bundle,
     load_analysis_bundle,
@@ -19,6 +22,7 @@ from feedbax.analysis.evaluation import (
     unregister_evaluation_recipe,
 )
 from feedbax.analysis.specs import (
+    AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
     execute_analysis_run_spec,
     register_analysis_recipe,
@@ -127,6 +131,21 @@ templates:
     mode: per-run
     analysis_type: {TOY_ANALYSIS_TYPE}
     requested_outputs: [toy]
+""",
+        encoding="utf-8",
+    )
+    (bundle_root / "missing_output.yml").write_text(
+        f"""
+name: toy_missing_output
+predicate:
+  manifest_kind: EvaluationRunManifest
+  metadata_equals:
+    method: minimax
+templates:
+  - name: mismatched_output
+    mode: per-run
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [missing]
 """,
         encoding="utf-8",
     )
@@ -258,6 +277,44 @@ def test_analysis_run_spec_rederives_missing_evaluation_states_cache(tmp_path: P
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
+def test_analysis_run_spec_records_failed_manifest_for_unknown_requested_output(
+    tmp_path: Path,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        eval_manifest, eval_path = _execute_toy_eval(tmp_path, n_trials=2, method="minimax")
+        spec = AnalysisRunSpec(
+            analysis_type=TOY_ANALYSIS_TYPE,
+            inputs=[
+                ParentRef(
+                    kind="EvaluationRunManifest",
+                    id=eval_manifest.id,
+                    role="evaluation_run",
+                    uri=str(eval_path),
+                )
+            ],
+            params={"requested_outputs": ["missing"]},
+        )
+
+        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+            execute_analysis_run_spec(
+                spec,
+                root=tmp_path,
+                fig_dump_formats=("json",),
+            )
+
+        assert "requested_outputs=['missing']" in str(excinfo.value.__cause__)
+        assert "available_analysis_keys=['toy']" in str(excinfo.value.__cause__)
+        failed_manifest = load_manifest(excinfo.value.path)
+        assert failed_manifest.kind == "AnalysisRunManifest"
+        assert failed_manifest.status == "failed"
+        assert failed_manifest.metadata["error"]["type"] == "ValueError"
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
 def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path, monkeypatch):
     _register_toy_evaluation_recipe()
     try:
@@ -270,17 +327,23 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path,
         matched = select_bundle_manifests(bundle, tmp_path)
         matched_ids = [manifest.id for manifest in matched]
         assert set(matched_ids) == {first.id, second.id}
-        assert [manifest.id for manifest in select_bundle_manifests(
-            bundle,
-            tmp_path,
-            run_ids=[first.id],
-        )] == [first.id]
+        assert [
+            manifest.id
+            for manifest in select_bundle_manifests(
+                bundle,
+                tmp_path,
+                run_ids=[first.id],
+            )
+        ] == [first.id]
 
         params_bundle = load_analysis_bundle("toy/params_match", registry=registry)
-        assert [manifest.id for manifest in select_bundle_manifests(
-            params_bundle,
-            tmp_path,
-        )] == [first.id]
+        assert [
+            manifest.id
+            for manifest in select_bundle_manifests(
+                params_bundle,
+                tmp_path,
+            )
+        ] == [first.id]
         assert predicate_matches_manifest(
             ManifestPredicate(run_ids=[other.id]),
             other,
@@ -314,6 +377,31 @@ def test_unqualified_bundle_lookup_uses_public_registry_metadata(tmp_path: Path,
     assert bundle.name == "toy_matrix"
 
 
+def test_analysis_bundle_fails_on_unknown_requested_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        _execute_toy_eval(tmp_path, n_trials=2, method="minimax")
+        registry = _write_bundle_package(tmp_path, monkeypatch)
+        bundle = load_analysis_bundle("toy/missing_output", registry=registry)
+
+        with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+            execute_analysis_bundle(
+                bundle,
+                root=tmp_path,
+                fig_dump_formats=("json",),
+            )
+
+        assert "requested_outputs=['missing']" in str(excinfo.value.__cause__)
+        assert "available_analysis_keys=['toy']" in str(excinfo.value.__cause__)
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
 def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypatch, capsys):
     _register_toy_evaluation_recipe()
     _register_toy_analysis_recipe()
@@ -342,9 +430,7 @@ def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypa
 
         output = json.loads(capsys.readouterr().out)
         expected_ids = [
-            item["matched_run_ids"][0]
-            for item in output
-            if item["template"] == "per_cell"
+            item["matched_run_ids"][0] for item in output if item["template"] == "per_cell"
         ]
         assert set(expected_ids) == {first.id, second.id}
         assert [(item["template"], item["matched_run_ids"]) for item in output] == [
