@@ -813,6 +813,39 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             "Either implement this method or the analysis will be skipped during figure generation."
         )
 
+    def emit_artifacts(
+        self,
+        context: "AnalysisRunContext",
+        data: AnalysisInputData,
+        *,
+        result: PyTree[Any],
+        **kwargs,
+    ) -> PyTree[Any] | None:
+        """Optionally record non-figure artifacts and return the downstream result.
+
+        Subclasses may use ``context.record_artifact*`` helpers here. Returning a
+        value replaces the result exposed to downstream analysis nodes; returning
+        ``None`` keeps the original result.
+        """
+        return None
+
+    def _emit_artifacts_with_context(
+        self,
+        context: "AnalysisRunContext",
+        data: AnalysisInputData,
+        result: PyTree[Any],
+        **kwargs,
+    ) -> PyTree[Any]:
+        """Run the artifact hook and record any refs embedded in the result payload."""
+        if self.__class__.emit_artifacts is AbstractAnalysis.emit_artifacts:
+            context.record_artifact_refs_from_value(result)
+            return result
+
+        emitted = self.emit_artifacts(context, data, result=result, **kwargs)
+        output = result if emitted is None else emitted
+        context.record_artifact_refs_from_value(output)
+        return output
+
     def _compute_with_ops(
         self,
         data: AnalysisInputData,
@@ -963,6 +996,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 logger.warning(f"Could not save cache for {self.name}: {e}")
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
+        if analysis_context is not None:
+            result = self._emit_artifacts_with_context(
+                analysis_context,
+                prepped_data,
+                result,
+                **prepped_kwargs,
+            )
 
         return result
 
@@ -1062,7 +1102,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     @classmethod
     def _input_leaf_types(cls) -> tuple[type, ...]:
         """Get the set of valid input leaf types for this analysis."""
-        return (str, _DataField, AbstractAnalysis, LiteralInput)
+        return (str, AnalysisRef, _DataField, AbstractAnalysis, LiteralInput)
 
     def is_analysis_input_leaf(self, leaf: Any) -> bool:
         """Determine if a leaf is a valid analysis input type."""
@@ -1084,7 +1124,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             for leaf in leaves:
                 if not (
                     isinstance(leaf, (type, str))
-                    or isinstance(leaf, (_DataField, AbstractAnalysis, LiteralInput))
+                    or isinstance(leaf, (AnalysisRef, _DataField, AbstractAnalysis, LiteralInput))
                 ):
                     valid_types = ", ".join([t.__name__ for t in self._input_leaf_types()])
                     raise ValueError(
