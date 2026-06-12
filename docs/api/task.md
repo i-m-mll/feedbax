@@ -33,6 +33,42 @@
 
 ::: feedbax.task.TaskTrialSpec
 
+Custom training and streaming-evaluation loops can prepare a trial without
+running the model through `AbstractTask.eval_trials` by calling
+`feedbax.task.prepare_trial`. The returned `PreparedTrial` contains the
+trial-specific initial state, normalized model inputs, merged time-varying
+intervention inputs, and inferred step count.
+
+Lower-level helpers are public for loops that need to compose only part of the
+preparation path: `prepare_inputs`, `merge_intervene_inputs`,
+`extract_timeseries_params`, `infer_n_steps`, `where_key_to_path`,
+`set_state_by_path`, and `set_state_matching_dtypes`. `safe_state_set` is an
+alias for `set_state_matching_dtypes`.
+
+When a loop needs trainable submodules from a named graph node, use
+`Graph.get_node_attrs("node", "attr", ...)` rather than reaching into
+`Graph.nodes` directly.
+
+::: feedbax.task.PreparedTrial
+
+::: feedbax.task.prepare_trial
+
+::: feedbax.task.prepare_inputs
+
+::: feedbax.task.merge_intervene_inputs
+
+::: feedbax.task.extract_timeseries_params
+
+::: feedbax.task.infer_n_steps
+
+::: feedbax.task.where_key_to_path
+
+::: feedbax.task.set_state_by_path
+
+::: feedbax.task.set_state_matching_dtypes
+
+::: feedbax.task.safe_state_set
+
 ## Abstract base classes
 
 <!-- ::: feedbax.task.AbstractTaskInputs -->

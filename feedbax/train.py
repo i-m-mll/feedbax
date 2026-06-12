@@ -47,11 +47,11 @@ from feedbax.state import StateT
 from feedbax.task import (
     AbstractTask,
     TaskTrialSpec,
-    _extract_timeseries_params,
-    _infer_n_steps,
-    _prepare_inputs,
-    _set_state_by_path,
-    _where_key_to_path,
+    extract_timeseries_params,
+    infer_n_steps,
+    prepare_inputs,
+    set_state_by_path,
+    where_key_to_path,
 )
 
 LOSS_FMT = ".2e"
@@ -315,6 +315,7 @@ class TaskTrainer(eqx.Module):
             # field params) may not carry the ensemble dimension.
             from equinox.nn import StateIndex
             from jax_cookbook import is_type
+
             n_replicates = tree_infer_batch_size(model, exclude=is_type(StateIndex))
             init_opt_state = eqx.filter_vmap(self.optimizer.init)
         else:
@@ -355,10 +356,14 @@ class TaskTrainer(eqx.Module):
                     range(len(save_steps)),
                 )
             )
-            save_model_parameters_idx_func = lambda x: save_model_parameters_idxs[int(x)]
+
+            def save_model_parameters_idx_func(x):
+                return save_model_parameters_idxs[int(x)]
         else:
             save_model_parameters_batches = np.full(idx_end, save_model_parameters, dtype=bool)
-            save_model_parameters_idx_func = lambda x: x
+
+            def save_model_parameters_idx_func(x):
+                return x
 
         if isinstance(save_trial_specs, Array):
             save_trial_specs_batches = np.array(
@@ -448,6 +453,7 @@ class TaskTrainer(eqx.Module):
                 if eqx.is_array(x) and x.ndim > 0 and x.shape[0] == n_replicates:
                     return 0
                 return None
+
             flat_model_arr_spec = jt.map(_ensemble_in_axis, flat_model)
 
             if ensemble_random_trials:
@@ -476,7 +482,13 @@ class TaskTrainer(eqx.Module):
             # a Python float) are NOT stacked by vmap. Plain 0 would cause vmap to
             # broadcast Python float weights to shape (n_replicates,), breaking the
             # shape invariant expected by loss_update_func and history storage.
-            out_axes = (eqx.if_array(0), trial_specs_out_axis, flat_model_arr_spec, eqx.if_array(0), eqx.if_array(0))
+            out_axes = (
+                eqx.if_array(0),
+                trial_specs_out_axis,
+                flat_model_arr_spec,
+                eqx.if_array(0),
+                eqx.if_array(0),
+            )
 
             train_step = eqx.filter_vmap(
                 self._train_step,
@@ -656,8 +668,12 @@ class TaskTrainer(eqx.Module):
                 if loss_update_mask[batch]:
                     # Aggregate losses and gradients over replicates if ensembled
                     if ensembled:
-                        losses_for_update = losses.map(lambda arr: jnp.mean(arr, axis=0))  # mean over replicates
-                        grads_for_update = jt.map(lambda arr: jnp.mean(arr, axis=0) if eqx.is_array(arr) else arr, grads)
+                        losses_for_update = losses.map(
+                            lambda arr: jnp.mean(arr, axis=0)
+                        )  # mean over replicates
+                        grads_for_update = jt.map(
+                            lambda arr: jnp.mean(arr, axis=0) if eqx.is_array(arr) else arr, grads
+                        )
                     else:
                         losses_for_update = losses
                         grads_for_update = grads
@@ -868,8 +884,8 @@ class TaskTrainer(eqx.Module):
 
         def _apply_inits(state, trial_spec):
             for where_substate, init_substate in trial_spec.inits.items():
-                path = _where_key_to_path(where_substate)
-                state = _set_state_by_path(model, state, path, init_substate)
+                path = where_key_to_path(where_substate)
+                state = set_state_by_path(model, state, path, init_substate)
 
             if trial_spec.intervene:
                 for label, params in trial_spec.intervene.items():
@@ -877,6 +893,7 @@ class TaskTrainer(eqx.Module):
                         raise ValueError(f"Unknown intervention label '{label}'")
                     idx = intervention_indices[label]
                     current = state.get(idx)
+
                     # Merge only time-invariant params into the initial State.
                     # TimeSeriesParam leaves are skipped here — they are
                     # handled per-step via params_override input ports on the
@@ -890,7 +907,8 @@ class TaskTrainer(eqx.Module):
 
                     merged = jt.map(
                         _merge_leaf,
-                        params, current,
+                        params,
+                        current,
                         is_leaf=lambda x: x is None or isinstance(x, TimeSeriesParam),
                     )
                     state = _state_set_matching_dtypes(state, idx, merged)
@@ -962,21 +980,16 @@ class TaskTrainer(eqx.Module):
         # Bug: 7d6dad4 — graph-based task discovery for TaskTrainer
         from feedbax.task import TaskComponent
 
-        nodes = getattr(model, 'nodes', None)
+        nodes = getattr(model, "nodes", None)
         if nodes is None:
             raise ValueError(
                 "model has no 'nodes' attribute. Pass a Graph instance or "
                 "use TaskTrainer(...) directly."
             )
 
-        task_components = [
-            node for node in nodes.values()
-            if isinstance(node, TaskComponent)
-        ]
+        task_components = [node for node in nodes.values() if isinstance(node, TaskComponent)]
         if len(task_components) == 0:
-            raise ValueError(
-                "No TaskComponent found in graph. Use TaskTrainer(...) directly."
-            )
+            raise ValueError("No TaskComponent found in graph. Use TaskTrainer(...) directly.")
         if len(task_components) > 1:
             raise ValueError(
                 f"Multiple TaskComponents found in graph ({len(task_components)}). "
@@ -1240,7 +1253,7 @@ def _extract_intervene_inputs(
         idx = indices[label]
         # The default params are stored as the StateIndex initial value.
         default_params = idx.init
-        tv_params = _extract_timeseries_params(params, default_params)
+        tv_params = extract_timeseries_params(params, default_params)
         if tv_params is not None:
             result[f"intervene:{label}"] = tv_params
     return result
@@ -1281,14 +1294,15 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional
         model = eqx.combine(diff_model, static_model)
 
         def _run_trial(trial_spec, init_state, key):
-            inputs = _prepare_inputs(model, trial_spec.inputs)
-            n_steps = _infer_n_steps(inputs, getattr(trial_spec, "timeline", None))
+            inputs = prepare_inputs(model, trial_spec.inputs)
+            n_steps = infer_n_steps(inputs, getattr(trial_spec, "timeline", None))
             # Extract time-varying intervention params and add as model inputs.
             # These are routed to intervenor params_override ports via input
             # bindings added by intervention_compat graph surgery.
             if trial_spec.intervene:
                 intervene_inputs = _extract_intervene_inputs(
-                    trial_spec.intervene, model,
+                    trial_spec.intervene,
+                    model,
                 )
                 if intervene_inputs:
                     inputs = {**inputs, **intervene_inputs}

@@ -311,6 +311,45 @@ class Graph(Component):
             isinstance(node, Graph) and node._needs_iteration for node in self.nodes.values()
         )
 
+    def get_node(self, path: str) -> Component:
+        """Return a named graph node by dotted graph-node path.
+
+        Args:
+            path: Node name or dotted path through nested graph nodes.
+
+        Returns:
+            The selected graph component.
+
+        Raises:
+            ValueError: If any path segment does not name a graph node.
+        """
+        current: Component = self
+        for part in path.split("."):
+            if not part:
+                continue
+            if not isinstance(current, Graph):
+                raise ValueError(f"Node path {path!r} enters non-graph node at {part!r}")
+            if part not in current.nodes:
+                raise ValueError(f"Unknown graph node {part!r} in node path {path!r}")
+            current = current.nodes[part]
+        return current
+
+    def get_node_attrs(self, node_path: str, *attr_paths: str) -> tuple[PyTree, ...]:
+        """Return one or more attributes from a named graph node.
+
+        This gives downstream training code a public selector target for
+        trainable submodules such as ``graph.get_node_attrs("net", "hidden",
+        "readout")`` without reaching into ``graph.nodes`` directly.
+        """
+        node = self.get_node(node_path)
+        values = []
+        for attr_path in attr_paths:
+            try:
+                values.append(attrgetter(attr_path)(node))
+            except AttributeError as exc:
+                raise ValueError(f"Node {node_path!r} has no attribute path {attr_path!r}") from exc
+        return tuple(values)
+
     @cached_property
     def _outgoing_wires(self) -> dict[tuple[str, str], list[Wire]]:
         outgoing: dict[tuple[str, str], list[Wire]] = {}
