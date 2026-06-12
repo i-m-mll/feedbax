@@ -11,12 +11,15 @@ import dill as pickle
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.validation import AnalysisRecipeProtocol, validate_analysis_recipe
 from feedbax.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     ParentRef,
     Provenance,
     default_manifest_root,
@@ -143,9 +146,7 @@ def resolve_analysis_inputs(
         if ref.kind == "EvaluationRunManifest":
             states_path = evaluation_states_cache_path(ref.id, root=root_path)
             if not states_path.exists():
-                raise FileNotFoundError(
-                    f"Evaluation states cache for {ref.id!r} not found at {states_path}"
-                )
+                _rederive_evaluation_states(ref.id, manifest, root=root_path)
             with states_path.open("rb") as stream:
                 states = pickle.load(stream)
         resolved.append(
@@ -157,6 +158,40 @@ def resolve_analysis_inputs(
             )
         )
     return resolved
+
+
+def _rederive_evaluation_states(
+    manifest_id: str,
+    manifest: AnyManifest | None,
+    *,
+    root: Path,
+) -> None:
+    if not isinstance(manifest, EvaluationRunManifest):
+        raise TypeError(
+            f"Expected EvaluationRunManifest {manifest_id!r}, got "
+            f"{type(manifest).__name__}"
+        )
+    if manifest.status != "completed":
+        raise ValueError(
+            f"Cannot re-derive states for evaluation manifest {manifest_id!r} "
+            f"with status {manifest.status!r}"
+        )
+    run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    metadata = {
+        key: value
+        for key, value in manifest.metadata.items()
+        if key != "cache"
+    }
+    rederived, _path = execute_evaluation_run_spec(
+        run_spec,
+        root=root,
+        provenance=manifest.provenance,
+        metadata=metadata,
+    )
+    if rederived.id != manifest_id:
+        raise ValueError(
+            f"Evaluation spec for {manifest_id!r} re-derived manifest {rederived.id!r}"
+        )
 
 
 def requested_outputs_from_spec(spec: AnalysisRunSpec) -> set[str] | None:

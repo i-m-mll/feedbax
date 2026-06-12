@@ -23,7 +23,13 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.manifest import AnalysisRunSpec, EvaluationRunSpec, ParentRef, load_manifest
+from feedbax.manifest import (
+    AnalysisRunSpec,
+    EvaluationRunSpec,
+    ParentRef,
+    evaluation_states_cache_path,
+    load_manifest,
+)
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
@@ -178,6 +184,46 @@ def test_analysis_run_spec_executes_registered_recipe_and_records_manifest(tmp_p
         assert manifest.summary_metrics["analysis_count"] == 1
         assert manifest.summary_metrics["figure_count"] == 1
         assert load_manifest(path).id == manifest.id
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_analysis_run_spec_rederives_missing_evaluation_states_cache(tmp_path: Path):
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        eval_manifest, eval_path = _execute_toy_eval(tmp_path, n_trials=5, method="minimax")
+        states_path = evaluation_states_cache_path(eval_manifest.id, root=tmp_path)
+        assert states_path.exists()
+        states_path.unlink()
+
+        spec = AnalysisRunSpec(
+            analysis_type=TOY_ANALYSIS_TYPE,
+            inputs=[
+                ParentRef(
+                    kind="EvaluationRunManifest",
+                    id=eval_manifest.id,
+                    role="evaluation_run",
+                    uri=str(eval_path),
+                )
+            ],
+            params={"requested_outputs": ["toy"]},
+        )
+
+        manifest, path = execute_analysis_run_spec(
+            spec,
+            root=tmp_path,
+            issues=["ad32279"],
+            fig_dump_formats=("json",),
+        )
+
+        assert path.exists()
+        assert states_path.exists()
+        assert manifest.status == "completed"
+        assert manifest.summary_metrics["analysis_count"] == 1
+        assert manifest.summary_metrics["figure_count"] == 1
+        assert load_manifest(eval_path).summary_metrics["n_trials"] == 5
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
