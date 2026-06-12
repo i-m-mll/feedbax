@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from .meta import ComponentMeta
-from .registry import ComponentRegistry
+from .meta import ComponentBuilder, ComponentMeta
+from .registry import ComponentRegistry, get_component_registry, register_component_type
 
-__all__ = ["ComponentMeta", "ComponentRegistry"]
+__all__ = [
+    "ComponentBuilder",
+    "ComponentMeta",
+    "ComponentRegistry",
+    "get_component_registry",
+    "register_component_type",
+]

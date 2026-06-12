@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -41,3 +41,4 @@ class ComponentDefinition(BaseModel):
     template_ui_state: Optional[GraphUIState] = None
     template_id: Optional[str] = None
     template_kind: Optional[str] = None
+    provenance: Optional[str] = None

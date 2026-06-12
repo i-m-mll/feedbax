@@ -99,6 +99,13 @@ def _lookup_defaults(component_registry: Any, name: str) -> dict[str, Any]:
         if isinstance(meta, Mapping):
             return dict(meta.get("default_params", {}))
         return {}
+    if hasattr(component_registry, "get"):
+        meta = component_registry.get(name)
+        if meta is None:
+            return {}
+        if hasattr(meta, "default_params"):
+            return dict(getattr(meta, "default_params"))
+        return {}
     if isinstance(component_registry, (list, tuple)):
         for meta in component_registry:
             if getattr(meta, "name", None) == name:
@@ -129,6 +136,9 @@ def _lookup_required_params(component_registry: Any, name: str) -> set[str]:
         return required
 
     if isinstance(component_registry, dict):
+        meta = component_registry.get(name)
+        return _from_meta(meta) if meta is not None else set()
+    if hasattr(component_registry, "get"):
         meta = component_registry.get(name)
         return _from_meta(meta) if meta is not None else set()
     if isinstance(component_registry, (list, tuple)):
@@ -757,18 +767,24 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
 def spec_to_graph(
     spec: GraphSpec,
-    component_registry: dict,
+    component_registry: Any | None = None,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
 ) -> Graph:
     """Instantiate a Graph-like object from GraphSpec."""
+    from feedbax.component_registry import get_component_registry
+
+    execution_registry = (
+        component_registry if hasattr(component_registry, "names") else get_component_registry()
+    )
+    metadata_registry = component_registry if component_registry is not None else execution_registry
     _validate_supported_spec_versions(spec)
     spec = _migrate_spec(spec)
     spec = normalize_stateful_prototypes(spec, input_prototypes)
 
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
-        defaults = _lookup_defaults(component_registry, node_spec.type)
-        required_params = _lookup_required_params(component_registry, node_spec.type)
+        defaults = _lookup_defaults(metadata_registry, node_spec.type)
+        required_params = _lookup_required_params(metadata_registry, node_spec.type)
         params = _merge_params(
             node_spec.params,
             defaults,
@@ -780,7 +796,7 @@ def spec_to_graph(
         if node_spec.type == "Subgraph":
             if not spec.subgraphs or node_name not in spec.subgraphs:
                 raise ValueError(f"Missing subgraph spec for '{node_name}'")
-            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], component_registry)
+            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
             continue
         if node_spec.type == "Network":
             subgraph = (spec.subgraphs or {}).get(node_name)
@@ -789,12 +805,17 @@ def spec_to_graph(
                     f"Network node {node_name!r} has no subgraph. "
                     "Open it in Studio to generate the internal architecture, then save again."
                 )
-            nodes[node_name] = spec_to_graph(subgraph, component_registry)
+            nodes[node_name] = spec_to_graph(subgraph, metadata_registry)
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
-            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], component_registry)
+            nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
             continue
-        nodes[node_name] = build_component(node_name, node_spec.type, params)
+        nodes[node_name] = build_component(
+            node_name,
+            node_spec.type,
+            params,
+            component_registry=execution_registry,
+        )
 
     wires = tuple(
         Wire(
