@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from feedbax.analysis.bundles import (
     ManifestPredicate,
@@ -139,6 +140,34 @@ templates:
     return registry
 
 
+def _register_empty_bundle_package(
+    registry: ExperimentRegistry,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    package_root = tmp_path / "empty_bundle_pkg"
+    bundle_root = package_root / "config" / "analysis_bundles"
+    bundle_root.mkdir(parents=True)
+    for path in (
+        package_root / "__init__.py",
+        package_root / "config" / "__init__.py",
+        bundle_root / "__init__.py",
+    ):
+        path.write_text("", encoding="utf-8")
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    package = importlib.import_module("empty_bundle_pkg")
+    registry.register_package(
+        "empty",
+        package,
+        parts=[],
+        analysis_module_root="analysis",
+        training_module_root="training",
+        config_resource_root="config",
+    )
+
+
 def test_analysis_run_spec_executes_registered_recipe_and_records_manifest(tmp_path: Path):
     _register_toy_evaluation_recipe()
     _register_toy_analysis_recipe()
@@ -222,6 +251,21 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path,
         assert expansions[0].spec.params["requested_outputs"] == ["toy"]
     finally:
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_unqualified_bundle_lookup_uses_public_registry_metadata(tmp_path: Path, monkeypatch):
+    registry = _write_bundle_package(tmp_path, monkeypatch)
+    _register_empty_bundle_package(registry, tmp_path, monkeypatch)
+
+    with patch.object(
+        registry,
+        "iter_package_metadata",
+        wraps=registry.iter_package_metadata,
+    ) as iter_metadata:
+        bundle = load_analysis_bundle("matrix", registry=registry)
+
+    assert iter_metadata.called
+    assert bundle.name == "toy_matrix"
 
 
 def test_analysis_cli_runs_bundle_against_manifest_root(tmp_path: Path, monkeypatch, capsys):

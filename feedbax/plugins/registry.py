@@ -162,6 +162,10 @@ class ExperimentRegistry:
             raise ValueError(f"Package '{package_name}' not registered")
         return self._packages[package_name]
 
+    def iter_package_metadata(self) -> list[tuple[str, PackageMetadata]]:
+        """Return registered package metadata keyed by package name."""
+        return list(self._packages.items())
+
     def single_package_name(self) -> str | None:
         pkgs = list(self._packages.keys())
         return pkgs[0] if len(pkgs) == 1 else None
