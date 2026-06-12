@@ -33,6 +33,26 @@
 
 ::: feedbax.task.TaskTrialSpec
 
+::: feedbax.task.PreparedTrial
+
+::: feedbax.task.prepare_trial
+
+::: feedbax.task.prepare_inputs
+
+::: feedbax.task.merge_intervene_inputs
+
+::: feedbax.task.extract_timeseries_params
+
+::: feedbax.task.infer_n_steps
+
+::: feedbax.task.where_key_to_path
+
+::: feedbax.task.set_state_by_path
+
+::: feedbax.task.set_state_matching_dtypes
+
+::: feedbax.task.safe_state_set
+
 ## Abstract base classes
 
 <!-- ::: feedbax.task.AbstractTaskInputs -->
