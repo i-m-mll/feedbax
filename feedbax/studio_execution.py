@@ -23,12 +23,12 @@ from feedbax.execution import (
     prepare_execution_plan,
     run_local_execution,
 )
+from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.manifest import (
-    AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,
     EntrypointRef,
-    EvaluationRunManifest,
     EvaluationRunSpec,
     ParentRef,
     Provenance,
@@ -818,29 +818,9 @@ def _materialize_eval_stage(
             else train_stage.scenario_id,
         },
     )
-    summary = {
-        "kind": "StudioEvaluationSummary",
-        "job_id": job_id,
-        "stage_id": eval_stage.id,
-        "input_training_runs": [ref.id for ref in input_refs],
-        "status": "completed",
-    }
-    artifact = store_json_artifact(
-        summary,
+    manifest, path = execute_evaluation_run_spec(
+        spec,
         root=root_path,
-        role="evaluation_result",
-        logical_name=f"{job_id}-evaluation-summary.json",
-        metadata={"stage_id": eval_stage.id, "job_id": job_id},
-    )
-    manifest = EvaluationRunManifest(
-        id=f"feedbax-evaluation-run:{job_id}",
-        status="completed",
-        evaluation_spec=spec_payload(
-            "EvaluationRunSpec",
-            spec.model_dump(mode="json", exclude_none=True),
-        ),
-        input_training_runs=input_refs,
-        summary_metrics={"input_training_runs": len(input_refs)},
         provenance=_stage_provenance(
             stage_kind="eval",
             issues=issues,
@@ -848,12 +828,13 @@ def _materialize_eval_stage(
             request_metadata=request_metadata,
             job_id=job_id,
         ),
-        artifacts=[artifact],
         metadata={"studio": _stage_manifest_metadata(workspace, eval_stage, job_id)},
     )
-    path = write_manifest(manifest, root=root_path)
     manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "evaluation_run", path, job_id)
-    artifact_refs = [_studio_artifact_ref(artifact, kind="EvaluationResult")]
+    artifact_refs = [
+        _studio_artifact_ref(artifact, kind="EvaluationResult")
+        for artifact in manifest.artifacts
+    ]
     _complete_stage_with_manifest(
         workspace,
         eval_stage,
@@ -894,7 +875,6 @@ def _materialize_analysis_stage(
             (analysis_spec_payload or {}).get("analysis_type", "feedbax.analysis.activity")
         ),
         inputs=input_refs,
-        # Contract-level forwarding; legacy analysis modules still consume eval refs.
         input_requirements=list((analysis_spec_payload or {}).get("input_requirements", [])),
         params={
             "stage_id": analysis_stage.id,
@@ -902,32 +882,12 @@ def _materialize_analysis_stage(
             "selection_spec": analysis_stage.selection_spec,
             "input_collection_id": evaluation_collection.id,
             "analysis_spec": analysis_spec_payload or {},
+            **_analysis_requested_outputs_params(analysis_spec_payload),
         },
     )
-    summary = {
-        "kind": "StudioAnalysisSummary",
-        "job_id": job_id,
-        "stage_id": analysis_stage.id,
-        "input_evaluation_runs": [ref.id for ref in input_refs],
-        "analysis_type": spec.analysis_type,
-        "status": "completed",
-    }
-    artifact = store_json_artifact(
-        summary,
+    manifest, path = execute_analysis_run_spec(
+        spec,
         root=root_path,
-        role="analysis_table",
-        logical_name=f"{job_id}-analysis-summary.json",
-        metadata={"stage_id": analysis_stage.id, "job_id": job_id},
-    )
-    manifest = AnalysisRunManifest(
-        id=f"feedbax-analysis-run:{job_id}",
-        status="completed",
-        analysis_spec=spec_payload(
-            "AnalysisRunSpec",
-            spec.model_dump(mode="json", exclude_none=True),
-        ),
-        inputs=input_refs,
-        summary_metrics={"input_evaluation_runs": len(input_refs)},
         provenance=_stage_provenance(
             stage_kind="analysis",
             issues=issues,
@@ -935,12 +895,17 @@ def _materialize_analysis_stage(
             request_metadata=request_metadata,
             job_id=job_id,
         ),
-        artifacts=[artifact],
-        metadata={"studio": _stage_manifest_metadata(workspace, analysis_stage, job_id)},
+        metadata={
+            "studio": _stage_manifest_metadata(workspace, analysis_stage, job_id),
+            "input_evaluation_runs": [ref.id for ref in input_refs],
+        },
+        fig_dump_formats=("json",),
     )
-    path = write_manifest(manifest, root=root_path)
     manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "analysis_run", path, job_id)
-    artifact_refs = [_studio_artifact_ref(artifact, kind="AnalysisTable")]
+    artifact_refs = [
+        _studio_artifact_ref(artifact, kind="AnalysisArtifact")
+        for artifact in manifest.artifacts
+    ]
     _complete_stage_with_manifest(
         workspace,
         analysis_stage,
@@ -955,6 +920,21 @@ def _materialize_analysis_stage(
         },
     )
     return path, artifact_refs
+
+
+def _analysis_requested_outputs_params(
+    analysis_spec_payload: dict[str, Any] | None,
+) -> dict[str, list[str]]:
+    if not analysis_spec_payload:
+        return {}
+    requested = analysis_spec_payload.get("requested_outputs", analysis_spec_payload.get("outputs"))
+    if requested is None:
+        return {}
+    if not isinstance(requested, list):
+        raise StudioExecutionPreparationError(
+            "Analysis scenario requested_outputs/outputs must be a list"
+        )
+    return {"requested_outputs": [str(item) for item in requested]}
 
 
 def _materialize_report_stage(

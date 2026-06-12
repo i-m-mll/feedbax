@@ -450,6 +450,7 @@ export interface ComponentDefinition {
   template_ui_state?: GraphUIState | null;
   template_id?: string | null;
   template_kind?: string | null;
+  provenance?: string | null;
 }
 
 export interface OptimizerSpec {
@@ -660,6 +661,7 @@ export interface GenerateAnalysisRequest {
 export interface GenerateAnalysisPayload {
   request_id: string;
   status: string;
+  manifest_id?: string | null;
 }
 
 export interface GenerateAnalysisResponse {
@@ -670,6 +672,10 @@ export interface AnalysisJobStatusPayload {
   request_id: string;
   status: string;
   figure_hashes?: string[] | null;
+  manifest_id?: string | null;
+  manifest_path?: string | null;
+  artifact_ids?: string[] | null;
+  artifact_paths?: string[] | null;
   error?: string | null;
 }
 
@@ -1365,6 +1371,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "template_ui_state": GraphUIStateSchema.nullable().optional(),
       "template_id": z.string().nullable().optional(),
       "template_kind": z.string().nullable().optional(),
+      "provenance": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
@@ -1727,6 +1734,7 @@ export const GenerateAnalysisPayloadSchema: z.ZodType<GenerateAnalysisPayload> =
     .object({
       "request_id": z.string(),
       "status": z.string(),
+      "manifest_id": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<GenerateAnalysisPayload>;
@@ -1745,6 +1753,10 @@ export const AnalysisJobStatusPayloadSchema: z.ZodType<AnalysisJobStatusPayload>
       "request_id": z.string(),
       "status": z.string(),
       "figure_hashes": z.array(z.string()).nullable().optional(),
+      "manifest_id": z.string().nullable().optional(),
+      "manifest_path": z.string().nullable().optional(),
+      "artifact_ids": z.array(z.string()).nullable().optional(),
+      "artifact_paths": z.array(z.string()).nullable().optional(),
       "error": z.string().nullable().optional(),
     })
     .strict()

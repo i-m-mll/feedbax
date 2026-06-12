@@ -1,10 +1,7 @@
-import copy
-import inspect
 import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from math import e
 from pathlib import Path
 from types import ModuleType
 from typing import Any, List, Literal, Optional, Union
@@ -24,7 +21,6 @@ from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook.progress import piter
 from jaxtyping import PyTree
 from rich.prompt import Prompt
-from ruamel.yaml import YAML
 from sqlalchemy.orm import Session
 
 from feedbax.analysis._dependencies import compute_dependency_results
@@ -33,6 +29,7 @@ from feedbax.analysis.analysis import (
     get_validation_trial_specs,
     logger,
 )
+from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
 from feedbax.colors import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
@@ -59,11 +56,10 @@ from feedbax.hyperparams import (
     flatten_hps,
     use_train_hps_when_none,
 )
-from feedbax.misc import delete_all_files_in_dir, log_version_info
+from feedbax.manifest import AnalysisRunSpec, evaluation_states_cache_path
+from feedbax.misc import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.setup_utils import query_and_load_model
-from feedbax.training.post_training import process_model_post_training
 from feedbax.tree_utils import tree_level_labels
 from feedbax.types import (
     AnalysisInputData,
@@ -449,12 +445,13 @@ def setup_eval_for_module(
 
 
 def perform_all_analyses(
-    db_session: Session,
+    db_session: Session | None,
     analyses: dict[str, AbstractAnalysis],
     data: AnalysisInputData,
-    model_info: ModelRecord,
-    eval_info: EvaluationRecord,
+    model_info: ModelRecord | None,
+    eval_info: EvaluationRecord | None,
     *,
+    analysis_context: AnalysisRunContext | None = None,
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: List[str] = ["html"],
     custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
@@ -478,7 +475,12 @@ def perform_all_analyses(
     # Phase 1: Compute all analysis nodes (dependencies + leaves)
     logger.info("Computing results for analyses and their dependencies")
     all_dependency_results = compute_dependency_results(
-        analyses, data, custom_dependencies, requested_outputs=requested_outputs, **kwargs
+        analyses,
+        data,
+        custom_dependencies,
+        requested_outputs=requested_outputs,
+        analysis_context=analysis_context,
+        **kwargs,
     )
 
     # When requested_outputs is set, filter analyses to match what was computed.
@@ -502,18 +504,35 @@ def perform_all_analyses(
             logger.debug(f"Making figures: {analysis_key}")
             figs = analysis._make_figs_with_ops(data, result, **inputs)
 
-            analysis.save_figs(
-                db_session,
-                eval_info,
-                result,
-                figs,
-                data.hps,
-                model_info,
-                dump_path=fig_dump_path,
-                dump_formats=fig_dump_formats,
-                label=analysis_key,
-                **inputs,
-            )
+            if analysis_context is not None:
+                analysis.save_outputs(
+                    analysis_context,
+                    result,
+                    figs,
+                    data.hps,
+                    dump_path=fig_dump_path,
+                    dump_formats=fig_dump_formats,
+                    label=analysis_key,
+                    **inputs,
+                )
+            else:
+                if db_session is None or eval_info is None:
+                    raise ValueError(
+                        "perform_all_analyses requires analysis_context or both "
+                        "db_session and eval_info for figure output."
+                    )
+                analysis.save_figs(
+                    db_session,
+                    eval_info,
+                    result,
+                    figs,
+                    data.hps,
+                    model_info,
+                    dump_path=fig_dump_path,
+                    dump_formats=fig_dump_formats,
+                    label=analysis_key,
+                    **inputs,
+                )
 
         return analysis, result, figs
 
@@ -531,7 +550,41 @@ def perform_all_analyses(
         }
     )
 
+    if analysis_context is not None:
+        analysis_context.finalize(
+            summary_metrics={
+                "analysis_count": len(analyses),
+            }
+        )
+
     return all_analyses, all_results, all_figs
+
+
+def run_analyses_with_context(
+    analyses: dict[str, AbstractAnalysis],
+    data: AnalysisInputData,
+    context: AnalysisRunContext,
+    *,
+    fig_dump_path: Optional[Path] = None,
+    fig_dump_formats: list[str] = ["html"],
+    custom_dependencies: Optional[dict[str, AbstractAnalysis]] = None,
+    requested_outputs: Optional[set[str]] = None,
+    **common_inputs,
+) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
+    """Run analyses and write outputs through ``AnalysisRunContext`` with no Studio DB."""
+    return perform_all_analyses(
+        None,
+        analyses,
+        data,
+        None,
+        None,
+        analysis_context=context,
+        fig_dump_path=fig_dump_path,
+        fig_dump_formats=fig_dump_formats,
+        custom_dependencies=custom_dependencies,
+        requested_outputs=requested_outputs,
+        **common_inputs,
+    )
 
 
 def check_records_for_analysis(
@@ -589,6 +642,8 @@ def run_evaluation(
     *,
     no_pickle: bool = False,
     states_pkl_dir: Path | None = None,
+    evaluation_manifest_id: str | None = None,
+    manifest_root: Path | None = None,
     memory_warn_gb: float = 24.0,
     key,
 ) -> AnalysisInputData:
@@ -605,8 +660,12 @@ def run_evaluation(
         transforms: Validated transforms spec (``post_eval`` applied here).
         eval_info: Database evaluation record (used for pickle hash).
         no_pickle: If ``True``, skip pickle load/save.
-        states_pkl_dir: Directory for state pickle cache.  Defaults to
-            ``PATHS.cache / "states"``.
+        states_pkl_dir: Directory for legacy state pickle cache.  Defaults to
+            ``PATHS.cache / "states"`` when ``evaluation_manifest_id`` is not
+            supplied.
+        evaluation_manifest_id: Optional manifest-canonical cache identity for
+            evaluated states.
+        manifest_root: Manifest root used for manifest-canonical state cache.
         memory_warn_gb: Warn if estimated state memory exceeds this threshold.
         key: JAX PRNG key for stochastic evaluation.
 
@@ -614,7 +673,13 @@ def run_evaluation(
         ``AnalysisInputData`` with ``states`` populated (and post-eval
         transforms applied).
     """
-    if states_pkl_dir is None:
+    if evaluation_manifest_id is not None:
+        states_pickle_path = evaluation_states_cache_path(
+            evaluation_manifest_id,
+            root=manifest_root,
+        )
+        states_pkl_dir = states_pickle_path.parent
+    elif states_pkl_dir is None:
         states_pkl_dir = PATHS.cache / STATES_CACHE_SUBDIR
     states_pkl_dir.mkdir(parents=True, exist_ok=True)
 
@@ -671,8 +736,8 @@ def run_evaluation(
         logger.info("All states evaluated.")
         return computed_states
 
-    # Create a filename based on the evaluation hash
-    states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"
+    if evaluation_manifest_id is None:
+        states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"
 
     loaded_from_pickle = False
     if not no_pickle and states_pickle_path.exists():
@@ -746,6 +811,7 @@ def run_analyses(
     *,
     fig_dump_path: Optional[Path] = None,
     fig_dump_formats: list[str] = ["html", "webp", "svg"],
+    analysis_context: AnalysisRunContext | None = None,
     requested_outputs: Optional[set[str]] = None,
 ) -> tuple[PyTree[AbstractAnalysis], PyTree[Any], PyTree[go.Figure]]:
     """Run the analysis phase on already-evaluated data.
@@ -774,6 +840,7 @@ def run_analyses(
         data,
         model_info,
         eval_info,
+        analysis_context=analysis_context,
         fig_dump_path=fig_dump_path,
         fig_dump_formats=fig_dump_formats,
         custom_dependencies=getattr(analysis_module, "DEPENDENCIES", {}),
@@ -790,6 +857,8 @@ def run_analysis_module(
     fig_dump_formats: list[str] = ["html", "webp", "svg"],
     no_pickle: bool = False,
     states_pkl_dir: Path | None = PATHS.cache / "states",
+    evaluation_manifest_id: str | None = None,
+    manifest_root: Path | None = None,
     eval_only: bool = False,
     memory_warn_gb: float = 24.0,
     requested_outputs: Optional[set[str]] = None,
@@ -808,6 +877,8 @@ def run_analysis_module(
         fig_dump_formats: Format list for figure dumps.
         no_pickle: Skip pickle load/save for state cache.
         states_pkl_dir: Directory for state pickle cache.
+        evaluation_manifest_id: Optional manifest-canonical cache identity.
+        manifest_root: Manifest root used for manifest-canonical state cache.
         eval_only: If ``True``, return after evaluation without running analyses.
         memory_warn_gb: Warn if estimated state memory exceeds this threshold.
         requested_outputs: If provided, only run analyses whose keys appear in
@@ -867,6 +938,8 @@ def run_analysis_module(
         eval_info,
         no_pickle=no_pickle,
         states_pkl_dir=states_pkl_dir,
+        evaluation_manifest_id=evaluation_manifest_id,
+        manifest_root=manifest_root,
         memory_warn_gb=memory_warn_gb,
         key=key,
     )
@@ -876,6 +949,26 @@ def run_analysis_module(
         return data, common_inputs, None, None, None
 
     # Phase 2: Analysis — compute results and generate figures
+    analysis_context = None
+    if evaluation_manifest_id is not None:
+        eval_ref = parent_ref_from_evaluation_manifest(evaluation_manifest_id)
+        analysis_params = {}
+        if requested_outputs is not None:
+            analysis_params["requested_outputs"] = sorted(requested_outputs)
+        analysis_context = AnalysisRunContext(
+            spec=AnalysisRunSpec(
+                analysis_type=module_key,
+                inputs=[eval_ref],
+                params=analysis_params,
+            ),
+            root=manifest_root,
+            db_session=db_session,
+            eval_info=eval_info,
+            model_info=model_info,
+            fig_dump_path=Path(fig_dump_dir),
+            fig_dump_formats=fig_dump_formats,
+        )
+
     all_analyses, all_results, all_figs = run_analyses(
         db_session,
         analysis_module,
@@ -885,6 +978,7 @@ def run_analysis_module(
         eval_info,
         fig_dump_path=Path(fig_dump_dir),
         fig_dump_formats=fig_dump_formats,
+        analysis_context=analysis_context,
         requested_outputs=requested_outputs,
     )
 

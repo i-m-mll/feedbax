@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from functools import cached_property, partial, wraps
 from itertools import chain
 from pathlib import Path
-from textwrap import wrap
 from types import EllipsisType, MappingProxyType, SimpleNamespace
 from typing import (
     TYPE_CHECKING,
@@ -67,7 +66,6 @@ from feedbax.tree_utils import (
     DoNotHashTree,
     _align_trees_to_structure,
     _hash_pytree,
-    _levels_raw,
     hash_callable_leaves,
     ldict_label_only_fn,
     move_ldict_level_above,
@@ -82,6 +80,8 @@ from feedbax.types import (
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
+
+    from feedbax.analysis.context import AnalysisRunContext
 else:
     from equinox import AbstractClassVar  # noqa: F401
 
@@ -813,9 +813,44 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             "Either implement this method or the analysis will be skipped during figure generation."
         )
 
+    def emit_artifacts(
+        self,
+        context: "AnalysisRunContext",
+        data: AnalysisInputData,
+        *,
+        result: PyTree[Any],
+        **kwargs,
+    ) -> PyTree[Any] | None:
+        """Optionally record non-figure artifacts and return the downstream result.
+
+        Subclasses may use ``context.record_artifact*`` helpers here. Returning a
+        value replaces the result exposed to downstream analysis nodes; returning
+        ``None`` keeps the original result.
+        """
+        return None
+
+    def _emit_artifacts_with_context(
+        self,
+        context: "AnalysisRunContext",
+        data: AnalysisInputData,
+        result: PyTree[Any],
+        **kwargs,
+    ) -> PyTree[Any]:
+        """Run the artifact hook and record any refs embedded in the result payload."""
+        if self.__class__.emit_artifacts is AbstractAnalysis.emit_artifacts:
+            context.record_artifact_refs_from_value(result)
+            return result
+
+        emitted = self.emit_artifacts(context, data, result=result, **kwargs)
+        output = result if emitted is None else emitted
+        context.record_artifact_refs_from_value(output)
+        return output
+
     def _compute_with_ops(
         self,
         data: AnalysisInputData,
+        *,
+        analysis_context: Optional["AnalysisRunContext"] = None,
         **kwargs,
     ) -> dict[str, PyTree[Any]]:
         """Perform computations with prep-ops, vmap, and result final-ops applied."""
@@ -912,7 +947,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
         def _try_load_result_from_cache() -> tuple[Optional[Path], Optional[Any]]:
             """Attempt to load the result from cache."""
-            cache_root = PATHS.cache / RESULTS_CACHE_SUBDIR
+            cache_root = (
+                analysis_context.results_cache_dir
+                if analysis_context is not None
+                else PATHS.cache / RESULTS_CACHE_SUBDIR
+            )
             cache_root.mkdir(parents=True, exist_ok=True)
 
             try:
@@ -940,7 +979,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             return cache_path, None
 
         result = None
-        cache_path, cached = None, None
+        cache_path = None
 
         if self.cache_result:
             cache_path, result = _try_load_result_from_cache()
@@ -957,6 +996,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 logger.warning(f"Could not save cache for {self.name}: {e}")
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
+        if analysis_context is not None:
+            result = self._emit_artifacts_with_context(
+                analysis_context,
+                prepped_data,
+                result,
+                **prepped_kwargs,
+            )
 
         return result
 
@@ -1056,7 +1102,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     @classmethod
     def _input_leaf_types(cls) -> tuple[type, ...]:
         """Get the set of valid input leaf types for this analysis."""
-        return (str, _DataField, AbstractAnalysis, LiteralInput)
+        return (str, AnalysisRef, _DataField, AbstractAnalysis, LiteralInput)
 
     def is_analysis_input_leaf(self, leaf: Any) -> bool:
         """Determine if a leaf is a valid analysis input type."""
@@ -1078,7 +1124,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             for leaf in leaves:
                 if not (
                     isinstance(leaf, (type, str))
-                    or isinstance(leaf, (_DataField, AbstractAnalysis, LiteralInput))
+                    or isinstance(leaf, (AnalysisRef, _DataField, AbstractAnalysis, LiteralInput))
                 ):
                     valid_types = ", ".join([t.__name__ for t in self._input_leaf_types()])
                     raise ValueError(
@@ -1175,49 +1221,16 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         """
         Save to disk and record in the database each figure in a PyTree of figures, for this analysis.
         """
-        # `sep="_"`` switches the label dunders for single underscores, so
-        # in `_params_to_save` we can use an argument e.g. `train_pert_std` rather than `train__pert__std`
-        param_keys = tree_level_labels(
-            figs, label_fn=ldict_label_only_fn, is_leaf=is_type(go.Figure), sep="_"
-        )
-
         if dump_path is not None:
             dump_path = Path(dump_path)
             dump_path.mkdir(exist_ok=True, parents=True)
 
-        figs_with_paths_flat = figs_flatten_with_paths(figs)
-
-        # Construct this for reference to hps that should only vary with the task variant.
-        hps_0 = jt.leaves(hps.get(self.variant, hps), is_leaf=is_type(TreeNamespace))[0]
-
-        ops_params_dict = self._extract_ops_info()
-
-        for i, (path, fig) in piter(
-            enumerate(figs_with_paths_flat),
+        for i, _path, fig, params in piter(
+            self._figure_output_records(result, figs, hps, dependencies),
             description="Saving figures",
-            total=len(figs_with_paths_flat),
+            total=len(figs_flatten_with_paths(figs)),
             eta_halflife=1.0,
         ):
-            path_params = dict(zip(param_keys, tuple(jtree.node_key_to_value(p) for p in path)))
-
-            # Include fields from this instance, but only if they are JSON serializable
-            field_params = {k: v for k, v in self._field_params.items() if is_json_serializable(v)}
-
-            params = dict(
-                **path_params,  # Inferred from the structure of the figs PyTree
-                **field_params,  # From the fields of the analysis subclass instance
-                **self._params_to_save(  # Implemented by the subclass
-                    hps,
-                    result=result,
-                    **path_params,
-                    **dependencies,  # Specified by the subclass `dependency_kwargs`, via `run_analysis`
-                ),
-                eval_n=hps_0.task.eval_n,  # ? Some things should always be included
-            )
-
-            if ops_params_dict:
-                params["ops"] = ops_params_dict
-
             add_evaluation_figure(
                 db_session,
                 eval_info,
@@ -1248,6 +1261,81 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                         f"Error saving fig dump parameters to {params_path}: {e}", exc_info=True
                     )
                     raise e
+
+    def save_outputs(
+        self,
+        context: "AnalysisRunContext",
+        result,
+        figs: PyTree[go.Figure],
+        hps: PyTree[TreeNamespace],
+        dump_path: Optional[Path] = None,
+        dump_formats: Sequence[str] = ("html",),
+        label: Optional[str] = None,
+        **dependencies,
+    ) -> None:
+        """Save analysis figures through a manifest-canonical run context."""
+        if figs is None:
+            return
+        for i, _path, fig, params in self._figure_output_records(
+            result,
+            figs,
+            hps,
+            dependencies,
+        ):
+            context.record_figure(
+                fig=fig,
+                analysis_name=camel_to_snake(self.name),
+                analysis_label=label,
+                ordinal=i,
+                params=params,
+                dump_path=dump_path,
+                dump_formats=dump_formats,
+            )
+
+    def _figure_output_records(
+        self,
+        result,
+        figs: PyTree[go.Figure],
+        hps: PyTree[TreeNamespace],
+        dependencies: Mapping[str, Any],
+    ) -> list[tuple[int, Any, go.Figure, dict[str, Any]]]:
+        """Return flattened figure records with legacy-compatible metadata."""
+        # `sep="_"`` switches the label dunders for single underscores, so
+        # in `_params_to_save` we can use an argument e.g. `train_pert_std` rather than
+        # `train__pert__std`.
+        param_keys = tree_level_labels(
+            figs, label_fn=ldict_label_only_fn, is_leaf=is_type(go.Figure), sep="_"
+        )
+        figs_with_paths_flat = figs_flatten_with_paths(figs)
+
+        # Construct this for reference to hps that should only vary with the task variant.
+        hps_0 = jt.leaves(hps.get(self.variant, hps), is_leaf=is_type(TreeNamespace))[0]
+        ops_params_dict = self._extract_ops_info()
+        records = []
+
+        for i, (path, fig) in enumerate(figs_with_paths_flat):
+            path_params = dict(zip(param_keys, tuple(jtree.node_key_to_value(p) for p in path)))
+
+            # Include fields from this instance, but only if they are JSON serializable.
+            field_params = {k: v for k, v in self._field_params.items() if is_json_serializable(v)}
+
+            params = dict(
+                **path_params,  # Inferred from the structure of the figs PyTree.
+                **field_params,  # From the fields of the analysis subclass instance.
+                **self._params_to_save(
+                    hps,
+                    result=result,
+                    **path_params,
+                    **dependencies,
+                ),
+                eval_n=hps_0.task.eval_n,
+            )
+
+            if ops_params_dict:
+                params["ops"] = ops_params_dict
+            records.append((i, path, fig, params))
+
+        return records
 
     @property
     def _all_ops(self) -> tuple:

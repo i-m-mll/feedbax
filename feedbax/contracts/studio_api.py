@@ -229,6 +229,7 @@ class GenerateAnalysisPayload(BaseModel):
 
     request_id: str
     status: str
+    manifest_id: Optional[str] = None
 
 
 class GenerateAnalysisResponse(BaseModel):
@@ -243,6 +244,10 @@ class AnalysisJobStatusPayload(BaseModel):
     request_id: str
     status: str
     figure_hashes: Optional[list[str]] = None
+    manifest_id: Optional[str] = None
+    manifest_path: Optional[str] = None
+    artifact_ids: Optional[list[str]] = None
+    artifact_paths: Optional[list[str]] = None
     error: Optional[str] = None
 
 

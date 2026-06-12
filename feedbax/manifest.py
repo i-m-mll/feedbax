@@ -431,6 +431,43 @@ def _safe_manifest_filename(manifest_id: str) -> str:
     return f"{safe}.json"
 
 
+def safe_manifest_key(manifest_id: str) -> str:
+    """Return a filesystem-safe key derived from a manifest identifier."""
+    return manifest_id.replace(":", "_").replace("/", "_")
+
+
+def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
+    """Return deterministic run identity for an evaluation spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-evaluation-run:{digest[:32]}"
+
+
+def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
+    """Return deterministic run identity for an analysis spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-analysis-run:{digest[:32]}"
+
+
+def evaluation_states_cache_path(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+) -> Path:
+    """Return the manifest-root cache path for evaluated state trajectories."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    return root_path / "cache" / "states" / f"{safe_manifest_key(manifest_id)}.pkl"
+
+
+def analysis_results_cache_dir(
+    manifest_id: str,
+    *,
+    root: Path | str | None = None,
+) -> Path:
+    """Return the manifest-root cache directory for computed analysis results."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    return root_path / "cache" / "analysis_results" / safe_manifest_key(manifest_id)
+
+
 def write_manifest(
     manifest: AnyManifest,
     *,

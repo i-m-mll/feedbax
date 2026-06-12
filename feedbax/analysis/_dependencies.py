@@ -11,7 +11,6 @@ I've decided to use `eqx.Module` and stick with a stateless solution. So we need
 parse the graph.
 """
 
-import hashlib
 import inspect
 import json
 import logging
@@ -26,12 +25,13 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 from jax.tree_util import treedef_is_leaf
 from jax_cookbook import is_type
-from jax_cookbook.progress import piter, progress_piter
+from jax_cookbook.progress import progress_piter
 from jax_cookbook.tree import collect_aux_data
 from jaxtyping import PyTree
 
 from feedbax.analysis.analysis import (
     AbstractAnalysis,
+    AnalysisRef,
     ExpandTo,
     LiteralInput,
     NoPorts,
@@ -99,6 +99,10 @@ def resolve_dependency_node(analysis, dep_name, dep_source, dependency_lookup=No
     # Handle None inputs by skipping them
     if dep_source is None:
         return None
+
+    # Handle typed analysis pointers by resolving their target.
+    if isinstance(dep_source, AnalysisRef):
+        dep_source = dep_source.target
 
     # Handle forwarding of attributes from AnalysisInputData via the `Data` sentinel
     if isinstance(dep_source, _DataField):
@@ -516,6 +520,7 @@ def compute_dependency_results(
     data: AnalysisInputData,
     custom_dependencies: Optional[Dict[str, AbstractAnalysis]] = None,
     requested_outputs: Optional[Set[str]] = None,
+    analysis_context: Any | None = None,
     **kwargs,
 ) -> list[dict[str, PyTree[Any]]]:
     """Compute all dependencies in correct order.
@@ -626,7 +631,11 @@ def compute_dependency_results(
                 _run_preflight_memory_estimation(dep_instance, data, dep_kwargs, node_label)
 
                 # Execute analysis and store result
-                result = dep_instance._compute_with_ops(data, **dep_kwargs)
+                result = dep_instance._compute_with_ops(
+                    data,
+                    analysis_context=analysis_context,
+                    **dep_kwargs,
+                )
             computed_results[node_id] = result
 
     # Assemble final results for each requested analysis

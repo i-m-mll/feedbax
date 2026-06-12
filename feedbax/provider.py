@@ -649,7 +649,18 @@ def loss_registry_snapshot() -> RegistrySnapshot:
 
 
 def analysis_registry_snapshot() -> RegistrySnapshot:
+    from feedbax.analysis.specs import registered_analysis_types
+
     entries: list[RegistryEntry] = []
+    entries.extend(
+        RegistryEntry(
+            type_id=analysis_type,
+            name=analysis_type,
+            category="Executable analysis recipe",
+            description="Registered executable AnalysisRunSpec recipe.",
+        )
+        for analysis_type in registered_analysis_types()
+    )
     for module_info in pkgutil.iter_modules(analysis_pkg.__path__):
         if module_info.name.startswith("_"):
             continue

@@ -14,6 +14,18 @@ from feedbax.studio_execution import (
     prepare_studio_training_execution,
     run_studio_training_local_execution,
 )
+from feedbax.analysis.evaluation import (
+    EvaluationRecipeResult,
+    register_evaluation_recipe,
+    unregister_evaluation_recipe,
+)
+from feedbax.analysis.specs import (
+    AnalysisRecipeResult,
+    register_analysis_recipe,
+    unregister_analysis_recipe,
+)
+from feedbax.manifest import EvaluationRunSpec, store_json_artifact
+from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
     GraphMetadata,
@@ -102,6 +114,53 @@ def _workspace():
         )
     )
     return workspace
+
+
+@pytest.fixture
+def studio_default_eval_recipe():
+    def recipe(
+        spec: EvaluationRunSpec,
+        root: Path,
+        states_path: Path,
+    ) -> EvaluationRecipeResult:
+        artifact = store_json_artifact(
+            {
+                "kind": "StudioEvaluationSummary",
+                "input_training_runs": [ref.id for ref in spec.inputs],
+                "status": "completed",
+            },
+            root=root,
+            role="evaluation_result",
+            logical_name="studio-default-evaluation-summary.json",
+            metadata={"states_path": str(states_path)},
+        )
+        return EvaluationRecipeResult(
+            states={"input_training_runs": [ref.id for ref in spec.inputs]},
+            summary_metrics={"toy_rollouts": len(spec.inputs)},
+            artifacts=[artifact],
+        )
+
+    register_evaluation_recipe("studio_default_eval", recipe, replace=True)
+    try:
+        yield
+    finally:
+        unregister_evaluation_recipe("studio_default_eval")
+
+
+@pytest.fixture
+def studio_default_analysis_recipe():
+    def recipe(spec, _root: Path, inputs) -> AnalysisRecipeResult:
+        return AnalysisRecipeResult(
+            analyses={"studio_summary": ToyAnalysis(variant="studio", cache_result=True)},
+            data=build_toy_analysis_data(value=len(inputs)),
+            common_inputs={"studio": spec.params.get("stage_id")},
+        )
+
+    register_analysis_recipe("feedbax.analysis.activity", recipe, replace=True)
+    try:
+        yield
+    finally:
+        unregister_analysis_recipe("feedbax.analysis.activity")
 
 
 def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
@@ -338,7 +397,32 @@ def test_studio_training_run_local_endpoint_returns_execution_result(tmp_path: P
     assert any(ref["role"] == "training_run" for ref in train_stage["manifest_refs"])
 
 
-def test_materialize_studio_pipeline_consumes_stage_collections(tmp_path: Path):
+def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: Path):
+    training = run_studio_training_local_execution(
+        StudioTrainingLocalRunRequest(
+            workspace=_workspace(),
+            job_id="studio-pipeline-train-unregistered",
+            root=str(tmp_path),
+            issues=["d30d4c2"],
+        )
+    )
+
+    with pytest.raises(ValueError, match="studio_default_eval.*not registered"):
+        materialize_studio_pipeline(
+            StudioPipelineMaterializationRequest(
+                workspace=training.workspace,
+                job_id="studio-pipeline-unregistered",
+                root=str(tmp_path),
+                issues=["d30d4c2"],
+            )
+        )
+
+
+def test_materialize_studio_pipeline_consumes_stage_collections(
+    tmp_path: Path,
+    studio_default_eval_recipe,
+    studio_default_analysis_recipe,
+):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace(),
@@ -383,6 +467,23 @@ def test_materialize_studio_pipeline_consumes_stage_collections(tmp_path: Path):
     assert eval_scenario.task_binding_spec.bindings[0].target_node_id == "network"
     assert len(materialized.workspace.manifest_refs) >= 4
     assert any(ref.role == "report" for ref in materialized.workspace.artifact_refs)
+    eval_manifest = json.loads(Path(materialized.manifest_paths["stage:eval"]).read_text())
+    analysis_manifest = json.loads(
+        Path(materialized.manifest_paths["stage:analysis"]).read_text()
+    )
+    assert eval_manifest["status"] == "completed"
+    assert eval_manifest["evaluation_spec"]["inline"]["evaluation_type"] == "studio_default_eval"
+    assert eval_manifest["summary_metrics"]["toy_rollouts"] == 1
+    assert eval_manifest["provenance"]["parents"][0]["id"].startswith("feedbax-training-run:")
+    assert "cache/states" in eval_manifest["metadata"]["cache"]["states_path"]
+    assert analysis_manifest["status"] == "completed"
+    assert analysis_manifest["analysis_spec"]["inline"]["analysis_type"] == (
+        "feedbax.analysis.activity"
+    )
+    assert analysis_manifest["inputs"][0]["id"] == eval_manifest["id"]
+    assert analysis_manifest["provenance"]["parents"][0]["id"] == eval_manifest["id"]
+    assert analysis_manifest["summary_metrics"]["analysis_count"] == 1
+    assert analysis_manifest["artifacts"][0]["role"] == "figure"
 
     future_stage = next(
         stage
@@ -392,7 +493,11 @@ def test_materialize_studio_pipeline_consumes_stage_collections(tmp_path: Path):
     assert future_stage.metadata["later_product_surface"]["keep"] is True
 
 
-def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(tmp_path: Path):
+def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
+    tmp_path: Path,
+    studio_default_eval_recipe,
+    studio_default_analysis_recipe,
+):
     training = run_studio_training_local_execution(
         StudioTrainingLocalRunRequest(
             workspace=_workspace(),
