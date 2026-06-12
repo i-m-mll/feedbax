@@ -6,7 +6,11 @@ from typing import Any, Callable
 
 import pytest
 
-from feedbax.component_registry import ComponentRegistry, register_component_type
+from feedbax.component_registry import (
+    ComponentRegistry,
+    get_component_registry,
+    register_component_type,
+)
 from feedbax.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.serialization import spec_to_graph
@@ -35,17 +39,36 @@ def test_programmatic_component_registration_materializes_via_spec_to_graph() ->
         lambda params: Gain(gain=float(params["gain"])),
         category="Test",
         description="Test-only gain.",
-        param_schema=[{"name": "gain", "type": "float", "default": 3.0, "required": True}],
+        param_schema=[{"name": "gain", "type": "float", "default": 3.0}],
         input_ports=["input"],
         output_ports=["output"],
         provenance="test-suite",
     )
+
+    registry = get_component_registry()
+    meta = registry.get("TestProgrammaticGain")
+    assert meta is not None
+    assert meta.default_params == {"gain": 3.0}
+    assert meta.input_ports == ["input"]
+    assert meta.output_ports == ["output"]
+    assert meta.provenance == "test-suite"
+
+    definition = next(item for item in registry.list_all() if item.name == "TestProgrammaticGain")
+    assert definition.default_params == {"gain": 3.0}
+    assert definition.input_ports == ["input"]
+    assert definition.output_ports == ["output"]
+    assert definition.provenance == "test-suite"
 
     graph = spec_to_graph(_single_node_spec("TestProgrammaticGain", {"gain": 4.0}))
 
     component = graph.nodes["component"]
     assert isinstance(component, Gain)
     assert component.gain == 4.0
+
+    default_graph = spec_to_graph(_single_node_spec("TestProgrammaticGain"))
+    default_component = default_graph.nodes["component"]
+    assert isinstance(default_component, Gain)
+    assert default_component.gain == 3.0
 
 
 def test_entry_point_component_registration_records_package_provenance() -> None:
