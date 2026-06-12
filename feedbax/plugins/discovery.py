@@ -5,7 +5,7 @@ import importlib.metadata
 import logging
 from typing import Optional
 
-from .registry import ExperimentRegistry, PackageMetadata, get_default_registry
+from .registry import ExperimentRegistry, get_default_registry
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,10 @@ def discover_experiment_packages(
             logger.info(f"Discovered experiment package '{entry_point.name}' via entry point")
 
         except Exception as e:
+            if _is_recipe_validation_error(e):
+                raise RuntimeError(
+                    f"Failed to register experiment package {entry_point.name!r}: {e}"
+                ) from e
             logger.warning(f"Failed to load experiment package '{entry_point.name}': {e}")
             continue
 
@@ -57,6 +61,14 @@ def discover_experiment_packages(
         logger.warning(f"No experiment packages found in entry point group '{entry_point_group}'")
 
     return registry
+
+
+def _is_recipe_validation_error(exc: Exception) -> bool:
+    exc_type = type(exc)
+    return (
+        exc_type.__module__ == "feedbax.analysis.validation"
+        and exc_type.__name__ == "RecipeValidationError"
+    )
 
 
 def register_package_from_module_info(

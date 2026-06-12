@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ import dill as pickle
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.analysis.validation import AnalysisRecipeProtocol, validate_analysis_recipe
 from feedbax.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -46,10 +47,7 @@ class AnalysisRecipeResult:
     custom_dependencies: dict[str, AbstractAnalysis] = field(default_factory=dict)
 
 
-AnalysisRecipe = Callable[
-    [AnalysisRunSpec, Path, Sequence[ResolvedAnalysisInput]],
-    AnalysisRecipeResult,
-]
+AnalysisRecipe = AnalysisRecipeProtocol
 
 _ANALYSIS_RECIPES: dict[str, AnalysisRecipe] = {}
 
@@ -77,7 +75,7 @@ def register_analysis_recipe(
         raise ValueError("analysis_type must not be empty")
     if analysis_type in _ANALYSIS_RECIPES and not replace:
         raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
-    _ANALYSIS_RECIPES[analysis_type] = recipe
+    _ANALYSIS_RECIPES[analysis_type] = validate_analysis_recipe(analysis_type, recipe)
 
 
 def unregister_analysis_recipe(analysis_type: str) -> None:
