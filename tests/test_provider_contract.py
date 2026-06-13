@@ -1055,6 +1055,41 @@ def test_network_authoring_normalization_emits_recurrent_cell_edges() -> None:
     assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
 
 
+def test_network_authoring_normalization_lowers_population_constraints() -> None:
+    raw_graph = _runtime_network_graph_spec()
+    raw_graph["nodes"]["network"]["params"]["hidden_size"] = 4
+    raw_graph["nodes"]["network"]["params"]["input_size"] = 2
+    raw_graph["nodes"]["network"]["params"]["population_structure"] = {
+        "schema_version": "feedbax.population_structure.v1",
+        "assignment": "explicit",
+        "n_input_only": 1,
+        "n_readout_only": 1,
+        "n_recurrent_only": 1,
+        "n_input_readout": 1,
+        "input_only_indices": [0],
+        "readout_only_indices": [1],
+        "recurrent_only_indices": [2],
+        "input_readout_indices": [3],
+    }
+    graph = GraphSpec.model_validate(raw_graph)
+
+    subgraph = normalize_graph_for_studio_authoring(graph).subgraphs["network"]
+
+    assert [(constraint.node, constraint.role) for constraint in subgraph.parameter_constraints] == [
+        ("cell", "input_kernel"),
+        ("readout", "weight"),
+    ]
+    assert not any(
+        constraint.role in {"hidden_kernel", "weight_hh"}
+        for constraint in subgraph.parameter_constraints
+    )
+    assert len(subgraph.parameter_constraints[0].mask) == 12
+    assert subgraph.parameter_constraints[1].mask == [
+        [0, 1, 0, 1],
+        [0, 1, 0, 1],
+    ]
+
+
 def test_network_authoring_normalization_flattens_legacy_model_wrapper() -> None:
     graph = GraphSpec.model_validate(_runtime_network_graph_spec())
     legacy_inner = (

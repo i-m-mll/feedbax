@@ -237,6 +237,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 out_nonlinearity=out_nonlinearity,
                 modulator=modulator,
                 modulator_input="sisu",
+                population_structure=component.population_structure,
                 name=f"{name} internals",
                 description="Auto-generated Network subgraph",
             )
@@ -255,6 +256,8 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             if has_multiplicative_sisu:
                 params["modulator_input"] = "sisu"
                 params["sisu_alpha"] = component.sisu_alpha.tolist()
+            if component.population_structure is not None:
+                params["population_structure"] = component.population_structure.to_spec()
             nodes[name] = ComponentSpec(
                 type="Network",
                 params=params,

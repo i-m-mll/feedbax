@@ -10,9 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
+from feedbax.nn import (
+    PopulationStructure,
+    lower_population_constraints,
+    population_structure_from_spec,
+)
 
 
 TemplateKind = Literal["executable", "display"]
@@ -92,6 +98,7 @@ def standard_network_subgraph(
     out_nonlinearity: str = "identity",
     modulator: dict[str, Any] | None = None,
     modulator_input: str = "sisu",
+    population_structure: PopulationStructure | Mapping[str, object] | None = None,
     name: str = "Network internals",
     description: str = "Built-in Network graph template",
 ) -> GraphSpec:
@@ -110,6 +117,17 @@ def standard_network_subgraph(
         modulator_params.setdefault("bias_init", 0.0)
     hidden_source_node = modulator_node if has_modulator else "cell"
     hidden_source_port = "output" if has_modulator else "hidden"
+    parameter_constraints = []
+    if population_structure is not None:
+        parameter_constraints = list(
+            lower_population_constraints(
+                population_structure,
+                hidden_size=int(hidden_size),
+                input_size=int(input_size),
+                out_size=int(out_size),
+                cell_type=normalized_cell_type,
+            )
+        )
     now = datetime.now().isoformat()
     nodes = {
         "input_mux": ComponentSpec(
@@ -196,6 +214,7 @@ def standard_network_subgraph(
             "output": ("readout", "output"),
             "hidden": (hidden_source_node, hidden_source_port),
         },
+        parameter_constraints=parameter_constraints,
         metadata=GraphMetadata(
             name=name,
             description=description,
@@ -230,6 +249,12 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
             "gain_init": params.get("sisu_alpha", [0.0] * hidden_size),
             "bias_init": 0.0,
         }
+    raw_population_structure = params.get("population_structure")
+    population_structure = None
+    if isinstance(raw_population_structure, PopulationStructure):
+        population_structure = raw_population_structure
+    elif isinstance(raw_population_structure, Mapping):
+        population_structure = population_structure_from_spec(hidden_size, raw_population_structure)
     node_params = {
         "input_size": input_size,
         "hidden_size": hidden_size,
@@ -244,6 +269,8 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
     if has_modulator:
         node_params["modulator_input"] = modulator_input
         node_params["sisu_alpha"] = params.get("sisu_alpha", [0.0] * hidden_size)
+    if population_structure is not None:
+        node_params["population_structure"] = population_structure.to_spec()
     input_ports = ["input", "feedback"]
     input_bindings = {
         "input": ("network", "input"),
@@ -278,6 +305,7 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
                 out_nonlinearity=out_nonlinearity,
                 modulator=modulator,
                 modulator_input=modulator_input,
+                population_structure=population_structure,
             )
         },
     )

@@ -58,7 +58,7 @@ from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.nn import SimpleStagedNetwork
+from feedbax.nn import SimpleStagedNetwork, population_structure_from_spec
 from feedbax.noise import Multiplicative, Normal
 from feedbax.penzai_component import (
     PENZAI_AVAILABLE,
@@ -118,6 +118,13 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
     hidden_noise_std = params.get("hidden_noise_std", 0.0)
     if hidden_noise_std in (None, 0, 0.0):
         hidden_noise_std = None
+    population_structure = None
+    raw_population_structure = params.get("population_structure")
+    if isinstance(raw_population_structure, Mapping):
+        population_structure = population_structure_from_spec(
+            int(params.get("hidden_size", 0)),
+            raw_population_structure,
+        )
     return SimpleStagedNetwork(
         input_size=int(params.get("input_size", 0)),
         hidden_size=int(params.get("hidden_size", 0)),
@@ -127,6 +134,7 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
         hidden_nonlinearity=hidden_nonlinearity,
         out_nonlinearity=out_nonlinearity,
         hidden_noise_std=hidden_noise_std,
+        population_structure=population_structure,
         key=jr.PRNGKey(0),
     )
 
