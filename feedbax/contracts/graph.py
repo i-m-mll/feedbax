@@ -47,6 +47,37 @@ class WireSpec(BaseModel):
     recurrent_initializer: Optional[Dict[str, Any]] = None
 
 
+class AdditiveGraphChannelTargetSpec(BaseModel):
+    """Target for a named additive graph-channel adapter."""
+
+    kind: Literal["edge", "input"]
+    target_node: str
+    target_port: str
+    source_node: Optional[str] = None
+    source_port: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "AdditiveGraphChannelTargetSpec":
+        if self.kind == "edge" and (self.source_node is None or self.source_port is None):
+            raise ValueError("edge additive channel adapters require source_node and source_port")
+        if self.kind == "input" and (self.source_node is not None or self.source_port is not None):
+            raise ValueError("input additive channel adapters must not set source_node/source_port")
+        return self
+
+
+class AdditiveGraphChannelAdapterSpec(BaseModel):
+    """Named external additive input to materialize into a graph."""
+
+    label: str
+    input_key: str
+    target: AdditiveGraphChannelTargetSpec
+    adapter_node: Optional[str] = None
+    payload_shape: Optional[List[int]] = None
+    payload_dtype: Optional[str] = None
+    provenance_role: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class UserPortSpec(BaseModel):
     """User-defined ports for a subgraph."""
 
@@ -178,6 +209,7 @@ class GraphSpec(BaseModel):
 
     nodes: Dict[str, ComponentSpec] = Field(default_factory=dict)
     wires: List[WireSpec] = Field(default_factory=list)
+    additive_channel_adapters: List[AdditiveGraphChannelAdapterSpec] = Field(default_factory=list)
     input_ports: List[str] = Field(default_factory=list)
     output_ports: List[str] = Field(default_factory=list)
     input_bindings: Dict[str, Tuple[str, str]] = Field(default_factory=dict)

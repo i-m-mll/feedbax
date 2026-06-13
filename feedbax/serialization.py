@@ -56,6 +56,7 @@ from feedbax.contracts.graph import (
     GraphSpec,
     WireSpec,
 )
+from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.serialization_builders import build_component, nonlinearity_name
 from feedbax.serialization_prototypes import (
     normalize_stateful_prototypes,
@@ -229,6 +230,7 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         user_ports=user_ports,
         taps=taps,
         retained_observables=spec.retained_observables,
+        additive_channel_adapters=list(spec.additive_channel_adapters),
         metadata=spec.metadata,
     )
 
@@ -867,6 +869,7 @@ def spec_to_graph(
     metadata_registry = component_registry if component_registry is not None else execution_registry
     _validate_supported_spec_versions(spec)
     spec = _migrate_spec(spec)
+    spec = materialize_additive_channel_adapters(spec)
     spec = normalize_stateful_prototypes(
         spec,
         input_prototypes,
