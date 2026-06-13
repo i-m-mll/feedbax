@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
@@ -195,6 +195,7 @@ class SpecSchemaFamily:
         durable: Whether payloads in this family are intended as saved artifacts.
         emitted: Whether Feedbax emits this family through provider/manifest surfaces.
         description: Short human-facing context for registry consumers.
+        policy: Explicit migration/rejection policy for this family.
     """
 
     kind: str
@@ -203,11 +204,31 @@ class SpecSchemaFamily:
     durable: bool = True
     emitted: bool = True
     description: str = ""
+    policy: "SpecFamilyMigrationPolicy | None" = None
 
     @property
     def identity(self) -> str:
         """Return the stable schema identity for this family."""
         return self.schema_id or self.kind
+
+
+@dataclass(frozen=True)
+class SpecFamilyMigrationPolicy:
+    """Explicit old-version behavior for one emitted structured spec family."""
+
+    owner_module: str
+    emitted_by: tuple[str, ...]
+    consumed_by: tuple[str, ...]
+    stance: Literal["migrate", "reject"]
+    supported_old_versions: tuple[str, ...] = ()
+    rejected_old_versions: tuple[str, ...] = ()
+    rejection_message: str = (
+        "Unsupported-version errors must include family, schema_id, source_version, "
+        "current_version, migration_intentionally_absent, and the policy reason."
+    )
+    required_tests: tuple[str, ...] = ()
+    notes: str = ""
+    covers: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +290,22 @@ class SpecSchemaRegistry:
     def families(self) -> tuple[SpecSchemaFamily, ...]:
         """Return registered families sorted by kind."""
         return tuple(self._families[kind] for kind in sorted(self._families))
+
+    def policy_matrix(self) -> dict[str, SpecFamilyMigrationPolicy]:
+        """Return explicit migration/rejection policies keyed by family kind."""
+        return {
+            kind: family.policy
+            for kind, family in sorted(self._families.items())
+            if family.policy is not None
+        }
+
+    def families_missing_policy(self) -> tuple[str, ...]:
+        """Return registered emitted family kinds that do not have policy rows."""
+        return tuple(
+            kind
+            for kind, family in sorted(self._families.items())
+            if family.emitted and family.policy is None
+        )
 
     def resolve(self, kind: str) -> SpecSchemaFamily:
         """Return the schema family for ``kind`` or raise a clear diagnostic."""
@@ -606,174 +643,544 @@ def migrate_graph_spec(
 
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     """Populate schema identities for emitted Feedbax spec families."""
-    for family in (
-        SpecSchemaFamily(
-            kind="GraphSpec",
-            schema_id=GRAPH_SPEC_SCHEMA_ID,
-            current_version=GRAPH_SPEC_SCHEMA_VERSION,
+    def _old(schema_id: str) -> str:
+        return f"{schema_id}.v0"
+
+    def _policy(
+        *,
+        owner_module: str,
+        emitted_by: tuple[str, ...],
+        consumed_by: tuple[str, ...],
+        stance: Literal["migrate", "reject"] = "reject",
+        supported_old_versions: tuple[str, ...] = (),
+        rejected_old_versions: tuple[str, ...] | None = None,
+        required_tests: tuple[str, ...] = ("tests/test_structured_spec_migrations.py",),
+        notes: str = "",
+        covers: str | None = None,
+    ) -> SpecFamilyMigrationPolicy:
+        return SpecFamilyMigrationPolicy(
+            owner_module=owner_module,
+            emitted_by=emitted_by,
+            consumed_by=consumed_by,
+            stance=stance,
+            supported_old_versions=supported_old_versions,
+            rejected_old_versions=tuple(rejected_old_versions or ()),
+            required_tests=required_tests,
+            notes=notes,
+            covers=covers,
+        )
+
+    def _family(
+        kind: str,
+        schema_id: str,
+        current_version: str,
+        *,
+        owner_module: str,
+        emitted_by: tuple[str, ...],
+        consumed_by: tuple[str, ...],
+        durable: bool = True,
+        description: str,
+        stance: Literal["migrate", "reject"] = "reject",
+        supported_old_versions: tuple[str, ...] = (),
+        rejected_old_versions: tuple[str, ...] | None = None,
+        required_tests: tuple[str, ...] = ("tests/test_structured_spec_migrations.py",),
+        notes: str = "",
+        covers: str | None = None,
+    ) -> SpecSchemaFamily:
+        rejected_versions = rejected_old_versions
+        if stance == "reject" and rejected_versions is None:
+            rejected_versions = (_old(schema_id),)
+        return SpecSchemaFamily(
+            kind=kind,
+            schema_id=schema_id,
+            current_version=current_version,
+            durable=durable,
+            description=description,
+            policy=_policy(
+                owner_module=owner_module,
+                emitted_by=emitted_by,
+                consumed_by=consumed_by,
+                stance=stance,
+                supported_old_versions=supported_old_versions,
+                rejected_old_versions=rejected_versions,
+                required_tests=required_tests,
+                notes=notes,
+                covers=covers,
+            ),
+        )
+
+    manifest_emitters = ("feedbax.manifest", "feedbax.provider")
+    studio_schema_emitters = ("feedbax.studio_schema", "feedbax.provider")
+    studio_execution_emitters = ("feedbax.studio_execution", "feedbax.provider")
+    objective_emitters = ("feedbax.objective_spec", "feedbax.provider")
+    execution_emitters = ("feedbax.execution_models", "feedbax.provider")
+
+    families = [
+        _family(
+            "GraphSpec",
+            GRAPH_SPEC_SCHEMA_ID,
+            GRAPH_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio canvas save/load", "provider_manifest.schemas"),
+            consumed_by=("feedbax.serialization.spec_to_graph", "Studio backend", "worker"),
             description="Canvas-authored executable graph specification.",
+            stance="migrate",
+            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION,),
+            rejected_old_versions=(),
+            required_tests=("tests/test_graphspec_schema_migrations.py",),
         ),
-        SpecSchemaFamily(
-            kind="TrainingSpec",
-            schema_id="feedbax.training_spec",
-            current_version="feedbax.training.v1",
-            description="Training optimizer, loss, and run-shape specification.",
+        _family(
+            "AdditiveGraphChannelAdapterSpec",
+            "feedbax.graph_spec.additive_channel_adapter",
+            GRAPH_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("GraphSpec.additive_channel_adapters", "provider_manifest.schemas"),
+            consumed_by=("feedbax.graph_channel_adapters",),
+            description="Graph-embedded external additive channel adapter.",
         ),
-        SpecSchemaFamily(
-            kind="TaskSpec",
-            schema_id="feedbax.task_spec",
-            current_version="feedbax.task.v1",
-            description="Task family and task parameter specification.",
+        _family(
+            "AdditiveGraphChannelTargetSpec",
+            "feedbax.graph_spec.additive_channel_target",
+            GRAPH_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("AdditiveGraphChannelAdapterSpec.target", "provider_manifest.schemas"),
+            consumed_by=("feedbax.graph_channel_adapters",),
+            description="Target address for an additive graph-channel adapter.",
         ),
-        SpecSchemaFamily(
-            kind="LossTermSpec",
-            schema_id="feedbax.loss_term_spec",
-            current_version="feedbax.loss_term.v1",
-            description="Legacy structured loss-term specification.",
+        _family(
+            "AnalysisInputRequirement",
+            "feedbax.analysis_input_requirement",
+            "feedbax.analysis_input_requirement.v1",
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("GraphSpec retained analysis inputs", "provider_manifest.schemas"),
+            consumed_by=("feedbax.analysis", "Studio schema enumeration"),
+            description="Observable requirement declared by an analysis consumer.",
         ),
-        SpecSchemaFamily(
-            kind="ObjectiveSpec",
-            schema_id="feedbax.objective_spec",
-            current_version="feedbax.objective.v1",
-            description="Durable selector-addressed objective specification.",
-        ),
-        SpecSchemaFamily(
-            kind="EvaluationRunSpec",
-            schema_id="feedbax.evaluation_run_spec",
-            current_version="feedbax.evaluation_run.v1",
-            description="Declarative evaluation run request.",
-        ),
-        SpecSchemaFamily(
-            kind="AnalysisRunSpec",
-            schema_id="feedbax.analysis_run_spec",
-            current_version="feedbax.analysis_run.v1",
-            description="Declarative analysis run request.",
-        ),
-        SpecSchemaFamily(
-            kind="ReportSpec",
-            schema_id="feedbax.report_spec",
-            current_version="feedbax.report.v1",
-            description="Declarative report request.",
-        ),
-        SpecSchemaFamily(
-            kind="ProviderManifest",
-            schema_id="feedbax.provider_manifest",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Provider capability and schema manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="GraphSpecManifest",
-            schema_id="feedbax.manifest.graph_spec",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable graph-spec manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="ModelArtifactManifest",
-            schema_id="feedbax.manifest.model_artifact",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable model-artifact manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="TrainingRunSetManifest",
-            schema_id="feedbax.manifest.training_run_set",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable training-run collection manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="TrainingRunManifest",
-            schema_id="feedbax.manifest.training_run",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable training-run manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="EvaluationRunManifest",
-            schema_id="feedbax.manifest.evaluation_run",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable evaluation-run manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="AnalysisRunManifest",
-            schema_id="feedbax.manifest.analysis_run",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable analysis-run manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="ReportManifest",
-            schema_id="feedbax.manifest.report",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Durable report manifest.",
-        ),
-        SpecSchemaFamily(
-            kind="StudioWorkspaceSpec",
-            schema_id="feedbax.studio.workspace",
-            current_version="feedbax.studio.workspace.v1",
-            description="Durable Studio workspace/pipeline state.",
-        ),
-        SpecSchemaFamily(
-            kind="StudioScenarioSpec",
-            schema_id="feedbax.studio.scenario",
-            current_version="feedbax.studio.scenario.v1",
-            description="Durable Studio scenario draft state.",
-        ),
-        SpecSchemaFamily(
-            kind="StudioTaskBindingSpec",
-            schema_id="feedbax.studio.task_bindings",
-            current_version="feedbax.studio.task_bindings.v2",
-            description="Scenario task-data to graph binding specification.",
-        ),
-        SpecSchemaFamily(
-            kind="StudioTaskTimelineSpec",
-            schema_id="feedbax.studio.task_timeline",
-            current_version="feedbax.studio.task_timeline.v1",
-            description="Structured Studio-authored task timeline.",
-        ),
-        SpecSchemaFamily(
-            kind="StudioValueSpec",
-            schema_id="feedbax.studio.value",
-            current_version="feedbax.studio.value.v1",
-            description="Structured Studio-authored parameter or target value.",
-        ),
-        SpecSchemaFamily(
-            kind="RetainedObservableSpec",
-            schema_id="feedbax.retained_observable",
-            current_version="feedbax.retained_observable.v1",
+        _family(
+            "RetainedObservableSpec",
+            "feedbax.retained_observable",
+            "feedbax.retained_observable.v1",
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("GraphSpec.retained_observables",),
+            consumed_by=("rollout retention planning", "analysis materialization"),
             description="Graph-embedded retained-observable request.",
         ),
-        SpecSchemaFamily(
-            kind="RegistrySnapshot",
-            schema_id="feedbax.registry_snapshot",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Provider component registry snapshot.",
+        _family(
+            "TrainingSpec",
+            "feedbax.training_spec",
+            "feedbax.training.v1",
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
+            consumed_by=("training service", "worker"),
+            description="Training optimizer, loss, and run-shape specification.",
         ),
-        SpecSchemaFamily(
-            kind="RegistryEntry",
-            schema_id="feedbax.registry_entry",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            durable=False,
-            description="Component registry entry embedded in registry snapshots.",
+        _family(
+            "TaskSpec",
+            "feedbax.task_spec",
+            "feedbax.task.v1",
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingRunManifest.task_spec", "provider_manifest.schemas"),
+            consumed_by=("task preset lowering", "worker"),
+            description="Task family and task parameter specification.",
         ),
-        SpecSchemaFamily(
-            kind="SpecPayload",
-            schema_id="feedbax.spec_payload",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            description="Manifest-embedded inline structured spec payload wrapper.",
+        _family(
+            "LossTermSpec",
+            "feedbax.loss_term_spec",
+            "feedbax.loss_term.v1",
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingSpec.loss", "provider_manifest.schemas"),
+            consumed_by=("training loss lowering",),
+            description="Legacy structured loss-term specification.",
         ),
-        SpecSchemaFamily(
-            kind="StudioSchemaRegistry",
-            schema_id="feedbax.studio.schema_registry",
-            current_version=MANIFEST_SCHEMA_VERSION,
-            durable=False,
-            description="Provider-emitted Studio schema enumeration.",
+        _family(
+            "ObjectiveSpec",
+            "feedbax.objective_spec",
+            "feedbax.objective.v1",
+            owner_module="feedbax.objective_spec",
+            emitted_by=("StudioScenarioSpec.objective_spec", "provider_manifest.schemas"),
+            consumed_by=("future objective lowering",),
+            description="Durable selector-addressed objective specification.",
         ),
-        SpecSchemaFamily(
-            kind="RuntimeIntrospectionResult",
-            schema_id="feedbax.studio.runtime_introspection",
-            current_version="feedbax.runtime_introspection.v1",
-            durable=False,
-            description="Validation/runtime sample response, not a saved artifact format.",
+        _family(
+            "EvaluationRunSpec",
+            "feedbax.evaluation_run_spec",
+            "feedbax.evaluation_run.v1",
+            owner_module="feedbax.manifest",
+            emitted_by=("EvaluationRunManifest.evaluation_spec", "provider_manifest.schemas"),
+            consumed_by=("feedbax.analysis.evaluation",),
+            description="Declarative evaluation run request.",
+        ),
+        _family(
+            "AnalysisRunSpec",
+            "feedbax.analysis_run_spec",
+            "feedbax.analysis_run.v1",
+            owner_module="feedbax.manifest",
+            emitted_by=("AnalysisRunManifest.analysis_spec", "provider_manifest.schemas"),
+            consumed_by=("feedbax.analysis.specs",),
+            description="Declarative analysis run request.",
+        ),
+        _family(
+            "ReportSpec",
+            "feedbax.report_spec",
+            "feedbax.report.v1",
+            owner_module="feedbax.manifest",
+            emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
+            consumed_by=("Studio report materialization",),
+            description="Declarative report request.",
+        ),
+    ]
+
+    for kind in (
+        "TargetStateLossSpec",
+        "FiniteDifferenceLossSpec",
+        "SelectorAddressSpec",
+        "TargetValueSpec",
+        "EpochMaskSpec",
+        "ConstantScheduleSpec",
+        "PowerLawScheduleSpec",
+        "MovementEpochRampScheduleSpec",
+        "MetricSpec",
+        "ReductionSpec",
+        "TaskTimelineSpec",
+        "TimelineEpochSpec",
+        "TimelineEventSpec",
+    ):
+        families.append(
+            _family(
+                kind,
+                f"feedbax.objective.{kind.removesuffix('Spec').lower()}",
+                "feedbax.objective.v1",
+                owner_module="feedbax.objective_spec",
+                emitted_by=objective_emitters,
+                consumed_by=("ObjectiveSpec",),
+                description=f"Provider-exported ObjectiveSpec submodel {kind}.",
+                covers="ObjectiveSpec",
+            )
+        )
+
+    for kind, schema_id, description in (
+        ("ArtifactRef", "feedbax.manifest.artifact_ref", "Manifest artifact reference."),
+        (
+            "ArtifactValidationRecord",
+            "feedbax.manifest.artifact_validation_record",
+            "Artifact validation provenance record.",
+        ),
+        (
+            "ArtifactMigrationRecord",
+            "feedbax.manifest.artifact_migration_record",
+            "Artifact migration provenance record.",
+        ),
+        ("SpecPayload", "feedbax.spec_payload", "Manifest-embedded inline spec wrapper."),
+        ("ArrayStoreRef", "feedbax.manifest.array_store_ref", "Manifest array-store ref."),
+        ("GraphSpecManifest", "feedbax.manifest.graph_spec", "Durable graph-spec manifest."),
+        (
+            "ModelArtifactManifest",
+            "feedbax.manifest.model_artifact",
+            "Durable model-artifact manifest.",
+        ),
+        (
+            "TrainingRunSetManifest",
+            "feedbax.manifest.training_run_set",
+            "Durable training-run collection manifest.",
+        ),
+        ("TrainingRunManifest", "feedbax.manifest.training_run", "Durable training-run manifest."),
+        (
+            "EvaluationRunManifest",
+            "feedbax.manifest.evaluation_run",
+            "Durable evaluation-run manifest.",
+        ),
+        ("AnalysisRunManifest", "feedbax.manifest.analysis_run", "Durable analysis-run manifest."),
+        ("ReportManifest", "feedbax.manifest.report", "Durable report manifest."),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                MANIFEST_SCHEMA_VERSION,
+                owner_module="feedbax.manifest",
+                emitted_by=manifest_emitters,
+                consumed_by=("manifest load/write", "provider handoff"),
+                description=description,
+            )
+        )
+
+    for kind, schema_id, version, description in (
+        (
+            "ArrayStorePayload",
+            "feedbax.array_store",
+            "feedbax.array_store.v1",
+            "Portable role-addressed array-store metadata payload.",
+        ),
+        (
+            "ArrayRecord",
+            "feedbax.array_record",
+            "feedbax.array_roles.v1",
+            "Per-array role metadata embedded in array stores.",
         ),
     ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                version,
+                owner_module="feedbax.artifact_schema",
+                emitted_by=("feedbax.artifact_schema", "provider_manifest.schemas"),
+                consumed_by=("feedbax.artifact_schema.read_npz_array_store", "artifact materializer"),
+                description=description,
+            )
+        )
+
+    for kind, schema_id, description in (
+        ("ExecutionSpec", "feedbax.execution_spec", "Provider-neutral execution request."),
+        ("ExecutionPlan", "feedbax.execution_plan", "Inspectable concrete execution plan."),
+        ("LocalExecutionResult", "feedbax.local_execution_result", "Local execution result."),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                "feedbax.execution.v1",
+                owner_module="feedbax.execution_models",
+                emitted_by=execution_emitters,
+                consumed_by=("execution planning", "Studio execution"),
+                description=description,
+            )
+        )
+
+    for kind, schema_id, description in (
+        (
+            "StudioWorkspaceSpec",
+            "feedbax.studio.workspace",
+            "Durable Studio workspace/pipeline state.",
+        ),
+        (
+            "StudioScenarioSpec",
+            "feedbax.studio.scenario",
+            "Durable Studio scenario draft state.",
+        ),
+        (
+            "StudioTaskBindingSpec",
+            "feedbax.studio.task_bindings",
+            "Scenario task-data to graph binding specification.",
+        ),
+        (
+            "StudioTaskTimelineSpec",
+            "feedbax.studio.task_timeline",
+            "Structured Studio-authored task timeline.",
+        ),
+        ("StudioValueSpec", "feedbax.studio.value", "Structured Studio-authored value."),
+    ):
+        rejected = (
+            ("feedbax.studio.task_bindings.v1",)
+            if kind == "StudioTaskBindingSpec"
+            else None
+        )
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                f"{schema_id}.v2" if kind == "StudioTaskBindingSpec" else f"{schema_id}.v1",
+                owner_module="feedbax.contracts.graph",
+                emitted_by=("Studio save/load", "provider_manifest.schemas"),
+                consumed_by=("Studio backend", "worker"),
+                description=description,
+                rejected_old_versions=rejected,
+            )
+        )
+
+    for kind, schema_id, description in (
+        (
+            "StudioTrainingExecutionRequest",
+            "feedbax.studio.training_execution_request",
+            "Request to lower a Studio train stage into an execution plan.",
+        ),
+        (
+            "StudioTrainingExecutionPreparation",
+            "feedbax.studio.training_execution_preparation",
+            "Prepared Studio training execution plan.",
+        ),
+        (
+            "StudioTrainingLocalRunRequest",
+            "feedbax.studio.training_local_run_request",
+            "Request to execute Studio training locally.",
+        ),
+        (
+            "StudioTrainingLocalRunResult",
+            "feedbax.studio.training_local_run_result",
+            "Result from local Studio training execution.",
+        ),
+        (
+            "StudioPipelineMaterializationRequest",
+            "feedbax.studio.pipeline_materialization_request",
+            "Request to materialize eval/analysis/report Studio stages.",
+        ),
+        (
+            "StudioPipelineMaterializationResult",
+            "feedbax.studio.pipeline_materialization_result",
+            "Result from Studio pipeline materialization.",
+        ),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                "feedbax.studio.execution.v1",
+                owner_module="feedbax.studio_execution",
+                emitted_by=studio_execution_emitters,
+                consumed_by=("provider HTTP API", "Studio backend"),
+                description=description,
+            )
+        )
+
+    for kind, schema_id, description in (
+        ("ValueSchema", "feedbax.studio.schema.value", "Provider-owned value schema record."),
+        ("PortSchema", "feedbax.studio.schema.port", "Provider-owned graph port schema."),
+        ("TaskDataSchema", "feedbax.studio.schema.task_data", "Provider-owned task data schema."),
+        (
+            "SelectorTargetSchema",
+            "feedbax.studio.schema.selector_target",
+            "Provider-owned selectable target schema.",
+        ),
+        (
+            "SchemaValidationIssue",
+            "feedbax.studio.schema.validation_issue",
+            "Studio schema validation issue.",
+        ),
+        (
+            "RuntimeIntrospectionOptions",
+            "feedbax.studio.runtime_introspection_options",
+            "Bounded runtime introspection request options.",
+        ),
+        (
+            "RuntimeSampleLeafSchema",
+            "feedbax.studio.runtime_sample_leaf",
+            "Runtime sample leaf schema record.",
+        ),
+        (
+            "RuntimeIntrospectionResult",
+            "feedbax.studio.runtime_introspection",
+            "Validation/runtime sample response, not a saved artifact format.",
+        ),
+        (
+            "StudioSchemaEnumerationRequest",
+            "feedbax.studio.schema_enumeration_request",
+            "Request to enumerate Studio schema surfaces.",
+        ),
+        (
+            "StudioSchemaRegistry",
+            "feedbax.studio.schema_registry",
+            "Provider-emitted Studio schema enumeration.",
+        ),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                MANIFEST_SCHEMA_VERSION,
+                owner_module="feedbax.studio_schema",
+                emitted_by=studio_schema_emitters,
+                consumed_by=("Studio frontend", "provider HTTP API"),
+                durable=kind not in {
+                    "StudioSchemaRegistry",
+                    "RuntimeIntrospectionResult",
+                    "RuntimeIntrospectionOptions",
+                    "RuntimeSampleLeafSchema",
+                    "StudioSchemaEnumerationRequest",
+                },
+                description=description,
+            )
+        )
+
+    for kind, schema_id, durable, description in (
+        ("ProviderManifest", "feedbax.provider_manifest", True, "Provider capability manifest."),
+        ("ProviderHealth", "feedbax.provider_health", False, "Provider health response."),
+        (
+            "ProviderValidationResult",
+            "feedbax.provider_validation_result",
+            False,
+            "Provider validation response.",
+        ),
+        ("CapabilitySpec", "feedbax.provider_capability", False, "Provider capability record."),
+        (
+            "MandibleArtifactMapping",
+            "feedbax.mandible_artifact_mapping",
+            False,
+            "Mandible artifact mapping metadata.",
+        ),
+        (
+            "MandibleManifestMapping",
+            "feedbax.mandible_manifest_mapping",
+            False,
+            "Mandible manifest mapping metadata.",
+        ),
+        ("RegistrySnapshot", "feedbax.registry_snapshot", True, "Provider registry snapshot."),
+        (
+            "RegistryEntry",
+            "feedbax.registry_entry",
+            False,
+            "Registry entry embedded in registry snapshots.",
+        ),
+        (
+            "ComponentRegistrySnapshot",
+            "feedbax.registry_snapshot.component",
+            True,
+            "Component registry snapshot capability alias.",
+        ),
+        (
+            "TaskRegistrySnapshot",
+            "feedbax.registry_snapshot.task",
+            True,
+            "Task registry snapshot capability alias.",
+        ),
+        (
+            "LossRegistrySnapshot",
+            "feedbax.registry_snapshot.loss",
+            True,
+            "Loss registry snapshot capability alias.",
+        ),
+        (
+            "ProtocolRegistrySnapshot",
+            "feedbax.registry_snapshot.protocol",
+            True,
+            "Protocol registry snapshot capability alias.",
+        ),
+        (
+            "AnalysisRegistrySnapshot",
+            "feedbax.registry_snapshot.analysis",
+            True,
+            "Analysis registry snapshot capability alias.",
+        ),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                MANIFEST_SCHEMA_VERSION,
+                owner_module="feedbax.provider",
+                emitted_by=("feedbax.provider.provider_manifest",),
+                consumed_by=("Mandible provider integration",),
+                durable=durable,
+                description=description,
+                covers="RegistrySnapshot" if kind.endswith("RegistrySnapshot") else None,
+            )
+        )
+
+    for family in families:
         registry.register_family(family)
+
+    for family in registry.families():
+        if family.policy is None:
+            continue
+        for old_version in family.policy.rejected_old_versions:
+            registry.reject_version(
+                family.kind,
+                old_version,
+                reason=(
+                    f"{family.kind} has no registered migration from {old_version!r}; "
+                    f"{family.policy.owner_module} owns this schema and current-version "
+                    "recreation or an explicit new migration is required."
+                ),
+            )
 
 
 default_registry = MigrationRegistry()
