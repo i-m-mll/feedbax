@@ -54,8 +54,14 @@ from feedbax.studio_schema import (
     ValueSchema,
     validate_graph_connection_schema,
 )
-from feedbax.contracts.graph import AnalysisInputRequirement, GraphSpec
+from feedbax.contracts.graph import (
+    AdditiveGraphChannelAdapterSpec,
+    AdditiveGraphChannelTargetSpec,
+    AnalysisInputRequirement,
+    GraphSpec,
+)
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -182,6 +188,8 @@ def health() -> ProviderHealth:
 def _schema_models() -> dict[str, type[BaseModel]]:
     return {
         "GraphSpec": GraphSpec,
+        "AdditiveGraphChannelAdapterSpec": AdditiveGraphChannelAdapterSpec,
+        "AdditiveGraphChannelTargetSpec": AdditiveGraphChannelTargetSpec,
         "AnalysisInputRequirement": AnalysisInputRequirement,
         "TrainingSpec": TrainingSpec,
         "TaskSpec": TaskSpec,
@@ -763,10 +771,21 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
 
     try:
         parsed = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)
-        spec = normalize_graph_for_studio_authoring(parsed)
+        spec = normalize_graph_for_studio_authoring(materialize_additive_channel_adapters(parsed))
     except PydanticValidationError as exc:
         errors = _pydantic_errors(exc)
         return ProviderValidationResult(valid=False, errors=errors)
+    except ValueError as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_additive_channel_adapter",
+                    message=str(exc),
+                    location={"path": "/additive_channel_adapters"},
+                )
+            ],
+        )
 
     registry = ComponentRegistry()
     errors: list[ValidationIssue] = []
