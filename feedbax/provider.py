@@ -60,6 +60,7 @@ from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     GraphSpec,
 )
+from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.task_presets import apply_delayed_reaches_preset
@@ -160,6 +161,14 @@ class RegistryEntry(ProviderModel):
     output_ports: list[str] = Field(default_factory=list)
     parameter_schema: Any = Field(default_factory=list)
     artifact_roles: list[str] = Field(default_factory=list)
+    owner: Optional[str] = None
+    provenance: Optional[str] = None
+    provenance_kind: Optional[str] = None
+    component_type_id: Optional[str] = None
+    param_schema_version: Optional[str] = None
+    supported_param_schema_versions: list[str] = Field(default_factory=list)
+    identity: Optional[ComponentIdentity] = None
+    migrations: list[ComponentMigrationInfo] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -592,6 +601,19 @@ def component_registry_snapshot() -> RegistrySnapshot:
                 name=definition.name,
                 category=definition.category,
                 description=definition.description,
+                owner=definition.owner,
+                package=definition.identity.package if definition.identity is not None else None,
+                provenance=definition.provenance,
+                provenance_kind=(
+                    definition.identity.provenance_kind
+                    if definition.identity is not None
+                    else None
+                ),
+                component_type_id=definition.name,
+                param_schema_version=definition.param_schema_version,
+                supported_param_schema_versions=list(definition.supported_param_schema_versions),
+                identity=definition.identity,
+                migrations=list(definition.migrations),
                 version=feedbax_version(),
                 input_ports=definition.input_ports,
                 output_ports=definition.output_ports,

@@ -9,6 +9,8 @@ import pytest
 
 from feedbax.component_registry import (
     ComponentRegistry,
+    ComponentMigration,
+    ComponentMigrationPack,
     get_component_registry,
     register_component_type,
 )
@@ -27,12 +29,18 @@ class _PrototypeSource(Component):
         return {"signal": jnp.ones((3,))}, state
 
 
-def _single_node_spec(component_type: str, params: dict[str, Any] | None = None) -> GraphSpec:
+def _single_node_spec(
+    component_type: str,
+    params: dict[str, Any] | None = None,
+    *,
+    param_schema_version: str | None = None,
+) -> GraphSpec:
     return GraphSpec(
         nodes={
             "component": ComponentSpec(
                 type=component_type,
                 params=params or {},
+                param_schema_version=param_schema_version,
                 input_ports=["input"],
                 output_ports=["output"],
             )
@@ -218,6 +226,139 @@ def test_unknown_component_error_names_type_and_known_registry_contents() -> Non
     assert "DefinitelyUnknownComponent" in message
     assert "Known component types:" in message
     assert "Gain" in message
+
+
+def test_builtin_component_rename_migration_materializes_registered_target() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_migration(
+        ComponentMigration(
+            source_type="LegacyGain",
+            target_type="Gain",
+            owner="feedbax",
+            migration_id="feedbax.component.LegacyGain-to-Gain.v1",
+            target_param_schema_version="1",
+            description="Test-only built-in rename edge.",
+        )
+    )
+
+    graph = spec_to_graph(_single_node_spec("LegacyGain", {"gain": 4.0}), registry)
+
+    component = graph.nodes["component"]
+    assert isinstance(component, Gain)
+    assert component.gain == 4.0
+    gain = next(item for item in registry.list_all() if item.name == "Gain")
+    assert [migration.source_type for migration in gain.migrations] == ["LegacyGain"]
+    assert gain.migrations[0].owner == "feedbax"
+
+
+def test_component_parameter_schema_migration_renames_required_parameter() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_migration(
+        ComponentMigration(
+            source_type="Gain",
+            target_type="Gain",
+            owner="feedbax",
+            source_param_schema_version="legacy-scale",
+            target_param_schema_version="1",
+            migration_id="feedbax.component.Gain.params.legacy-scale-to-1",
+            migrate_params=lambda params: {"gain": params["scale"]},
+        )
+    )
+
+    graph = spec_to_graph(
+        _single_node_spec("Gain", {"scale": 8.0}, param_schema_version="legacy-scale"),
+        registry,
+    )
+
+    component = graph.nodes["component"]
+    assert isinstance(component, Gain)
+    assert component.gain == 8.0
+
+
+def test_downstream_migration_pack_can_migrate_owned_component_id() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_component_type(
+        "rlrmp.CurrentGain",
+        lambda params: Gain(gain=float(params["gain"])),
+        owner="rlrmp",
+        provenance="package:rlrmp",
+        param_schema=[{"name": "gain", "type": "float", "default": 1.0, "required": True}],
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+    registry.register_migration_pack(
+        ComponentMigrationPack(
+            owner="rlrmp",
+            package="rlrmp",
+            migrations=(
+                ComponentMigration(
+                    source_type="rlrmp.LegacyGain",
+                    target_type="rlrmp.CurrentGain",
+                    owner="rlrmp",
+                    migration_id="rlrmp.component.LegacyGain-to-CurrentGain.v1",
+                ),
+            ),
+        )
+    )
+
+    graph = spec_to_graph(_single_node_spec("rlrmp.LegacyGain", {"gain": 9.0}), registry)
+
+    component = graph.nodes["component"]
+    assert isinstance(component, Gain)
+    assert component.gain == 9.0
+    definition = next(item for item in registry.list_all() if item.name == "rlrmp.CurrentGain")
+    assert definition.owner == "rlrmp"
+    assert definition.identity is not None
+    assert definition.identity.provenance_kind == "package"
+    assert definition.migrations[0].source_type == "rlrmp.LegacyGain"
+
+
+def test_absent_downstream_owner_fails_with_actionable_message() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    with pytest.raises(ValueError) as exc_info:
+        spec_to_graph(_single_node_spec("rlrmp.LegacyGain", {"gain": 1.0}), registry)
+
+    message = str(exc_info.value)
+    assert "owner='rlrmp'" in message
+    assert "migration pack" in message
+    assert "rlrmp.LegacyGain" in message
+
+
+def test_loaded_owner_without_migration_edge_fails_with_version_context() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    registry.register_component_type(
+        "rlrmp.CurrentGain",
+        lambda params: Gain(gain=float(params["gain"])),
+        owner="rlrmp",
+        provenance="package:rlrmp",
+        param_schema=[{"name": "gain", "type": "float", "default": 1.0}],
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        spec_to_graph(_single_node_spec("rlrmp.UnsupportedGain", {"gain": 1.0}), registry)
+
+    message = str(exc_info.value)
+    assert "No component migration registered" in message
+    assert "owner='rlrmp'" in message
+    assert "rlrmp.UnsupportedGain" in message
+
+
+def test_unsupported_component_parameter_schema_fails_with_current_version() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    with pytest.raises(ValueError) as exc_info:
+        spec_to_graph(
+            _single_node_spec("Gain", {"scale": 1.0}, param_schema_version="unsupported"),
+            registry,
+        )
+
+    message = str(exc_info.value)
+    assert "No component migration registered" in message
+    assert "source_param_schema_version='unsupported'" in message
+    assert "current_param_schema_version='1'" in message
 
 
 def test_elementwise_affine_modulator_is_builtin_component() -> None:

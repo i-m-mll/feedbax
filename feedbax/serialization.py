@@ -186,6 +186,7 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         nodes[node_id] = ComponentSpec(
             type=next_type,
             params=params,
+            param_schema_version=node_spec.param_schema_version,
             input_ports=input_ports,
             output_ports=list(node_spec.output_ports),
         )
@@ -943,22 +944,46 @@ def spec_to_graph(
 
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
-        defaults = _lookup_defaults(metadata_registry, node_spec.type)
-        required_params = _lookup_required_params(metadata_registry, node_spec.type)
+        node_type = node_spec.type
+        node_params = dict(node_spec.params)
+        resolve_component_spec = getattr(metadata_registry, "resolve_component_spec", None)
+        should_resolve_component_spec = getattr(
+            metadata_registry,
+            "should_resolve_component_spec",
+            None,
+        )
+        if (
+            callable(resolve_component_spec)
+            and callable(should_resolve_component_spec)
+            and should_resolve_component_spec(
+                node_type,
+                param_schema_version=node_spec.param_schema_version,
+            )
+        ):
+            resolution = resolve_component_spec(
+                node_type,
+                node_params,
+                param_schema_version=node_spec.param_schema_version,
+            )
+            node_type = resolution.type_id
+            node_params = resolution.params
+
+        defaults = _lookup_defaults(metadata_registry, node_type)
+        required_params = _lookup_required_params(metadata_registry, node_type)
         params = _merge_params(
-            node_spec.params,
+            node_params,
             defaults,
             required_params=required_params,
             node_name=node_name,
-            node_type=node_spec.type,
+            node_type=node_type,
         )
 
-        if node_spec.type == "Subgraph":
+        if node_type == "Subgraph":
             if not spec.subgraphs or node_name not in spec.subgraphs:
                 raise ValueError(f"Missing subgraph spec for '{node_name}'")
             nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
             continue
-        if node_spec.type == "Network":
+        if node_type == "Network":
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
                 raise ValueError(
@@ -972,7 +997,7 @@ def spec_to_graph(
             continue
         nodes[node_name] = build_component(
             node_name,
-            node_spec.type,
+            node_type,
             params,
             component_registry=execution_registry,
         )
