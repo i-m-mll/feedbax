@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import jax
+import jax.numpy as jnp
 import pytest
 
 from feedbax.bodies import FeedbackChannels
 from feedbax.channel import Channel
+from feedbax.components import Demux
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.graph import init_state_from_component
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -208,3 +212,131 @@ def test_channel_rejects_unknown_noise_model() -> None:
                 output_bindings={"output": ("channel", "output")},
             )
         )
+
+
+def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
+    spec = GraphSpec(
+        nodes={
+            "split": ComponentSpec(
+                type="Demux",
+                params={"sizes": [2, 1, 3]},
+                input_ports=["input"],
+                output_ports=["out_0", "out_1", "out_2"],
+            )
+        },
+        input_ports=["input"],
+        output_ports=["first", "middle", "last"],
+        input_bindings={"input": ("split", "input")},
+        output_bindings={
+            "first": ("split", "out_0"),
+            "middle": ("split", "out_1"),
+            "last": ("split", "out_2"),
+        },
+    )
+
+    graph = spec_to_graph(spec)
+
+    split = graph.nodes["split"]
+    assert isinstance(split, Demux)
+    assert split.sizes == (2, 1, 3)
+    assert split.output_ports == ("out_0", "out_1", "out_2")
+
+    state = init_state_from_component(graph)
+    outputs, _ = graph({"input": jnp.arange(6.0)}, state, key=jax.random.PRNGKey(0))
+
+    assert jnp.allclose(outputs["first"], jnp.array([0.0, 1.0]))
+    assert jnp.allclose(outputs["middle"], jnp.array([2.0]))
+    assert jnp.allclose(outputs["last"], jnp.array([3.0, 4.0, 5.0]))
+
+    roundtrip = graph_to_spec(graph)
+    node = roundtrip.nodes["split"]
+    assert node.type == "Demux"
+    assert node.params["sizes"] == [2, 1, 3]
+    assert node.input_ports == ["input"]
+    assert node.output_ports == ["out_0", "out_1", "out_2"]
+    assert roundtrip.output_bindings == spec.output_bindings
+
+
+def test_demux_graphspec_executes_as_internal_node() -> None:
+    spec = GraphSpec(
+        nodes={
+            "join": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "split": ComponentSpec(
+                type="Demux",
+                params={"sizes": [2, 1]},
+                input_ports=["input"],
+                output_ports=["out_0", "out_1"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="join",
+                source_port="output",
+                target_node="split",
+                target_port="input",
+            )
+        ],
+        input_ports=["left", "right"],
+        output_ports=["left", "right"],
+        input_bindings={"left": ("join", "in_0"), "right": ("join", "in_1")},
+        output_bindings={"left": ("split", "out_0"), "right": ("split", "out_1")},
+    )
+
+    graph = spec_to_graph(spec)
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {"left": jnp.array([1.0, 2.0]), "right": jnp.array([3.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+
+    assert jnp.allclose(outputs["left"], jnp.array([1.0, 2.0]))
+    assert jnp.allclose(outputs["right"], jnp.array([3.0]))
+
+
+def test_demux_graphspec_rejects_invalid_sizes() -> None:
+    with pytest.raises(ValueError, match="Demux sizes must be positive"):
+        spec_to_graph(
+            GraphSpec(
+                nodes={
+                    "split": ComponentSpec(
+                        type="Demux",
+                        params={"sizes": [2, 0]},
+                        input_ports=["input"],
+                        output_ports=["out_0", "out_1"],
+                    )
+                },
+                input_ports=["input"],
+                output_ports=["output"],
+                input_bindings={"input": ("split", "input")},
+                output_bindings={"output": ("split", "out_0")},
+            )
+        )
+
+
+def test_demux_rejects_mismatched_input_width() -> None:
+    graph = spec_to_graph(
+        GraphSpec(
+            nodes={
+                "split": ComponentSpec(
+                    type="Demux",
+                    params={"sizes": [2, 2]},
+                    input_ports=["input"],
+                    output_ports=["out_0", "out_1"],
+                )
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+            input_bindings={"input": ("split", "input")},
+            output_bindings={"output": ("split", "out_0")},
+        )
+    )
+    state = init_state_from_component(graph)
+
+    with pytest.raises(ValueError, match="Demux input final dimension"):
+        graph({"input": jnp.arange(3.0)}, state, key=jax.random.PRNGKey(0))

@@ -13,6 +13,7 @@ from feedbax.components import (
     Constant,
     Damper,
     DelayLine,
+    Demux,
     GRU,
     Gain,
     LSTM,
@@ -526,6 +527,13 @@ def _build_mux(params: Mapping[str, Any]) -> Mux:
     return Mux(n_inputs=int(params.get("n_inputs", 2)))
 
 
+def _build_demux(params: Mapping[str, Any]) -> Demux:
+    sizes = params.get("sizes")
+    if not isinstance(sizes, (list, tuple)):
+        raise ValueError("Demux requires 'sizes' as a non-empty list of positive integers")
+    return Demux(sizes=sizes)
+
+
 def _build_gru(params: Mapping[str, Any]) -> GRU:
     return GRU(
         input_size=int(params.get("input_size", 1)),
@@ -592,6 +600,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Linear": _build_linear,
     "MLP": _build_mlp,
     "Mux": _build_mux,
+    "Demux": _build_demux,
     "GRU": _build_gru,
     "LSTM": _build_lstm,
     "Spring": _build_spring,

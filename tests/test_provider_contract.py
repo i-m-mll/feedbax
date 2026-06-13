@@ -1262,6 +1262,33 @@ def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
     assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
 
 
+def test_studio_schema_enumeration_projects_dynamic_demux_outputs() -> None:
+    graph = GraphSpec(
+        nodes={
+            "split": {
+                "type": "Demux",
+                "params": {"sizes": [2, 1, 3]},
+                "input_ports": ["input"],
+                "output_ports": ["out_0", "out_1"],
+            }
+        },
+        input_ports=["input"],
+        output_ports=["tail"],
+        input_bindings={"input": ("split", "input")},
+        output_bindings={"tail": ("split", "out_2")},
+    )
+    workspace = build_default_studio_workspace(label="Demux schema", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    port = next(port for port in registry.ports if port.id == "port:split.out_2:output")
+
+    assert port.value_schema.dtype == "vector"
+    assert port.value_schema.shape == [3]
+    assert port.origin == "inferred_static"
+    assert not any(issue.type == "unknown_graph_output_binding_port" for issue in registry.issues)
+
+
 def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
     graph = GraphSpec(
         nodes={
