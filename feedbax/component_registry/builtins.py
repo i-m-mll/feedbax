@@ -794,14 +794,16 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(name='scale', type='float', default=1.0, required=True),
                 ParamSchema(name='amplitude', type='float', default=1.0, required=True),
                 ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(name='label', type='str', default='curl_field', required=False),
             ],
-            input_ports=['effector', 'force'],
+            input_ports=['effector', 'force', 'params_override'],
             output_ports=['force'],
             icon='Wind',
             port_types=PortTypeSpec(
                 inputs={
                     'effector': PortType(dtype='state'),
                     'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
                 },
                 outputs={'force': PortType(dtype='vector')},
             ),
@@ -817,12 +819,51 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(name='amplitude', type='float', default=1.0, required=True),
                 ParamSchema(name='field', type='array', default=[0.0, 0.0], required=True),
                 ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(name='label', type='str', default='fixed_field', required=False),
             ],
-            input_ports=['force'],
+            input_ports=['force', 'params_override'],
             output_ports=['force'],
             icon='Flag',
             port_types=PortTypeSpec(
-                inputs={'force': PortType(dtype='vector')},
+                inputs={
+                    'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
+                },
+                outputs={'force': PortType(dtype='vector')},
+            ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='DynamicsMatrixPerturb',
+            category='Interventions',
+            description='State-feedback dynamics-matrix perturbation in the force channel.',
+            param_schema=[
+                ParamSchema(name='scale', type='float', default=1.0, required=True),
+                ParamSchema(
+                    name='delta_A',
+                    type='array',
+                    default=[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]],
+                    required=True,
+                ),
+                ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(
+                    name='label',
+                    type='str',
+                    default='dynamics_matrix_perturb',
+                    required=False,
+                ),
+                ParamSchema(name='mass', type='float', default=1.0, min=0.0, required=False),
+            ],
+            input_ports=['effector', 'force', 'params_override'],
+            output_ports=['force'],
+            icon='Activity',
+            port_types=PortTypeSpec(
+                inputs={
+                    'effector': PortType(dtype='state'),
+                    'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
+                },
                 outputs={'force': PortType(dtype='vector')},
             ),
         )
