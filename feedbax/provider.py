@@ -30,6 +30,7 @@ from feedbax.manifest import (
     feedbax_version,
     utc_now,
 )
+from feedbax.migrations import migrate_graph_spec
 from feedbax.objective_spec import objective_schema_models
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
@@ -771,7 +772,8 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
     from feedbax.component_registry import ComponentRegistry
 
     try:
-        parsed = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)
+        migrated = migrate_graph_spec(payload)
+        parsed = GraphSpec.model_validate(migrated.payload)
         spec = normalize_graph_for_studio_authoring(materialize_additive_channel_adapters(parsed))
     except PydanticValidationError as exc:
         errors = _pydantic_errors(exc)

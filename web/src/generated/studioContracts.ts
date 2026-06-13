@@ -124,8 +124,11 @@ export interface GraphMetadata {
 }
 
 export interface GraphSpec {
+  schema_id?: string;
+  schema_version?: string;
   nodes?: Record<string, ComponentSpec>;
   wires?: WireSpec[];
+  additive_channel_adapters?: AdditiveGraphChannelAdapterSpec[];
   input_ports?: string[];
   output_ports?: string[];
   input_bindings?: Record<string, [string, string]>;
@@ -135,6 +138,7 @@ export interface GraphSpec {
   user_ports?: Record<string, UserPortSpec> | null;
   taps?: TapSpec[] | null;
   retained_observables?: RetainedObservableSpec[] | null;
+  parameter_constraints?: ParameterConstraintSpec[];
   metadata?: GraphMetadata | null;
 }
 
@@ -913,8 +917,11 @@ export const GraphMetadataSchema: z.ZodType<GraphMetadata> = z.lazy(() =>
 export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
   z
     .object({
+      "schema_id": z.string().optional(),
+      "schema_version": z.string().optional(),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "wires": z.array(WireSpecSchema).optional(),
+      "additive_channel_adapters": z.array(AdditiveGraphChannelAdapterSpecSchema).optional(),
       "input_ports": z.array(z.string()).optional(),
       "output_ports": z.array(z.string()).optional(),
       "input_bindings": z.record(z.string(), z.tuple([z.string(), z.string()])).optional(),
@@ -924,6 +931,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
       "user_ports": z.record(z.string(), UserPortSpecSchema).nullable().optional(),
       "taps": z.array(TapSpecSchema).nullable().optional(),
       "retained_observables": z.array(RetainedObservableSpecSchema).nullable().optional(),
+      "parameter_constraints": z.array(ParameterConstraintSpecSchema).optional(),
       "metadata": GraphMetadataSchema.nullable().optional(),
     })
     .strict()

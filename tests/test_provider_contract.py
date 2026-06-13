@@ -40,6 +40,8 @@ from feedbax.studio_schema import (
 from feedbax.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
+    GRAPH_SPEC_SCHEMA_ID,
+    GRAPH_SPEC_SCHEMA_VERSION,
     AnalysisInputRequirement,
     GraphMetadata,
     GraphSpec,
@@ -50,6 +52,7 @@ from feedbax.contracts.graph import (
     build_default_studio_workspace,
 )
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.migrations import default_spec_registry
 from feedbax.studio_protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
     WorkerStatus,
@@ -293,6 +296,18 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
 
     for schema_name, model_type in contract_models.items():
         assert manifest.schemas[schema_name] == model_type.model_json_schema()
+
+
+def test_provider_manifest_graph_spec_schema_exposes_registered_identity() -> None:
+    manifest = provider_manifest()
+    graph_spec_schema = manifest.schemas["GraphSpec"]
+    if graph_spec_schema.get("$ref") == "#/$defs/GraphSpec":
+        graph_spec_schema = graph_spec_schema["$defs"]["GraphSpec"]
+    properties = graph_spec_schema["properties"]
+
+    assert default_spec_registry.current_version("GraphSpec") == GRAPH_SPEC_SCHEMA_VERSION
+    assert properties["schema_id"]["default"] == GRAPH_SPEC_SCHEMA_ID
+    assert properties["schema_version"]["default"] == GRAPH_SPEC_SCHEMA_VERSION
 
 
 def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:

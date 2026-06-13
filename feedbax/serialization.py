@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, cast
 
 import jax.numpy as jnp
 import jax.tree as jt
@@ -61,6 +61,7 @@ from feedbax.contracts.graph import (
     WireSpec,
 )
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.migrations import migrate_graph_spec
 from feedbax.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.serialization_builders import build_component, nonlinearity_name
 from feedbax.serialization_prototypes import (
@@ -70,8 +71,6 @@ from feedbax.serialization_prototypes import (
 )
 from feedbax.state_feedback import StateFeedbackSelector
 
-
-SUPPORTED_GRAPH_SPEC_VERSIONS = frozenset({"1.0.0"})
 
 __all__ = ["graph_to_spec", "prototypes_from_task_bindings", "spec_to_graph"]
 
@@ -154,92 +153,6 @@ def _lookup_required_params(component_registry: Any, name: str) -> set[str]:
             if getattr(meta, "name", None) == name:
                 return _from_meta(meta)
     return set()
-
-
-def _validate_supported_spec_versions(spec: GraphSpec, *, path: str = "graph") -> None:
-    version = spec.metadata.version if spec.metadata is not None else None
-    if version is not None and version not in SUPPORTED_GRAPH_SPEC_VERSIONS:
-        supported = ", ".join(sorted(SUPPORTED_GRAPH_SPEC_VERSIONS))
-        raise ValueError(
-            f"Unsupported GraphSpec version {version!r} at {path}; supported versions: {supported}"
-        )
-    for node_name, subgraph in (spec.subgraphs or {}).items():
-        _validate_supported_spec_versions(subgraph, path=f"{path}.subgraphs[{node_name!r}]")
-
-
-def _migrate_spec(spec: GraphSpec) -> GraphSpec:
-    nodes: dict[str, ComponentSpec] = {}
-    for node_id, node_spec in spec.nodes.items():
-        next_type = node_spec.type
-        if next_type == "SimpleStagedNetwork":
-            next_type = "Network"
-        if next_type == "FeedbackChannel":
-            next_type = "Channel"
-        if next_type == "PenzaiSubgraph":
-            next_type = "PenzaiAdapter"
-        params = dict(node_spec.params)
-        if next_type == "Network" and "output_size" in params and "out_size" not in params:
-            params["out_size"] = params.get("output_size")
-        input_ports = list(node_spec.input_ports)
-        if next_type == "Network":
-            input_ports = ["input" if port == "target" else port for port in input_ports]
-        nodes[node_id] = ComponentSpec(
-            type=next_type,
-            params=params,
-            input_ports=input_ports,
-            output_ports=list(node_spec.output_ports),
-        )
-
-    def _rename_port(node_name: str, port: str) -> str:
-        node = nodes.get(node_name)
-        if node and node.type == "Network" and port == "target":
-            return "input"
-        return port
-
-    wires = [
-        WireSpec(
-            source_node=wire.source_node,
-            source_port=_rename_port(wire.source_node, wire.source_port),
-            target_node=wire.target_node,
-            target_port=_rename_port(wire.target_node, wire.target_port),
-            temporality=wire.temporality,
-            recurrent_initializer=wire.recurrent_initializer,
-        )
-        for wire in spec.wires
-    ]
-
-    input_bindings = {
-        name: (
-            node,
-            _rename_port(node, port),
-        )
-        for name, (node, port) in spec.input_bindings.items()
-    }
-
-    subgraphs = (
-        {node_id: _migrate_spec(subgraph) for node_id, subgraph in spec.subgraphs.items()}
-        if spec.subgraphs
-        else {}
-    )
-    user_ports = dict(spec.user_ports) if spec.user_ports else None
-    taps = list(spec.taps) if spec.taps else None
-
-    return GraphSpec(
-        nodes=nodes,
-        wires=wires,
-        input_ports=list(spec.input_ports),
-        output_ports=list(spec.output_ports),
-        input_bindings=input_bindings,
-        output_bindings=dict(spec.output_bindings),
-        subgraphs=subgraphs or None,
-        barnacles=spec.barnacles,
-        user_ports=user_ports,
-        taps=taps,
-        retained_observables=spec.retained_observables,
-        parameter_constraints=list(spec.parameter_constraints),
-        additive_channel_adapters=list(spec.additive_channel_adapters),
-        metadata=spec.metadata,
-    )
 
 
 def graph_to_spec(graph: Any) -> GraphSpec:
@@ -904,7 +817,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 source_port=wire.source_port,
                 target_node=wire.target_node,
                 target_port=wire.target_port,
-                temporality=wire.temporality,
+                temporality=cast(Literal["instant", "recurrent"], wire.temporality),
                 recurrent_initializer=wire.recurrent_initializer,
             )
             for wire in graph.wires
@@ -932,8 +845,8 @@ def spec_to_graph(
         component_registry if hasattr(component_registry, "names") else get_component_registry()
     )
     metadata_registry = component_registry if component_registry is not None else execution_registry
-    _validate_supported_spec_versions(spec)
-    spec = _migrate_spec(spec)
+    migration = migrate_graph_spec(spec)
+    spec = GraphSpec.model_validate(migration.payload)
     spec = materialize_additive_channel_adapters(spec)
     spec = normalize_stateful_prototypes(
         spec,
@@ -989,8 +902,12 @@ def spec_to_graph(
         for wire in spec.wires
     )
 
-    input_bindings = {name: tuple(binding) for name, binding in spec.input_bindings.items()}
-    output_bindings = {name: tuple(binding) for name, binding in spec.output_bindings.items()}
+    input_bindings = {
+        name: (binding[0], binding[1]) for name, binding in spec.input_bindings.items()
+    }
+    output_bindings = {
+        name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
+    }
 
     graph = Graph(
         nodes=nodes,

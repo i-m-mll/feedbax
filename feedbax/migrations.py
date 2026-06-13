@@ -7,6 +7,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from feedbax.contracts.graph import (
+    GRAPH_SPEC_SCHEMA_ID,
+    GRAPH_SPEC_SCHEMA_VERSION,
+    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+    GraphSpec,
+)
 from feedbax.manifest import ArtifactMigrationRecord, SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION
 
 
@@ -72,6 +78,10 @@ class MigrationRegistry:
                 f"{migration.source_version!r} -> {migration.target_version!r}"
             )
         self._edges[key] = migration
+
+    def edges(self) -> tuple[SchemaMigration, ...]:
+        """Return registered migration edges sorted by source/target."""
+        return tuple(self._edges[key] for key in sorted(self._edges))
 
     def path(self, source_version: str, target_version: str) -> list[SchemaMigration]:
         """Return the shortest deterministic migration path."""
@@ -224,6 +234,12 @@ class SpecSchemaRegistry:
         self.resolve(kind)
         self._migrations.setdefault(kind, MigrationRegistry()).register(migration)
 
+    def available_migrations(self, kind: str) -> tuple[SchemaMigration, ...]:
+        """Return registered migrations for ``kind`` sorted by source/target."""
+        self.resolve(kind)
+        registry = self._migrations.get(kind)
+        return () if registry is None else registry.edges()
+
     def reject_version(
         self,
         kind: str,
@@ -293,7 +309,7 @@ class SpecSchemaRegistry:
         registry = self._migrations.get(kind)
         if registry is None:
             raise UnsupportedSpecVersion(
-                _missing_path_message(family, resolved_source, resolved_target)
+                _missing_path_message(family, resolved_source, resolved_target, ())
             )
 
         try:
@@ -304,7 +320,12 @@ class SpecSchemaRegistry:
             )
         except UnsupportedMigrationPath as exc:
             raise UnsupportedSpecVersion(
-                _missing_path_message(family, resolved_source, resolved_target)
+                _missing_path_message(
+                    family,
+                    resolved_source,
+                    resolved_target,
+                    registry.edges(),
+                )
             ) from exc
 
         return SpecMigrationResult(
@@ -340,12 +361,191 @@ def _missing_path_message(
     family: SpecSchemaFamily,
     source_version: str,
     target_version: str,
+    available_migrations: tuple[SchemaMigration, ...],
 ) -> str:
+    available = [
+        f"{migration.source_version}->{migration.target_version} ({migration.migration_id})"
+        for migration in available_migrations
+    ]
+    available_text = ", ".join(available) if available else "<none>"
     return (
         "No Feedbax structured spec migration path registered: "
         f"family={family.kind!r}, schema_id={family.identity!r}, "
         f"source_version={source_version!r}, current_version={target_version!r}; "
-        "no explicit unsupported-version policy is registered for this source version"
+        "no explicit unsupported-version policy is registered for this source version; "
+        f"available_migrations=[{available_text}]"
+    )
+
+
+def _mapping_payload(payload: Mapping[str, Any] | GraphSpec) -> dict[str, Any]:
+    if isinstance(payload, GraphSpec):
+        return payload.model_dump(mode="json")
+    return dict(payload)
+
+
+def _payload_metadata_version(payload: Mapping[str, Any]) -> str | None:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        version = metadata.get("version")
+        if isinstance(version, str) and version:
+            return version
+    return None
+
+
+def _graph_spec_source_version(
+    payload: Mapping[str, Any],
+    explicit_source_version: str | None,
+) -> str:
+    if explicit_source_version:
+        return explicit_source_version
+    schema_version = _payload_schema_version(payload)
+    if schema_version:
+        return schema_version
+    metadata_version = _payload_metadata_version(payload)
+    if metadata_version:
+        return metadata_version
+    return GRAPH_SPEC_SCHEMA_VERSION
+
+
+def _validate_graph_spec_schema_id(payload: Mapping[str, Any], *, path: str) -> None:
+    schema_id = payload.get("schema_id")
+    if schema_id is not None and schema_id != GRAPH_SPEC_SCHEMA_ID:
+        raise UnsupportedSpecVersion(
+            "Unsupported Feedbax GraphSpec schema identity: "
+            f"path={path!r}, schema_id={schema_id!r}, expected={GRAPH_SPEC_SCHEMA_ID!r}"
+        )
+
+
+def _record_with_graph_path(record: ArtifactMigrationRecord, path: str) -> ArtifactMigrationRecord:
+    return record.model_copy(
+        update={"metadata": {**record.metadata, "graph_path": path}},
+    )
+
+
+def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_id"] = GRAPH_SPEC_SCHEMA_ID
+
+    nodes: dict[str, Any] = {}
+    for node_id, raw_node in dict(payload.get("nodes") or {}).items():
+        node = dict(raw_node)
+        next_type = node.get("type")
+        if next_type == "SimpleStagedNetwork":
+            next_type = "Network"
+        if next_type == "FeedbackChannel":
+            next_type = "Channel"
+        if next_type == "PenzaiSubgraph":
+            next_type = "PenzaiAdapter"
+
+        params = dict(node.get("params") or {})
+        if next_type == "Network" and "output_size" in params and "out_size" not in params:
+            params["out_size"] = params.get("output_size")
+
+        input_ports = list(node.get("input_ports") or [])
+        if next_type == "Network":
+            input_ports = ["input" if port == "target" else port for port in input_ports]
+
+        node["type"] = next_type
+        node["params"] = params
+        node["input_ports"] = input_ports
+        node["output_ports"] = list(node.get("output_ports") or [])
+        nodes[str(node_id)] = node
+
+    def _rename_port(node_name: str, port: str) -> str:
+        node = nodes.get(node_name)
+        if isinstance(node, Mapping) and node.get("type") == "Network" and port == "target":
+            return "input"
+        return port
+
+    wires: list[dict[str, Any]] = []
+    for raw_wire in list(payload.get("wires") or []):
+        wire = dict(raw_wire)
+        source_node = str(wire.get("source_node"))
+        target_node = str(wire.get("target_node"))
+        wire["source_port"] = _rename_port(source_node, str(wire.get("source_port")))
+        wire["target_port"] = _rename_port(target_node, str(wire.get("target_port")))
+        wires.append(wire)
+
+    input_bindings: dict[str, tuple[str, str]] = {}
+    for name, raw_binding in dict(payload.get("input_bindings") or {}).items():
+        try:
+            node, port = raw_binding
+        except (TypeError, ValueError):
+            input_bindings[str(name)] = raw_binding
+            continue
+        input_bindings[str(name)] = (str(node), _rename_port(str(node), str(port)))
+
+    migrated["nodes"] = nodes
+    migrated["wires"] = wires
+    migrated["input_bindings"] = input_bindings
+    migrated.setdefault("output_bindings", dict(payload.get("output_bindings") or {}))
+    return migrated
+
+
+def migrate_graph_spec(
+    payload: Mapping[str, Any] | GraphSpec,
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "graph",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Migrate a GraphSpec payload through the public registered schema path.
+
+    Nested subgraphs are migrated recursively through the same registry policy.
+    Migration records are returned in deterministic parent-before-child order
+    and include ``metadata["graph_path"]`` for provenance.
+    """
+    registry = registry or default_spec_registry
+    payload_dict = _mapping_payload(payload)
+    _validate_graph_spec_schema_id(payload_dict, path=path)
+    resolved_source = _graph_spec_source_version(payload_dict, source_version)
+    resolved_target = target_version or registry.current_version("GraphSpec")
+
+    result = registry.migrate(
+        "GraphSpec",
+        payload_dict,
+        source_version=resolved_source,
+        target_version=resolved_target,
+    )
+    migrated_payload = dict(result.payload)
+    migrated_payload.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    migrated_payload.setdefault("schema_version", resolved_target)
+    records = [_record_with_graph_path(record, path) for record in result.migration_records]
+
+    subgraphs = migrated_payload.get("subgraphs")
+    if isinstance(subgraphs, Mapping):
+        migrated_subgraphs: dict[str, Any] = {}
+        for node_id in sorted(subgraphs):
+            raw_subgraph = subgraphs[node_id]
+            if not isinstance(raw_subgraph, Mapping) and not isinstance(raw_subgraph, GraphSpec):
+                migrated_subgraphs[str(node_id)] = raw_subgraph
+                continue
+            nested_source = None
+            if isinstance(raw_subgraph, Mapping):
+                nested_source = (
+                    _payload_schema_version(raw_subgraph)
+                    or _payload_metadata_version(raw_subgraph)
+                    or resolved_source
+                )
+            nested = migrate_graph_spec(
+                raw_subgraph,
+                source_version=nested_source,
+                target_version=resolved_target,
+                path=f"{path}.subgraphs[{node_id!r}]",
+                registry=registry,
+            )
+            migrated_subgraphs[str(node_id)] = nested.payload
+            records.extend(nested.migration_records)
+        migrated_payload["subgraphs"] = migrated_subgraphs
+
+    return SpecMigrationResult(
+        kind=result.kind,
+        schema_id=result.schema_id,
+        source_version=result.source_version,
+        target_version=result.target_version,
+        payload=migrated_payload,
+        migration_records=records,
     )
 
 
@@ -354,8 +554,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     for family in (
         SpecSchemaFamily(
             kind="GraphSpec",
-            schema_id="feedbax.graph_spec",
-            current_version="1.0.0",
+            schema_id=GRAPH_SPEC_SCHEMA_ID,
+            current_version=GRAPH_SPEC_SCHEMA_VERSION,
             description="Canvas-authored executable graph specification.",
         ),
         SpecSchemaFamily(
@@ -524,3 +724,16 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 default_registry = MigrationRegistry()
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-legacy-v1-to-v2",
+        migrate=_migrate_legacy_graph_spec_payload,
+        description=(
+            "Promote legacy GraphSpec payloads to the explicit schema identity and "
+            "rename built-in node types and Network input ports."
+        ),
+    ),
+)
