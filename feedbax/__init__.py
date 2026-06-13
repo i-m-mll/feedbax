@@ -71,6 +71,10 @@ from feedbax.task import (
     get_scalar_epoch_seq,
     prepare_trial,
 )
+from feedbax.task_presets import (
+    DELAYED_CENTER_OUT_PRESET,
+    delayed_center_out_reaches_params,
+)
 
 # from feedbax._logging import enable_central_logging
 
@@ -83,6 +87,7 @@ __all__ = [
     "Component",
     "DelayedReaches",
     "DelayedReachTaskInputs",
+    "DELAYED_CENTER_OUT_PRESET",
     "Graph",
     "GraphTemplateMetadata",
     "LOG_LEVEL",
@@ -94,6 +99,7 @@ __all__ = [
     "Wire",
     "__version__",
     "centreout_endpoints",
+    "delayed_center_out_reaches_params",
     "forceless_task_inputs",
     "get_ensemble",
     "gen_epoch_lengths",

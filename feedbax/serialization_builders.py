@@ -60,6 +60,10 @@ from feedbax.penzai_component import (
 )
 from feedbax.serialization_prototypes import array_proto_from_shape
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
+from feedbax.task_presets import (
+    apply_delayed_reaches_preset,
+    delayed_reaches_n_steps_from_params,
+)
 
 
 _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
@@ -176,7 +180,7 @@ def _build_filter(params: Mapping[str, Any]) -> FirstOrderFilter:
 
 
 def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComponent:
-    loss_func = CompositeLoss({})
+    loss_func = CompositeLoss(())
     if task_type == "SimpleReaches":
         task = SimpleReaches(
             loss_func=loss_func,
@@ -187,19 +191,26 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
             eval_grid_n=int(params.get("eval_grid_n", 1)),
         )
     elif task_type == "DelayedReaches":
+        params = apply_delayed_reaches_preset(params)
         task = DelayedReaches(
             loss_func=loss_func,
-            n_steps=int(params.get("n_steps", 140)),
+            n_steps=delayed_reaches_n_steps_from_params(params),
             workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
+            preset=params.get("preset", None),
             train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
             epoch_len_ranges=tuple(
                 tuple(int(value) for value in item)
                 for item in params.get("epoch_len_ranges", [[5, 15], [10, 20]])
             ),
+            epoch_names=tuple(str(value) for value in params.get("epoch_names", []))
+            or ("hold", "target_on", "movement"),
             target_on_epochs=tuple(int(value) for value in params.get("target_on_epochs", [1, 2])),
             hold_epochs=tuple(int(value) for value in params.get("hold_epochs", [0, 1])),
             move_epochs=tuple(int(value) for value in params.get("move_epochs", [2])),
             p_catch_trial=float(params.get("p_catch_trial", 0.5)),
+            target_visible_from_start=bool(params.get("target_visible_from_start", False)),
+            go_cue_event_name=params.get("go_cue_event_name", None),
+            catch_metadata_policy=str(params.get("catch_metadata_policy", "none")),
             eval_n_directions=int(params.get("eval_n_directions", 7)),
             eval_reach_length=float(params.get("eval_reach_length", 0.5)),
             eval_grid_n=int(params.get("eval_grid_n", 1)),

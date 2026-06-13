@@ -713,12 +713,17 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 params.update(
                     {
                         "workspace": jnp.asarray(task.workspace).tolist(),
+                        "preset": task.preset,
                         "train_endpoint_mode": task.train_endpoint_mode,
                         "epoch_len_ranges": [list(item) for item in task.epoch_len_ranges],
+                        "epoch_names": list(task.epoch_names),
                         "target_on_epochs": jnp.asarray(task.target_on_epochs).tolist(),
                         "hold_epochs": jnp.asarray(task.hold_epochs).tolist(),
                         "move_epochs": jnp.asarray(task.move_epochs).tolist(),
                         "p_catch_trial": task.p_catch_trial,
+                        "target_visible_from_start": task.target_visible_from_start,
+                        "go_cue_event_name": task.go_cue_event_name,
+                        "catch_metadata_policy": task.catch_metadata_policy,
                         "eval_n_directions": task.eval_n_directions,
                         "eval_reach_length": task.eval_reach_length,
                         "eval_grid_n": task.eval_grid_n,
