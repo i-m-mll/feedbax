@@ -17,23 +17,9 @@ function standardNetworkSubgraph(nodeId: string, params: ComponentSpec['params']
         : 2;
   const readoutActivation =
     typeof params.out_nonlinearity === 'string' ? params.out_nonlinearity : 'tanh';
-  const sisuGating = typeof params.sisu_gating === 'string' ? params.sisu_gating : 'additive';
-  const hasModulator = sisuGating === 'multiplicative';
-  const modulatorInput =
-    typeof params.modulator_input === 'string' && params.modulator_input.length > 0
-      ? params.modulator_input
-      : 'sisu';
-  const cellInputSize = hasModulator ? inputSize - 1 : inputSize;
   const cellInputPorts = cellType === 'LSTM' ? ['input', 'hidden', 'cell'] : ['input', 'hidden'];
   const cellOutputPorts = cellType === 'LSTM' ? ['output', 'hidden', 'cell'] : ['output', 'hidden'];
-  const hiddenSourceNode = hasModulator ? 'sisu_modulator' : 'cell';
-  const hiddenSourcePort = hasModulator ? 'output' : 'hidden';
-  const recurrentWires = networkRecurrentWires(
-    cellType,
-    hiddenSize,
-    hiddenSourceNode,
-    hiddenSourcePort
-  );
+  const recurrentWires = networkRecurrentWires(cellType, hiddenSize);
   const nodes: GraphSpec['nodes'] = {
     input_mux: {
       type: 'Mux',
@@ -46,7 +32,7 @@ function standardNetworkSubgraph(nodeId: string, params: ComponentSpec['params']
     cell: {
       type: cellType,
       params: {
-        input_size: cellInputSize,
+        input_size: inputSize,
         hidden_size: hiddenSize,
       },
       input_ports: cellInputPorts,
@@ -77,34 +63,10 @@ function standardNetworkSubgraph(nodeId: string, params: ComponentSpec['params']
     input: ['input_mux', 'in_0'],
     feedback: ['input_mux', 'in_1'],
   };
-  if (hasModulator) {
-    nodes.sisu_modulator = {
-      type: 'ElementwiseAffineModulator',
-      params: {
-        signal_shape: [hiddenSize],
-        baseline: 1.0,
-        gain_init:
-          Array.isArray(params.sisu_alpha) && params.sisu_alpha.length > 0
-            ? params.sisu_alpha
-            : Array(hiddenSize).fill(0),
-        bias_init: 0.0,
-      },
-      input_ports: ['signal', 'modulator', 'scale', 'bias'],
-      output_ports: ['output'],
-    };
-    wires.push({
-      source_node: 'cell',
-      source_port: 'output',
-      target_node: 'sisu_modulator',
-      target_port: 'signal',
-    });
-    inputPorts.push(modulatorInput);
-    inputBindings[modulatorInput] = ['sisu_modulator', 'modulator'];
-  }
   wires.push(
     {
-      source_node: hiddenSourceNode,
-      source_port: hiddenSourcePort,
+      source_node: 'cell',
+      source_port: 'hidden',
       target_node: 'readout',
       target_port: 'input',
     },
@@ -119,7 +81,7 @@ function standardNetworkSubgraph(nodeId: string, params: ComponentSpec['params']
     input_bindings: inputBindings,
     output_bindings: {
       output: ['readout', 'output'],
-      hidden: [hiddenSourceNode, hiddenSourcePort],
+      hidden: ['cell', 'hidden'],
     },
     taps: [],
     subgraphs: {},
@@ -454,6 +416,10 @@ export function normalizeGraphAuthoringTypes(graph: GraphSpec): GraphSpec {
         if ('output_size' in nextParams && !('out_size' in nextParams)) {
           nextParams.out_size = nextParams.output_size;
         }
+        delete nextParams.sisu_gating;
+        delete nextParams.sisu_alpha;
+        delete nextParams.modulator;
+        delete nextParams.modulator_input;
       }
       const nextSpec: ComponentSpec = {
         ...spec,

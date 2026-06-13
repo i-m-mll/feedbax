@@ -61,28 +61,8 @@ def register_builtin_components(registry: _Registry) -> None:
                     min=0,
                     required=False,
                 ),
-                ParamSchema(
-                    name='sisu_gating',
-                    type='enum',
-                    options=['additive', 'multiplicative'],
-                    default='additive',
-                    required=False,
-                ),
-                ParamSchema(
-                    name='modulator_input',
-                    type='str',
-                    default='sisu',
-                    required=False,
-                ),
-                ParamSchema(
-                    name='sisu_alpha',
-                    type='array',
-                    default=[],
-                    required=False,
-                    description='Per-hidden-unit multiplicative SISU gains.',
-                ),
             ],
-            input_ports=['input', 'feedback', 'sisu'],
+            input_ports=['input', 'feedback'],
             output_ports=['output', 'hidden'],
             icon='CircuitBoard',
             is_composite=True,
@@ -90,7 +70,6 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={
                     'input': PortType(dtype='vector'),
                     'feedback': PortType(dtype='vector'),
-                    'sisu': PortType(dtype='scalar'),
                 },
                 outputs={
                     'output': PortType(dtype='vector'),

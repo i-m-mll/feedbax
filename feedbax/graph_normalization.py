@@ -95,10 +95,6 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
     input_size = _int_param(params.get("input_size"), 6)
     output_size = _int_param(params.get("out_size", params.get("output_size")), 2)
     activation = str(params.get("out_nonlinearity", "tanh"))
-    sisu_gating = str(params.get("sisu_gating", "additive"))
-    has_modulator = sisu_gating == "multiplicative"
-    modulator_input = str(params.get("modulator_input", "sisu"))
-    cell_input_size = input_size - 1 if has_modulator else input_size
     parameter_constraints = []
     population_structure = params.get("population_structure")
     if isinstance(population_structure, dict):
@@ -106,7 +102,7 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
             lower_population_constraints(
                 population_structure,
                 hidden_size=hidden_size,
-                input_size=cell_input_size,
+                input_size=input_size,
                 out_size=output_size,
                 cell_type=cell_type,
             )
@@ -115,8 +111,6 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
     cell_output_ports = (
         ["output", "hidden", "cell"] if cell_type == "LSTM" else ["output", "hidden"]
     )
-    hidden_source_node = "sisu_modulator" if has_modulator else "cell"
-    hidden_source_port = "output" if has_modulator else "hidden"
     nodes = {
         "input_mux": ComponentSpec(
             type="Mux",
@@ -126,7 +120,7 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
         ),
         "cell": ComponentSpec(
             type=cell_type,
-            params={"input_size": cell_input_size, "hidden_size": hidden_size},
+            params={"input_size": input_size, "hidden_size": hidden_size},
             input_ports=cell_input_ports,
             output_ports=cell_output_ports,
         ),
@@ -152,44 +146,17 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
     ]
     input_ports = ["input", "feedback"]
     input_bindings = {"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")}
-    if has_modulator:
-        alpha = params.get("sisu_alpha")
-        if not isinstance(alpha, list) or not alpha:
-            alpha = [0.0] * hidden_size
-        nodes["sisu_modulator"] = ComponentSpec(
-            type="ElementwiseAffineModulator",
-            params={
-                "signal_shape": [hidden_size],
-                "baseline": 1.0,
-                "gain_init": alpha,
-                "bias_init": 0.0,
-            },
-            input_ports=["signal", "modulator", "scale", "bias"],
-            output_ports=["output"],
-        )
-        wires.append(
-            WireSpec(
-                source_node="cell",
-                source_port="output",
-                target_node="sisu_modulator",
-                target_port="signal",
-            )
-        )
-        input_ports.append(modulator_input)
-        input_bindings[modulator_input] = ("sisu_modulator", "modulator")
     wires.extend(
         [
             WireSpec(
-                source_node=hidden_source_node,
-                source_port=hidden_source_port,
+                source_node="cell",
+                source_port="hidden",
                 target_node="readout",
                 target_port="input",
             ),
             *_network_recurrent_wires(
                 cell_type,
                 hidden_size,
-                hidden_source_node=hidden_source_node,
-                hidden_source_port=hidden_source_port,
             ),
         ]
     )
@@ -201,7 +168,7 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
         input_bindings=input_bindings,
         output_bindings={
             "output": ("readout", "output"),
-            "hidden": (hidden_source_node, hidden_source_port),
+            "hidden": ("cell", "hidden"),
         },
         parameter_constraints=parameter_constraints,
         taps=[],
@@ -425,6 +392,9 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
         params = dict(node_spec.params)
         if next_type == "Network" and "output_size" in params and "out_size" not in params:
             params["out_size"] = params["output_size"]
+        if next_type == "Network":
+            for stale_param in ("sisu_gating", "sisu_alpha", "modulator", "modulator_input"):
+                params.pop(stale_param, None)
         input_ports = list(node_spec.input_ports)
         output_ports = list(node_spec.output_ports)
         if next_type == "Network":

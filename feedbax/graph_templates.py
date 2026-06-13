@@ -96,8 +96,6 @@ def standard_network_subgraph(
     out_size: int,
     cell_type: str = "GRU",
     out_nonlinearity: str = "identity",
-    modulator: dict[str, Any] | None = None,
-    modulator_input: str = "sisu",
     population_structure: PopulationStructure | Mapping[str, object] | None = None,
     name: str = "Network internals",
     description: str = "Built-in Network graph template",
@@ -105,18 +103,6 @@ def standard_network_subgraph(
     """Build the executable subgraph used by built-in Network templates."""
 
     normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
-    modulator_params = dict(modulator or {})
-    has_modulator = bool(modulator_params)
-    modulator_node = str(modulator_params.pop("node", "sisu_modulator"))
-    modulator_type = str(modulator_params.pop("type", "ElementwiseAffineModulator"))
-    modulator_input = str(modulator_params.pop("input_port", modulator_input))
-    if has_modulator:
-        modulator_params.setdefault("signal_shape", [int(hidden_size)])
-        modulator_params.setdefault("baseline", 1.0)
-        modulator_params.setdefault("gain_init", 0.0)
-        modulator_params.setdefault("bias_init", 0.0)
-    hidden_source_node = modulator_node if has_modulator else "cell"
-    hidden_source_port = "output" if has_modulator else "hidden"
     parameter_constraints = []
     if population_structure is not None:
         parameter_constraints = list(
@@ -171,36 +157,17 @@ def standard_network_subgraph(
     ]
     input_ports = ["input", "feedback"]
     input_bindings = {"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")}
-    if has_modulator:
-        nodes[modulator_node] = ComponentSpec(
-            type=modulator_type,
-            params=modulator_params,
-            input_ports=["signal", "modulator", "scale", "bias"],
-            output_ports=["output"],
-        )
-        wires.append(
-            WireSpec(
-                source_node="cell",
-                source_port="output",
-                target_node=modulator_node,
-                target_port="signal",
-            )
-        )
-        input_ports.append(modulator_input)
-        input_bindings[modulator_input] = (modulator_node, "modulator")
     wires.extend(
         [
             WireSpec(
-                source_node=hidden_source_node,
-                source_port=hidden_source_port,
+                source_node="cell",
+                source_port="hidden",
                 target_node="readout",
                 target_port="input",
             ),
             *network_recurrent_wires(
                 normalized_cell_type,
                 int(hidden_size),
-                hidden_source_node=hidden_source_node,
-                hidden_source_port=hidden_source_port,
             ),
         ]
     )
@@ -212,7 +179,7 @@ def standard_network_subgraph(
         input_bindings=input_bindings,
         output_bindings={
             "output": ("readout", "output"),
-            "hidden": (hidden_source_node, hidden_source_port),
+            "hidden": ("cell", "hidden"),
         },
         parameter_constraints=parameter_constraints,
         metadata=GraphMetadata(
@@ -235,20 +202,6 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
     hidden_type = str(params.get("hidden_type", "GRUCell"))
     cell_type = "LSTM" if hidden_type in {"LSTM", "LSTMCell"} else "GRU"
     out_nonlinearity = str(params.get("out_nonlinearity", "identity"))
-    sisu_gating = str(params.get("sisu_gating", "additive"))
-    has_modulator = sisu_gating == "multiplicative" or bool(params.get("modulator"))
-    modulator_input = str(params.get("modulator_input", "sisu"))
-    cell_input_size = input_size - 1 if sisu_gating == "multiplicative" else input_size
-    if cell_input_size <= 0:
-        raise ValueError("multiplicative SISU Network templates require input_size > 1")
-    modulator = params.get("modulator")
-    if has_modulator and not isinstance(modulator, dict):
-        modulator = {
-            "signal_shape": [hidden_size],
-            "baseline": 1.0,
-            "gain_init": params.get("sisu_alpha", [0.0] * hidden_size),
-            "bias_init": 0.0,
-        }
     raw_population_structure = params.get("population_structure")
     population_structure = None
     if isinstance(raw_population_structure, PopulationStructure):
@@ -264,11 +217,7 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         "out_nonlinearity": out_nonlinearity,
         "hidden_noise_std": float(params.get("hidden_noise_std", 0.0) or 0.0),
         "encoding_size": int(params.get("encoding_size", 0) or 0),
-        "sisu_gating": sisu_gating,
     }
-    if has_modulator:
-        node_params["modulator_input"] = modulator_input
-        node_params["sisu_alpha"] = params.get("sisu_alpha", [0.0] * hidden_size)
     if population_structure is not None:
         node_params["population_structure"] = population_structure.to_spec()
     input_ports = ["input", "feedback"]
@@ -276,9 +225,6 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         "input": ("network", "input"),
         "feedback": ("network", "feedback"),
     }
-    if has_modulator:
-        input_ports.append(modulator_input)
-        input_bindings[modulator_input] = ("network", modulator_input)
     return GraphSpec(
         nodes={
             "network": ComponentSpec(
@@ -298,13 +244,11 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         },
         subgraphs={
             "network": standard_network_subgraph(
-                input_size=cell_input_size,
+                input_size=input_size,
                 hidden_size=hidden_size,
                 out_size=out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
-                modulator=modulator,
-                modulator_input=modulator_input,
                 population_structure=population_structure,
             )
         },
