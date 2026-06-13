@@ -513,6 +513,10 @@ class Demux(Component):
 
     def __init__(self, sizes: Sequence[int]):
         self.sizes = tuple(int(s) for s in sizes)
+        if not self.sizes:
+            raise ValueError("Demux sizes must contain at least one output size")
+        if any(size <= 0 for size in self.sizes):
+            raise ValueError("Demux sizes must be positive integers")
         self.output_ports = tuple(f"out_{i}" for i in range(len(self.sizes)))
 
     def __call__(
@@ -523,6 +527,11 @@ class Demux(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         x = inputs["input"]
+        if x.shape[-1] != sum(self.sizes):
+            raise ValueError(
+                f"Demux input final dimension {x.shape[-1]} does not match "
+                f"sum(sizes) {sum(self.sizes)}"
+            )
         outputs: dict[str, PyTree] = {}
         start = 0
         for i, sz in enumerate(self.sizes):

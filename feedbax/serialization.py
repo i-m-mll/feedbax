@@ -11,6 +11,7 @@ from feedbax.components import (
     Constant,
     DelayLine,
     Damper,
+    Demux,
     GRU,
     Gain,
     LSTM,
@@ -454,6 +455,14 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="Mux",
                 params={"n_inputs": component.n_inputs},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Demux):
+            nodes[name] = ComponentSpec(
+                type="Demux",
+                params={"sizes": list(component.sizes)},
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
