@@ -10,7 +10,7 @@ from feedbax.migrations import (
     UnsupportedSpecVersion,
     default_spec_registry,
 )
-from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION
+from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
 
 
 def _registry() -> SpecSchemaRegistry:
@@ -140,3 +140,104 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["SpecPayload"].identity == "feedbax.spec_payload"
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+def test_default_policy_matrix_covers_registered_emitted_families() -> None:
+    missing = default_spec_registry.families_missing_policy()
+
+    assert missing == ()
+
+    for family in default_spec_registry.families():
+        assert family.policy is not None, family.kind
+        policy = family.policy
+        assert policy.owner_module
+        assert policy.emitted_by
+        assert policy.consumed_by
+        assert policy.required_tests
+        assert policy.rejection_message
+        assert policy.stance in {"migrate", "reject"}
+        if policy.stance == "migrate":
+            assert policy.supported_old_versions, family.kind
+        else:
+            assert policy.rejected_old_versions, family.kind
+
+
+def test_default_policy_matrix_covers_provider_schema_exports_and_capability_refs() -> None:
+    from feedbax.provider import provider_manifest
+
+    manifest = provider_manifest()
+    schema_refs = set(manifest.schemas)
+    for capability in manifest.capabilities.values():
+        if capability.input_schema is not None:
+            schema_refs.add(capability.input_schema)
+        if capability.output_schema is not None:
+            schema_refs.add(capability.output_schema)
+
+    missing = schema_refs - set(default_spec_registry.policy_matrix())
+
+    assert missing == set()
+    assert default_spec_registry.resolve("ComponentRegistrySnapshot").policy is not None
+    assert default_spec_registry.resolve("ComponentRegistrySnapshot").policy.covers == (
+        "RegistrySnapshot"
+    )
+
+
+def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> None:
+    for family in default_spec_registry.families():
+        current = default_spec_registry.migrate(
+            family.kind,
+            {"schema_version": family.current_version},
+        )
+        assert current.source_version == family.current_version
+        assert current.target_version == family.current_version
+        assert not current.migrated
+
+        policy = family.policy
+        assert policy is not None
+        if policy.stance == "migrate":
+            for old_version in policy.supported_old_versions:
+                migrated = default_spec_registry.migrate(
+                    family.kind,
+                    {"schema_version": old_version},
+                )
+                assert migrated.source_version == old_version
+                assert migrated.target_version == family.current_version
+                assert migrated.migrated
+            continue
+
+        for old_version in policy.rejected_old_versions:
+            with pytest.raises(UnsupportedSpecVersion) as excinfo:
+                default_spec_registry.migrate(
+                    family.kind,
+                    {"schema_version": old_version},
+                )
+
+            message = str(excinfo.value)
+            assert f"family='{family.kind}'" in message
+            assert f"schema_id='{family.identity}'" in message
+            assert f"source_version='{old_version}'" in message
+            assert f"current_version='{family.current_version}'" in message
+            assert "migration_intentionally_absent=yes" in message
+
+
+def test_default_policy_matrix_distinguishes_graph_migration_from_task_binding_rejection() -> None:
+    graph_policy = default_spec_registry.resolve("GraphSpec").policy
+    task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
+
+    assert graph_policy is not None
+    assert graph_policy.stance == "migrate"
+    assert graph_policy.supported_old_versions == (LEGACY_GRAPH_SPEC_SCHEMA_VERSION,)
+    assert task_binding_policy is not None
+    assert task_binding_policy.stance == "reject"
+    assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v1",)
+
+    with pytest.raises(UnsupportedSpecVersion) as excinfo:
+        default_spec_registry.migrate(
+            "StudioTaskBindingSpec",
+            {"schema_version": "feedbax.studio.task_bindings.v1"},
+        )
+
+    message = str(excinfo.value)
+    assert "family='StudioTaskBindingSpec'" in message
+    assert "feedbax.studio.task_bindings.v1" in message
+    assert "migration_intentionally_absent=yes" in message
