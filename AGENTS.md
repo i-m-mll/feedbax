@@ -58,6 +58,15 @@
   existing semantic schema or include versioned migration logic and focused
   migration tests. Do not leave schema-affecting refactors as agent archaeology
   for downstream projects.
+- Any new or changed structured spec emitter must declare a stable schema
+  identity, such as an explicit version field or registered schema ID, and must
+  integrate with the migration path or explicitly reject older versions with a
+  clear error. This applies to provider APIs, manifests, Studio save/load,
+  workers, analysis/evaluation/report execution, registries, and downstream
+  extension hooks. Validation-only Pydantic or TypeScript shapes are not
+  sufficient for durable emitted specs; implementation issues and auth specs
+  must include focused acceptance evidence for old-version accept, migrate, or
+  reject behavior.
 - Studio needs both processes: frontend `cd web && npm run dev` and backend
   `uv run uvicorn feedbax.web.app:app --port 8000`.
 
