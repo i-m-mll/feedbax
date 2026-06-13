@@ -10,7 +10,17 @@ from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
 )
+from feedbax.manifest import (
+    ArtifactMigrationRecord,
+    GraphSpecManifest,
+    ModelArtifactManifest,
+    ParentRef,
+    load_graph_spec_from_manifest,
+    spec_payload,
+    write_manifest,
+)
 from feedbax.migrations import SpecMigrationResult, UnsupportedSpecVersion, migrate_graph_spec
+from feedbax.provider import validate_graph_spec_manifest, validate_spec
 
 
 def _legacy_metadata() -> dict[str, str]:
@@ -20,6 +30,18 @@ def _legacy_metadata() -> dict[str, str]:
         "updated_at": "2026-01-01T00:00:00Z",
         "version": LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     }
+
+
+def _legacy_graph_payload() -> dict[str, object]:
+    return {
+        "metadata": _legacy_metadata(),
+        "nodes": {},
+        "wires": [],
+    }
+
+
+def _current_graph_payload() -> dict[str, object]:
+    return GraphSpec().model_dump(mode="json")
 
 
 def test_graph_spec_schema_identity_survives_json_round_trip() -> None:
@@ -132,6 +154,151 @@ def test_unknown_graph_spec_schema_version_reports_available_migrations() -> Non
     assert f"current_version='{GRAPH_SPEC_SCHEMA_VERSION}'" in message
     assert "available_migrations=[" in message
     assert "graph-spec-legacy-v1-to-v2" in message
+
+
+def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
+    manifest = GraphSpecManifest(
+        id="feedbax-graph-spec:legacy",
+        graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
+    )
+
+    result = load_graph_spec_from_manifest(manifest)
+
+    loaded_manifest = result.manifest
+    assert isinstance(loaded_manifest, GraphSpecManifest)
+    assert result.custody_manifest_kind == "GraphSpecManifest"
+    assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
+    assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
+    assert loaded_manifest.graph_spec.sha256 == spec_payload(
+        "GraphSpec",
+        result.payload,
+    ).sha256
+    assert [record.migration_id for record in result.applied_migration_records] == [
+        "graph-spec-legacy-v1-to-v2"
+    ]
+    assert result.migration_records == loaded_manifest.migration_records
+
+
+def test_model_artifact_inline_graph_spec_preserves_downstream_migration_records() -> None:
+    downstream = ArtifactMigrationRecord(
+        migration_id="rlrmp-legacy-artifact-v0-to-v1",
+        source_schema_version="rlrmp.model_artifact.v0",
+        target_schema_version="rlrmp.model_artifact.v1",
+        tool="rlrmp",
+    )
+    manifest = ModelArtifactManifest(
+        id="feedbax-model-artifact:legacy-inline",
+        graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
+        migration_records=[downstream],
+    )
+
+    result = load_graph_spec_from_manifest(manifest)
+
+    loaded_manifest = result.manifest
+    assert isinstance(loaded_manifest, ModelArtifactManifest)
+    assert result.custody_manifest_kind == "ModelArtifactManifest"
+    assert result.downstream_migration_records == [downstream]
+    assert loaded_manifest.migration_records[0] == downstream
+    assert loaded_manifest.migration_records[1].tool == "feedbax"
+    assert not isinstance(loaded_manifest.graph_spec, ParentRef)
+    assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
+
+
+def test_model_artifact_parent_graph_spec_records_are_discoverable(tmp_path) -> None:
+    graph_manifest = GraphSpecManifest(
+        id="feedbax-graph-spec:referenced",
+        graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
+    )
+    graph_manifest_path = write_manifest(graph_manifest, root=tmp_path, index=False)
+    model_manifest = ModelArtifactManifest(
+        id="feedbax-model-artifact:referenced",
+        graph_spec=ParentRef(
+            kind="GraphSpecManifest",
+            id=graph_manifest.id,
+            role="graph_spec",
+            uri=str(graph_manifest_path),
+        ),
+    )
+
+    result = load_graph_spec_from_manifest(model_manifest)
+
+    loaded_manifest = result.manifest
+    assert isinstance(loaded_manifest, GraphSpecManifest)
+    assert result.custody_manifest_id == graph_manifest.id
+    assert result.migration_records == loaded_manifest.migration_records
+    assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
+
+
+def test_provider_validation_reports_manifest_migration_custody_states() -> None:
+    migrated = validate_graph_spec_manifest(
+        GraphSpecManifest(
+            id="feedbax-graph-spec:legacy",
+            graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
+        )
+    )
+    assert migrated.valid
+    assert migrated.migration_status == "feedbax_migrated"
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "graph-spec-legacy-v1-to-v2"
+    ]
+    routed = validate_spec(
+        "graph_manifest",
+        GraphSpecManifest(
+            id="feedbax-graph-spec:routed",
+            graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
+        ).model_dump(mode="json"),
+    )
+    assert routed.valid
+    assert routed.migration_status == "feedbax_migrated"
+
+    current = validate_graph_spec_manifest(
+        GraphSpecManifest(
+            id="feedbax-graph-spec:current",
+            graph_spec=spec_payload("GraphSpec", _current_graph_payload()),
+        )
+    )
+    assert current.valid
+    assert current.migration_status == "current"
+    assert current.migration_records == []
+
+    downstream_record = ArtifactMigrationRecord(
+        migration_id="rlrmp-legacy-artifact-v0-to-v1",
+        source_schema_version="rlrmp.model_artifact.v0",
+        target_schema_version="rlrmp.model_artifact.v1",
+        tool="rlrmp",
+    )
+    downstream = validate_graph_spec_manifest(
+        ModelArtifactManifest(
+            id="feedbax-model-artifact:downstream",
+            graph_spec=spec_payload("GraphSpec", _current_graph_payload()),
+            migration_records=[downstream_record],
+        )
+    )
+    assert downstream.valid
+    assert downstream.migration_status == "downstream_migrated"
+    assert downstream.downstream_migration_records == [downstream_record]
+
+
+def test_provider_validation_rejects_unsupported_manifest_graph_spec_version() -> None:
+    result = validate_graph_spec_manifest(
+        GraphSpecManifest(
+            id="feedbax-graph-spec:unsupported",
+            graph_spec=spec_payload(
+                "GraphSpec",
+                {
+                    "schema_id": GRAPH_SPEC_SCHEMA_ID,
+                    "schema_version": "feedbax.graph_spec.v99",
+                    "nodes": {},
+                    "wires": [],
+                },
+            ),
+        )
+    )
+
+    assert not result.valid
+    assert result.migration_status == "rejected"
+    assert result.errors[0].type == "unsupported_spec_version"
+    assert "feedbax.graph_spec.v99" in result.errors[0].message
 
 
 def test_spec_to_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.MonkeyPatch) -> None:
