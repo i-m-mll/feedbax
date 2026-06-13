@@ -39,6 +39,8 @@ from feedbax.intervene.intervene import (
     Copy,
     CurlField,
     CurlFieldParams,
+    DynamicsMatrixPerturb,
+    DynamicsMatrixPerturbParams,
     FixedField,
     FixedFieldParams,
     NetworkClamp,
@@ -577,6 +579,48 @@ def _build_rigid_tendon_hill_muscle_thelen(
     )
 
 
+def _build_curl_field(params: Mapping[str, Any]) -> CurlField:
+    return CurlField(
+        params=CurlFieldParams(
+            scale=float(params.get("scale", 1.0)),
+            amplitude=float(params.get("amplitude", 1.0)),
+            active=bool(params.get("active", False)),
+        ),
+        label=str(params.get("label", "curl_field")),
+    )
+
+
+def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
+    return FixedField(
+        params=FixedFieldParams(
+            scale=float(params.get("scale", 1.0)),
+            amplitude=float(params.get("amplitude", 1.0)),
+            field=jnp.asarray(params.get("field", [0.0, 0.0])),
+            active=bool(params.get("active", False)),
+        ),
+        label=str(params.get("label", "fixed_field")),
+    )
+
+
+def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
+    delta_A = jnp.asarray(params.get("delta_A", [[0.0, 0.0, 0.0, 0.0]] * 2))
+    if delta_A.ndim != 2:
+        raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
+    if delta_A.shape[1] != 2 * delta_A.shape[0]:
+        raise ValueError(
+            "DynamicsMatrixPerturb delta_A must have shape (n_dim, 2 * n_dim)"
+        )
+    return DynamicsMatrixPerturb(
+        params=DynamicsMatrixPerturbParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+            delta_A=delta_A,
+        ),
+        label=str(params.get("label", "dynamics_matrix_perturb")),
+        mass=float(params.get("mass", 1.0)),
+    )
+
+
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
     "Sum": _build_sum,
@@ -603,21 +647,9 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Channel": _build_channel,
     "FeedbackChannels": _build_feedback_channels,
     "FirstOrderFilter": _build_filter,
-    "CurlField": lambda params: CurlField(
-        params=CurlFieldParams(
-            scale=float(params.get("scale", 1.0)),
-            amplitude=float(params.get("amplitude", 1.0)),
-            active=bool(params.get("active", False)),
-        )
-    ),
-    "FixedField": lambda params: FixedField(
-        params=FixedFieldParams(
-            scale=float(params.get("scale", 1.0)),
-            amplitude=float(params.get("amplitude", 1.0)),
-            field=jnp.asarray(params.get("field", [0.0, 0.0])),
-            active=bool(params.get("active", False)),
-        )
-    ),
+    "CurlField": _build_curl_field,
+    "FixedField": _build_fixed_field,
+    "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
     "AddNoise": lambda params: AddNoise(
         params=AddNoiseParams(
             scale=float(params.get("scale", 1.0)),

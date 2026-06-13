@@ -35,6 +35,7 @@ from feedbax.intervene.intervene import (
     ConstantInput,
     Copy,
     CurlField,
+    DynamicsMatrixPerturb,
     FixedField,
     NetworkClamp,
     NetworkConstantInput,
@@ -686,6 +687,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "scale": component._initial_state.scale,
                 "amplitude": component._initial_state.amplitude,
                 "active": component._initial_state.active,
+                "label": component.label,
             }
             nodes[name] = ComponentSpec(
                 type="CurlField",
@@ -701,9 +703,26 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "amplitude": component._initial_state.amplitude,
                 "field": jnp.asarray(component._initial_state.field).tolist(),
                 "active": component._initial_state.active,
+                "label": component.label,
             }
             nodes[name] = ComponentSpec(
                 type="FixedField",
+                params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, DynamicsMatrixPerturb):
+            params = {
+                "scale": component._initial_state.scale,
+                "delta_A": jnp.asarray(component._initial_state.delta_A).tolist(),
+                "active": component._initial_state.active,
+                "label": component.label,
+                "mass": component.mass,
+            }
+            nodes[name] = ComponentSpec(
+                type="DynamicsMatrixPerturb",
                 params=params,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
