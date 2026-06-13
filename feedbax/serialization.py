@@ -28,6 +28,7 @@ from feedbax.components import (
     Spring,
     Sum,
 )
+from feedbax.control.affine import AffineFeedbackController
 from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Component, Graph, Wire
 from feedbax.graph_templates import standard_network_subgraph
@@ -601,6 +602,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="LinearStateSpace",
                 params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, AffineFeedbackController):
+            nodes[name] = ComponentSpec(
+                type="AffineFeedbackController",
+                params=component.to_params(),
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

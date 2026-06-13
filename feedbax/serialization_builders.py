@@ -30,6 +30,7 @@ from feedbax.components import (
     Spring,
     Sum,
 )
+from feedbax.control.affine import build_affine_feedback_controller
 from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Component
 from feedbax.intervene.intervene import (
@@ -653,6 +654,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
     "LinearStateSpace": _build_linear_state_space,
     "StateFeedbackSelector": build_state_feedback_selector,
+    "AffineFeedbackController": build_affine_feedback_controller,
     "Channel": _build_channel,
     "FeedbackChannels": _build_feedback_channels,
     "FirstOrderFilter": _build_filter,
