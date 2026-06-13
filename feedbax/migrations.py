@@ -18,6 +18,7 @@ from feedbax.manifest import ArtifactMigrationRecord, SCHEMA_VERSION as MANIFEST
 
 MigrationPayload = Mapping[str, Any]
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
+ComponentParamMigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class MigrationError(ValueError):
@@ -34,6 +35,14 @@ class UnknownSpecFamily(MigrationError):
 
 class UnsupportedSpecVersion(MigrationError):
     """Raised when a structured spec version cannot be accepted or migrated."""
+
+
+class UnsupportedComponentMigration(MigrationError):
+    """Raised when a component ID or parameter schema cannot be migrated."""
+
+
+class MissingComponentOwner(UnsupportedComponentMigration):
+    """Raised when a durable component ID does not name a loadable owner."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,52 @@ class SchemaMigration:
             metadata={"description": self.description} if self.description else {},
         )
         return migrated, record
+
+
+@dataclass(frozen=True)
+class ComponentMigration:
+    """One deterministic component type or parameter-schema migration edge."""
+
+    source_type: str
+    target_type: str
+    migration_id: str
+    owner: str
+    source_param_schema_version: str | None = None
+    target_param_schema_version: str | None = None
+    migrate_params: ComponentParamMigrationFn | None = None
+    description: str = ""
+
+    def apply(
+        self,
+        params: Mapping[str, Any],
+        *,
+        source_param_schema_version: str | None = None,
+    ) -> tuple[str, dict[str, Any], str | None]:
+        """Apply this component edge to a parameter payload."""
+        if source_param_schema_version != self.source_param_schema_version:
+            raise UnsupportedComponentMigration(
+                "Unsupported component parameter schema version: "
+                f"type={self.source_type!r}, owner={self.owner!r}, "
+                f"source_version={source_param_schema_version!r}, "
+                f"expected_source_version={self.source_param_schema_version!r}, "
+                f"target_type={self.target_type!r}, "
+                f"target_version={self.target_param_schema_version!r}"
+            )
+        migrated = dict(params)
+        if self.migrate_params is not None:
+            migrated = self.migrate_params(migrated)
+        return self.target_type, migrated, self.target_param_schema_version
+
+
+@dataclass(frozen=True)
+class ComponentMigrationPack:
+    """Migration pack contributed by a component owner package."""
+
+    owner: str
+    migrations: tuple[ComponentMigration, ...]
+    package: str | None = None
+    version: str | None = None
+    description: str = ""
 
 
 class MigrationRegistry:

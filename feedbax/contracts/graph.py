@@ -37,6 +37,7 @@ class ComponentSpec(BaseModel):
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
+    param_schema_version: Optional[str] = None
     input_ports: List[str] = Field(default_factory=list)
     output_ports: List[str] = Field(default_factory=list)
 

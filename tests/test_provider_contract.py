@@ -470,6 +470,17 @@ def test_component_registry_snapshot_wraps_existing_registry() -> None:
     gain = next(entry for entry in snapshot.entries if entry.type_id == "feedbax.component.Gain")
     assert gain.input_ports == ["input"]
     assert gain.output_ports == ["output"]
+    assert gain.component_type_id == "Gain"
+    assert gain.owner == "feedbax"
+    assert gain.package == "feedbax"
+    assert gain.provenance == "feedbax"
+    assert gain.provenance_kind == "feedbax"
+    assert gain.param_schema_version == "1"
+    assert gain.supported_param_schema_versions == ["1"]
+    assert gain.identity is not None
+    assert gain.identity.stable
+    assert gain.identity.owner == "feedbax"
+    assert gain.migrations == []
 
 
 def test_validation_functions_accept_small_vertical_slice_specs() -> None:

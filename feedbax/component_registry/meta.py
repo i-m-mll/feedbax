@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from feedbax.contracts.component import PortTypeSpec
+from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo, PortTypeSpec
 from feedbax.contracts.graph import GraphSpec, GraphUIState, NodeUIState, ParamSchema
 
 if TYPE_CHECKING:
@@ -34,6 +34,20 @@ class ComponentMeta:
     builder: Optional[ComponentBuilder] = None
     output_prototype_fn: Optional[OutputPrototypeFn] = None
     provenance: Optional[str] = None
+    identity: Optional[ComponentIdentity] = None
+    owner: Optional[str] = None
+    param_schema_version: str = "1"
+    supported_param_schema_versions: List[str] = field(default_factory=list)
+    migrations: List[ComponentMigrationInfo] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.supported_param_schema_versions:
+            self.supported_param_schema_versions = [self.param_schema_version]
+        elif self.param_schema_version not in self.supported_param_schema_versions:
+            self.supported_param_schema_versions = [
+                *self.supported_param_schema_versions,
+                self.param_schema_version,
+            ]
 
     @property
     def default_params(self) -> Dict[str, ParamValue]:
