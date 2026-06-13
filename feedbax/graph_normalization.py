@@ -45,11 +45,17 @@ def _recurrent_zero_initializer(width: int | None = None, *, state_slot: str) ->
     return initializer
 
 
-def _network_recurrent_wires(cell_type: str, hidden_size: int) -> list[WireSpec]:
+def _network_recurrent_wires(
+    cell_type: str,
+    hidden_size: int,
+    *,
+    hidden_source_node: str = "cell",
+    hidden_source_port: str = "hidden",
+) -> list[WireSpec]:
     wires = [
         WireSpec(
-            source_node="cell",
-            source_port="hidden",
+            source_node=hidden_source_node,
+            source_port=hidden_source_port,
             target_node="cell",
             target_port="hidden",
             temporality="recurrent",
@@ -84,57 +90,101 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
     input_size = _int_param(params.get("input_size"), 6)
     output_size = _int_param(params.get("out_size", params.get("output_size")), 2)
     activation = str(params.get("out_nonlinearity", "tanh"))
+    sisu_gating = str(params.get("sisu_gating", "additive"))
+    has_modulator = sisu_gating == "multiplicative"
+    modulator_input = str(params.get("modulator_input", "sisu"))
+    cell_input_size = input_size - 1 if has_modulator else input_size
     cell_input_ports = ["input", "hidden", "cell"] if cell_type == "LSTM" else ["input", "hidden"]
     cell_output_ports = (
         ["output", "hidden", "cell"] if cell_type == "LSTM" else ["output", "hidden"]
     )
-    return GraphSpec(
-        nodes={
-            "input_mux": ComponentSpec(
-                type="Mux",
-                params={"n_inputs": 2},
-                input_ports=["in_0", "in_1"],
-                output_ports=["output"],
-            ),
-            "cell": ComponentSpec(
-                type=cell_type,
-                params={"input_size": input_size, "hidden_size": hidden_size},
-                input_ports=cell_input_ports,
-                output_ports=cell_output_ports,
-            ),
-            "readout": ComponentSpec(
-                type="Linear",
-                params={
-                    "input_size": hidden_size,
-                    "output_size": output_size,
-                    "use_bias": True,
-                    "activation": activation,
-                },
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-        },
-        wires=[
-            WireSpec(
-                source_node="input_mux",
-                source_port="output",
-                target_node="cell",
-                target_port="input",
-            ),
+    hidden_source_node = "sisu_modulator" if has_modulator else "cell"
+    hidden_source_port = "output" if has_modulator else "hidden"
+    nodes = {
+        "input_mux": ComponentSpec(
+            type="Mux",
+            params={"n_inputs": 2},
+            input_ports=["in_0", "in_1"],
+            output_ports=["output"],
+        ),
+        "cell": ComponentSpec(
+            type=cell_type,
+            params={"input_size": cell_input_size, "hidden_size": hidden_size},
+            input_ports=cell_input_ports,
+            output_ports=cell_output_ports,
+        ),
+        "readout": ComponentSpec(
+            type="Linear",
+            params={
+                "input_size": hidden_size,
+                "output_size": output_size,
+                "use_bias": True,
+                "activation": activation,
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+        ),
+    }
+    wires = [
+        WireSpec(
+            source_node="input_mux",
+            source_port="output",
+            target_node="cell",
+            target_port="input",
+        )
+    ]
+    input_ports = ["input", "feedback"]
+    input_bindings = {"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")}
+    if has_modulator:
+        alpha = params.get("sisu_alpha")
+        if not isinstance(alpha, list) or not alpha:
+            alpha = [0.0] * hidden_size
+        nodes["sisu_modulator"] = ComponentSpec(
+            type="ElementwiseAffineModulator",
+            params={
+                "signal_shape": [hidden_size],
+                "baseline": 1.0,
+                "gain_init": alpha,
+                "bias_init": 0.0,
+            },
+            input_ports=["signal", "modulator", "scale", "bias"],
+            output_ports=["output"],
+        )
+        wires.append(
             WireSpec(
                 source_node="cell",
                 source_port="output",
+                target_node="sisu_modulator",
+                target_port="signal",
+            )
+        )
+        input_ports.append(modulator_input)
+        input_bindings[modulator_input] = ("sisu_modulator", "modulator")
+    wires.extend(
+        [
+            WireSpec(
+                source_node=hidden_source_node,
+                source_port=hidden_source_port,
                 target_node="readout",
                 target_port="input",
             ),
-            *_network_recurrent_wires(cell_type, hidden_size),
-        ],
-        input_ports=["input", "feedback"],
+            *_network_recurrent_wires(
+                cell_type,
+                hidden_size,
+                hidden_source_node=hidden_source_node,
+                hidden_source_port=hidden_source_port,
+            ),
+        ]
+    )
+    return GraphSpec(
+        nodes=nodes,
+        wires=wires,
+        input_ports=input_ports,
         output_ports=["output", "hidden"],
-        input_bindings={"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")},
+        input_bindings=input_bindings,
         output_bindings={
             "output": ("readout", "output"),
-            "hidden": ("cell", "hidden"),
+            "hidden": (hidden_source_node, hidden_source_port),
         },
         taps=[],
         subgraphs={},
@@ -260,6 +310,12 @@ def _normalize_network_subgraph(subgraph: GraphSpec) -> GraphSpec:
         return subgraph
     cell_type = subgraph.nodes[cell_id].type
     hidden_size = _int_param(subgraph.nodes[cell_id].params.get("hidden_size"), 100)
+    hidden_binding = subgraph.output_bindings.get("hidden")
+    hidden_source_node = hidden_binding[0] if hidden_binding else cell_id
+    hidden_source_port = hidden_binding[1] if hidden_binding else "hidden"
+    preserves_hidden_source = hidden_source_node in subgraph.nodes and (
+        hidden_source_node != cell_id or hidden_source_port == "hidden"
+    )
     has_mux_wire = any(
         wire.source_node == "input_mux"
         and wire.source_port == "output"
@@ -267,7 +323,12 @@ def _normalize_network_subgraph(subgraph: GraphSpec) -> GraphSpec:
         and wire.target_port == "input"
         for wire in subgraph.wires
     )
-    recurrent_wires = _network_recurrent_wires(cell_type, hidden_size)
+    recurrent_wires = _network_recurrent_wires(
+        cell_type,
+        hidden_size,
+        hidden_source_node=hidden_source_node,
+        hidden_source_port=hidden_source_port,
+    )
     recurrent_targets = {(wire.target_node, wire.target_port) for wire in recurrent_wires}
     existing_recurrent_targets = {
         (wire.target_node, wire.target_port)
@@ -279,14 +340,13 @@ def _normalize_network_subgraph(subgraph: GraphSpec) -> GraphSpec:
         for wire in recurrent_wires
         if (wire.target_node, wire.target_port) not in existing_recurrent_targets
     ]
-    needs_hidden_binding = subgraph.output_bindings.get("hidden") != (cell_id, "hidden")
     if (
         "input_mux" in subgraph.nodes
         and has_mux_wire
         and feedback_binding
         and input_binding == ("input_mux", "in_0")
         and not missing_recurrent_wires
-        and not needs_hidden_binding
+        and preserves_hidden_source
     ):
         return subgraph.model_copy(
             update={
@@ -323,8 +383,7 @@ def _normalize_network_subgraph(subgraph: GraphSpec) -> GraphSpec:
     input_bindings["input"] = ("input_mux", "in_0")
     input_bindings["feedback"] = ("input_mux", "in_1")
     output_bindings = dict(subgraph.output_bindings)
-    if needs_hidden_binding:
-        output_bindings["hidden"] = (cell_id, "hidden")
+    output_bindings["hidden"] = (hidden_source_node, hidden_source_port)
     return subgraph.model_copy(
         update={
             "nodes": nodes,
@@ -413,8 +472,6 @@ def normalize_graph_for_studio_authoring(graph: GraphSpec) -> GraphSpec:
         for node_id, subgraph in subgraphs.items():
             node = nodes.get(node_id)
             if node is not None and node.type == "Network":
-                if node_id in generated_subgraphs or _is_auto_generated_network_subgraph(subgraph):
-                    continue
                 nodes[node_id] = node.model_copy(
                     update={
                         "input_ports": list(subgraph.input_ports),

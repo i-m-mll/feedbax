@@ -140,6 +140,60 @@ describe('graph authoring normalization', () => {
     expect(normalized.nodes.task_mux.params.n_inputs).toBe(3);
   });
 
+  it('generates explicit SISU input routing for multiplicative Network authoring', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        network: {
+          type: 'SimpleStagedNetwork',
+          params: {
+            input_size: 4,
+            hidden_size: 3,
+            output_size: 2,
+            sisu_gating: 'multiplicative',
+            sisu_alpha: [0.1, -0.2, 0.3],
+          },
+          input_ports: ['target', 'feedback'],
+          output_ports: ['output', 'hidden'],
+        },
+      },
+      wires: [],
+      input_ports: ['target', 'feedback'],
+      output_ports: ['output', 'hidden'],
+      input_bindings: {
+        target: ['network', 'target'],
+        feedback: ['network', 'feedback'],
+      },
+      output_bindings: {
+        output: ['network', 'output'],
+        hidden: ['network', 'hidden'],
+      },
+    };
+
+    const normalized = normalizeGraphAuthoringTypes(graph);
+    const subgraph = normalized.subgraphs!.network;
+
+    expect(normalized.nodes.network.input_ports).toEqual(['input', 'feedback', 'sisu']);
+    expect(subgraph.nodes.sisu_modulator).toMatchObject({
+      type: 'ElementwiseAffineModulator',
+      params: {
+        signal_shape: [3],
+        gain_init: [0.1, -0.2, 0.3],
+      },
+    });
+    expect(subgraph.nodes.cell.params.input_size).toBe(3);
+    expect(subgraph.input_bindings.sisu).toEqual(['sisu_modulator', 'modulator']);
+    expect(subgraph.output_bindings.hidden).toEqual(['sisu_modulator', 'output']);
+    expect(subgraph.wires).toContainEqual(
+      expect.objectContaining({
+        source_node: 'sisu_modulator',
+        source_port: 'output',
+        target_node: 'cell',
+        target_port: 'hidden',
+        temporality: 'recurrent',
+      })
+    );
+  });
+
   it('retargets task-data bindings from legacy Network target ports to input ports', () => {
     const graph = normalizeGraphForStudioAuthoring(runtimeGraph);
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(

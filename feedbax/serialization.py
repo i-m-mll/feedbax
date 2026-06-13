@@ -213,12 +213,30 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             hidden_type_name = type(component.hidden).__name__
             cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
             out_nonlinearity = nonlinearity_name(component.out_nonlinearity)
+            has_multiplicative_sisu = (
+                component.sisu_gating == "multiplicative" and component.sisu_alpha is not None
+            )
+            modulator = None
+            input_ports = list(component.input_ports)
+            if has_multiplicative_sisu:
+                modulator = {
+                    "signal_shape": [component.hidden_size],
+                    "baseline": 1.0,
+                    "gain_init": component.sisu_alpha.tolist(),
+                    "bias_init": 0.0,
+                }
+                if "sisu" not in input_ports:
+                    input_ports.append("sisu")
             subgraphs[name] = standard_network_subgraph(
-                input_size=component.input_size,
+                input_size=component.input_size - 1
+                if has_multiplicative_sisu
+                else component.input_size,
                 hidden_size=component.hidden_size,
                 out_size=component.out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
+                modulator=modulator,
+                modulator_input="sisu",
                 name=f"{name} internals",
                 description="Auto-generated Network subgraph",
             )
@@ -232,11 +250,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "out_nonlinearity": out_nonlinearity,
                 "hidden_noise_std": component.hidden_noise_std or 0.0,
                 "encoding_size": component.encoding_size or 0,
+                "sisu_gating": component.sisu_gating,
             }
+            if has_multiplicative_sisu:
+                params["modulator_input"] = "sisu"
+                params["sisu_alpha"] = component.sisu_alpha.tolist()
             nodes[name] = ComponentSpec(
                 type="Network",
                 params=params,
-                input_ports=list(component.input_ports),
+                input_ports=input_ports,
                 output_ports=list(component.output_ports),
             )
             continue

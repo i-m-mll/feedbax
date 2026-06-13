@@ -395,6 +395,19 @@ def output_prototypes_for_node(
             if (node_name, port) in input_prototypes
         }
         return state_feedback_output_prototype(params, node_inputs)
+    if node_type == "ElementwiseAffineModulator":
+        signal = input_prototypes.get((node_name, "signal"))
+        if signal is not None:
+            return {"output": signal}
+        signal_shape = params.get("signal_shape")
+        proto = array_proto_from_shape(signal_shape)
+        if proto is not None:
+            return {"output": proto}
+        return _defer_or_raise(
+            f"ElementwiseAffineModulator node {node_name!r} requires signal prototype "
+            "or signal_shape",
+            strict=strict,
+        )
     if node_type == "FeedbackChannels":
         proto = _proto_from_shape_spec(params.get("input_shape"))
         if proto is None:
