@@ -30,6 +30,14 @@ def shape_from_proto(proto: Any) -> list[int] | None:
     return [int(dim) for dim in leaves[0].shape]
 
 
+def _proto_from_shape_spec(shape: Any) -> Any:
+    if not isinstance(shape, (list, tuple)):
+        return None
+    if shape and all(isinstance(item, (list, tuple)) for item in shape):
+        return tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in shape)
+    return jnp.zeros(tuple(int(dim) for dim in shape))
+
+
 def proto_from_value(value: Any) -> Any:
     return jt.map(lambda x: jnp.zeros_like(jnp.asarray(x)), value)
 
@@ -361,7 +369,12 @@ def output_prototypes_for_node(
         return {"output": jnp.zeros((sum(shape[0] for shape in shapes if shape),))}
     if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
         effector = CartesianState()
-        return {"effector": effector}
+        return {"effector": effector, "state": effector}
+    if node_type == "FeedbackChannels":
+        proto = _proto_from_shape_spec(params.get("input_shape"))
+        if proto is None:
+            proto = (jnp.zeros(2), jnp.zeros(2))
+        return {"feedback": proto}
     raise ValueError(
         f"Node {node_name!r} has unsupported component type {node_type!r} for prototype inference"
     )
