@@ -4,6 +4,7 @@ from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
+from feedbax.control.affine import affine_feedback_output_prototype
 from feedbax.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
@@ -1332,6 +1333,37 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'error': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='AffineFeedbackController',
+            category='Control',
+            description='Time-varying affine feedback controller with optional feedforward.',
+            param_schema=[
+                ParamSchema(name='gain', type='array', default=[[[1.0]]], required=True),
+                ParamSchema(name='bias', type='array', default=None, required=False),
+                ParamSchema(name='feedforward', type='array', default=None, required=False),
+                ParamSchema(
+                    name='schedule_policy',
+                    type='enum',
+                    options=['hold', 'error'],
+                    default='hold',
+                    required=False,
+                ),
+            ],
+            input_ports=['feedback', 'reference', 'feedforward'],
+            output_ports=['command'],
+            icon='GitBranch',
+            port_types=PortTypeSpec(
+                inputs={
+                    'feedback': PortType(dtype='vector'),
+                    'reference': PortType(dtype='vector'),
+                    'feedforward': PortType(dtype='vector'),
+                },
+                outputs={'command': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=affine_feedback_output_prototype,
         )
     )
     # --- Discrete components ---

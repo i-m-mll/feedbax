@@ -20,8 +20,10 @@ from feedbax.control.pid import (
     PID,
     PIDDiscrete,
 )
+from feedbax.control.affine import AffineFeedbackController
 
 __all__ = [
+    "AffineFeedbackController",
     "Derivative",
     "Integrator",
     "IntegratorDiscrete",
