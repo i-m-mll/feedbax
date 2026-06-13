@@ -183,6 +183,7 @@ class BaseManifest(StrictModel):
 class GraphSpecManifest(BaseManifest):
     kind: Literal["GraphSpecManifest"] = "GraphSpecManifest"
     graph_spec: SpecPayload
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 class ModelArtifactManifest(BaseManifest):
@@ -275,6 +276,17 @@ AnyManifest = (
     | AnalysisRunManifest
     | ReportManifest
 )
+
+class GraphSpecLoadResult(StrictModel):
+    """Migrated GraphSpec payload plus the manifest that owns its migration records."""
+
+    payload: dict[str, Any]
+    manifest: GraphSpecManifest | ModelArtifactManifest
+    custody_manifest_kind: Literal["GraphSpecManifest", "ModelArtifactManifest"]
+    custody_manifest_id: str
+    applied_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+    downstream_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "GraphSpecManifest": GraphSpecManifest,
@@ -498,6 +510,154 @@ def load_manifest(path: Path | str) -> AnyManifest:
     if model is None:
         raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
     return model.model_validate(data)  # type: ignore[return-value]
+
+
+def load_graph_spec_from_manifest(
+    manifest: GraphSpecManifest | ModelArtifactManifest | Path | str,
+    *,
+    root: Path | str | None = None,
+) -> GraphSpecLoadResult:
+    """Load a manifest-owned GraphSpec while preserving migration-record custody.
+
+    Feedbax GraphSpec migration records stay on the manifest that directly owns
+    the inline GraphSpec payload. Downstream legacy-conversion records already
+    present on a model artifact remain distinct and are surfaced separately.
+    """
+    manifest_obj, manifest_path = _load_graph_spec_manifest_source(manifest)
+    base = Path(root) if root is not None else (
+        manifest_path.parent if manifest_path is not None else Path(".")
+    )
+
+    if isinstance(manifest_obj, GraphSpecManifest):
+        return _migrate_manifest_graph_spec_payload(
+            manifest_obj,
+            manifest_obj.graph_spec,
+            existing_records=manifest_obj.migration_records,
+            custody_manifest_kind="GraphSpecManifest",
+        )
+
+    graph_spec = manifest_obj.graph_spec
+    if isinstance(graph_spec, ParentRef):
+        referenced = _load_parent_graph_spec_manifest(graph_spec, base=base)
+        referenced_result = load_graph_spec_from_manifest(referenced, root=base)
+        downstream_records = _append_unique_migration_records(
+            referenced_result.downstream_migration_records,
+            _downstream_migration_records(manifest_obj.migration_records),
+        )
+        return referenced_result.model_copy(
+            update={"downstream_migration_records": downstream_records}
+        )
+
+    return _migrate_manifest_graph_spec_payload(
+        manifest_obj,
+        graph_spec,
+        existing_records=manifest_obj.migration_records,
+        custody_manifest_kind="ModelArtifactManifest",
+    )
+
+
+def _load_graph_spec_manifest_source(
+    manifest: GraphSpecManifest | ModelArtifactManifest | Path | str,
+) -> tuple[GraphSpecManifest | ModelArtifactManifest, Path | None]:
+    if isinstance(manifest, GraphSpecManifest | ModelArtifactManifest):
+        return manifest, None
+    path = Path(manifest)
+    loaded = load_manifest(path)
+    if not isinstance(loaded, GraphSpecManifest | ModelArtifactManifest):
+        raise TypeError(
+            "Expected GraphSpecManifest or ModelArtifactManifest, "
+            f"got {type(loaded).__name__}."
+        )
+    return loaded, path
+
+
+def _load_parent_graph_spec_manifest(parent: ParentRef, *, base: Path) -> GraphSpecManifest:
+    if parent.uri is None:
+        raise ValueError(
+            f"Model artifact graph_spec parent {parent.id!r} has no URI; "
+            "GraphSpec migration custody is not discoverable."
+        )
+    path = Path(parent.uri)
+    if not path.is_absolute():
+        path = base / path
+    loaded = load_manifest(path)
+    if not isinstance(loaded, GraphSpecManifest):
+        raise TypeError(
+            f"Model artifact graph_spec parent {parent.id!r} resolved to "
+            f"{type(loaded).__name__}, expected GraphSpecManifest."
+        )
+    return loaded
+
+
+def _migrate_manifest_graph_spec_payload(
+    manifest: GraphSpecManifest | ModelArtifactManifest,
+    payload: SpecPayload,
+    *,
+    existing_records: list[ArtifactMigrationRecord],
+    custody_manifest_kind: Literal["GraphSpecManifest", "ModelArtifactManifest"],
+) -> GraphSpecLoadResult:
+    if payload.kind != "GraphSpec":
+        raise TypeError(f"Expected GraphSpec payload, got {payload.kind!r}.")
+
+    from feedbax.migrations import migrate_graph_spec
+
+    migrated = migrate_graph_spec(payload.inline, path="graph_spec.inline")
+    migrated_payload = payload.model_copy(
+        update={
+            "inline": migrated.payload,
+            "sha256": sha256_bytes(canonical_json_bytes(migrated.payload)),
+        }
+    )
+    migration_records = _append_unique_migration_records(
+        existing_records,
+        migrated.migration_records,
+    )
+    updated_manifest = manifest.model_copy(
+        update={
+            "graph_spec": migrated_payload,
+            "migration_records": migration_records,
+        }
+    )
+    return GraphSpecLoadResult(
+        payload=migrated.payload,
+        manifest=updated_manifest,
+        custody_manifest_kind=custody_manifest_kind,
+        custody_manifest_id=manifest.id,
+        applied_migration_records=migrated.migration_records,
+        migration_records=migration_records,
+        downstream_migration_records=_downstream_migration_records(migration_records),
+    )
+
+
+def _append_unique_migration_records(
+    existing: list[ArtifactMigrationRecord],
+    added: list[ArtifactMigrationRecord],
+) -> list[ArtifactMigrationRecord]:
+    records = list(existing)
+    seen = {_migration_record_key(record) for record in records}
+    for record in added:
+        key = _migration_record_key(record)
+        if key not in seen:
+            records.append(record)
+            seen.add(key)
+    return records
+
+
+def _migration_record_key(record: ArtifactMigrationRecord) -> tuple[str, str, str, str, str]:
+    metadata = json.dumps(record.metadata, sort_keys=True, separators=(",", ":"))
+    return (
+        record.tool,
+        record.migration_id,
+        record.source_schema_version,
+        record.target_schema_version,
+        metadata,
+    )
+
+
+def _downstream_migration_records(
+    records: list[ArtifactMigrationRecord],
+) -> list[ArtifactMigrationRecord]:
+    return [record for record in records if record.tool != "feedbax"]
 
 
 def training_run_manifest_id(job_id: Optional[str] = None) -> str:
