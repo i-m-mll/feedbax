@@ -1,4 +1,4 @@
-"""Versioned schema migration registry for durable Feedbax artifacts."""
+"""Versioned schema migration registries for durable Feedbax artifacts and specs."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from feedbax.manifest import ArtifactMigrationRecord
+from feedbax.manifest import ArtifactMigrationRecord, SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION
 
 
 MigrationPayload = Mapping[str, Any]
@@ -20,6 +20,14 @@ class MigrationError(ValueError):
 
 class UnsupportedMigrationPath(MigrationError):
     """Raised when no deterministic schema migration path is registered."""
+
+
+class UnknownSpecFamily(MigrationError):
+    """Raised when a structured spec kind is not registered."""
+
+
+class UnsupportedSpecVersion(MigrationError):
+    """Raised when a structured spec version cannot be accepted or migrated."""
 
 
 @dataclass(frozen=True)
@@ -111,4 +119,408 @@ class MigrationRegistry:
         return migrated, records
 
 
+@dataclass(frozen=True)
+class SpecSchemaFamily:
+    """Identity and current schema version for one structured spec family.
+
+    Attributes:
+        kind: Stable public kind, usually the provider schema/model name.
+        current_version: Current accepted version for this family.
+        schema_id: Stable namespaced schema identity. Defaults to ``kind``.
+        durable: Whether payloads in this family are intended as saved artifacts.
+        emitted: Whether Feedbax emits this family through provider/manifest surfaces.
+        description: Short human-facing context for registry consumers.
+    """
+
+    kind: str
+    current_version: str
+    schema_id: str | None = None
+    durable: bool = True
+    emitted: bool = True
+    description: str = ""
+
+    @property
+    def identity(self) -> str:
+        """Return the stable schema identity for this family."""
+        return self.schema_id or self.kind
+
+
+@dataclass(frozen=True)
+class UnsupportedSpecVersionPolicy:
+    """Explicit rejection policy for an unsupported old structured spec version."""
+
+    kind: str
+    version: str
+    reason: str
+    migration_intentionally_absent: bool = True
+
+
+@dataclass(frozen=True)
+class SpecMigrationResult:
+    """Result from accepting or migrating one structured spec payload."""
+
+    kind: str
+    schema_id: str
+    source_version: str
+    target_version: str
+    payload: dict[str, Any]
+    migration_records: list[ArtifactMigrationRecord]
+
+    @property
+    def migrated(self) -> bool:
+        """Whether any migration edge was applied."""
+        return bool(self.migration_records)
+
+
+class SpecSchemaRegistry:
+    """Registry for structured spec schema identity and migration policy.
+
+    This registry is family-scoped: migration edges for one spec kind are not
+    considered for another kind even if their version strings happen to match.
+    Current payloads are accepted as no-ops. Old payloads either follow a
+    registered migration path or fail through an explicit unsupported-version
+    policy or a clear missing-path diagnostic.
+    """
+
+    def __init__(self) -> None:
+        self._families: dict[str, SpecSchemaFamily] = {}
+        self._migrations: dict[str, MigrationRegistry] = {}
+        self._unsupported_versions: dict[tuple[str, str], UnsupportedSpecVersionPolicy] = {}
+
+    def register_family(self, family: SpecSchemaFamily) -> None:
+        """Register one structured spec family.
+
+        Raises:
+            ValueError: If the kind or current version is empty, or already registered.
+        """
+        if not family.kind:
+            raise ValueError("Structured spec family kind must be non-empty")
+        if not family.current_version:
+            raise ValueError("Structured spec family current_version must be non-empty")
+        if family.kind in self._families:
+            raise ValueError(f"Structured spec family already registered: {family.kind!r}")
+        self._families[family.kind] = family
+
+    def families(self) -> tuple[SpecSchemaFamily, ...]:
+        """Return registered families sorted by kind."""
+        return tuple(self._families[kind] for kind in sorted(self._families))
+
+    def resolve(self, kind: str) -> SpecSchemaFamily:
+        """Return the schema family for ``kind`` or raise a clear diagnostic."""
+        try:
+            return self._families[kind]
+        except KeyError as exc:
+            known = ", ".join(sorted(self._families)) or "<none>"
+            raise UnknownSpecFamily(
+                f"Unknown Feedbax structured spec family {kind!r}; known families: {known}"
+            ) from exc
+
+    def current_version(self, kind: str) -> str:
+        """Return the current version registered for a structured spec kind."""
+        return self.resolve(kind).current_version
+
+    def register_migration(self, kind: str, migration: SchemaMigration) -> None:
+        """Register one migration edge for a structured spec family."""
+        self.resolve(kind)
+        self._migrations.setdefault(kind, MigrationRegistry()).register(migration)
+
+    def reject_version(
+        self,
+        kind: str,
+        version: str,
+        *,
+        reason: str,
+        migration_intentionally_absent: bool = True,
+    ) -> None:
+        """Register an explicit unsupported-version rejection policy."""
+        self.resolve(kind)
+        if not version:
+            raise ValueError("Unsupported structured spec version must be non-empty")
+        if not reason:
+            raise ValueError("Unsupported structured spec version reason must be non-empty")
+        key = (kind, version)
+        if key in self._unsupported_versions:
+            raise ValueError(
+                f"Unsupported structured spec version already registered: {kind!r} {version!r}"
+            )
+        self._unsupported_versions[key] = UnsupportedSpecVersionPolicy(
+            kind=kind,
+            version=version,
+            reason=reason,
+            migration_intentionally_absent=migration_intentionally_absent,
+        )
+
+    def migrate(
+        self,
+        kind: str,
+        payload: MigrationPayload,
+        *,
+        source_version: str | None = None,
+        target_version: str | None = None,
+    ) -> SpecMigrationResult:
+        """Accept or migrate a structured spec payload for ``kind``.
+
+        If neither ``source_version`` nor ``payload["schema_version"]`` is
+        present, the payload is treated as current and returned unchanged. This
+        preserves existing versionless in-memory specs while still allowing
+        durable callers to opt into explicit version checks.
+        """
+        family = self.resolve(kind)
+        payload_dict = dict(payload)
+        resolved_source = (
+            source_version
+            or _payload_schema_version(payload_dict)
+            or family.current_version
+        )
+        resolved_target = target_version or family.current_version
+
+        if resolved_source == resolved_target:
+            return SpecMigrationResult(
+                kind=family.kind,
+                schema_id=family.identity,
+                source_version=resolved_source,
+                target_version=resolved_target,
+                payload=payload_dict,
+                migration_records=[],
+            )
+
+        policy = self._unsupported_versions.get((kind, resolved_source))
+        if policy is not None:
+            raise UnsupportedSpecVersion(
+                _unsupported_version_message(family, policy, resolved_target)
+            )
+
+        registry = self._migrations.get(kind)
+        if registry is None:
+            raise UnsupportedSpecVersion(
+                _missing_path_message(family, resolved_source, resolved_target)
+            )
+
+        try:
+            migrated, records = registry.migrate(
+                payload_dict,
+                source_version=resolved_source,
+                target_version=resolved_target,
+            )
+        except UnsupportedMigrationPath as exc:
+            raise UnsupportedSpecVersion(
+                _missing_path_message(family, resolved_source, resolved_target)
+            ) from exc
+
+        return SpecMigrationResult(
+            kind=family.kind,
+            schema_id=family.identity,
+            source_version=resolved_source,
+            target_version=resolved_target,
+            payload=migrated,
+            migration_records=records,
+        )
+
+
+def _payload_schema_version(payload: Mapping[str, Any]) -> str | None:
+    schema_version = payload.get("schema_version")
+    return schema_version if isinstance(schema_version, str) and schema_version else None
+
+
+def _unsupported_version_message(
+    family: SpecSchemaFamily,
+    policy: UnsupportedSpecVersionPolicy,
+    target_version: str,
+) -> str:
+    absent = "yes" if policy.migration_intentionally_absent else "no"
+    return (
+        "Unsupported Feedbax structured spec version: "
+        f"family={family.kind!r}, schema_id={family.identity!r}, "
+        f"source_version={policy.version!r}, current_version={target_version!r}, "
+        f"migration_intentionally_absent={absent}; reason: {policy.reason}"
+    )
+
+
+def _missing_path_message(
+    family: SpecSchemaFamily,
+    source_version: str,
+    target_version: str,
+) -> str:
+    return (
+        "No Feedbax structured spec migration path registered: "
+        f"family={family.kind!r}, schema_id={family.identity!r}, "
+        f"source_version={source_version!r}, current_version={target_version!r}; "
+        "no explicit unsupported-version policy is registered for this source version"
+    )
+
+
+def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
+    """Populate schema identities for emitted Feedbax spec families."""
+    for family in (
+        SpecSchemaFamily(
+            kind="GraphSpec",
+            schema_id="feedbax.graph_spec",
+            current_version="1.0.0",
+            description="Canvas-authored executable graph specification.",
+        ),
+        SpecSchemaFamily(
+            kind="TrainingSpec",
+            schema_id="feedbax.training_spec",
+            current_version="feedbax.training.v1",
+            description="Training optimizer, loss, and run-shape specification.",
+        ),
+        SpecSchemaFamily(
+            kind="TaskSpec",
+            schema_id="feedbax.task_spec",
+            current_version="feedbax.task.v1",
+            description="Task family and task parameter specification.",
+        ),
+        SpecSchemaFamily(
+            kind="LossTermSpec",
+            schema_id="feedbax.loss_term_spec",
+            current_version="feedbax.loss_term.v1",
+            description="Legacy structured loss-term specification.",
+        ),
+        SpecSchemaFamily(
+            kind="ObjectiveSpec",
+            schema_id="feedbax.objective_spec",
+            current_version="feedbax.objective.v1",
+            description="Durable selector-addressed objective specification.",
+        ),
+        SpecSchemaFamily(
+            kind="EvaluationRunSpec",
+            schema_id="feedbax.evaluation_run_spec",
+            current_version="feedbax.evaluation_run.v1",
+            description="Declarative evaluation run request.",
+        ),
+        SpecSchemaFamily(
+            kind="AnalysisRunSpec",
+            schema_id="feedbax.analysis_run_spec",
+            current_version="feedbax.analysis_run.v1",
+            description="Declarative analysis run request.",
+        ),
+        SpecSchemaFamily(
+            kind="ReportSpec",
+            schema_id="feedbax.report_spec",
+            current_version="feedbax.report.v1",
+            description="Declarative report request.",
+        ),
+        SpecSchemaFamily(
+            kind="ProviderManifest",
+            schema_id="feedbax.provider_manifest",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Provider capability and schema manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="GraphSpecManifest",
+            schema_id="feedbax.manifest.graph_spec",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable graph-spec manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="ModelArtifactManifest",
+            schema_id="feedbax.manifest.model_artifact",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable model-artifact manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="TrainingRunSetManifest",
+            schema_id="feedbax.manifest.training_run_set",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable training-run collection manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="TrainingRunManifest",
+            schema_id="feedbax.manifest.training_run",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable training-run manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="EvaluationRunManifest",
+            schema_id="feedbax.manifest.evaluation_run",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable evaluation-run manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="AnalysisRunManifest",
+            schema_id="feedbax.manifest.analysis_run",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable analysis-run manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="ReportManifest",
+            schema_id="feedbax.manifest.report",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Durable report manifest.",
+        ),
+        SpecSchemaFamily(
+            kind="StudioWorkspaceSpec",
+            schema_id="feedbax.studio.workspace",
+            current_version="feedbax.studio.workspace.v1",
+            description="Durable Studio workspace/pipeline state.",
+        ),
+        SpecSchemaFamily(
+            kind="StudioScenarioSpec",
+            schema_id="feedbax.studio.scenario",
+            current_version="feedbax.studio.scenario.v1",
+            description="Durable Studio scenario draft state.",
+        ),
+        SpecSchemaFamily(
+            kind="StudioTaskBindingSpec",
+            schema_id="feedbax.studio.task_bindings",
+            current_version="feedbax.studio.task_bindings.v2",
+            description="Scenario task-data to graph binding specification.",
+        ),
+        SpecSchemaFamily(
+            kind="StudioTaskTimelineSpec",
+            schema_id="feedbax.studio.task_timeline",
+            current_version="feedbax.studio.task_timeline.v1",
+            description="Structured Studio-authored task timeline.",
+        ),
+        SpecSchemaFamily(
+            kind="StudioValueSpec",
+            schema_id="feedbax.studio.value",
+            current_version="feedbax.studio.value.v1",
+            description="Structured Studio-authored parameter or target value.",
+        ),
+        SpecSchemaFamily(
+            kind="RetainedObservableSpec",
+            schema_id="feedbax.retained_observable",
+            current_version="feedbax.retained_observable.v1",
+            description="Graph-embedded retained-observable request.",
+        ),
+        SpecSchemaFamily(
+            kind="RegistrySnapshot",
+            schema_id="feedbax.registry_snapshot",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Provider component registry snapshot.",
+        ),
+        SpecSchemaFamily(
+            kind="RegistryEntry",
+            schema_id="feedbax.registry_entry",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            durable=False,
+            description="Component registry entry embedded in registry snapshots.",
+        ),
+        SpecSchemaFamily(
+            kind="SpecPayload",
+            schema_id="feedbax.spec_payload",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            description="Manifest-embedded inline structured spec payload wrapper.",
+        ),
+        SpecSchemaFamily(
+            kind="StudioSchemaRegistry",
+            schema_id="feedbax.studio.schema_registry",
+            current_version=MANIFEST_SCHEMA_VERSION,
+            durable=False,
+            description="Provider-emitted Studio schema enumeration.",
+        ),
+        SpecSchemaFamily(
+            kind="RuntimeIntrospectionResult",
+            schema_id="feedbax.studio.runtime_introspection",
+            current_version="feedbax.runtime_introspection.v1",
+            durable=False,
+            description="Validation/runtime sample response, not a saved artifact format.",
+        ),
+    ):
+        registry.register_family(family)
+
+
 default_registry = MigrationRegistry()
+default_spec_registry = SpecSchemaRegistry()
+_register_default_spec_families(default_spec_registry)
