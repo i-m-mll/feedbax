@@ -10,9 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
+from feedbax.nn import (
+    PopulationStructure,
+    lower_population_constraints,
+    population_structure_from_spec,
+)
 
 
 TemplateKind = Literal["executable", "display"]
@@ -84,12 +90,24 @@ def standard_network_subgraph(
     out_size: int,
     cell_type: str = "GRU",
     out_nonlinearity: str = "identity",
+    population_structure: PopulationStructure | Mapping[str, object] | None = None,
     name: str = "Network internals",
     description: str = "Built-in Network graph template",
 ) -> GraphSpec:
     """Build the executable subgraph used by built-in Network templates."""
 
     normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
+    parameter_constraints = []
+    if population_structure is not None:
+        parameter_constraints = list(
+            lower_population_constraints(
+                population_structure,
+                hidden_size=int(hidden_size),
+                input_size=int(input_size),
+                out_size=int(out_size),
+                cell_type=normalized_cell_type,
+            )
+        )
     now = datetime.now().isoformat()
     return GraphSpec(
         nodes={
@@ -146,6 +164,7 @@ def standard_network_subgraph(
             "output": ("readout", "output"),
             "hidden": ("cell", "hidden"),
         },
+        parameter_constraints=parameter_constraints,
         metadata=GraphMetadata(
             name=name,
             description=description,
@@ -166,6 +185,12 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
     hidden_type = str(params.get("hidden_type", "GRUCell"))
     cell_type = "LSTM" if hidden_type in {"LSTM", "LSTMCell"} else "GRU"
     out_nonlinearity = str(params.get("out_nonlinearity", "identity"))
+    raw_population_structure = params.get("population_structure")
+    population_structure = None
+    if isinstance(raw_population_structure, PopulationStructure):
+        population_structure = raw_population_structure
+    elif isinstance(raw_population_structure, Mapping):
+        population_structure = population_structure_from_spec(hidden_size, raw_population_structure)
     node_params = {
         "input_size": input_size,
         "hidden_size": hidden_size,
@@ -176,6 +201,8 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         "hidden_noise_std": float(params.get("hidden_noise_std", 0.0) or 0.0),
         "encoding_size": int(params.get("encoding_size", 0) or 0),
     }
+    if population_structure is not None:
+        node_params["population_structure"] = population_structure.to_spec()
     return GraphSpec(
         nodes={
             "network": ComponentSpec(
@@ -203,6 +230,7 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
                 out_size=out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
+                population_structure=population_structure,
             )
         },
     )

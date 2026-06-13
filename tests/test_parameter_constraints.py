@@ -8,7 +8,17 @@ import pytest
 
 from feedbax._mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
+from feedbax.graph import Graph
+from feedbax.graph_templates import network_template_graph, standard_network_subgraph
 from feedbax.loss import AbstractLoss
+from feedbax.nn import (
+    MaskedLinear,
+    PopulationStructure,
+    SimpleStagedNetwork,
+    lower_population_constraints,
+    population_input_kernel_mask,
+    population_readout_kernel_mask,
+)
 from feedbax.parameter_constraints import apply_parameter_constraints
 from feedbax.serialization import graph_to_spec, spec_to_graph
 from feedbax.task import AbstractTask, TaskInterventionSpecs, TaskTrialSpec, TrialSpecDependency
@@ -115,6 +125,203 @@ def test_recurrent_input_kernel_constraints_use_stable_roles(
     )
 
     assert jnp.all(graph.nodes["cell"].cell.weight_ih[:, 1] == 0.0)
+
+
+def _fixed_population_structure() -> PopulationStructure:
+    return PopulationStructure.from_indices(
+        input_only_indices=[0],
+        readout_only_indices=[1],
+        recurrent_only_indices=[2],
+        input_readout_indices=[3],
+    )
+
+
+def test_population_lowering_repeats_gate_rows_and_selects_readout_columns() -> None:
+    population = _fixed_population_structure()
+
+    gru_constraints = lower_population_constraints(
+        population,
+        hidden_size=4,
+        input_size=2,
+        out_size=2,
+        cell_type="GRU",
+    )
+    lstm_constraints = lower_population_constraints(
+        population,
+        hidden_size=4,
+        input_size=2,
+        out_size=2,
+        cell_type="LSTM",
+    )
+
+    gru_input_mask = jnp.asarray(gru_constraints[0].mask)
+    lstm_input_mask = jnp.asarray(lstm_constraints[0].mask)
+    readout_mask = jnp.asarray(gru_constraints[1].mask)
+    expected_gate = jnp.array(
+        [
+            [1, 1],
+            [0, 0],
+            [0, 0],
+            [1, 1],
+        ],
+        dtype=bool,
+    )
+
+    assert jnp.array_equal(gru_input_mask, jnp.tile(expected_gate, (3, 1)))
+    assert jnp.array_equal(lstm_input_mask, jnp.tile(expected_gate, (4, 1)))
+    assert jnp.array_equal(
+        readout_mask,
+        jnp.array(
+            [
+                [0, 1, 0, 1],
+                [0, 1, 0, 1],
+            ],
+            dtype=bool,
+        ),
+    )
+
+
+def test_network_template_population_constraints_materialize_without_recurrent_masks() -> None:
+    population = _fixed_population_structure()
+    spec = network_template_graph(
+        {
+            "input_size": 2,
+            "hidden_size": 4,
+            "out_size": 2,
+            "population_structure": population.to_spec(),
+        }
+    )
+    subgraph = spec.subgraphs["network"]
+
+    assert [(constraint.node, constraint.role) for constraint in subgraph.parameter_constraints] == [
+        ("cell", "input_kernel"),
+        ("readout", "weight"),
+    ]
+
+    graph = spec_to_graph(spec)
+    network = graph.nodes["network"]
+    input_mask = population_input_kernel_mask(population, 2, gate_count=3)
+    readout_mask = population_readout_kernel_mask(population, 2)
+
+    assert jnp.all(network.nodes["cell"].cell.weight_ih[~input_mask.astype(bool)] == 0.0)
+    assert jnp.all(network.nodes["readout"].layer.weight[~readout_mask.astype(bool)] == 0.0)
+
+
+@pytest.mark.parametrize(
+    ("hidden_type", "cell_type", "gate_count"),
+    [
+        (eqx.nn.GRUCell, "GRU", 3),
+        (eqx.nn.LSTMCell, "LSTM", 4),
+    ],
+)
+def test_population_constraints_match_simplestagednetwork_fixed_assignment(
+    hidden_type,
+    cell_type: str,
+    gate_count: int,
+) -> None:
+    population = _fixed_population_structure()
+    legacy = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        hidden_type=hidden_type,
+        population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+    graph = spec_to_graph(
+        standard_network_subgraph(
+            input_size=2,
+            hidden_size=4,
+            out_size=2,
+            cell_type=cell_type,
+            population_structure=population,
+        )
+    )
+
+    input_mask = population_input_kernel_mask(population, 2, gate_count=gate_count).astype(bool)
+    legacy_readout_weight = legacy.readout.weight
+    if isinstance(legacy.readout, MaskedLinear):
+        legacy_readout_weight = legacy_readout_weight * legacy.readout.mask
+
+    assert jnp.array_equal(legacy.hidden.weight_ih == 0.0, ~input_mask)
+    assert jnp.array_equal(graph.nodes["cell"].cell.weight_ih == 0.0, ~input_mask)
+    assert jnp.array_equal(
+        legacy_readout_weight == 0.0,
+        graph.nodes["readout"].layer.weight == 0.0,
+    )
+
+
+def test_population_constraints_project_after_synthetic_update() -> None:
+    population = _fixed_population_structure()
+    graph = spec_to_graph(
+        standard_network_subgraph(
+            input_size=2,
+            hidden_size=4,
+            out_size=2,
+            cell_type="LSTM",
+            population_structure=population,
+        )
+    )
+    graph = eqx.tree_at(
+        lambda g: g.nodes["cell"].cell.weight_ih,
+        graph,
+        jnp.ones_like(graph.nodes["cell"].cell.weight_ih),
+    )
+    graph = eqx.tree_at(
+        lambda g: g.nodes["readout"].layer.weight,
+        graph,
+        jnp.ones_like(graph.nodes["readout"].layer.weight),
+    )
+    graph = eqx.tree_at(
+        lambda g: g.nodes["cell"].cell.weight_hh,
+        graph,
+        jnp.ones_like(graph.nodes["cell"].cell.weight_hh),
+    )
+
+    projected = apply_parameter_constraints(graph)
+    input_mask = population_input_kernel_mask(population, 2, gate_count=4).astype(bool)
+    readout_mask = population_readout_kernel_mask(population, 2).astype(bool)
+
+    assert jnp.all(projected.nodes["cell"].cell.weight_ih[~input_mask] == 0.0)
+    assert jnp.all(projected.nodes["cell"].cell.weight_hh == 1.0)
+    assert jnp.all(projected.nodes["readout"].layer.weight[~readout_mask] == 0.0)
+
+
+def test_population_constraints_round_trip_from_legacy_network_serialization() -> None:
+    population = _fixed_population_structure()
+    legacy = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        population_structure=population,
+        key=jax.random.PRNGKey(2),
+    )
+    spec = graph_to_spec(
+        Graph(
+            nodes={"network": legacy},
+            input_ports=("input", "feedback"),
+            output_ports=("output",),
+            input_bindings={"input": ("network", "input"), "feedback": ("network", "feedback")},
+            output_bindings={"output": ("network", "output")},
+        )
+    )
+
+    assert spec.nodes["network"].params["population_structure"] == population.to_spec()
+    assert spec.subgraphs["network"].parameter_constraints == list(
+        lower_population_constraints(
+            population,
+            hidden_size=4,
+            input_size=2,
+            out_size=2,
+            cell_type="GRU",
+        )
+    )
+
+    restored = graph_to_spec(spec_to_graph(spec))
+    assert (
+        restored.subgraphs["network"].parameter_constraints
+        == spec.subgraphs["network"].parameter_constraints
+    )
 
 
 def test_parameter_constraints_reject_incompatible_mask_shape() -> None:

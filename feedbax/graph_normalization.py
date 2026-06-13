@@ -14,6 +14,7 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
     WireSpec,
 )
+from feedbax.nn import lower_population_constraints
 
 
 def _authoring_component_type(component_type: str) -> str:
@@ -27,14 +28,18 @@ def _authoring_component_type(component_type: str) -> str:
 
 
 def _int_param(value: object, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    if value is None:
         return default
+    try:
+        if isinstance(value, (int, float, str)):
+            return int(value)
+    except (TypeError, ValueError):
+        pass
+    return default
 
 
 def _recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> dict:
-    initializer = {
+    initializer: dict[str, object] = {
         "kind": "zeros",
         "scope": "trial",
         "source": "state_initializer",
@@ -84,6 +89,18 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
     input_size = _int_param(params.get("input_size"), 6)
     output_size = _int_param(params.get("out_size", params.get("output_size")), 2)
     activation = str(params.get("out_nonlinearity", "tanh"))
+    parameter_constraints = []
+    population_structure = params.get("population_structure")
+    if isinstance(population_structure, dict):
+        parameter_constraints = list(
+            lower_population_constraints(
+                population_structure,
+                hidden_size=hidden_size,
+                input_size=input_size,
+                out_size=output_size,
+                cell_type=cell_type,
+            )
+        )
     cell_input_ports = ["input", "hidden", "cell"] if cell_type == "LSTM" else ["input", "hidden"]
     cell_output_ports = (
         ["output", "hidden", "cell"] if cell_type == "LSTM" else ["output", "hidden"]
@@ -136,6 +153,7 @@ def _standard_network_subgraph(node_id: str, params: dict) -> GraphSpec:
             "output": ("readout", "output"),
             "hidden": ("cell", "hidden"),
         },
+        parameter_constraints=parameter_constraints,
         taps=[],
         subgraphs={},
         metadata=GraphMetadata(

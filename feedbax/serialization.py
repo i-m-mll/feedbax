@@ -306,6 +306,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 out_size=component.out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
+                population_structure=component.population_structure,
                 name=f"{name} internals",
                 description="Auto-generated Network subgraph",
             )
@@ -320,6 +321,8 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "hidden_noise_std": component.hidden_noise_std or 0.0,
                 "encoding_size": component.encoding_size or 0,
             }
+            if component.population_structure is not None:
+                params["population_structure"] = component.population_structure.to_spec()
             nodes[name] = ComponentSpec(
                 type="Network",
                 params=params,
