@@ -140,7 +140,7 @@ describe('graph authoring normalization', () => {
     expect(normalized.nodes.task_mux.params.n_inputs).toBe(3);
   });
 
-  it('generates explicit SISU input routing for multiplicative Network authoring', () => {
+  it('does not generate special SISU input routing for Network authoring', () => {
     const graph: GraphSpec = {
       nodes: {
         network: {
@@ -172,26 +172,15 @@ describe('graph authoring normalization', () => {
     const normalized = normalizeGraphAuthoringTypes(graph);
     const subgraph = normalized.subgraphs!.network;
 
-    expect(normalized.nodes.network.input_ports).toEqual(['input', 'feedback', 'sisu']);
-    expect(subgraph.nodes.sisu_modulator).toMatchObject({
-      type: 'ElementwiseAffineModulator',
-      params: {
-        signal_shape: [3],
-        gain_init: [0.1, -0.2, 0.3],
-      },
-    });
-    expect(subgraph.nodes.cell.params.input_size).toBe(3);
-    expect(subgraph.input_bindings.sisu).toEqual(['sisu_modulator', 'modulator']);
-    expect(subgraph.output_bindings.hidden).toEqual(['sisu_modulator', 'output']);
-    expect(subgraph.wires).toContainEqual(
-      expect.objectContaining({
-        source_node: 'sisu_modulator',
-        source_port: 'output',
-        target_node: 'cell',
-        target_port: 'hidden',
-        temporality: 'recurrent',
-      })
-    );
+    expect(normalized.nodes.network.input_ports).toEqual(['input', 'feedback']);
+    expect(normalized.nodes.network.input_ports).not.toContain('sisu');
+    expect(subgraph.input_ports).not.toContain('sisu');
+    expect(subgraph.nodes.sisu_modulator).toBeUndefined();
+    expect(subgraph.nodes.cell.params.input_size).toBe(4);
+    expect(subgraph.output_bindings.hidden).toEqual(['cell', 'hidden']);
+    expect(normalized.nodes.network.params.sisu_gating).toBeUndefined();
+    expect(normalized.nodes.network.params.sisu_alpha).toBeUndefined();
+    expect(normalized.nodes.network.params.modulator_input).toBeUndefined();
   });
 
   it('retargets task-data bindings from legacy Network target ports to input ports', () => {
