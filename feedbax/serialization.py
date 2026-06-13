@@ -61,6 +61,7 @@ from feedbax.contracts.graph import (
     WireSpec,
 )
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.serialization_builders import build_component, nonlinearity_name
 from feedbax.serialization_prototypes import (
     normalize_stateful_prototypes,
@@ -235,6 +236,7 @@ def _migrate_spec(spec: GraphSpec) -> GraphSpec:
         user_ports=user_ports,
         taps=taps,
         retained_observables=spec.retained_observables,
+        parameter_constraints=list(spec.parameter_constraints),
         additive_channel_adapters=list(spec.additive_channel_adapters),
         metadata=spec.metadata,
     )
@@ -913,6 +915,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
         output_bindings=dict(graph.output_bindings),
         subgraphs=subgraphs or None,
         retained_observables=getattr(graph, "retained_observables", None),
+        parameter_constraints=list(getattr(graph, "parameter_constraints", ())),
         metadata=None,
     )
 
@@ -989,11 +992,13 @@ def spec_to_graph(
     input_bindings = {name: tuple(binding) for name, binding in spec.input_bindings.items()}
     output_bindings = {name: tuple(binding) for name, binding in spec.output_bindings.items()}
 
-    return Graph(
+    graph = Graph(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
         output_ports=tuple(spec.output_ports),
         input_bindings=input_bindings,
         output_bindings=output_bindings,
+        parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
     )
+    return apply_parameter_constraints(graph)

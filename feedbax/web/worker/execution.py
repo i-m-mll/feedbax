@@ -17,6 +17,7 @@ import jax.tree as jt
 import optax
 
 from feedbax.graph import Graph, GraphTraceRequest, init_state_from_component
+from feedbax.parameter_constraints import apply_parameter_constraints
 from feedbax.retained_observables import (
     LossTermPlan,
     RetentionPlan,
@@ -234,6 +235,8 @@ def run_training_graph(
         updates, opt_state = optimizer.update(grads, opt_state, trainable)
         trainable = eqx.apply_updates(trainable, updates)
         graph = eqx.combine(static, trainable)
+        graph = apply_parameter_constraints(graph)
+        trainable, static = eqx.partition(graph, compiled.trainable_filter)
         compiled.graph = graph
 
         final_loss = float(jax.block_until_ready(loss_value))
