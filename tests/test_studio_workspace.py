@@ -124,7 +124,7 @@ def test_legacy_project_load_normalizes_runtime_network_authoring_shape(tmp_path
     record = service.get_graph(graph_id)
 
     assert record.project.graph.nodes["network"].type == "Network"
-    assert record.project.graph.nodes["network"].input_ports == ["input"]
+    assert record.project.graph.nodes["network"].input_ports == ["input", "feedback"]
     assert record.project.graph.input_bindings == {"input": ("network", "input")}
     assert record.project.graph.subgraphs is not None
     assert record.project.graph.subgraphs["network"].nodes["cell"].type == "GRU"
@@ -134,6 +134,64 @@ def test_legacy_project_load_normalizes_runtime_network_authoring_shape(tmp_path
     assert train_graph.nodes["network"].type == "Network"
     assert train_graph.subgraphs is not None
     assert "network" in train_graph.subgraphs
+
+
+def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    graph_id = "workspace-task-binding-v1"
+    graph = _graph()
+    payload = {
+        "metadata": graph.metadata.model_dump(),
+        "graph": graph.model_dump(),
+        "workspace": {
+            "id": "workspace:legacy-bindings",
+            "schema_version": "feedbax.studio.workspace.v1",
+            "label": "Legacy bindings",
+            "active_stage_id": "stage:train",
+            "stages": [
+                {
+                    "id": "stage:train",
+                    "kind": "train",
+                    "label": "Train",
+                    "scenario_id": "scenario:train",
+                }
+            ],
+            "scenarios": {
+                "scenario:train": {
+                    "id": "scenario:train",
+                    "schema_version": "feedbax.studio.scenario.v1",
+                    "label": "Train",
+                    "stage_id": "stage:train",
+                    "graph": graph.model_dump(),
+                    "task_binding_spec": {
+                        "schema_version": "feedbax.studio.task_bindings.v1",
+                        "exposed_outputs": [],
+                        "bindings": [
+                            {
+                                "id": "task:inputs->network:input",
+                                "source_output_id": "inputs",
+                                "target_node_id": "network",
+                                "target_port": "input",
+                                "role": "model_input",
+                                "metadata": {},
+                            }
+                        ],
+                        "metadata": {},
+                    },
+                }
+            },
+        },
+    }
+    (tmp_path / f"{graph_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    record = service.get_graph(graph_id)
+
+    workspace = record.project.workspace
+    assert workspace is not None
+    scenario = workspace.scenarios["scenario:train"]
+    assert scenario.task_binding_spec is not None
+    assert scenario.task_binding_spec.schema_version == "feedbax.studio.task_bindings.v2"
+    assert scenario.task_binding_spec.bindings[0].source_data_id == "inputs"
 
 
 def test_update_graph_preserves_explicit_workspace_extensions(tmp_path):

@@ -313,6 +313,7 @@ class AnalysisPageSpec(BaseModel):
 
 STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.studio.workspace.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
+STUDIO_STAGE_SCHEMA_VERSION = "feedbax.studio.stage.v1"
 
 StudioStageKind = Literal[
     "train",
@@ -593,6 +594,7 @@ class StudioStageSpec(BaseModel):
     """Pipeline stage over scenario drafts, collections, and manifests."""
 
     id: str
+    schema_version: str = STUDIO_STAGE_SCHEMA_VERSION
     kind: StudioStageKind
     label: str
     status: StudioStageStatus = "draft"

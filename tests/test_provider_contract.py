@@ -28,6 +28,7 @@ from feedbax.provider import (
     validate_analysis_spec,
     validate_evaluation_spec,
     validate_graph_spec,
+    validate_spec,
     validate_task_spec,
     validate_training_spec,
 )
@@ -308,6 +309,34 @@ def test_provider_manifest_graph_spec_schema_exposes_registered_identity() -> No
     assert default_spec_registry.current_version("GraphSpec") == GRAPH_SPEC_SCHEMA_VERSION
     assert properties["schema_id"]["default"] == GRAPH_SPEC_SCHEMA_ID
     assert properties["schema_version"]["default"] == GRAPH_SPEC_SCHEMA_VERSION
+
+
+def test_provider_validation_exposes_objective_and_studio_migration_entrypoints() -> None:
+    objective = validate_spec("objective", {"schema_version": "feedbax.objective.v0"})
+    assert not objective.valid
+    assert objective.errors[0].type == "invalid_objective_spec"
+    assert "feedbax.objective.v0" in objective.errors[0].message
+
+    task_binding = validate_spec(
+        "studio_task_binding",
+        {
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [],
+            "bindings": [],
+            "metadata": {},
+        },
+    )
+    assert task_binding.valid
+
+    workspace_payload = _schema_workspace().model_dump(mode="json", exclude_none=True)
+    workspace_payload["scenarios"]["scenario:train"]["task_binding_spec"] = {
+        "schema_version": "feedbax.studio.task_bindings.v0",
+        "metadata": {},
+    }
+    workspace = validate_spec("studio_workspace", workspace_payload)
+    assert not workspace.valid
+    assert workspace.errors[0].type == "invalid_studio_workspace_spec"
+    assert "task_bindings.v0" in workspace.errors[0].message
 
 
 def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
@@ -986,6 +1015,20 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert "path:states.mechanics.effector.pos" in selectors
     assert any(issue.type == "stage_missing_scenario" for issue in registry.issues)
     assert registry.metadata["runtime_introspection"]["status"] == "not_requested"
+
+
+def test_studio_schema_enumeration_reports_workspace_migration_rejection() -> None:
+    workspace = _schema_workspace().model_dump(mode="json", exclude_none=True)
+    workspace["scenarios"]["scenario:train"]["task_binding_spec"] = {
+        "schema_version": "feedbax.studio.task_bindings.v0",
+        "metadata": {},
+    }
+
+    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+
+    assert registry.ports == []
+    assert registry.issues[0].type == "workspace_schema_version_error"
+    assert "task_bindings.v0" in registry.issues[0].message
 
 
 def test_studio_schema_enumeration_normalizes_runtime_network_ports() -> None:
@@ -1892,6 +1935,43 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
     )
 
 
+def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
+    job = _worker_contract_job(
+        task_binding_spec={
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->gain:input",
+                    "source_output_id": "inputs",
+                    "target_node_id": "gain",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    _require_worker_specs(job)
+
+    assert job.task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert job.task_binding_spec["exposed_data"][0]["id"] == "inputs"
+    assert "exposed_outputs" not in job.task_binding_spec
+    assert job.task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
+    assert "source_output_id" not in job.task_binding_spec["bindings"][0]
+
+
 def test_worker_spec_contract_normalizes_runtime_network_payloads() -> None:
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
@@ -1969,21 +2049,12 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
         ),
         (
             {
-                "schema_version": "feedbax.studio.task_bindings.v1",
-                "exposed_outputs": [],
-                "bindings": [],
-                "metadata": {},
-            },
-            "schema v2",
-        ),
-        (
-            {
                 "schema_version": "feedbax.studio.task_bindings.v2",
                 "exposed_outputs": [],
                 "bindings": [],
                 "metadata": {},
             },
-            "exposed_outputs is not accepted",
+            "exposed_outputs.*renamed to exposed_data",
         ),
         (
             {

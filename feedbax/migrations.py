@@ -45,6 +45,9 @@ class MissingComponentOwner(UnsupportedComponentMigration):
     """Raised when a durable component ID does not name a loadable owner."""
 
 
+STUDIO_TASK_BINDING_LEGACY_V1 = "feedbax.studio.task_bindings.v1"
+
+
 @dataclass(frozen=True)
 class SchemaMigration:
     """One deterministic migration edge between schema versions."""
@@ -477,6 +480,12 @@ def _record_with_graph_path(record: ArtifactMigrationRecord, path: str) -> Artif
     )
 
 
+def _record_with_spec_path(record: ArtifactMigrationRecord, path: str) -> ArtifactMigrationRecord:
+    return record.model_copy(
+        update={"metadata": {**record.metadata, "spec_path": path}},
+    )
+
+
 def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated["schema_id"] = GRAPH_SPEC_SCHEMA_ID
@@ -534,6 +543,28 @@ def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any
     migrated["wires"] = wires
     migrated["input_bindings"] = input_bindings
     migrated.setdefault("output_bindings", dict(payload.get("output_bindings") or {}))
+    return migrated
+
+
+def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    if "exposed_outputs" in migrated and "exposed_data" not in migrated:
+        migrated["exposed_data"] = migrated.pop("exposed_outputs")
+    else:
+        migrated.pop("exposed_outputs", None)
+
+    bindings: list[Any] = []
+    for raw_binding in list(migrated.get("bindings") or []):
+        if not isinstance(raw_binding, Mapping):
+            bindings.append(raw_binding)
+            continue
+        binding = dict(raw_binding)
+        if "source_output_id" in binding and "source_data_id" not in binding:
+            binding["source_data_id"] = binding.pop("source_output_id")
+        else:
+            binding.pop("source_output_id", None)
+        bindings.append(binding)
+    migrated["bindings"] = bindings
     return migrated
 
 
@@ -602,6 +633,273 @@ def migrate_graph_spec(
         payload=migrated_payload,
         migration_records=records,
     )
+
+
+def migrate_studio_task_binding_spec(
+    payload: Mapping[str, Any],
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "task_binding_spec",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Migrate a Studio task-binding payload through the public schema path."""
+    registry = registry or default_spec_registry
+    result = registry.migrate(
+        "StudioTaskBindingSpec",
+        payload,
+        source_version=source_version,
+        target_version=target_version,
+    )
+    return SpecMigrationResult(
+        kind=result.kind,
+        schema_id=result.schema_id,
+        source_version=result.source_version,
+        target_version=result.target_version,
+        payload=result.payload,
+        migration_records=[
+            _record_with_spec_path(record, path) for record in result.migration_records
+        ],
+    )
+
+
+def migrate_structured_spec_payload(
+    kind: str,
+    payload: Mapping[str, Any],
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "spec",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Migrate or explicitly reject one registered structured spec payload."""
+    registry = registry or default_spec_registry
+    if kind == "GraphSpec":
+        return migrate_graph_spec(
+            payload,
+            source_version=source_version,
+            target_version=target_version,
+            path=path,
+            registry=registry,
+        )
+    if kind == "StudioTaskBindingSpec":
+        return migrate_studio_task_binding_spec(
+            payload,
+            source_version=source_version,
+            target_version=target_version,
+            path=path,
+            registry=registry,
+        )
+    result = registry.migrate(
+        kind,
+        payload,
+        source_version=source_version,
+        target_version=target_version,
+    )
+    return SpecMigrationResult(
+        kind=result.kind,
+        schema_id=result.schema_id,
+        source_version=result.source_version,
+        target_version=result.target_version,
+        payload=result.payload,
+        migration_records=[
+            _record_with_spec_path(record, path) for record in result.migration_records
+        ],
+    )
+
+
+_SCENARIO_STRUCTURED_FIELDS = {
+    "training_spec": "TrainingSpec",
+    "task_spec": "TaskSpec",
+    "objective_spec": "ObjectiveSpec",
+    "temporal_spec": "StudioTaskTimelineSpec",
+    "analysis_spec": "AnalysisRunSpec",
+    "report_spec": "ReportSpec",
+}
+
+
+def migrate_studio_scenario_spec(
+    payload: Mapping[str, Any],
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "scenario",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Migrate a Studio scenario and nested durable spec payloads."""
+    registry = registry or default_spec_registry
+    result = registry.migrate(
+        "StudioScenarioSpec",
+        payload,
+        source_version=source_version,
+        target_version=target_version,
+    )
+    migrated_payload = dict(result.payload)
+    records = [_record_with_spec_path(record, path) for record in result.migration_records]
+
+    graph_payload = migrated_payload.get("graph")
+    if isinstance(graph_payload, Mapping) or isinstance(graph_payload, GraphSpec):
+        graph_result = migrate_graph_spec(
+            graph_payload,
+            path=f"{path}/graph",
+            registry=registry,
+        )
+        migrated_payload["graph"] = graph_result.payload
+        records.extend(graph_result.migration_records)
+
+    task_binding_payload = migrated_payload.get("task_binding_spec")
+    if isinstance(task_binding_payload, Mapping):
+        task_binding_result = migrate_studio_task_binding_spec(
+            task_binding_payload,
+            path=f"{path}/task_binding_spec",
+            registry=registry,
+        )
+        migrated_payload["task_binding_spec"] = task_binding_result.payload
+        records.extend(task_binding_result.migration_records)
+
+    for field_name, kind in _SCENARIO_STRUCTURED_FIELDS.items():
+        field_payload = migrated_payload.get(field_name)
+        if isinstance(field_payload, Mapping):
+            field_result = migrate_structured_spec_payload(
+                kind,
+                field_payload,
+                path=f"{path}/{field_name}",
+                registry=registry,
+            )
+            migrated_payload[field_name] = field_result.payload
+            records.extend(field_result.migration_records)
+
+    probe_specs = migrated_payload.get("probe_specs")
+    if isinstance(probe_specs, list):
+        migrated_probes: list[Any] = []
+        for index, probe_payload in enumerate(probe_specs):
+            if not isinstance(probe_payload, Mapping):
+                migrated_probes.append(probe_payload)
+                continue
+            probe_result = migrate_structured_spec_payload(
+                "RetainedObservableSpec",
+                probe_payload,
+                path=f"{path}/probe_specs/{index}",
+                registry=registry,
+            )
+            migrated_probes.append(probe_result.payload)
+            records.extend(probe_result.migration_records)
+        migrated_payload["probe_specs"] = migrated_probes
+
+    return SpecMigrationResult(
+        kind=result.kind,
+        schema_id=result.schema_id,
+        source_version=result.source_version,
+        target_version=result.target_version,
+        payload=migrated_payload,
+        migration_records=records,
+    )
+
+
+def migrate_studio_stage_spec(
+    payload: Mapping[str, Any],
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "stage",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Migrate or explicitly reject a Studio pipeline stage payload."""
+    return migrate_structured_spec_payload(
+        "StudioStageSpec",
+        payload,
+        source_version=source_version,
+        target_version=target_version,
+        path=path,
+        registry=registry,
+    )
+
+
+def migrate_studio_workspace_spec(
+    payload: Mapping[str, Any],
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+    path: str = "workspace",
+    registry: SpecSchemaRegistry | None = None,
+) -> SpecMigrationResult:
+    """Migrate a durable Studio workspace and nested scenario/stage payloads."""
+    registry = registry or default_spec_registry
+    result = registry.migrate(
+        "StudioWorkspaceSpec",
+        payload,
+        source_version=source_version,
+        target_version=target_version,
+    )
+    migrated_payload = dict(result.payload)
+    records = [_record_with_spec_path(record, path) for record in result.migration_records]
+
+    scenarios = migrated_payload.get("scenarios")
+    if isinstance(scenarios, Mapping):
+        migrated_scenarios: dict[str, Any] = {}
+        for scenario_id in sorted(scenarios):
+            scenario_payload = scenarios[scenario_id]
+            if not isinstance(scenario_payload, Mapping):
+                migrated_scenarios[str(scenario_id)] = scenario_payload
+                continue
+            scenario_result = migrate_studio_scenario_spec(
+                scenario_payload,
+                path=f"{path}/scenarios/{scenario_id}",
+                registry=registry,
+            )
+            migrated_scenarios[str(scenario_id)] = scenario_result.payload
+            records.extend(scenario_result.migration_records)
+        migrated_payload["scenarios"] = migrated_scenarios
+
+    stages = migrated_payload.get("stages")
+    if isinstance(stages, list):
+        migrated_stages: list[Any] = []
+        for index, stage_payload in enumerate(stages):
+            if not isinstance(stage_payload, Mapping):
+                migrated_stages.append(stage_payload)
+                continue
+            stage_result = migrate_studio_stage_spec(
+                stage_payload,
+                path=f"{path}/stages/{index}",
+                registry=registry,
+            )
+            migrated_stages.append(stage_result.payload)
+            records.extend(stage_result.migration_records)
+        migrated_payload["stages"] = migrated_stages
+
+    return SpecMigrationResult(
+        kind=result.kind,
+        schema_id=result.schema_id,
+        source_version=result.source_version,
+        target_version=result.target_version,
+        payload=migrated_payload,
+        migration_records=records,
+    )
+
+
+def migrate_graph_project_payload(
+    payload: Mapping[str, Any],
+    *,
+    registry: SpecSchemaRegistry | None = None,
+) -> dict[str, Any]:
+    """Migrate durable project-level graph and workspace payloads before validation."""
+    registry = registry or default_spec_registry
+    migrated = dict(payload)
+    graph_payload = migrated.get("graph")
+    if isinstance(graph_payload, Mapping) or isinstance(graph_payload, GraphSpec):
+        migrated["graph"] = migrate_graph_spec(
+            graph_payload,
+            path="graph",
+            registry=registry,
+        ).payload
+    workspace_payload = migrated.get("workspace")
+    if isinstance(workspace_payload, Mapping):
+        migrated["workspace"] = migrate_studio_workspace_spec(
+            workspace_payload,
+            path="workspace",
+            registry=registry,
+        ).payload
+    return migrated
 
 
 def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
@@ -716,6 +1014,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Durable Studio scenario draft state.",
         ),
         SpecSchemaFamily(
+            kind="StudioStageSpec",
+            schema_id="feedbax.studio.stage",
+            current_version="feedbax.studio.stage.v1",
+            description="Durable Studio pipeline stage state.",
+        ),
+        SpecSchemaFamily(
             kind="StudioTaskBindingSpec",
             schema_id="feedbax.studio.task_bindings",
             current_version="feedbax.studio.task_bindings.v2",
@@ -790,5 +1094,34 @@ default_spec_registry.register_migration(
             "Promote legacy GraphSpec payloads to the explicit schema identity and "
             "rename built-in node types and Network input ports."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskBindingSpec",
+    SchemaMigration(
+        source_version=STUDIO_TASK_BINDING_LEGACY_V1,
+        target_version="feedbax.studio.task_bindings.v2",
+        migration_id="studio-task-bindings-v1-to-v2",
+        migrate=_migrate_studio_task_binding_v1_payload,
+        description=(
+            "Rename exposed_outputs to exposed_data and source_output_id to "
+            "source_data_id for scenario-owned task data bindings."
+        ),
+    ),
+)
+default_spec_registry.reject_version(
+    "StudioTaskBindingSpec",
+    "feedbax.studio.task_bindings.v0",
+    reason=(
+        "pre-v1 Studio task binding drafts did not distinguish protocol-owned "
+        "task data from graph-bindable data"
+    ),
+)
+default_spec_registry.reject_version(
+    "ObjectiveSpec",
+    "feedbax.objective.v0",
+    reason=(
+        "pre-v1 objective drafts did not declare selector, timeline, metric, "
+        "and reduction semantics durably"
     ),
 )
