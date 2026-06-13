@@ -61,6 +61,7 @@ from feedbax.serialization_prototypes import (
     prototypes_from_task_bindings,
     shape_from_proto,
 )
+from feedbax.state_feedback import StateFeedbackSelector
 
 
 SUPPORTED_GRAPH_SPEC_VERSIONS = frozenset({"1.0.0"})
@@ -542,6 +543,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="LinearStateSpace",
                 params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, StateFeedbackSelector):
+            nodes[name] = ComponentSpec(
+                type="StateFeedbackSelector",
+                params=component.to_params(),
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

@@ -59,6 +59,7 @@ from feedbax.penzai_component import (
     build_penzai_subgraph,
 )
 from feedbax.serialization_prototypes import array_proto_from_shape
+from feedbax.state_feedback import build_state_feedback_selector
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 
 
@@ -414,6 +415,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "ReluMuscle": _build_relu_muscle,
     "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
     "LinearStateSpace": _build_linear_state_space,
+    "StateFeedbackSelector": build_state_feedback_selector,
     "Channel": _build_channel,
     "FirstOrderFilter": _build_filter,
     "CurlField": lambda params: CurlField(

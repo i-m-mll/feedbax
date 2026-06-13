@@ -4,6 +4,7 @@ from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
+from feedbax.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
 from .meta import ComponentMeta
@@ -557,6 +558,46 @@ def register_builtin_components(registry: _Registry) -> None:
                     'state': PortType(dtype='vector'),
                 },
             ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='StateFeedbackSelector',
+            category='Mechanics',
+            description='Select named state-vector slices and optional target-relative feedback.',
+            param_schema=[
+                ParamSchema(
+                    name='state_slices',
+                    type='object',
+                    default={
+                        'position': {'start': 0, 'stop': 2},
+                        'velocity': {'start': 2, 'stop': 4},
+                    },
+                    required=False,
+                ),
+                ParamSchema(
+                    name='channels',
+                    type='array',
+                    default=[
+                        {'slice': 'position', 'transform': 'identity'},
+                        {'slice': 'velocity', 'transform': 'identity'},
+                    ],
+                    required=False,
+                ),
+                ParamSchema(name='expected_state_dim', type='int', default=None, required=False),
+                ParamSchema(name='output_size', type='int', default=None, required=False),
+            ],
+            input_ports=['state', 'target'],
+            output_ports=['feedback'],
+            icon='Route',
+            port_types=PortTypeSpec(
+                inputs={
+                    'state': PortType(dtype='vector'),
+                    'target': PortType(dtype='vector'),
+                },
+                outputs={'feedback': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=state_feedback_output_prototype,
         )
     )
     registry.register(
