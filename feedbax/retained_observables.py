@@ -580,6 +580,8 @@ def _task_n_steps(task_spec: Optional[Mapping[str, Any] | Any]) -> int:
     params = task.get("params")
     if isinstance(params, Mapping) and params.get("n_steps") is not None:
         return int(params["n_steps"])
+    if isinstance(params, Mapping) and params.get("n_control_stages") is not None:
+        return int(params["n_control_stages"])
     return 0
 
 

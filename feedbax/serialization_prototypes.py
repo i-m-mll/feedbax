@@ -9,6 +9,7 @@ import jax.tree as jt
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.state import CartesianState
+from feedbax.state_feedback import state_feedback_output_prototype
 
 
 STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
@@ -28,6 +29,14 @@ def shape_from_proto(proto: Any) -> list[int] | None:
     if len(leaves) != 1 or not hasattr(leaves[0], "shape"):
         return None
     return [int(dim) for dim in leaves[0].shape]
+
+
+def _proto_from_shape_spec(shape: Any) -> Any:
+    if not isinstance(shape, (list, tuple)):
+        return None
+    if shape and all(isinstance(item, (list, tuple)) for item in shape):
+        return tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in shape)
+    return jnp.zeros(tuple(int(dim) for dim in shape))
 
 
 def proto_from_value(value: Any) -> Any:
@@ -182,7 +191,9 @@ def _lookup_registry_meta(component_registry: Any, name: str) -> Any | None:
     elif hasattr(component_registry, "get"):
         meta = component_registry.get(name)
     elif isinstance(component_registry, (list, tuple)):
-        meta = next((item for item in component_registry if getattr(item, "name", None) == name), None)
+        meta = next(
+            (item for item in component_registry if getattr(item, "name", None) == name), None
+        )
     else:
         meta = None
     return meta
@@ -361,7 +372,34 @@ def output_prototypes_for_node(
         return {"output": jnp.zeros((sum(shape[0] for shape in shapes if shape),))}
     if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
         effector = CartesianState()
-        return {"effector": effector}
+        return {"effector": effector, "state": effector}
+    if node_type == "LinearStateSpace":
+        A = jnp.asarray(params["A"])
+        B = jnp.asarray(params["B"])
+        state_dim = int(A.shape[0])
+        pos_start, pos_stop = (int(value) for value in params.get("pos_slice", [0, 2]))
+        vel_start, vel_stop = (int(value) for value in params.get("vel_slice", [2, 4]))
+        force_dim = int(B.shape[1]) if B.ndim == 2 else 0
+        return {
+            "effector": CartesianState(
+                pos=jnp.zeros((pos_stop - pos_start,), dtype=A.dtype),
+                vel=jnp.zeros((vel_stop - vel_start,), dtype=A.dtype),
+                force=jnp.zeros((force_dim,), dtype=A.dtype),
+            ),
+            "state": jnp.zeros((state_dim,), dtype=A.dtype),
+        }
+    if node_type == "StateFeedbackSelector":
+        node_inputs = {
+            port: input_prototypes[(node_name, port)]
+            for port in node_spec.input_ports
+            if (node_name, port) in input_prototypes
+        }
+        return state_feedback_output_prototype(params, node_inputs)
+    if node_type == "FeedbackChannels":
+        proto = _proto_from_shape_spec(params.get("input_shape"))
+        if proto is None:
+            proto = (jnp.zeros(2), jnp.zeros(2))
+        return {"feedback": proto}
     raise ValueError(
         f"Node {node_name!r} has unsupported component type {node_type!r} for prototype inference"
     )

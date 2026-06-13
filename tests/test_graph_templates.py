@@ -383,6 +383,40 @@ def test_spec_to_graph_round_trips_external_boundary_verbatim() -> None:
     assert round_tripped.output_bindings == spec.output_bindings
 
 
+def test_delayed_center_out_task_params_round_trip_through_graph_spec() -> None:
+    spec = GraphSpec(
+        nodes={
+            "task": ComponentSpec(
+                type="DelayedReaches",
+                params={
+                    "preset": "delayed_center_out",
+                    "n_control_stages": 8,
+                    "workspace": [[-1.0, -1.0], [1.0, 1.0]],
+                    "epoch_len_ranges": [[2, 2]],
+                    "p_catch_trial": 0.25,
+                },
+                output_ports=["inputs", "targets", "inits", "intervene"],
+            )
+        },
+        output_ports=["inputs"],
+        output_bindings={"inputs": ("task", "inputs")},
+    )
+
+    round_tripped = graph_to_spec(spec_to_graph(spec, {}))
+    params = round_tripped.nodes["task"].params
+
+    assert params["preset"] == "delayed_center_out"
+    assert params["n_steps"] == 9
+    assert params["epoch_names"] == ["prep", "movement"]
+    assert params["target_on_epochs"] == [0, 1]
+    assert params["hold_epochs"] == [0]
+    assert params["move_epochs"] == [1]
+    assert params["target_visible_from_start"] is True
+    assert params["go_cue_event_name"] == "go_cue"
+    assert params["catch_metadata_policy"] == "flag"
+    assert params["p_catch_trial"] == 0.25
+
+
 def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
     spec = GraphSpec(
         nodes={

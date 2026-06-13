@@ -8,6 +8,8 @@ from feedbax._mapping import WhereDict
 from feedbax.graph import init_state_from_component
 from feedbax.intervene import TimeSeriesParam
 from feedbax.loss import AbstractLoss
+from feedbax.serialization_builders import build_component
+from feedbax.task_presets import delayed_center_out_reaches_params
 
 try:
     from feedbax.task import (
@@ -96,3 +98,52 @@ def test_delayed_reaches_can_sample_center_out_training_trials():
     trial = task.get_train_trial(jax.random.PRNGKey(0))
 
     assert jnp.allclose(trial.inits["mechanics.effector"].pos, jnp.zeros(2))
+
+
+def test_delayed_center_out_preset_exposes_timeline_and_catch_metadata():
+    task = DelayedReaches.delayed_center_out(
+        loss_func=DummyLoss(),
+        n_control_stages=8,
+        workspace=jnp.asarray([[-1.0, -1.0], [1.0, 1.0]]),
+        epoch_len_ranges=((2, 2),),
+        p_catch_trial=1.0,
+    )
+
+    trial = task.get_train_trial(jax.random.PRNGKey(0))
+
+    assert task.n_steps == 9
+    assert task.preset == "delayed_center_out"
+    assert trial.timeline.epoch_names == ("prep", "movement")
+    assert trial.timeline.event_names == ("go_cue",)
+    assert int(trial.timeline.event_steps[0]) == int(trial.timeline.epoch_bounds[1])
+    assert trial.extra is not None
+    assert bool(trial.extra["is_catch_trial"])
+    assert jnp.all(trial.inputs.target_on == 1.0)
+    assert jnp.all(trial.inputs.hold == 1.0)
+    assert jnp.allclose(
+        trial.targets["mechanics.effector.pos"].value,
+        trial.inits["mechanics.effector"].pos,
+    )
+
+
+def test_delayed_center_out_task_spec_materializes_from_compact_params():
+    params = delayed_center_out_reaches_params(
+        n_control_stages=8,
+        workspace=[[-1.0, -1.0], [1.0, 1.0]],
+        epoch_len_ranges=[[2, 2]],
+        p_catch_trial=0.0,
+    )
+
+    component = build_component("task", "DelayedReaches", params)
+    task = component.task
+    trial = component.trial_spec
+
+    assert task.n_steps == 9
+    assert task.train_endpoint_mode == "center_out"
+    assert tuple(task.epoch_names) == ("prep", "movement")
+    assert task.target_visible_from_start is True
+    assert task.catch_metadata_policy == "flag"
+    assert trial.timeline.epoch_names == ("prep", "movement")
+    assert trial.timeline.event_names == ("go_cue",)
+    assert trial.extra is not None
+    assert bool(trial.extra["is_catch_trial"]) is False

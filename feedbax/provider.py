@@ -54,8 +54,15 @@ from feedbax.studio_schema import (
     ValueSchema,
     validate_graph_connection_schema,
 )
-from feedbax.contracts.graph import AnalysisInputRequirement, GraphSpec
+from feedbax.contracts.graph import (
+    AdditiveGraphChannelAdapterSpec,
+    AdditiveGraphChannelTargetSpec,
+    AnalysisInputRequirement,
+    GraphSpec,
+)
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.task_presets import apply_delayed_reaches_preset
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -182,6 +189,8 @@ def health() -> ProviderHealth:
 def _schema_models() -> dict[str, type[BaseModel]]:
     return {
         "GraphSpec": GraphSpec,
+        "AdditiveGraphChannelAdapterSpec": AdditiveGraphChannelAdapterSpec,
+        "AdditiveGraphChannelTargetSpec": AdditiveGraphChannelTargetSpec,
         "AnalysisInputRequirement": AnalysisInputRequirement,
         "TrainingSpec": TrainingSpec,
         "TaskSpec": TaskSpec,
@@ -763,10 +772,21 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
 
     try:
         parsed = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)
-        spec = normalize_graph_for_studio_authoring(parsed)
+        spec = normalize_graph_for_studio_authoring(materialize_additive_channel_adapters(parsed))
     except PydanticValidationError as exc:
         errors = _pydantic_errors(exc)
         return ProviderValidationResult(valid=False, errors=errors)
+    except ValueError as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_additive_channel_adapter",
+                    message=str(exc),
+                    location={"path": "/additive_channel_adapters"},
+                )
+            ],
+        )
 
     registry = ComponentRegistry()
     errors: list[ValidationIssue] = []
@@ -1017,6 +1037,18 @@ def _validate_task_n_steps(spec: TaskSpec) -> list[ValidationIssue]:
 def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[ValidationIssue]:
     """Validate compact DelayedReaches task params at the Studio boundary."""
     errors: list[ValidationIssue] = []
+    try:
+        params = apply_delayed_reaches_preset(params)
+    except ValueError as exc:
+        errors.append(
+            ValidationIssue(
+                type="unknown_task_preset",
+                message=str(exc),
+                location={"path": "/params/preset"},
+            )
+        )
+        return errors
+
     dense_keys = [
         key for key in ("targets", "target_pos", "target_vel", "validation_trials") if key in params
     ]
@@ -1075,6 +1107,30 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
             )
 
     epoch_count = len(epoch_len_ranges) + 1
+    epoch_names = params.get("epoch_names", [])
+    if epoch_names:
+        if not isinstance(epoch_names, list) or not all(
+            isinstance(name, str) for name in epoch_names
+        ):
+            errors.append(
+                ValidationIssue(
+                    type="invalid_epoch_names",
+                    message="DelayedReaches epoch_names must be a list of strings",
+                    location={"path": "/params/epoch_names"},
+                )
+            )
+        elif len(epoch_names) != epoch_count:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_epoch_names",
+                    message=(
+                        "DelayedReaches epoch_names length must equal "
+                        "len(epoch_len_ranges) + 1"
+                    ),
+                    location={"path": "/params/epoch_names"},
+                )
+            )
+
     for key in ("target_on_epochs", "hold_epochs", "move_epochs"):
         value = params.get(key, [])
         if not isinstance(value, list):
@@ -1109,6 +1165,109 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
                         location={"path": f"/params/{key}/{index}"},
                     )
                 )
+    try:
+        p_catch_trial = float(params.get("p_catch_trial", 0.5))
+    except (TypeError, ValueError):
+        errors.append(
+            ValidationIssue(
+                type="invalid_catch_probability",
+                message="DelayedReaches p_catch_trial must be a number in [0, 1]",
+                location={"path": "/params/p_catch_trial"},
+            )
+        )
+    else:
+        if p_catch_trial < 0.0 or p_catch_trial > 1.0:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_catch_probability",
+                    message="DelayedReaches p_catch_trial must be in [0, 1]",
+                    location={"path": "/params/p_catch_trial"},
+                )
+            )
+
+    catch_metadata_policy = params.get("catch_metadata_policy", "none")
+    if catch_metadata_policy not in ("none", "flag"):
+        errors.append(
+            ValidationIssue(
+                type="invalid_catch_metadata_policy",
+                message="DelayedReaches catch_metadata_policy must be 'none' or 'flag'",
+                location={"path": "/params/catch_metadata_policy"},
+            )
+        )
+
+    target_visible_from_start = params.get("target_visible_from_start", False)
+    target_on_epoch_values: list[int] = []
+    for item in params.get("target_on_epochs", []):
+        try:
+            target_on_epoch_values.append(int(item))
+        except (TypeError, ValueError):
+            pass
+    if not isinstance(target_visible_from_start, bool):
+        errors.append(
+            ValidationIssue(
+                type="invalid_target_visibility",
+                message="DelayedReaches target_visible_from_start must be a boolean",
+                location={"path": "/params/target_visible_from_start"},
+            )
+        )
+    elif target_visible_from_start and 0 not in target_on_epoch_values:
+        errors.append(
+            ValidationIssue(
+                type="invalid_target_visibility",
+                message=(
+                    "DelayedReaches target_visible_from_start=True requires "
+                    "target_on_epochs to include epoch 0"
+                ),
+                location={"path": "/params/target_visible_from_start"},
+            )
+        )
+
+    go_cue_event_name = params.get("go_cue_event_name")
+    if go_cue_event_name is not None and not isinstance(go_cue_event_name, str):
+        errors.append(
+            ValidationIssue(
+                type="invalid_go_cue_event",
+                message="DelayedReaches go_cue_event_name must be a string or null",
+                location={"path": "/params/go_cue_event_name"},
+            )
+        )
+
+    if "n_control_stages" in params:
+        try:
+            n_control_stages = int(params["n_control_stages"])
+        except (TypeError, ValueError):
+            errors.append(
+                ValidationIssue(
+                    type="invalid_task_n_steps",
+                    message="DelayedReaches n_control_stages must be a positive integer",
+                    location={"path": "/params/n_control_stages"},
+                )
+            )
+        else:
+            if n_control_stages <= 0:
+                errors.append(
+                    ValidationIssue(
+                        type="invalid_task_n_steps",
+                        message="DelayedReaches n_control_stages must be a positive integer",
+                        location={"path": "/params/n_control_stages"},
+                    )
+                )
+            if "n_steps" in params:
+                try:
+                    n_steps = int(params["n_steps"])
+                except (TypeError, ValueError):
+                    n_steps = None
+                if n_steps is not None and n_steps != n_control_stages + 1:
+                    errors.append(
+                        ValidationIssue(
+                            type="task_n_steps_mismatch",
+                            message=(
+                                "DelayedReaches n_steps must equal "
+                                "n_control_stages + 1 when both are provided"
+                            ),
+                            location={"path": "/"},
+                        )
+                    )
     return errors
 
 

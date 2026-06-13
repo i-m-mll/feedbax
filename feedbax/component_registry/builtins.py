@@ -4,6 +4,7 @@ from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
+from feedbax.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
 from .meta import ComponentMeta
@@ -492,6 +493,8 @@ def register_builtin_components(registry: _Registry) -> None:
             description='Point-mass plant with direct force input.',
             param_schema=[
                 ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
+                ParamSchema(name='mass', type='float', default=1.0, min=0.0, required=False),
+                ParamSchema(name='damping', type='float', default=0.0, min=0.0, required=False),
             ],
             input_ports=['force'],
             output_ports=['effector', 'state'],
@@ -557,6 +560,46 @@ def register_builtin_components(registry: _Registry) -> None:
                     'state': PortType(dtype='vector'),
                 },
             ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='StateFeedbackSelector',
+            category='Mechanics',
+            description='Select named state-vector slices and optional target-relative feedback.',
+            param_schema=[
+                ParamSchema(
+                    name='state_slices',
+                    type='object',
+                    default={
+                        'position': {'start': 0, 'stop': 2},
+                        'velocity': {'start': 2, 'stop': 4},
+                    },
+                    required=False,
+                ),
+                ParamSchema(
+                    name='channels',
+                    type='array',
+                    default=[
+                        {'slice': 'position', 'transform': 'identity'},
+                        {'slice': 'velocity', 'transform': 'identity'},
+                    ],
+                    required=False,
+                ),
+                ParamSchema(name='expected_state_dim', type='int', default=None, required=False),
+                ParamSchema(name='output_size', type='int', default=None, required=False),
+            ],
+            input_ports=['state', 'target'],
+            output_ports=['feedback'],
+            icon='Route',
+            port_types=PortTypeSpec(
+                inputs={
+                    'state': PortType(dtype='vector'),
+                    'target': PortType(dtype='vector'),
+                },
+                outputs={'feedback': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=state_feedback_output_prototype,
         )
     )
     registry.register(
@@ -634,8 +677,36 @@ def register_builtin_components(registry: _Registry) -> None:
             description='Delay and noise for a signal.',
             param_schema=[
                 ParamSchema(name='delay', type='int', default=5, min=0, required=True),
+                ParamSchema(
+                    name='noise_model',
+                    type='enum',
+                    options=[
+                        'none',
+                        'additive_gaussian',
+                        'signal_dependent_gaussian',
+                        'signal_dependent_plus_additive',
+                    ],
+                    default='additive_gaussian',
+                    required=False,
+                ),
                 ParamSchema(name='noise_std', type='float', default=0.01, min=0, required=False),
+                ParamSchema(
+                    name='additive_noise_std',
+                    type='float',
+                    default=0.0,
+                    min=0,
+                    required=False,
+                ),
+                ParamSchema(
+                    name='signal_dependent_noise_std',
+                    type='float',
+                    default=0.0,
+                    min=0,
+                    required=False,
+                ),
                 ParamSchema(name='add_noise', type='bool', default=True, required=False),
+                ParamSchema(name='noise_role', type='str', default=None, required=False),
+                ParamSchema(name='noise_timing', type='str', default=None, required=False),
                 ParamSchema(name='input_shape', type='array', default=[1], required=False),
             ],
             input_ports=['input'],
@@ -644,6 +715,53 @@ def register_builtin_components(registry: _Registry) -> None:
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
+            ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='FeedbackChannels',
+            category='Channels',
+            description='Mechanics feedback selector followed by delay/noise channels.',
+            param_schema=[
+                ParamSchema(name='delay', type='int', default=0, min=0, required=False),
+                ParamSchema(
+                    name='selector',
+                    type='enum',
+                    options=['point_mass_pos_vel', 'effector_pos_vel', 'plant_skeleton', 'paths'],
+                    default='point_mass_pos_vel',
+                    required=False,
+                ),
+                ParamSchema(
+                    name='paths',
+                    type='array',
+                    default=['plant.skeleton.pos', 'plant.skeleton.vel'],
+                    required=False,
+                ),
+                ParamSchema(
+                    name='noise_model',
+                    type='enum',
+                    options=[
+                        'none',
+                        'additive_gaussian',
+                        'signal_dependent_gaussian',
+                        'signal_dependent_plus_additive',
+                    ],
+                    default='additive_gaussian',
+                    required=False,
+                ),
+                ParamSchema(name='noise_std', type='float', default=0.0, min=0, required=False),
+                ParamSchema(name='add_noise', type='bool', default=False, required=False),
+                ParamSchema(name='noise_role', type='str', default='sensory_feedback', required=False),
+                ParamSchema(name='noise_timing', type='str', default='pre_controller', required=False),
+                ParamSchema(name='input_shape', type='array', default=[[2], [2]], required=False),
+            ],
+            input_ports=['mechanics'],
+            output_ports=['feedback'],
+            icon='Radio',
+            port_types=PortTypeSpec(
+                inputs={'mechanics': PortType(dtype='state')},
+                outputs={'feedback': PortType(dtype='state')},
             ),
         )
     )
@@ -1018,10 +1136,24 @@ def register_builtin_components(registry: _Registry) -> None:
             param_schema=[
                 ParamSchema(name='n_steps', type='int', default=140, min=1, required=True),
                 ParamSchema(
+                    name='n_control_stages',
+                    type='int',
+                    default=None,
+                    min=1,
+                    required=False,
+                ),
+                ParamSchema(
                     name='workspace',
                     type='bounds2d',
                     default=[[-1.0, -1.0], [1.0, 1.0]],
                     required=True,
+                ),
+                ParamSchema(
+                    name='preset',
+                    type='enum',
+                    options=['default', 'delayed_center_out'],
+                    default='default',
+                    required=False,
                 ),
                 ParamSchema(
                     name='train_endpoint_mode',
@@ -1036,10 +1168,37 @@ def register_builtin_components(registry: _Registry) -> None:
                     default=[[5, 15], [10, 20]],
                     required=False,
                 ),
+                ParamSchema(
+                    name='epoch_names',
+                    type='array',
+                    default=['hold', 'target_on', 'movement'],
+                    required=False,
+                ),
                 ParamSchema(name='target_on_epochs', type='array', default=[1, 2], required=False),
                 ParamSchema(name='hold_epochs', type='array', default=[0, 1], required=False),
                 ParamSchema(name='move_epochs', type='array', default=[2], required=False),
-                ParamSchema(name='p_catch_trial', type='float', default=0.5, min=0.0, max=1.0, required=False),
+                ParamSchema(
+                    name='target_visible_from_start',
+                    type='bool',
+                    default=False,
+                    required=False,
+                ),
+                ParamSchema(name='go_cue_event_name', type='str', default=None, required=False),
+                ParamSchema(
+                    name='p_catch_trial',
+                    type='float',
+                    default=0.5,
+                    min=0.0,
+                    max=1.0,
+                    required=False,
+                ),
+                ParamSchema(
+                    name='catch_metadata_policy',
+                    type='enum',
+                    options=['none', 'flag'],
+                    default='none',
+                    required=False,
+                ),
                 ParamSchema(name='eval_n_directions', type='int', default=7, min=1, required=False),
                 ParamSchema(name='eval_reach_length', type='float', default=0.5, required=False),
                 ParamSchema(name='eval_grid_n', type='int', default=1, min=1, required=False),
@@ -1415,4 +1574,3 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- CDE Controllers ---
     register_cde_templates(registry)
-

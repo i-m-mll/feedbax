@@ -50,6 +50,7 @@ from feedbax.contracts.graph import (
     build_default_studio_workspace,
 )
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.studio_protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
     WorkerStatus,
     _Job,
@@ -578,6 +579,57 @@ def test_task_validation_reports_pathful_step_count_errors() -> None:
     assert invalid.errors[0].type == "invalid_task_n_steps"
     assert invalid.errors[0].location == {"path": "/params/n_steps"}
     assert {error.type for error in mismatch.errors} == {"task_n_steps_mismatch"}
+
+
+def test_delayed_center_out_preset_task_spec_validates_and_infers_control_stages() -> None:
+    payload = {
+        "type": "DelayedReaches",
+        "params": {
+            "preset": "delayed_center_out",
+            "n_control_stages": 140,
+            "workspace": [[-1.0, -1.0], [1.0, 1.0]],
+            "epoch_len_ranges": [[20, 60]],
+            "p_catch_trial": 0.25,
+        },
+    }
+
+    result = validate_task_spec(payload)
+
+    assert result.valid is True
+    assert infer_task_n_steps(payload) == 140
+
+
+def test_delayed_center_out_validation_rejects_inconsistent_control_stages() -> None:
+    result = validate_task_spec(
+        {
+            "type": "DelayedReaches",
+            "params": {
+                "preset": "delayed_center_out",
+                "n_control_stages": 140,
+                "n_steps": 140,
+            },
+        }
+    )
+
+    assert result.valid is False
+    assert {error.type for error in result.errors} == {"task_n_steps_mismatch"}
+
+
+def test_delayed_reaches_validation_rejects_invalid_metadata_policy() -> None:
+    result = validate_task_spec(
+        {
+            "type": "DelayedReaches",
+            "params": {
+                "epoch_names": ["prep", "movement"],
+                "epoch_len_ranges": [[20, 60]],
+                "target_on_epochs": [0, 1],
+                "catch_metadata_policy": "trial_type",
+            },
+        }
+    )
+
+    assert result.valid is False
+    assert {error.type for error in result.errors} == {"invalid_catch_metadata_policy"}
 
 
 def test_graph_validation_reports_unknown_components() -> None:

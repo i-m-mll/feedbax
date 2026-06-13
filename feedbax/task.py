@@ -19,6 +19,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
 from functools import cached_property, partial
 from typing import (
+    Any,
     TYPE_CHECKING,
     ClassVar,
     Literal,
@@ -56,6 +57,7 @@ from feedbax.loss import (
 )
 from feedbax.misc import BatchInfo, is_module, is_none
 from feedbax.state import CartesianState, StateT
+from feedbax.task_presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
     from feedbax.graph import Component
@@ -1451,6 +1453,14 @@ class DelayedReaches(AbstractTask):
             the task phases for each task trial.
         target_on_epochs: The epochs in which the "target on" signal is turned on.
         hold_epochs: The epochs in which the hold signal is turned on.
+        move_epochs: The epochs in which the reach target is active for scoring.
+        target_visible_from_start: Whether the authored spec intends target
+            information to be visible from the first control step.
+        go_cue_event_name: Optional timeline event name placed at the first
+            movement epoch boundary.
+        catch_metadata_policy: ``"flag"`` adds ``is_catch_trial`` to
+            :class:`TaskTrialSpec.extra`; ``"none"`` preserves the historical
+            no-extra behavior.
         eval_n_directions: The number of evenly-spread center-out reaches
             starting from each workspace grid point in the validation set. The number
             of trials in the validation set is equal to
@@ -1482,10 +1492,39 @@ class DelayedReaches(AbstractTask):
     target_on_epochs: Int[Array, " _"] = field(default=(1, 2), converter=jnp.asarray)
     move_epochs: Int[Array, " _"] = field(default=(2,), converter=jnp.asarray)
     p_catch_trial: float = 0.5  #! TODO
+    preset: Optional[str] = None
+    target_visible_from_start: bool = False
+    go_cue_event_name: Optional[str] = None
+    catch_metadata_policy: Literal["none", "flag"] = "none"
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1
     train_endpoint_mode: Literal["workspace", "center_out"] = "workspace"
+
+    @classmethod
+    def delayed_center_out(
+        cls,
+        *,
+        loss_func: AbstractLoss,
+        n_control_stages: int,
+        workspace: Float[Array, "bounds=2 ndim=2"],
+        **overrides: Any,
+    ) -> Self:
+        """Construct the public delayed center-out preset.
+
+        The preset uses exactly two authored epochs, ``prep`` and ``movement``.
+        The sampled boundary between them is the go cue: the hold signal is on
+        during ``prep`` and target scoring starts in ``movement``.  The target is
+        visible throughout the trial.
+        """
+
+        params = delayed_center_out_reaches_params(
+            n_control_stages=n_control_stages,
+            workspace=workspace,
+            **overrides,
+        )
+        params.pop("n_control_stages", None)
+        return cls(loss_func=loss_func, n_steps=n_control_stages + 1, **params)
 
     def __check_init__(self):
         if len(self.epoch_len_ranges) + 1 != len(self.epoch_names):
@@ -1494,6 +1533,19 @@ class DelayedReaches(AbstractTask):
             )
             logger.error(err_msg)
             raise ValueError(err_msg)
+        if self.catch_metadata_policy not in ("none", "flag"):
+            raise ValueError(
+                "DelayedReaches catch_metadata_policy must be one of 'none' or 'flag'"
+            )
+        if self.preset not in (None, "default", "delayed_center_out"):
+            raise ValueError(
+                "DelayedReaches preset must be 'delayed_center_out', 'default', or None"
+            )
+        if self.target_visible_from_start and 0 not in set(np.asarray(self.target_on_epochs)):
+            raise ValueError(
+                "DelayedReaches target_visible_from_start=True requires "
+                "target_on_epochs to include epoch 0"
+            )
 
     def get_train_trial(
         self, key: PRNGKeyArray, batch_info: Optional[BatchInfo] = None
@@ -1519,7 +1571,7 @@ class DelayedReaches(AbstractTask):
         effector_init_state, effector_target_state = _pos_only_states(effector_pos_endpoints)
 
         # Construct time sequences of inputs and targets
-        task_inputs, effector_target_states, epoch_bounds = self._get_sequences(
+        task_inputs, effector_target_states, epoch_bounds, is_catch = self._get_sequences(
             effector_init_state,
             effector_target_state,
             key2,
@@ -1542,7 +1594,10 @@ class DelayedReaches(AbstractTask):
                 self.n_steps,
                 epoch_bounds=epoch_bounds,
                 epoch_names=self.epoch_names,
+                event_steps=self._go_cue_event_steps(epoch_bounds),
+                event_names=self._go_cue_event_names(),
             ),
+            extra=self._trial_extra(is_catch),
         )
 
     def get_validation_trials(self, key: PRNGKeyArray) -> TaskTrialSpec:
@@ -1561,7 +1616,7 @@ class DelayedReaches(AbstractTask):
         epochs_keys = jr.split(key_val, effector_init_states.pos.shape[0])
         #! Assume no catch trials during validation
         get_sequences = partial(self._get_sequences, p_catch=0.0)
-        task_inputs, effector_target_states, epoch_bounds = jax.vmap(get_sequences)(
+        task_inputs, effector_target_states, epoch_bounds, is_catch = jax.vmap(get_sequences)(
             effector_init_states, effector_target_states, epochs_keys
         )
 
@@ -1581,8 +1636,29 @@ class DelayedReaches(AbstractTask):
                 self.n_steps,
                 epoch_bounds=epoch_bounds,
                 epoch_names=self.epoch_names,
+                event_steps=self._go_cue_event_steps(epoch_bounds),
+                event_names=self._go_cue_event_names(),
             ),
+            extra=self._trial_extra(is_catch),
         )
+
+    def _go_cue_event_steps(self, epoch_bounds: Array) -> Optional[Array]:
+        if self.go_cue_event_name is None:
+            return None
+        if self.move_epochs.shape[0] == 0:
+            return None
+        go_cue_step = jnp.take(epoch_bounds, self.move_epochs[0], axis=-1)
+        return jnp.expand_dims(go_cue_step, axis=-1).astype(jnp.int32)
+
+    def _go_cue_event_names(self) -> Optional[tuple[str, ...]]:
+        if self.go_cue_event_name is None:
+            return None
+        return (self.go_cue_event_name,)
+
+    def _trial_extra(self, is_catch: Array) -> Optional[Mapping[str, Array]]:
+        if self.catch_metadata_policy == "flag":
+            return {"is_catch_trial": is_catch}
+        return None
 
     def _get_sequences(
         self,
@@ -1591,7 +1667,7 @@ class DelayedReaches(AbstractTask):
         key: PRNGKeyArray,
         *,
         p_catch: float,
-    ) -> Tuple[DelayedReachTaskInputs, CartesianState, Int[Array, " n_epochs"]]:
+    ) -> Tuple[DelayedReachTaskInputs, CartesianState, Int[Array, " n_epochs"], Array]:
         """Convert static task inputs to sequences, and make hold signal."""
         key_epochs, key_catch = jr.split(key)
         epoch_lengths_pre = gen_epoch_lengths(key_epochs, self.epoch_len_ranges)
@@ -1636,7 +1712,7 @@ class DelayedReaches(AbstractTask):
         task_input = DelayedReachTaskInputs(stim_seqs, hold_seq, stim_on_seq)
         target_states = target_seqs
 
-        return task_input, target_states, epoch_bounds
+        return task_input, target_states, epoch_bounds, is_catch
 
     @property
     def n_validation_trials(self) -> int:

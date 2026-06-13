@@ -177,6 +177,12 @@ def infer_task_n_steps(
     ignored here so callers can use provider validation for pathful errors.
     """
 
+    params = _task_params(task_spec)
+    if "n_control_stages" in params:
+        parsed = parse_positive_n_steps(params["n_control_stages"])
+        if parsed is not None:
+            return parsed
+
     for _path, value in task_n_steps_values(task_spec):
         parsed = parse_positive_n_steps(value)
         if parsed is not None:
