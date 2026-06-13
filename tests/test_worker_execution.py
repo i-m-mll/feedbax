@@ -11,7 +11,12 @@ import pytest
 
 from feedbax.graph_templates import network_template_graph
 from feedbax.graph_normalization import normalize_task_binding_spec_for_studio_authoring
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphSpec,
+    ParameterConstraintSpec,
+    StudioTaskBindingSpec,
+)
 from feedbax.web.worker.execution import (
     compile_training_run,
     rollout_graph,
@@ -327,6 +332,33 @@ def test_run_training_graph_trains_tiny_full_graph() -> None:
     assert "graph_output:output" in result.retained_observables["outputs"]
     assert "task_data:model_input" in result.retained_observables["task_data"]
     assert "task_data:inputs.model" in result.retained_observables["task_data"]
+
+
+def test_run_training_graph_projects_parameter_constraints_after_update() -> None:
+    graph_spec = GraphSpec.model_validate(_linear_graph_spec())
+    graph_spec.parameter_constraints = [
+        ParameterConstraintSpec(node="readout", role="weight", mask=[[0]], value=0.0)
+    ]
+    compiled = compile_training_run(
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_task_binding_spec(),
+        cfg=_cfg(),
+    )
+
+    assert compiled.graph.nodes["readout"].layer.weight[0, 0] == 0.0
+
+    run_training_graph(
+        compiled,
+        job_id="test-job",
+        total_batches=3,
+        cfg=_cfg(snapshot_interval=3),
+        stop_event=threading.Event(),
+        emit=lambda event: None,
+    )
+
+    assert compiled.graph.nodes["readout"].layer.weight[0, 0] == 0.0
 
 
 def test_compile_training_run_fails_unsupported_display_only_component() -> None:

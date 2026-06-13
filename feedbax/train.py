@@ -42,6 +42,7 @@ from feedbax.misc import (
     exponential_smoothing,
     is_none,
 )
+from feedbax.parameter_constraints import project_component_parameters
 from feedbax.intervene.schedule import TimeSeriesParam
 from feedbax.state import StateT
 from feedbax.task import (
@@ -937,6 +938,7 @@ class TaskTrainer(eqx.Module):
         # For updates computed directly from the state, without loss gradient.
         for update_func in update_funcs:
             model = update_func(model, states)
+        model = project_component_parameters(model)
 
         flat_model = jtu.tree_leaves(model)
         flat_opt_state = jtu.tree_leaves(opt_state)

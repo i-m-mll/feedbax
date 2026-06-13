@@ -36,6 +36,20 @@ class ComponentSpec(BaseModel):
     output_ports: List[str] = Field(default_factory=list)
 
 
+class ParameterConstraintSpec(BaseModel):
+    """Structural constraint for a graph node parameter array.
+
+    ``mask`` uses trainability semantics: truthy entries keep the parameter value,
+    while falsy entries are projected to ``value`` at initialization and after
+    optimizer updates.
+    """
+
+    node: str
+    role: str
+    mask: ParamValue
+    value: ParamValue = 0.0
+
+
 class WireSpec(BaseModel):
     """Specification for a wire connecting two ports."""
 
@@ -219,6 +233,7 @@ class GraphSpec(BaseModel):
     user_ports: Optional[Dict[str, UserPortSpec]] = None
     taps: Optional[List[TapSpec]] = None
     retained_observables: Optional[List[RetainedObservableSpec]] = None
+    parameter_constraints: List[ParameterConstraintSpec] = Field(default_factory=list)
     metadata: Optional[GraphMetadata] = None
 
 
