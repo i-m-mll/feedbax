@@ -15,7 +15,7 @@ from feedbax.graph_templates import (
 )
 from feedbax.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.nn import SimpleStagedNetwork
-from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.serialization import graph_to_spec, spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
@@ -542,16 +542,9 @@ def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
 
 
 def test_spec_to_graph_rejects_unsupported_graph_spec_version() -> None:
-    spec = GraphSpec(
-        metadata=GraphMetadata(
-            name="bad",
-            created_at="2026-06-11T00:00:00Z",
-            updated_at="2026-06-11T00:00:00Z",
-            version="9.0.0",
-        )
-    )
+    spec = GraphSpec(schema_version="feedbax.graph_spec.v99")
 
-    with pytest.raises(ValueError, match="Unsupported GraphSpec version '9.0.0'"):
+    with pytest.raises(ValueError, match="source_version='feedbax.graph_spec.v99'"):
         spec_to_graph(spec, {})
 
 

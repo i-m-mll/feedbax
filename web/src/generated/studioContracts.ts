@@ -22,8 +22,16 @@ export interface ParamSchema {
 export interface ComponentSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
+  param_schema_version?: string | null;
   input_ports?: string[];
   output_ports?: string[];
+}
+
+export interface ParameterConstraintSpec {
+  node: string;
+  role: string;
+  mask: number | string | boolean | null | unknown[] | Record<string, unknown>;
+  value?: number | string | boolean | null | unknown[] | Record<string, unknown>;
 }
 
 export interface WireSpec {
@@ -33,6 +41,25 @@ export interface WireSpec {
   target_port: string;
   temporality?: "instant" | "recurrent";
   recurrent_initializer?: Record<string, unknown> | null;
+}
+
+export interface AdditiveGraphChannelTargetSpec {
+  kind: "edge" | "input";
+  target_node: string;
+  target_port: string;
+  source_node?: string | null;
+  source_port?: string | null;
+}
+
+export interface AdditiveGraphChannelAdapterSpec {
+  label: string;
+  input_key: string;
+  target: AdditiveGraphChannelTargetSpec;
+  adapter_node?: string | null;
+  payload_shape?: number[] | null;
+  payload_dtype?: string | null;
+  provenance_role?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface UserPortSpec {
@@ -439,6 +466,26 @@ export interface PortTypeSpec {
   outputs?: Record<string, PortType>;
 }
 
+export interface ComponentIdentity {
+  type_id: string;
+  owner?: string | null;
+  provenance?: string | null;
+  provenance_kind?: "feedbax" | "package" | "file" | "local" | "unknown";
+  package?: string | null;
+  import_path?: string | null;
+  stable?: boolean;
+}
+
+export interface ComponentMigrationInfo {
+  migration_id: string;
+  owner: string;
+  source_type: string;
+  target_type: string;
+  source_param_schema_version?: string | null;
+  target_param_schema_version?: string | null;
+  description?: string;
+}
+
 export interface ComponentDefinition {
   name: string;
   category: string;
@@ -455,6 +502,11 @@ export interface ComponentDefinition {
   template_id?: string | null;
   template_kind?: string | null;
   provenance?: string | null;
+  identity?: ComponentIdentity | null;
+  owner?: string | null;
+  param_schema_version?: string;
+  supported_param_schema_versions?: string[];
+  migrations?: ComponentMigrationInfo[];
 }
 
 export interface OptimizerSpec {
@@ -767,11 +819,23 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
     .object({
       "type": z.string(),
       "params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "param_schema_version": z.string().nullable().optional(),
       "input_ports": z.array(z.string()).optional(),
       "output_ports": z.array(z.string()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ComponentSpec>;
+
+export const ParameterConstraintSpecSchema: z.ZodType<ParameterConstraintSpec> = z.lazy(() =>
+  z
+    .object({
+      "node": z.string(),
+      "role": z.string(),
+      "mask": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
+      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ParameterConstraintSpec>;
 
 export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
   z
@@ -785,6 +849,33 @@ export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<WireSpec>;
+
+export const AdditiveGraphChannelTargetSpecSchema: z.ZodType<AdditiveGraphChannelTargetSpec> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("edge"), z.literal("input")]),
+      "target_node": z.string(),
+      "target_port": z.string(),
+      "source_node": z.string().nullable().optional(),
+      "source_port": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AdditiveGraphChannelTargetSpec>;
+
+export const AdditiveGraphChannelAdapterSpecSchema: z.ZodType<AdditiveGraphChannelAdapterSpec> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "input_key": z.string(),
+      "target": AdditiveGraphChannelTargetSpecSchema,
+      "adapter_node": z.string().nullable().optional(),
+      "payload_shape": z.array(z.number().int()).nullable().optional(),
+      "payload_dtype": z.string().nullable().optional(),
+      "provenance_role": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AdditiveGraphChannelAdapterSpec>;
 
 export const UserPortSpecSchema: z.ZodType<UserPortSpec> = z.lazy(() =>
   z
@@ -1362,6 +1453,34 @@ export const PortTypeSpecSchema: z.ZodType<PortTypeSpec> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<PortTypeSpec>;
 
+export const ComponentIdentitySchema: z.ZodType<ComponentIdentity> = z.lazy(() =>
+  z
+    .object({
+      "type_id": z.string(),
+      "owner": z.string().nullable().optional(),
+      "provenance": z.string().nullable().optional(),
+      "provenance_kind": z.union([z.literal("feedbax"), z.literal("package"), z.literal("file"), z.literal("local"), z.literal("unknown")]).optional(),
+      "package": z.string().nullable().optional(),
+      "import_path": z.string().nullable().optional(),
+      "stable": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentIdentity>;
+
+export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z.lazy(() =>
+  z
+    .object({
+      "migration_id": z.string(),
+      "owner": z.string(),
+      "source_type": z.string(),
+      "target_type": z.string(),
+      "source_param_schema_version": z.string().nullable().optional(),
+      "target_param_schema_version": z.string().nullable().optional(),
+      "description": z.string().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentMigrationInfo>;
+
 export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(() =>
   z
     .object({
@@ -1380,6 +1499,11 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "template_id": z.string().nullable().optional(),
       "template_kind": z.string().nullable().optional(),
       "provenance": z.string().nullable().optional(),
+      "identity": ComponentIdentitySchema.nullable().optional(),
+      "owner": z.string().nullable().optional(),
+      "param_schema_version": z.string().optional(),
+      "supported_param_schema_versions": z.array(z.string()).optional(),
+      "migrations": z.array(ComponentMigrationInfoSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
