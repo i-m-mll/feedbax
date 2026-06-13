@@ -13,6 +13,7 @@ from feedbax._model import (
     wrap_stateless_callable,
     wrap_stateless_keyless_callable,
 )
+from feedbax._mapping import WhereDict
 from feedbax._selectors import Selection, select
 from feedbax.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.graph_templates import (
@@ -54,27 +55,56 @@ from feedbax.nn_cde import CDENetwork, CDENetworkState
 from feedbax.intervene import is_intervenor
 from feedbax.loss import is_termtree
 from feedbax.misc import is_module
+from feedbax.task import (
+    AbstractTask,
+    DelayedReaches,
+    DelayedReachTaskInputs,
+    SimpleReaches,
+    TaskTrialSpec,
+    TrialTimeline,
+    _forceless_task_inputs as forceless_task_inputs,
+    _pos_only_states as pos_only_states,
+    centreout_endpoints,
+    gen_epoch_lengths,
+    get_masks,
+    get_masked_seqs,
+    get_scalar_epoch_seq,
+    prepare_trial,
+)
 
 # from feedbax._logging import enable_central_logging
 
 __all__ = [
     "AbstractModel",
+    "AbstractTask",
     "BUILTIN_GRAPH_TEMPLATES",
     "CDENetwork",
     "CDENetworkState",
     "Component",
+    "DelayedReaches",
+    "DelayedReachTaskInputs",
     "Graph",
     "GraphTemplateMetadata",
     "LOG_LEVEL",
     "Selection",
+    "SimpleReaches",
+    "TaskTrialSpec",
+    "TrialTimeline",
+    "WhereDict",
     "Wire",
     "__version__",
+    "centreout_endpoints",
+    "forceless_task_inputs",
     "get_ensemble",
+    "gen_epoch_lengths",
     "init_state_from_component",
     "is_intervenor",
     "is_module",
     "is_termtree",
     "is_type",
+    "get_masks",
+    "get_masked_seqs",
+    "get_scalar_epoch_seq",
     "leaves_of_type",
     "load",
     "load_with_hyperparameters",
@@ -82,6 +112,8 @@ __all__ = [
     "make_named_tuple_subclass",
     "move_level_to_outside",
     "network_template_graph",
+    "pos_only_states",
+    "prepare_trial",
     "random_split_like_tree",
     "save",
     "select",
