@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+GRAPH_SPEC_SCHEMA_ID = "feedbax.graph_spec"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.graph_spec.v2"
+LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
+
+
 # Use Any for nested param values to avoid recursive type issues
 ParamValue = Union[int, float, str, bool, None, List[Any], Dict[str, Any]]
 
@@ -221,6 +226,14 @@ class GraphMetadata(BaseModel):
 class GraphSpec(BaseModel):
     """Complete specification for a computation graph."""
 
+    schema_id: str = Field(
+        default=GRAPH_SPEC_SCHEMA_ID,
+        description="Stable machine-readable schema identity for GraphSpec payloads.",
+    )
+    schema_version: str = Field(
+        default=GRAPH_SPEC_SCHEMA_VERSION,
+        description="Machine-readable GraphSpec schema version.",
+    )
     nodes: Dict[str, ComponentSpec] = Field(default_factory=dict)
     wires: List[WireSpec] = Field(default_factory=list)
     additive_channel_adapters: List[AdditiveGraphChannelAdapterSpec] = Field(default_factory=list)

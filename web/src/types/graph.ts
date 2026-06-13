@@ -109,6 +109,8 @@ export interface RetainedObservableSpec {
 }
 
 export interface GraphSpec {
+  schema_id?: string;
+  schema_version?: string;
   nodes: Record<string, ComponentSpec>;
   wires: WireSpec[];
   input_ports: string[];

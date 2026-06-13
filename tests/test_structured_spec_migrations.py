@@ -10,6 +10,7 @@ from feedbax.migrations import (
     UnsupportedSpecVersion,
     default_spec_registry,
 )
+from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION
 
 
 def _registry() -> SpecSchemaRegistry:
@@ -132,7 +133,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     families = {family.kind: family for family in default_spec_registry.families()}
 
     assert families["GraphSpec"].identity == "feedbax.graph_spec"
-    assert families["GraphSpec"].current_version == "1.0.0"
+    assert families["GraphSpec"].current_version == GRAPH_SPEC_SCHEMA_VERSION
     assert families["TrainingSpec"].identity == "feedbax.training_spec"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
