@@ -7,7 +7,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.channel import Channel
+from feedbax.bodies import FeedbackChannels
+from feedbax.channel import Channel, ChannelSpec
 from feedbax.components import (
     Constant,
     Damper,
@@ -53,7 +54,7 @@ from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.nn import SimpleStagedNetwork
-from feedbax.noise import Normal
+from feedbax.noise import Multiplicative, Normal
 from feedbax.penzai_component import (
     PENZAI_AVAILABLE,
     build_penzai_subgraph,
@@ -125,7 +126,12 @@ def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
     if plant_type == "TwoLinkArm":
         plant = DirectForceInput(TwoLinkArm())
     elif plant_type == "PointMass":
-        plant = DirectForceInput(PointMass(mass=float(params.get("mass", 1.0))))
+        plant = DirectForceInput(
+            PointMass(
+                mass=float(params.get("mass", 1.0)),
+                damping=float(params.get("damping", 0.0)),
+            )
+        )
     else:
         raise ValueError(f"Unsupported plant_type '{plant_type}'")
     return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
@@ -145,13 +151,94 @@ def _build_linear_state_space(params: Mapping[str, Any]) -> LinearStateSpace:
     )
 
 
+def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    nested = params.get("noise")
+    noise_params = dict(nested) if isinstance(nested, Mapping) else {}
+    model = str(
+        noise_params.get(
+            "model",
+            noise_params.get("type", params.get("noise_model", "additive_gaussian")),
+        )
+    )
+    if model in {"gaussian", "additive", "normal"}:
+        model = "additive_gaussian"
+    elif model in {"signal_dependent", "multiplicative_gaussian"}:
+        model = "signal_dependent_gaussian"
+    elif model in {"command", "motor_command"}:
+        model = "signal_dependent_plus_additive"
+
+    noise_std = noise_params.get("std", params.get("noise_std", 0.0))
+    additive_std = noise_params.get(
+        "additive_std",
+        noise_params.get("additive_noise_std", params.get("additive_noise_std", noise_std)),
+    )
+    if model == "additive_gaussian" and noise_std not in (None, 0, 0.0):
+        additive_std = noise_std
+    signal_dependent_std = noise_params.get(
+        "signal_dependent_std",
+        noise_params.get(
+            "signal_dependent_noise_std",
+            params.get("signal_dependent_noise_std", 0.0),
+        ),
+    )
+    add_noise_default = model != "none"
+    add_noise = bool(noise_params.get("add_noise", params.get("add_noise", add_noise_default)))
+    return {
+        "model": model,
+        "add_noise": add_noise,
+        "additive_std": float(additive_std or 0.0),
+        "signal_dependent_std": float(signal_dependent_std or 0.0),
+        "role": noise_params.get("role", params.get("noise_role")),
+        "timing": noise_params.get("timing", params.get("noise_timing")),
+    }
+
+
+def _build_noise_func(noise: Mapping[str, Any]):
+    model = str(noise["model"])
+    add_noise = bool(noise["add_noise"])
+    additive_std = float(noise["additive_std"])
+    signal_dependent_std = float(noise["signal_dependent_std"])
+    supported = {
+        "none",
+        "additive_gaussian",
+        "signal_dependent_gaussian",
+        "signal_dependent_plus_additive",
+    }
+    if model not in supported:
+        raise ValueError(
+            f"Unsupported Channel noise_model {model!r}; expected one of "
+            "'none', 'additive_gaussian', 'signal_dependent_gaussian', or "
+            "'signal_dependent_plus_additive'"
+        )
+    if model == "none" or not add_noise:
+        return None
+    if model == "additive_gaussian":
+        return Normal(std=additive_std) if additive_std != 0.0 else None
+    if model == "signal_dependent_gaussian":
+        return (
+            Multiplicative(Normal(std=signal_dependent_std))
+            if signal_dependent_std != 0.0
+            else None
+        )
+    if model == "signal_dependent_plus_additive":
+        terms = []
+        if signal_dependent_std != 0.0:
+            terms.append(Multiplicative(Normal(std=signal_dependent_std)))
+        if additive_std != 0.0:
+            terms.append(Normal(std=additive_std))
+        if not terms:
+            return None
+        noise_func = terms[0]
+        for term in terms[1:]:
+            noise_func = noise_func + term
+        return noise_func
+    raise AssertionError(f"Unhandled Channel noise_model {model!r}")
+
+
 def _build_channel(params: Mapping[str, Any]) -> Channel:
     delay = int(params.get("delay", 0))
-    add_noise = bool(params.get("add_noise", True))
-    noise_std = params.get("noise_std", 0.0)
-    noise_func = None
-    if add_noise and noise_std not in (None, 0, 0.0):
-        noise_func = Normal(std=float(noise_std))
+    noise = _noise_params(params)
+    noise_func = _build_noise_func(noise)
     input_proto = None
     input_shape = params.get("input_shape")
     if isinstance(input_shape, (list, tuple)):
@@ -159,9 +246,95 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     return Channel(
         delay=delay,
         noise_func=noise_func,
-        add_noise=add_noise,
+        add_noise=bool(noise["add_noise"]),
         input_proto=input_proto,
+        init_value=float(params.get("init_value", 0.0)),
+        noise_model=str(noise["model"]),
+        noise_role=None if noise["role"] is None else str(noise["role"]),
+        noise_timing=None if noise["timing"] is None else str(noise["timing"]),
     )
+
+
+def _path_selector(paths: tuple[str, ...]):
+    def _select(mechanics_state):
+        values = []
+        for path in paths:
+            value = mechanics_state
+            for part in path.split("."):
+                if not hasattr(value, part):
+                    raise AttributeError(f"Mechanics feedback selector path {path!r} has no {part!r}")
+                value = getattr(value, part)
+            values.append(value)
+        return values[0] if len(values) == 1 else tuple(values)
+
+    _select._feedbax_feedback_selector = "paths"  # type: ignore[attr-defined]
+    _select._feedbax_feedback_paths = paths  # type: ignore[attr-defined]
+    return _select
+
+
+def _feedback_selector(params: Mapping[str, Any]):
+    selector = str(params.get("selector", "point_mass_pos_vel"))
+    raw_paths = params.get("paths")
+    if raw_paths is not None and selector == "paths":
+        if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
+            raise ValueError("FeedbackChannels 'paths' must be a non-empty list of attribute paths")
+        return "paths", tuple(str(path) for path in raw_paths)
+
+    if selector in {
+        "point_mass_pos_vel",
+        "point_mass_state",
+        "mechanics.plant.skeleton.pos_vel",
+    }:
+        return "point_mass_pos_vel", ("plant.skeleton.pos", "plant.skeleton.vel")
+    if selector in {"effector_pos_vel", "mechanics.effector.pos_vel"}:
+        return "effector_pos_vel", ("effector.pos", "effector.vel")
+    if selector in {"plant_skeleton", "mechanics.plant.skeleton"}:
+        return "plant_skeleton", ("plant.skeleton",)
+    raise ValueError(
+        f"Unsupported FeedbackChannels selector {selector!r}; expected point_mass_pos_vel, "
+        "effector_pos_vel, plant_skeleton, or explicit paths"
+    )
+
+
+def _proto_from_shape_spec(shape: Any):
+    if not isinstance(shape, (list, tuple)):
+        return None
+    if shape and all(isinstance(item, (list, tuple)) for item in shape):
+        return tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in shape)
+    return jnp.zeros(tuple(int(dim) for dim in shape))
+
+
+def _feedback_input_proto(params: Mapping[str, Any], paths: tuple[str, ...]):
+    proto = _proto_from_shape_spec(params.get("input_shape"))
+    if proto is not None:
+        return proto
+    if paths == ("plant.skeleton.pos", "plant.skeleton.vel") or paths == (
+        "effector.pos",
+        "effector.vel",
+    ):
+        return (jnp.zeros(2), jnp.zeros(2))
+    return jnp.zeros(1)
+
+
+def _build_feedback_channels(params: Mapping[str, Any]) -> FeedbackChannels:
+    delay = int(params.get("delay", 0))
+    selector, paths = _feedback_selector(params)
+    noise = _noise_params(params)
+    noise_func = _build_noise_func(noise)
+    where = _path_selector(paths)
+    where._feedbax_feedback_selector = selector  # type: ignore[attr-defined]
+    channel = Channel(
+        delay=delay,
+        noise_func=noise_func,
+        add_noise=bool(noise["add_noise"]),
+        input_proto=_feedback_input_proto(params, paths),
+        init_value=float(params.get("init_value", 0.0)),
+        noise_model=str(noise["model"]),
+        noise_role=None if noise["role"] is None else str(noise["role"]),
+        noise_timing=None if noise["timing"] is None else str(noise["timing"]),
+    )
+    spec = ChannelSpec(where=where, delay=delay, noise_func=noise_func)
+    return FeedbackChannels(channel, spec)
 
 
 def _build_filter(params: Mapping[str, Any]) -> FirstOrderFilter:
@@ -415,6 +588,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
     "LinearStateSpace": _build_linear_state_space,
     "Channel": _build_channel,
+    "FeedbackChannels": _build_feedback_channels,
     "FirstOrderFilter": _build_filter,
     "CurlField": lambda params: CurlField(
         params=CurlFieldParams(

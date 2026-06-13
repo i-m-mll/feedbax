@@ -66,6 +66,9 @@ class Channel(Component):
     add_noise: bool
     input_proto: PyTree[Array]
     init_value: float
+    noise_model: str = field(default="additive_gaussian", static=True)
+    noise_role: Optional[str] = field(default=None, static=True)
+    noise_timing: Optional[str] = field(default=None, static=True)
     state_index: StateIndex
     _initial_state: ChannelState = field(static=True)
 
@@ -76,6 +79,9 @@ class Channel(Component):
         add_noise: bool = True,
         input_proto: Optional[PyTree[Array]] = None,
         init_value: float = 0.0,
+        noise_model: str = "additive_gaussian",
+        noise_role: Optional[str] = None,
+        noise_timing: Optional[str] = None,
     ):
         if not isinstance(delay, int):
             raise ValueError("Delay must be an integer")
@@ -86,6 +92,9 @@ class Channel(Component):
             input_proto = jnp.zeros(1)
         self.input_proto = input_proto
         self.init_value = init_value
+        self.noise_model = noise_model
+        self.noise_role = noise_role
+        self.noise_timing = noise_timing
 
         self._initial_state = self._initial_state_value(input_proto)
         self.state_index = StateIndex(self._initial_state)
@@ -139,15 +148,20 @@ class Channel(Component):
             add_noise=self.add_noise,
             input_proto=input_proto,
             init_value=self.init_value,
+            noise_model=self.noise_model,
+            noise_role=self.noise_role,
+            noise_timing=self.noise_timing,
         )
 
 
 def toggle_channel_noise(tree, enabled: Optional[bool] = None):
     """Disable/enable noise in all Channel leaves of a PyTree."""
     if enabled is None:
-        replace_fn = lambda x: not x
+        def replace_fn(x):
+            return not x
     else:
-        replace_fn = lambda _: enabled
+        def replace_fn(_):
+            return enabled
 
     return eqx.tree_at(
         lambda channel: channel.add_noise,

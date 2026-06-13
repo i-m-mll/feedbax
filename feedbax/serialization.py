@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import jax.numpy as jnp
 import jax.tree as jt
 
+from feedbax.bodies import FeedbackChannels
 from feedbax.channel import Channel
 from feedbax.components import (
     Constant,
@@ -47,7 +48,7 @@ from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.nn import SimpleStagedNetwork
-from feedbax.noise import Normal
+from feedbax.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.penzai_component import PenzaiSubgraph
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.contracts.graph import (
@@ -244,6 +245,36 @@ def graph_to_spec(graph: Any) -> GraphSpec:
         if hasattr(value, "tolist"):
             return value.tolist()
         return value
+
+    def _channel_noise_params(component: Channel) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "noise_model": getattr(component, "noise_model", "additive_gaussian"),
+            "add_noise": component.add_noise,
+        }
+        additive_std = 0.0
+        signal_dependent_std = 0.0
+        noise_func = component.noise_func
+        terms = noise_func.terms if isinstance(noise_func, CompositeNoise) else (noise_func,)
+        for term in terms:
+            if isinstance(term, Normal):
+                additive_std = float(term.std)
+            elif isinstance(term, Multiplicative) and isinstance(term.noise_func, Normal):
+                signal_dependent_std = float(term.noise_func.std)
+
+        if params["noise_model"] == "signal_dependent_plus_additive":
+            params["additive_noise_std"] = additive_std
+            params["signal_dependent_noise_std"] = signal_dependent_std
+        elif params["noise_model"] == "signal_dependent_gaussian":
+            params["signal_dependent_noise_std"] = signal_dependent_std
+        else:
+            params["noise_std"] = additive_std
+        noise_role = getattr(component, "noise_role", None)
+        noise_timing = getattr(component, "noise_timing", None)
+        if noise_role is not None:
+            params["noise_role"] = noise_role
+        if noise_timing is not None:
+            params["noise_timing"] = noise_timing
+        return params
 
     for name, component in graph.nodes.items():
         if isinstance(component, Graph):
@@ -527,6 +558,21 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
+            if (
+                plant_type == "PointMass"
+                and isinstance(component.plant, DirectForceInput)
+                and isinstance(component.plant.skeleton, PointMass)
+            ):
+                skeleton = component.plant.skeleton
+                nodes[name] = nodes[name].model_copy(
+                    update={
+                        "params": {
+                            **params,
+                            "mass": float(skeleton.mass),
+                            "damping": float(skeleton.damping),
+                        }
+                    }
+                )
             continue
 
         if isinstance(component, LinearStateSpace):
@@ -548,19 +594,57 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             continue
 
         if isinstance(component, Channel):
-            noise_std = 0.0
-            if isinstance(component.noise_func, Normal):
-                noise_std = float(component.noise_func.std)
             params = {
                 "delay": component.delay,
-                "noise_std": noise_std,
-                "add_noise": component.add_noise,
+                **_channel_noise_params(component),
             }
             input_proto_leaves = jt.leaves(component.input_proto)
             if len(input_proto_leaves) == 1 and hasattr(input_proto_leaves[0], "shape"):
                 params["input_shape"] = [int(dim) for dim in input_proto_leaves[0].shape]
             nodes[name] = ComponentSpec(
                 type="Channel",
+                params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, FeedbackChannels):
+            channel_leaves = jt.leaves(
+                component.channels,
+                is_leaf=lambda item: isinstance(item, Channel),
+            )
+            spec_leaves = jt.leaves(
+                component.specs,
+                is_leaf=lambda item: hasattr(item, "where"),
+            )
+            if len(channel_leaves) != 1 or len(spec_leaves) != 1:
+                raise ValueError(
+                    "graph_to_spec only supports single-channel FeedbackChannels built-ins"
+                )
+            channel = channel_leaves[0]
+            feedback_spec = spec_leaves[0]
+            selector = getattr(feedback_spec.where, "_feedbax_feedback_selector", None)
+            paths = getattr(feedback_spec.where, "_feedbax_feedback_paths", None)
+            if selector is None:
+                raise ValueError(
+                    "FeedbackChannels component cannot be serialized without a declarative "
+                    "selector; build it through GraphSpec with 'selector' or 'paths'"
+                )
+            params = {
+                "delay": channel.delay,
+                **_channel_noise_params(channel),
+                "selector": selector,
+            }
+            if paths is not None:
+                params["paths"] = list(paths)
+            input_proto_leaves = jt.leaves(channel.input_proto)
+            if input_proto_leaves and all(hasattr(leaf, "shape") for leaf in input_proto_leaves):
+                params["input_shape"] = [
+                    [int(dim) for dim in leaf.shape] for leaf in input_proto_leaves
+                ]
+            nodes[name] = ComponentSpec(
+                type="FeedbackChannels",
                 params=params,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),

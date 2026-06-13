@@ -492,6 +492,8 @@ def register_builtin_components(registry: _Registry) -> None:
             description='Point-mass plant with direct force input.',
             param_schema=[
                 ParamSchema(name='dt', type='float', default=0.01, min=0.001, required=True),
+                ParamSchema(name='mass', type='float', default=1.0, min=0.0, required=False),
+                ParamSchema(name='damping', type='float', default=0.0, min=0.0, required=False),
             ],
             input_ports=['force'],
             output_ports=['effector', 'state'],
@@ -634,8 +636,36 @@ def register_builtin_components(registry: _Registry) -> None:
             description='Delay and noise for a signal.',
             param_schema=[
                 ParamSchema(name='delay', type='int', default=5, min=0, required=True),
+                ParamSchema(
+                    name='noise_model',
+                    type='enum',
+                    options=[
+                        'none',
+                        'additive_gaussian',
+                        'signal_dependent_gaussian',
+                        'signal_dependent_plus_additive',
+                    ],
+                    default='additive_gaussian',
+                    required=False,
+                ),
                 ParamSchema(name='noise_std', type='float', default=0.01, min=0, required=False),
+                ParamSchema(
+                    name='additive_noise_std',
+                    type='float',
+                    default=0.0,
+                    min=0,
+                    required=False,
+                ),
+                ParamSchema(
+                    name='signal_dependent_noise_std',
+                    type='float',
+                    default=0.0,
+                    min=0,
+                    required=False,
+                ),
                 ParamSchema(name='add_noise', type='bool', default=True, required=False),
+                ParamSchema(name='noise_role', type='str', default=None, required=False),
+                ParamSchema(name='noise_timing', type='str', default=None, required=False),
                 ParamSchema(name='input_shape', type='array', default=[1], required=False),
             ],
             input_ports=['input'],
@@ -644,6 +674,53 @@ def register_builtin_components(registry: _Registry) -> None:
             port_types=PortTypeSpec(
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
+            ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='FeedbackChannels',
+            category='Channels',
+            description='Mechanics feedback selector followed by delay/noise channels.',
+            param_schema=[
+                ParamSchema(name='delay', type='int', default=0, min=0, required=False),
+                ParamSchema(
+                    name='selector',
+                    type='enum',
+                    options=['point_mass_pos_vel', 'effector_pos_vel', 'plant_skeleton', 'paths'],
+                    default='point_mass_pos_vel',
+                    required=False,
+                ),
+                ParamSchema(
+                    name='paths',
+                    type='array',
+                    default=['plant.skeleton.pos', 'plant.skeleton.vel'],
+                    required=False,
+                ),
+                ParamSchema(
+                    name='noise_model',
+                    type='enum',
+                    options=[
+                        'none',
+                        'additive_gaussian',
+                        'signal_dependent_gaussian',
+                        'signal_dependent_plus_additive',
+                    ],
+                    default='additive_gaussian',
+                    required=False,
+                ),
+                ParamSchema(name='noise_std', type='float', default=0.0, min=0, required=False),
+                ParamSchema(name='add_noise', type='bool', default=False, required=False),
+                ParamSchema(name='noise_role', type='str', default='sensory_feedback', required=False),
+                ParamSchema(name='noise_timing', type='str', default='pre_controller', required=False),
+                ParamSchema(name='input_shape', type='array', default=[[2], [2]], required=False),
+            ],
+            input_ports=['mechanics'],
+            output_ports=['feedback'],
+            icon='Radio',
+            port_types=PortTypeSpec(
+                inputs={'mechanics': PortType(dtype='state')},
+                outputs={'feedback': PortType(dtype='state')},
             ),
         )
     )
@@ -1415,4 +1492,3 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- CDE Controllers ---
     register_cde_templates(registry)
-
