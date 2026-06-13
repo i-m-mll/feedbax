@@ -11,6 +11,7 @@ from feedbax.components import (
     Constant,
     DelayLine,
     Damper,
+    ElementwiseAffineModulator,
     GRU,
     Gain,
     LSTM,
@@ -342,6 +343,19 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="Multiply",
                 params={},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, ElementwiseAffineModulator):
+            nodes[name] = ComponentSpec(
+                type="ElementwiseAffineModulator",
+                params={
+                    "signal_shape": list(component.signal_shape),
+                    "baseline": component.baseline.tolist(),
+                    "gain_init": component.gain.tolist(),
+                    "bias_init": component.bias.tolist(),
+                },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

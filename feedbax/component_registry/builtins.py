@@ -165,6 +165,35 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     registry.register(
         ComponentMeta(
+            name='ElementwiseAffineModulator',
+            category='Math',
+            description=(
+                'Per-element affine modulation: '
+                'signal * (baseline + gain * modulator) + bias * modulator.'
+            ),
+            param_schema=[
+                ParamSchema(name='signal_shape', type='array', default=[1], required=True),
+                ParamSchema(name='baseline', type='array', default=1.0, required=False),
+                ParamSchema(name='gain_init', type='array', default=0.0, required=False),
+                ParamSchema(name='bias_init', type='array', default=0.0, required=False),
+                ParamSchema(name='trainable', type='bool', default=True, required=False),
+            ],
+            input_ports=['signal', 'modulator', 'scale', 'bias'],
+            output_ports=['output'],
+            icon='SlidersHorizontal',
+            port_types=PortTypeSpec(
+                inputs={
+                    'signal': PortType(dtype='vector'),
+                    'modulator': PortType(dtype='vector'),
+                    'scale': PortType(dtype='vector'),
+                    'bias': PortType(dtype='vector'),
+                },
+                outputs={'output': PortType(dtype='vector')},
+            ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
             name='Constant',
             category='Sources',
             description='Constant value output.',

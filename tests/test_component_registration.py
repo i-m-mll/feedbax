@@ -218,3 +218,17 @@ def test_unknown_component_error_names_type_and_known_registry_contents() -> Non
     assert "DefinitelyUnknownComponent" in message
     assert "Known component types:" in message
     assert "Gain" in message
+
+
+def test_elementwise_affine_modulator_is_builtin_component() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+
+    meta = registry.get("ElementwiseAffineModulator")
+
+    assert meta is not None
+    assert meta.default_params["signal_shape"] == [1]
+    assert meta.default_params["baseline"] == 1.0
+    assert meta.default_params["gain_init"] == 0.0
+    assert meta.default_params["bias_init"] == 0.0
+    assert meta.input_ports == ["signal", "modulator", "scale", "bias"]
+    assert meta.output_ports == ["output"]
