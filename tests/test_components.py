@@ -1,9 +1,11 @@
 import jax
 import jax.numpy as jnp
 import equinox as eqx
+import pytest
 
 from feedbax._tree import filter_spec_leaves
 from feedbax.channel import Channel, ChannelSpec
+from feedbax.components import ElementwiseAffineModulator
 from feedbax.graph import init_state_from_component
 from feedbax.iterate import run_component
 from feedbax.mechanics import Mechanics
@@ -12,6 +14,110 @@ from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.misc import attr_str_tree_to_where_func, where_func_to_attr_str_tree
 from feedbax.nn import SimpleStagedNetwork
 from feedbax.bodies import SimpleFeedback
+
+
+def _call_modulator(component, signal, modulator):
+    state = init_state_from_component(component)
+    outputs, _ = component(
+        {"signal": signal, "modulator": modulator},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+    return outputs["output"]
+
+
+def test_elementwise_affine_modulator_defaults_to_identity():
+    component = ElementwiseAffineModulator(signal_shape=(3,))
+
+    output = _call_modulator(
+        component,
+        jnp.array([1.0, -2.0, 3.0]),
+        jnp.array(10.0),
+    )
+
+    assert jnp.allclose(output, jnp.array([1.0, -2.0, 3.0]))
+
+
+def test_elementwise_affine_modulator_multiplicative_scalar_modulator():
+    component = ElementwiseAffineModulator(
+        signal_shape=(3,),
+        baseline=1.0,
+        gain_init=jnp.array([0.5, -1.0, 2.0]),
+        bias_init=0.0,
+    )
+    signal = jnp.array([2.0, 4.0, 8.0])
+
+    output = _call_modulator(component, signal, jnp.array(0.25))
+
+    assert jnp.allclose(output, signal * (1.0 + component.gain * 0.25))
+
+
+def test_elementwise_affine_modulator_additive_vector_modulator():
+    component = ElementwiseAffineModulator(
+        signal_shape=(3,),
+        baseline=1.0,
+        gain_init=0.0,
+        bias_init=jnp.array([1.0, 2.0, -1.0]),
+    )
+    signal = jnp.array([2.0, 4.0, 8.0])
+    modulator = jnp.array([0.5, 1.5, 2.0])
+
+    output = _call_modulator(component, signal, modulator)
+
+    assert jnp.allclose(output, signal + component.bias * modulator)
+
+
+def test_elementwise_affine_modulator_accepts_explicit_scale_and_bias_inputs():
+    component = ElementwiseAffineModulator(signal_shape=(2,), gain_init=0.0, bias_init=0.0)
+    state = init_state_from_component(component)
+
+    outputs, _ = component(
+        {
+            "signal": jnp.array([2.0, 4.0]),
+            "modulator": jnp.array(0.5),
+            "scale": jnp.array([1.0, -0.5]),
+            "bias": jnp.array([0.2, 0.4]),
+        },
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+
+    expected = jnp.array([2.0, 4.0]) * (1.0 + jnp.array([1.0, -0.5]) * 0.5)
+    expected = expected + jnp.array([0.2, 0.4]) * 0.5
+    assert jnp.allclose(outputs["output"], expected)
+
+
+def test_elementwise_affine_modulator_rejects_bad_shapes():
+    with pytest.raises(ValueError, match="gain_init shape"):
+        ElementwiseAffineModulator(signal_shape=(3,), gain_init=jnp.ones((2,)))
+
+    component = ElementwiseAffineModulator(signal_shape=(3,))
+    with pytest.raises(ValueError, match="input shapes"):
+        _call_modulator(component, jnp.ones((3,)), jnp.ones((2,)))
+
+
+def test_elementwise_affine_modulator_matches_multiplicative_sisu_formula():
+    net = SimpleStagedNetwork(
+        input_size=3,
+        hidden_size=3,
+        out_size=2,
+        sisu_gating="multiplicative",
+        key=jax.random.PRNGKey(0),
+    )
+    alpha = jnp.array([0.2, -0.3, 0.5])
+    net = eqx.tree_at(lambda item: item.sisu_alpha, net, alpha)
+    component = ElementwiseAffineModulator(
+        signal_shape=(3,),
+        baseline=1.0,
+        gain_init=net.sisu_alpha,
+        bias_init=0.0,
+    )
+    hidden = jnp.array([1.0, 2.0, 3.0])
+
+    for sisu_value in (0.0, 0.5, 1.0):
+        output = _call_modulator(component, hidden, jnp.array(sisu_value))
+        expected = hidden * (1.0 + net.sisu_alpha * sisu_value)
+        assert jnp.allclose(output, expected)
 
 
 def test_channel_delay():

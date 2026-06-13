@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import equinox as eqx
 from equinox.nn import State
 import jax
 import jax.numpy as jnp
@@ -12,7 +13,7 @@ import pytest
 from feedbax.bodies import FeedbackChannels
 from feedbax.channel import Channel
 from feedbax.component_registry import ComponentRegistry
-from feedbax.components import Demux
+from feedbax.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.graph import init_state_from_component
 from feedbax.intervene import (
@@ -123,6 +124,62 @@ def _force_field_cases():
             ["effector", "force", "params_override"],
         ),
     )
+
+
+def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
+    spec = GraphSpec(
+        nodes={
+            "modulate": ComponentSpec(
+                type="ElementwiseAffineModulator",
+                params={
+                    "signal_shape": [3],
+                    "baseline": 1.0,
+                    "gain_init": [0.5, -1.0, 2.0],
+                    "bias_init": [0.1, 0.0, -0.2],
+                    "trainable": True,
+                },
+                input_ports=["signal", "modulator", "scale", "bias"],
+                output_ports=["output"],
+            )
+        },
+        input_ports=["signal", "modulator"],
+        output_ports=["output"],
+        input_bindings={
+            "signal": ("modulate", "signal"),
+            "modulator": ("modulate", "modulator"),
+        },
+        output_bindings={"output": ("modulate", "output")},
+    )
+
+    graph = spec_to_graph(spec)
+    component = graph.nodes["modulate"]
+    assert isinstance(component, ElementwiseAffineModulator)
+    assert component.signal_shape == (3,)
+    assert jnp.allclose(component.gain, jnp.array([0.5, -1.0, 2.0]))
+    assert jnp.allclose(component.bias, jnp.array([0.1, 0.0, -0.2]))
+    assert len(eqx.filter(component, eqx.is_inexact_array).gain) == 3
+
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {"signal": jnp.array([2.0, 4.0, 8.0]), "modulator": jnp.array(0.5)},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+    expected = (
+        jnp.array([2.0, 4.0, 8.0])
+        * (1.0 + jnp.array([0.5, -1.0, 2.0]) * 0.5)
+        + jnp.array([0.1, 0.0, -0.2]) * 0.5
+    )
+    assert jnp.allclose(outputs["output"], expected)
+
+    roundtrip = graph_to_spec(graph)
+    params = roundtrip.nodes["modulate"].params
+    assert roundtrip.nodes["modulate"].type == "ElementwiseAffineModulator"
+    assert roundtrip.nodes["modulate"].input_ports == ["signal", "modulator", "scale", "bias"]
+    assert params["signal_shape"] == [3]
+    assert params["baseline"] == [1.0, 1.0, 1.0]
+    assert params["gain_init"] == [0.5, -1.0, 2.0]
+    assert jnp.allclose(jnp.asarray(params["bias_init"]), jnp.array([0.1, 0.0, -0.2]))
 
 
 def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:

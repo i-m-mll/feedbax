@@ -14,6 +14,7 @@ from feedbax.components import (
     Damper,
     DelayLine,
     Demux,
+    ElementwiseAffineModulator,
     GRU,
     Gain,
     LSTM,
@@ -443,6 +444,20 @@ def _build_multiply(params: Mapping[str, Any]) -> Multiply:
     return Multiply()
 
 
+def _build_elementwise_affine_modulator(
+    params: Mapping[str, Any],
+) -> ElementwiseAffineModulator:
+    signal_shape = params.get("signal_shape")
+    if not isinstance(signal_shape, (list, tuple)):
+        raise ValueError("ElementwiseAffineModulator requires array parameter 'signal_shape'")
+    return ElementwiseAffineModulator(
+        signal_shape=signal_shape,
+        baseline=params.get("baseline", 1.0),
+        gain_init=params.get("gain_init", 0.0),
+        bias_init=params.get("bias_init", 0.0),
+    )
+
+
 def _build_constant(params: Mapping[str, Any]) -> Constant:
     return Constant(value=params.get("value", 0.0))
 
@@ -634,6 +649,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
     "Sum": _build_sum,
     "Multiply": _build_multiply,
+    "ElementwiseAffineModulator": _build_elementwise_affine_modulator,
     "Constant": _build_constant,
     "Ravel": lambda params: Ravel(),
     "Ramp": _build_ramp,
