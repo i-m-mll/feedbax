@@ -1018,10 +1018,24 @@ def register_builtin_components(registry: _Registry) -> None:
             param_schema=[
                 ParamSchema(name='n_steps', type='int', default=140, min=1, required=True),
                 ParamSchema(
+                    name='n_control_stages',
+                    type='int',
+                    default=None,
+                    min=1,
+                    required=False,
+                ),
+                ParamSchema(
                     name='workspace',
                     type='bounds2d',
                     default=[[-1.0, -1.0], [1.0, 1.0]],
                     required=True,
+                ),
+                ParamSchema(
+                    name='preset',
+                    type='enum',
+                    options=['default', 'delayed_center_out'],
+                    default='default',
+                    required=False,
                 ),
                 ParamSchema(
                     name='train_endpoint_mode',
@@ -1036,10 +1050,37 @@ def register_builtin_components(registry: _Registry) -> None:
                     default=[[5, 15], [10, 20]],
                     required=False,
                 ),
+                ParamSchema(
+                    name='epoch_names',
+                    type='array',
+                    default=['hold', 'target_on', 'movement'],
+                    required=False,
+                ),
                 ParamSchema(name='target_on_epochs', type='array', default=[1, 2], required=False),
                 ParamSchema(name='hold_epochs', type='array', default=[0, 1], required=False),
                 ParamSchema(name='move_epochs', type='array', default=[2], required=False),
-                ParamSchema(name='p_catch_trial', type='float', default=0.5, min=0.0, max=1.0, required=False),
+                ParamSchema(
+                    name='target_visible_from_start',
+                    type='bool',
+                    default=False,
+                    required=False,
+                ),
+                ParamSchema(name='go_cue_event_name', type='str', default=None, required=False),
+                ParamSchema(
+                    name='p_catch_trial',
+                    type='float',
+                    default=0.5,
+                    min=0.0,
+                    max=1.0,
+                    required=False,
+                ),
+                ParamSchema(
+                    name='catch_metadata_policy',
+                    type='enum',
+                    options=['none', 'flag'],
+                    default='none',
+                    required=False,
+                ),
                 ParamSchema(name='eval_n_directions', type='int', default=7, min=1, required=False),
                 ParamSchema(name='eval_reach_length', type='float', default=0.5, required=False),
                 ParamSchema(name='eval_grid_n', type='int', default=1, min=1, required=False),
@@ -1415,4 +1456,3 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     # --- CDE Controllers ---
     register_cde_templates(registry)
-
