@@ -15,9 +15,9 @@ Feedbax includes a number of different types of modules. This page summarizes th
 
 ## Models and states
 
-The base class for all types of models is [`AbstractModel`][feedbax.AbstractModel], which is an alias of [`Component`][feedbax.runtime.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.runtime.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
+The base class for all types of models is [`Component`][feedbax.runtime.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.runtime.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
 
-Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, an `AbstractModel` is like a function that receives a state PyTree, and returns an altered copy.
+Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, a `Component` is like a function that receives inputs and state, and returns updated outputs and state.
 
 Most Feedbax models are graphs of components. Each component performs a single step; iteration is handled externally or by cycles in the graph. When a graph contains a feedback cycle, it internally iterates using `lax.scan`, producing a history of component states.
 
