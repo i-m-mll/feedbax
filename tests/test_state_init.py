@@ -1,4 +1,4 @@
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.intervene import AddNoise, AddNoiseParams
 
 

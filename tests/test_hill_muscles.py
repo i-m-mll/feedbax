@@ -30,7 +30,7 @@ from feedbax.mechanics.musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 
 
 # Enable 64-bit for numerical precision

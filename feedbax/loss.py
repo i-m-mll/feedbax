@@ -49,9 +49,9 @@ from jax_cookbook.misc import moving_avg, softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax._mapping import WhereDict
-from feedbax._model import AbstractModel
+from feedbax.runtime.model import AbstractModel
 from feedbax.misc import get_unique_label
-from feedbax.state import State
+from feedbax.runtime.state import State
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedbackState

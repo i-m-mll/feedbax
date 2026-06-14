@@ -227,9 +227,9 @@ class Graph(Component):
         Uses DFS to find back-edges (cycle-forming wires).
         The remaining acyclic subgraph is topologically sorted.
 
-        Note: Uses shared implementation from feedbax._graph.topological_sort
+        Note: Uses shared implementation from feedbax.runtime._graph.topological_sort
         """
-        from feedbax._graph import detect_cycles_and_sort
+        from feedbax.runtime._graph import detect_cycles_and_sort
 
         # Build adjacency from wires
         adjacency = {name: set() for name in self.nodes}

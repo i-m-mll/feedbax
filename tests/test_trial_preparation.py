@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from equinox.nn import StateIndex
 
 from feedbax._mapping import WhereDict
-from feedbax.graph import Component, Graph, init_state_from_component
+from feedbax.runtime.graph import Component, Graph, init_state_from_component
 from feedbax.intervene import TimeSeriesParam
 from feedbax.task import (
     TaskTrialSpec,

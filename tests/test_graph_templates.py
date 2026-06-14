@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.channel import Channel
-from feedbax.components import DelayLine, Linear
+from feedbax.runtime.channel import Channel
+from feedbax.runtime.components import DelayLine, Linear
 from feedbax.filters import FirstOrderFilter
-from feedbax.graph import Graph, Wire, init_state_from_component
+from feedbax.runtime.graph import Graph, Wire, init_state_from_component
 from feedbax.graph_templates import (
     network_template_graph,
     recurrent_controller_template_graph,

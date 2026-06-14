@@ -167,7 +167,7 @@ class GraphService:
             return {"content": content, "filename": filename}
         if export_format == "python":
             content = (
-                "# TODO: Implement export to Python once feedbax.graph is available.\n"
+                "# TODO: Implement export to Python once feedbax.runtime.graph is available.\n"
                 f"# Graph id: {graph_id}\n"
             )
             filename = f"{record.project.metadata.name}.py"

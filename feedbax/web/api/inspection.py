@@ -112,7 +112,7 @@ def _render_graph_spec(
     has_cycles = False
 
     if project_cycles:
-        from feedbax._graph import detect_cycles_and_sort
+        from feedbax.runtime._graph import detect_cycles_and_sort
 
         adjacency: dict[str, set[str]] = {name: set() for name in graph_spec.nodes.keys()}
         for wire in graph_spec.wires:

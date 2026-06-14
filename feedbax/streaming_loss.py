@@ -24,8 +24,8 @@ import jax.tree as jt
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from feedbax._model import AbstractModel
-from feedbax._streaming import current_state_from_window
+from feedbax.runtime.model import AbstractModel
+from feedbax.runtime.streaming import current_state_from_window
 from feedbax.loss import (
     AbstractLoss,
     CompositeLoss,

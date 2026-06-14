@@ -23,7 +23,7 @@ except ImportError:
     # Define a local TypeVar as a stand-in for type annotations in this test file.
     StateT = TypeVar("StateT", bound=AbstractSkeletonState)
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)

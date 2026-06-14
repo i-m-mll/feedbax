@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from jaxtyping import PyTree
 
-from feedbax._graph import detect_cycles_and_sort
+from feedbax.runtime._graph import detect_cycles_and_sort
 
 if TYPE_CHECKING:
-    from feedbax.graph import Graph
+    from feedbax.runtime.graph import Graph
 
 # Track whether treescope has been configured
 _treescope_configured = False
@@ -189,7 +189,7 @@ def render_model_html(
     import treescope
 
     # Import Graph here to avoid circular imports at module level
-    from feedbax.graph import Graph
+    from feedbax.runtime.graph import Graph
 
     # Build context information for cycles if applicable
     cycle_info: dict[str, Any] = {}

@@ -7,8 +7,8 @@ from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
-from feedbax.state import CartesianState
+from feedbax.runtime.graph import Component
+from feedbax.runtime.state import CartesianState
 
 
 class LinearStateSpaceState(Module):

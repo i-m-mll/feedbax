@@ -8,14 +8,14 @@ import logging
 import os
 
 from feedbax._io import load, load_with_hyperparameters, save
-from feedbax._model import (
+from feedbax.runtime.model import (
     AbstractModel,
     wrap_stateless_callable,
     wrap_stateless_keyless_callable,
 )
 from feedbax._mapping import WhereDict
-from feedbax._selectors import Selection, select
-from feedbax.graph import Component, Graph, Wire, init_state_from_component
+from feedbax.runtime.selectors import Selection, select
+from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.graph_templates import (
     BUILTIN_GRAPH_TEMPLATES,
     GraphTemplateMetadata,

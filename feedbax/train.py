@@ -25,7 +25,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 from tensorboardX import SummaryWriter  # type: ignore
 
 from feedbax import is_type
-from feedbax.graph import Component, init_state_from_component
+from feedbax.runtime.graph import Component, init_state_from_component
 from feedbax._tree import (
     filter_spec_leaves,
     tree_infer_batch_size,
@@ -42,9 +42,9 @@ from feedbax.misc import (
     exponential_smoothing,
     is_none,
 )
-from feedbax.parameter_constraints import project_component_parameters
+from feedbax.runtime.parameter_constraints import project_component_parameters
 from feedbax.intervene.schedule import TimeSeriesParam
-from feedbax.state import StateT
+from feedbax.runtime.state import StateT
 from feedbax.task import (
     AbstractTask,
     TaskTrialSpec,

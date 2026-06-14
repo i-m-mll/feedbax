@@ -20,7 +20,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton, MJXSkeletonState
-from feedbax.state import StateBounds
+from feedbax.runtime.state import StateBounds
 
 
 class MJXPlant(AbstractPlant):

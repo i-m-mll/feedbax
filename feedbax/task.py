@@ -42,7 +42,7 @@ from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax._mapping import WhereDict
 from feedbax._tree import is_type, tree_call, tree_call_with_keys
-from feedbax.graph import Component, Graph, init_state_from_component
+from feedbax.runtime.graph import Component, Graph, init_state_from_component
 from feedbax.iterate import run_component
 from feedbax.intervene import (
     InterventionSpec,
@@ -56,11 +56,11 @@ from feedbax.loss import (
     power_discount,
 )
 from feedbax.misc import BatchInfo, is_module, is_none
-from feedbax.state import CartesianState, StateT
+from feedbax.runtime.state import CartesianState, StateT
 from feedbax.task_presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
-    from feedbax.graph import Component
+    from feedbax.runtime.graph import Component
 
 logger = logging.getLogger(__name__)
 

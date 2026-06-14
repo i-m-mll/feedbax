@@ -18,7 +18,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 import numpy as np
 
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
-from feedbax.state import CartesianState, StateBounds
+from feedbax.runtime.state import CartesianState, StateBounds
 from feedbax.misc import SINCOS_GRAD_SIGNS, corners_2d
 
 

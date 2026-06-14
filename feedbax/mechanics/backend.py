@@ -26,7 +26,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
 from feedbax.mechanics.plant import AbstractPlant, PlantState
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)

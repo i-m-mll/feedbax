@@ -5,7 +5,7 @@ from typing import Protocol
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
 from feedbax.control.affine import affine_feedback_output_prototype
-from feedbax.state_feedback import state_feedback_output_prototype
+from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
 from .meta import ComponentMeta

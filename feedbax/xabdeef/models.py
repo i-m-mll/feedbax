@@ -19,7 +19,7 @@ from feedbax import get_ensemble
 from feedbax.bodies import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.misc import identity_func
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.nn import PopulationStructure, SimpleStagedNetwork

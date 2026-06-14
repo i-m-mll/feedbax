@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import wraps
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 
 
 # Typing alias for older code; new models should use `Component` directly.

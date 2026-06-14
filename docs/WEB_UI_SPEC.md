@@ -51,7 +51,7 @@ Build a modern web application for interactively constructing and training Feedb
 
 ### 1.3 Relationship to Existing Code
 
-The UI is a visual interface to the existing `feedbax.graph` module:
+The UI is a visual interface to the existing `feedbax.runtime.graph` module:
 
 | Python Concept | UI Representation |
 |----------------|-------------------|
@@ -163,7 +163,7 @@ A future migration to Svelte would require rewriting UI components but preserve 
 ### 4.1 Core Types (TypeScript)
 
 ```typescript
-// Mirrors feedbax.graph.Component
+// Mirrors feedbax.runtime.graph.Component
 interface ComponentSpec {
   type: string;                          // e.g., "SimpleStagedNetwork", "Mechanics"
   params: Record<string, ParamValue>;    // Component-specific parameters
@@ -171,7 +171,7 @@ interface ComponentSpec {
   output_ports: string[];                // e.g., ["output", "hidden"]
 }
 
-// Mirrors feedbax.graph.Wire
+// Mirrors feedbax.runtime.graph.Wire
 interface WireSpec {
   source_node: string;
   source_port: string;
@@ -179,7 +179,7 @@ interface WireSpec {
   target_port: string;
 }
 
-// Mirrors feedbax.graph.Graph
+// Mirrors feedbax.runtime.graph.Graph
 interface GraphSpec {
   nodes: Record<string, ComponentSpec>;
   wires: WireSpec[];
@@ -383,7 +383,7 @@ Complete project file format:
 # feedbax/web/serialization.py
 
 from pydantic import BaseModel
-from feedbax.graph import Graph, Component, Wire
+from feedbax.runtime.graph import Graph, Component, Wire
 
 class WireSpec(BaseModel):
     source_node: str
@@ -725,10 +725,10 @@ from typing import Type, Callable
 from pathlib import Path
 import importlib.util
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.nn import SimpleStagedNetwork
 from feedbax.mechanics import Mechanics
-from feedbax.channel import FeedbackChannel
+from feedbax.runtime.channel import FeedbackChannel
 # ... other built-in components
 
 @dataclass
@@ -826,7 +826,7 @@ import queue
 
 import jax
 from feedbax.train import TaskTrainer
-from feedbax.graph import Graph
+from feedbax.runtime.graph import Graph
 
 class TrainingStatus(Enum):
     IDLE = "idle"
@@ -1502,7 +1502,7 @@ User-defined components live in `~/.feedbax/components/`:
 ```python
 # ~/.feedbax/components/my_custom_network.py
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.web.decorators import register_component
 from equinox.nn import State
 from jaxtyping import PRNGKeyArray, PyTree

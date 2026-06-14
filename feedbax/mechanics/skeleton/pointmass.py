@@ -15,7 +15,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
 from feedbax.dynamics import LinearSystem, LTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)

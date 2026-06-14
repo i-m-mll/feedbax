@@ -17,7 +17,7 @@ import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton, AbstractSkeletonState
-from feedbax.state import CartesianState, StateBounds
+from feedbax.runtime.state import CartesianState, StateBounds
 
 
 class MJXSkeletonState(AbstractSkeletonState):

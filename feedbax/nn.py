@@ -19,7 +19,7 @@ from equinox.nn import State, StateIndex
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.misc import (
     identity_func,
     interleave_unequal,

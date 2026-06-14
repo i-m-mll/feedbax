@@ -13,7 +13,7 @@ from jaxtyping import PRNGKeyArray
 import optax  # type: ignore
 
 from feedbax import get_ensemble
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.task import AbstractTask, SimpleReaches
 from feedbax.train import TaskTrainer, TaskTrainerHistory
 from feedbax.xabdeef.losses import simple_reach_loss

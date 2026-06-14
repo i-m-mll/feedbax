@@ -1067,7 +1067,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
             emitted_by=("GraphSpec.additive_channel_adapters", "provider_manifest.schemas"),
-            consumed_by=("feedbax.graph_channel_adapters",),
+            consumed_by=("feedbax.runtime.graph_channel_adapters",),
             description="Graph-embedded external additive channel adapter.",
         ),
         _family(
@@ -1076,7 +1076,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
             emitted_by=("AdditiveGraphChannelAdapterSpec.target", "provider_manifest.schemas"),
-            consumed_by=("feedbax.graph_channel_adapters",),
+            consumed_by=("feedbax.runtime.graph_channel_adapters",),
             description="Target address for an additive graph-channel adapter.",
         ),
         _family(
@@ -1375,9 +1375,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 schema_id,
                 version,
-                owner_module="feedbax.retained_observables",
+                owner_module="feedbax.runtime.retained_observables",
                 emitted_by=(
-                    "feedbax.retained_observables.retention_plan_to_json",
+                    "feedbax.runtime.retained_observables.retention_plan_to_json",
                     "TrainingRunManifest retention artifacts",
                 ),
                 consumed_by=("training-run manifest write/load", "analysis materialization"),

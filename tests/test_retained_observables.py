@@ -17,7 +17,7 @@ from feedbax.retention_artifact_schema import (
     RETENTION_PLAN_SCHEMA_ID,
     RETENTION_PLAN_SCHEMA_VERSION,
 )
-from feedbax.retained_observables import (
+from feedbax.runtime.retained_observables import (
     RetentionPlanError,
     evaluate_loss_plan,
     lower_retention_plan,

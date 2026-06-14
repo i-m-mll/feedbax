@@ -17,8 +17,8 @@ import jax.numpy as jnp
 import jax.tree as jt
 import pytest
 
-from feedbax._selectors import Selection, select, tree_at
-from feedbax.graph import Component, Graph, Wire
+from feedbax.runtime.selectors import Selection, select, tree_at
+from feedbax.runtime.graph import Component, Graph, Wire
 
 
 # ========== Test Fixtures ==========

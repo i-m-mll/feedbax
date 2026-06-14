@@ -39,7 +39,7 @@ from matplotlib.typing import ColorType
 from feedbax.bodies import SimpleFeedbackState
 from feedbax.loss import TermTree
 from feedbax.misc import corners_2d
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 from feedbax.task import TaskTrialSpec
 
 if TYPE_CHECKING:

@@ -18,11 +18,11 @@ import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from equinox.nn import State
-from feedbax._streaming import (
+from feedbax.runtime.streaming import (
     init_streaming_state_window,
     update_streaming_state_window,
 )
-from feedbax.graph import Component, Graph
+from feedbax.runtime.graph import Component, Graph
 
 
 def iterate_component(
