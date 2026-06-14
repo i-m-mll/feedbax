@@ -13,7 +13,7 @@ from jax import Array
 from jaxtyping import PRNGKeyArray, Scalar
 
 from feedbax.dynamics import AbstractDynamicalSystem, LinearSystem
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)

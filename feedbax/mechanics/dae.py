@@ -28,7 +28,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 
 
 logger = logging.getLogger(__name__)

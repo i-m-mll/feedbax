@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.manifest_index import rebuild_manifest_index
-from feedbax.provider import health, provider_manifest, registry_snapshot, validate_spec
+from feedbax.integrations.provider import health, provider_manifest, registry_snapshot, validate_spec
 from feedbax.execution import (
     ExecutionSpec,
     load_execution_spec,

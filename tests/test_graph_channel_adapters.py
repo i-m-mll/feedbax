@@ -10,9 +10,9 @@ from feedbax.contracts.graph import (
     GraphSpec,
     WireSpec,
 )
-from feedbax.graph import init_state_from_component
-from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.provider import validate_graph_spec
+from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.integrations.provider import validate_graph_spec
 from feedbax.serialization import spec_to_graph
 
 

@@ -497,7 +497,7 @@ import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 
 
 '''

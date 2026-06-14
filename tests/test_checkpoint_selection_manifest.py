@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     SCHEMA_VERSION,
     CheckpointCandidateRef,
     CheckpointScorerIdentity,
@@ -22,7 +22,7 @@ from feedbax.manifest import (
     spec_payload,
     write_manifest,
 )
-from feedbax.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 
 
 def _parent(kind: str, id_: str, role: str, uri: str | None = None) -> ParentRef:

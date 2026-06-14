@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from feedbax.objective_spec import (
+from feedbax.objectives.spec import (
     EpochMaskSpec,
     FiniteDifferenceLossSpec,
     MatrixPayloadSpec,
@@ -20,7 +20,7 @@ from feedbax.objective_spec import (
     TimelineEventSpec,
     canonical_objective_payload,
 )
-from feedbax.provider import provider_manifest
+from feedbax.integrations.provider import provider_manifest
 
 
 def _delayed_reach_timeline() -> TaskTimelineSpec:

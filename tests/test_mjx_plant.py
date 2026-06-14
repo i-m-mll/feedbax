@@ -16,7 +16,7 @@ from feedbax.mechanics.model_builder import (
 from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton, MJXSkeletonState
 from feedbax.mechanics.mjx_plant import MJXPlant
 from feedbax.mechanics.plant import PlantState
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 @pytest.fixture

@@ -17,7 +17,7 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
     ParentRef,

@@ -11,7 +11,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.tree_util as jtu
 
-from feedbax.artifact_schema import (
+from feedbax.contracts.artifact_schema import (
     ARRAY_STORE_SCHEMA_VERSION,
     ArrayStore,
     ArtifactSchemaError,
@@ -20,7 +20,7 @@ from feedbax.artifact_schema import (
     read_npz_array_store,
     validate_role_address,
 )
-from feedbax.manifest import SCHEMA_VERSION, ModelArtifactManifest, load_manifest, sha256_file
+from feedbax.contracts.manifest import SCHEMA_VERSION, ModelArtifactManifest, load_manifest, sha256_file
 
 
 class UnsupportedArtifactSchemaError(ArtifactSchemaError):

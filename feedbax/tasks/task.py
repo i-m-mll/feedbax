@@ -42,25 +42,25 @@ from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax._mapping import WhereDict
 from feedbax._tree import is_type, tree_call, tree_call_with_keys
-from feedbax.graph import Component, Graph, init_state_from_component
+from feedbax.runtime.graph import Component, Graph, init_state_from_component
 from feedbax.iterate import run_component
 from feedbax.intervene import (
     InterventionSpec,
     TimeSeriesParam,
 )
 from feedbax.intervene.schedule import IntervenorLabelStr
-from feedbax.loss import (
+from feedbax.objectives.loss import (
     AbstractLoss,
     TargetSpec,
     TermTree,
     power_discount,
 )
 from feedbax.misc import BatchInfo, is_module, is_none
-from feedbax.state import CartesianState, StateT
-from feedbax.task_presets import delayed_center_out_reaches_params
+from feedbax.runtime.state import CartesianState, StateT
+from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
-    from feedbax.graph import Component
+    from feedbax.runtime.graph import Component
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +292,7 @@ def infer_n_steps(inputs: PyTree, timeline=None) -> int:
     Checks ``timeline.n_steps`` first if a timeline is provided, then falls
     back to reading the leading dimension of the first leaf of ``inputs``.
 
-    Used by :class:`AbstractTask` and also by ``feedbax.train`` to avoid
+    Used by :class:`AbstractTask` and also by ``feedbax.training.trainer`` to avoid
     duplicating this inference logic.
 
     Args:

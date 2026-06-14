@@ -10,7 +10,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from feedbax.loss import (
+from feedbax.objectives.loss import (
     AbstractLoss,
     CompositeLoss,
     TargetSpec,

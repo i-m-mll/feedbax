@@ -35,7 +35,7 @@ from feedbax.mechanics.hill_muscles import (
 from feedbax.mechanics.muscle_config import MuscleTopology
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
-from feedbax.state import CartesianState, StateBounds
+from feedbax.runtime.state import CartesianState, StateBounds
 
 
 logger = logging.getLogger(__name__)

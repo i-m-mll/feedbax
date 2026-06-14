@@ -20,7 +20,7 @@ from feedbax.contracts.studio_api import (
     WorkerStatusResponse,
 )
 from feedbax.web.services.graph_service import GraphService
-from feedbax.loss_service import loss_service
+from feedbax.objectives.service import loss_service
 from feedbax.web.services.training_service import training_service
 
 router = APIRouter()

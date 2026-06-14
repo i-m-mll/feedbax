@@ -5,7 +5,7 @@ import jax.numpy as jnp
 
 from feedbax.analysis import feedbax_graph_controller, graph_controller
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.graph import Component, Graph, GraphTraceRequest, Wire
+from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire
 
 
 class _StatefulGain(Component):

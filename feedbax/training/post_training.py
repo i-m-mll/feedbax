@@ -16,7 +16,7 @@ import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objects as go
 from feedbax.misc import attr_str_tree_to_where_func
-from feedbax.train import TaskTrainerHistory, WhereFunc, init_task_trainer_history
+from feedbax.training.trainer import TaskTrainerHistory, WhereFunc, init_task_trainer_history
 from feedbax.xabdeef.losses import simple_reach_loss
 from jax_cookbook import anyf, identity, is_module, is_type
 from jaxtyping import Array, Int, PyTree

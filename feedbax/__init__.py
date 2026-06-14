@@ -8,14 +8,9 @@ import logging
 import os
 
 from feedbax._io import load, load_with_hyperparameters, save
-from feedbax._model import (
-    AbstractModel,
-    wrap_stateless_callable,
-    wrap_stateless_keyless_callable,
-)
 from feedbax._mapping import WhereDict
-from feedbax._selectors import Selection, select
-from feedbax.graph import Component, Graph, Wire, init_state_from_component
+from feedbax.runtime.selectors import Selection, select
+from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.graph_templates import (
     BUILTIN_GRAPH_TEMPLATES,
     GraphTemplateMetadata,
@@ -53,9 +48,9 @@ from feedbax._tree import (
 )
 from feedbax.nn_cde import CDENetwork, CDENetworkState
 from feedbax.intervene import is_intervenor
-from feedbax.loss import is_termtree
+from feedbax.objectives.loss import is_termtree
 from feedbax.misc import is_module
-from feedbax.task import (
+from feedbax.tasks import (
     AbstractTask,
     DelayedReaches,
     DelayedReachTaskInputs,
@@ -71,7 +66,7 @@ from feedbax.task import (
     get_scalar_epoch_seq,
     prepare_trial,
 )
-from feedbax.task_presets import (
+from feedbax.tasks.presets import (
     DELAYED_CENTER_OUT_PRESET,
     delayed_center_out_reaches_params,
 )
@@ -79,7 +74,6 @@ from feedbax.task_presets import (
 # from feedbax._logging import enable_central_logging
 
 __all__ = [
-    "AbstractModel",
     "AbstractTask",
     "BUILTIN_GRAPH_TEMPLATES",
     "CDENetwork",
@@ -144,8 +138,6 @@ __all__ = [
     "tree_unstack",
     "tree_unzip",
     "tree_zip",
-    "wrap_stateless_callable",
-    "wrap_stateless_keyless_callable",
 ]
 
 

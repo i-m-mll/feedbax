@@ -59,7 +59,7 @@ class TestPointMassLinearize:
         pm = PointMass(mass=1.0, damping=10.0)
         sys_a = pm.linearize(state=None)
         # Pass an arbitrary CartesianState; result must be identical
-        from feedbax.state import CartesianState
+        from feedbax.runtime.state import CartesianState
         nominal = CartesianState(pos=jnp.array([1.0, 2.0]), vel=jnp.array([0.5, -0.3]))
         sys_b = pm.linearize(state=nominal)
         assert jnp.allclose(sys_a.A, sys_b.A)

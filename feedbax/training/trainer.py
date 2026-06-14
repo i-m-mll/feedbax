@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial, wraps
 from pathlib import Path
-from typing import Any, Literal, Optional, Tuple, TypeAlias
+from typing import Any, Optional, Tuple, TypeAlias
 
 import equinox as eqx
 import jax
@@ -25,7 +25,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 from tensorboardX import SummaryWriter  # type: ignore
 
 from feedbax import is_type
-from feedbax.graph import Component, init_state_from_component
+from feedbax.runtime.graph import Component, init_state_from_component
 from feedbax._tree import (
     filter_spec_leaves,
     tree_infer_batch_size,
@@ -33,19 +33,18 @@ from feedbax._tree import (
     tree_take,
 )
 from feedbax.iterate import run_component
-from feedbax.loss import AbstractLoss, TermTree
+from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.misc import (
     BatchInfo,
     Timer,
     batched_outer,
     delete_contents,
     exponential_smoothing,
-    is_none,
 )
-from feedbax.parameter_constraints import project_component_parameters
+from feedbax.runtime.parameter_constraints import project_component_parameters
 from feedbax.intervene.schedule import TimeSeriesParam
-from feedbax.state import StateT
-from feedbax.task import (
+from feedbax.runtime.state import StateT
+from feedbax.tasks import (
     AbstractTask,
     TaskTrialSpec,
     extract_timeseries_params,
@@ -90,7 +89,7 @@ WhereFunc: TypeAlias = Callable[[Component], Any]
 
 class TaskTrainerHistory(eqx.Module):
     """A record of training history over a call to a
-    [`TaskTrainer`][feedbax.train.TaskTrainer] instance.
+    [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] instance.
 
     Attributes:
         loss: The training losses.
@@ -830,7 +829,7 @@ class TaskTrainer(eqx.Module):
         treedef_model,
         flat_opt_state,
         treedef_opt_state,
-        where_train_spec,  #! can't do AbstractModel[StateT[bool]]
+        where_train_spec,  #! can't precisely type Component trainable leaves here.
         update_funcs,
         key: PRNGKeyArray,
         loss_reduction_fn: Optional[Callable] = None,
@@ -980,7 +979,7 @@ class TaskTrainer(eqx.Module):
                 or if zero or more than one TaskComponent is found.
         """
         # Bug: 7d6dad4 — graph-based task discovery for TaskTrainer
-        from feedbax.task import TaskComponent
+        from feedbax.tasks import TaskComponent
 
         nodes = getattr(model, "nodes", None)
         if nodes is None:
@@ -1341,57 +1340,6 @@ def mask_diagonal(array):
     """Set the diagonal of (the last two dimensions of) `array` to zero."""
     mask = 1 - jnp.eye(array.shape[-1])
     return array * mask
-
-
-class HebbianGRUUpdate(eqx.Module):
-    """DEPRECATED. Use `HebbianUpdate`.
-
-    Hebbian update rule for the recurrent weights of a GRUCell.
-
-    This specifically applies the Hebbian update to the candidate activation
-    weights of the GRU, while leaving the update and reset weights unchanged.
-    """
-
-    scale: float = 0.01
-    mode: Literal["default", "differential"] = "default"
-    weight_type: Literal["candidate", "update", "reset"] = "candidate"
-
-    def __call__(self, model: Component, states: StateT) -> Component:
-        x = states.net.hidden
-
-        if self.mode == "default":
-            # Hebbian learning rule
-            dW = x[..., :, None] @ x[..., None, :]
-        elif self.mode == "differential":
-            dx = jnp.diff(x, axis=-2)  # diff over time
-            dW = dx[..., :, None] @ dx[..., None, :]
-        else:
-            raise ValueError("invalid mode field value encountered for HebbianGRUUpdate")
-
-        dW = self.scale * dW
-        # Updates do not apply to self weights.
-        dW = mask_diagonal(dW)
-
-        # Sum over all batch dimensions (e.g. trials, time)
-        dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
-
-        # Build the update for the appropriate weights of the GRU.
-        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
-        weight_idxs = {
-            "reset": slice(0, weight_hh.shape[-2] // 3),
-            "update": slice(weight_hh.shape[-2] // 3, 2 * weight_hh.shape[-2] // 3),
-            "candidate": slice(2 * weight_hh.shape[-2] // 3, None),
-        }[self.weight_type]
-        weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
-
-        update = eqx.tree_at(
-            lambda model: model.step.net.hidden.weight_hh,
-            jt.map(lambda x: None, model),
-            weight_hh,
-            is_leaf=is_none,
-        )
-
-        return update
 
 
 def hebb_rule(

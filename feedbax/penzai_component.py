@@ -27,7 +27,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 
 if TYPE_CHECKING:
     pass

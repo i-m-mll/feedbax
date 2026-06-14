@@ -6,7 +6,7 @@
 
 from abc import abstractmethod, abstractproperty
 import logging
-from typing import Generic, Optional, TypeVar
+from typing import Generic, Optional
 
 import equinox as eqx
 from equinox import Module
@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
-from feedbax.state import StateBounds, StateT
+from feedbax.runtime.state import StateBounds, StateT
 
 
 logger = logging.getLogger(__name__)
@@ -75,9 +75,7 @@ class AbstractDynamicalSystem(Module, Generic[StateT]):
         Vector fields for biomechanical models are generally not
         time-dependent. That is, the argument `t` to `vector_field` is
         typically unused. This is apparent in the way we alias `vector_field`
-        to `__call__`, which is a method that `AbstractModel` requires.
-
-        Perhaps it is unnecessary to inherit from `AbstractModel`, though.
+        to `__call__`, which is the call surface expected of components.
     """
 
     def __call__(

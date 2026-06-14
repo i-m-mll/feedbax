@@ -22,9 +22,9 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax._graph import detect_cycles_and_sort
-from feedbax._selectors import Selection, select
-from feedbax._streaming import (
+from feedbax.runtime._graph import detect_cycles_and_sort
+from feedbax.runtime.selectors import Selection, select
+from feedbax.runtime.streaming import (
     init_streaming_state_window,
     update_streaming_state_window,
 )

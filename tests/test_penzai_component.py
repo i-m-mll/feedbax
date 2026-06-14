@@ -12,10 +12,10 @@ import jax
 import jax.numpy as jnp
 from equinox.nn import State
 
-from feedbax.graph import Component, Graph, Wire
+from feedbax.runtime.graph import Component, Graph, Wire
 from equinox.nn import StateIndex
 
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.penzai_component import (
     PENZAI_AVAILABLE,
     TREESCOPE_AVAILABLE,

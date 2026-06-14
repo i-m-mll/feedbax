@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.acausal import (
     AcausalConnection,
     AcausalSystem,

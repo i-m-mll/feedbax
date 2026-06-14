@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from feedbax.provider import validate_task_spec, validate_training_spec
+from feedbax.integrations.provider import validate_task_spec, validate_training_spec
 
 
 def _read_json(path: str) -> dict[str, Any]:

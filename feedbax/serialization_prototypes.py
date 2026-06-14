@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import jax.tree as jt
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.state import CartesianState
-from feedbax.state_feedback import state_feedback_output_prototype
+from feedbax.runtime.state import CartesianState
+from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 
 STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}

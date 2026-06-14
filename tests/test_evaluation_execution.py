@@ -9,7 +9,7 @@ from feedbax.analysis.evaluation import (
     register_evaluation_recipe,
     unregister_evaluation_recipe,
 )
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     Provenance,

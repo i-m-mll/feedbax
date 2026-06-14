@@ -5,14 +5,14 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from feedbax._mapping import WhereDict
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.intervene import TimeSeriesParam
-from feedbax.loss import AbstractLoss
+from feedbax.objectives.loss import AbstractLoss
 from feedbax.serialization_builders import build_component
-from feedbax.task_presets import delayed_center_out_reaches_params
+from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 try:
-    from feedbax.task import (
+    from feedbax.tasks import (
         AbstractTask,
         DelayedReaches,
         TaskComponent,
@@ -22,7 +22,7 @@ try:
     )
 except ImportError:
     pytest.skip(
-        "Circular import in feedbax.task (pre-existing issue, not on develop)",
+        "Circular import in feedbax.tasks (pre-existing issue, not on develop)",
         allow_module_level=True,
     )
 

@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from feedbax.manifest import ManifestStatus
+from feedbax.contracts.manifest import ManifestStatus
 
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]

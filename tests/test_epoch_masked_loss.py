@@ -20,14 +20,14 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax._mapping import WhereDict
-from feedbax.loss import (
+from feedbax.objectives.loss import (
     EpochMaskedLoss,
     OutputJerkLoss,
     StateDerivativeLoss,
     TargetSpec,
     TargetStateLoss,
 )
-from feedbax.task import TaskTrialSpec, TrialTimeline
+from feedbax.tasks import TaskTrialSpec, TrialTimeline
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +380,7 @@ def test_per_trial_mask_varies_with_epoch_bounds():
 
 
 def test_unsupported_base_loss_raises():
-    from feedbax.loss import ModelLoss
+    from feedbax.objectives.loss import ModelLoss
     base = ModelLoss(label="model_only", loss_fn=lambda m: jnp.float32(0.0))
     wrapped = EpochMaskedLoss(
         label="model_only_pre_go",

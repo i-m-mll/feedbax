@@ -30,7 +30,7 @@ from feedbax.types import SeqOf, SeqOfT
 from jax_cookbook import MaskedArray
 
 if TYPE_CHECKING:
-    from feedbax.task import TaskTrialSpec
+    from feedbax.tasks import TaskTrialSpec
 
 
 def _unwrap_masked_array(x):

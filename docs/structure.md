@@ -15,9 +15,9 @@ Feedbax includes a number of different types of modules. This page summarizes th
 
 ## Models and states
 
-The base class for all types of models is [`AbstractModel`][feedbax.AbstractModel], which is an alias of [`Component`][feedbax.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
+The base class for all types of models is [`Component`][feedbax.runtime.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.runtime.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
 
-Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, an `AbstractModel` is like a function that receives a state PyTree, and returns an altered copy.
+Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, a `Component` is like a function that receives inputs and state, and returns updated outputs and state.
 
 Most Feedbax models are graphs of components. Each component performs a single step; iteration is handled externally or by cycles in the graph. When a graph contains a feedback cycle, it internally iterates using `lax.scan`, producing a history of component states.
 
@@ -25,9 +25,9 @@ Most Feedbax models are graphs of components. Each component performs a single s
 
 In Feedbax, models are trained to perform tasks. Typically, this means running the model through trials of the task, then scoring its performance, then getting an updated model that should perform slightly better on the next set of trials.
 
-The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
+The base class for all types of tasks is [`AbstractTask`][feedbax.tasks.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
 
-[Trial specifications][feedbax.task.TaskTrialSpec] are always composed of three things:
+[Trial specifications][feedbax.tasks.TaskTrialSpec] are always composed of three things:
 
 1. Data with which to initialize one or more parts of a model's state, prior to a trial;
 2. Target data which the loss function will use to score the history of a model's states, over a trial;
@@ -35,17 +35,17 @@ The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractT
 
 The loss function is not defined within the `AbstractTask`, but merely assigned to it as an attribute. This is because two tasks that are otherwise identical might vary in terms of their scoring mechanism. Therefore we specify the specific loss function we want to use, when we construct an instance of a particular type of task.
 
-The base class for all loss functions is [`AbstractLoss`][feedbax.loss.AbstractLoss]. A loss computation takes as input the states of a model across a trial, as well as the complete specification for that trial.
+The base class for all loss functions is [`AbstractLoss`][feedbax.objectives.loss.AbstractLoss]. A loss computation takes as input the states of a model across a trial, as well as the complete specification for that trial.
 
-Most types of loss are "simple" losses, which define one particular scoring mechanism. For example, [`NetworkActivityLoss`][feedbax.loss.NetworkActivityLoss] defines a penalty for the non-zero activities of the units ("neurons") in a model's neural network. Training on this loss will favour reducing the activity in the network as much as possible, given the other constraints.
+Most types of loss are "simple" losses, which define one particular scoring mechanism. For example, [`NetworkActivityLoss`][feedbax.objectives.loss.NetworkActivityLoss] defines a penalty for the non-zero activities of the units ("neurons") in a model's neural network. Training on this loss will favour reducing the activity in the network as much as possible, given the other constraints.
 
-The class [`CompositeLoss`][feedbax.loss.CompositeLoss] is used to aggregate (say, sum) multiple loss terms into a single loss function. Scoring of a task is usually based on multiple criteria, so the loss function that is assigned to an `AbstractTask` is usually a `CompositeLoss`.
+The class [`CompositeLoss`][feedbax.objectives.loss.CompositeLoss] is used to aggregate (say, sum) multiple loss terms into a single loss function. Scoring of a task is usually based on multiple criteria, so the loss function that is assigned to an `AbstractTask` is usually a `CompositeLoss`.
 
 ## Training
 
-A [`TaskTrainer`][feedbax.train.TaskTrainer] is used to [train](/feedbax/examples/1_train#training-the-model) a model to perform a task, over a sequence of many batches of training trials provided by an `AbstractTask`.
+A [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] is used to [train](/feedbax/examples/1_train#training-the-model) a model to perform a task, over a sequence of many batches of training trials provided by an `AbstractTask`.
 
-At the end of a training run, a `TaskTrainer` returns not just the trained model, but also a [`TaskTrainerHistory`][feedbax.train.TaskTrainerHistory] object. Normally this contains the value of the loss over all the batches. However, depending on the arguments given to `TaskTrainer`, it may also contain other information, like 1) the trial specifications on which the model was trained, or 2) the history of the model's trained parameters.
+At the end of a training run, a `TaskTrainer` returns not just the trained model, but also a [`TaskTrainerHistory`][feedbax.training.trainer.TaskTrainerHistory] object. Normally this contains the value of the loss over all the batches. However, depending on the arguments given to `TaskTrainer`, it may also contain other information, like 1) the trial specifications on which the model was trained, or 2) the history of the model's trained parameters.
 
 A `TaskTrainer` may also be used to train a set of [model replicates](/feedbax/examples/4_vmap) in parallel.
 
@@ -69,7 +69,7 @@ So far there isn't an `AbstractNetwork` or `AbstractController` that defines how
 
 ### Channels
 
-[`Channel`][feedbax.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
+[`Channel`][feedbax.runtime.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
 
 `Channel` is used by `SimpleFeedback` to model sensory feedback, but it can also be used wherever delayed, noisy transmission is required in a model.
 

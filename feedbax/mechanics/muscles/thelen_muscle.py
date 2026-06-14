@@ -24,7 +24,7 @@ from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 
 
 logger = logging.getLogger(__name__)

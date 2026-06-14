@@ -3,9 +3,9 @@
 import equinox as eqx
 import jax.numpy as jnp
 
-from feedbax._streaming import init_streaming_state_window, update_streaming_state_window
-from feedbax.loss import CompositeLoss, NthDifferenceLoss, StateDerivativeLoss
-from feedbax.streaming_loss import make_streaming_loss_fn
+from feedbax.runtime.streaming import init_streaming_state_window, update_streaming_state_window
+from feedbax.objectives.loss import CompositeLoss, NthDifferenceLoss, StateDerivativeLoss
+from feedbax.objectives.streaming import make_streaming_loss_fn
 
 
 class _FakeState(eqx.Module):

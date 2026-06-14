@@ -10,7 +10,7 @@ from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
 )
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     ArtifactMigrationRecord,
     GraphSpecManifest,
     ModelArtifactManifest,
@@ -20,8 +20,8 @@ from feedbax.manifest import (
     spec_payload,
     write_manifest,
 )
-from feedbax.migrations import SpecMigrationResult, UnsupportedSpecVersion, migrate_graph_spec
-from feedbax.provider import validate_graph_spec_manifest, validate_spec
+from feedbax.contracts.migrations import SpecMigrationResult, UnsupportedSpecVersion, migrate_graph_spec
+from feedbax.integrations.provider import validate_graph_spec_manifest, validate_spec
 
 
 def _legacy_metadata() -> dict[str, str]:

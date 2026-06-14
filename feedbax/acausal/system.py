@@ -23,7 +23,7 @@ import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.mechanics.dae import DAEComponent, DAEState
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import (

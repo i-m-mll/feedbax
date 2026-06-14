@@ -2,7 +2,7 @@
 
 These models describe objective/loss terms for saved artifacts and provider
 contracts. They intentionally do not execute losses; lowering into
-``feedbax.loss`` or a future streaming objective backend is a separate step.
+``feedbax.objectives.loss`` or a future streaming objective backend is a separate step.
 """
 
 from __future__ import annotations
@@ -398,7 +398,7 @@ def migrate_objective_spec(
     target_version: str | None = None,
 ) -> Any:
     """Migrate or explicitly reject a durable objective payload by schema version."""
-    from feedbax.migrations import migrate_structured_spec_payload
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
 
     payload = spec.model_dump(mode="json") if isinstance(spec, ObjectiveSpec) else spec
     return migrate_structured_spec_payload(

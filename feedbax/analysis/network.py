@@ -9,8 +9,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 import numpy as np
-from feedbax.loss import nan_safe_mse
-from feedbax.train import SimpleTrainer, grad_wrap_simple_loss_func
+from feedbax.objectives.loss import nan_safe_mse
+from feedbax.training.trainer import SimpleTrainer, grad_wrap_simple_loss_func
 from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 

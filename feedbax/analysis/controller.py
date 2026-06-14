@@ -12,7 +12,7 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.contracts.graph import GraphSpec
-from feedbax.graph import Graph, GraphTraceRequest
+from feedbax.runtime.graph import Graph, GraphTraceRequest
 from feedbax.serialization import spec_to_graph
 
 GraphInputBuilder = Callable[[PyTree, int], Mapping[str, PyTree]]
@@ -80,7 +80,7 @@ class GraphControllerAdapter:
     ``h = concat(flatten(equinox.nn.State), flatten(cycle_port_values))``.
 
     Each call to :meth:`step` unpacks that state, executes the graph through the
-    public :meth:`feedbax.graph.Graph.step` API, and repacks the new graph state
+    public :meth:`feedbax.runtime.graph.Graph.step` API, and repacks the new graph state
     and recurrent carry. Cyclic graphs therefore use the same recurrent/cycle
     semantics as normal graph execution.
     """

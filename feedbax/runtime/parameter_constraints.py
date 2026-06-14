@@ -8,9 +8,9 @@ from typing import Any, Callable
 import equinox as eqx
 import jax.numpy as jnp
 
-from feedbax.components import GRU, LSTM, Linear
+from feedbax.runtime.components import GRU, LSTM, Linear
 from feedbax.contracts.graph import ParameterConstraintSpec
-from feedbax.graph import Component, Graph
+from feedbax.runtime.graph import Component, Graph
 
 
 ConstraintLike = ParameterConstraintSpec | Mapping[str, Any]

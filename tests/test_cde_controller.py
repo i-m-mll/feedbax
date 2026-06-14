@@ -11,7 +11,7 @@ import pytest
 import equinox as eqx
 
 from feedbax.nn_cde import CDENetwork, CDENetworkState
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ class TestSimpleFeedbackIntegration:
         from feedbax.mechanics.plant import DirectForceInput
         from feedbax.mechanics.skeleton.pointmass import PointMass
         from feedbax.noise import Normal
-        from feedbax.state import CartesianState
+        from feedbax.runtime.state import CartesianState
 
         k1, k2, k3 = jr.split(key, 3)
 
@@ -364,8 +364,8 @@ class TestSimpleFeedbackIntegration:
         assert outputs["effector"].pos.shape[0] == n_steps
 
     @pytest.mark.xfail(
-        reason="Pre-existing circular import: feedbax.task -> feedbax.plot "
-               "-> feedbax.types -> feedbax.task",
+        reason="Pre-existing circular import: feedbax.tasks -> feedbax.plot "
+               "-> feedbax.types -> feedbax.tasks",
         strict=True,
     )
     def test_full_model_builder(self, key):
@@ -373,8 +373,8 @@ class TestSimpleFeedbackIntegration:
 
         This test requires the task module which has a circular import issue.
         """
-        from feedbax.task import SimpleReaches
-        from feedbax.loss import CompositeLoss
+        from feedbax.tasks import SimpleReaches
+        from feedbax.objectives.loss import CompositeLoss
         from feedbax.xabdeef.models import cde_controller_nn
 
         k1, k2, k3 = jr.split(key, 3)

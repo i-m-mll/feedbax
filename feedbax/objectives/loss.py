@@ -49,13 +49,13 @@ from jax_cookbook.misc import moving_avg, softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax._mapping import WhereDict
-from feedbax._model import AbstractModel
+from feedbax.runtime.graph import Component
 from feedbax.misc import get_unique_label
-from feedbax.state import State
+from feedbax.runtime.state import State
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedbackState
-    from feedbax.task import TaskTrialSpec
+    from feedbax.tasks import TaskTrialSpec
 
 
 logger = logging.getLogger(__name__)
@@ -299,7 +299,7 @@ class AbstractLoss(Module):
         self,
         states: PyTree,
         trial_specs: "TaskTrialSpec",
-        model: AbstractModel,
+        model: Component,
     ) -> TermTree["AbstractLoss"]:
         return TermTree.leaf(
             self.label,
@@ -311,7 +311,7 @@ class AbstractLoss(Module):
         self,
         states: Optional[PyTree],
         trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
+        model: Optional[Component],
     ) -> Array:
         """Implement this to calculate a loss term."""
         raise NotImplementedError
@@ -442,7 +442,7 @@ class FuncTermsLoss[T](AbstractTermedLoss):
 
     label: str
     build_context: Callable[
-        [State, "TaskTrialSpec", AbstractModel], T
+        [State, "TaskTrialSpec", Component], T
     ]  # (states, trial_specs, model) -> Ctx
     terms: Mapping[str, Callable[[T], Array]]
     weights: Mapping[str, float]
@@ -452,7 +452,7 @@ class FuncTermsLoss[T](AbstractTermedLoss):
         self,
         states: State,
         trial_specs: "TaskTrialSpec",
-        model: AbstractModel,
+        model: Component,
     ) -> TermTree[AbstractLoss]:
         ctx = self.build_context(states, trial_specs, model)
         children = {}
@@ -597,7 +597,7 @@ class CompositeLoss(AbstractTermedLoss):
         self,
         states: State,
         trial_specs: "TaskTrialSpec",
-        model: AbstractModel,
+        model: Component,
     ) -> TermTree[AbstractLoss]:
         """Evaluate, weight, and return all component terms.
 
@@ -739,7 +739,7 @@ class TargetStateLoss(AbstractLoss):
         self,
         states: Optional[PyTree],
         trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
+        model: Optional[Component],
     ) -> Array:
         """
         Arguments:
@@ -961,7 +961,7 @@ class StopAtGoalLoss(AbstractLoss):
         self,
         states: Optional[PyTree],
         trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
+        model: Optional[Component],
     ) -> Array:
         assert states is not None, "StopAtGoalLoss requires states"
         assert trial_specs is not None, "StopAtGoalLoss requires trial_specs"
@@ -992,13 +992,13 @@ class ModelLoss(AbstractLoss):
     """Wrapper for functions that take a model, and return a scalar."""
 
     label: str
-    loss_fn: Callable[[AbstractModel], Array]
+    loss_fn: Callable[[Component], Array]
 
     def term(
         self,
         states: Optional[PyTree],
         trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
+        model: Optional[Component],
     ) -> Array:
         assert model is not None, "ModelLoss requires a model, but model is None"
         return self.loss_fn(model)
@@ -1040,7 +1040,7 @@ class NthDifferenceLoss(CrossTimestepLoss):
         self,
         states: Optional[PyTree],
         trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
+        model: Optional[Component],
     ) -> Array:
         assert states is not None, f"{type(self).__name__} requires states"
 
@@ -1064,8 +1064,8 @@ class NthDifferenceLoss(CrossTimestepLoss):
 class StateDerivativeLoss(NthDifferenceLoss):
     """Penalize the squared first-difference of a state variable along time.
 
-    Compatibility wrapper for ``NthDifferenceLoss(order=1)`` with the historic
-    default selector ``state.net.hidden``.
+    Canonical semantic specialization of ``NthDifferenceLoss(order=1)`` for
+    controller-state smoothness, with the default selector ``state.net.hidden``.
 
     Bug: efc4d68
     """
@@ -1216,7 +1216,7 @@ class EpochMaskedLoss(AbstractLoss):
         self,
         states: PyTree,
         trial_specs: "TaskTrialSpec",
-        model: AbstractModel,
+        model: Component,
     ) -> TermTree["AbstractLoss"]:
         # Support nested wrapping: unwrap to the innermost concrete loss.
         # (Composing two EpochMaskedLoss layers is not a typical use case, but
@@ -1248,7 +1248,7 @@ class EpochMaskedLoss(AbstractLoss):
         base: "TargetStateLoss",
         states: PyTree,
         trial_specs: "TaskTrialSpec",
-        model: AbstractModel,
+        model: Component,
     ) -> Array:
         """Reuse `TargetStateLoss.term` machinery, but inject our epoch mask
         into the list of weight selectors used by `reduce_over_time_with_weights`.
@@ -1401,7 +1401,7 @@ class EffectorStraightPathLoss(AbstractLoss):
         self,
         states: Optional["SimpleFeedbackState"],
         trial_specs: Optional["TaskTrialSpec"],
-        model: Optional[AbstractModel],
+        model: Optional[Component],
     ) -> Array:
         assert states is not None, "EffectorStraightPathLoss requires states"
         assert trial_specs is not None, "EffectorStraightPathLoss requires trial_specs"

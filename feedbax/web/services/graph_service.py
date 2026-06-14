@@ -12,7 +12,7 @@ from feedbax.graph_normalization import (
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,
 )
-from feedbax.migrations import migrate_graph_project_payload
+from feedbax.contracts.migrations import migrate_graph_project_payload
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphProject,
@@ -167,7 +167,7 @@ class GraphService:
             return {"content": content, "filename": filename}
         if export_format == "python":
             content = (
-                "# TODO: Implement export to Python once feedbax.graph is available.\n"
+                "# TODO: Implement export to Python once feedbax.runtime.graph is available.\n"
                 f"# Graph id: {graph_id}\n"
             )
             filename = f"{record.project.metadata.name}.py"

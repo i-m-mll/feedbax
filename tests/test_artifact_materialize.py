@@ -15,13 +15,13 @@ from feedbax.artifact_materialize import (
     materialize_model_artifact,
     template_array_roles,
 )
-from feedbax.artifact_schema import (
+from feedbax.contracts.artifact_schema import (
     ArrayStoreValidationError,
     array_store_ref,
     read_npz_array_store,
     write_npz_array_store,
 )
-from feedbax.manifest import ModelArtifactManifest, spec_payload
+from feedbax.contracts.manifest import ModelArtifactManifest, spec_payload
 
 
 class Nested(eqx.Module):

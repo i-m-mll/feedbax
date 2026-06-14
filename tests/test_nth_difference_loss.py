@@ -4,7 +4,14 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 
-from feedbax.loss import NthDifferenceLoss, OutputJerkLoss, StateDerivativeLoss
+from feedbax.objectives.loss import NthDifferenceLoss, OutputJerkLoss, StateDerivativeLoss
+
+
+def test_named_difference_losses_are_canonical_specializations():
+    assert issubclass(StateDerivativeLoss, NthDifferenceLoss)
+    assert issubclass(OutputJerkLoss, NthDifferenceLoss)
+    assert StateDerivativeLoss().order == 1
+    assert OutputJerkLoss().order == 2
 
 
 class _FakeNet(eqx.Module):

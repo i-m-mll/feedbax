@@ -7,7 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from feedbax.provider import (
+from feedbax.integrations.provider import (
     ProviderHealth,
     ProviderManifest,
     ProviderValidationResult,
@@ -18,12 +18,12 @@ from feedbax.provider import (
     validate_spec,
 )
 from feedbax.execution import ExecutionPlan, ExecutionSpec, prepare_execution_plan
-from feedbax.studio_schema import (
+from feedbax.studio.schema import (
     StudioSchemaEnumerationRequest,
     StudioSchemaRegistry,
     enumerate_studio_schema_registry,
 )
-from feedbax.studio_execution import (
+from feedbax.studio.execution import (
     StudioExecutionPreparationError,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,

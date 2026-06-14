@@ -1,7 +1,7 @@
 # Graph components
 
-::: feedbax.graph.Component
+::: feedbax.runtime.graph.Component
 
-::: feedbax.graph.Wire
+::: feedbax.runtime.graph.Wire
 
-::: feedbax.graph.Graph
+::: feedbax.runtime.graph.Graph

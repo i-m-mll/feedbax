@@ -11,8 +11,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
-from feedbax.loss import nan_safe_mse
-from feedbax.train import SimpleTrainer, grad_wrap_simple_loss_func
+from feedbax.objectives.loss import nan_safe_mse
+from feedbax.training.trainer import SimpleTrainer, grad_wrap_simple_loss_func
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.analysis.aligned import AlignedVars
