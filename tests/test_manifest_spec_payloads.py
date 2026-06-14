@@ -97,10 +97,10 @@ def test_load_manifest_rejects_unsupported_non_graph_embedded_spec_with_path(
             "id": "feedbax-evaluation-run:test",
             "evaluation_spec": {
                 "kind": "EvaluationRunSpec",
-                "schema_id": "feedbax.evaluation_run_spec",
-                "schema_version": "feedbax.evaluation_run.v0",
+                "schema_id": "feedbax.spec.evaluation_run",
+                "schema_version": "feedbax.spec.evaluation_run.v0",
                 "inline": {
-                    "schema_version": "feedbax.evaluation_run.v0",
+                    "schema_version": "feedbax.spec.evaluation_run.v0",
                     "evaluation_type": "toy_eval",
                     "params": {},
                 },
@@ -114,7 +114,7 @@ def test_load_manifest_rejects_unsupported_non_graph_embedded_spec_with_path(
     message = str(excinfo.value)
     assert "path='evaluation_spec'" in message
     assert "kind='EvaluationRunSpec'" in message
-    assert "source_version='feedbax.evaluation_run.v0'" in message
+    assert "source_version='feedbax.spec.evaluation_run.v0'" in message
 
 
 def test_spec_payload_writer_stamps_non_graph_family_and_hashes_current_inline() -> None:
@@ -123,8 +123,8 @@ def test_spec_payload_writer_stamps_non_graph_family_and_hashes_current_inline()
         {"evaluation_type": "toy_eval", "training_run_ids": [], "params": {}},
     )
 
-    assert payload.schema_id == "feedbax.evaluation_run_spec"
-    assert payload.schema_version == "feedbax.evaluation_run.v1"
+    assert payload.schema_id == "feedbax.spec.evaluation_run"
+    assert payload.schema_version == "feedbax.spec.evaluation_run.v1"
     assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
     assert payload.source_sha256 is None
     assert payload.migration_records == []
@@ -135,8 +135,8 @@ def test_generic_spec_payload_migration_records_non_graph_source_hash() -> None:
     registry.register_family(
         SpecSchemaFamily(
             kind="DemoSpec",
-            schema_id="feedbax.demo",
-            current_version="demo.v2",
+            schema_id="feedbax.spec.demo",
+            current_version="feedbax.spec.demo.v2",
         )
     )
 
@@ -148,7 +148,7 @@ def test_generic_spec_payload_migration_records_non_graph_source_hash() -> None:
         "DemoSpec",
         SchemaMigration(
             source_version="demo.v1",
-            target_version="demo.v2",
+            target_version="feedbax.spec.demo.v2",
             migration_id="demo-spec-v1-to-v2",
             migrate=migrate_v1_to_v2,
         ),
@@ -166,9 +166,9 @@ def test_generic_spec_payload_migration_records_non_graph_source_hash() -> None:
         registry=registry,
     )
 
-    assert payload.schema_id == "feedbax.demo"
-    assert payload.schema_version == "demo.v2"
-    assert payload.inline == {"schema_version": "demo.v2", "renamed": 4}
+    assert payload.schema_id == "feedbax.spec.demo"
+    assert payload.schema_version == "feedbax.spec.demo.v2"
+    assert payload.inline == {"schema_version": "feedbax.spec.demo.v2", "renamed": 4}
     assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
     assert payload.source_sha256 == source_sha256
     assert [record.migration_id for record in payload.migration_records] == ["demo-spec-v1-to-v2"]

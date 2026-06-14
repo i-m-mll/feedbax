@@ -58,7 +58,7 @@ def test_create_graph_persists_default_workspace(tmp_path):
 
     workspace = record.project.workspace
     assert workspace is not None
-    assert workspace.schema_version == "feedbax.studio.workspace.v1"
+    assert workspace.schema_version == "feedbax.spec.studio.workspace.v1"
     assert workspace.active_stage_id == "stage:train"
     assert [stage.kind for stage in workspace.stages] == [
         "train",
@@ -143,7 +143,7 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
         "graph": graph.model_dump(),
         "workspace": {
             "id": "workspace:legacy-bindings",
-            "schema_version": "feedbax.studio.workspace.v1",
+            "schema_version": "feedbax.spec.studio.workspace.v1",
             "label": "Legacy bindings",
             "active_stage_id": "stage:train",
             "stages": [
@@ -157,7 +157,7 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
             "scenarios": {
                 "scenario:train": {
                     "id": "scenario:train",
-                    "schema_version": "feedbax.studio.scenario.v1",
+                    "schema_version": "feedbax.spec.studio.scenario.v1",
                     "label": "Train",
                     "stage_id": "stage:train",
                     "graph": graph.model_dump(),
@@ -188,7 +188,7 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
     assert workspace is not None
     scenario = workspace.scenarios["scenario:train"]
     assert scenario.task_binding_spec is not None
-    assert scenario.task_binding_spec.schema_version == "feedbax.studio.task_bindings.v2"
+    assert scenario.task_binding_spec.schema_version == "feedbax.spec.studio.task_bindings.v2"
     assert scenario.task_binding_spec.bindings[0].source_data_id == "inputs"
 
 

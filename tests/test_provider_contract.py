@@ -9,16 +9,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     ArrayStoreRef,
     ArtifactRef,
     EntrypointRef,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     ModelArtifactManifest,
     ParentRef,
     Provenance,
+    ReportManifest,
+    ReportSpec,
     TrainingRunManifest,
     load_manifest,
     sha256_file,
     spec_payload,
+    write_manifest,
     write_training_run_manifest,
 )
 from feedbax.manifest_index import rebuild_manifest_index
@@ -28,6 +35,7 @@ from feedbax.provider import (
     validate_analysis_spec,
     validate_evaluation_spec,
     validate_graph_spec,
+    validate_report_spec,
     validate_spec,
     validate_task_spec,
     validate_training_spec,
@@ -139,7 +147,7 @@ def _task_input_binding(
     if expected_shape is not None:
         data["expected_shape"] = expected_shape
     return {
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [data],
         "bindings": [
             {
@@ -208,7 +216,7 @@ def _schema_workspace():
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -274,6 +282,8 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
     assert "ModelArtifactManifest" in manifest.schemas
+    assert "CheckpointSelectionManifest" in manifest.schemas
+    assert "CheckpointSelectionSpec" in manifest.schemas
     assert "ArrayStorePayload" in manifest.schemas
     assert "ArrayStoreRef" in manifest.schemas
     assert "ObjectiveSpec" in manifest.schemas
@@ -283,6 +293,47 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "RuntimeIntrospectionOptions" in manifest.schemas
     assert "RuntimeSampleLeafSchema" in manifest.schemas
     assert "MandibleManifestMapping" in manifest.schemas
+
+
+def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:
+    manifest = provider_manifest()
+
+    expected = {
+        "execute_evaluation_run": ("EvaluationRunSpec", "EvaluationRunManifest", "execute"),
+        "execute_analysis_run": ("AnalysisRunSpec", "AnalysisRunManifest", "execute"),
+        "materialize_report": ("ReportSpec", "ReportManifest", "execute"),
+        "inspect_evaluation_manifest": (
+            "EvaluationRunManifest",
+            "EvaluationRunManifest",
+            "inspect",
+        ),
+        "inspect_analysis_manifest": ("AnalysisRunManifest", "AnalysisRunManifest", "inspect"),
+        "inspect_report_manifest": ("ReportManifest", "ReportManifest", "inspect"),
+        "handoff_evaluation_artifacts": (
+            "EvaluationRunManifest",
+            "EvaluationRunManifest",
+            "handoff",
+        ),
+        "handoff_analysis_artifacts": ("AnalysisRunManifest", "AnalysisRunManifest", "handoff"),
+        "handoff_report_artifacts": ("ReportManifest", "ReportManifest", "handoff"),
+    }
+
+    for name, (input_schema, output_schema, action) in expected.items():
+        capability = manifest.capabilities[name]
+        assert capability.input_schema == input_schema
+        assert capability.output_schema == output_schema
+        assert capability.action == action
+
+    assert manifest.capabilities["validate_evaluation_spec"].input_schema == "EvaluationRunSpec"
+    assert manifest.capabilities["validate_analysis_spec"].input_schema == "AnalysisRunSpec"
+    assert manifest.capabilities["validate_report_spec"].input_schema == "ReportSpec"
+    assert "trajectory_dataset" in manifest.capabilities["execute_evaluation_run"].artifact_roles
+    assert "analysis_table" in manifest.capabilities["execute_analysis_run"].artifact_roles
+    assert "report" in manifest.capabilities["materialize_report"].artifact_roles
+    assert (
+        "artifact_id fields are optional and local URIs remain valid"
+        in manifest.capabilities["handoff_report_artifacts"].custody_expectations
+    )
 
 
 def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
@@ -349,6 +400,7 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
         "TrainingRunSetManifest",
         "TrainingRunManifest",
         "EvaluationRunManifest",
+        "CheckpointSelectionManifest",
         "AnalysisRunManifest",
         "ReportManifest",
     }
@@ -381,6 +433,15 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
     )
     assert "parameter_store.roles" in model_artifact.opaque_domain_fields
     assert "mandible/2322726" in model_artifact.related_issue_refs
+
+    checkpoint_selection = mappings["CheckpointSelectionManifest"]
+    assert checkpoint_selection.subject_node_type == "feedbax.checkpoint_selection"
+    assert checkpoint_selection.spec_fields == ["selection_spec"]
+    assert "bank.ref" in checkpoint_selection.parent_ref_fields
+    assert "selections[].selected_checkpoint.model_artifact" in (
+        checkpoint_selection.parent_ref_fields
+    )
+    assert "scorer" in checkpoint_selection.opaque_domain_fields
 
 
 def test_training_run_manifest_mandible_mapping_fixture_preserves_local_refs() -> None:
@@ -440,7 +501,7 @@ def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores()
         ),
         parameter_store=ArrayStoreRef(
             role="params",
-            schema_version="feedbax.array_store.v1",
+            schema_version="feedbax.manifest.array_store.v1",
             storage_backend="npz.v1",
             logical_name="model.arrays.npz",
             artifact_id="mandible-artifact:params-demo",
@@ -454,7 +515,7 @@ def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores()
         ),
         state_store=ArrayStoreRef(
             role="state",
-            schema_version="feedbax.array_store.v1",
+            schema_version="feedbax.manifest.array_store.v1",
             storage_backend="npz.v1",
             logical_name="model.state.npz",
             uri="artifacts/demo/model.state.npz",
@@ -463,7 +524,7 @@ def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores()
         ),
         optimizer_store=ArrayStoreRef(
             role="optimizer",
-            schema_version="feedbax.array_store.v1",
+            schema_version="feedbax.manifest.array_store.v1",
             storage_backend="npz.v1",
             logical_name="optimizer.npz",
             uri="artifacts/demo/optimizer.npz",
@@ -488,6 +549,142 @@ def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores()
     assert manifest.state_store.roles == ["state.mechanics.position"]
     assert manifest.optimizer_store is not None
     assert manifest.optimizer_store.roles == ["optimizer.adam.momentum"]
+
+
+def test_eval_analysis_report_manifests_preserve_optional_handoff_artifact_ids(
+    tmp_path: Path,
+) -> None:
+    training_parent = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:provider-depth",
+        role="training_run",
+        uri="manifests/training_runs/provider-depth.json",
+    )
+    evaluation_spec = EvaluationRunSpec(
+        evaluation_type="provider_depth_eval",
+        inputs=[training_parent],
+        params={"split": "validation"},
+    )
+    evaluation = EvaluationRunManifest(
+        id="feedbax-evaluation-run:provider-depth",
+        status="completed",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            evaluation_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        input_training_runs=[training_parent],
+        provenance=Provenance(parents=[training_parent], issues=["63c798f"]),
+        artifacts=[
+            ArtifactRef(
+                role="trajectory_dataset",
+                logical_name="states.parquet",
+                uri="artifacts/eval/states.parquet",
+                media_type="application/vnd.apache.parquet",
+                metadata={"schema_id": "feedbax.manifest.evaluation_run"},
+            )
+        ],
+    )
+    evaluation_path = write_manifest(evaluation, root=tmp_path)
+
+    evaluation_parent = ParentRef(
+        kind="EvaluationRunManifest",
+        id=evaluation.id,
+        role="evaluation_run",
+        uri=str(evaluation_path.relative_to(tmp_path)),
+    )
+    analysis_spec = AnalysisRunSpec(
+        analysis_type="feedbax.analysis.plot",
+        inputs=[evaluation_parent],
+        params={"requested_outputs": ["summary_table"]},
+    )
+    analysis = AnalysisRunManifest(
+        id="feedbax-analysis-run:provider-depth",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            analysis_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        inputs=[evaluation_parent],
+        provenance=Provenance(parents=[evaluation_parent], issues=["63c798f"]),
+        artifacts=[
+            ArtifactRef(
+                role="analysis_table",
+                logical_name="summary.csv",
+                uri="artifacts/analysis/summary.csv",
+                media_type="text/csv",
+            )
+        ],
+    )
+    analysis_path = write_manifest(analysis, root=tmp_path)
+
+    analysis_parent = ParentRef(
+        kind="AnalysisRunManifest",
+        id=analysis.id,
+        role="analysis_run",
+        uri=str(analysis_path.relative_to(tmp_path)),
+    )
+    report_spec = ReportSpec(
+        report_type="provider_depth_report",
+        inputs=[analysis_parent],
+        params={"format": "html"},
+    )
+    report = ReportManifest(
+        id="feedbax-report:provider-depth",
+        status="completed",
+        report_spec=spec_payload(
+            "ReportSpec",
+            report_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        inputs=[analysis_parent],
+        provenance=Provenance(parents=[analysis_parent], issues=["63c798f"]),
+        artifacts=[
+            ArtifactRef(
+                role="report",
+                logical_name="report-bundle.zip",
+                uri="artifacts/reports/report-bundle.zip",
+                media_type="application/zip",
+                metadata={"handoff": {"mandible_artifact_id": None}},
+            )
+        ],
+    )
+    report_path = write_manifest(report, root=tmp_path)
+
+    loaded = [load_manifest(path) for path in (evaluation_path, analysis_path, report_path)]
+    assert [manifest.kind for manifest in loaded] == [
+        "EvaluationRunManifest",
+        "AnalysisRunManifest",
+        "ReportManifest",
+    ]
+    assert all(manifest.artifacts[0].artifact_id is None for manifest in loaded)
+    assert loaded[0].artifacts[0].uri == "artifacts/eval/states.parquet"
+    assert loaded[1].analysis_spec.schema_id == "feedbax.spec.analysis_run"
+    assert loaded[2].report_spec.schema_version == "feedbax.spec.report.v1"
+
+    assert validate_spec(
+        "evaluation",
+        evaluation_spec.model_dump(mode="json", exclude_none=True),
+    ).valid
+    assert validate_spec("analysis", analysis_spec.model_dump(mode="json", exclude_none=True)).valid
+    assert validate_report_spec(report_spec).valid
+
+    index_path = rebuild_manifest_index(tmp_path)
+    with sqlite3.connect(index_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT m.kind, a.role, a.artifact_id, a.uri
+            FROM manifests AS m
+            JOIN artifacts AS a ON a.manifest_id = m.id
+            WHERE m.id IN (?, ?, ?)
+            ORDER BY m.kind
+            """,
+            (evaluation.id, analysis.id, report.id),
+        ).fetchall()
+
+    assert rows == [
+        ("AnalysisRunManifest", "analysis_table", None, "artifacts/analysis/summary.csv"),
+        ("EvaluationRunManifest", "trajectory_dataset", None, "artifacts/eval/states.parquet"),
+        ("ReportManifest", "report", None, "artifacts/reports/report-bundle.zip"),
+    ]
 
 
 def test_component_registry_snapshot_wraps_existing_registry() -> None:
@@ -809,14 +1006,14 @@ def test_graph_validation_uses_schema_for_direction_occupied_and_dtype_mismatch(
 def test_studio_task_timeline_spec_validates_value_specs() -> None:
     timeline = StudioTaskTimelineSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_timeline.v1",
+            "schema_version": "feedbax.spec.studio.task_timeline.v1",
             "epochs": [
                 {
                     "id": "epoch:0",
                     "label": "hold",
                     "index": 0,
                     "length": {
-                        "schema_version": "feedbax.studio.value.v1",
+                        "schema_version": "feedbax.spec.studio.value.v1",
                         "mode": "constant",
                         "value": {"min": 0, "max": 1},
                         "metadata": {"scope": "trial"},
@@ -833,7 +1030,7 @@ def test_studio_task_timeline_spec_validates_value_specs() -> None:
                     "path": "inputs.hold",
                     "epoch_ids": ["epoch:0"],
                     "value_spec": {
-                        "schema_version": "feedbax.studio.value.v1",
+                        "schema_version": "feedbax.spec.studio.value.v1",
                         "mode": "distribution",
                         "distribution": {
                             "family": "uniform",
@@ -903,7 +1100,7 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [],
             "bindings": [],
             "metadata": {},
@@ -1040,7 +1237,7 @@ def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports() -> None
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -1084,7 +1281,8 @@ def test_runtime_wrapper_normalization_does_not_lower_hidden_population_constrai
     raw_graph["nodes"]["network"]["params"]["hidden_size"] = 4
     raw_graph["nodes"]["network"]["params"]["input_size"] = 2
     raw_graph["nodes"]["network"]["params"]["population_structure"] = {
-        "schema_version": "feedbax.population_structure.v1",
+        "schema_id": "feedbax.spec.population_structure",
+        "schema_version": "feedbax.spec.population_structure.v1",
         "assignment": "explicit",
         "n_input_only": 1,
         "n_readout_only": 1,
@@ -1283,7 +1481,7 @@ def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "target_on",
@@ -1362,7 +1560,7 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -1422,7 +1620,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() 
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -1529,7 +1727,7 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -1809,7 +2007,7 @@ def test_worker_emits_durable_training_manifest(
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [],
             "bindings": [],
             "metadata": {},
@@ -1860,7 +2058,7 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
     _require_worker_specs(
         _worker_contract_job(
             task_binding_spec={
-                "schema_version": "feedbax.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v2",
                 "exposed_data": [
                     {
                         "id": "inputs",
@@ -1917,7 +2115,7 @@ def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
 
     _require_worker_specs(job)
 
-    assert job.task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert job.task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
     assert job.task_binding_spec["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in job.task_binding_spec
     assert job.task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
@@ -1928,7 +2126,7 @@ def test_worker_spec_contract_rejects_runtime_network_payloads() -> None:
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
         task_binding_spec={
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -1962,7 +2160,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
         _require_worker_specs(
             _worker_contract_job(
                 task_binding_spec={
-                    "schema_version": "feedbax.studio.task_bindings.v2",
+                    "schema_version": "feedbax.spec.studio.task_bindings.v2",
                     "exposed_data": [
                         {
                             "id": "inputs",
@@ -1998,7 +2196,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
         ),
         (
             {
-                "schema_version": "feedbax.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v2",
                 "exposed_outputs": [],
                 "bindings": [],
                 "metadata": {},
@@ -2007,7 +2205,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
         ),
         (
             {
-                "schema_version": "feedbax.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v2",
                 "exposed_data": [],
                 "bindings": [
                     {

@@ -29,6 +29,9 @@ from feedbax.contracts.graph import ParameterConstraintSpec
 
 logger = logging.getLogger(__name__)
 
+POPULATION_STRUCTURE_SCHEMA_ID = "feedbax.spec.population_structure"
+POPULATION_STRUCTURE_SCHEMA_VERSION = "feedbax.spec.population_structure.v1"
+
 
 # class Layer(Protocol):
 #     def __init__(
@@ -277,7 +280,8 @@ class PopulationStructure(Module):
             return [int(value) for value in jnp.asarray(values).tolist()]
 
         return {
-            "schema_version": "feedbax.population_structure.v1",
+            "schema_id": POPULATION_STRUCTURE_SCHEMA_ID,
+            "schema_version": POPULATION_STRUCTURE_SCHEMA_VERSION,
             "assignment": "explicit",
             "n_input_only": int(self.n_input_only),
             "n_readout_only": int(self.n_readout_only),
@@ -290,6 +294,20 @@ class PopulationStructure(Module):
         }
 
 
+def validate_population_structure_spec(spec: Mapping[str, object]) -> dict[str, object]:
+    """Validate a serialized population-structure spec against the schema registry."""
+    from feedbax.migrations import default_spec_registry
+
+    schema_id = spec.get("schema_id")
+    if schema_id is not None and schema_id != POPULATION_STRUCTURE_SCHEMA_ID:
+        raise ValueError(
+            "Unsupported PopulationStructureSpec schema_id: "
+            f"schema_id={schema_id!r}, expected={POPULATION_STRUCTURE_SCHEMA_ID!r}"
+        )
+    result = default_spec_registry.migrate("PopulationStructureSpec", spec)
+    return result.payload
+
+
 def population_structure_from_spec(
     hidden_size: int,
     spec: Mapping[str, object] | PopulationStructure,
@@ -300,6 +318,7 @@ def population_structure_from_spec(
 
     if isinstance(spec, PopulationStructure):
         return spec
+    spec = validate_population_structure_spec(spec)
 
     def int_param(name: str, default: int = 0) -> int:
         value = spec.get(name, default)

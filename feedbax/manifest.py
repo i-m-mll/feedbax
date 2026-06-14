@@ -16,9 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.graph import AnalysisInputRequirement
+from feedbax.retention_artifact_schema import (
+    RETENTION_ARTIFACT_ROLE_SCHEMAS,
+    retained_observables_to_json,
+    retention_artifact_metadata,
+    retention_artifact_schema,
+)
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -30,6 +36,8 @@ except ImportError:  # pragma: no cover - Python 3.12 always has importlib.metad
 SCHEMA_VERSION = "feedbax.manifest.v1"
 PROVIDER_VERSION = "feedbax-provider.v1"
 DEFAULT_MANIFEST_ROOT_ENV = "FEEDBAX_RUNS_DIR"
+REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
+REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
@@ -147,6 +155,81 @@ class Provenance(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class FileHashRef(StrictModel):
+    """Deterministic content hash for one source or artifact file."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+    role: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TreeHashEntry(StrictModel):
+    """One file entry included in a deterministic tree hash."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TreeHashRef(StrictModel):
+    """Deterministic hash for a directory tree and its member file hashes."""
+
+    path: str
+    sha256: str
+    file_count: int
+    total_size_bytes: int
+    files: list[TreeHashEntry] = Field(default_factory=list)
+    role: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegenerationCommand(StrictModel):
+    """Command form used to regenerate one or more analysis/report artifacts."""
+
+    argv: list[str] = Field(default_factory=list)
+    shell_command: Optional[str] = None
+    cwd: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_invocation(self) -> "RegenerationCommand":
+        if not self.argv and not self.shell_command:
+            raise ValueError("regeneration command requires argv or shell_command")
+        return self
+
+
+class RegenerationSpec(StrictModel):
+    """Generic replay record for regenerating analysis or report artifacts."""
+
+    schema_id: str = REGENERATION_SPEC_SCHEMA_ID
+    schema_version: str = REGENERATION_SPEC_SCHEMA_VERSION
+    command: RegenerationCommand
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    inputs: list[ParentRef | ArtifactRef] = Field(default_factory=list)
+    outputs: list[ParentRef | ArtifactRef] = Field(default_factory=list)
+    source_files: list[FileHashRef] = Field(default_factory=list)
+    source_trees: list[TreeHashRef] = Field(default_factory=list)
+    provenance: Provenance = Field(default_factory=Provenance)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "RegenerationSpec":
+        if self.schema_id != REGENERATION_SPEC_SCHEMA_ID:
+            raise ValueError(
+                "unsupported RegenerationSpec schema_id: "
+                f"{self.schema_id!r}, expected {REGENERATION_SPEC_SCHEMA_ID!r}"
+            )
+        if self.schema_version != REGENERATION_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported RegenerationSpec schema_version: "
+                f"{self.schema_version!r}, expected {REGENERATION_SPEC_SCHEMA_VERSION!r}"
+            )
+        return self
+
+
 class SpecPayload(StrictModel):
     """Inline spec payload plus optional stable reference metadata."""
 
@@ -240,6 +323,149 @@ class EvaluationRunManifest(BaseManifest):
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointScorerIdentity(StrictModel):
+    """Stable identity for a downstream-provided checkpoint scorer."""
+
+    scorer_id: str
+    name: Optional[str] = None
+    version: Optional[str] = None
+    plugin: Optional[str] = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointSelectionBank(StrictModel):
+    """Validation or evaluation bank used to score candidate checkpoints."""
+
+    role: Literal["validation", "evaluation", "fixed"] = "validation"
+    status: Literal["available", "missing", "unavailable"] = "available"
+    bank_id: Optional[str] = None
+    logical_name: Optional[str] = None
+    ref: Optional[ParentRef | ArtifactRef] = None
+    fallback_ref: Optional[ParentRef | ArtifactRef] = None
+    fallback_reason: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_bank_status(self) -> "CheckpointSelectionBank":
+        if self.status == "available" and self.ref is None:
+            raise ValueError("available checkpoint-selection banks must include ref")
+        if self.status != "available" and self.fallback_ref is not None and not self.fallback_reason:
+            raise ValueError("checkpoint-selection bank fallback_ref requires fallback_reason")
+        return self
+
+
+class CheckpointCandidateRef(StrictModel):
+    """Reference to one candidate checkpoint and its available lineage."""
+
+    id: str
+    checkpoint: ParentRef | ArtifactRef
+    run_id: Optional[str] = None
+    replicate_id: Optional[str] = None
+    step: Optional[int] = None
+    training_run: Optional[ParentRef] = None
+    model_artifact: Optional[ParentRef] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointScoreSummary(StrictModel):
+    """Scorer output summary for one candidate checkpoint."""
+
+    candidate_id: str
+    primary_metric: str
+    primary_value: float
+    objective: Literal["minimize", "maximize"]
+    rank: Optional[int] = None
+    metrics: dict[str, float] = Field(default_factory=dict)
+    status: Literal["scored", "failed", "missing"] = "scored"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointSelectionGroup(StrictModel):
+    """Candidate and selected checkpoint records for a run or replicate."""
+
+    scope: Literal["run", "replicate"] = "run"
+    run_id: str
+    replicate_id: Optional[str] = None
+    candidate_checkpoints: list[CheckpointCandidateRef] = Field(default_factory=list)
+    selected_checkpoint: Optional[CheckpointCandidateRef] = None
+    score_summaries: list[CheckpointScoreSummary] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_group(self) -> "CheckpointSelectionGroup":
+        if self.scope == "replicate" and not self.replicate_id:
+            raise ValueError("replicate checkpoint-selection groups require replicate_id")
+        if self.selected_checkpoint is not None:
+            candidate_ids = {candidate.id for candidate in self.candidate_checkpoints}
+            if self.selected_checkpoint.id not in candidate_ids:
+                raise ValueError(
+                    "selected checkpoint must also appear in candidate_checkpoints"
+                )
+        return self
+
+
+class CheckpointSelectionSpec(StrictModel):
+    """Declarative request for generic checkpoint selection."""
+
+    selection_type: str
+    scorer: CheckpointScorerIdentity
+    bank: CheckpointSelectionBank
+    group_by: Literal["run", "replicate"] = "run"
+    candidate_checkpoints: list[CheckpointCandidateRef] = Field(default_factory=list)
+    inputs: list[ParentRef] = Field(default_factory=list)
+    fallback_allowed: bool = False
+    params: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointSelectionManifest(BaseManifest):
+    """Durable custody record for selected checkpoints."""
+
+    kind: Literal["CheckpointSelectionManifest"] = "CheckpointSelectionManifest"
+    selection_spec: SpecPayload
+    scorer: CheckpointScorerIdentity
+    bank: CheckpointSelectionBank
+    selection_status: Literal["selected", "fallback_selected", "failed"]
+    fallback_allowed: bool = False
+    failure_reason: Optional[str] = None
+    inputs: list[ParentRef] = Field(default_factory=list)
+    selections: list[CheckpointSelectionGroup] = Field(default_factory=list)
+    summary_metrics: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_selection_status(self) -> "CheckpointSelectionManifest":
+        selected_groups = [
+            group for group in self.selections if group.selected_checkpoint is not None
+        ]
+        if self.selection_status in {"selected", "fallback_selected"} and not selected_groups:
+            raise ValueError(
+                "checkpoint-selection manifests with selected status require a selected checkpoint"
+            )
+
+        bank_missing = self.bank.status != "available"
+        if bank_missing and self.selection_status == "selected":
+            raise ValueError(
+                "missing or unavailable checkpoint-selection banks cannot produce "
+                "selection_status='selected'"
+            )
+        if self.selection_status == "fallback_selected":
+            if not self.fallback_allowed:
+                raise ValueError("fallback_selected requires fallback_allowed=True")
+            if self.bank.status == "available":
+                raise ValueError("fallback_selected requires a missing or unavailable bank")
+            if not (self.failure_reason or self.bank.fallback_reason or self.bank.fallback_ref):
+                raise ValueError(
+                    "fallback_selected requires failure_reason, bank.fallback_reason, "
+                    "or bank.fallback_ref"
+                )
+        if self.selection_status == "failed" and not (
+            self.failure_reason or self.bank.fallback_reason
+        ):
+            raise ValueError("failed checkpoint-selection manifests require failure_reason")
+        return self
+
+
 class AnalysisRunSpec(StrictModel):
     """Declarative request for an analysis run."""
 
@@ -253,6 +479,9 @@ class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
     analysis_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
+        default_factory=list
+    )
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -269,6 +498,9 @@ class ReportManifest(BaseManifest):
     kind: Literal["ReportManifest"] = "ReportManifest"
     report_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
+        default_factory=list
+    )
 
 
 AnyManifest = (
@@ -277,6 +509,7 @@ AnyManifest = (
     | TrainingRunSetManifest
     | TrainingRunManifest
     | EvaluationRunManifest
+    | CheckpointSelectionManifest
     | AnalysisRunManifest
     | ReportManifest
 )
@@ -298,6 +531,7 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "TrainingRunSetManifest": TrainingRunSetManifest,
     "TrainingRunManifest": TrainingRunManifest,
     "EvaluationRunManifest": EvaluationRunManifest,
+    "CheckpointSelectionManifest": CheckpointSelectionManifest,
     "AnalysisRunManifest": AnalysisRunManifest,
     "ReportManifest": ReportManifest,
 }
@@ -313,8 +547,9 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
         "task_binding_spec",
     ),
     "EvaluationRunManifest": ("evaluation_spec",),
-    "AnalysisRunManifest": ("analysis_spec",),
-    "ReportManifest": ("report_spec",),
+    "CheckpointSelectionManifest": ("selection_spec",),
+    "AnalysisRunManifest": ("analysis_spec", "regeneration_specs"),
+    "ReportManifest": ("report_spec", "regeneration_specs"),
 }
 
 
@@ -335,6 +570,67 @@ def sha256_file(path: Path | str) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def file_hash_ref(
+    path: Path | str,
+    *,
+    root: Path | str | None = None,
+    role: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> FileHashRef:
+    """Return a deterministic hash reference for one file."""
+    file_path = Path(path)
+    display_path = str(file_path if root is None else file_path.relative_to(Path(root)))
+    stat = file_path.stat()
+    return FileHashRef(
+        path=display_path,
+        sha256=sha256_file(file_path),
+        size_bytes=stat.st_size,
+        role=role,
+        metadata=dict(metadata or {}),
+    )
+
+
+def tree_hash_ref(
+    path: Path | str,
+    *,
+    root: Path | str | None = None,
+    role: Optional[str] = None,
+    include_files: bool = True,
+    metadata: Optional[dict[str, Any]] = None,
+) -> TreeHashRef:
+    """Return a deterministic hash reference for regular files under a directory."""
+    tree_path = Path(path)
+    if not tree_path.is_dir():
+        raise NotADirectoryError(tree_path)
+
+    entries: list[TreeHashEntry] = []
+    total_size = 0
+    for file_path in sorted(
+        candidate for candidate in tree_path.rglob("*") if candidate.is_file()
+    ):
+        relative_path = str(file_path.relative_to(tree_path))
+        stat = file_path.stat()
+        total_size += stat.st_size
+        entries.append(
+            TreeHashEntry(
+                path=relative_path,
+                sha256=sha256_file(file_path),
+                size_bytes=stat.st_size,
+            )
+        )
+    digest_payload = [entry.model_dump(mode="json", exclude_none=True) for entry in entries]
+    display_path = str(tree_path if root is None else tree_path.relative_to(Path(root)))
+    return TreeHashRef(
+        path=display_path,
+        sha256=sha256_bytes(canonical_json_bytes(digest_payload)),
+        file_count=len(entries),
+        total_size_bytes=total_size,
+        files=entries if include_files else [],
+        role=role,
+        metadata=dict(metadata or {}),
+    )
 
 
 def _spec_payload_record_metadata(
@@ -562,6 +858,115 @@ def store_json_artifact(
     )
 
 
+def _validate_retention_artifact_version(
+    role: str,
+    payload: dict[str, Any],
+    *,
+    path: str,
+) -> dict[str, Any]:
+    """Validate or stamp a governed retention artifact payload."""
+    from feedbax.migrations import UnsupportedSpecVersion, default_spec_registry
+
+    kind, expected_schema_id, current_version = retention_artifact_schema(role)
+    schema_id = payload.get("schema_id")
+    if schema_id is not None and schema_id != expected_schema_id:
+        raise UnsupportedSpecVersion(
+            "Unsupported retention artifact schema identity: "
+            f"path={path!r}, role={role!r}, kind={kind!r}, "
+            f"schema_id={schema_id!r}, expected={expected_schema_id!r}"
+        )
+
+    source_version = payload.get("schema_version")
+    if source_version is not None and not isinstance(source_version, str):
+        raise UnsupportedSpecVersion(
+            "Retention artifact schema_version must be a string: "
+            f"path={path!r}, role={role!r}, kind={kind!r}, "
+            f"schema_version={source_version!r}"
+        )
+    if isinstance(source_version, str) and source_version and source_version != current_version:
+        try:
+            default_spec_registry.migrate(kind, payload, source_version=source_version)
+        except UnsupportedSpecVersion as exc:
+            raise UnsupportedSpecVersion(
+                "Unsupported retention artifact schema version: "
+                f"path={path!r}, role={role!r}, kind={kind!r}; {exc}"
+            ) from exc
+
+    stamped = dict(payload)
+    stamped["schema_id"] = expected_schema_id
+    stamped["schema_version"] = current_version
+    return stamped
+
+
+def _retention_artifact_payload(
+    role: str,
+    value: Any,
+    *,
+    path: str,
+) -> dict[str, Any]:
+    if role == "retained_observables":
+        if (
+            isinstance(value, dict)
+            and ("schema_id" in value or "schema_version" in value)
+            and "observables" in value
+        ):
+            payload = dict(value)
+        else:
+            payload = retained_observables_to_json(value)
+    elif role == "retention_plan":
+        if not isinstance(value, dict):
+            raise TypeError(
+                "retention_plan artifact payload must be a mapping: "
+                f"path={path!r}, got={type(value).__name__}"
+            )
+        payload = dict(value)
+    else:
+        payload = value
+    if not isinstance(payload, dict):
+        raise TypeError(
+            "retention artifact payload must be a mapping after schema wrapping: "
+            f"path={path!r}, role={role!r}, got={type(payload).__name__}"
+        )
+    return _validate_retention_artifact_version(role, payload, path=path)
+
+
+def _validate_retention_artifact_ref_metadata(data: dict[str, Any]) -> dict[str, Any]:
+    artifacts = data.get("artifacts")
+    if not isinstance(artifacts, list):
+        return data
+    normalized = dict(data)
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            continue
+        role = artifact.get("role")
+        if role not in RETENTION_ARTIFACT_ROLE_SCHEMAS:
+            continue
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        missing = [
+            key
+            for key in ("schema_id", "schema_version")
+            if not isinstance(metadata.get(key), str) or not metadata.get(key)
+        ]
+        if missing:
+            from feedbax.migrations import UnsupportedSpecVersion
+
+            raise UnsupportedSpecVersion(
+                "Retention artifact ref is missing governed schema metadata: "
+                f"path='artifacts/{index}/metadata', role={role!r}, missing={missing}"
+            )
+        _validate_retention_artifact_version(
+            role,
+            {
+                "schema_id": metadata["schema_id"],
+                "schema_version": metadata["schema_version"],
+            },
+            path=f"artifacts/{index}/metadata",
+        )
+    return normalized
+
+
 def _manifest_dir(root: Path, kind: str) -> Path:
     names = {
         "GraphSpecManifest": "graph_specs",
@@ -569,6 +974,7 @@ def _manifest_dir(root: Path, kind: str) -> Path:
         "TrainingRunSetManifest": "training_run_sets",
         "TrainingRunManifest": "training_runs",
         "EvaluationRunManifest": "evaluation_runs",
+        "CheckpointSelectionManifest": "checkpoint_selections",
         "AnalysisRunManifest": "analysis_runs",
         "ReportManifest": "reports",
     }
@@ -592,6 +998,11 @@ def _is_spec_payload_data(value: Any) -> bool:
 def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
     if value is None:
         return None
+    if isinstance(value, list):
+        return [
+            _normalize_spec_payload_field(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
         return migrate_spec_payload(value, path=path)
     return value
@@ -620,6 +1031,8 @@ def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
     """Return a copy with embedded spec payloads registry-stamped and migrated."""
     fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
     if not fields:
+        if isinstance(manifest, CheckpointSelectionManifest):
+            return normalize_checkpoint_selection_lineage(manifest)
         return manifest
     updates: dict[str, Any] = {}
     for field_name in fields:
@@ -627,9 +1040,70 @@ def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
         normalized = _normalize_spec_payload_field(value, path=field_name)
         if normalized is not value:
             updates[field_name] = normalized
-    if not updates:
+    normalized_manifest = manifest.model_copy(update=updates) if updates else manifest
+    if isinstance(normalized_manifest, CheckpointSelectionManifest):
+        return normalize_checkpoint_selection_lineage(normalized_manifest)
+    return normalized_manifest  # type: ignore[return-value]
+
+
+def _parent_ref_key(parent: ParentRef) -> tuple[str, str, Optional[str]]:
+    return (parent.kind, parent.id, parent.role)
+
+
+def _append_unique_parent_refs(
+    existing: list[ParentRef],
+    added: list[ParentRef],
+) -> list[ParentRef]:
+    refs = list(existing)
+    seen = {_parent_ref_key(parent) for parent in refs}
+    for parent in added:
+        key = _parent_ref_key(parent)
+        if key not in seen:
+            refs.append(parent)
+            seen.add(key)
+    return refs
+
+
+def _parent_ref_from_ref(ref: ParentRef | ArtifactRef | None) -> ParentRef | None:
+    return ref if isinstance(ref, ParentRef) else None
+
+
+def _checkpoint_candidate_lineage_refs(candidate: CheckpointCandidateRef) -> list[ParentRef]:
+    refs = [
+        _parent_ref_from_ref(candidate.checkpoint),
+        candidate.training_run,
+        candidate.model_artifact,
+    ]
+    return [ref for ref in refs if ref is not None]
+
+
+def checkpoint_selection_parent_refs(
+    manifest: CheckpointSelectionManifest,
+) -> list[ParentRef]:
+    """Return manifest lineage refs discoverable from checkpoint-selection custody."""
+    refs: list[ParentRef] = list(manifest.inputs)
+    for bank_ref in (manifest.bank.ref, manifest.bank.fallback_ref):
+        parent = _parent_ref_from_ref(bank_ref)
+        if parent is not None:
+            refs.append(parent)
+    for group in manifest.selections:
+        if group.selected_checkpoint is not None:
+            refs.extend(_checkpoint_candidate_lineage_refs(group.selected_checkpoint))
+    return _append_unique_parent_refs([], refs)
+
+
+def normalize_checkpoint_selection_lineage(
+    manifest: CheckpointSelectionManifest,
+) -> CheckpointSelectionManifest:
+    """Attach selected checkpoint and bank refs to provenance.parents for indexing."""
+    parents = _append_unique_parent_refs(
+        manifest.provenance.parents,
+        checkpoint_selection_parent_refs(manifest),
+    )
+    if parents == manifest.provenance.parents:
         return manifest
-    return manifest.model_copy(update=updates)  # type: ignore[return-value]
+    provenance = manifest.provenance.model_copy(update={"parents": parents})
+    return manifest.model_copy(update={"provenance": provenance})
 
 
 def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
@@ -642,6 +1116,12 @@ def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
     """Return deterministic run identity for an analysis spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
     return f"feedbax-analysis-run:{digest[:32]}"
+
+
+def checkpoint_selection_manifest_id(spec: CheckpointSelectionSpec) -> str:
+    """Return deterministic identity for a checkpoint-selection spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-checkpoint-selection:{digest[:32]}"
 
 
 def evaluation_states_cache_path(
@@ -691,6 +1171,7 @@ def load_manifest(path: Path | str) -> AnyManifest:
     """Load a known Feedbax manifest from disk."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     data = _normalize_manifest_data_spec_payloads(data)
+    data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")
     if not isinstance(raw_kind, str):
         raise ValueError(f"Unknown Feedbax manifest kind: {raw_kind!r}")
@@ -894,23 +1375,33 @@ def write_training_run_manifest(
     if retention_plan is not None:
         artifacts.append(
             store_json_artifact(
-                retention_plan,
+                _retention_artifact_payload(
+                    "retention_plan",
+                    retention_plan,
+                    path="retention_plan",
+                ),
                 root=root_path,
                 role="retention_plan",
                 logical_name=f"feedbax_retention_plan_{job_id}.json"
                 if job_id
                 else "feedbax_retention_plan.json",
+                metadata=retention_artifact_metadata("retention_plan"),
             )
         )
     if retained_observables is not None:
         artifacts.append(
             store_json_artifact(
-                retained_observables,
+                _retention_artifact_payload(
+                    "retained_observables",
+                    retained_observables,
+                    path="retained_observables",
+                ),
                 root=root_path,
                 role="retained_observables",
                 logical_name=f"feedbax_retained_observables_{job_id}.json"
                 if job_id
                 else "feedbax_retained_observables.json",
+                metadata=retention_artifact_metadata("retained_observables"),
             )
         )
 

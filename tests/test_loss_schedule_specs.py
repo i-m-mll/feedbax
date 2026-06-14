@@ -132,7 +132,7 @@ def test_b_set_like_objective_spec_covers_masks_schedules_and_differences() -> N
 
     payload = canonical_objective_payload(spec)
 
-    assert payload["schema_version"] == "feedbax.objective.v1"
+    assert payload["schema_version"] == "feedbax.spec.objective.v1"
     assert [term["label"] for term in payload["terms"]] == [
         "effector_pos_full_trial_powerlaw",
         "effector_pos_post_go_powerlaw",

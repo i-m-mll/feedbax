@@ -17,12 +17,20 @@ from feedbax.manifest import (
     ArtifactRef,
     ArtifactMigrationRecord,
     ArtifactValidationRecord,
+    CheckpointCandidateRef,
+    CheckpointScoreSummary,
+    CheckpointScorerIdentity,
+    CheckpointSelectionBank,
+    CheckpointSelectionGroup,
+    CheckpointSelectionManifest,
+    CheckpointSelectionSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
     GraphSpecLoadResult,
     GraphSpecManifest,
     ModelArtifactManifest,
     PROVIDER_VERSION,
+    RegenerationSpec,
     ReportManifest,
     ReportSpec,
     SCHEMA_VERSION,
@@ -222,12 +230,19 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "EvaluationRunSpec": EvaluationRunSpec,
         "AnalysisRunSpec": AnalysisRunSpec,
         "ReportSpec": ReportSpec,
+        "RegenerationSpec": RegenerationSpec,
+        "CheckpointSelectionSpec": CheckpointSelectionSpec,
         "ArtifactRef": ArtifactRef,
         "ArrayRecord": ArrayRecord,
         "ArrayStorePayload": ArrayStorePayload,
         "ArrayStoreRef": ArrayStoreRef,
         "ArtifactValidationRecord": ArtifactValidationRecord,
         "ArtifactMigrationRecord": ArtifactMigrationRecord,
+        "CheckpointScorerIdentity": CheckpointScorerIdentity,
+        "CheckpointSelectionBank": CheckpointSelectionBank,
+        "CheckpointCandidateRef": CheckpointCandidateRef,
+        "CheckpointScoreSummary": CheckpointScoreSummary,
+        "CheckpointSelectionGroup": CheckpointSelectionGroup,
         "ExecutionSpec": ExecutionSpec,
         "ExecutionPlan": ExecutionPlan,
         "LocalExecutionResult": LocalExecutionResult,
@@ -253,6 +268,9 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
         "EvaluationRunManifest": EvaluationRunManifest,
+        "CheckpointSelectionManifest": CheckpointSelectionManifest,
+        "AnalysisBundleSpec": analysis_pkg.AnalysisBundleSpec,
+        "StagedAnalysisBundleExecution": analysis_pkg.StagedAnalysisBundleExecution,
         "AnalysisRunManifest": AnalysisRunManifest,
         "ReportManifest": ReportManifest,
         "CapabilitySpec": CapabilitySpec,
@@ -387,6 +405,43 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
             actions=run_actions + ["run_analysis"],
             related_issue_refs=["51832b9", "63c798f"],
         ),
+        "CheckpointSelectionManifest": MandibleManifestMapping(
+            manifest_kind="CheckpointSelectionManifest",
+            subject_node_type="feedbax.checkpoint_selection",
+            title_fields=["selection_spec.inline.selection_type", "id"],
+            artifact_fields=[
+                MandibleArtifactMapping(
+                    source_field="artifacts[]",
+                    role="checkpoint_selection_artifact",
+                    description="Optional score tables or selection products.",
+                ),
+            ],
+            spec_fields=["selection_spec"],
+            parent_ref_fields=[
+                "inputs",
+                "bank.ref",
+                "bank.fallback_ref",
+                "selections[].selected_checkpoint.checkpoint",
+                "selections[].selected_checkpoint.training_run",
+                "selections[].selected_checkpoint.model_artifact",
+                "provenance.parents",
+            ],
+            opaque_domain_fields=[
+                "selection_spec.inline",
+                "scorer",
+                "bank.metadata",
+                "selections",
+                "summary_metrics",
+                "metadata",
+            ],
+            actions=run_actions + ["run_analysis"],
+            related_issue_refs=["58e3bff", "d97b144"],
+            description=(
+                "Feedbax owns checkpoint-selection custody, scorer identity, bank "
+                "availability/fallback status, selected refs, and lineage. Downstream "
+                "projects own scorer semantics."
+            ),
+        ),
         "AnalysisRunManifest": MandibleManifestMapping(
             manifest_kind="AnalysisRunManifest",
             subject_node_type="feedbax.analysis_run",
@@ -396,8 +451,13 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
                     source_field="artifacts[]",
                     role="analysis_artifact",
                 ),
+                MandibleArtifactMapping(
+                    source_field="regeneration_specs[]",
+                    role="regeneration_spec",
+                    description="Replay spec refs for regenerating analysis artifacts.",
+                ),
             ],
-            spec_fields=["analysis_spec"],
+            spec_fields=["analysis_spec", "regeneration_specs[]"],
             parent_ref_fields=["inputs", "provenance.parents"],
             opaque_domain_fields=["analysis_spec.inline", "summary_metrics", "metadata"],
             actions=run_actions + ["publish_report"],
@@ -412,8 +472,13 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
                     source_field="artifacts[]",
                     role="report_artifact",
                 ),
+                MandibleArtifactMapping(
+                    source_field="regeneration_specs[]",
+                    role="regeneration_spec",
+                    description="Replay spec refs for regenerating report artifacts.",
+                ),
             ],
-            spec_fields=["report_spec"],
+            spec_fields=["report_spec", "regeneration_specs[]"],
             parent_ref_fields=["inputs", "provenance.parents"],
             opaque_domain_fields=["report_spec.inline", "metadata"],
             actions=run_actions + ["publish_report"],
@@ -460,6 +525,13 @@ def provider_manifest() -> ProviderManifest:
             compatibility_predicates=["selected node has Feedbax analysis spec payload"],
             selected_node_kinds=["feedbax.analysis_run"],
         ),
+        "validate_report_spec": CapabilitySpec(
+            input_schema="ReportSpec",
+            output_schema="ProviderValidationResult",
+            action="validate",
+            compatibility_predicates=["selected node has Feedbax report spec payload"],
+            selected_node_kinds=["feedbax.report"],
+        ),
         "start_training_run": CapabilitySpec(
             input_schema="TrainingSpec",
             output_schema="TrainingRunManifest",
@@ -475,6 +547,103 @@ def provider_manifest() -> ProviderManifest:
                 "Feedbax writes local manifests/artifacts first.",
                 "Mandible artifact IDs are optional enrichment after handoff.",
             ],
+        ),
+        "execute_evaluation_run": CapabilitySpec(
+            input_schema="EvaluationRunSpec",
+            output_schema="EvaluationRunManifest",
+            requires_review=True,
+            description="Run a Feedbax evaluation spec and emit a durable evaluation manifest.",
+            action="execute",
+            compatibility_predicates=["evaluation spec validates and input manifests are resolvable"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["trajectory_dataset", "evaluation_result", "manifest"],
+            selected_node_kinds=["feedbax.training_run", "feedbax.evaluation_run"],
+            custody_expectations=[
+                "Evaluation manifests preserve local artifact refs.",
+                "Mandible artifact IDs are optional handoff metadata.",
+            ],
+        ),
+        "execute_analysis_run": CapabilitySpec(
+            input_schema="AnalysisRunSpec",
+            output_schema="AnalysisRunManifest",
+            requires_review=True,
+            description="Run a Feedbax analysis spec and emit a durable analysis manifest.",
+            action="execute",
+            compatibility_predicates=["analysis spec validates and input manifests are resolvable"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["analysis_table", "figure", "manifest"],
+            selected_node_kinds=["feedbax.evaluation_run", "feedbax.analysis_run"],
+            custody_expectations=[
+                "Analysis artifacts remain Feedbax-local unless handed off.",
+                "Regeneration specs attach to manifest spec payloads and artifact refs.",
+            ],
+        ),
+        "materialize_report": CapabilitySpec(
+            input_schema="ReportSpec",
+            output_schema="ReportManifest",
+            requires_review=False,
+            description="Materialize a report manifest from analysis products.",
+            action="execute",
+            compatibility_predicates=["report spec validates and input analysis products exist"],
+            mutates_state=True,
+            artifact_roles=["report", "manifest"],
+            selected_node_kinds=["feedbax.analysis_run", "feedbax.report"],
+            custody_expectations=[
+                "Report bundles can carry optional Mandible artifact IDs after handoff."
+            ],
+        ),
+        "inspect_evaluation_manifest": CapabilitySpec(
+            input_schema="EvaluationRunManifest",
+            output_schema="EvaluationRunManifest",
+            description="Inspect evaluation manifest lineage, specs, and artifact refs.",
+            action="inspect",
+            artifact_roles=["trajectory_dataset", "evaluation_result", "manifest"],
+            selected_node_kinds=["feedbax.evaluation_run"],
+        ),
+        "inspect_analysis_manifest": CapabilitySpec(
+            input_schema="AnalysisRunManifest",
+            output_schema="AnalysisRunManifest",
+            description="Inspect analysis manifest lineage, specs, and artifact refs.",
+            action="inspect",
+            artifact_roles=["analysis_table", "figure", "manifest"],
+            selected_node_kinds=["feedbax.analysis_run"],
+        ),
+        "inspect_report_manifest": CapabilitySpec(
+            input_schema="ReportManifest",
+            output_schema="ReportManifest",
+            description="Inspect report manifest lineage, specs, and artifact refs.",
+            action="inspect",
+            artifact_roles=["report", "manifest"],
+            selected_node_kinds=["feedbax.report"],
+        ),
+        "handoff_evaluation_artifacts": CapabilitySpec(
+            input_schema="EvaluationRunManifest",
+            output_schema="EvaluationRunManifest",
+            description="Attach optional external artifact custody IDs to evaluation refs.",
+            action="handoff",
+            artifact_roles=["trajectory_dataset", "evaluation_result", "manifest"],
+            selected_node_kinds=["feedbax.evaluation_run"],
+            custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
+        ),
+        "handoff_analysis_artifacts": CapabilitySpec(
+            input_schema="AnalysisRunManifest",
+            output_schema="AnalysisRunManifest",
+            description="Attach optional external artifact custody IDs to analysis refs.",
+            action="handoff",
+            artifact_roles=["analysis_table", "figure", "manifest"],
+            selected_node_kinds=["feedbax.analysis_run"],
+            custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
+        ),
+        "handoff_report_artifacts": CapabilitySpec(
+            input_schema="ReportManifest",
+            output_schema="ReportManifest",
+            description="Attach optional external artifact custody IDs to report refs.",
+            action="handoff",
+            artifact_roles=["report", "manifest"],
+            selected_node_kinds=["feedbax.report"],
+            custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
         ),
         "prepare_execution_plan": CapabilitySpec(
             input_schema="ExecutionSpec",
@@ -589,9 +758,11 @@ def provider_manifest() -> ProviderManifest:
             "retained_observables",
             "trajectory_dataset",
             "evaluation_result",
+            "checkpoint_selection",
             "analysis_table",
             "figure",
             "report",
+            "regeneration_spec",
             "manifest",
             "execution_plan",
             "execution_log",
@@ -1548,6 +1719,33 @@ def validate_analysis_spec(
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
+def validate_report_spec(payload: dict[str, Any] | ReportSpec) -> ProviderValidationResult:
+    try:
+        spec = payload if isinstance(payload, ReportSpec) else ReportSpec.model_validate(payload)
+    except PydanticValidationError as exc:
+        errors = _pydantic_errors(exc)
+        return ProviderValidationResult(valid=False, errors=errors)
+
+    errors: list[ValidationIssue] = []
+    if not spec.report_type.strip():
+        errors.append(
+            ValidationIssue(
+                type="missing_report_type",
+                message="report_type must not be empty",
+                location={"path": "/report_type"},
+            )
+        )
+    if not spec.inputs:
+        errors.append(
+            ValidationIssue(
+                type="missing_inputs",
+                message="Report specs require at least one input ref",
+                location={"path": "/inputs"},
+            )
+        )
+    return ProviderValidationResult(valid=not errors, errors=errors)
+
+
 def validate_objective_spec(payload: dict[str, Any]) -> ProviderValidationResult:
     """Validate a durable objective payload through the registered migration path."""
     try:
@@ -1622,6 +1820,8 @@ def validate_spec(
         return validate_evaluation_spec(payload)
     if kind == "analysis":
         return validate_analysis_spec(payload)
+    if kind == "report":
+        return validate_report_spec(payload)
     if kind == "objective":
         return validate_objective_spec(payload)
     if kind == "studio_workspace":
