@@ -76,3 +76,36 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
     )
 
     assert payload["web_modules"] == []
+
+
+def test_obsolete_web_alias_modules_are_absent() -> None:
+    payload = _run_import_probe(
+        """
+        import importlib
+        import importlib.util
+        import json
+
+        canonical_modules = [
+            "feedbax.graph_normalization",
+            "feedbax.serialization",
+            "feedbax.loss_service",
+            "feedbax.component_registry",
+        ]
+        for module_name in canonical_modules:
+            importlib.import_module(module_name)
+
+        obsolete_aliases = [
+            "feedbax.web.graph_normalization",
+            "feedbax.web.serialization",
+            "feedbax.web.services.loss_service",
+            "feedbax.web.services.component_registry",
+        ]
+        alias_specs = {
+            module_name: importlib.util.find_spec(module_name) is not None
+            for module_name in obsolete_aliases
+        }
+        print(json.dumps({"alias_specs": alias_specs}))
+        """
+    )
+
+    assert not any(payload["alias_specs"].values())
