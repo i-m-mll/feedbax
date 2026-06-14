@@ -19,67 +19,6 @@ class _Registry(Protocol):
 def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         ComponentMeta(
-            name='Network',
-            category='Neural Networks',
-            description='Recurrent network. Enter to inspect and modify the internal architecture.',
-            param_schema=[
-                ParamSchema(name='input_size', type='int', default=6, min=1, required=True),
-                ParamSchema(name='hidden_size', type='int', default=100, min=1, required=True),
-                ParamSchema(name='out_size', type='int', default=2, min=1, required=False),
-                ParamSchema(
-                    name='hidden_type',
-                    type='enum',
-                    options=['GRUCell', 'LSTMCell', 'Linear'],
-                    default='GRUCell',
-                    required=False,
-                ),
-                ParamSchema(
-                    name='hidden_nonlinearity',
-                    type='enum',
-                    options=['tanh', 'relu', 'identity'],
-                    default='tanh',
-                    required=False,
-                ),
-                ParamSchema(
-                    name='out_nonlinearity',
-                    type='enum',
-                    options=['tanh', 'relu', 'sigmoid', 'identity'],
-                    default='tanh',
-                    required=False,
-                ),
-                ParamSchema(
-                    name='hidden_noise_std',
-                    type='float',
-                    default=0.0,
-                    min=0.0,
-                    required=False,
-                ),
-                ParamSchema(
-                    name='encoding_size',
-                    type='int',
-                    default=0,
-                    min=0,
-                    required=False,
-                ),
-            ],
-            input_ports=['input', 'feedback'],
-            output_ports=['output', 'hidden'],
-            icon='CircuitBoard',
-            is_composite=True,
-            port_types=PortTypeSpec(
-                inputs={
-                    'input': PortType(dtype='vector'),
-                    'feedback': PortType(dtype='vector'),
-                },
-                outputs={
-                    'output': PortType(dtype='vector'),
-                    'hidden': PortType(dtype='vector'),
-                },
-            ),
-        )
-    )
-    registry.register(
-        ComponentMeta(
             name='Subgraph',
             category='Structure',
             description='Nested graph container.',

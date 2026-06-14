@@ -32,7 +32,7 @@ from feedbax.components import (
 from feedbax.control.affine import AffineFeedbackController
 from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Component, Graph, Wire
-from feedbax.graph_templates import standard_network_subgraph
+from feedbax.graph_templates import recurrent_controller_template_graph
 from feedbax.intervene.intervene import (
     AddNoise,
     ConstantInput,
@@ -162,6 +162,11 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
     nodes: dict[str, ComponentSpec] = {}
     subgraphs: dict[str, GraphSpec] = {}
+    expanded_input_bindings: dict[tuple[str, str], tuple[str, str]] = {}
+    expanded_output_bindings: dict[tuple[str, str], tuple[str, str]] = {}
+    expanded_wires: list[WireSpec] = []
+    expanded_parameter_constraints = []
+    expanded_nodes: set[str] = set()
 
     def _to_native(value: Any):
         if hasattr(value, "tolist"):
@@ -198,6 +203,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             params["noise_timing"] = noise_timing
         return params
 
+    def _prefixed_node(component_name: str, node_name: str) -> str:
+        return f"{component_name}_{node_name}"
+
+    def _remap_template_binding(
+        component_name: str,
+        binding: tuple[str, str],
+    ) -> tuple[str, str]:
+        return (_prefixed_node(component_name, binding[0]), binding[1])
+
     for name, component in graph.nodes.items():
         if isinstance(component, Graph):
             subgraphs[name] = graph_to_spec(component)
@@ -213,35 +227,53 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             hidden_type_name = type(component.hidden).__name__
             cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
             out_nonlinearity = nonlinearity_name(component.out_nonlinearity)
-            input_ports = list(component.input_ports)
-            subgraphs[name] = standard_network_subgraph(
+            template = recurrent_controller_template_graph(
                 input_size=component.input_size,
                 hidden_size=component.hidden_size,
                 out_size=component.out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
                 population_structure=component.population_structure,
-                name=f"{name} internals",
-                description="Auto-generated Network subgraph",
+                name=f"{name} recurrent controller",
+                description="Serialized SimpleStagedNetwork as explicit graph nodes",
             )
-
-            params = {
-                "input_size": component.input_size,
-                "hidden_size": component.hidden_size,
-                "out_size": component.out_size,
-                "hidden_type": hidden_type_name,
-                "hidden_nonlinearity": nonlinearity_name(component.hidden_nonlinearity),
-                "out_nonlinearity": out_nonlinearity,
-                "hidden_noise_std": component.hidden_noise_std or 0.0,
-                "encoding_size": component.encoding_size or 0,
-            }
-            if component.population_structure is not None:
-                params["population_structure"] = component.population_structure.to_spec()
-            nodes[name] = ComponentSpec(
-                type="Network",
-                params=params,
-                input_ports=input_ports,
-                output_ports=list(component.output_ports),
+            for template_node_name, node_spec in template.nodes.items():
+                node_name = _prefixed_node(name, template_node_name)
+                if node_name in nodes:
+                    raise ValueError(
+                        f"Cannot inline SimpleStagedNetwork {name!r}: generated node "
+                        f"{node_name!r} already exists"
+                    )
+                nodes[node_name] = node_spec
+            expanded_nodes.add(name)
+            expanded_wires.extend(
+                WireSpec(
+                    source_node=_prefixed_node(name, wire.source_node),
+                    source_port=wire.source_port,
+                    target_node=_prefixed_node(name, wire.target_node),
+                    target_port=wire.target_port,
+                    temporality=wire.temporality,
+                    recurrent_initializer=wire.recurrent_initializer,
+                )
+                for wire in template.wires
+            )
+            expanded_input_bindings.update(
+                {
+                    (name, port): _remap_template_binding(name, binding)
+                    for port, binding in template.input_bindings.items()
+                }
+            )
+            expanded_output_bindings.update(
+                {
+                    (name, port): _remap_template_binding(name, binding)
+                    for port, binding in template.output_bindings.items()
+                }
+            )
+            expanded_parameter_constraints.extend(
+                constraint.model_copy(
+                    update={"node": _prefixed_node(name, constraint.node)}
+                )
+                for constraint in template.parameter_constraints
             )
             continue
 
@@ -813,26 +845,70 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             output_ports=list(component.output_ports),
         )
 
-    return GraphSpec(
-        nodes=nodes,
-        wires=[
+    def _remap_wire_endpoint(node: str, port: str, *, direction: str) -> tuple[str, str]:
+        bindings = expanded_output_bindings if direction == "source" else expanded_input_bindings
+        if (node, port) in bindings:
+            return bindings[(node, port)]
+        if node in expanded_nodes:
+            raise ValueError(
+                f"Cannot serialize SimpleStagedNetwork endpoint {node!r}.{port!r}: "
+                f"no explicit {direction} binding exists for that port"
+            )
+        return node, port
+
+    def _remap_graph_binding(binding: tuple[str, str], *, direction: str) -> tuple[str, str]:
+        return _remap_wire_endpoint(binding[0], binding[1], direction=direction)
+
+    wires = [
+        *expanded_wires,
+        *(
             WireSpec(
-                source_node=wire.source_node,
-                source_port=wire.source_port,
-                target_node=wire.target_node,
-                target_port=wire.target_port,
+                source_node=_remap_wire_endpoint(
+                    wire.source_node,
+                    wire.source_port,
+                    direction="source",
+                )[0],
+                source_port=_remap_wire_endpoint(
+                    wire.source_node,
+                    wire.source_port,
+                    direction="source",
+                )[1],
+                target_node=_remap_wire_endpoint(
+                    wire.target_node,
+                    wire.target_port,
+                    direction="target",
+                )[0],
+                target_port=_remap_wire_endpoint(
+                    wire.target_node,
+                    wire.target_port,
+                    direction="target",
+                )[1],
                 temporality=cast(Literal["instant", "recurrent"], wire.temporality),
                 recurrent_initializer=wire.recurrent_initializer,
             )
             for wire in graph.wires
-        ],
+        ),
+    ]
+
+    return GraphSpec(
+        nodes=nodes,
+        wires=wires,
         input_ports=list(graph.input_ports),
         output_ports=list(graph.output_ports),
-        input_bindings=dict(graph.input_bindings),
-        output_bindings=dict(graph.output_bindings),
+        input_bindings={
+            name: _remap_graph_binding(binding, direction="target")
+            for name, binding in graph.input_bindings.items()
+        },
+        output_bindings={
+            name: _remap_graph_binding(binding, direction="source")
+            for name, binding in graph.output_bindings.items()
+        },
         subgraphs=subgraphs or None,
         retained_observables=getattr(graph, "retained_observables", None),
-        parameter_constraints=list(getattr(graph, "parameter_constraints", ())),
+        parameter_constraints=[
+            *list(getattr(graph, "parameter_constraints", ())),
+            *expanded_parameter_constraints,
+        ],
         metadata=None,
     )
 

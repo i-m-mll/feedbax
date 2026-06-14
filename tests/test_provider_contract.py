@@ -702,11 +702,11 @@ def test_graph_validation_reports_unknown_components() -> None:
     assert result.errors[0].type == "unknown_component_type"
 
 
-def test_graph_validation_normalizes_runtime_network_authoring_payloads() -> None:
+def test_graph_validation_rejects_runtime_network_authoring_payloads() -> None:
     result = validate_graph_spec(_runtime_network_graph_spec())
 
-    assert result.valid
-    assert {error.type for error in result.errors} == set()
+    assert not result.valid
+    assert "unknown_component_type" in {error.type for error in result.errors}
 
 
 def test_graph_validation_rejects_task_nodes() -> None:
@@ -1031,7 +1031,7 @@ def test_studio_schema_enumeration_reports_workspace_migration_rejection() -> No
     assert "task_bindings.v0" in registry.issues[0].message
 
 
-def test_studio_schema_enumeration_normalizes_runtime_network_ports() -> None:
+def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports() -> None:
     workspace = build_default_studio_workspace(
         label="Runtime network",
         graph=GraphSpec.model_validate(_runtime_network_graph_spec()),
@@ -1067,38 +1067,19 @@ def test_studio_schema_enumeration_normalizes_runtime_network_ports() -> None:
 
     registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
 
-    network_input = next(port for port in registry.ports if port.id == "port:network.input:input")
-    assert network_input.component_type == "Network"
-    assert network_input.bound_task_data_id == "task_data:inputs"
-    assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
+    assert not any(port.id == "port:network.input:input" for port in registry.ports)
+    assert any(issue.type == "task_binding_unknown_schema" for issue in registry.issues)
 
 
-def test_network_authoring_normalization_emits_recurrent_cell_edges() -> None:
+def test_runtime_wrapper_normalization_does_not_generate_recurrent_cell_edges() -> None:
     graph = GraphSpec.model_validate(_runtime_network_graph_spec())
     normalized = normalize_graph_for_studio_authoring(graph)
-    subgraph = normalized.subgraphs["network"]
 
-    hidden_wire = next(
-        wire
-        for wire in subgraph.wires
-        if wire.source_node == "cell"
-        and wire.source_port == "hidden"
-        and wire.target_node == "cell"
-        and wire.target_port == "hidden"
-    )
-
-    assert hidden_wire.temporality == "recurrent"
-    assert hidden_wire.recurrent_initializer == {
-        "kind": "zeros",
-        "scope": "trial",
-        "shape": [100],
-        "source": "state_initializer",
-        "state_slot": "hidden",
-    }
-    assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
+    assert normalized.nodes["network"].type == "SimpleStagedNetwork"
+    assert normalized.subgraphs is None
 
 
-def test_network_authoring_normalization_lowers_population_constraints() -> None:
+def test_runtime_wrapper_normalization_does_not_lower_hidden_population_constraints() -> None:
     raw_graph = _runtime_network_graph_spec()
     raw_graph["nodes"]["network"]["params"]["hidden_size"] = 4
     raw_graph["nodes"]["network"]["params"]["input_size"] = 2
@@ -1116,91 +1097,68 @@ def test_network_authoring_normalization_lowers_population_constraints() -> None
     }
     graph = GraphSpec.model_validate(raw_graph)
 
-    subgraph = normalize_graph_for_studio_authoring(graph).subgraphs["network"]
+    normalized = normalize_graph_for_studio_authoring(graph)
 
-    assert [(constraint.node, constraint.role) for constraint in subgraph.parameter_constraints] == [
-        ("cell", "input_kernel"),
-        ("readout", "weight"),
-    ]
-    assert not any(
-        constraint.role in {"hidden_kernel", "weight_hh"}
-        for constraint in subgraph.parameter_constraints
-    )
-    assert len(subgraph.parameter_constraints[0].mask) == 12
-    assert subgraph.parameter_constraints[1].mask == [
-        [0, 1, 0, 1],
-        [0, 1, 0, 1],
-    ]
+    assert normalized.subgraphs is None
+    assert normalized.parameter_constraints == []
 
 
-def test_network_authoring_normalization_flattens_legacy_model_wrapper() -> None:
-    graph = GraphSpec.model_validate(_runtime_network_graph_spec())
-    legacy_inner = (
-        normalize_graph_for_studio_authoring(graph)
-        .subgraphs["network"]
-        .model_copy(
-            update={
-                "wires": [
-                    wire.model_copy(
-                        update={"temporality": "instant", "recurrent_initializer": None}
-                    )
-                    for wire in normalize_graph_for_studio_authoring(graph)
-                    .subgraphs["network"]
-                    .wires
-                ],
-                "output_ports": ["output"],
-                "output_bindings": {"output": ("readout", "output")},
+def test_runtime_wrapper_normalization_preserves_legacy_model_wrapper() -> None:
+    legacy_inner = GraphSpec(
+        nodes={
+            "cell": {
+                "type": "GRU",
+                "params": {"input_size": 4, "hidden_size": 100},
+                "input_ports": ["input", "hidden"],
+                "output_ports": ["output", "hidden"],
             }
-        )
+        },
+        wires=[],
+        input_ports=["input"],
+        output_ports=["output"],
+        input_bindings={"input": ("cell", "input")},
+        output_bindings={"output": ("cell", "output")},
     )
-    wrapped = graph.model_copy(
-        update={
-            "nodes": {
-                **graph.nodes,
-                "network": graph.nodes["network"].model_copy(update={"type": "Network"}),
-            },
-            "subgraphs": {
-                "network": GraphSpec(
-                    nodes={
-                        "model": {
-                            "type": "Subgraph",
-                            "params": {},
-                            "input_ports": ["input", "feedback"],
-                            "output_ports": ["output"],
-                        }
-                    },
-                    wires=[],
-                    input_ports=["input", "feedback"],
-                    output_ports=["output"],
-                    input_bindings={
-                        "input": ("model", "input"),
-                        "feedback": ("model", "feedback"),
-                    },
-                    output_bindings={"output": ("model", "output")},
-                    subgraphs={"model": legacy_inner},
-                )
-            },
-        }
+    wrapped = GraphSpec(
+        nodes={
+            "network": {
+                "type": "Network",
+                "params": {},
+                "input_ports": ["input", "feedback"],
+                "output_ports": ["output"],
+            }
+        },
+        subgraphs={
+            "network": GraphSpec(
+                nodes={
+                    "model": {
+                        "type": "Subgraph",
+                        "params": {},
+                        "input_ports": ["input", "feedback"],
+                        "output_ports": ["output"],
+                    }
+                },
+                wires=[],
+                input_ports=["input", "feedback"],
+                output_ports=["output"],
+                input_bindings={
+                    "input": ("model", "input"),
+                    "feedback": ("model", "feedback"),
+                },
+                output_bindings={"output": ("model", "output")},
+                subgraphs={"model": legacy_inner},
+            ),
+        },
     )
 
     subgraph = normalize_graph_for_studio_authoring(wrapped).subgraphs["network"]
 
-    assert "model" not in subgraph.nodes
-    assert subgraph.nodes["cell"].type == "GRU"
-    assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
-    hidden_wire = next(
-        wire
-        for wire in subgraph.wires
-        if wire.source_node == "cell"
-        and wire.source_port == "hidden"
-        and wire.target_node == "cell"
-        and wire.target_port == "hidden"
-    )
-    assert hidden_wire.temporality == "recurrent"
-    assert hidden_wire.recurrent_initializer is not None
+    assert subgraph.nodes["model"].type == "Subgraph"
+    assert subgraph.subgraphs["model"].nodes["cell"].type == "GRU"
+    assert subgraph.output_bindings == {"output": ("model", "output")}
 
 
-def test_network_authoring_normalization_marks_feedback_cut_recurrent() -> None:
+def test_runtime_wrapper_normalization_does_not_mark_feedback_cut_recurrent() -> None:
     graph = GraphSpec(
         nodes={
             "network": {
@@ -1246,13 +1204,8 @@ def test_network_authoring_normalization_marks_feedback_cut_recurrent() -> None:
 
     recurrent_wire = normalize_graph_for_studio_authoring(graph).wires[2]
 
-    assert recurrent_wire.temporality == "recurrent"
-    assert recurrent_wire.recurrent_initializer == {
-        "kind": "zeros",
-        "scope": "trial",
-        "source": "state_initializer",
-        "state_slot": "feedback",
-    }
+    assert recurrent_wire.temporality == "instant"
+    assert recurrent_wire.recurrent_initializer is None
 
 
 def test_graph_connection_schema_rejects_instant_cycles_and_accepts_recurrent_cut() -> None:
@@ -1563,8 +1516,8 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
                 "output_ports": ["output"],
             },
             "network": {
-                "type": "Network",
-                "params": {"input_size": 4, "hidden_size": 100, "out_size": 2},
+                "type": "Subgraph",
+                "params": {},
                 "input_ports": ["input", "hidden"],
                 "output_ports": ["output", "hidden"],
             },
@@ -1644,14 +1597,13 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
 
     registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
     mux_output = next(port for port in registry.ports if port.id == "port:task_mux.output:output")
-    feedback_input = next(
-        port for port in registry.ports if port.id == "port:network.feedback:input"
-    )
+    feedback_input = next(port for port in registry.ports if port.id == "port:network.input:input")
     hidden_inputs = [port for port in registry.ports if port.id == "port:network.hidden:input"]
 
     assert mux_output.value_schema.shape == [6]
     assert feedback_input.value_schema.dtype == "vector"
-    assert hidden_inputs == []
+    assert len(hidden_inputs) == 1
+    assert hidden_inputs[0].value_schema.dtype == "vector"
 
 
 def test_studio_schema_enumeration_runtime_introspection_hook_adds_sample_leaf_targets() -> None:
@@ -1972,7 +1924,7 @@ def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
     assert "source_output_id" not in job.task_binding_spec["bindings"][0]
 
 
-def test_worker_spec_contract_normalizes_runtime_network_payloads() -> None:
+def test_worker_spec_contract_rejects_runtime_network_payloads() -> None:
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
         task_binding_spec={
@@ -2001,11 +1953,8 @@ def test_worker_spec_contract_normalizes_runtime_network_payloads() -> None:
         },
     )
 
-    _require_worker_specs(job)
-
-    assert job.graph_spec["nodes"]["network"]["type"] == "Network"
-    assert "network" in job.graph_spec["subgraphs"]
-    assert job.task_binding_spec["bindings"][0]["target_port"] == "input"
+    with pytest.raises(ValueError, match="task_binding_unknown_schema"):
+        _require_worker_specs(job)
 
 
 def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None:

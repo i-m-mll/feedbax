@@ -110,7 +110,7 @@ def test_legacy_project_load_materializes_workspace(tmp_path):
     assert analysis_scenario.analysis_spec["pages"][0]["eval_run_id"] == "eval-1"
 
 
-def test_legacy_project_load_normalizes_runtime_network_authoring_shape(tmp_path):
+def test_legacy_project_load_does_not_generate_network_subgraph(tmp_path):
     service = GraphService(storage_dir=tmp_path)
     graph_id = "legacy-runtime-network"
     graph = _runtime_network_graph()
@@ -123,17 +123,15 @@ def test_legacy_project_load_normalizes_runtime_network_authoring_shape(tmp_path
 
     record = service.get_graph(graph_id)
 
-    assert record.project.graph.nodes["network"].type == "Network"
-    assert record.project.graph.nodes["network"].input_ports == ["input", "feedback"]
-    assert record.project.graph.input_bindings == {"input": ("network", "input")}
-    assert record.project.graph.subgraphs is not None
-    assert record.project.graph.subgraphs["network"].nodes["cell"].type == "GRU"
+    assert record.project.graph.nodes["network"].type == "SimpleStagedNetwork"
+    assert record.project.graph.nodes["network"].input_ports == ["target"]
+    assert record.project.graph.input_bindings == {"input": ("network", "target")}
+    assert record.project.graph.subgraphs is None
     train_stage = next(stage for stage in record.project.workspace.stages if stage.kind == "train")
     train_graph = record.project.workspace.scenarios[train_stage.scenario_id].graph
     assert train_graph is not None
-    assert train_graph.nodes["network"].type == "Network"
-    assert train_graph.subgraphs is not None
-    assert "network" in train_graph.subgraphs
+    assert train_graph.nodes["network"].type == "SimpleStagedNetwork"
+    assert train_graph.subgraphs is None
 
 
 def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
