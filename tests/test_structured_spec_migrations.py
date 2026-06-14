@@ -160,6 +160,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["PopulationStructureSpec"].identity == "feedbax.spec.population_structure"
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
+    assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
     assert families["SpecPayload"].identity == "feedbax.manifest.spec_payload"
@@ -178,6 +179,7 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "EvaluationRunSpec",
         "AnalysisRunSpec",
         "ReportSpec",
+        "RegenerationSpec",
         "ExecutionSpec",
         "StudioWorkspaceSpec",
         "StudioTaskBindingSpec",

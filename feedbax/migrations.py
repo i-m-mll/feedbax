@@ -13,7 +13,12 @@ from feedbax.contracts.graph import (
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
-from feedbax.manifest import ArtifactMigrationRecord, SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION
+from feedbax.manifest import (
+    ArtifactMigrationRecord,
+    REGENERATION_SPEC_SCHEMA_ID,
+    REGENERATION_SPEC_SCHEMA_VERSION,
+    SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
+)
 from feedbax.retention_artifact_schema import (
     LOSS_TERM_PLAN_SCHEMA_ID,
     LOSS_TERM_PLAN_SCHEMA_VERSION,
@@ -1169,6 +1174,30 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
             consumed_by=("Studio report materialization",),
             description="Declarative report request.",
+        ),
+        _family(
+            "RegenerationSpec",
+            REGENERATION_SPEC_SCHEMA_ID,
+            REGENERATION_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.manifest",
+            emitted_by=(
+                "AnalysisRunManifest.regeneration_specs",
+                "ReportManifest.regeneration_specs",
+                "provider_manifest.schemas",
+            ),
+            consumed_by=(
+                "analysis materialization",
+                "report materialization",
+                "downstream replay consumers",
+            ),
+            description=(
+                "Generic replay and provenance record for regenerating analysis/report "
+                "artifacts without downstream scientific payload semantics."
+            ),
+            required_tests=(
+                "tests/test_regeneration_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "CheckpointSelectionSpec",
