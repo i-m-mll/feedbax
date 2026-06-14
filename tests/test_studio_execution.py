@@ -75,7 +75,7 @@ def _workspace():
         "params": {"n_targets": 4, "target_radius": 0.02},
     }
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate({
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [
             {
                 "id": "inputs",
@@ -193,7 +193,7 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
     assert prepared.execution_spec.metadata["studio"]["workspace_id"] == prepared.workspace.id
     assert prepared.execution_spec.metadata["studio"]["training_spec"]["n_batches"] == 25
     task_binding_spec = prepared.execution_spec.metadata["studio"]["task_binding_spec"]
-    assert task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
     assert task_binding_spec["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in task_binding_spec
     assert (
@@ -289,7 +289,7 @@ def test_task_binding_spec_rejects_legacy_v1_contract():
 def test_task_binding_spec_rejects_source_output_id():
     with pytest.raises(ValueError, match="source_output_id.*source_data_id"):
         StudioTaskBindingSpec.model_validate({
-            "schema_version": "feedbax.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -342,7 +342,7 @@ def test_run_studio_training_local_execution_materializes_snapshot_and_refs(
         == task_binding_spec
         == workspace_snapshot["scenarios"]["scenario:train"]["task_binding_spec"]
     )
-    assert task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
     assert task_binding_spec["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in task_binding_spec
     assert task_binding_spec["bindings"][0]["source_data_id"] == "inputs"

@@ -19,8 +19,8 @@ from pydantic import Field, field_validator
 from feedbax.manifest import ArrayStoreRef, StrictModel, sha256_bytes, sha256_file
 
 
-ARRAY_STORE_SCHEMA_VERSION = "feedbax.array_store.v1"
-ROLE_SCHEMA_VERSION = "feedbax.array_roles.v1"
+ARRAY_STORE_SCHEMA_VERSION = "feedbax.manifest.array_store.v1"
+ROLE_SCHEMA_VERSION = "feedbax.manifest.array_roles.v1"
 NPZ_BACKEND_VERSION = "npz.v1"
 METADATA_KEY = "__feedbax_array_store__.json"
 ARRAY_KEY_TEMPLATE = "array_{index:06d}"

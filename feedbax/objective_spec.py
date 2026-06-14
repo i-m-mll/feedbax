@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-OBJECTIVE_SCHEMA_VERSION = "feedbax.objective.v1"
+OBJECTIVE_SCHEMA_VERSION = "feedbax.spec.objective.v1"
 
 MetricKind = Literal["squared_l2", "l2", "l1", "squared", "absolute", "huber"]
 ReductionKind = Literal["mean", "sum", "none"]

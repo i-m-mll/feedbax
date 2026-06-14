@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.graph import (
@@ -14,6 +14,11 @@ from feedbax.contracts.graph import (
     GraphSpec,
 )
 from feedbax.manifest import ArtifactMigrationRecord, SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION
+from feedbax.schema_namespace import (
+    SchemaNamespaceKind,
+    validate_schema_identity,
+    validate_schema_version,
+)
 
 
 MigrationPayload = Mapping[str, Any]
@@ -199,6 +204,7 @@ class SpecSchemaFamily:
         emitted: Whether Feedbax emits this family through provider/manifest surfaces.
         description: Short human-facing context for registry consumers.
         policy: Explicit migration/rejection policy for this family.
+        namespace: Resolved governed namespace for this family.
     """
 
     kind: str
@@ -208,6 +214,7 @@ class SpecSchemaFamily:
     emitted: bool = True
     description: str = ""
     policy: "SpecFamilyMigrationPolicy | None" = None
+    namespace: SchemaNamespaceKind | None = None
 
     @property
     def identity(self) -> str:
@@ -288,7 +295,17 @@ class SpecSchemaRegistry:
             raise ValueError("Structured spec family current_version must be non-empty")
         if family.kind in self._families:
             raise ValueError(f"Structured spec family already registered: {family.kind!r}")
-        self._families[family.kind] = family
+        namespace = validate_schema_identity(family.identity, family=family.kind)
+        validate_schema_version(family.current_version, family=family.kind)
+        if family.namespace is not None and namespace != family.namespace:
+            raise ValueError(
+                "Structured spec family namespace mismatch: "
+                f"kind={family.kind!r}, schema_id={family.identity!r}, "
+                f"declared={family.namespace.value!r}, resolved={namespace.value!r}"
+            )
+        self._families[family.kind] = (
+            family if family.namespace is not None else replace(family, namespace=namespace)
+        )
 
     def families(self) -> tuple[SpecSchemaFamily, ...]:
         """Return registered families sorted by kind."""
@@ -1029,7 +1046,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "AdditiveGraphChannelAdapterSpec",
-            "feedbax.graph_spec.additive_channel_adapter",
+            "feedbax.spec.graph.additive_channel_adapter",
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
             emitted_by=("GraphSpec.additive_channel_adapters", "provider_manifest.schemas"),
@@ -1038,7 +1055,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "AdditiveGraphChannelTargetSpec",
-            "feedbax.graph_spec.additive_channel_target",
+            "feedbax.spec.graph.additive_channel_target",
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
             emitted_by=("AdditiveGraphChannelAdapterSpec.target", "provider_manifest.schemas"),
@@ -1047,8 +1064,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "AnalysisInputRequirement",
-            "feedbax.analysis_input_requirement",
-            "feedbax.analysis_input_requirement.v1",
+            "feedbax.spec.analysis.input_requirement",
+            "feedbax.spec.analysis.input_requirement.v1",
             owner_module="feedbax.contracts.graph",
             emitted_by=("GraphSpec retained analysis inputs", "provider_manifest.schemas"),
             consumed_by=("feedbax.analysis", "Studio schema enumeration"),
@@ -1056,8 +1073,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "RetainedObservableSpec",
-            "feedbax.retained_observable",
-            "feedbax.retained_observable.v1",
+            "feedbax.spec.graph.retained_observable",
+            "feedbax.spec.graph.retained_observable.v1",
             owner_module="feedbax.contracts.graph",
             emitted_by=("GraphSpec.retained_observables",),
             consumed_by=("rollout retention planning", "analysis materialization"),
@@ -1065,8 +1082,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "TrainingSpec",
-            "feedbax.training_spec",
-            "feedbax.training.v1",
+            "feedbax.spec.training",
+            "feedbax.spec.training.v1",
             owner_module="feedbax.contracts.training",
             emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
             consumed_by=("training service", "worker"),
@@ -1074,8 +1091,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "TaskSpec",
-            "feedbax.task_spec",
-            "feedbax.task.v1",
+            "feedbax.spec.task",
+            "feedbax.spec.task.v1",
             owner_module="feedbax.contracts.training",
             emitted_by=("TrainingRunManifest.task_spec", "provider_manifest.schemas"),
             consumed_by=("task preset lowering", "worker"),
@@ -1083,8 +1100,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "LossTermSpec",
-            "feedbax.loss_term_spec",
-            "feedbax.loss_term.v1",
+            "feedbax.spec.training.loss_term",
+            "feedbax.spec.training.loss_term.v1",
             owner_module="feedbax.contracts.training",
             emitted_by=("TrainingSpec.loss", "provider_manifest.schemas"),
             consumed_by=("training loss lowering",),
@@ -1092,8 +1109,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "ObjectiveSpec",
-            "feedbax.objective_spec",
-            "feedbax.objective.v1",
+            "feedbax.spec.objective",
+            "feedbax.spec.objective.v1",
             owner_module="feedbax.objective_spec",
             emitted_by=("StudioScenarioSpec.objective_spec", "provider_manifest.schemas"),
             consumed_by=("future objective lowering",),
@@ -1102,8 +1119,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "EvaluationRunSpec",
-            "feedbax.evaluation_run_spec",
-            "feedbax.evaluation_run.v1",
+            "feedbax.spec.evaluation_run",
+            "feedbax.spec.evaluation_run.v1",
             owner_module="feedbax.manifest",
             emitted_by=("EvaluationRunManifest.evaluation_spec", "provider_manifest.schemas"),
             consumed_by=("feedbax.analysis.evaluation",),
@@ -1111,8 +1128,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "AnalysisRunSpec",
-            "feedbax.analysis_run_spec",
-            "feedbax.analysis_run.v1",
+            "feedbax.spec.analysis_run",
+            "feedbax.spec.analysis_run.v1",
             owner_module="feedbax.manifest",
             emitted_by=("AnalysisRunManifest.analysis_spec", "provider_manifest.schemas"),
             consumed_by=("feedbax.analysis.specs",),
@@ -1120,8 +1137,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         _family(
             "ReportSpec",
-            "feedbax.report_spec",
-            "feedbax.report.v1",
+            "feedbax.spec.report",
+            "feedbax.spec.report.v1",
             owner_module="feedbax.manifest",
             emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
             consumed_by=("Studio report materialization",),
@@ -1147,8 +1164,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         families.append(
             _family(
                 kind,
-                f"feedbax.objective.{kind.removesuffix('Spec').lower()}",
-                "feedbax.objective.v1",
+                f"feedbax.spec.objective.{kind.removesuffix('Spec').lower()}",
+                "feedbax.spec.objective.v1",
                 owner_module="feedbax.objective_spec",
                 emitted_by=objective_emitters,
                 consumed_by=("ObjectiveSpec",),
@@ -1169,7 +1186,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "feedbax.manifest.artifact_migration_record",
             "Artifact migration provenance record.",
         ),
-        ("SpecPayload", "feedbax.spec_payload", "Manifest-embedded inline spec wrapper."),
+        ("SpecPayload", "feedbax.manifest.spec_payload", "Manifest-embedded inline spec wrapper."),
         ("ArrayStoreRef", "feedbax.manifest.array_store_ref", "Manifest array-store ref."),
         ("GraphSpecManifest", "feedbax.manifest.graph_spec", "Durable graph-spec manifest."),
         (
@@ -1211,14 +1228,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     for kind, schema_id, version, description in (
         (
             "ArrayStorePayload",
-            "feedbax.array_store",
-            "feedbax.array_store.v1",
+            "feedbax.manifest.array_store",
+            "feedbax.manifest.array_store.v1",
             "Portable role-addressed array-store metadata payload.",
         ),
         (
             "ArrayRecord",
-            "feedbax.array_record",
-            "feedbax.array_roles.v1",
+            "feedbax.manifest.array_record",
+            "feedbax.manifest.array_roles.v1",
             "Per-array role metadata embedded in array stores.",
         ),
     ):
@@ -1235,15 +1252,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         )
 
     for kind, schema_id, description in (
-        ("ExecutionSpec", "feedbax.execution_spec", "Provider-neutral execution request."),
-        ("ExecutionPlan", "feedbax.execution_plan", "Inspectable concrete execution plan."),
-        ("LocalExecutionResult", "feedbax.local_execution_result", "Local execution result."),
+        ("ExecutionSpec", "feedbax.spec.execution", "Provider-neutral execution request."),
+        ("ExecutionPlan", "feedbax.manifest.execution_plan", "Inspectable concrete execution plan."),
+        ("LocalExecutionResult", "feedbax.manifest.local_execution_result", "Local execution result."),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                "feedbax.execution.v1",
+                (
+                    "feedbax.spec.execution.v1"
+                    if kind == "ExecutionSpec"
+                    else "feedbax.manifest.execution.v1"
+                ),
                 owner_module="feedbax.execution_models",
                 emitted_by=execution_emitters,
                 consumed_by=("execution planning", "Studio execution"),
@@ -1254,30 +1275,30 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     for kind, schema_id, description in (
         (
             "StudioWorkspaceSpec",
-            "feedbax.studio.workspace",
+            "feedbax.spec.studio.workspace",
             "Durable Studio workspace/pipeline state.",
         ),
         (
             "StudioScenarioSpec",
-            "feedbax.studio.scenario",
+            "feedbax.spec.studio.scenario",
             "Durable Studio scenario draft state.",
         ),
         (
             "StudioStageSpec",
-            "feedbax.studio.stage",
+            "feedbax.spec.studio.stage",
             "Durable Studio pipeline stage state.",
         ),
         (
             "StudioTaskBindingSpec",
-            "feedbax.studio.task_bindings",
+            "feedbax.spec.studio.task_bindings",
             "Scenario task-data to graph binding specification.",
         ),
         (
             "StudioTaskTimelineSpec",
-            "feedbax.studio.task_timeline",
+            "feedbax.spec.studio.task_timeline",
             "Structured Studio-authored task timeline.",
         ),
-        ("StudioValueSpec", "feedbax.studio.value", "Structured Studio-authored value."),
+        ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
         supported = (STUDIO_TASK_BINDING_LEGACY_V1,) if kind == "StudioTaskBindingSpec" else None
         rejected = ("feedbax.studio.task_bindings.v0",) if kind == "StudioTaskBindingSpec" else None
@@ -1299,32 +1320,32 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     for kind, schema_id, description in (
         (
             "StudioTrainingExecutionRequest",
-            "feedbax.studio.training_execution_request",
+            "feedbax.spec.studio.training_execution_request",
             "Request to lower a Studio train stage into an execution plan.",
         ),
         (
             "StudioTrainingExecutionPreparation",
-            "feedbax.studio.training_execution_preparation",
+            "feedbax.spec.studio.training_execution_preparation",
             "Prepared Studio training execution plan.",
         ),
         (
             "StudioTrainingLocalRunRequest",
-            "feedbax.studio.training_local_run_request",
+            "feedbax.spec.studio.training_local_run_request",
             "Request to execute Studio training locally.",
         ),
         (
             "StudioTrainingLocalRunResult",
-            "feedbax.studio.training_local_run_result",
+            "feedbax.manifest.studio.training_local_run_result",
             "Result from local Studio training execution.",
         ),
         (
             "StudioPipelineMaterializationRequest",
-            "feedbax.studio.pipeline_materialization_request",
+            "feedbax.spec.studio.pipeline_materialization_request",
             "Request to materialize eval/analysis/report Studio stages.",
         ),
         (
             "StudioPipelineMaterializationResult",
-            "feedbax.studio.pipeline_materialization_result",
+            "feedbax.manifest.studio.pipeline_materialization_result",
             "Result from Studio pipeline materialization.",
         ),
     ):
@@ -1332,7 +1353,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             _family(
                 kind,
                 schema_id,
-                "feedbax.studio.execution.v1",
+                (
+                    "feedbax.manifest.studio.execution.v1"
+                    if kind.endswith("Result")
+                    else "feedbax.spec.studio.execution.v1"
+                ),
                 owner_module="feedbax.studio_execution",
                 emitted_by=studio_execution_emitters,
                 consumed_by=("provider HTTP API", "Studio backend"),
@@ -1341,42 +1366,42 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         )
 
     for kind, schema_id, description in (
-        ("ValueSchema", "feedbax.studio.schema.value", "Provider-owned value schema record."),
-        ("PortSchema", "feedbax.studio.schema.port", "Provider-owned graph port schema."),
-        ("TaskDataSchema", "feedbax.studio.schema.task_data", "Provider-owned task data schema."),
+        ("ValueSchema", "feedbax.spec.studio.schema.value", "Provider-owned value schema record."),
+        ("PortSchema", "feedbax.spec.studio.schema.port", "Provider-owned graph port schema."),
+        ("TaskDataSchema", "feedbax.spec.studio.schema.task_data", "Provider-owned task data schema."),
         (
             "SelectorTargetSchema",
-            "feedbax.studio.schema.selector_target",
+            "feedbax.spec.studio.schema.selector_target",
             "Provider-owned selectable target schema.",
         ),
         (
             "SchemaValidationIssue",
-            "feedbax.studio.schema.validation_issue",
+            "feedbax.spec.studio.schema.validation_issue",
             "Studio schema validation issue.",
         ),
         (
             "RuntimeIntrospectionOptions",
-            "feedbax.studio.runtime_introspection_options",
+            "feedbax.spec.studio.runtime_introspection_options",
             "Bounded runtime introspection request options.",
         ),
         (
             "RuntimeSampleLeafSchema",
-            "feedbax.studio.runtime_sample_leaf",
+            "feedbax.spec.studio.runtime_sample_leaf",
             "Runtime sample leaf schema record.",
         ),
         (
             "RuntimeIntrospectionResult",
-            "feedbax.studio.runtime_introspection",
+            "feedbax.manifest.studio.runtime_introspection",
             "Validation/runtime sample response, not a saved artifact format.",
         ),
         (
             "StudioSchemaEnumerationRequest",
-            "feedbax.studio.schema_enumeration_request",
+            "feedbax.spec.studio.schema_enumeration_request",
             "Request to enumerate Studio schema surfaces.",
         ),
         (
             "StudioSchemaRegistry",
-            "feedbax.studio.schema_registry",
+            "feedbax.manifest.studio.schema_registry",
             "Provider-emitted Studio schema enumeration.",
         ),
     ):
@@ -1400,61 +1425,61 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         )
 
     for kind, schema_id, durable, description in (
-        ("ProviderManifest", "feedbax.provider_manifest", True, "Provider capability manifest."),
-        ("ProviderHealth", "feedbax.provider_health", False, "Provider health response."),
+        ("ProviderManifest", "feedbax.manifest.provider", True, "Provider capability manifest."),
+        ("ProviderHealth", "feedbax.manifest.provider_health", False, "Provider health response."),
         (
             "ProviderValidationResult",
-            "feedbax.provider_validation_result",
+            "feedbax.manifest.provider_validation_result",
             False,
             "Provider validation response.",
         ),
-        ("CapabilitySpec", "feedbax.provider_capability", False, "Provider capability record."),
+        ("CapabilitySpec", "feedbax.manifest.provider_capability", False, "Provider capability record."),
         (
             "MandibleArtifactMapping",
-            "feedbax.mandible_artifact_mapping",
+            "feedbax.manifest.mandible_artifact_mapping",
             False,
             "Mandible artifact mapping metadata.",
         ),
         (
             "MandibleManifestMapping",
-            "feedbax.mandible_manifest_mapping",
+            "feedbax.manifest.mandible_manifest_mapping",
             False,
             "Mandible manifest mapping metadata.",
         ),
-        ("RegistrySnapshot", "feedbax.registry_snapshot", True, "Provider registry snapshot."),
+        ("RegistrySnapshot", "feedbax.manifest.registry_snapshot", True, "Provider registry snapshot."),
         (
             "RegistryEntry",
-            "feedbax.registry_entry",
+            "feedbax.manifest.registry_entry",
             False,
             "Registry entry embedded in registry snapshots.",
         ),
         (
             "ComponentRegistrySnapshot",
-            "feedbax.registry_snapshot.component",
+            "feedbax.manifest.registry_snapshot.component",
             True,
             "Component registry snapshot capability alias.",
         ),
         (
             "TaskRegistrySnapshot",
-            "feedbax.registry_snapshot.task",
+            "feedbax.manifest.registry_snapshot.task",
             True,
             "Task registry snapshot capability alias.",
         ),
         (
             "LossRegistrySnapshot",
-            "feedbax.registry_snapshot.loss",
+            "feedbax.manifest.registry_snapshot.loss",
             True,
             "Loss registry snapshot capability alias.",
         ),
         (
             "ProtocolRegistrySnapshot",
-            "feedbax.registry_snapshot.protocol",
+            "feedbax.manifest.registry_snapshot.protocol",
             True,
             "Protocol registry snapshot capability alias.",
         ),
         (
             "AnalysisRegistrySnapshot",
-            "feedbax.registry_snapshot.analysis",
+            "feedbax.manifest.registry_snapshot.analysis",
             True,
             "Analysis registry snapshot capability alias.",
         ),
@@ -1511,7 +1536,7 @@ default_spec_registry.register_migration(
     "StudioTaskBindingSpec",
     SchemaMigration(
         source_version=STUDIO_TASK_BINDING_LEGACY_V1,
-        target_version="feedbax.studio.task_bindings.v2",
+        target_version="feedbax.spec.studio.task_bindings.v2",
         migration_id="studio-task-bindings-v1-to-v2",
         migrate=_migrate_studio_task_binding_v1_payload,
         description=(

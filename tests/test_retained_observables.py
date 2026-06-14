@@ -394,14 +394,14 @@ def _fixed_task_timeline() -> dict:
         "type": "DelayedReaches",
         "params": {"n_steps": 5},
         "timeline": {
-            "schema_version": "feedbax.studio.task_timeline.v1",
+            "schema_version": "feedbax.spec.studio.task_timeline.v1",
             "epochs": [
                 {
                     "id": "epoch:0",
                     "label": "hold",
                     "index": 0,
                     "length": {
-                        "schema_version": "feedbax.studio.value.v1",
+                        "schema_version": "feedbax.spec.studio.value.v1",
                         "mode": "constant",
                         "value": {"steps": 1},
                         "metadata": {"scope": "trial"},
@@ -413,7 +413,7 @@ def _fixed_task_timeline() -> dict:
                     "label": "target_on",
                     "index": 1,
                     "length": {
-                        "schema_version": "feedbax.studio.value.v1",
+                        "schema_version": "feedbax.spec.studio.value.v1",
                         "mode": "constant",
                         "value": {"steps": 2},
                         "metadata": {"scope": "trial"},
@@ -425,7 +425,7 @@ def _fixed_task_timeline() -> dict:
                     "label": "movement",
                     "index": 2,
                     "length": {
-                        "schema_version": "feedbax.studio.value.v1",
+                        "schema_version": "feedbax.spec.studio.value.v1",
                         "mode": "constant",
                         "value": None,
                         "metadata": {"inferred_from_remaining_steps": True},

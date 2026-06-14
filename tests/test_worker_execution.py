@@ -46,7 +46,7 @@ def _linear_graph_spec(component_type: str = "Linear") -> dict:
 
 def _task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -81,7 +81,7 @@ def _task_binding_spec() -> dict:
 
 def _network_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -155,7 +155,7 @@ def _mux_graph_spec() -> dict:
 
 def _mux_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [
             {
                 "id": "position",
@@ -413,7 +413,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
         output_bindings={"output": ("delay", "output")},
     ).model_dump(mode="json", exclude_none=True)
     task_binding_spec = {
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -593,7 +593,7 @@ def test_compile_training_run_lowers_segment_aggregation_with_task_timeline() ->
         "type": "DelayedReaches",
         "params": {"n_steps": 4},
         "timeline": {
-            "schema_version": "feedbax.studio.task_timeline.v1",
+            "schema_version": "feedbax.spec.studio.task_timeline.v1",
             "epochs": [
                 {
                     "id": "epoch:0",

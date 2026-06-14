@@ -146,12 +146,12 @@ def test_unknown_graph_spec_schema_version_reports_available_migrations() -> Non
         migrate_graph_spec(
             {
                 "schema_id": GRAPH_SPEC_SCHEMA_ID,
-                "schema_version": "feedbax.graph_spec.v99",
+                "schema_version": "feedbax.spec.graph.v99",
             }
         )
 
     message = str(excinfo.value)
-    assert "source_version='feedbax.graph_spec.v99'" in message
+    assert "source_version='feedbax.spec.graph.v99'" in message
     assert f"current_version='{GRAPH_SPEC_SCHEMA_VERSION}'" in message
     assert "available_migrations=[" in message
     assert "graph-spec-legacy-v1-to-v2" in message
@@ -288,7 +288,7 @@ def test_provider_validation_rejects_unsupported_manifest_graph_spec_version() -
                 kind="GraphSpec",
                 inline={
                     "schema_id": GRAPH_SPEC_SCHEMA_ID,
-                    "schema_version": "feedbax.graph_spec.v99",
+                    "schema_version": "feedbax.spec.graph.v99",
                     "nodes": {},
                     "wires": [],
                 },
@@ -299,7 +299,7 @@ def test_provider_validation_rejects_unsupported_manifest_graph_spec_version() -
     assert not result.valid
     assert result.migration_status == "rejected"
     assert result.errors[0].type == "unsupported_spec_version"
-    assert "feedbax.graph_spec.v99" in result.errors[0].message
+    assert "feedbax.spec.graph.v99" in result.errors[0].message
 
 
 def test_spec_to_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.MonkeyPatch) -> None:
