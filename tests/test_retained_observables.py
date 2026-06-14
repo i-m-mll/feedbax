@@ -359,6 +359,65 @@ def test_loss_target_selector_norms_and_range_aggregation() -> None:
     assert float(total) == pytest.approx(2.5)
 
 
+def test_matrix_quadratic_loss_uses_target_centering_and_final_aggregation() -> None:
+    graph = _graph()
+    training = _training(
+        LossTermSpec(
+            type="MatrixQuadraticLoss",
+            label="Terminal quadratic",
+            selector="graph_output:effector",
+            target_selector="task_data:targets.effector",
+            matrix=[[2.0, 0.5], [0.5, 4.0]],
+            matrix_kind="dense",
+            time_agg=TimeAggregationSpec(mode="final"),
+        )
+    )
+    plan = lower_retention_plan(graph, training)
+
+    total, terms = evaluate_loss_plan(
+        plan.loss_terms,
+        {
+            "graph_output:effector": jnp.asarray([[0.0, 0.0], [3.0, 5.0]]),
+            "task_data:targets.effector": jnp.asarray([[0.0, 0.0], [1.0, 2.0]]),
+        },
+    )
+
+    assert plan.loss_terms[0].matrix_kind == "dense"
+    assert float(total) == pytest.approx(50.0)
+    assert float(terms["loss"]) == pytest.approx(50.0)
+    assert retention_plan_to_json(plan)["loss_terms"][0]["matrix"] == [
+        [2.0, 0.5],
+        [0.5, 4.0],
+    ]
+
+
+def test_matrix_quadratic_loss_rejects_mismatched_matrix_shape() -> None:
+    term = LossTermSpec(
+        type="MatrixQuadraticLoss",
+        label="Bad quadratic",
+        selector="graph_output:effector",
+        matrix=[[1.0]],
+    )
+    plan = lower_retention_plan(_graph(), _training(term))
+
+    with pytest.raises(RetentionPlanError, match="Dense matrix shape"):
+        evaluate_loss_plan(
+            plan.loss_terms,
+            {"graph_output:effector": jnp.asarray([[1.0, 2.0]])},
+        )
+
+
+def test_matrix_quadratic_loss_requires_matrix_during_lowering() -> None:
+    term = LossTermSpec(
+        type="MatrixQuadraticLoss",
+        label="Missing quadratic",
+        selector="graph_output:effector",
+    )
+
+    with pytest.raises(RetentionPlanError, match="requires a matrix payload"):
+        lower_retention_plan(_graph(), _training(term))
+
+
 def test_loss_rejects_both_target_selector_and_target_value() -> None:
     graph = _graph()
     training = _training(
@@ -673,24 +732,28 @@ def test_training_manifest_stores_retention_plan_and_observable_artifacts(tmp_pa
 def test_training_manifest_rejects_unsupported_retention_artifact_version(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(UnsupportedSpecVersion) as exc_info:
-        write_training_run_manifest(
-            job_id="job-old-retention",
-            total_batches=1,
-            retention_plan={
-                "schema_id": RETENTION_PLAN_SCHEMA_ID,
-                "schema_version": "feedbax.manifest.training.retention_plan.v0",
-                "observables": [],
-                "loss_terms": [],
-            },
-            root=tmp_path / "runs",
-            provenance=Provenance(source_commit="abc123", dirty=False),
-        )
+    for version in (
+        "feedbax.manifest.training.retention_plan.v1",
+        "feedbax.manifest.training.retention_plan.v0",
+    ):
+        with pytest.raises(UnsupportedSpecVersion) as exc_info:
+            write_training_run_manifest(
+                job_id="job-old-retention",
+                total_batches=1,
+                retention_plan={
+                    "schema_id": RETENTION_PLAN_SCHEMA_ID,
+                    "schema_version": version,
+                    "observables": [],
+                    "loss_terms": [],
+                },
+                root=tmp_path / "runs",
+                provenance=Provenance(source_commit="abc123", dirty=False),
+            )
 
-    message = str(exc_info.value)
-    assert "RetentionPlan" in message
-    assert "feedbax.manifest.training.retention_plan.v0" in message
-    assert "migration_intentionally_absent=yes" in message
+        message = str(exc_info.value)
+        assert "RetentionPlan" in message
+        assert version in message
+        assert "migration_intentionally_absent=yes" in message
 
 
 def test_load_manifest_rejects_unsupported_retention_artifact_ref_metadata(

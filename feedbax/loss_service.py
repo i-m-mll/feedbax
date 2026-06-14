@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from feedbax.contracts.graph import GraphSpec, BarnacleSpec
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec
 
 
@@ -340,6 +340,10 @@ class LossService:
 
         if spec.norm:
             config["norm"] = self.get_norm_function(spec.norm)
+
+        if spec.matrix is not None:
+            config["matrix"] = spec.matrix
+            config["matrix_kind"] = spec.matrix_kind or "dense"
 
         if spec.time_agg:
             target_spec = self.build_time_aggregation(spec.time_agg)

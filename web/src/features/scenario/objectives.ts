@@ -354,6 +354,8 @@ export function lossSpecFromObjectiveSpec(spec: StudioObjectiveSpec): LossTermSp
       ...(term.target_value !== undefined ? { target_value: term.target_value } : {}),
       retention: retentionFromObjective(term) ?? null,
       norm: normFromPenalty(term.penalty),
+      ...(term.matrix !== undefined ? { matrix: term.matrix } : {}),
+      ...(term.matrix_kind !== undefined ? { matrix_kind: term.matrix_kind } : {}),
       time_agg: timeAggregationFromObjective(term.temporal_selector),
     };
   });

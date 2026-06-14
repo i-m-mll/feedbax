@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from feedbax.objective_spec import (
     EpochMaskSpec,
     FiniteDifferenceLossSpec,
+    MatrixPayloadSpec,
+    MatrixQuadraticLossSpec,
     MetricSpec,
     MovementEpochRampScheduleSpec,
     ObjectiveSpec,
@@ -36,12 +38,18 @@ def _delayed_reach_timeline() -> TaskTimelineSpec:
     )
 
 
-def _state_selector(selector: str, *, units: str | None = None) -> SelectorAddressSpec:
+def _state_selector(
+    selector: str,
+    *,
+    units: str | None = None,
+    feature_axis: str | None = None,
+) -> SelectorAddressSpec:
     return SelectorAddressSpec(
         selector=selector,
         kind="state",
         value_units=units,
         temporal_axis="time",
+        feature_axis=feature_axis,
     )
 
 
@@ -175,6 +183,52 @@ def test_flat_position_schedule_uses_constant_schedule_default() -> None:
     }
 
 
+def test_matrix_quadratic_objective_term_covers_terminal_quadratic_payload() -> None:
+    spec = ObjectiveSpec(
+        timeline=_delayed_reach_timeline(),
+        terms=[
+            MatrixQuadraticLossSpec(
+                label="terminal_state_cost",
+                selector=_state_selector(
+                    "state.mechanics.effector.pos",
+                    units="m",
+                    feature_axis="coordinate",
+                ),
+                target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                matrix=MatrixPayloadSpec(
+                    kind="dense",
+                    value=[[10.0, 0.5], [0.5, 2.0]],
+                ),
+                reduction={"time": "final", "trial": "mean", "feature": "sum"},
+            )
+        ],
+    )
+
+    payload = canonical_objective_payload(spec)
+
+    assert payload["terms"][0]["type"] == "matrix_quadratic"
+    assert payload["terms"][0]["matrix"] == {
+        "kind": "dense",
+        "value": [[10.0, 0.5], [0.5, 2.0]],
+        "metadata": {},
+    }
+    assert payload["terms"][0]["reduction"]["time"] == "final"
+
+
+def test_matrix_quadratic_rejects_non_square_dense_matrix() -> None:
+    with pytest.raises(ValidationError, match="square rank-2"):
+        MatrixPayloadSpec(kind="dense", value=[[1.0, 0.0]])
+
+
+def test_matrix_quadratic_rejects_selector_without_feature_axis() -> None:
+    with pytest.raises(ValidationError, match="feature_axis"):
+        MatrixQuadraticLossSpec(
+            label="bad_matrix_term",
+            selector=_state_selector("state.net.hidden"),
+            matrix=MatrixPayloadSpec(kind="diagonal", value=[1.0, 1.0]),
+        )
+
+
 def test_validation_rejects_finite_difference_without_temporal_selector() -> None:
     with pytest.raises(ValidationError, match="temporal_axis"):
         FiniteDifferenceLossSpec(
@@ -249,4 +303,6 @@ def test_provider_manifest_exposes_objective_schema_models() -> None:
 
     assert "ObjectiveSpec" in schemas
     assert "FiniteDifferenceLossSpec" in schemas
+    assert "MatrixQuadraticLossSpec" in schemas
+    assert "MatrixPayloadSpec" in schemas
     assert "MovementEpochRampScheduleSpec" in schemas

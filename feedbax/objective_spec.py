@@ -7,6 +7,7 @@ contracts. They intentionally do not execute losses; lowering into
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -16,6 +17,8 @@ OBJECTIVE_SCHEMA_VERSION = "feedbax.spec.objective.v1"
 
 MetricKind = Literal["squared_l2", "l2", "l1", "squared", "absolute", "huber"]
 ReductionKind = Literal["mean", "sum", "none"]
+TimeReductionKind = Literal["mean", "sum", "none", "final"]
+MatrixPayloadKind = Literal["dense", "diagonal"]
 SelectorKind = Literal[
     "state",
     "port",
@@ -152,10 +155,30 @@ class MetricSpec(ObjectiveSpecModel):
         return self
 
 
+class MatrixPayloadSpec(ObjectiveSpecModel):
+    """Matrix payload for selector-addressed quadratic objective terms."""
+
+    kind: MatrixPayloadKind = "dense"
+    value: Any
+    dtype: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_matrix_payload(self) -> "MatrixPayloadSpec":
+        shape = _json_array_shape(self.value)
+        if self.kind == "dense":
+            if len(shape) != 2 or shape[0] != shape[1]:
+                raise ValueError("dense matrix payload must be a square rank-2 array")
+        elif self.kind == "diagonal":
+            if len(shape) != 1:
+                raise ValueError("diagonal matrix payload must be a rank-1 array")
+        return self
+
+
 class ReductionSpec(ObjectiveSpecModel):
     """Reduction applied after metric, mask, and schedule weighting."""
 
-    time: ReductionKind = "mean"
+    time: TimeReductionKind = "mean"
     trial: ReductionKind = "mean"
     feature: ReductionKind = "sum"
     empty_mask: Literal["zero", "error"] = "zero"
@@ -218,8 +241,24 @@ class FiniteDifferenceLossSpec(ObjectiveTermBase):
         return self
 
 
+class MatrixQuadraticLossSpec(ObjectiveTermBase):
+    """Penalize a selected vector with ``(value - target)^T M (value - target)``."""
+
+    type: Literal["matrix_quadratic"] = "matrix_quadratic"
+    matrix: MatrixPayloadSpec
+    target: Optional[TargetValueSpec] = None
+
+    @model_validator(mode="after")
+    def _validate_matrix_quadratic(self) -> "MatrixQuadraticLossSpec":
+        if self.selector.feature_axis is None:
+            raise ValueError("matrix_quadratic selector must declare a feature_axis")
+        if self.metric.kind != "squared_l2":
+            raise ValueError("matrix_quadratic terms use matrix payloads, not metric kinds")
+        return self
+
+
 ObjectiveTermSpec = Annotated[
-    TargetStateLossSpec | FiniteDifferenceLossSpec,
+    TargetStateLossSpec | FiniteDifferenceLossSpec | MatrixQuadraticLossSpec,
     Field(discriminator="type"),
 ]
 
@@ -329,8 +368,10 @@ def objective_schema_models() -> dict[str, type[BaseModel]]:
         "ObjectiveSpec": ObjectiveSpec,
         "TargetStateLossSpec": TargetStateLossSpec,
         "FiniteDifferenceLossSpec": FiniteDifferenceLossSpec,
+        "MatrixQuadraticLossSpec": MatrixQuadraticLossSpec,
         "SelectorAddressSpec": SelectorAddressSpec,
         "TargetValueSpec": TargetValueSpec,
+        "MatrixPayloadSpec": MatrixPayloadSpec,
         "EpochMaskSpec": EpochMaskSpec,
         "ConstantScheduleSpec": ConstantScheduleSpec,
         "PowerLawScheduleSpec": PowerLawScheduleSpec,
@@ -375,3 +416,18 @@ def validate_objective_spec(spec: ObjectiveSpec | dict[str, Any]) -> ObjectiveSp
         return spec
     migrated = migrate_objective_spec(spec).payload
     return ObjectiveSpec.model_validate(migrated)
+
+
+def _json_array_shape(value: Any) -> tuple[int, ...]:
+    """Return the rectangular shape of a JSON-like array payload."""
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        length = len(value)
+        if length == 0:
+            return (0,)
+        child_shapes = [_json_array_shape(item) for item in value]
+        first = child_shapes[0]
+        if any(shape != first for shape in child_shapes):
+            raise ValueError("matrix payload must be rectangular")
+        return (length, *first)
+    return ()

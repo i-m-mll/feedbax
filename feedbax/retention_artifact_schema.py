@@ -6,7 +6,7 @@ from typing import Any
 
 
 RETENTION_PLAN_SCHEMA_ID = "feedbax.manifest.training.retention_plan"
-RETENTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.training.retention_plan.v1"
+RETENTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.training.retention_plan.v2"
 RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID = (
     "feedbax.manifest.training.retained_observables"
 )
@@ -25,7 +25,7 @@ RETENTION_POLICY_PLAN_SCHEMA_VERSION = (
     "feedbax.manifest.training.retention_policy_plan.v1"
 )
 LOSS_TERM_PLAN_SCHEMA_ID = "feedbax.manifest.training.loss_term_plan"
-LOSS_TERM_PLAN_SCHEMA_VERSION = "feedbax.manifest.training.loss_term_plan.v1"
+LOSS_TERM_PLAN_SCHEMA_VERSION = "feedbax.manifest.training.loss_term_plan.v2"
 
 RETENTION_ARTIFACT_ROLE_SCHEMAS: dict[str, tuple[str, str, str]] = {
     "retention_plan": (

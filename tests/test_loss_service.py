@@ -1,7 +1,7 @@
 """Tests for the loss service."""
 
 import pytest
-from feedbax.loss_service import LossService, ProbeInfo
+from feedbax.loss_service import LossService
 from feedbax.contracts.graph import (
     GraphSpec,
     ComponentSpec,
@@ -333,6 +333,24 @@ class TestSpecToLossConfig:
         assert config["norm"] == "feedbax.loss.norms.squared_l2"
         assert config["time_aggregation"]["mode"] == "final"
         assert "probe" in config
+
+    def test_matrix_quadratic_loss_config_preserves_matrix_payload(
+        self, loss_service, sample_graph
+    ):
+        spec = LossTermSpec(
+            type="MatrixQuadraticLoss",
+            label="Quadratic Effort",
+            weight=0.5,
+            selector="port:effector.velocity",
+            matrix=[[1.0, 0.0], [0.0, 2.0]],
+            matrix_kind="dense",
+            time_agg=TimeAggregationSpec(mode="sum"),
+        )
+        config = loss_service.spec_to_loss_config(spec, sample_graph)
+        assert config["type"] == "MatrixQuadraticLoss"
+        assert config["matrix"] == [[1.0, 0.0], [0.0, 2.0]]
+        assert config["matrix_kind"] == "dense"
+        assert config["time_aggregation"]["mode"] == "sum"
 
     def test_composite_loss_config(self, loss_service, sample_graph):
         spec = LossTermSpec(

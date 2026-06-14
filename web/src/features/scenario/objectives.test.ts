@@ -135,6 +135,42 @@ describe('scenario objective operations', () => {
     });
   });
 
+  it('preserves matrix-quadratic payloads when lowering to training loss', () => {
+    const sourceSelector = {
+      namespace: 'graph_output' as const,
+      compact: 'graph_output:effector',
+      target_id: 'effector',
+      path: 'effector',
+      role: 'observed' as const,
+      metadata: {},
+    };
+    const term = createObjectiveTerm({
+      spec: baseSpec,
+      label: 'Terminal quadratic',
+      sourceSelector,
+    });
+    const withTerm = updateObjectiveTerm(addObjectiveTerm(baseSpec, term), term.id, {
+      type_id: 'MatrixQuadraticLoss',
+      matrix: [
+        [2, 0.5],
+        [0.5, 4],
+      ],
+      matrix_kind: 'dense',
+      temporal_selector: { mode: 'final' },
+    });
+
+    expect(lossSpecFromObjectiveSpec(withTerm).children?.[term.id]).toMatchObject({
+      type: 'MatrixQuadraticLoss',
+      selector: 'graph_output:effector',
+      matrix: [
+        [2, 0.5],
+        [0.5, 4],
+      ],
+      matrix_kind: 'dense',
+      time_agg: { mode: 'final' },
+    });
+  });
+
   it('keeps schema-backed selector metadata on objective terms', () => {
     const sourceSelector = {
       namespace: 'state_path' as const,
