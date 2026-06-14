@@ -43,8 +43,7 @@ _DEFAULT_TRAINABLE_COMPONENT_TYPES = {
     "MLP",
     "GRU",
     "LSTM",
-    "Network",
-    "Network Template",
+    "Recurrent Controller",
     "Simple Feedback Loop",
 }
 

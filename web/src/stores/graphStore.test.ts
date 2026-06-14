@@ -501,7 +501,7 @@ describe('graphStore template insertion', () => {
     },
   };
   const templateComponent: ComponentDefinition = {
-    name: 'Network Template',
+    name: 'Recurrent Controller',
     category: 'Neural Networks',
     description: 'Template',
     param_schema: [],
@@ -509,7 +509,7 @@ describe('graphStore template insertion', () => {
     output_ports: ['output'],
     icon: 'network',
     default_params: {},
-    template_id: 'feedbax.templates.network',
+    template_id: 'feedbax.templates.recurrent_controller',
     template_kind: 'executable',
     template_graph: {
       nodes: {
@@ -671,7 +671,7 @@ describe('graphStore template insertion', () => {
 
     const state = useGraphStore.getState();
     expect(Object.keys(state.graph.nodes)).toEqual(['source', 'input_mux', 'cell', 'readout']);
-    expect(state.graph.nodes['Network Template']).toBeUndefined();
+    expect(state.graph.nodes['Recurrent Controller']).toBeUndefined();
     expect(state.graph.nodes.cell.params._subgraph).toBeUndefined();
     expect(state.graph.wires).toEqual([
       {
@@ -725,42 +725,42 @@ describe('graphStore template insertion', () => {
 
     const observables = useGraphStore.getState().graph.retained_observables ?? [];
     const secondImport = observables.filter((observable) =>
-      observable.id.startsWith('feedbax_templates_network:observable:')
+      observable.id.startsWith('feedbax_templates_recurrent_controller:observable:')
     );
     expect(secondImport).toHaveLength(5);
 
     expect(secondImport.find((observable) => observable.label === 'Cell output')).toMatchObject({
-      selector: 'port:feedbax_templates_network_cell.output',
+      selector: 'port:feedbax_templates_recurrent_controller_cell.output',
       target: {
-        selector: 'port:feedbax_templates_network_cell.output',
-        node_id: 'feedbax_templates_network_cell',
+        selector: 'port:feedbax_templates_recurrent_controller_cell.output',
+        node_id: 'feedbax_templates_recurrent_controller_cell',
       },
     });
     expect(secondImport.find((observable) => observable.label === 'Cell to readout')).toMatchObject({
-      selector: 'edge:feedbax_templates_network_cell.output->feedbax_templates_network_readout.input',
+      selector: 'edge:feedbax_templates_recurrent_controller_cell.output->feedbax_templates_recurrent_controller_readout.input',
       target: {
-        selector: 'edge:feedbax_templates_network_cell.output->feedbax_templates_network_readout.input',
-        edge_id: 'feedbax_templates_network_cell:output->feedbax_templates_network_readout:input',
+        selector: 'edge:feedbax_templates_recurrent_controller_cell.output->feedbax_templates_recurrent_controller_readout.input',
+        edge_id: 'feedbax_templates_recurrent_controller_cell:output->feedbax_templates_recurrent_controller_readout:input',
       },
     });
     expect(secondImport.find((observable) => observable.label === 'Cell hidden carry')).toMatchObject({
-      selector: 'recurrent_carry:feedbax_templates_network_cell.hidden->feedbax_templates_network_cell.hidden',
+      selector: 'recurrent_carry:feedbax_templates_recurrent_controller_cell.hidden->feedbax_templates_recurrent_controller_cell.hidden',
       target: {
-        edge_id: 'feedbax_templates_network_cell:hidden->feedbax_templates_network_cell:hidden',
+        edge_id: 'feedbax_templates_recurrent_controller_cell:hidden->feedbax_templates_recurrent_controller_cell:hidden',
       },
     });
     expect(secondImport.find((observable) => observable.label === 'Graph output')).toMatchObject({
       selector: 'graph_output:output',
       target: {
-        node_id: 'feedbax_templates_network_readout',
+        node_id: 'feedbax_templates_recurrent_controller_readout',
         port: 'output',
       },
     });
     expect(secondImport.find((observable) => observable.label === 'Cell state')).toMatchObject({
-      selector: 'path:states.feedbax_templates_network_cell.hidden',
+      selector: 'path:states.feedbax_templates_recurrent_controller_cell.hidden',
       target: {
-        node_id: 'feedbax_templates_network_cell',
-        path: 'states.feedbax_templates_network_cell.hidden',
+        node_id: 'feedbax_templates_recurrent_controller_cell',
+        path: 'states.feedbax_templates_recurrent_controller_cell.hidden',
       },
     });
   });

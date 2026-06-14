@@ -5,8 +5,8 @@ from typing import Protocol
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.graph_templates import (
     BUILTIN_GRAPH_TEMPLATES,
+    recurrent_controller_template_graph,
     simple_feedback_template_graph,
-    standard_network_subgraph,
 )
 
 from .meta import ComponentMeta, _template_ui_state
@@ -19,8 +19,8 @@ class _Registry(Protocol):
 def register_builtin_graph_templates(registry: _Registry) -> None:
     metadata = {template.id: template for template in BUILTIN_GRAPH_TEMPLATES}
 
-    network_meta = metadata["feedbax.templates.network"]
-    network_graph = standard_network_subgraph(
+    network_meta = metadata["feedbax.templates.recurrent_controller"]
+    network_graph = recurrent_controller_template_graph(
         input_size=6,
         hidden_size=100,
         out_size=2,
@@ -81,22 +81,14 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
                 {
                     'feedback': (120, 260),
                     'feedback_ravel': (120, 110),
-                    'network': (340, 180),
-                    'efferent': (560, 180),
-                    'mechanics': (780, 180),
-                },
-                subgraph_states={
-                    'network': _template_ui_state(
-                        {
-                            'input_mux': (80, 160),
-                            'cell': (280, 160),
-                            'readout': (500, 160),
-                        }
-                    )
+                    'input_mux': (340, 180),
+                    'cell': (520, 180),
+                    'readout': (700, 180),
+                    'efferent': (880, 180),
+                    'mechanics': (1060, 180),
                 },
             ),
             template_id=feedback_meta.id,
             template_kind=feedback_meta.kind,
         )
     )
-

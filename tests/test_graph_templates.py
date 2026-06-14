@@ -10,8 +10,8 @@ from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Graph, Wire, init_state_from_component
 from feedbax.graph_templates import (
     network_template_graph,
+    recurrent_controller_template_graph,
     simple_feedback_template_graph,
-    standard_network_subgraph,
 )
 from feedbax.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.nn import SimpleStagedNetwork
@@ -50,7 +50,7 @@ def _task_binding_spec() -> dict:
     }
 
 
-def _network_controller_graph_spec(*, node_type: str = "Network") -> GraphSpec:
+def _network_controller_graph_spec() -> GraphSpec:
     network = network_template_graph(
         {
             "input_size": 3,
@@ -60,11 +60,9 @@ def _network_controller_graph_spec(*, node_type: str = "Network") -> GraphSpec:
             "out_nonlinearity": "tanh",
         }
     )
-    network_node = network.nodes["network"].model_copy(update={"type": node_type})
-    subgraphs = network.subgraphs if node_type == "Network" else None
     return GraphSpec(
         nodes={
-            "network": network_node,
+            **network.nodes,
             "mechanics": ComponentSpec(
                 type="PointMass",
                 params={"dt": 0.02},
@@ -74,33 +72,29 @@ def _network_controller_graph_spec(*, node_type: str = "Network") -> GraphSpec:
         },
         wires=[
             WireSpec(
-                source_node="network",
-                source_port="output",
+                source_node=network.output_bindings["output"][0],
+                source_port=network.output_bindings["output"][1],
                 target_node="mechanics",
                 target_port="force",
             )
         ],
         input_ports=["input", "feedback"],
         output_ports=["effector"],
-        input_bindings={
-            "input": ("network", "input"),
-            "feedback": ("network", "feedback"),
-        },
+        input_bindings=dict(network.input_bindings),
         output_bindings={"effector": ("mechanics", "effector")},
-        subgraphs=subgraphs,
+        parameter_constraints=network.parameter_constraints,
     )
 
 
-def test_spec_to_graph_network_instantiates_serialized_subgraph() -> None:
-    graph = spec_to_graph(_network_controller_graph_spec(node_type="Network"), {})
+def test_spec_to_graph_controller_template_instantiates_explicit_nodes() -> None:
+    graph = spec_to_graph(_network_controller_graph_spec(), {})
 
-    assert isinstance(graph.nodes["network"], Graph)
-    assert not isinstance(graph.nodes["network"], SimpleStagedNetwork)
-    assert set(graph.nodes["network"].nodes) == {"input_mux", "cell", "readout"}
+    assert not any(isinstance(node, SimpleStagedNetwork) for node in graph.nodes.values())
+    assert set(graph.nodes) == {"input_mux", "cell", "readout", "mechanics"}
 
 
 def test_gru_network_subgraph_runs_with_recurrent_zero_initializer() -> None:
-    subgraph = standard_network_subgraph(
+    subgraph = recurrent_controller_template_graph(
         input_size=3,
         hidden_size=4,
         out_size=2,
@@ -125,7 +119,7 @@ def test_gru_network_subgraph_runs_with_recurrent_zero_initializer() -> None:
 
 
 def test_lstm_network_subgraph_runs_with_recurrent_zero_initializers() -> None:
-    subgraph = standard_network_subgraph(
+    subgraph = recurrent_controller_template_graph(
         input_size=3,
         hidden_size=4,
         out_size=2,
@@ -149,8 +143,8 @@ def test_lstm_network_subgraph_runs_with_recurrent_zero_initializers() -> None:
     assert outputs["hidden"].shape == (3, 4)
 
 
-def test_network_subgraph_without_modulator_keeps_standard_shape() -> None:
-    subgraph = standard_network_subgraph(
+def test_recurrent_controller_template_is_explicit_plain_graph() -> None:
+    subgraph = recurrent_controller_template_graph(
         input_size=3,
         hidden_size=4,
         out_size=2,
@@ -175,7 +169,7 @@ def test_network_subgraph_without_modulator_keeps_standard_shape() -> None:
     )
 
 
-def test_network_authoring_normalization_does_not_generate_special_sisu_ports() -> None:
+def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_ports() -> None:
     spec = GraphSpec(
         nodes={
             "network": ComponentSpec(
@@ -184,8 +178,8 @@ def test_network_authoring_normalization_does_not_generate_special_sisu_ports() 
                     "input_size": 4,
                     "hidden_size": 3,
                     "output_size": 2,
-                    "sisu_gating": "multiplicative",
-                    "sisu_alpha": [0.1, -0.2, 0.3],
+                    "unsupported_gating": "multiplicative",
+                    "unsupported_gain": [0.1, -0.2, 0.3],
                 },
                 input_ports=["target", "feedback"],
                 output_ports=["output", "hidden"],
@@ -204,26 +198,17 @@ def test_network_authoring_normalization_does_not_generate_special_sisu_ports() 
     )
 
     normalized = normalize_graph_for_studio_authoring(spec)
-    subgraph = normalized.subgraphs["network"] if normalized.subgraphs else None
 
-    assert subgraph is not None
-    assert normalized.nodes["network"].input_ports == ["input", "feedback"]
-    assert "sisu" not in normalized.nodes["network"].input_ports
-    assert "sisu" not in subgraph.input_ports
-    assert "sisu_modulator" not in subgraph.nodes
-    assert "sisu_gating" not in normalized.nodes["network"].params
-    assert "sisu_alpha" not in normalized.nodes["network"].params
+    assert normalized.subgraphs is None
+    assert normalized.nodes["network"].type == "SimpleStagedNetwork"
     assert "modulator_input" not in normalized.nodes["network"].params
-    assert subgraph.nodes["cell"].params["input_size"] == 4
-    assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
 
 
-def test_legacy_network_serialization_does_not_expose_special_sisu_boundary() -> None:
+def test_legacy_runtime_network_serialization_inlines_explicit_controller_nodes() -> None:
     network = SimpleStagedNetwork(
         input_size=4,
         hidden_size=3,
         out_size=2,
-        sisu_gating="multiplicative",
         key=jax.random.PRNGKey(5),
     )
     spec = graph_to_spec(
@@ -235,17 +220,18 @@ def test_legacy_network_serialization_does_not_expose_special_sisu_boundary() ->
             output_bindings={"output": ("network", "output"), "hidden": ("network", "hidden")},
         )
     )
-    subgraph = spec.subgraphs["network"] if spec.subgraphs else None
-
-    assert subgraph is not None
-    assert spec.nodes["network"].input_ports == ["input", "feedback"]
-    assert "sisu" not in spec.nodes["network"].input_ports
-    assert "sisu" not in subgraph.input_ports
-    assert "sisu_modulator" not in subgraph.nodes
-    assert "sisu_gating" not in spec.nodes["network"].params
-    assert "sisu_alpha" not in spec.nodes["network"].params
-    assert "modulator_input" not in spec.nodes["network"].params
-    assert subgraph.nodes["cell"].params["input_size"] == 4
+    assert spec.subgraphs is None
+    assert "network" not in spec.nodes
+    assert set(spec.nodes) == {"network_input_mux", "network_cell", "network_readout"}
+    assert spec.input_bindings == {
+        "input": ("network_input_mux", "in_0"),
+        "feedback": ("network_input_mux", "in_1"),
+    }
+    assert spec.output_bindings == {
+        "output": ("network_readout", "output"),
+        "hidden": ("network_cell", "hidden"),
+    }
+    assert spec.nodes["network_cell"].params["input_size"] == 4
 
 
 def test_linear_activation_from_graph_spec_is_honored() -> None:
@@ -285,16 +271,12 @@ def test_linear_activation_from_graph_spec_is_honored() -> None:
 def test_builtin_executable_templates_are_exposed_in_component_registry() -> None:
     definitions = {component.name: component for component in ComponentRegistry().list_all()}
 
-    network = definitions["Network Template"]
-    network_component = definitions["Network"]
+    network = definitions["Recurrent Controller"]
     feedback = definitions["Simple Feedback Loop"]
 
-    assert network_component.input_ports == ["input", "feedback"]
-    assert "sisu" not in network_component.input_ports
-    assert network_component.port_types is not None
-    assert "sisu" not in network_component.port_types.inputs
+    assert "Network" not in definitions
 
-    assert network.template_id == "feedbax.templates.network"
+    assert network.template_id == "feedbax.templates.recurrent_controller"
     assert network.template_kind == "executable"
     assert network.template_graph is not None
     assert set(network.template_graph.nodes) == {"input_mux", "cell", "readout"}
@@ -302,12 +284,12 @@ def test_builtin_executable_templates_are_exposed_in_component_registry() -> Non
     assert feedback.template_id == "feedbax.templates.simple_feedback"
     assert feedback.template_kind == "executable"
     assert feedback.template_graph is not None
-    assert feedback.template_graph.subgraphs is not None
-    assert "network" in feedback.template_graph.subgraphs
+    assert feedback.template_graph.subgraphs is None
+    assert {"input_mux", "cell", "readout"} <= set(feedback.template_graph.nodes)
 
 
 def test_generic_template_node_instantiates_persisted_subgraph() -> None:
-    subgraph = standard_network_subgraph(
+    subgraph = recurrent_controller_template_graph(
         input_size=3,
         hidden_size=4,
         out_size=2,
@@ -317,7 +299,7 @@ def test_generic_template_node_instantiates_persisted_subgraph() -> None:
     spec = GraphSpec(
         nodes={
             "controller": ComponentSpec(
-                type="Network Template",
+                type="Recurrent Controller",
                 params={},
                 input_ports=["input", "feedback"],
                 output_ports=["output", "hidden"],

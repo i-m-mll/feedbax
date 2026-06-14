@@ -20,8 +20,8 @@ from feedbax.graph_templates import (
     BUILTIN_GRAPH_TEMPLATES,
     GraphTemplateMetadata,
     network_template_graph,
+    recurrent_controller_template_graph,
     simple_feedback_template_graph,
-    standard_network_subgraph,
 )
 from feedbax._tree import (
     get_ensemble,
@@ -121,10 +121,10 @@ __all__ = [
     "pos_only_states",
     "prepare_trial",
     "random_split_like_tree",
+    "recurrent_controller_template_graph",
     "save",
     "select",
     "simple_feedback_template_graph",
-    "standard_network_subgraph",
     "tree_array_bytes",
     "tree_call",
     "tree_concatenate",
