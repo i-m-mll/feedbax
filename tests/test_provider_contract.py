@@ -274,6 +274,8 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
     assert "ModelArtifactManifest" in manifest.schemas
+    assert "CheckpointSelectionManifest" in manifest.schemas
+    assert "CheckpointSelectionSpec" in manifest.schemas
     assert "ArrayStorePayload" in manifest.schemas
     assert "ArrayStoreRef" in manifest.schemas
     assert "ObjectiveSpec" in manifest.schemas
@@ -349,6 +351,7 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
         "TrainingRunSetManifest",
         "TrainingRunManifest",
         "EvaluationRunManifest",
+        "CheckpointSelectionManifest",
         "AnalysisRunManifest",
         "ReportManifest",
     }
@@ -381,6 +384,15 @@ def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
     )
     assert "parameter_store.roles" in model_artifact.opaque_domain_fields
     assert "mandible/2322726" in model_artifact.related_issue_refs
+
+    checkpoint_selection = mappings["CheckpointSelectionManifest"]
+    assert checkpoint_selection.subject_node_type == "feedbax.checkpoint_selection"
+    assert checkpoint_selection.spec_fields == ["selection_spec"]
+    assert "bank.ref" in checkpoint_selection.parent_ref_fields
+    assert "selections[].selected_checkpoint.model_artifact" in (
+        checkpoint_selection.parent_ref_fields
+    )
+    assert "scorer" in checkpoint_selection.opaque_domain_fields
 
 
 def test_training_run_manifest_mandible_mapping_fixture_preserves_local_refs() -> None:

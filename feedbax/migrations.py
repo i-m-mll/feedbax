@@ -1158,6 +1158,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("Studio report materialization",),
             description="Declarative report request.",
         ),
+        _family(
+            "CheckpointSelectionSpec",
+            "feedbax.spec.checkpoint_selection",
+            "feedbax.spec.checkpoint_selection.v1",
+            owner_module="feedbax.manifest",
+            emitted_by=("CheckpointSelectionManifest.selection_spec", "provider_manifest.schemas"),
+            consumed_by=("checkpoint-selection materializers", "downstream scorer plug-ins"),
+            description="Declarative generic checkpoint-selection request.",
+        ),
     ]
 
     for kind in (
@@ -1202,6 +1211,31 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         ("SpecPayload", "feedbax.manifest.spec_payload", "Manifest-embedded inline spec wrapper."),
         ("ArrayStoreRef", "feedbax.manifest.array_store_ref", "Manifest array-store ref."),
+        (
+            "CheckpointScorerIdentity",
+            "feedbax.manifest.checkpoint_selection.scorer",
+            "Checkpoint-selection scorer identity record.",
+        ),
+        (
+            "CheckpointSelectionBank",
+            "feedbax.manifest.checkpoint_selection.bank",
+            "Checkpoint-selection validation/evaluation bank record.",
+        ),
+        (
+            "CheckpointCandidateRef",
+            "feedbax.manifest.checkpoint_selection.candidate",
+            "Checkpoint-selection candidate reference.",
+        ),
+        (
+            "CheckpointScoreSummary",
+            "feedbax.manifest.checkpoint_selection.score_summary",
+            "Checkpoint-selection score summary.",
+        ),
+        (
+            "CheckpointSelectionGroup",
+            "feedbax.manifest.checkpoint_selection.group",
+            "Checkpoint-selection run or replicate group.",
+        ),
         ("GraphSpecManifest", "feedbax.manifest.graph_spec", "Durable graph-spec manifest."),
         (
             "GraphSpecLoadResult",
@@ -1223,6 +1257,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "EvaluationRunManifest",
             "feedbax.manifest.evaluation_run",
             "Durable evaluation-run manifest.",
+        ),
+        (
+            "CheckpointSelectionManifest",
+            "feedbax.manifest.checkpoint_selection",
+            "Durable checkpoint-selection manifest.",
         ),
         ("AnalysisRunManifest", "feedbax.manifest.analysis_run", "Durable analysis-run manifest."),
         ("ReportManifest", "feedbax.manifest.report", "Durable report manifest."),

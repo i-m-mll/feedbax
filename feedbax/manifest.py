@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.graph import AnalysisInputRequirement
 
@@ -240,6 +240,149 @@ class EvaluationRunManifest(BaseManifest):
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointScorerIdentity(StrictModel):
+    """Stable identity for a downstream-provided checkpoint scorer."""
+
+    scorer_id: str
+    name: Optional[str] = None
+    version: Optional[str] = None
+    plugin: Optional[str] = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointSelectionBank(StrictModel):
+    """Validation or evaluation bank used to score candidate checkpoints."""
+
+    role: Literal["validation", "evaluation", "fixed"] = "validation"
+    status: Literal["available", "missing", "unavailable"] = "available"
+    bank_id: Optional[str] = None
+    logical_name: Optional[str] = None
+    ref: Optional[ParentRef | ArtifactRef] = None
+    fallback_ref: Optional[ParentRef | ArtifactRef] = None
+    fallback_reason: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_bank_status(self) -> "CheckpointSelectionBank":
+        if self.status == "available" and self.ref is None:
+            raise ValueError("available checkpoint-selection banks must include ref")
+        if self.status != "available" and self.fallback_ref is not None and not self.fallback_reason:
+            raise ValueError("checkpoint-selection bank fallback_ref requires fallback_reason")
+        return self
+
+
+class CheckpointCandidateRef(StrictModel):
+    """Reference to one candidate checkpoint and its available lineage."""
+
+    id: str
+    checkpoint: ParentRef | ArtifactRef
+    run_id: Optional[str] = None
+    replicate_id: Optional[str] = None
+    step: Optional[int] = None
+    training_run: Optional[ParentRef] = None
+    model_artifact: Optional[ParentRef] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointScoreSummary(StrictModel):
+    """Scorer output summary for one candidate checkpoint."""
+
+    candidate_id: str
+    primary_metric: str
+    primary_value: float
+    objective: Literal["minimize", "maximize"]
+    rank: Optional[int] = None
+    metrics: dict[str, float] = Field(default_factory=dict)
+    status: Literal["scored", "failed", "missing"] = "scored"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointSelectionGroup(StrictModel):
+    """Candidate and selected checkpoint records for a run or replicate."""
+
+    scope: Literal["run", "replicate"] = "run"
+    run_id: str
+    replicate_id: Optional[str] = None
+    candidate_checkpoints: list[CheckpointCandidateRef] = Field(default_factory=list)
+    selected_checkpoint: Optional[CheckpointCandidateRef] = None
+    score_summaries: list[CheckpointScoreSummary] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_group(self) -> "CheckpointSelectionGroup":
+        if self.scope == "replicate" and not self.replicate_id:
+            raise ValueError("replicate checkpoint-selection groups require replicate_id")
+        if self.selected_checkpoint is not None:
+            candidate_ids = {candidate.id for candidate in self.candidate_checkpoints}
+            if self.selected_checkpoint.id not in candidate_ids:
+                raise ValueError(
+                    "selected checkpoint must also appear in candidate_checkpoints"
+                )
+        return self
+
+
+class CheckpointSelectionSpec(StrictModel):
+    """Declarative request for generic checkpoint selection."""
+
+    selection_type: str
+    scorer: CheckpointScorerIdentity
+    bank: CheckpointSelectionBank
+    group_by: Literal["run", "replicate"] = "run"
+    candidate_checkpoints: list[CheckpointCandidateRef] = Field(default_factory=list)
+    inputs: list[ParentRef] = Field(default_factory=list)
+    fallback_allowed: bool = False
+    params: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointSelectionManifest(BaseManifest):
+    """Durable custody record for selected checkpoints."""
+
+    kind: Literal["CheckpointSelectionManifest"] = "CheckpointSelectionManifest"
+    selection_spec: SpecPayload
+    scorer: CheckpointScorerIdentity
+    bank: CheckpointSelectionBank
+    selection_status: Literal["selected", "fallback_selected", "failed"]
+    fallback_allowed: bool = False
+    failure_reason: Optional[str] = None
+    inputs: list[ParentRef] = Field(default_factory=list)
+    selections: list[CheckpointSelectionGroup] = Field(default_factory=list)
+    summary_metrics: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_selection_status(self) -> "CheckpointSelectionManifest":
+        selected_groups = [
+            group for group in self.selections if group.selected_checkpoint is not None
+        ]
+        if self.selection_status in {"selected", "fallback_selected"} and not selected_groups:
+            raise ValueError(
+                "checkpoint-selection manifests with selected status require a selected checkpoint"
+            )
+
+        bank_missing = self.bank.status != "available"
+        if bank_missing and self.selection_status == "selected":
+            raise ValueError(
+                "missing or unavailable checkpoint-selection banks cannot produce "
+                "selection_status='selected'"
+            )
+        if self.selection_status == "fallback_selected":
+            if not self.fallback_allowed:
+                raise ValueError("fallback_selected requires fallback_allowed=True")
+            if self.bank.status == "available":
+                raise ValueError("fallback_selected requires a missing or unavailable bank")
+            if not (self.failure_reason or self.bank.fallback_reason or self.bank.fallback_ref):
+                raise ValueError(
+                    "fallback_selected requires failure_reason, bank.fallback_reason, "
+                    "or bank.fallback_ref"
+                )
+        if self.selection_status == "failed" and not (
+            self.failure_reason or self.bank.fallback_reason
+        ):
+            raise ValueError("failed checkpoint-selection manifests require failure_reason")
+        return self
+
+
 class AnalysisRunSpec(StrictModel):
     """Declarative request for an analysis run."""
 
@@ -277,6 +420,7 @@ AnyManifest = (
     | TrainingRunSetManifest
     | TrainingRunManifest
     | EvaluationRunManifest
+    | CheckpointSelectionManifest
     | AnalysisRunManifest
     | ReportManifest
 )
@@ -298,6 +442,7 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "TrainingRunSetManifest": TrainingRunSetManifest,
     "TrainingRunManifest": TrainingRunManifest,
     "EvaluationRunManifest": EvaluationRunManifest,
+    "CheckpointSelectionManifest": CheckpointSelectionManifest,
     "AnalysisRunManifest": AnalysisRunManifest,
     "ReportManifest": ReportManifest,
 }
@@ -313,6 +458,7 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
         "task_binding_spec",
     ),
     "EvaluationRunManifest": ("evaluation_spec",),
+    "CheckpointSelectionManifest": ("selection_spec",),
     "AnalysisRunManifest": ("analysis_spec",),
     "ReportManifest": ("report_spec",),
 }
@@ -569,6 +715,7 @@ def _manifest_dir(root: Path, kind: str) -> Path:
         "TrainingRunSetManifest": "training_run_sets",
         "TrainingRunManifest": "training_runs",
         "EvaluationRunManifest": "evaluation_runs",
+        "CheckpointSelectionManifest": "checkpoint_selections",
         "AnalysisRunManifest": "analysis_runs",
         "ReportManifest": "reports",
     }
@@ -620,6 +767,8 @@ def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
     """Return a copy with embedded spec payloads registry-stamped and migrated."""
     fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
     if not fields:
+        if isinstance(manifest, CheckpointSelectionManifest):
+            return normalize_checkpoint_selection_lineage(manifest)
         return manifest
     updates: dict[str, Any] = {}
     for field_name in fields:
@@ -627,9 +776,70 @@ def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
         normalized = _normalize_spec_payload_field(value, path=field_name)
         if normalized is not value:
             updates[field_name] = normalized
-    if not updates:
+    normalized_manifest = manifest.model_copy(update=updates) if updates else manifest
+    if isinstance(normalized_manifest, CheckpointSelectionManifest):
+        return normalize_checkpoint_selection_lineage(normalized_manifest)
+    return normalized_manifest  # type: ignore[return-value]
+
+
+def _parent_ref_key(parent: ParentRef) -> tuple[str, str, Optional[str]]:
+    return (parent.kind, parent.id, parent.role)
+
+
+def _append_unique_parent_refs(
+    existing: list[ParentRef],
+    added: list[ParentRef],
+) -> list[ParentRef]:
+    refs = list(existing)
+    seen = {_parent_ref_key(parent) for parent in refs}
+    for parent in added:
+        key = _parent_ref_key(parent)
+        if key not in seen:
+            refs.append(parent)
+            seen.add(key)
+    return refs
+
+
+def _parent_ref_from_ref(ref: ParentRef | ArtifactRef | None) -> ParentRef | None:
+    return ref if isinstance(ref, ParentRef) else None
+
+
+def _checkpoint_candidate_lineage_refs(candidate: CheckpointCandidateRef) -> list[ParentRef]:
+    refs = [
+        _parent_ref_from_ref(candidate.checkpoint),
+        candidate.training_run,
+        candidate.model_artifact,
+    ]
+    return [ref for ref in refs if ref is not None]
+
+
+def checkpoint_selection_parent_refs(
+    manifest: CheckpointSelectionManifest,
+) -> list[ParentRef]:
+    """Return manifest lineage refs discoverable from checkpoint-selection custody."""
+    refs: list[ParentRef] = list(manifest.inputs)
+    for bank_ref in (manifest.bank.ref, manifest.bank.fallback_ref):
+        parent = _parent_ref_from_ref(bank_ref)
+        if parent is not None:
+            refs.append(parent)
+    for group in manifest.selections:
+        if group.selected_checkpoint is not None:
+            refs.extend(_checkpoint_candidate_lineage_refs(group.selected_checkpoint))
+    return _append_unique_parent_refs([], refs)
+
+
+def normalize_checkpoint_selection_lineage(
+    manifest: CheckpointSelectionManifest,
+) -> CheckpointSelectionManifest:
+    """Attach selected checkpoint and bank refs to provenance.parents for indexing."""
+    parents = _append_unique_parent_refs(
+        manifest.provenance.parents,
+        checkpoint_selection_parent_refs(manifest),
+    )
+    if parents == manifest.provenance.parents:
         return manifest
-    return manifest.model_copy(update=updates)  # type: ignore[return-value]
+    provenance = manifest.provenance.model_copy(update={"parents": parents})
+    return manifest.model_copy(update={"provenance": provenance})
 
 
 def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
@@ -642,6 +852,12 @@ def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
     """Return deterministic run identity for an analysis spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
     return f"feedbax-analysis-run:{digest[:32]}"
+
+
+def checkpoint_selection_manifest_id(spec: CheckpointSelectionSpec) -> str:
+    """Return deterministic identity for a checkpoint-selection spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-checkpoint-selection:{digest[:32]}"
 
 
 def evaluation_states_cache_path(
