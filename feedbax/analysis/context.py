@@ -21,6 +21,8 @@ from feedbax.manifest import (
     ManifestStatus,
     ParentRef,
     Provenance,
+    RegenerationSpec,
+    SpecPayload,
     analysis_results_cache_dir,
     analysis_run_manifest_id,
     collect_git_provenance,
@@ -84,6 +86,10 @@ class AnalysisRunContext:
     metadata: dict[str, Any] | None = None
     index_manifest: bool = True
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
+    _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
+        default_factory=list,
+        init=False,
+    )
     _manifest_path: Path | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -116,6 +122,11 @@ class AnalysisRunContext:
     def artifacts(self) -> tuple[ArtifactRef, ...]:
         """Return artifacts recorded so far."""
         return tuple(self._artifacts)
+
+    @property
+    def regeneration_specs(self) -> tuple[SpecPayload | ParentRef | ArtifactRef, ...]:
+        """Return regeneration specs recorded so far."""
+        return tuple(self._regeneration_specs)
 
     def record_artifact(
         self,
@@ -221,6 +232,36 @@ class AnalysisRunContext:
         """Find and record ``ArtifactRef`` objects embedded in a result payload."""
         return self.record_artifact_refs(tuple(self._iter_artifact_refs(value)))
 
+    def record_regeneration_specs(
+        self,
+        specs: Sequence[RegenerationSpec | SpecPayload | ParentRef | ArtifactRef],
+    ) -> tuple[SpecPayload | ParentRef | ArtifactRef, ...]:
+        """Record replay/provenance specs for this analysis run.
+
+        Feedbax owns only the manifest custody shape here. Downstream materializers
+        may provide inline ``RegenerationSpec`` values, already-packaged
+        ``SpecPayload`` objects, or external refs to durable regeneration records.
+        """
+        existing = {self._regeneration_spec_key(spec) for spec in self._regeneration_specs}
+        added = []
+        for raw_spec in specs:
+            spec = self._coerce_regeneration_spec(raw_spec)
+            key = self._regeneration_spec_key(spec)
+            if key in existing:
+                continue
+            self._regeneration_specs.append(spec)
+            existing.add(key)
+            added.append(spec)
+        return tuple(added)
+
+    def record_regeneration_spec(
+        self,
+        spec: RegenerationSpec | SpecPayload | ParentRef | ArtifactRef,
+    ) -> SpecPayload | ParentRef | ArtifactRef:
+        """Record one replay/provenance spec for this analysis run."""
+        recorded = self.record_regeneration_specs([spec])
+        return recorded[0] if recorded else self._coerce_regeneration_spec(spec)
+
     def record_figure(
         self,
         *,
@@ -307,6 +348,7 @@ class AnalysisRunContext:
             },
             provenance=provenance,
             artifacts=list(self._artifacts),
+            regeneration_specs=list(self._regeneration_specs),
             metadata={
                 **(self.metadata or {}),
                 **(metadata or {}),
@@ -478,6 +520,31 @@ class AnalysisRunContext:
             artifact.artifact_id,
             artifact.sha256,
             artifact.uri,
+        )
+
+    def _coerce_regeneration_spec(
+        self,
+        spec: RegenerationSpec | SpecPayload | ParentRef | ArtifactRef,
+    ) -> SpecPayload | ParentRef | ArtifactRef:
+        if isinstance(spec, RegenerationSpec):
+            return spec_payload("RegenerationSpec", spec.model_dump(mode="json"))
+        return spec
+
+    def _regeneration_spec_key(
+        self,
+        spec: SpecPayload | ParentRef | ArtifactRef,
+    ) -> tuple[Any, ...]:
+        if isinstance(spec, SpecPayload):
+            return ("SpecPayload", spec.kind, spec.sha256, spec.ref)
+        if isinstance(spec, ParentRef):
+            return ("ParentRef", spec.kind, spec.id, spec.uri, spec.role)
+        return (
+            "ArtifactRef",
+            spec.role,
+            spec.logical_name,
+            spec.artifact_id,
+            spec.sha256,
+            spec.uri,
         )
 
     def _iter_artifact_refs(self, value: Any):
