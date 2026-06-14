@@ -15,7 +15,7 @@ Feedbax includes a number of different types of modules. This page summarizes th
 
 ## Models and states
 
-The base class for all types of models is [`AbstractModel`][feedbax.AbstractModel], which is an alias of [`Component`][feedbax.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
+The base class for all types of models is [`AbstractModel`][feedbax.AbstractModel], which is an alias of [`Component`][feedbax.runtime.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.runtime.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
 
 Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, an `AbstractModel` is like a function that receives a state PyTree, and returns an altered copy.
 
@@ -69,7 +69,7 @@ So far there isn't an `AbstractNetwork` or `AbstractController` that defines how
 
 ### Channels
 
-[`Channel`][feedbax.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
+[`Channel`][feedbax.runtime.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
 
 `Channel` is used by `SimpleFeedback` to model sensory feedback, but it can also be used wherever delayed, noisy transmission is required in a model.
 

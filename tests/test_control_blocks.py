@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 
 # Control components
 from feedbax.control.continuous import Derivative, Integrator, StateSpace, TransferFunction
@@ -12,7 +12,7 @@ from feedbax.control.discrete import IntegratorDiscrete, UnitDelay, ZeroOrderHol
 from feedbax.control.pid import PID, PIDDiscrete
 
 # Signal components in components.py
-from feedbax.components import DeadZone, Demux, Mux, RateLimiter, Switch
+from feedbax.runtime.components import DeadZone, Demux, Mux, RateLimiter, Switch
 
 # Filter components
 from feedbax.filters import BandPassFilter, HighPassFilter

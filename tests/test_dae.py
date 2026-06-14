@@ -18,8 +18,8 @@ from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE, PointMassDAEP
 from feedbax.mechanics.skeleton.arm_dae import TwoLinkArmDAE, TwoLinkArmDAEParams
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.state import CartesianState
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.state import CartesianState
+from feedbax.runtime.graph import init_state_from_component
 
 
 # Enable 64-bit for numerical precision tests

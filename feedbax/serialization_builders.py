@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from feedbax.bodies import FeedbackChannels
-from feedbax.channel import Channel, ChannelSpec
-from feedbax.components import (
+from feedbax.runtime.channel import Channel, ChannelSpec
+from feedbax.runtime.components import (
     Constant,
     Damper,
     DelayLine,
@@ -33,7 +33,7 @@ from feedbax.components import (
 )
 from feedbax.control.affine import build_affine_feedback_controller
 from feedbax.filters import FirstOrderFilter
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
     AddNoise,
     AddNoiseParams,
@@ -65,7 +65,7 @@ from feedbax.penzai_component import (
     build_penzai_subgraph,
 )
 from feedbax.serialization_prototypes import array_proto_from_shape
-from feedbax.state_feedback import build_state_feedback_selector
+from feedbax.runtime.state_feedback import build_state_feedback_selector
 from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.task_presets import (
     apply_delayed_reaches_preset,

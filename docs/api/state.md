@@ -6,17 +6,17 @@
     For example, [`MechanicsState`][feedbax.mechanics.MechanicsState] is defined in the same module as
     [`Mechanics`][feedbax.mechanics.Mechanics].
 
-::: feedbax.state.State
+::: feedbax.runtime.state.State
     options:
         separate_signature: true
         signature_crossrefs: true
-::: feedbax.state.StateT
+::: feedbax.runtime.state.StateT
     options:
         separate_signature: true
         signature_crossrefs: true
 
-::: feedbax.state.StateBounds
+::: feedbax.runtime.state.StateBounds
 
-::: feedbax.state.CartesianState
+::: feedbax.runtime.state.CartesianState
 
-::: feedbax.state.clip_state
+::: feedbax.runtime.state.clip_state

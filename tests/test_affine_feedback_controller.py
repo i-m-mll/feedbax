@@ -7,7 +7,7 @@ import pytest
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.control.affine import AffineFeedbackController
-from feedbax.graph import Graph, init_state_from_component
+from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.serialization import graph_to_spec, spec_to_graph
 
 

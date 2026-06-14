@@ -11,7 +11,7 @@ import pytest
 import equinox as eqx
 
 from feedbax.nn_cde import CDENetwork, CDENetworkState
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ class TestSimpleFeedbackIntegration:
         from feedbax.mechanics.plant import DirectForceInput
         from feedbax.mechanics.skeleton.pointmass import PointMass
         from feedbax.noise import Normal
-        from feedbax.state import CartesianState
+        from feedbax.runtime.state import CartesianState
 
         k1, k2, k3 = jr.split(key, 3)
 

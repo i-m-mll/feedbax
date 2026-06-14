@@ -17,8 +17,8 @@ import jax.tree as jt
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
-from feedbax.graph import Component
-from feedbax.state import StateBounds
+from feedbax.runtime.graph import Component
+from feedbax.runtime.state import StateBounds
 
 
 class FilterState(eqx.Module):

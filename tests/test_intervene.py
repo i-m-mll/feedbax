@@ -17,7 +17,7 @@ from feedbax.intervene import (
     DynamicsMatrixPerturb,
     DynamicsMatrixPerturbParams,
 )
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 def _make_state(component: DynamicsMatrixPerturb, params: DynamicsMatrixPerturbParams) -> State:

@@ -16,10 +16,10 @@ import jax.random as jr
 import jax.tree as jt
 import optax
 
-from feedbax.graph import Graph, GraphTraceRequest, init_state_from_component
-from feedbax.parameter_constraints import apply_parameter_constraints
+from feedbax.runtime.graph import Graph, GraphTraceRequest, init_state_from_component
+from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.migrations import migrate_studio_task_binding_spec
-from feedbax.retained_observables import (
+from feedbax.runtime.retained_observables import (
     LossTermPlan,
     RetentionPlan,
     RetentionPlanError,

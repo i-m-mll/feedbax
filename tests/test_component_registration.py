@@ -14,10 +14,10 @@ from feedbax.component_registry import (
     get_component_registry,
     register_component_type,
 )
-from feedbax.channel import Channel
-from feedbax.components import Gain
+from feedbax.runtime.channel import Channel
+from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.serialization import spec_to_graph
 
 
@@ -183,7 +183,7 @@ def test_user_component_file_registers_palette_metadata_and_builder(
     component_file.write_text(
         textwrap.dedent(
             """
-            from feedbax.components import Gain
+            from feedbax.runtime.components import Gain
 
 
             class UserGain(Gain):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from feedbax._graph import detect_cycles_and_sort
+from feedbax.runtime._graph import detect_cycles_and_sort
 from feedbax._treescope import (
     CycleAnnotation,
     TreeProjection,
@@ -144,7 +144,7 @@ class TestGraphToTree:
     def test_invalid_strategy(self):
         """Test that invalid cut strategy raises error."""
         # We need a minimal Graph-like object
-        from feedbax.graph import Component, Graph, Wire
+        from feedbax.runtime.graph import Component, Graph, Wire
 
         # Create a simple graph (using the real Graph class)
         class DummyComponent(Component):
@@ -164,7 +164,7 @@ class TestGraphToTree:
 
     def test_acyclic_graph_projection(self):
         """Test projection of an acyclic graph."""
-        from feedbax.graph import Component, Graph, Wire
+        from feedbax.runtime.graph import Component, Graph, Wire
 
         class DummyComponent(Component):
             input_ports = ("input",)
@@ -186,7 +186,7 @@ class TestGraphToTree:
 
     def test_cyclic_graph_projection(self):
         """Test projection of a cyclic graph."""
-        from feedbax.graph import Component, Graph, Wire
+        from feedbax.runtime.graph import Component, Graph, Wire
 
         class DummyComponent(Component):
             input_ports = ("input",)
@@ -251,7 +251,7 @@ class TestRenderModelHtml:
 
     def test_render_graph_with_cycles(self):
         """Test rendering a graph with cycles shows annotations."""
-        from feedbax.graph import Component, Graph, Wire
+        from feedbax.runtime.graph import Component, Graph, Wire
 
         class DummyComponent(Component):
             input_ports = ("input",)

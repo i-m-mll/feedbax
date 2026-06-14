@@ -17,9 +17,9 @@ import jax.random as jr
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.channel import Channel, ChannelSpec, ChannelState
+from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState
 from feedbax.filters import FilterState, FirstOrderFilter
-from feedbax.graph import Component, Graph, Wire
+from feedbax.runtime.graph import Component, Graph, Wire
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.noise import Normal
 from feedbax._tree import tree_sum_n_features

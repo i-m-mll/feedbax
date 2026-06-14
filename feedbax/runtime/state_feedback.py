@@ -10,7 +10,7 @@ from equinox.nn import State
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 
 
 _DEFAULT_STATE_SLICES = {

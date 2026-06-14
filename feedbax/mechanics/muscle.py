@@ -27,7 +27,7 @@ from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree, Scalar
 import numpy as np
 
 from feedbax.dynamics import AbstractDynamicalSystem
-from feedbax.state import StateBounds
+from feedbax.runtime.state import StateBounds
 
 
 logger = logging.getLogger(__name__)

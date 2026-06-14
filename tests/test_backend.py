@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import pytest
 
-from feedbax.graph import init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.mechanics import (
     DiffraxBackend,
     MJXBackend,
@@ -23,7 +23,7 @@ from feedbax.mechanics import (
 )
 from feedbax.mechanics.plant import DirectForceInput, PlantState
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 try:
     import mujoco  # noqa: F401

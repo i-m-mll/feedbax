@@ -25,7 +25,7 @@ import optimistix as optx
 
 from feedbax.mechanics.dae import DAEComponent, DAEParams
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 from feedbax.misc import SINCOS_GRAD_SIGNS
 
 

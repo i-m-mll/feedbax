@@ -17,7 +17,7 @@ from equinox.nn import State
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.mechanics.geometry import PointMassRadialGeometry
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 

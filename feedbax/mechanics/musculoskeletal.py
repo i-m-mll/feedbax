@@ -26,7 +26,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.graph import Component
+from feedbax.runtime.graph import Component
 from feedbax.mechanics.dae import DAEComponent
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.hill_muscles import (
@@ -38,7 +38,7 @@ from feedbax.mechanics.hill_muscles import (
     TendonForceLengthCurve,
 )
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
-from feedbax.state import CartesianState
+from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)

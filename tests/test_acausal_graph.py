@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.graph import Component, Graph, Wire, init_state_from_component
+from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.acausal import (
     AcausalConnection,
     AcausalSystem,

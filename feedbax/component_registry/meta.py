@@ -9,7 +9,7 @@ from feedbax.contracts.graph import GraphSpec, GraphUIState, NodeUIState, ParamS
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ParamValue
-    from feedbax.graph import Component
+    from feedbax.runtime.graph import Component
 
 
 ComponentBuilder = Callable[[Mapping[str, Any]], "Component"]

@@ -22,7 +22,7 @@ from feedbax.dynamics import AbstractDynamicalSystem
 from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton
-from feedbax.state import StateBounds, StateT, clip_state
+from feedbax.runtime.state import StateBounds, StateT, clip_state
 
 
 logger = logging.getLogger(__name__)
