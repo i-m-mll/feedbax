@@ -24,8 +24,8 @@ import jax.tree as jt
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from feedbax._model import AbstractModel
 from feedbax._streaming import current_state_from_window
+from feedbax.graph import Component
 from feedbax.loss import (
     AbstractLoss,
     CompositeLoss,
@@ -39,7 +39,7 @@ from feedbax.loss import (
 def make_streaming_loss_fn(
     loss_func: AbstractLoss,
     trial_specs,
-    model: AbstractModel,
+    model: Component,
     n_steps: int,
 ) -> Callable:
     """Construct a per-step streaming loss function from a loss tree.

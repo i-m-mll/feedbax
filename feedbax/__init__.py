@@ -8,11 +8,6 @@ import logging
 import os
 
 from feedbax._io import load, load_with_hyperparameters, save
-from feedbax._model import (
-    AbstractModel,
-    wrap_stateless_callable,
-    wrap_stateless_keyless_callable,
-)
 from feedbax._mapping import WhereDict
 from feedbax._selectors import Selection, select
 from feedbax.graph import Component, Graph, Wire, init_state_from_component
@@ -79,7 +74,6 @@ from feedbax.task_presets import (
 # from feedbax._logging import enable_central_logging
 
 __all__ = [
-    "AbstractModel",
     "AbstractTask",
     "BUILTIN_GRAPH_TEMPLATES",
     "CDENetwork",
@@ -144,8 +138,6 @@ __all__ = [
     "tree_unstack",
     "tree_unzip",
     "tree_zip",
-    "wrap_stateless_callable",
-    "wrap_stateless_keyless_callable",
 ]
 
 

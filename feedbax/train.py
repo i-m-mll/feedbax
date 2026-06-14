@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial, wraps
 from pathlib import Path
-from typing import Any, Literal, Optional, Tuple, TypeAlias
+from typing import Any, Optional, Tuple, TypeAlias
 
 import equinox as eqx
 import jax
@@ -40,7 +40,6 @@ from feedbax.misc import (
     batched_outer,
     delete_contents,
     exponential_smoothing,
-    is_none,
 )
 from feedbax.parameter_constraints import project_component_parameters
 from feedbax.intervene.schedule import TimeSeriesParam
@@ -830,7 +829,7 @@ class TaskTrainer(eqx.Module):
         treedef_model,
         flat_opt_state,
         treedef_opt_state,
-        where_train_spec,  #! can't do AbstractModel[StateT[bool]]
+        where_train_spec,  #! can't precisely type Component trainable leaves here.
         update_funcs,
         key: PRNGKeyArray,
         loss_reduction_fn: Optional[Callable] = None,
@@ -1341,57 +1340,6 @@ def mask_diagonal(array):
     """Set the diagonal of (the last two dimensions of) `array` to zero."""
     mask = 1 - jnp.eye(array.shape[-1])
     return array * mask
-
-
-class HebbianGRUUpdate(eqx.Module):
-    """DEPRECATED. Use `HebbianUpdate`.
-
-    Hebbian update rule for the recurrent weights of a GRUCell.
-
-    This specifically applies the Hebbian update to the candidate activation
-    weights of the GRU, while leaving the update and reset weights unchanged.
-    """
-
-    scale: float = 0.01
-    mode: Literal["default", "differential"] = "default"
-    weight_type: Literal["candidate", "update", "reset"] = "candidate"
-
-    def __call__(self, model: Component, states: StateT) -> Component:
-        x = states.net.hidden
-
-        if self.mode == "default":
-            # Hebbian learning rule
-            dW = x[..., :, None] @ x[..., None, :]
-        elif self.mode == "differential":
-            dx = jnp.diff(x, axis=-2)  # diff over time
-            dW = dx[..., :, None] @ dx[..., None, :]
-        else:
-            raise ValueError("invalid mode field value encountered for HebbianGRUUpdate")
-
-        dW = self.scale * dW
-        # Updates do not apply to self weights.
-        dW = mask_diagonal(dW)
-
-        # Sum over all batch dimensions (e.g. trials, time)
-        dW_batch = jnp.mean(jnp.reshape(dW, (-1, dW.shape[-2], dW.shape[-1])), axis=0)
-
-        # Build the update for the appropriate weights of the GRU.
-        weight_hh = jnp.zeros_like(model.step.net.hidden.weight_hh)
-        weight_idxs = {
-            "reset": slice(0, weight_hh.shape[-2] // 3),
-            "update": slice(weight_hh.shape[-2] // 3, 2 * weight_hh.shape[-2] // 3),
-            "candidate": slice(2 * weight_hh.shape[-2] // 3, None),
-        }[self.weight_type]
-        weight_hh = weight_hh.at[..., weight_idxs, :].set(dW_batch)
-
-        update = eqx.tree_at(
-            lambda model: model.step.net.hidden.weight_hh,
-            jt.map(lambda x: None, model),
-            weight_hh,
-            is_leaf=is_none,
-        )
-
-        return update
 
 
 def hebb_rule(
