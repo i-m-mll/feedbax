@@ -37,13 +37,13 @@ from matplotlib.ticker import FormatStrFormatter
 from matplotlib.typing import ColorType
 
 from feedbax.bodies import SimpleFeedbackState
-from feedbax.loss import TermTree
+from feedbax.objectives.loss import TermTree
 from feedbax.misc import corners_2d
 from feedbax.runtime.state import CartesianState
-from feedbax.task import TaskTrialSpec
+from feedbax.tasks import TaskTrialSpec
 
 if TYPE_CHECKING:
-    from feedbax.train import TaskTrainerHistory
+    from feedbax.training.trainer import TaskTrainerHistory
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from feedbax.objective_spec import (
+from feedbax.objectives.spec import (
     EpochMaskSpec,
     FiniteDifferenceLossSpec,
     MatrixPayloadSpec,

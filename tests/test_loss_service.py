@@ -1,7 +1,7 @@
 """Tests for the loss service."""
 
 import pytest
-from feedbax.loss_service import LossService
+from feedbax.objectives.service import LossService
 from feedbax.contracts.graph import (
     GraphSpec,
     ComponentSpec,

@@ -10,7 +10,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 from equinox import filter_vmap as vmap
 from feedbax.intervene import is_intervenor
-from feedbax.task import AbstractTask
+from feedbax.tasks import AbstractTask
 from jax import lax
 from jax_cookbook import MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree

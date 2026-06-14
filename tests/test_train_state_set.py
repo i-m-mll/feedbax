@@ -4,7 +4,7 @@ import pytest
 from equinox.nn import State, StateIndex
 
 from feedbax.intervene import FixedField, FixedFieldParams
-from feedbax.train import _state_set_matching_dtypes
+from feedbax.training.trainer import _state_set_matching_dtypes
 
 
 class _WeakStateComponent(eqx.Module):

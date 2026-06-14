@@ -4,7 +4,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 
-from feedbax.loss import NthDifferenceLoss, OutputJerkLoss, StateDerivativeLoss
+from feedbax.objectives.loss import NthDifferenceLoss, OutputJerkLoss, StateDerivativeLoss
 
 
 class _FakeNet(eqx.Module):

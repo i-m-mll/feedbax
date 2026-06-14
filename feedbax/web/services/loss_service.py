@@ -1,3 +1,3 @@
 """Compatibility re-exports for loss service helpers."""
 
-from feedbax.loss_service import *  # noqa: F403
+from feedbax.objectives.service import *  # noqa: F403

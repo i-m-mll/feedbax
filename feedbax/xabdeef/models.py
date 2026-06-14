@@ -25,7 +25,7 @@ from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.nn import PopulationStructure, SimpleStagedNetwork
 from feedbax.nn_cde import CDENetwork
 from feedbax.noise import HalfNormal2Vector, Multiplicative, Normal
-from feedbax.task import AbstractTask
+from feedbax.tasks import AbstractTask
 
 
 logger = logging.getLogger(__name__)

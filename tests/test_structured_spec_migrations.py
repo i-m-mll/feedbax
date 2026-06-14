@@ -14,7 +14,7 @@ from feedbax.migrations import (
 )
 from feedbax.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
-from feedbax.objective_spec import validate_objective_spec
+from feedbax.objectives.spec import validate_objective_spec
 
 
 def _registry() -> SpecSchemaRegistry:

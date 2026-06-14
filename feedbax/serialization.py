@@ -54,7 +54,7 @@ from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.nn import SimpleStagedNetwork
 from feedbax.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.penzai_component import PenzaiSubgraph
-from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
+from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,

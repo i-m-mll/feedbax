@@ -1,5 +1,5 @@
 import feedbax
-import feedbax.task as task_api
+import feedbax.tasks as task_api
 from feedbax._mapping import WhereDict
 
 

@@ -50,7 +50,7 @@ from feedbax.intervene.intervene import (
     NetworkConstantInput,
     NetworkIntervenorParams,
 )
-from feedbax.loss import CompositeLoss
+from feedbax.objectives.loss import CompositeLoss
 from feedbax.mechanics.linear_state_space import LinearStateSpace
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
@@ -66,8 +66,8 @@ from feedbax.penzai_component import (
 )
 from feedbax.serialization_prototypes import array_proto_from_shape
 from feedbax.runtime.state_feedback import build_state_feedback_selector
-from feedbax.task import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-from feedbax.task_presets import (
+from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
+from feedbax.tasks.presets import (
     apply_delayed_reaches_preset,
     delayed_reaches_n_steps_from_params,
 )

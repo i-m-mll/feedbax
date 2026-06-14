@@ -10,7 +10,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
-from feedbax.task import AbstractTask
+from feedbax.tasks import AbstractTask
 from jax_cookbook import (
     compose,
     is_module,

@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from feedbax.loss import ModelLoss
+from feedbax.objectives.loss import ModelLoss
 
 
 def readout_norm_func(weights):

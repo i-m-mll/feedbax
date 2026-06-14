@@ -55,7 +55,7 @@ from feedbax.runtime.state import State
 
 if TYPE_CHECKING:
     from feedbax.bodies import SimpleFeedbackState
-    from feedbax.task import TaskTrialSpec
+    from feedbax.tasks import TaskTrialSpec
 
 
 logger = logging.getLogger(__name__)

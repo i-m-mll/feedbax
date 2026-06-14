@@ -17,10 +17,10 @@ import jax_cookbook.tree as jtree
 import numpy as np
 import optax
 from feedbax._io import arrays_to_lists
-from feedbax.loss import AbstractLoss
+from feedbax.objectives.loss import AbstractLoss
 from feedbax.misc import attr_str_tree_to_where_func
-from feedbax.task import AbstractTask
-from feedbax.train import TaskTrainer
+from feedbax.tasks import AbstractTask
+from feedbax.training.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
 from jax_cookbook import is_type
 from jaxtyping import Array, PRNGKeyArray, PyTree

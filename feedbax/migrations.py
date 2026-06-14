@@ -1044,7 +1044,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     manifest_emitters = ("feedbax.manifest", "feedbax.provider")
     studio_schema_emitters = ("feedbax.studio_schema", "feedbax.provider")
     studio_execution_emitters = ("feedbax.studio_execution", "feedbax.provider")
-    objective_emitters = ("feedbax.objective_spec", "feedbax.provider")
+    objective_emitters = ("feedbax.objectives.spec", "feedbax.provider")
     execution_emitters = ("feedbax.execution_models", "feedbax.provider")
 
     families = [
@@ -1142,7 +1142,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "ObjectiveSpec",
             "feedbax.spec.objective",
             "feedbax.spec.objective.v1",
-            owner_module="feedbax.objective_spec",
+            owner_module="feedbax.objectives.spec",
             emitted_by=("StudioScenarioSpec.objective_spec", "provider_manifest.schemas"),
             consumed_by=("future objective lowering",),
             description="Durable selector-addressed objective specification.",
@@ -1246,7 +1246,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 f"feedbax.spec.objective.{kind.removesuffix('Spec').lower()}",
                 "feedbax.spec.objective.v1",
-                owner_module="feedbax.objective_spec",
+                owner_module="feedbax.objectives.spec",
                 emitted_by=objective_emitters,
                 consumed_by=("ObjectiveSpec",),
                 description=f"Provider-exported ObjectiveSpec submodel {kind}.",

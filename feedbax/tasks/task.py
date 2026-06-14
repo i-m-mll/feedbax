@@ -49,7 +49,7 @@ from feedbax.intervene import (
     TimeSeriesParam,
 )
 from feedbax.intervene.schedule import IntervenorLabelStr
-from feedbax.loss import (
+from feedbax.objectives.loss import (
     AbstractLoss,
     TargetSpec,
     TermTree,
@@ -57,7 +57,7 @@ from feedbax.loss import (
 )
 from feedbax.misc import BatchInfo, is_module, is_none
 from feedbax.runtime.state import CartesianState, StateT
-from feedbax.task_presets import delayed_center_out_reaches_params
+from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
     from feedbax.runtime.graph import Component
@@ -292,7 +292,7 @@ def infer_n_steps(inputs: PyTree, timeline=None) -> int:
     Checks ``timeline.n_steps`` first if a timeline is provided, then falls
     back to reading the leading dimension of the first leaf of ``inputs``.
 
-    Used by :class:`AbstractTask` and also by ``feedbax.train`` to avoid
+    Used by :class:`AbstractTask` and also by ``feedbax.training.trainer`` to avoid
     duplicating this inference logic.
 
     Args:
