@@ -17,6 +17,8 @@ import jax.tree as jt
 import optax
 
 from feedbax.graph import Graph, GraphTraceRequest, init_state_from_component
+from feedbax.parameter_constraints import apply_parameter_constraints
+from feedbax.migrations import migrate_studio_task_binding_spec
 from feedbax.retained_observables import (
     LossTermPlan,
     RetentionPlan,
@@ -116,7 +118,9 @@ def compile_training_run(
     binding_model = (
         task_binding_spec
         if isinstance(task_binding_spec, StudioTaskBindingSpec)
-        else StudioTaskBindingSpec.model_validate(task_binding_spec)
+        else StudioTaskBindingSpec.model_validate(
+            migrate_studio_task_binding_spec(task_binding_spec).payload
+        )
     )
     binding_errors = [
         issue
@@ -234,6 +238,8 @@ def run_training_graph(
         updates, opt_state = optimizer.update(grads, opt_state, trainable)
         trainable = eqx.apply_updates(trainable, updates)
         graph = eqx.combine(static, trainable)
+        graph = apply_parameter_constraints(graph)
+        trainable, static = eqx.partition(graph, compiled.trainable_filter)
         compiled.graph = graph
 
         final_loss = float(jax.block_until_ready(loss_value))

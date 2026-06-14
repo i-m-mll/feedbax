@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.migrations import migrate_studio_workspace_spec
 from feedbax.manifest import SCHEMA_VERSION, utc_now
 from feedbax.studio_protocol import (
     GRAPH_BINDABLE_TASK_DATA_ROLES,
@@ -168,7 +169,7 @@ class RuntimeIntrospectionResult(StudioSchemaModel):
 class StudioSchemaEnumerationRequest(StudioSchemaModel):
     """HTTP request for static Studio schema enumeration."""
 
-    workspace: StudioWorkspaceSpec
+    workspace: StudioWorkspaceSpec | dict[str, Any]
     scenario_id: Optional[str] = None
     runtime_introspection: RuntimeIntrospectionOptions | bool | None = None
 
@@ -198,7 +199,9 @@ def enumerate_studio_schema_registry(
         workspace_spec = (
             workspace
             if isinstance(workspace, StudioWorkspaceSpec)
-            else StudioWorkspaceSpec.model_validate(workspace)
+            else StudioWorkspaceSpec.model_validate(
+                migrate_studio_workspace_spec(workspace).payload
+            )
         )
     except PydanticValidationError as exc:
         return StudioSchemaRegistry(
@@ -210,6 +213,17 @@ def enumerate_studio_schema_registry(
                     location={"path": "/" + "/".join(str(part) for part in error.get("loc", ()))},
                 )
                 for error in exc.errors()
+            ],
+        )
+    except ValueError as exc:
+        return StudioSchemaRegistry(
+            scenario_id=scenario_id,
+            issues=[
+                SchemaValidationIssue(
+                    type="workspace_schema_version_error",
+                    message=str(exc),
+                    location={"path": "/workspace/schema_version"},
+                )
             ],
         )
 
@@ -679,6 +693,20 @@ def _normalize_dynamic_graph_ports(
     changed = False
     nodes = dict(graph.nodes)
     for node_id, node in graph.nodes.items():
+        if node.type == "Demux":
+            sizes = node.params.get("sizes")
+            if isinstance(sizes, list) and all(isinstance(size, int) and size > 0 for size in sizes):
+                output_ports = [f"out_{index}" for index in range(len(sizes))]
+                if node.input_ports == ["input"] and node.output_ports == output_ports:
+                    continue
+                nodes[node_id] = node.model_copy(
+                    update={
+                        "input_ports": node.input_ports or ["input"],
+                        "output_ports": output_ports,
+                    }
+                )
+                changed = True
+            continue
         if node.type != "Mux":
             continue
         max_index = -1
@@ -738,7 +766,7 @@ def _enumerate_graph_ports(
                 )
             )
         for port_name in output_ports:
-            port_type = meta.port_types.outputs.get(port_name) if meta and meta.port_types else None
+            port_type = _component_output_port_type(meta, node.type, port_name)
             ports.append(
                 _port_schema(
                     node_id=node_id,
@@ -788,6 +816,22 @@ def _component_input_port_type(
     return port_type
 
 
+def _component_output_port_type(
+    meta: Any, component_type: str, port_name: str
+) -> Optional[PortType]:
+    if meta is None or meta.port_types is None:
+        return None
+    port_type = meta.port_types.outputs.get(port_name)
+    if (
+        port_type is None
+        and component_type == "Demux"
+        and port_name.startswith("out_")
+        and port_name.removeprefix("out_").isdigit()
+    ):
+        port_type = meta.port_types.outputs.get("out_0") or meta.port_types.outputs.get("out_1")
+    return port_type
+
+
 def _value_schema_for_graph_port(
     graph: GraphSpec,
     node_id: str,
@@ -810,7 +854,7 @@ def _value_schema_for_graph_port(
     port_type = (
         _component_input_port_type(meta, node.type, port)
         if direction == "input"
-        else (meta.port_types.outputs.get(port) if meta and meta.port_types else None)
+        else _component_output_port_type(meta, node.type, port)
     )
     return _port_schema(
         node_id=node_id,
@@ -924,6 +968,21 @@ def _component_port_dimension(
             dimension = n_pairs * 2 if n_pairs is not None else None
     elif component_type == "FeedbackChannels" and direction == "output" and port == "output":
         dimension = _feedback_channels_width(node_params)
+    elif component_type == "Demux":
+        sizes = node_params.get("sizes")
+        if isinstance(sizes, (list, tuple)) and all(
+            isinstance(size, int) and size > 0 for size in sizes
+        ):
+            if direction == "input" and port == "input":
+                dimension = sum(sizes)
+            elif (
+                direction == "output"
+                and port.startswith("out_")
+                and port.removeprefix("out_").isdigit()
+            ):
+                index = int(port.removeprefix("out_"))
+                if 0 <= index < len(sizes):
+                    dimension = sizes[index]
 
     if dimension_param is not None:
         dimension = _positive_int_param(node_params, dimension_param)

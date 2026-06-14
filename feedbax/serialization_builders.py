@@ -13,6 +13,8 @@ from feedbax.components import (
     Constant,
     Damper,
     DelayLine,
+    Demux,
+    ElementwiseAffineModulator,
     GRU,
     Gain,
     LSTM,
@@ -29,6 +31,7 @@ from feedbax.components import (
     Spring,
     Sum,
 )
+from feedbax.control.affine import build_affine_feedback_controller
 from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Component
 from feedbax.intervene.intervene import (
@@ -39,6 +42,8 @@ from feedbax.intervene.intervene import (
     Copy,
     CurlField,
     CurlFieldParams,
+    DynamicsMatrixPerturb,
+    DynamicsMatrixPerturbParams,
     FixedField,
     FixedFieldParams,
     NetworkClamp,
@@ -53,7 +58,7 @@ from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.nn import SimpleStagedNetwork
+from feedbax.nn import SimpleStagedNetwork, population_structure_from_spec
 from feedbax.noise import Multiplicative, Normal
 from feedbax.penzai_component import (
     PENZAI_AVAILABLE,
@@ -113,6 +118,13 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
     hidden_noise_std = params.get("hidden_noise_std", 0.0)
     if hidden_noise_std in (None, 0, 0.0):
         hidden_noise_std = None
+    population_structure = None
+    raw_population_structure = params.get("population_structure")
+    if isinstance(raw_population_structure, Mapping):
+        population_structure = population_structure_from_spec(
+            int(params.get("hidden_size", 0)),
+            raw_population_structure,
+        )
     return SimpleStagedNetwork(
         input_size=int(params.get("input_size", 0)),
         hidden_size=int(params.get("hidden_size", 0)),
@@ -122,6 +134,7 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
         hidden_nonlinearity=hidden_nonlinearity,
         out_nonlinearity=out_nonlinearity,
         hidden_noise_std=hidden_noise_std,
+        population_structure=population_structure,
         key=jr.PRNGKey(0),
     )
 
@@ -439,6 +452,20 @@ def _build_multiply(params: Mapping[str, Any]) -> Multiply:
     return Multiply()
 
 
+def _build_elementwise_affine_modulator(
+    params: Mapping[str, Any],
+) -> ElementwiseAffineModulator:
+    signal_shape = params.get("signal_shape")
+    if not isinstance(signal_shape, (list, tuple)):
+        raise ValueError("ElementwiseAffineModulator requires array parameter 'signal_shape'")
+    return ElementwiseAffineModulator(
+        signal_shape=signal_shape,
+        baseline=params.get("baseline", 1.0),
+        gain_init=params.get("gain_init", 0.0),
+        bias_init=params.get("bias_init", 0.0),
+    )
+
+
 def _build_constant(params: Mapping[str, Any]) -> Constant:
     return Constant(value=params.get("value", 0.0))
 
@@ -526,6 +553,13 @@ def _build_mux(params: Mapping[str, Any]) -> Mux:
     return Mux(n_inputs=int(params.get("n_inputs", 2)))
 
 
+def _build_demux(params: Mapping[str, Any]) -> Demux:
+    sizes = params.get("sizes")
+    if not isinstance(sizes, (list, tuple)):
+        raise ValueError("Demux requires 'sizes' as a non-empty list of positive integers")
+    return Demux(sizes=sizes)
+
+
 def _build_gru(params: Mapping[str, Any]) -> GRU:
     return GRU(
         input_size=int(params.get("input_size", 1)),
@@ -577,10 +611,53 @@ def _build_rigid_tendon_hill_muscle_thelen(
     )
 
 
+def _build_curl_field(params: Mapping[str, Any]) -> CurlField:
+    return CurlField(
+        params=CurlFieldParams(
+            scale=float(params.get("scale", 1.0)),
+            amplitude=float(params.get("amplitude", 1.0)),
+            active=bool(params.get("active", False)),
+        ),
+        label=str(params.get("label", "curl_field")),
+    )
+
+
+def _build_fixed_field(params: Mapping[str, Any]) -> FixedField:
+    return FixedField(
+        params=FixedFieldParams(
+            scale=float(params.get("scale", 1.0)),
+            amplitude=float(params.get("amplitude", 1.0)),
+            field=jnp.asarray(params.get("field", [0.0, 0.0])),
+            active=bool(params.get("active", False)),
+        ),
+        label=str(params.get("label", "fixed_field")),
+    )
+
+
+def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixPerturb:
+    delta_A = jnp.asarray(params.get("delta_A", [[0.0, 0.0, 0.0, 0.0]] * 2))
+    if delta_A.ndim != 2:
+        raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
+    if delta_A.shape[1] != 2 * delta_A.shape[0]:
+        raise ValueError(
+            "DynamicsMatrixPerturb delta_A must have shape (n_dim, 2 * n_dim)"
+        )
+    return DynamicsMatrixPerturb(
+        params=DynamicsMatrixPerturbParams(
+            scale=float(params.get("scale", 1.0)),
+            active=bool(params.get("active", False)),
+            delta_A=delta_A,
+        ),
+        label=str(params.get("label", "dynamics_matrix_perturb")),
+        mass=float(params.get("mass", 1.0)),
+    )
+
+
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
     "Sum": _build_sum,
     "Multiply": _build_multiply,
+    "ElementwiseAffineModulator": _build_elementwise_affine_modulator,
     "Constant": _build_constant,
     "Ravel": lambda params: Ravel(),
     "Ramp": _build_ramp,
@@ -592,6 +669,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Linear": _build_linear,
     "MLP": _build_mlp,
     "Mux": _build_mux,
+    "Demux": _build_demux,
     "GRU": _build_gru,
     "LSTM": _build_lstm,
     "Spring": _build_spring,
@@ -600,24 +678,13 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "RigidTendonHillMuscleThelen": _build_rigid_tendon_hill_muscle_thelen,
     "LinearStateSpace": _build_linear_state_space,
     "StateFeedbackSelector": build_state_feedback_selector,
+    "AffineFeedbackController": build_affine_feedback_controller,
     "Channel": _build_channel,
     "FeedbackChannels": _build_feedback_channels,
     "FirstOrderFilter": _build_filter,
-    "CurlField": lambda params: CurlField(
-        params=CurlFieldParams(
-            scale=float(params.get("scale", 1.0)),
-            amplitude=float(params.get("amplitude", 1.0)),
-            active=bool(params.get("active", False)),
-        )
-    ),
-    "FixedField": lambda params: FixedField(
-        params=FixedFieldParams(
-            scale=float(params.get("scale", 1.0)),
-            amplitude=float(params.get("amplitude", 1.0)),
-            field=jnp.asarray(params.get("field", [0.0, 0.0])),
-            active=bool(params.get("active", False)),
-        )
-    ),
+    "CurlField": _build_curl_field,
+    "FixedField": _build_fixed_field,
+    "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
     "AddNoise": lambda params: AddNoise(
         params=AddNoiseParams(
             scale=float(params.get("scale", 1.0)),

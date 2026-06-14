@@ -23,6 +23,7 @@ from feedbax.graph_normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
+from feedbax.migrations import migrate_studio_task_binding_spec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 
 
@@ -230,12 +231,9 @@ def _require_worker_specs(job: _Job) -> None:
             "task data bindings must not be inferred from graph task nodes"
         )
     task_binding_spec = _as_mapping("task_binding_spec", job.task_binding_spec)
-    if task_binding_spec.get("schema_version") != "feedbax.studio.task_bindings.v2":
-        raise ValueError("Training worker requires task_binding_spec schema v2")
-    if "exposed_outputs" in task_binding_spec:
-        raise ValueError("task_binding_spec.exposed_outputs is not accepted; use exposed_data")
     try:
-        binding_spec = StudioTaskBindingSpec.model_validate(task_binding_spec)
+        migrated_spec = migrate_studio_task_binding_spec(task_binding_spec).payload
+        binding_spec = StudioTaskBindingSpec.model_validate(migrated_spec)
     except ValueError as exc:
         raise ValueError(f"Invalid task_binding_spec: {exc}") from exc
     binding_spec = normalize_task_binding_spec_for_studio_authoring(binding_spec, graph_spec)

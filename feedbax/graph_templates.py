@@ -10,9 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
+from feedbax.nn import (
+    PopulationStructure,
+    lower_population_constraints,
+    population_structure_from_spec,
+)
 
 
 TemplateKind = Literal["executable", "display"]
@@ -44,13 +50,19 @@ def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> 
     return initializer
 
 
-def network_recurrent_wires(cell_type: str, hidden_size: int) -> list[WireSpec]:
+def network_recurrent_wires(
+    cell_type: str,
+    hidden_size: int,
+    *,
+    hidden_source_node: str = "cell",
+    hidden_source_port: str = "hidden",
+) -> list[WireSpec]:
     """Return recurrent carry wires for a Network cell subgraph."""
 
     wires = [
         WireSpec(
-            source_node="cell",
-            source_port="hidden",
+            source_node=hidden_source_node,
+            source_port=hidden_source_port,
             target_node="cell",
             target_port="hidden",
             temporality="recurrent",
@@ -84,68 +96,92 @@ def standard_network_subgraph(
     out_size: int,
     cell_type: str = "GRU",
     out_nonlinearity: str = "identity",
+    population_structure: PopulationStructure | Mapping[str, object] | None = None,
     name: str = "Network internals",
     description: str = "Built-in Network graph template",
 ) -> GraphSpec:
     """Build the executable subgraph used by built-in Network templates."""
 
     normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
+    parameter_constraints = []
+    if population_structure is not None:
+        parameter_constraints = list(
+            lower_population_constraints(
+                population_structure,
+                hidden_size=int(hidden_size),
+                input_size=int(input_size),
+                out_size=int(out_size),
+                cell_type=normalized_cell_type,
+            )
+        )
     now = datetime.now().isoformat()
-    return GraphSpec(
-        nodes={
-            "input_mux": ComponentSpec(
-                type="Mux",
-                params={"n_inputs": 2},
-                input_ports=["in_0", "in_1"],
-                output_ports=["output"],
-            ),
-            "cell": ComponentSpec(
-                type=normalized_cell_type,
-                params={
-                    "input_size": int(input_size),
-                    "hidden_size": int(hidden_size),
-                },
-                input_ports=["input", "hidden", "cell"]
-                if normalized_cell_type == "LSTM"
-                else ["input", "hidden"],
-                output_ports=["output", "hidden", "cell"]
-                if normalized_cell_type == "LSTM"
-                else ["output", "hidden"],
-            ),
-            "readout": ComponentSpec(
-                type="Linear",
-                params={
-                    "input_size": int(hidden_size),
-                    "output_size": int(out_size),
-                    "use_bias": True,
-                    "activation": out_nonlinearity,
-                },
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-        },
-        wires=[
-            WireSpec(
-                source_node="input_mux",
-                source_port="output",
-                target_node="cell",
-                target_port="input",
-            ),
+    nodes = {
+        "input_mux": ComponentSpec(
+            type="Mux",
+            params={"n_inputs": 2},
+            input_ports=["in_0", "in_1"],
+            output_ports=["output"],
+        ),
+        "cell": ComponentSpec(
+            type=normalized_cell_type,
+            params={
+                "input_size": int(input_size),
+                "hidden_size": int(hidden_size),
+            },
+            input_ports=["input", "hidden", "cell"]
+            if normalized_cell_type == "LSTM"
+            else ["input", "hidden"],
+            output_ports=["output", "hidden", "cell"]
+            if normalized_cell_type == "LSTM"
+            else ["output", "hidden"],
+        ),
+        "readout": ComponentSpec(
+            type="Linear",
+            params={
+                "input_size": int(hidden_size),
+                "output_size": int(out_size),
+                "use_bias": True,
+                "activation": out_nonlinearity,
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+        ),
+    }
+    wires = [
+        WireSpec(
+            source_node="input_mux",
+            source_port="output",
+            target_node="cell",
+            target_port="input",
+        ),
+    ]
+    input_ports = ["input", "feedback"]
+    input_bindings = {"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")}
+    wires.extend(
+        [
             WireSpec(
                 source_node="cell",
-                source_port="output",
+                source_port="hidden",
                 target_node="readout",
                 target_port="input",
             ),
-            *network_recurrent_wires(normalized_cell_type, int(hidden_size)),
-        ],
-        input_ports=["input", "feedback"],
+            *network_recurrent_wires(
+                normalized_cell_type,
+                int(hidden_size),
+            ),
+        ]
+    )
+    return GraphSpec(
+        nodes=nodes,
+        wires=wires,
+        input_ports=input_ports,
         output_ports=["output", "hidden"],
-        input_bindings={"input": ("input_mux", "in_0"), "feedback": ("input_mux", "in_1")},
+        input_bindings=input_bindings,
         output_bindings={
             "output": ("readout", "output"),
             "hidden": ("cell", "hidden"),
         },
+        parameter_constraints=parameter_constraints,
         metadata=GraphMetadata(
             name=name,
             description=description,
@@ -166,6 +202,12 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
     hidden_type = str(params.get("hidden_type", "GRUCell"))
     cell_type = "LSTM" if hidden_type in {"LSTM", "LSTMCell"} else "GRU"
     out_nonlinearity = str(params.get("out_nonlinearity", "identity"))
+    raw_population_structure = params.get("population_structure")
+    population_structure = None
+    if isinstance(raw_population_structure, PopulationStructure):
+        population_structure = raw_population_structure
+    elif isinstance(raw_population_structure, Mapping):
+        population_structure = population_structure_from_spec(hidden_size, raw_population_structure)
     node_params = {
         "input_size": input_size,
         "hidden_size": hidden_size,
@@ -176,22 +218,26 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         "hidden_noise_std": float(params.get("hidden_noise_std", 0.0) or 0.0),
         "encoding_size": int(params.get("encoding_size", 0) or 0),
     }
+    if population_structure is not None:
+        node_params["population_structure"] = population_structure.to_spec()
+    input_ports = ["input", "feedback"]
+    input_bindings = {
+        "input": ("network", "input"),
+        "feedback": ("network", "feedback"),
+    }
     return GraphSpec(
         nodes={
             "network": ComponentSpec(
                 type="Network",
                 params=node_params,
-                input_ports=["input", "feedback"],
+                input_ports=input_ports,
                 output_ports=["output", "hidden"],
             )
         },
         wires=[],
-        input_ports=["input", "feedback"],
+        input_ports=input_ports,
         output_ports=["output", "hidden"],
-        input_bindings={
-            "input": ("network", "input"),
-            "feedback": ("network", "feedback"),
-        },
+        input_bindings=input_bindings,
         output_bindings={
             "output": ("network", "output"),
             "hidden": ("network", "hidden"),
@@ -203,6 +249,7 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
                 out_size=out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
+                population_structure=population_structure,
             )
         },
     )

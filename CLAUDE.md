@@ -62,6 +62,16 @@ When changing durable formats, record the migration issue and validation
 strategy in the implementation issue or auth spec. Do not leave
 schema-affecting refactors as agent archaeology for downstream projects.
 
+Any new or changed structured spec emitter must declare a stable schema
+identity, such as an explicit version field or registered schema ID, and must
+integrate with the migration path or explicitly reject older versions with a
+clear error. This applies to provider APIs, manifests, Studio save/load,
+workers, analysis/evaluation/report execution, registries, and downstream
+extension hooks. Validation-only Pydantic or TypeScript shapes are not
+sufficient for durable emitted specs; implementation issues and auth specs must
+include focused acceptance evidence for old-version accept, migrate, or reject
+behavior.
+
 ## UI Conventions
 
 **No-jitter**: Interactive/editable page elements must not change geometry (size, position, spacing) when interacted with, except as explicitly intended (e.g. expand/collapse). Hover states, focus rings, edit mode transitions must preserve element dimensions.

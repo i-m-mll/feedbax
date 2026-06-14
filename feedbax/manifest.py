@@ -152,8 +152,12 @@ class SpecPayload(StrictModel):
 
     kind: str
     inline: dict[str, Any]
+    schema_id: Optional[str] = None
+    schema_version: Optional[str] = None
     ref: Optional[str] = None
     sha256: Optional[str] = None
+    source_sha256: Optional[str] = None
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -183,6 +187,7 @@ class BaseManifest(StrictModel):
 class GraphSpecManifest(BaseManifest):
     kind: Literal["GraphSpecManifest"] = "GraphSpecManifest"
     graph_spec: SpecPayload
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 class ModelArtifactManifest(BaseManifest):
@@ -276,6 +281,17 @@ AnyManifest = (
     | ReportManifest
 )
 
+class GraphSpecLoadResult(StrictModel):
+    """Migrated GraphSpec payload plus the manifest that owns its migration records."""
+
+    payload: dict[str, Any]
+    manifest: GraphSpecManifest | ModelArtifactManifest
+    custody_manifest_kind: Literal["GraphSpecManifest", "ModelArtifactManifest"]
+    custody_manifest_id: str
+    applied_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+    downstream_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+
 MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "GraphSpecManifest": GraphSpecManifest,
     "ModelArtifactManifest": ModelArtifactManifest,
@@ -284,6 +300,21 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "EvaluationRunManifest": EvaluationRunManifest,
     "AnalysisRunManifest": AnalysisRunManifest,
     "ReportManifest": ReportManifest,
+}
+
+SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
+    "GraphSpecManifest": ("graph_spec",),
+    "ModelArtifactManifest": ("graph_spec",),
+    "TrainingRunSetManifest": ("graph_spec",),
+    "TrainingRunManifest": (
+        "graph_spec",
+        "training_spec",
+        "task_spec",
+        "task_binding_spec",
+    ),
+    "EvaluationRunManifest": ("evaluation_spec",),
+    "AnalysisRunManifest": ("analysis_spec",),
+    "ReportManifest": ("report_spec",),
 }
 
 
@@ -306,14 +337,132 @@ def sha256_file(path: Path | str) -> str:
     return digest.hexdigest()
 
 
-def spec_payload(kind: str, inline: dict[str, Any], ref: Optional[str] = None) -> SpecPayload:
-    """Build a spec payload with a content hash over the inline payload."""
-    return SpecPayload(
-        kind=kind,
-        inline=inline,
-        ref=ref,
-        sha256=sha256_bytes(canonical_json_bytes(inline)),
+def _spec_payload_record_metadata(
+    record: ArtifactMigrationRecord,
+    *,
+    kind: str,
+    path: str,
+) -> ArtifactMigrationRecord:
+    metadata = {
+        **record.metadata,
+        "spec_payload_kind": kind,
+        "spec_payload_path": path,
+    }
+    return record.model_copy(update={"metadata": metadata})
+
+
+def _ensure_spec_payload_hash(payload: SpecPayload, *, path: str) -> str:
+    inline_sha256 = sha256_bytes(canonical_json_bytes(payload.inline))
+    if payload.sha256 is not None and payload.sha256 != inline_sha256:
+        raise ValueError(
+            "Embedded SpecPayload sha256 does not match canonical inline payload: "
+            f"path={path!r}, kind={payload.kind!r}, sha256={payload.sha256!r}, "
+            f"computed_sha256={inline_sha256!r}"
+        )
+    return inline_sha256
+
+
+def migrate_spec_payload(
+    payload: SpecPayload | dict[str, Any],
+    *,
+    path: str = "spec",
+    registry: Any | None = None,
+) -> SpecPayload:
+    """Accept or migrate one manifest-embedded structured spec payload.
+
+    ``sha256`` is the content hash of the canonical, post-migration inline
+    payload. If migration changes the inline payload, ``source_sha256`` retains
+    the original inline hash for provenance.
+    """
+    from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID
+    from feedbax.migrations import (
+        UnknownSpecFamily,
+        UnsupportedSpecVersion,
+        default_spec_registry,
+        migrate_graph_spec,
     )
+
+    spec_payload_obj = (
+        payload if isinstance(payload, SpecPayload) else SpecPayload.model_validate(payload)
+    )
+    active_registry = registry or default_spec_registry
+    try:
+        family = active_registry.resolve(spec_payload_obj.kind)
+    except UnknownSpecFamily as exc:
+        raise UnknownSpecFamily(
+            "Unknown embedded SpecPayload family: "
+            f"path={path!r}, kind={spec_payload_obj.kind!r}; {exc}"
+        ) from exc
+    expected_schema_id = family.identity
+    if spec_payload_obj.schema_id is not None and spec_payload_obj.schema_id != expected_schema_id:
+        raise UnsupportedSpecVersion(
+            "Unsupported embedded SpecPayload schema identity: "
+            f"path={path!r}, kind={spec_payload_obj.kind!r}, "
+            f"schema_id={spec_payload_obj.schema_id!r}, expected={expected_schema_id!r}"
+        )
+
+    source_sha256 = _ensure_spec_payload_hash(spec_payload_obj, path=path)
+    source_version = spec_payload_obj.schema_version
+    inline_schema_version = spec_payload_obj.inline.get("schema_version")
+    if (
+        source_version is not None
+        and isinstance(inline_schema_version, str)
+        and inline_schema_version
+        and inline_schema_version != source_version
+    ):
+        raise UnsupportedSpecVersion(
+            "Embedded SpecPayload schema version disagrees with inline payload: "
+            f"path={path!r}, kind={spec_payload_obj.kind!r}, "
+            f"schema_version={source_version!r}, "
+            f"inline_schema_version={inline_schema_version!r}"
+        )
+
+    try:
+        if spec_payload_obj.kind == "GraphSpec" and expected_schema_id == GRAPH_SPEC_SCHEMA_ID:
+            result = migrate_graph_spec(
+                spec_payload_obj.inline,
+                source_version=source_version,
+                path=path,
+                registry=active_registry,
+            )
+        else:
+            result = active_registry.migrate(
+                spec_payload_obj.kind,
+                spec_payload_obj.inline,
+                source_version=source_version,
+            )
+    except UnsupportedSpecVersion as exc:
+        raise UnsupportedSpecVersion(
+            "Unsupported embedded SpecPayload version: "
+            f"path={path!r}, kind={spec_payload_obj.kind!r}; {exc}"
+        ) from exc
+
+    migrated_sha256 = sha256_bytes(canonical_json_bytes(result.payload))
+    migration_records = [
+        *spec_payload_obj.migration_records,
+        *(
+            _spec_payload_record_metadata(record, kind=spec_payload_obj.kind, path=path)
+            for record in result.migration_records
+        ),
+    ]
+    update: dict[str, Any] = {
+        "inline": result.payload,
+        "schema_id": result.schema_id,
+        "schema_version": result.target_version,
+        "sha256": migrated_sha256,
+        "migration_records": migration_records,
+    }
+    if source_sha256 != migrated_sha256:
+        update["source_sha256"] = spec_payload_obj.source_sha256 or source_sha256
+    elif spec_payload_obj.source_sha256 is not None:
+        update["source_sha256"] = spec_payload_obj.source_sha256
+    return spec_payload_obj.model_copy(update=update)
+
+
+def spec_payload(kind: str, inline: dict[str, Any], ref: Optional[str] = None) -> SpecPayload:
+    """Build a registry-stamped spec payload hashed after inline migration."""
+    payload = SpecPayload(kind=kind, inline=inline, ref=ref)
+    return migrate_spec_payload(payload, path=kind)
 
 
 def collect_git_provenance(cwd: Path | str | None = None) -> Provenance:
@@ -436,6 +585,53 @@ def safe_manifest_key(manifest_id: str) -> str:
     return manifest_id.replace(":", "_").replace("/", "_")
 
 
+def _is_spec_payload_data(value: Any) -> bool:
+    return isinstance(value, dict) and "kind" in value and "inline" in value
+
+
+def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
+        return migrate_spec_payload(value, path=path)
+    return value
+
+
+def _normalize_manifest_data_spec_payloads(data: dict[str, Any]) -> dict[str, Any]:
+    raw_kind = data.get("kind")
+    if not isinstance(raw_kind, str):
+        return data
+    kind = raw_kind
+    fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(kind)
+    if not fields:
+        return data
+    normalized = dict(data)
+    for field_name in fields:
+        if field_name not in normalized:
+            continue
+        normalized[field_name] = _normalize_spec_payload_field(
+            normalized[field_name],
+            path=field_name,
+        )
+    return normalized
+
+
+def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
+    """Return a copy with embedded spec payloads registry-stamped and migrated."""
+    fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
+    if not fields:
+        return manifest
+    updates: dict[str, Any] = {}
+    for field_name in fields:
+        value = getattr(manifest, field_name, None)
+        normalized = _normalize_spec_payload_field(value, path=field_name)
+        if normalized is not value:
+            updates[field_name] = normalized
+    if not updates:
+        return manifest
+    return manifest.model_copy(update=updates)  # type: ignore[return-value]
+
+
 def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
     """Return deterministic run identity for an evaluation spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
@@ -475,6 +671,7 @@ def write_manifest(
     index: bool = True,
 ) -> Path:
     """Write a manifest to the local manifest layout and optionally index it."""
+    manifest = normalize_manifest_spec_payloads(manifest)
     root_path = Path(root) if root is not None else default_manifest_root()
     manifest_dir = _manifest_dir(root_path, manifest.kind)
     manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -493,11 +690,158 @@ def write_manifest(
 def load_manifest(path: Path | str) -> AnyManifest:
     """Load a known Feedbax manifest from disk."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    kind = data.get("kind")
+    data = _normalize_manifest_data_spec_payloads(data)
+    raw_kind = data.get("kind")
+    if not isinstance(raw_kind, str):
+        raise ValueError(f"Unknown Feedbax manifest kind: {raw_kind!r}")
+    kind = raw_kind
     model = MANIFEST_MODELS.get(kind)
     if model is None:
         raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
     return model.model_validate(data)  # type: ignore[return-value]
+
+
+def load_graph_spec_from_manifest(
+    manifest: GraphSpecManifest | ModelArtifactManifest | Path | str,
+    *,
+    root: Path | str | None = None,
+) -> GraphSpecLoadResult:
+    """Load a manifest-owned GraphSpec while preserving migration-record custody.
+
+    Feedbax GraphSpec migration records stay on the manifest that directly owns
+    the inline GraphSpec payload. Downstream legacy-conversion records already
+    present on a model artifact remain distinct and are surfaced separately.
+    """
+    manifest_obj, manifest_path = _load_graph_spec_manifest_source(manifest)
+    base = Path(root) if root is not None else (
+        manifest_path.parent if manifest_path is not None else Path(".")
+    )
+
+    if isinstance(manifest_obj, GraphSpecManifest):
+        return _migrate_manifest_graph_spec_payload(
+            manifest_obj,
+            manifest_obj.graph_spec,
+            existing_records=manifest_obj.migration_records,
+            custody_manifest_kind="GraphSpecManifest",
+        )
+
+    graph_spec = manifest_obj.graph_spec
+    if isinstance(graph_spec, ParentRef):
+        referenced = _load_parent_graph_spec_manifest(graph_spec, base=base)
+        referenced_result = load_graph_spec_from_manifest(referenced, root=base)
+        downstream_records = _append_unique_migration_records(
+            referenced_result.downstream_migration_records,
+            _downstream_migration_records(manifest_obj.migration_records),
+        )
+        return referenced_result.model_copy(
+            update={"downstream_migration_records": downstream_records}
+        )
+
+    return _migrate_manifest_graph_spec_payload(
+        manifest_obj,
+        graph_spec,
+        existing_records=manifest_obj.migration_records,
+        custody_manifest_kind="ModelArtifactManifest",
+    )
+
+
+def _load_graph_spec_manifest_source(
+    manifest: GraphSpecManifest | ModelArtifactManifest | Path | str,
+) -> tuple[GraphSpecManifest | ModelArtifactManifest, Path | None]:
+    if isinstance(manifest, GraphSpecManifest | ModelArtifactManifest):
+        return manifest, None
+    path = Path(manifest)
+    loaded = load_manifest(path)
+    if not isinstance(loaded, GraphSpecManifest | ModelArtifactManifest):
+        raise TypeError(
+            "Expected GraphSpecManifest or ModelArtifactManifest, "
+            f"got {type(loaded).__name__}."
+        )
+    return loaded, path
+
+
+def _load_parent_graph_spec_manifest(parent: ParentRef, *, base: Path) -> GraphSpecManifest:
+    if parent.uri is None:
+        raise ValueError(
+            f"Model artifact graph_spec parent {parent.id!r} has no URI; "
+            "GraphSpec migration custody is not discoverable."
+        )
+    path = Path(parent.uri)
+    if not path.is_absolute():
+        path = base / path
+    loaded = load_manifest(path)
+    if not isinstance(loaded, GraphSpecManifest):
+        raise TypeError(
+            f"Model artifact graph_spec parent {parent.id!r} resolved to "
+            f"{type(loaded).__name__}, expected GraphSpecManifest."
+        )
+    return loaded
+
+
+def _migrate_manifest_graph_spec_payload(
+    manifest: GraphSpecManifest | ModelArtifactManifest,
+    payload: SpecPayload,
+    *,
+    existing_records: list[ArtifactMigrationRecord],
+    custody_manifest_kind: Literal["GraphSpecManifest", "ModelArtifactManifest"],
+) -> GraphSpecLoadResult:
+    if payload.kind != "GraphSpec":
+        raise TypeError(f"Expected GraphSpec payload, got {payload.kind!r}.")
+
+    migrated_payload = migrate_spec_payload(payload, path="graph_spec")
+    applied_records = [
+        record for record in migrated_payload.migration_records if record.tool == "feedbax"
+    ]
+    migration_records = _append_unique_migration_records(
+        existing_records,
+        applied_records,
+    )
+    updated_manifest = manifest.model_copy(
+        update={
+            "graph_spec": migrated_payload,
+            "migration_records": migration_records,
+        }
+    )
+    return GraphSpecLoadResult(
+        payload=migrated_payload.inline,
+        manifest=updated_manifest,
+        custody_manifest_kind=custody_manifest_kind,
+        custody_manifest_id=manifest.id,
+        applied_migration_records=applied_records,
+        migration_records=migration_records,
+        downstream_migration_records=_downstream_migration_records(migration_records),
+    )
+
+
+def _append_unique_migration_records(
+    existing: list[ArtifactMigrationRecord],
+    added: list[ArtifactMigrationRecord],
+) -> list[ArtifactMigrationRecord]:
+    records = list(existing)
+    seen = {_migration_record_key(record) for record in records}
+    for record in added:
+        key = _migration_record_key(record)
+        if key not in seen:
+            records.append(record)
+            seen.add(key)
+    return records
+
+
+def _migration_record_key(record: ArtifactMigrationRecord) -> tuple[str, str, str, str, str]:
+    metadata = json.dumps(record.metadata, sort_keys=True, separators=(",", ":"))
+    return (
+        record.tool,
+        record.migration_id,
+        record.source_schema_version,
+        record.target_schema_version,
+        metadata,
+    )
+
+
+def _downstream_migration_records(
+    records: list[ArtifactMigrationRecord],
+) -> list[ArtifactMigrationRecord]:
+    return [record for record in records if record.tool != "feedbax"]
 
 
 def training_run_manifest_id(job_id: Optional[str] = None) -> str:

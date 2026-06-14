@@ -9,8 +9,16 @@ from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
-from feedbax.contracts.component import ComponentDefinition, PortType, PortTypeSpec
+from feedbax.contracts.component import (
+    ComponentDefinition,
+    ComponentIdentity,
+    ComponentMigrationInfo,
+    PortType,
+    PortTypeSpec,
+)
 from feedbax.contracts.graph import (
+    AdditiveGraphChannelAdapterSpec,
+    AdditiveGraphChannelTargetSpec,
     AnalysisInputConsumerSpec,
     AnalysisInputRequirement,
     AnalysisPageSpec,
@@ -25,6 +33,7 @@ from feedbax.contracts.graph import (
     GraphUIState,
     NodeUIState,
     ParamSchema,
+    ParameterConstraintSpec,
     RetainedObservableSpec,
     RetainedObservableTargetSpec,
     RetentionPolicySpec,
@@ -115,7 +124,10 @@ NONE_TYPE = type(None)
 MODEL_TYPES: list[type[BaseModel]] = [
     ParamSchema,
     ComponentSpec,
+    ParameterConstraintSpec,
     WireSpec,
+    AdditiveGraphChannelTargetSpec,
+    AdditiveGraphChannelAdapterSpec,
     UserPortSpec,
     TapTransform,
     TapSpec,
@@ -159,6 +171,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ValidationResult,
     PortType,
     PortTypeSpec,
+    ComponentIdentity,
+    ComponentMigrationInfo,
     ComponentDefinition,
     OptimizerSpec,
     TimeAggregationSpec,

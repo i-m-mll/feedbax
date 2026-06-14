@@ -28,6 +28,7 @@ from feedbax.provider import (
     validate_analysis_spec,
     validate_evaluation_spec,
     validate_graph_spec,
+    validate_spec,
     validate_task_spec,
     validate_training_spec,
 )
@@ -40,6 +41,8 @@ from feedbax.studio_schema import (
 from feedbax.graph_normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
+    GRAPH_SPEC_SCHEMA_ID,
+    GRAPH_SPEC_SCHEMA_VERSION,
     AnalysisInputRequirement,
     GraphMetadata,
     GraphSpec,
@@ -50,6 +53,7 @@ from feedbax.contracts.graph import (
     build_default_studio_workspace,
 )
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.migrations import default_spec_registry
 from feedbax.studio_protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
     WorkerStatus,
@@ -295,6 +299,46 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
         assert manifest.schemas[schema_name] == model_type.model_json_schema()
 
 
+def test_provider_manifest_graph_spec_schema_exposes_registered_identity() -> None:
+    manifest = provider_manifest()
+    graph_spec_schema = manifest.schemas["GraphSpec"]
+    if graph_spec_schema.get("$ref") == "#/$defs/GraphSpec":
+        graph_spec_schema = graph_spec_schema["$defs"]["GraphSpec"]
+    properties = graph_spec_schema["properties"]
+
+    assert default_spec_registry.current_version("GraphSpec") == GRAPH_SPEC_SCHEMA_VERSION
+    assert properties["schema_id"]["default"] == GRAPH_SPEC_SCHEMA_ID
+    assert properties["schema_version"]["default"] == GRAPH_SPEC_SCHEMA_VERSION
+
+
+def test_provider_validation_exposes_objective_and_studio_migration_entrypoints() -> None:
+    objective = validate_spec("objective", {"schema_version": "feedbax.objective.v0"})
+    assert not objective.valid
+    assert objective.errors[0].type == "invalid_objective_spec"
+    assert "feedbax.objective.v0" in objective.errors[0].message
+
+    task_binding = validate_spec(
+        "studio_task_binding",
+        {
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [],
+            "bindings": [],
+            "metadata": {},
+        },
+    )
+    assert task_binding.valid
+
+    workspace_payload = _schema_workspace().model_dump(mode="json", exclude_none=True)
+    workspace_payload["scenarios"]["scenario:train"]["task_binding_spec"] = {
+        "schema_version": "feedbax.studio.task_bindings.v0",
+        "metadata": {},
+    }
+    workspace = validate_spec("studio_workspace", workspace_payload)
+    assert not workspace.valid
+    assert workspace.errors[0].type == "invalid_studio_workspace_spec"
+    assert "task_bindings.v0" in workspace.errors[0].message
+
+
 def test_provider_manifest_exposes_mandible_manifest_mapping_contract() -> None:
     manifest = provider_manifest()
     mappings = manifest.mandible_manifest_mappings
@@ -455,6 +499,17 @@ def test_component_registry_snapshot_wraps_existing_registry() -> None:
     gain = next(entry for entry in snapshot.entries if entry.type_id == "feedbax.component.Gain")
     assert gain.input_ports == ["input"]
     assert gain.output_ports == ["output"]
+    assert gain.component_type_id == "Gain"
+    assert gain.owner == "feedbax"
+    assert gain.package == "feedbax"
+    assert gain.provenance == "feedbax"
+    assert gain.provenance_kind == "feedbax"
+    assert gain.param_schema_version == "1"
+    assert gain.supported_param_schema_versions == ["1"]
+    assert gain.identity is not None
+    assert gain.identity.stable
+    assert gain.identity.owner == "feedbax"
+    assert gain.migrations == []
 
 
 def test_validation_functions_accept_small_vertical_slice_specs() -> None:
@@ -962,6 +1017,20 @@ def test_studio_schema_enumeration_returns_ports_task_data_targets_and_issues() 
     assert registry.metadata["runtime_introspection"]["status"] == "not_requested"
 
 
+def test_studio_schema_enumeration_reports_workspace_migration_rejection() -> None:
+    workspace = _schema_workspace().model_dump(mode="json", exclude_none=True)
+    workspace["scenarios"]["scenario:train"]["task_binding_spec"] = {
+        "schema_version": "feedbax.studio.task_bindings.v0",
+        "metadata": {},
+    }
+
+    registry = enumerate_studio_schema_registry(workspace, "scenario:train")
+
+    assert registry.ports == []
+    assert registry.issues[0].type == "workspace_schema_version_error"
+    assert "task_bindings.v0" in registry.issues[0].message
+
+
 def test_studio_schema_enumeration_normalizes_runtime_network_ports() -> None:
     workspace = build_default_studio_workspace(
         label="Runtime network",
@@ -1027,6 +1096,41 @@ def test_network_authoring_normalization_emits_recurrent_cell_edges() -> None:
         "state_slot": "hidden",
     }
     assert subgraph.output_bindings["hidden"] == ("cell", "hidden")
+
+
+def test_network_authoring_normalization_lowers_population_constraints() -> None:
+    raw_graph = _runtime_network_graph_spec()
+    raw_graph["nodes"]["network"]["params"]["hidden_size"] = 4
+    raw_graph["nodes"]["network"]["params"]["input_size"] = 2
+    raw_graph["nodes"]["network"]["params"]["population_structure"] = {
+        "schema_version": "feedbax.population_structure.v1",
+        "assignment": "explicit",
+        "n_input_only": 1,
+        "n_readout_only": 1,
+        "n_recurrent_only": 1,
+        "n_input_readout": 1,
+        "input_only_indices": [0],
+        "readout_only_indices": [1],
+        "recurrent_only_indices": [2],
+        "input_readout_indices": [3],
+    }
+    graph = GraphSpec.model_validate(raw_graph)
+
+    subgraph = normalize_graph_for_studio_authoring(graph).subgraphs["network"]
+
+    assert [(constraint.node, constraint.role) for constraint in subgraph.parameter_constraints] == [
+        ("cell", "input_kernel"),
+        ("readout", "weight"),
+    ]
+    assert not any(
+        constraint.role in {"hidden_kernel", "weight_hh"}
+        for constraint in subgraph.parameter_constraints
+    )
+    assert len(subgraph.parameter_constraints[0].mask) == 12
+    assert subgraph.parameter_constraints[1].mask == [
+        [0, 1, 0, 1],
+        [0, 1, 0, 1],
+    ]
 
 
 def test_network_authoring_normalization_flattens_legacy_model_wrapper() -> None:
@@ -1260,6 +1364,33 @@ def test_studio_schema_enumeration_projects_dynamic_mux_inputs() -> None:
     assert port.value_schema.dtype == "vector"
     assert port.origin == "declared"
     assert not any(issue.type == "unknown_task_binding_target_port" for issue in registry.issues)
+
+
+def test_studio_schema_enumeration_projects_dynamic_demux_outputs() -> None:
+    graph = GraphSpec(
+        nodes={
+            "split": {
+                "type": "Demux",
+                "params": {"sizes": [2, 1, 3]},
+                "input_ports": ["input"],
+                "output_ports": ["out_0", "out_1"],
+            }
+        },
+        input_ports=["input"],
+        output_ports=["tail"],
+        input_bindings={"input": ("split", "input")},
+        output_bindings={"tail": ("split", "out_2")},
+    )
+    workspace = build_default_studio_workspace(label="Demux schema", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    port = next(port for port in registry.ports if port.id == "port:split.out_2:output")
+
+    assert port.value_schema.dtype == "vector"
+    assert port.value_schema.shape == [3]
+    assert port.origin == "inferred_static"
+    assert not any(issue.type == "unknown_graph_output_binding_port" for issue in registry.issues)
 
 
 def test_studio_schema_task_data_trajectory_bindings_use_sample_view() -> None:
@@ -1804,6 +1935,43 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2() -> None:
     )
 
 
+def test_worker_spec_contract_migrates_legacy_task_binding_v1() -> None:
+    job = _worker_contract_job(
+        task_binding_spec={
+            "schema_version": "feedbax.studio.task_bindings.v1",
+            "exposed_outputs": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->gain:input",
+                    "source_output_id": "inputs",
+                    "target_node_id": "gain",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    _require_worker_specs(job)
+
+    assert job.task_binding_spec["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert job.task_binding_spec["exposed_data"][0]["id"] == "inputs"
+    assert "exposed_outputs" not in job.task_binding_spec
+    assert job.task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
+    assert "source_output_id" not in job.task_binding_spec["bindings"][0]
+
+
 def test_worker_spec_contract_normalizes_runtime_network_payloads() -> None:
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
@@ -1881,21 +2049,12 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings() -> None
         ),
         (
             {
-                "schema_version": "feedbax.studio.task_bindings.v1",
-                "exposed_outputs": [],
-                "bindings": [],
-                "metadata": {},
-            },
-            "schema v2",
-        ),
-        (
-            {
                 "schema_version": "feedbax.studio.task_bindings.v2",
                 "exposed_outputs": [],
                 "bindings": [],
                 "metadata": {},
             },
-            "exposed_outputs is not accepted",
+            "exposed_outputs.*renamed to exposed_data",
         ),
         (
             {

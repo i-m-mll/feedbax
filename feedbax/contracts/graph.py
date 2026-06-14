@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+GRAPH_SPEC_SCHEMA_ID = "feedbax.graph_spec"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.graph_spec.v2"
+LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
+
+
 # Use Any for nested param values to avoid recursive type issues
 ParamValue = Union[int, float, str, bool, None, List[Any], Dict[str, Any]]
 
@@ -32,8 +37,23 @@ class ComponentSpec(BaseModel):
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
+    param_schema_version: Optional[str] = None
     input_ports: List[str] = Field(default_factory=list)
     output_ports: List[str] = Field(default_factory=list)
+
+
+class ParameterConstraintSpec(BaseModel):
+    """Structural constraint for a graph node parameter array.
+
+    ``mask`` uses trainability semantics: truthy entries keep the parameter value,
+    while falsy entries are projected to ``value`` at initialization and after
+    optimizer updates.
+    """
+
+    node: str
+    role: str
+    mask: ParamValue
+    value: ParamValue = 0.0
 
 
 class WireSpec(BaseModel):
@@ -207,6 +227,14 @@ class GraphMetadata(BaseModel):
 class GraphSpec(BaseModel):
     """Complete specification for a computation graph."""
 
+    schema_id: str = Field(
+        default=GRAPH_SPEC_SCHEMA_ID,
+        description="Stable machine-readable schema identity for GraphSpec payloads.",
+    )
+    schema_version: str = Field(
+        default=GRAPH_SPEC_SCHEMA_VERSION,
+        description="Machine-readable GraphSpec schema version.",
+    )
     nodes: Dict[str, ComponentSpec] = Field(default_factory=dict)
     wires: List[WireSpec] = Field(default_factory=list)
     additive_channel_adapters: List[AdditiveGraphChannelAdapterSpec] = Field(default_factory=list)
@@ -219,6 +247,7 @@ class GraphSpec(BaseModel):
     user_ports: Optional[Dict[str, UserPortSpec]] = None
     taps: Optional[List[TapSpec]] = None
     retained_observables: Optional[List[RetainedObservableSpec]] = None
+    parameter_constraints: List[ParameterConstraintSpec] = Field(default_factory=list)
     metadata: Optional[GraphMetadata] = None
 
 
@@ -284,6 +313,7 @@ class AnalysisPageSpec(BaseModel):
 
 STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.studio.workspace.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
+STUDIO_STAGE_SCHEMA_VERSION = "feedbax.studio.stage.v1"
 
 StudioStageKind = Literal[
     "train",
@@ -564,6 +594,7 @@ class StudioStageSpec(BaseModel):
     """Pipeline stage over scenario drafts, collections, and manifests."""
 
     id: str
+    schema_version: str = STUDIO_STAGE_SCHEMA_VERSION
     kind: StudioStageKind
     label: str
     status: StudioStageStatus = "draft"

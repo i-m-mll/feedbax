@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, cast
 
 import jax.numpy as jnp
 import jax.tree as jt
@@ -11,6 +11,8 @@ from feedbax.components import (
     Constant,
     DelayLine,
     Damper,
+    Demux,
+    ElementwiseAffineModulator,
     GRU,
     Gain,
     LSTM,
@@ -27,6 +29,7 @@ from feedbax.components import (
     Spring,
     Sum,
 )
+from feedbax.control.affine import AffineFeedbackController
 from feedbax.filters import FirstOrderFilter
 from feedbax.graph import Component, Graph, Wire
 from feedbax.graph_templates import standard_network_subgraph
@@ -35,6 +38,7 @@ from feedbax.intervene.intervene import (
     ConstantInput,
     Copy,
     CurlField,
+    DynamicsMatrixPerturb,
     FixedField,
     NetworkClamp,
     NetworkConstantInput,
@@ -57,6 +61,8 @@ from feedbax.contracts.graph import (
     WireSpec,
 )
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.migrations import migrate_graph_spec
+from feedbax.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.serialization_builders import build_component, nonlinearity_name
 from feedbax.serialization_prototypes import (
     normalize_stateful_prototypes,
@@ -65,8 +71,6 @@ from feedbax.serialization_prototypes import (
 )
 from feedbax.state_feedback import StateFeedbackSelector
 
-
-SUPPORTED_GRAPH_SPEC_VERSIONS = frozenset({"1.0.0"})
 
 __all__ = ["graph_to_spec", "prototypes_from_task_bindings", "spec_to_graph"]
 
@@ -151,91 +155,6 @@ def _lookup_required_params(component_registry: Any, name: str) -> set[str]:
     return set()
 
 
-def _validate_supported_spec_versions(spec: GraphSpec, *, path: str = "graph") -> None:
-    version = spec.metadata.version if spec.metadata is not None else None
-    if version is not None and version not in SUPPORTED_GRAPH_SPEC_VERSIONS:
-        supported = ", ".join(sorted(SUPPORTED_GRAPH_SPEC_VERSIONS))
-        raise ValueError(
-            f"Unsupported GraphSpec version {version!r} at {path}; supported versions: {supported}"
-        )
-    for node_name, subgraph in (spec.subgraphs or {}).items():
-        _validate_supported_spec_versions(subgraph, path=f"{path}.subgraphs[{node_name!r}]")
-
-
-def _migrate_spec(spec: GraphSpec) -> GraphSpec:
-    nodes: dict[str, ComponentSpec] = {}
-    for node_id, node_spec in spec.nodes.items():
-        next_type = node_spec.type
-        if next_type == "SimpleStagedNetwork":
-            next_type = "Network"
-        if next_type == "FeedbackChannel":
-            next_type = "Channel"
-        if next_type == "PenzaiSubgraph":
-            next_type = "PenzaiAdapter"
-        params = dict(node_spec.params)
-        if next_type == "Network" and "output_size" in params and "out_size" not in params:
-            params["out_size"] = params.get("output_size")
-        input_ports = list(node_spec.input_ports)
-        if next_type == "Network":
-            input_ports = ["input" if port == "target" else port for port in input_ports]
-        nodes[node_id] = ComponentSpec(
-            type=next_type,
-            params=params,
-            input_ports=input_ports,
-            output_ports=list(node_spec.output_ports),
-        )
-
-    def _rename_port(node_name: str, port: str) -> str:
-        node = nodes.get(node_name)
-        if node and node.type == "Network" and port == "target":
-            return "input"
-        return port
-
-    wires = [
-        WireSpec(
-            source_node=wire.source_node,
-            source_port=_rename_port(wire.source_node, wire.source_port),
-            target_node=wire.target_node,
-            target_port=_rename_port(wire.target_node, wire.target_port),
-            temporality=wire.temporality,
-            recurrent_initializer=wire.recurrent_initializer,
-        )
-        for wire in spec.wires
-    ]
-
-    input_bindings = {
-        name: (
-            node,
-            _rename_port(node, port),
-        )
-        for name, (node, port) in spec.input_bindings.items()
-    }
-
-    subgraphs = (
-        {node_id: _migrate_spec(subgraph) for node_id, subgraph in spec.subgraphs.items()}
-        if spec.subgraphs
-        else {}
-    )
-    user_ports = dict(spec.user_ports) if spec.user_ports else None
-    taps = list(spec.taps) if spec.taps else None
-
-    return GraphSpec(
-        nodes=nodes,
-        wires=wires,
-        input_ports=list(spec.input_ports),
-        output_ports=list(spec.output_ports),
-        input_bindings=input_bindings,
-        output_bindings=dict(spec.output_bindings),
-        subgraphs=subgraphs or None,
-        barnacles=spec.barnacles,
-        user_ports=user_ports,
-        taps=taps,
-        retained_observables=spec.retained_observables,
-        additive_channel_adapters=list(spec.additive_channel_adapters),
-        metadata=spec.metadata,
-    )
-
-
 def graph_to_spec(graph: Any) -> GraphSpec:
     """Serialize a Graph-like object to GraphSpec."""
     if not isinstance(graph, Graph):
@@ -294,12 +213,14 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             hidden_type_name = type(component.hidden).__name__
             cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
             out_nonlinearity = nonlinearity_name(component.out_nonlinearity)
+            input_ports = list(component.input_ports)
             subgraphs[name] = standard_network_subgraph(
                 input_size=component.input_size,
                 hidden_size=component.hidden_size,
                 out_size=component.out_size,
                 cell_type=cell_type,
                 out_nonlinearity=out_nonlinearity,
+                population_structure=component.population_structure,
                 name=f"{name} internals",
                 description="Auto-generated Network subgraph",
             )
@@ -314,10 +235,12 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "hidden_noise_std": component.hidden_noise_std or 0.0,
                 "encoding_size": component.encoding_size or 0,
             }
+            if component.population_structure is not None:
+                params["population_structure"] = component.population_structure.to_spec()
             nodes[name] = ComponentSpec(
                 type="Network",
                 params=params,
-                input_ports=list(component.input_ports),
+                input_ports=input_ports,
                 output_ports=list(component.output_ports),
             )
             continue
@@ -342,6 +265,19 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="Multiply",
                 params={},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, ElementwiseAffineModulator):
+            nodes[name] = ComponentSpec(
+                type="ElementwiseAffineModulator",
+                params={
+                    "signal_shape": list(component.signal_shape),
+                    "baseline": component.baseline.tolist(),
+                    "gain_init": component.gain.tolist(),
+                    "bias_init": component.bias.tolist(),
+                },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -454,6 +390,14 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="Mux",
                 params={"n_inputs": component.n_inputs},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, Demux):
+            nodes[name] = ComponentSpec(
+                type="Demux",
+                params={"sizes": list(component.sizes)},
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )
@@ -596,6 +540,15 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             )
             continue
 
+        if isinstance(component, AffineFeedbackController):
+            nodes[name] = ComponentSpec(
+                type="AffineFeedbackController",
+                params=component.to_params(),
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
         if isinstance(component, StateFeedbackSelector):
             nodes[name] = ComponentSpec(
                 type="StateFeedbackSelector",
@@ -686,6 +639,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "scale": component._initial_state.scale,
                 "amplitude": component._initial_state.amplitude,
                 "active": component._initial_state.active,
+                "label": component.label,
             }
             nodes[name] = ComponentSpec(
                 type="CurlField",
@@ -701,9 +655,26 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 "amplitude": component._initial_state.amplitude,
                 "field": jnp.asarray(component._initial_state.field).tolist(),
                 "active": component._initial_state.active,
+                "label": component.label,
             }
             nodes[name] = ComponentSpec(
                 type="FixedField",
+                params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, DynamicsMatrixPerturb):
+            params = {
+                "scale": component._initial_state.scale,
+                "delta_A": jnp.asarray(component._initial_state.delta_A).tolist(),
+                "active": component._initial_state.active,
+                "label": component.label,
+                "mass": component.mass,
+            }
+            nodes[name] = ComponentSpec(
+                type="DynamicsMatrixPerturb",
                 params=params,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
@@ -850,7 +821,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
                 source_port=wire.source_port,
                 target_node=wire.target_node,
                 target_port=wire.target_port,
-                temporality=wire.temporality,
+                temporality=cast(Literal["instant", "recurrent"], wire.temporality),
                 recurrent_initializer=wire.recurrent_initializer,
             )
             for wire in graph.wires
@@ -861,6 +832,7 @@ def graph_to_spec(graph: Any) -> GraphSpec:
         output_bindings=dict(graph.output_bindings),
         subgraphs=subgraphs or None,
         retained_observables=getattr(graph, "retained_observables", None),
+        parameter_constraints=list(getattr(graph, "parameter_constraints", ())),
         metadata=None,
     )
 
@@ -877,8 +849,8 @@ def spec_to_graph(
         component_registry if hasattr(component_registry, "names") else get_component_registry()
     )
     metadata_registry = component_registry if component_registry is not None else execution_registry
-    _validate_supported_spec_versions(spec)
-    spec = _migrate_spec(spec)
+    migration = migrate_graph_spec(spec)
+    spec = GraphSpec.model_validate(migration.payload)
     spec = materialize_additive_channel_adapters(spec)
     spec = normalize_stateful_prototypes(
         spec,
@@ -888,22 +860,46 @@ def spec_to_graph(
 
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
-        defaults = _lookup_defaults(metadata_registry, node_spec.type)
-        required_params = _lookup_required_params(metadata_registry, node_spec.type)
+        node_type = node_spec.type
+        node_params = dict(node_spec.params)
+        resolve_component_spec = getattr(metadata_registry, "resolve_component_spec", None)
+        should_resolve_component_spec = getattr(
+            metadata_registry,
+            "should_resolve_component_spec",
+            None,
+        )
+        if (
+            callable(resolve_component_spec)
+            and callable(should_resolve_component_spec)
+            and should_resolve_component_spec(
+                node_type,
+                param_schema_version=node_spec.param_schema_version,
+            )
+        ):
+            resolution = resolve_component_spec(
+                node_type,
+                node_params,
+                param_schema_version=node_spec.param_schema_version,
+            )
+            node_type = resolution.type_id
+            node_params = resolution.params
+
+        defaults = _lookup_defaults(metadata_registry, node_type)
+        required_params = _lookup_required_params(metadata_registry, node_type)
         params = _merge_params(
-            node_spec.params,
+            node_params,
             defaults,
             required_params=required_params,
             node_name=node_name,
-            node_type=node_spec.type,
+            node_type=node_type,
         )
 
-        if node_spec.type == "Subgraph":
+        if node_type == "Subgraph":
             if not spec.subgraphs or node_name not in spec.subgraphs:
                 raise ValueError(f"Missing subgraph spec for '{node_name}'")
             nodes[node_name] = spec_to_graph(spec.subgraphs[node_name], metadata_registry)
             continue
-        if node_spec.type == "Network":
+        if node_type == "Network":
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
                 raise ValueError(
@@ -917,7 +913,7 @@ def spec_to_graph(
             continue
         nodes[node_name] = build_component(
             node_name,
-            node_spec.type,
+            node_type,
             params,
             component_registry=execution_registry,
         )
@@ -934,14 +930,20 @@ def spec_to_graph(
         for wire in spec.wires
     )
 
-    input_bindings = {name: tuple(binding) for name, binding in spec.input_bindings.items()}
-    output_bindings = {name: tuple(binding) for name, binding in spec.output_bindings.items()}
+    input_bindings = {
+        name: (binding[0], binding[1]) for name, binding in spec.input_bindings.items()
+    }
+    output_bindings = {
+        name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
+    }
 
-    return Graph(
+    graph = Graph(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
         output_ports=tuple(spec.output_ports),
         input_bindings=input_bindings,
         output_bindings=output_bindings,
+        parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
     )
+    return apply_parameter_constraints(graph)

@@ -40,6 +40,7 @@ from feedbax.manifest import (
     utc_now,
     write_manifest,
 )
+from feedbax.migrations import migrate_studio_task_binding_spec
 from feedbax.studio_schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.contracts.graph import (
     GraphSpec,
@@ -514,7 +515,8 @@ def _validate_task_binding_spec(
     if task_binding_spec is None:
         return []
     try:
-        validated_spec = StudioTaskBindingSpec.model_validate(task_binding_spec)
+        migrated_spec = migrate_studio_task_binding_spec(task_binding_spec).payload
+        validated_spec = StudioTaskBindingSpec.model_validate(migrated_spec)
     except ValidationError as exc:
         issues: list[StudioValidationIssue] = []
         for error in exc.errors():
@@ -531,6 +533,14 @@ def _validate_task_binding_spec(
                 )
             )
         return issues
+    except ValueError as exc:
+        return [
+            StudioValidationIssue(
+                type="invalid_task_binding_spec",
+                message=str(exc),
+                location={"path": "/task_binding_spec/schema_version"},
+            )
+        ]
     graph_spec = GraphSpec.model_validate(graph)
     return _schema_issues_to_studio(
         validate_task_binding_schema(validated_spec, graph_spec, "/task_binding_spec")

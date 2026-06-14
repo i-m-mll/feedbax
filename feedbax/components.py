@@ -65,6 +65,76 @@ class Multiply(Component):
         return {"output": output}, state
 
 
+def _affine_param(value: PyTree, shape: tuple[int, ...], name: str) -> PyTree:
+    array = jnp.asarray(value)
+    try:
+        jnp.broadcast_shapes(array.shape, shape)
+    except ValueError as exc:
+        raise ValueError(
+            f"ElementwiseAffineModulator {name} shape {array.shape} cannot broadcast "
+            f"to signal_shape {shape}"
+        ) from exc
+    return jnp.broadcast_to(array, shape)
+
+
+class ElementwiseAffineModulator(Component):
+    """Apply per-element affine modulation to a signal.
+
+    Computes ``signal * (baseline + scale * modulator) + bias * modulator``.
+    By default ``scale`` and ``bias`` come from the trainable ``gain`` and
+    ``bias`` fields, but either may be provided as an explicit input port.
+    ``modulator`` may be scalar or broadcastable to the configured signal shape.
+    """
+
+    input_ports = ("signal", "modulator", "scale", "bias")
+    output_ports = ("output",)
+
+    baseline: Array
+    gain: Array
+    bias: Array
+    signal_shape: tuple[int, ...] = field(static=True)
+
+    def __init__(
+        self,
+        signal_shape: Sequence[int],
+        baseline: PyTree = 1.0,
+        gain_init: PyTree = 0.0,
+        bias_init: PyTree = 0.0,
+    ):
+        shape = tuple(int(dim) for dim in signal_shape)
+        if not shape:
+            raise ValueError("ElementwiseAffineModulator signal_shape must be non-empty")
+        if any(dim <= 0 for dim in shape):
+            raise ValueError(
+                "ElementwiseAffineModulator signal_shape dimensions must be positive"
+            )
+        self.signal_shape = shape
+        self.baseline = _affine_param(baseline, shape, "baseline")
+        self.gain = _affine_param(gain_init, shape, "gain_init")
+        self.bias = _affine_param(bias_init, shape, "bias_init")
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        signal = jnp.asarray(inputs["signal"])
+        modulator = jnp.asarray(inputs["modulator"])
+        scale = jnp.asarray(inputs.get("scale", self.gain))
+        bias = jnp.asarray(inputs.get("bias", self.bias))
+        if signal.shape != self.signal_shape:
+            raise ValueError(
+                "ElementwiseAffineModulator signal shape "
+                f"{signal.shape} does not match configured signal_shape {self.signal_shape}"
+            )
+        try:
+            jnp.broadcast_shapes(signal.shape, modulator.shape, scale.shape, bias.shape)
+        except ValueError as exc:
+            raise ValueError(
+                "ElementwiseAffineModulator input shapes cannot broadcast to signal shape "
+                f"{signal.shape}: modulator={modulator.shape}, scale={scale.shape}, "
+                f"bias={bias.shape}"
+            ) from exc
+        output = signal * (self.baseline + scale * modulator) + bias * modulator
+        return {"output": output}, state
+
+
 class Saturation(Component):
     """Clamp input to a min/max range."""
 
@@ -513,6 +583,10 @@ class Demux(Component):
 
     def __init__(self, sizes: Sequence[int]):
         self.sizes = tuple(int(s) for s in sizes)
+        if not self.sizes:
+            raise ValueError("Demux sizes must contain at least one output size")
+        if any(size <= 0 for size in self.sizes):
+            raise ValueError("Demux sizes must be positive integers")
         self.output_ports = tuple(f"out_{i}" for i in range(len(self.sizes)))
 
     def __call__(
@@ -523,6 +597,11 @@ class Demux(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         x = inputs["input"]
+        if x.shape[-1] != sum(self.sizes):
+            raise ValueError(
+                f"Demux input final dimension {x.shape[-1]} does not match "
+                f"sum(sizes) {sum(self.sizes)}"
+            )
         outputs: dict[str, PyTree] = {}
         start = 0
         for i, sz in enumerate(self.sizes):

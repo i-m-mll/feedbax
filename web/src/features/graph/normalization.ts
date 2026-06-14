@@ -20,59 +20,65 @@ function standardNetworkSubgraph(nodeId: string, params: ComponentSpec['params']
   const cellInputPorts = cellType === 'LSTM' ? ['input', 'hidden', 'cell'] : ['input', 'hidden'];
   const cellOutputPorts = cellType === 'LSTM' ? ['output', 'hidden', 'cell'] : ['output', 'hidden'];
   const recurrentWires = networkRecurrentWires(cellType, hiddenSize);
+  const nodes: GraphSpec['nodes'] = {
+    input_mux: {
+      type: 'Mux',
+      params: {
+        n_inputs: 2,
+      },
+      input_ports: ['in_0', 'in_1'],
+      output_ports: ['output'],
+    },
+    cell: {
+      type: cellType,
+      params: {
+        input_size: inputSize,
+        hidden_size: hiddenSize,
+      },
+      input_ports: cellInputPorts,
+      output_ports: cellOutputPorts,
+    },
+    readout: {
+      type: 'Linear',
+      params: {
+        input_size: hiddenSize,
+        output_size: outputSize,
+        use_bias: true,
+        activation: readoutActivation,
+      },
+      input_ports: ['input'],
+      output_ports: ['output'],
+    },
+  };
+  const wires: GraphSpec['wires'] = [
+    {
+      source_node: 'input_mux',
+      source_port: 'output',
+      target_node: 'cell',
+      target_port: 'input',
+    },
+  ];
+  const inputPorts = ['input', 'feedback'];
+  const inputBindings: GraphSpec['input_bindings'] = {
+    input: ['input_mux', 'in_0'],
+    feedback: ['input_mux', 'in_1'],
+  };
+  wires.push(
+    {
+      source_node: 'cell',
+      source_port: 'hidden',
+      target_node: 'readout',
+      target_port: 'input',
+    },
+    ...recurrentWires
+  );
 
   return {
-    nodes: {
-      input_mux: {
-        type: 'Mux',
-        params: {
-          n_inputs: 2,
-        },
-        input_ports: ['in_0', 'in_1'],
-        output_ports: ['output'],
-      },
-      cell: {
-        type: cellType,
-        params: {
-          input_size: inputSize,
-          hidden_size: hiddenSize,
-        },
-        input_ports: cellInputPorts,
-        output_ports: cellOutputPorts,
-      },
-      readout: {
-        type: 'Linear',
-        params: {
-          input_size: hiddenSize,
-          output_size: outputSize,
-          use_bias: true,
-          activation: readoutActivation,
-        },
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
-    },
-    wires: [
-      {
-        source_node: 'input_mux',
-        source_port: 'output',
-        target_node: 'cell',
-        target_port: 'input',
-      },
-      {
-        source_node: 'cell',
-        source_port: 'output',
-        target_node: 'readout',
-        target_port: 'input',
-      },
-      ...recurrentWires,
-    ],
-    input_ports: ['input', 'feedback'],
+    nodes,
+    wires,
+    input_ports: inputPorts,
     output_ports: ['output', 'hidden'],
-    input_bindings: {
-      input: ['input_mux', 'in_0'],
-      feedback: ['input_mux', 'in_1'],
-    },
+    input_bindings: inputBindings,
     output_bindings: {
       output: ['readout', 'output'],
       hidden: ['cell', 'hidden'],
@@ -99,11 +105,16 @@ function recurrentZeroInitializer(width: number, stateSlot: string) {
   };
 }
 
-function networkRecurrentWires(cellType: 'GRU' | 'LSTM', hiddenSize: number): GraphSpec['wires'] {
+function networkRecurrentWires(
+  cellType: 'GRU' | 'LSTM',
+  hiddenSize: number,
+  hiddenSourceNode = 'cell',
+  hiddenSourcePort = 'hidden'
+): GraphSpec['wires'] {
   const wires: GraphSpec['wires'] = [
     {
-      source_node: 'cell',
-      source_port: 'hidden',
+      source_node: hiddenSourceNode,
+      source_port: hiddenSourcePort,
       target_node: 'cell',
       target_port: 'hidden',
       temporality: 'recurrent',
@@ -205,7 +216,18 @@ function normalizeNetworkSubgraph(subgraph: GraphSpec, params: ComponentSpec['pa
   const cellNode = subgraph.nodes[cellId];
   const cellType = cellNode.type === 'LSTM' ? 'LSTM' : 'GRU';
   const hiddenSize = typeof cellNode.params.hidden_size === 'number' ? cellNode.params.hidden_size : 100;
-  const recurrentWires = networkRecurrentWires(cellType, hiddenSize);
+  const hiddenBinding = subgraph.output_bindings.hidden;
+  const hiddenSourceNode = hiddenBinding?.[0] ?? cellId;
+  const hiddenSourcePort = hiddenBinding?.[1] ?? 'hidden';
+  const preservesHiddenSource =
+    hiddenSourceNode in subgraph.nodes &&
+    (hiddenSourceNode !== cellId || hiddenSourcePort === 'hidden');
+  const recurrentWires = networkRecurrentWires(
+    cellType,
+    hiddenSize,
+    hiddenSourceNode,
+    hiddenSourcePort
+  );
   const recurrentTargets = new Set(
     recurrentWires.map((wire) => `${wire.target_node}.${wire.target_port}`)
   );
@@ -232,8 +254,7 @@ function normalizeNetworkSubgraph(subgraph: GraphSpec, params: ComponentSpec['pa
     inputBinding?.[0] !== 'input_mux' ||
     inputBinding?.[1] !== 'in_0' ||
     missingRecurrentWires.length > 0 ||
-    subgraph.output_bindings.hidden?.[0] !== cellId ||
-    subgraph.output_bindings.hidden?.[1] !== 'hidden';
+    !preservesHiddenSource;
   if (!needsMux) {
     return {
       ...subgraph,
@@ -277,7 +298,7 @@ function normalizeNetworkSubgraph(subgraph: GraphSpec, params: ComponentSpec['pa
     },
     output_bindings: {
       ...subgraph.output_bindings,
-      hidden: [cellId, 'hidden'] as [string, string],
+      hidden: [hiddenSourceNode, hiddenSourcePort] as [string, string],
     },
     metadata: {
       ...subgraph.metadata,
@@ -395,6 +416,10 @@ export function normalizeGraphAuthoringTypes(graph: GraphSpec): GraphSpec {
         if ('output_size' in nextParams && !('out_size' in nextParams)) {
           nextParams.out_size = nextParams.output_size;
         }
+        delete nextParams.sisu_gating;
+        delete nextParams.sisu_alpha;
+        delete nextParams.modulator;
+        delete nextParams.modulator_input;
       }
       const nextSpec: ComponentSpec = {
         ...spec,

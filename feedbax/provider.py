@@ -19,6 +19,7 @@ from feedbax.manifest import (
     ArtifactValidationRecord,
     EvaluationRunManifest,
     EvaluationRunSpec,
+    GraphSpecLoadResult,
     GraphSpecManifest,
     ModelArtifactManifest,
     PROVIDER_VERSION,
@@ -28,9 +29,16 @@ from feedbax.manifest import (
     TrainingRunManifest,
     TrainingRunSetManifest,
     feedbax_version,
+    load_graph_spec_from_manifest,
     utc_now,
 )
-from feedbax.objective_spec import objective_schema_models
+from feedbax.migrations import (
+    UnsupportedSpecVersion,
+    migrate_graph_spec,
+    migrate_studio_task_binding_spec,
+    migrate_studio_workspace_spec,
+)
+from feedbax.objective_spec import objective_schema_models, validate_objective_spec as _validate_objective_spec
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
@@ -59,7 +67,10 @@ from feedbax.contracts.graph import (
     AdditiveGraphChannelTargetSpec,
     AnalysisInputRequirement,
     GraphSpec,
+    StudioTaskBindingSpec,
+    StudioWorkspaceSpec,
 )
+from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.task_presets import apply_delayed_reaches_preset
@@ -160,6 +171,14 @@ class RegistryEntry(ProviderModel):
     output_ports: list[str] = Field(default_factory=list)
     parameter_schema: Any = Field(default_factory=list)
     artifact_roles: list[str] = Field(default_factory=list)
+    owner: Optional[str] = None
+    provenance: Optional[str] = None
+    provenance_kind: Optional[str] = None
+    component_type_id: Optional[str] = None
+    param_schema_version: Optional[str] = None
+    supported_param_schema_versions: list[str] = Field(default_factory=list)
+    identity: Optional[ComponentIdentity] = None
+    migrations: list[ComponentMigrationInfo] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -180,6 +199,11 @@ class ProviderValidationResult(ProviderModel):
     valid: bool
     errors: list[ValidationIssue] = Field(default_factory=list)
     warnings: list[ValidationIssue] = Field(default_factory=list)
+    migration_status: Optional[
+        Literal["current", "feedbax_migrated", "downstream_migrated", "rejected"]
+    ] = None
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
+    downstream_migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 def health() -> ProviderHealth:
@@ -224,6 +248,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "StudioSchemaRegistry": StudioSchemaRegistry,
         "StudioSchemaEnumerationRequest": StudioSchemaEnumerationRequest,
         "GraphSpecManifest": GraphSpecManifest,
+        "GraphSpecLoadResult": GraphSpecLoadResult,
         "ModelArtifactManifest": ModelArtifactManifest,
         "TrainingRunSetManifest": TrainingRunSetManifest,
         "TrainingRunManifest": TrainingRunManifest,
@@ -257,12 +282,13 @@ def _mandible_manifest_mappings() -> dict[str, MandibleManifestMapping]:
             title_fields=["graph_spec.ref", "id"],
             spec_fields=["graph_spec"],
             parent_ref_fields=["provenance.parents"],
-            opaque_domain_fields=["graph_spec.inline", "metadata"],
+            opaque_domain_fields=["graph_spec.inline", "migration_records", "metadata"],
             actions=common_actions + ["validate_graph_spec"],
             related_issue_refs=["51832b9", "c6c6da0", "f68cf66"],
             description=(
                 "Mandible should treat the graph payload as Feedbax-owned domain "
-                "detail and use Feedbax validation for semantics."
+                "detail and use Feedbax validation for semantics. Feedbax-owned "
+                "GraphSpec migration records remain on this manifest."
             ),
         ),
         "ModelArtifactManifest": MandibleManifestMapping(
@@ -592,6 +618,19 @@ def component_registry_snapshot() -> RegistrySnapshot:
                 name=definition.name,
                 category=definition.category,
                 description=definition.description,
+                owner=definition.owner,
+                package=definition.identity.package if definition.identity is not None else None,
+                provenance=definition.provenance,
+                provenance_kind=(
+                    definition.identity.provenance_kind
+                    if definition.identity is not None
+                    else None
+                ),
+                component_type_id=definition.name,
+                param_schema_version=definition.param_schema_version,
+                supported_param_schema_versions=list(definition.supported_param_schema_versions),
+                identity=definition.identity,
+                migrations=list(definition.migrations),
                 version=feedbax_version(),
                 input_ports=definition.input_ports,
                 output_ports=definition.output_ports,
@@ -770,12 +809,32 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
     from feedbax.graph_normalization import normalize_graph_for_studio_authoring
     from feedbax.component_registry import ComponentRegistry
 
+    migration_records: list[ArtifactMigrationRecord] = []
     try:
-        parsed = payload if isinstance(payload, GraphSpec) else GraphSpec.model_validate(payload)
+        migrated = migrate_graph_spec(payload)
+        migration_records = migrated.migration_records
+        parsed = GraphSpec.model_validate(migrated.payload)
         spec = normalize_graph_for_studio_authoring(materialize_additive_channel_adapters(parsed))
+    except UnsupportedSpecVersion as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="unsupported_spec_version",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+            migration_status="rejected",
+        )
     except PydanticValidationError as exc:
         errors = _pydantic_errors(exc)
-        return ProviderValidationResult(valid=False, errors=errors)
+        return ProviderValidationResult(
+            valid=False,
+            errors=errors,
+            migration_status="feedbax_migrated" if migration_records else "current",
+            migration_records=migration_records,
+        )
     except ValueError as exc:
         return ProviderValidationResult(
             valid=False,
@@ -786,6 +845,8 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                     location={"path": "/additive_channel_adapters"},
                 )
             ],
+            migration_status="feedbax_migrated" if migration_records else "current",
+            migration_records=migration_records,
         )
 
     registry = ComponentRegistry()
@@ -875,8 +936,87 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
                     location={"path": exc.path, "selector": exc.selector or ""},
                 )
             )
-    return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
+    return ProviderValidationResult(
+        valid=not errors,
+        errors=errors,
+        warnings=warnings,
+        migration_status="feedbax_migrated" if migration_records else "current",
+        migration_records=migration_records,
+    )
 
+
+def validate_graph_spec_manifest(
+    manifest: GraphSpecManifest | ModelArtifactManifest | dict[str, Any],
+) -> ProviderValidationResult:
+    if isinstance(manifest, dict):
+        kind = manifest.get("kind")
+        try:
+            if kind == "GraphSpecManifest":
+                manifest_obj: GraphSpecManifest | ModelArtifactManifest = (
+                    GraphSpecManifest.model_validate(manifest)
+                )
+            elif kind == "ModelArtifactManifest":
+                manifest_obj = ModelArtifactManifest.model_validate(manifest)
+            else:
+                return ProviderValidationResult(
+                    valid=False,
+                    errors=[
+                        ValidationIssue(
+                            type="unsupported_manifest_kind",
+                            message=(
+                                "Expected GraphSpecManifest or ModelArtifactManifest, "
+                                f"got {kind!r}."
+                            ),
+                            location={"path": "/kind"},
+                        )
+                    ],
+                )
+        except PydanticValidationError as exc:
+            return ProviderValidationResult(valid=False, errors=_pydantic_errors(exc))
+    else:
+        manifest_obj = manifest
+
+    try:
+        load_result = load_graph_spec_from_manifest(manifest_obj)
+    except UnsupportedSpecVersion as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="unsupported_spec_version",
+                    message=str(exc),
+                    location={"path": "/graph_spec/schema_version"},
+                )
+            ],
+            migration_status="rejected",
+        )
+    except (TypeError, ValueError, FileNotFoundError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="graph_spec_manifest_custody_error",
+                    message=str(exc),
+                    location={"path": "/graph_spec"},
+                )
+            ],
+            migration_status="rejected",
+        )
+
+    result = validate_graph_spec(load_result.payload)
+    if load_result.applied_migration_records:
+        migration_status = "feedbax_migrated"
+    elif load_result.downstream_migration_records:
+        migration_status = "downstream_migrated"
+    else:
+        migration_status = "current"
+    return result.model_copy(
+        update={
+            "migration_status": migration_status,
+            "migration_records": load_result.migration_records,
+            "downstream_migration_records": load_result.downstream_migration_records,
+        }
+    )
 
 def _validate_loss_term(term: LossTermSpec, path: str) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
@@ -1408,6 +1548,62 @@ def validate_analysis_spec(
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
+def validate_objective_spec(payload: dict[str, Any]) -> ProviderValidationResult:
+    """Validate a durable objective payload through the registered migration path."""
+    try:
+        _validate_objective_spec(payload)
+    except (PydanticValidationError, ValueError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_objective_spec",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
+def validate_studio_workspace_spec(payload: dict[str, Any]) -> ProviderValidationResult:
+    """Validate a Studio workspace payload through the registered migration path."""
+    try:
+        migrated = migrate_studio_workspace_spec(payload).payload
+        StudioWorkspaceSpec.model_validate(migrated)
+    except (PydanticValidationError, ValueError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_studio_workspace_spec",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
+def validate_studio_task_binding_spec(payload: dict[str, Any]) -> ProviderValidationResult:
+    """Validate a Studio task-binding payload through the registered migration path."""
+    try:
+        migrated = migrate_studio_task_binding_spec(payload).payload
+        StudioTaskBindingSpec.model_validate(migrated)
+    except (PydanticValidationError, ValueError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_studio_task_binding_spec",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
 def validate_spec(
     kind: str,
     payload: dict[str, Any],
@@ -1416,6 +1612,8 @@ def validate_spec(
 ) -> ProviderValidationResult:
     if kind == "graph":
         return validate_graph_spec(payload)
+    if kind in {"graph_manifest", "model_artifact_manifest"}:
+        return validate_graph_spec_manifest(payload)
     if kind == "training":
         return validate_training_spec(payload, graph_spec=graph_spec)
     if kind == "task":
@@ -1424,4 +1622,10 @@ def validate_spec(
         return validate_evaluation_spec(payload)
     if kind == "analysis":
         return validate_analysis_spec(payload)
+    if kind == "objective":
+        return validate_objective_spec(payload)
+    if kind == "studio_workspace":
+        return validate_studio_workspace_spec(payload)
+    if kind == "studio_task_binding":
+        return validate_studio_task_binding_spec(payload)
     raise ValueError(f"Unknown spec kind: {kind!r}")

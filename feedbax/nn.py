@@ -6,9 +6,9 @@
 
 import logging
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
-from typing import Literal, Optional
+from typing import Literal, Optional, cast
 
 import equinox as eqx
 import jax
@@ -25,6 +25,7 @@ from feedbax.misc import (
     interleave_unequal,
     n_positional_args,
 )
+from feedbax.contracts.graph import ParameterConstraintSpec
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,36 @@ class PopulationStructure(Module):
     input_readout_indices: Array  # shape (n_input_readout,)
 
     @classmethod
+    def from_indices(
+        cls,
+        *,
+        input_only_indices: Sequence[int],
+        readout_only_indices: Sequence[int],
+        recurrent_only_indices: Sequence[int],
+        input_readout_indices: Sequence[int],
+    ) -> "PopulationStructure":
+        """Create a population structure from explicit unit assignments."""
+
+        input_only = jnp.asarray(input_only_indices, dtype=int)
+        readout_only = jnp.asarray(readout_only_indices, dtype=int)
+        recurrent_only = jnp.asarray(recurrent_only_indices, dtype=int)
+        input_readout = jnp.asarray(input_readout_indices, dtype=int)
+        input_indices = jnp.concatenate([input_only, input_readout])
+        readout_indices = jnp.concatenate([readout_only, input_readout])
+        return cls(
+            n_input_only=int(input_only.shape[0]),
+            n_readout_only=int(readout_only.shape[0]),
+            n_recurrent_only=int(recurrent_only.shape[0]),
+            n_input_readout=int(input_readout.shape[0]),
+            input_indices=input_indices,
+            readout_indices=readout_indices,
+            input_only_indices=input_only,
+            readout_only_indices=readout_only,
+            recurrent_only_indices=recurrent_only,
+            input_readout_indices=input_readout,
+        )
+
+    @classmethod
     def create(
         cls,
         hidden_size: int,
@@ -238,6 +269,168 @@ class PopulationStructure(Module):
             recurrent_only_indices=recurrent_only_indices,
             input_readout_indices=input_readout_indices,
         )
+
+    def to_spec(self) -> dict[str, object]:
+        """Return a durable, explicit population assignment spec."""
+
+        def indices(values: Array) -> list[int]:
+            return [int(value) for value in jnp.asarray(values).tolist()]
+
+        return {
+            "schema_version": "feedbax.population_structure.v1",
+            "assignment": "explicit",
+            "n_input_only": int(self.n_input_only),
+            "n_readout_only": int(self.n_readout_only),
+            "n_recurrent_only": int(self.n_recurrent_only),
+            "n_input_readout": int(self.n_input_readout),
+            "input_only_indices": indices(self.input_only_indices),
+            "readout_only_indices": indices(self.readout_only_indices),
+            "recurrent_only_indices": indices(self.recurrent_only_indices),
+            "input_readout_indices": indices(self.input_readout_indices),
+        }
+
+
+def population_structure_from_spec(
+    hidden_size: int,
+    spec: Mapping[str, object] | PopulationStructure,
+    *,
+    key: PRNGKeyArray | None = None,
+) -> PopulationStructure:
+    """Build a ``PopulationStructure`` from a serialized high-level spec."""
+
+    if isinstance(spec, PopulationStructure):
+        return spec
+
+    def int_param(name: str, default: int = 0) -> int:
+        value = spec.get(name, default)
+        if isinstance(value, (int, float, str)):
+            return int(value)
+        raise ValueError(f"population_structure {name!r} must be numeric")
+
+    def indices_param(name: str) -> Sequence[int]:
+        value = spec.get(name, ())
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return cast(Sequence[int], value)
+        raise ValueError(f"population_structure {name!r} must be a sequence of integers")
+
+    assignment = str(spec.get("assignment", "random"))
+    if assignment == "explicit":
+        return PopulationStructure.from_indices(
+            input_only_indices=indices_param("input_only_indices"),
+            readout_only_indices=indices_param("readout_only_indices"),
+            recurrent_only_indices=indices_param("recurrent_only_indices"),
+            input_readout_indices=indices_param("input_readout_indices"),
+        )
+    n_input_only = int_param("n_input_only")
+    n_readout_only = int_param("n_readout_only")
+    n_recurrent_only = int_param("n_recurrent_only")
+    n_input_readout = int_param("n_input_readout")
+    if assignment == "contiguous":
+        assignment_fn = contiguous_assignment
+    elif assignment == "random":
+        assignment_fn = None
+    else:
+        raise ValueError(f"Unsupported population assignment {assignment!r}")
+    if key is None:
+        key = jr.PRNGKey(int_param("seed"))
+    return PopulationStructure.create(
+        hidden_size,
+        n_input_only=n_input_only,
+        n_readout_only=n_readout_only,
+        n_recurrent_only=n_recurrent_only,
+        n_input_readout=n_input_readout,
+        assignment_fn=assignment_fn,
+        key=key,
+    )
+
+
+def _population_base_input_mask(
+    population_structure: PopulationStructure,
+    input_size: int,
+) -> Array:
+    hidden_size = (
+        population_structure.n_input_only
+        + population_structure.n_readout_only
+        + population_structure.n_recurrent_only
+        + population_structure.n_input_readout
+    )
+    mask = jnp.zeros((hidden_size, input_size))
+    return mask.at[population_structure.input_indices, :].set(1.0)
+
+
+def population_input_kernel_mask(
+    population_structure: PopulationStructure,
+    input_size: int,
+    *,
+    gate_count: int,
+) -> Array:
+    """Return an input-kernel mask with hidden rows repeated per recurrent gate."""
+
+    if gate_count < 1:
+        raise ValueError("gate_count must be positive")
+    return jnp.tile(_population_base_input_mask(population_structure, input_size), (gate_count, 1))
+
+
+def population_readout_kernel_mask(
+    population_structure: PopulationStructure,
+    out_size: int,
+) -> Array:
+    """Return a readout weight mask selecting population readout columns."""
+
+    hidden_size = (
+        population_structure.n_input_only
+        + population_structure.n_readout_only
+        + population_structure.n_recurrent_only
+        + population_structure.n_input_readout
+    )
+    mask = jnp.zeros((out_size, hidden_size))
+    return mask.at[:, population_structure.readout_indices].set(1.0)
+
+
+def infer_recurrent_gate_count(weight_rows: int, hidden_size: int) -> int:
+    """Infer recurrent-cell gate count from the input-kernel row count."""
+
+    if hidden_size <= 0 or weight_rows % hidden_size != 0:
+        raise ValueError(
+            f"Cannot infer gate count from input-kernel rows={weight_rows} "
+            f"and hidden_size={hidden_size}"
+        )
+    return weight_rows // hidden_size
+
+
+def lower_population_constraints(
+    population_structure: PopulationStructure | Mapping[str, object],
+    *,
+    hidden_size: int,
+    input_size: int,
+    out_size: int,
+    cell_type: str,
+    cell_node: str = "cell",
+    readout_node: str = "readout",
+) -> tuple[ParameterConstraintSpec, ...]:
+    """Lower high-level population connectivity to graph parameter constraints."""
+
+    structure = population_structure_from_spec(hidden_size, population_structure)
+    normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
+    gate_count = 4 if normalized_cell_type == "LSTM" else 3
+    return (
+        ParameterConstraintSpec(
+            node=cell_node,
+            role="input_kernel",
+            mask=population_input_kernel_mask(
+                structure,
+                input_size,
+                gate_count=gate_count,
+            ).tolist(),
+            value=0.0,
+        ),
+        ParameterConstraintSpec(
+            node=readout_node,
+            role="weight",
+            mask=population_readout_kernel_mask(structure, out_size).tolist(),
+            value=0.0,
+        ),
+    )
 
 
 class MaskedLinear(Module):
@@ -438,20 +631,12 @@ class SimpleStagedNetwork(Component):
                     # For GRUCell, weight_ih is (3*hidden_size, input_size) for reset, update, candidate
                     weight_ih_shape = hidden.weight_ih.shape
 
-                    # Create mask: only input-receiving units get non-zero rows
-                    if weight_ih_shape[0] == 3 * hidden_size:
-                        # GRUCell case: replicate mask 3 times (for reset, update, candidate)
-                        hidden_input_mask = jnp.zeros((hidden_size, encoding_size))
-                        hidden_input_mask = hidden_input_mask.at[
-                            population_structure.input_indices, :
-                        ].set(1.0)
-                        hidden_input_mask = jnp.tile(hidden_input_mask, (3, 1))
-                    else:
-                        # Simple RNN case
-                        hidden_input_mask = jnp.zeros((hidden_size, encoding_size))
-                        hidden_input_mask = hidden_input_mask.at[
-                            population_structure.input_indices, :
-                        ].set(1.0)
+                    gate_count = infer_recurrent_gate_count(weight_ih_shape[0], hidden_size)
+                    hidden_input_mask = population_input_kernel_mask(
+                        population_structure,
+                        encoding_size,
+                        gate_count=gate_count,
+                    )
 
                     masked_weight_ih = hidden.weight_ih * hidden_input_mask
                     hidden = eqx.tree_at(lambda h: h.weight_ih, hidden, masked_weight_ih)
@@ -468,20 +653,12 @@ class SimpleStagedNetwork(Component):
                 if hasattr(hidden, "weight_ih"):
                     weight_ih_shape = hidden.weight_ih.shape
 
-                    # Create mask: only input-receiving units get non-zero rows
-                    if weight_ih_shape[0] == 3 * hidden_size:
-                        # GRUCell case: replicate mask 3 times (for reset, update, candidate)
-                        hidden_input_mask = jnp.zeros((hidden_size, layer_input_size))
-                        hidden_input_mask = hidden_input_mask.at[
-                            population_structure.input_indices, :
-                        ].set(1.0)
-                        hidden_input_mask = jnp.tile(hidden_input_mask, (3, 1))
-                    else:
-                        # Simple RNN case
-                        hidden_input_mask = jnp.zeros((hidden_size, layer_input_size))
-                        hidden_input_mask = hidden_input_mask.at[
-                            population_structure.input_indices, :
-                        ].set(1.0)
+                    gate_count = infer_recurrent_gate_count(weight_ih_shape[0], hidden_size)
+                    hidden_input_mask = population_input_kernel_mask(
+                        population_structure,
+                        layer_input_size,
+                        gate_count=gate_count,
+                    )
 
                     masked_weight_ih = hidden.weight_ih * hidden_input_mask
                     hidden = eqx.tree_at(lambda h: h.weight_ih, hidden, masked_weight_ih)
@@ -504,9 +681,7 @@ class SimpleStagedNetwork(Component):
         # Create readout layer (potentially masked if population_structure is provided)
         if out_size is not None:
             if population_structure is not None:
-                # Create mask for readout: only readout-contributing units have non-zero columns
-                readout_mask = jnp.zeros((out_size, hidden_size))
-                readout_mask = readout_mask.at[:, population_structure.readout_indices].set(1.0)
+                readout_mask = population_readout_kernel_mask(population_structure, out_size)
                 readout = MaskedLinear(
                     hidden_size, out_size, readout_mask, use_bias=use_bias, key=key3
                 )

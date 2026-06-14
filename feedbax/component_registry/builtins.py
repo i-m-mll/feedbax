@@ -4,6 +4,7 @@ from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
+from feedbax.control.affine import affine_feedback_output_prototype
 from feedbax.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
@@ -160,6 +161,35 @@ def register_builtin_components(registry: _Registry) -> None:
             port_types=PortTypeSpec(
                 inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
+            ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='ElementwiseAffineModulator',
+            category='Math',
+            description=(
+                'Per-element affine modulation: '
+                'signal * (baseline + gain * modulator) + bias * modulator.'
+            ),
+            param_schema=[
+                ParamSchema(name='signal_shape', type='array', default=[1], required=True),
+                ParamSchema(name='baseline', type='array', default=1.0, required=False),
+                ParamSchema(name='gain_init', type='array', default=0.0, required=False),
+                ParamSchema(name='bias_init', type='array', default=0.0, required=False),
+                ParamSchema(name='trainable', type='bool', default=True, required=False),
+            ],
+            input_ports=['signal', 'modulator', 'scale', 'bias'],
+            output_ports=['output'],
+            icon='SlidersHorizontal',
+            port_types=PortTypeSpec(
+                inputs={
+                    'signal': PortType(dtype='vector'),
+                    'modulator': PortType(dtype='vector'),
+                    'scale': PortType(dtype='vector'),
+                    'bias': PortType(dtype='vector'),
+                },
+                outputs={'output': PortType(dtype='vector')},
             ),
         )
     )
@@ -794,14 +824,16 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(name='scale', type='float', default=1.0, required=True),
                 ParamSchema(name='amplitude', type='float', default=1.0, required=True),
                 ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(name='label', type='str', default='curl_field', required=False),
             ],
-            input_ports=['effector', 'force'],
+            input_ports=['effector', 'force', 'params_override'],
             output_ports=['force'],
             icon='Wind',
             port_types=PortTypeSpec(
                 inputs={
                     'effector': PortType(dtype='state'),
                     'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
                 },
                 outputs={'force': PortType(dtype='vector')},
             ),
@@ -817,12 +849,51 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParamSchema(name='amplitude', type='float', default=1.0, required=True),
                 ParamSchema(name='field', type='array', default=[0.0, 0.0], required=True),
                 ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(name='label', type='str', default='fixed_field', required=False),
             ],
-            input_ports=['force'],
+            input_ports=['force', 'params_override'],
             output_ports=['force'],
             icon='Flag',
             port_types=PortTypeSpec(
-                inputs={'force': PortType(dtype='vector')},
+                inputs={
+                    'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
+                },
+                outputs={'force': PortType(dtype='vector')},
+            ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='DynamicsMatrixPerturb',
+            category='Interventions',
+            description='State-feedback dynamics-matrix perturbation in the force channel.',
+            param_schema=[
+                ParamSchema(name='scale', type='float', default=1.0, required=True),
+                ParamSchema(
+                    name='delta_A',
+                    type='array',
+                    default=[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]],
+                    required=True,
+                ),
+                ParamSchema(name='active', type='bool', default=False, required=False),
+                ParamSchema(
+                    name='label',
+                    type='str',
+                    default='dynamics_matrix_perturb',
+                    required=False,
+                ),
+                ParamSchema(name='mass', type='float', default=1.0, min=0.0, required=False),
+            ],
+            input_ports=['effector', 'force', 'params_override'],
+            output_ports=['force'],
+            icon='Activity',
+            port_types=PortTypeSpec(
+                inputs={
+                    'effector': PortType(dtype='state'),
+                    'force': PortType(dtype='vector'),
+                    'params_override': PortType(dtype='object'),
+                },
                 outputs={'force': PortType(dtype='vector')},
             ),
         )
@@ -1332,6 +1403,37 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'error': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='AffineFeedbackController',
+            category='Control',
+            description='Time-varying affine feedback controller with optional feedforward.',
+            param_schema=[
+                ParamSchema(name='gain', type='array', default=[[[1.0]]], required=True),
+                ParamSchema(name='bias', type='array', default=None, required=False),
+                ParamSchema(name='feedforward', type='array', default=None, required=False),
+                ParamSchema(
+                    name='schedule_policy',
+                    type='enum',
+                    options=['hold', 'error'],
+                    default='hold',
+                    required=False,
+                ),
+            ],
+            input_ports=['feedback', 'reference', 'feedforward'],
+            output_ports=['command'],
+            icon='GitBranch',
+            port_types=PortTypeSpec(
+                inputs={
+                    'feedback': PortType(dtype='vector'),
+                    'reference': PortType(dtype='vector'),
+                    'feedforward': PortType(dtype='vector'),
+                },
+                outputs={'command': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=affine_feedback_output_prototype,
         )
     )
     # --- Discrete components ---

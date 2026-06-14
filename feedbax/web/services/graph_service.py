@@ -12,6 +12,7 @@ from feedbax.graph_normalization import (
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,
 )
+from feedbax.migrations import migrate_graph_project_payload
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphProject,
@@ -179,6 +180,7 @@ class GraphService:
     def _load_project(self, path: Path) -> GraphProject:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
+        data = migrate_graph_project_payload(data)
         project = normalize_project_for_studio_authoring(GraphProject.model_validate(data))
         self._ensure_workspace(project)
         return project

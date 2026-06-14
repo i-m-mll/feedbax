@@ -140,6 +140,49 @@ describe('graph authoring normalization', () => {
     expect(normalized.nodes.task_mux.params.n_inputs).toBe(3);
   });
 
+  it('does not generate special SISU input routing for Network authoring', () => {
+    const graph: GraphSpec = {
+      nodes: {
+        network: {
+          type: 'SimpleStagedNetwork',
+          params: {
+            input_size: 4,
+            hidden_size: 3,
+            output_size: 2,
+            sisu_gating: 'multiplicative',
+            sisu_alpha: [0.1, -0.2, 0.3],
+          },
+          input_ports: ['target', 'feedback'],
+          output_ports: ['output', 'hidden'],
+        },
+      },
+      wires: [],
+      input_ports: ['target', 'feedback'],
+      output_ports: ['output', 'hidden'],
+      input_bindings: {
+        target: ['network', 'target'],
+        feedback: ['network', 'feedback'],
+      },
+      output_bindings: {
+        output: ['network', 'output'],
+        hidden: ['network', 'hidden'],
+      },
+    };
+
+    const normalized = normalizeGraphAuthoringTypes(graph);
+    const subgraph = normalized.subgraphs!.network;
+
+    expect(normalized.nodes.network.input_ports).toEqual(['input', 'feedback']);
+    expect(normalized.nodes.network.input_ports).not.toContain('sisu');
+    expect(subgraph.input_ports).not.toContain('sisu');
+    expect(subgraph.nodes.sisu_modulator).toBeUndefined();
+    expect(subgraph.nodes.cell.params.input_size).toBe(4);
+    expect(subgraph.output_bindings.hidden).toEqual(['cell', 'hidden']);
+    expect(normalized.nodes.network.params.sisu_gating).toBeUndefined();
+    expect(normalized.nodes.network.params.sisu_alpha).toBeUndefined();
+    expect(normalized.nodes.network.params.modulator_input).toBeUndefined();
+  });
+
   it('retargets task-data bindings from legacy Network target ports to input ports', () => {
     const graph = normalizeGraphForStudioAuthoring(runtimeGraph);
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
