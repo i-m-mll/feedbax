@@ -1084,7 +1084,8 @@ def test_runtime_wrapper_normalization_does_not_lower_hidden_population_constrai
     raw_graph["nodes"]["network"]["params"]["hidden_size"] = 4
     raw_graph["nodes"]["network"]["params"]["input_size"] = 2
     raw_graph["nodes"]["network"]["params"]["population_structure"] = {
-        "schema_version": "feedbax.population_structure.v1",
+        "schema_id": "feedbax.spec.population_structure",
+        "schema_version": "feedbax.spec.population_structure.v1",
         "assignment": "explicit",
         "n_input_only": 1,
         "n_readout_only": 1,

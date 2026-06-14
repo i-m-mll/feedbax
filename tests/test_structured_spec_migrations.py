@@ -157,6 +157,8 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["GraphSpec"].identity == "feedbax.spec.graph"
     assert families["GraphSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["GraphSpec"].current_version == GRAPH_SPEC_SCHEMA_VERSION
+    assert families["PopulationStructureSpec"].identity == "feedbax.spec.population_structure"
+    assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
@@ -169,6 +171,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
 def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> None:
     spec_kinds = {
         "GraphSpec",
+        "PopulationStructureSpec",
         "TrainingSpec",
         "TaskSpec",
         "ObjectiveSpec",
@@ -287,6 +290,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     graph_policy = default_spec_registry.resolve("GraphSpec").policy
     task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
     objective_policy = default_spec_registry.resolve("ObjectiveSpec").policy
+    population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
@@ -298,6 +302,9 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert objective_policy is not None
     assert objective_policy.stance == "reject"
     assert objective_policy.rejected_old_versions == ("feedbax.objective.v0",)
+    assert population_policy is not None
+    assert population_policy.stance == "reject"
+    assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)
 
     migrated = default_spec_registry.migrate(
         "StudioTaskBindingSpec",
