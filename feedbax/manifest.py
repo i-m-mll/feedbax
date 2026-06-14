@@ -36,6 +36,8 @@ except ImportError:  # pragma: no cover - Python 3.12 always has importlib.metad
 SCHEMA_VERSION = "feedbax.manifest.v1"
 PROVIDER_VERSION = "feedbax-provider.v1"
 DEFAULT_MANIFEST_ROOT_ENV = "FEEDBAX_RUNS_DIR"
+REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
+REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
@@ -151,6 +153,81 @@ class Provenance(StrictModel):
     issues: list[str] = Field(default_factory=list)
     parents: list[ParentRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FileHashRef(StrictModel):
+    """Deterministic content hash for one source or artifact file."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+    role: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TreeHashEntry(StrictModel):
+    """One file entry included in a deterministic tree hash."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TreeHashRef(StrictModel):
+    """Deterministic hash for a directory tree and its member file hashes."""
+
+    path: str
+    sha256: str
+    file_count: int
+    total_size_bytes: int
+    files: list[TreeHashEntry] = Field(default_factory=list)
+    role: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegenerationCommand(StrictModel):
+    """Command form used to regenerate one or more analysis/report artifacts."""
+
+    argv: list[str] = Field(default_factory=list)
+    shell_command: Optional[str] = None
+    cwd: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_invocation(self) -> "RegenerationCommand":
+        if not self.argv and not self.shell_command:
+            raise ValueError("regeneration command requires argv or shell_command")
+        return self
+
+
+class RegenerationSpec(StrictModel):
+    """Generic replay record for regenerating analysis or report artifacts."""
+
+    schema_id: str = REGENERATION_SPEC_SCHEMA_ID
+    schema_version: str = REGENERATION_SPEC_SCHEMA_VERSION
+    command: RegenerationCommand
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    inputs: list[ParentRef | ArtifactRef] = Field(default_factory=list)
+    outputs: list[ParentRef | ArtifactRef] = Field(default_factory=list)
+    source_files: list[FileHashRef] = Field(default_factory=list)
+    source_trees: list[TreeHashRef] = Field(default_factory=list)
+    provenance: Provenance = Field(default_factory=Provenance)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_schema_identity(self) -> "RegenerationSpec":
+        if self.schema_id != REGENERATION_SPEC_SCHEMA_ID:
+            raise ValueError(
+                "unsupported RegenerationSpec schema_id: "
+                f"{self.schema_id!r}, expected {REGENERATION_SPEC_SCHEMA_ID!r}"
+            )
+        if self.schema_version != REGENERATION_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported RegenerationSpec schema_version: "
+                f"{self.schema_version!r}, expected {REGENERATION_SPEC_SCHEMA_VERSION!r}"
+            )
+        return self
 
 
 class SpecPayload(StrictModel):
@@ -402,6 +479,9 @@ class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
     analysis_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
+        default_factory=list
+    )
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -418,6 +498,9 @@ class ReportManifest(BaseManifest):
     kind: Literal["ReportManifest"] = "ReportManifest"
     report_spec: SpecPayload
     inputs: list[ParentRef] = Field(default_factory=list)
+    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(
+        default_factory=list
+    )
 
 
 AnyManifest = (
@@ -465,8 +548,8 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     ),
     "EvaluationRunManifest": ("evaluation_spec",),
     "CheckpointSelectionManifest": ("selection_spec",),
-    "AnalysisRunManifest": ("analysis_spec",),
-    "ReportManifest": ("report_spec",),
+    "AnalysisRunManifest": ("analysis_spec", "regeneration_specs"),
+    "ReportManifest": ("report_spec", "regeneration_specs"),
 }
 
 
@@ -487,6 +570,67 @@ def sha256_file(path: Path | str) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def file_hash_ref(
+    path: Path | str,
+    *,
+    root: Path | str | None = None,
+    role: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> FileHashRef:
+    """Return a deterministic hash reference for one file."""
+    file_path = Path(path)
+    display_path = str(file_path if root is None else file_path.relative_to(Path(root)))
+    stat = file_path.stat()
+    return FileHashRef(
+        path=display_path,
+        sha256=sha256_file(file_path),
+        size_bytes=stat.st_size,
+        role=role,
+        metadata=dict(metadata or {}),
+    )
+
+
+def tree_hash_ref(
+    path: Path | str,
+    *,
+    root: Path | str | None = None,
+    role: Optional[str] = None,
+    include_files: bool = True,
+    metadata: Optional[dict[str, Any]] = None,
+) -> TreeHashRef:
+    """Return a deterministic hash reference for regular files under a directory."""
+    tree_path = Path(path)
+    if not tree_path.is_dir():
+        raise NotADirectoryError(tree_path)
+
+    entries: list[TreeHashEntry] = []
+    total_size = 0
+    for file_path in sorted(
+        candidate for candidate in tree_path.rglob("*") if candidate.is_file()
+    ):
+        relative_path = str(file_path.relative_to(tree_path))
+        stat = file_path.stat()
+        total_size += stat.st_size
+        entries.append(
+            TreeHashEntry(
+                path=relative_path,
+                sha256=sha256_file(file_path),
+                size_bytes=stat.st_size,
+            )
+        )
+    digest_payload = [entry.model_dump(mode="json", exclude_none=True) for entry in entries]
+    display_path = str(tree_path if root is None else tree_path.relative_to(Path(root)))
+    return TreeHashRef(
+        path=display_path,
+        sha256=sha256_bytes(canonical_json_bytes(digest_payload)),
+        file_count=len(entries),
+        total_size_bytes=total_size,
+        files=entries if include_files else [],
+        role=role,
+        metadata=dict(metadata or {}),
+    )
 
 
 def _spec_payload_record_metadata(
@@ -854,6 +998,11 @@ def _is_spec_payload_data(value: Any) -> bool:
 def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
     if value is None:
         return None
+    if isinstance(value, list):
+        return [
+            _normalize_spec_payload_field(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
         return migrate_spec_payload(value, path=path)
     return value
