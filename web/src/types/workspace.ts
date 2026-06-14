@@ -126,6 +126,8 @@ export interface StudioObjectiveTermSpec {
   target_value?: unknown;
   operator?: string | null;
   penalty?: string | null;
+  matrix?: unknown;
+  matrix_kind?: 'dense' | 'diagonal';
   temporal_selector?: TimeAggregationSpec | Record<string, unknown> | null;
   retention?: RetentionPolicySpec | null;
   weight: number;

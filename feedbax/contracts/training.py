@@ -39,6 +39,8 @@ class LossTermSpec(BaseModel):
     target_value: Optional[Any] = None
     retention: Optional[RetentionPolicySpec] = None
     norm: Optional[Literal["squared_l2", "l2", "l1", "huber"]] = None
+    matrix: Optional[Any] = None
+    matrix_kind: Optional[Literal["dense", "diagonal"]] = None
     time_agg: Optional[TimeAggregationSpec] = None
     children: Optional[Dict[str, "LossTermSpec"]] = None
 

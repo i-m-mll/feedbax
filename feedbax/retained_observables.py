@@ -109,6 +109,8 @@ class LossTermPlan:
     target: Optional[SelectorRef] = None
     target_value: Any = None
     norm: Literal["squared_l2", "l2", "l1", "huber"] = "squared_l2"
+    matrix: Any = None
+    matrix_kind: Literal["dense", "diagonal"] = "dense"
     time_agg: TimeAggregationSpec = field(default_factory=TimeAggregationSpec)
     time_mask: Optional[Any] = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -318,7 +320,10 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
         target = 0.0
 
     diff = jnp.asarray(source) - jnp.asarray(target)
-    per_step = _norm_values(diff, term.norm)
+    if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}:
+        per_step = _matrix_quadratic_values(diff, term.matrix, term.matrix_kind)
+    else:
+        per_step = _norm_values(diff, term.norm)
     return _aggregate_time(
         per_step,
         term.time_agg,
@@ -370,6 +375,8 @@ def retention_plan_to_json(plan: RetentionPlan) -> dict[str, Any]:
                 "target_selector": item.target.selector if item.target is not None else None,
                 "target_value": item.target_value,
                 "norm": item.norm,
+                "matrix": item.matrix,
+                "matrix_kind": item.matrix_kind,
                 "time_agg": item.time_agg.model_dump(mode="json", exclude_none=True),
                 "time_mask": (
                     jnp.asarray(item.time_mask, dtype=bool).tolist()
@@ -518,6 +525,8 @@ def _lower_loss_terms(
             path=path,
             selector=term.selector,
         )
+    if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}:
+        _validate_matrix_loss_term(term, path)
     time_agg = term.time_agg or TimeAggregationSpec(mode="all")
     time_mask = None
     metadata: dict[str, Any] = {}
@@ -562,6 +571,8 @@ def _lower_loss_terms(
             target=target,
             target_value=term.target_value,
             norm=term.norm or "squared_l2",
+            matrix=term.matrix,
+            matrix_kind=term.matrix_kind or "dense",
             time_agg=time_agg,
             time_mask=time_mask,
             metadata=metadata,
@@ -916,6 +927,89 @@ def _norm_values(values: Any, norm: str) -> Any:
     if norm == "l2":
         return jnp.sqrt(reduced)
     return reduced
+
+
+def _validate_matrix_loss_term(term: LossTermSpec, path: str) -> None:
+    if term.matrix is None:
+        raise RetentionPlanError(
+            "MatrixQuadraticLoss requires a matrix payload",
+            path=f"{path}/matrix",
+            selector=term.selector,
+        )
+    mat = jnp.asarray(term.matrix)
+    matrix_kind = term.matrix_kind or "dense"
+    if matrix_kind == "diagonal":
+        if mat.ndim != 1:
+            raise RetentionPlanError(
+                "Diagonal matrix-quadratic losses require a rank-1 matrix payload",
+                path=f"{path}/matrix",
+                selector=term.selector,
+            )
+        return
+    if matrix_kind == "dense":
+        if mat.ndim == 0:
+            return
+        if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:
+            raise RetentionPlanError(
+                "Dense matrix-quadratic losses require a square rank-2 matrix payload",
+                path=f"{path}/matrix",
+                selector=term.selector,
+            )
+        return
+    raise RetentionPlanError(
+        f"Unsupported matrix kind {matrix_kind!r}",
+        path=f"{path}/matrix_kind",
+        selector=term.selector,
+    )
+
+
+def _matrix_quadratic_values(
+    values: Any,
+    matrix: Any,
+    matrix_kind: Literal["dense", "diagonal"],
+) -> Any:
+    arr = jnp.asarray(values)
+    if matrix is None:
+        raise RetentionPlanError(
+            "MatrixQuadraticLoss requires a matrix payload",
+            path="/loss/matrix",
+        )
+    mat = jnp.asarray(matrix)
+    if arr.ndim == 0:
+        if mat.ndim != 0:
+            raise RetentionPlanError(
+                "Scalar matrix-quadratic losses require a scalar matrix payload",
+                path="/loss/matrix",
+            )
+        return mat * jnp.square(arr)
+    if matrix_kind == "diagonal":
+        if mat.ndim != 1:
+            raise RetentionPlanError(
+                "Diagonal matrix-quadratic losses require a rank-1 matrix payload",
+                path="/loss/matrix",
+            )
+        if mat.shape[0] != arr.shape[-1]:
+            raise RetentionPlanError(
+                "Diagonal matrix length must match the selected value feature dimension",
+                path="/loss/matrix",
+            )
+        return jnp.sum(jnp.square(arr) * mat, axis=-1)
+    if matrix_kind == "dense":
+        if mat.ndim != 2 or mat.shape[0] != mat.shape[1]:
+            raise RetentionPlanError(
+                "Dense matrix-quadratic losses require a square rank-2 matrix payload",
+                path="/loss/matrix",
+            )
+        if mat.shape[0] != arr.shape[-1]:
+            raise RetentionPlanError(
+                "Dense matrix shape must match the selected value feature dimension",
+                path="/loss/matrix",
+            )
+        return jnp.einsum("...i,ij,...j->...", arr, mat, arr)
+    raise RetentionPlanError(
+        f"Unsupported matrix kind {matrix_kind!r}",
+        path="/loss/matrix_kind",
+    )
 
 
 def _aggregate_time(

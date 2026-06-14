@@ -24,6 +24,8 @@ export interface LossTermSpec {
   target_value?: unknown;
   retention?: RetentionPolicySpec | null;
   norm?: 'squared_l2' | 'l2' | 'l1' | 'huber';
+  matrix?: unknown;
+  matrix_kind?: 'dense' | 'diagonal';
   time_agg?: TimeAggregationSpec;
   children?: Record<string, LossTermSpec>;
 }

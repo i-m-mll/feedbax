@@ -1227,8 +1227,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     for kind in (
         "TargetStateLossSpec",
         "FiniteDifferenceLossSpec",
+        "MatrixQuadraticLossSpec",
         "SelectorAddressSpec",
         "TargetValueSpec",
+        "MatrixPayloadSpec",
         "EpochMaskSpec",
         "ConstantScheduleSpec",
         "PowerLawScheduleSpec",
@@ -1365,6 +1367,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "Executable lowered loss term subrecord.",
         ),
     ):
+        rejected_versions = None
+        if kind in {"RetentionPlan", "LossTermPlan"}:
+            rejected_versions = (f"{schema_id}.v1", f"{schema_id}.v0")
         families.append(
             _family(
                 kind,
@@ -1377,6 +1382,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 ),
                 consumed_by=("training-run manifest write/load", "analysis materialization"),
                 description=description,
+                rejected_old_versions=rejected_versions,
                 required_tests=("tests/test_retained_observables.py",),
             )
         )
