@@ -39,53 +39,6 @@ export const componentLibrary: ComponentDefinition[] = [
 
   // --- Neural Networks ---
   {
-    name: 'Network',
-    category: 'Neural Networks',
-    description: 'Composite recurrent network template.',
-    param_schema: [
-      { name: 'input_size', type: 'int', default: 6, min: 1, required: true },
-      { name: 'hidden_size', type: 'int', default: 100, min: 1, required: true },
-      { name: 'out_size', type: 'int', default: 2, min: 1, required: false },
-      {
-        name: 'hidden_type',
-        type: 'enum',
-        options: ['GRUCell', 'LSTMCell', 'Linear'],
-        default: 'GRUCell',
-        required: false,
-      },
-      {
-        name: 'hidden_nonlinearity',
-        type: 'enum',
-        options: ['tanh', 'relu', 'identity'],
-        default: 'tanh',
-        required: false,
-      },
-      {
-        name: 'out_nonlinearity',
-        type: 'enum',
-        options: ['tanh', 'relu', 'identity'],
-        default: 'tanh',
-        required: false,
-      },
-      { name: 'hidden_noise_std', type: 'float', default: 0.0, min: 0.0, required: false },
-      { name: 'encoding_size', type: 'int', default: 0, min: 0, required: false },
-    ],
-    input_ports: ['input', 'feedback'],
-    output_ports: ['output', 'hidden'],
-    icon: 'CircuitBoard',
-    default_params: {
-      input_size: 6,
-      hidden_size: 100,
-      out_size: 2,
-      hidden_type: 'GRUCell',
-      hidden_nonlinearity: 'tanh',
-      out_nonlinearity: 'tanh',
-      hidden_noise_std: 0.0,
-      encoding_size: 0,
-    },
-    is_composite: true,
-  },
-  {
     name: 'MLP',
     category: 'Neural Networks',
     description: 'Multi-layer perceptron.',

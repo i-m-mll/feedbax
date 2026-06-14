@@ -89,7 +89,7 @@ def network_recurrent_wires(
     return wires
 
 
-def standard_network_subgraph(
+def recurrent_controller_template_graph(
     *,
     input_size: int,
     hidden_size: int,
@@ -97,10 +97,10 @@ def standard_network_subgraph(
     cell_type: str = "GRU",
     out_nonlinearity: str = "identity",
     population_structure: PopulationStructure | Mapping[str, object] | None = None,
-    name: str = "Network internals",
-    description: str = "Built-in Network graph template",
+    name: str = "Recurrent controller",
+    description: str = "Explicit recurrent controller graph template",
 ) -> GraphSpec:
-    """Build the executable subgraph used by built-in Network templates."""
+    """Build an explicit recurrent controller graph with ordinary nodes and wires."""
 
     normalized_cell_type = "LSTM" if cell_type in {"LSTM", "LSTMCell"} else "GRU"
     parameter_constraints = []
@@ -193,8 +193,11 @@ def standard_network_subgraph(
 
 
 def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
-    """Build a top-level Network template with an executable internal subgraph."""
+    """Build the legacy recurrent controller preset as an explicit graph.
 
+    ``Network`` is no longer a durable wrapper component. This compatibility
+    entry point returns the ordinary template graph directly.
+    """
     params = dict(params or {})
     input_size = int(params.get("input_size", 6))
     hidden_size = int(params.get("hidden_size", 100))
@@ -208,50 +211,13 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
         population_structure = raw_population_structure
     elif isinstance(raw_population_structure, Mapping):
         population_structure = population_structure_from_spec(hidden_size, raw_population_structure)
-    node_params = {
-        "input_size": input_size,
-        "hidden_size": hidden_size,
-        "out_size": out_size,
-        "hidden_type": hidden_type,
-        "hidden_nonlinearity": str(params.get("hidden_nonlinearity", "tanh")),
-        "out_nonlinearity": out_nonlinearity,
-        "hidden_noise_std": float(params.get("hidden_noise_std", 0.0) or 0.0),
-        "encoding_size": int(params.get("encoding_size", 0) or 0),
-    }
-    if population_structure is not None:
-        node_params["population_structure"] = population_structure.to_spec()
-    input_ports = ["input", "feedback"]
-    input_bindings = {
-        "input": ("network", "input"),
-        "feedback": ("network", "feedback"),
-    }
-    return GraphSpec(
-        nodes={
-            "network": ComponentSpec(
-                type="Network",
-                params=node_params,
-                input_ports=input_ports,
-                output_ports=["output", "hidden"],
-            )
-        },
-        wires=[],
-        input_ports=input_ports,
-        output_ports=["output", "hidden"],
-        input_bindings=input_bindings,
-        output_bindings={
-            "output": ("network", "output"),
-            "hidden": ("network", "hidden"),
-        },
-        subgraphs={
-            "network": standard_network_subgraph(
-                input_size=input_size,
-                hidden_size=hidden_size,
-                out_size=out_size,
-                cell_type=cell_type,
-                out_nonlinearity=out_nonlinearity,
-                population_structure=population_structure,
-            )
-        },
+    return recurrent_controller_template_graph(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        out_size=out_size,
+        cell_type=cell_type,
+        out_nonlinearity=out_nonlinearity,
+        population_structure=population_structure,
     )
 
 
@@ -277,9 +243,8 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
     tau_decay = float(params.get("tau_decay", 0.0) or 0.0)
 
     network_template = network_template_graph(network_params)
-    network = network_template.nodes["network"]
-    network_subgraph = network_template.subgraphs["network"] if network_template.subgraphs else None
     nodes: dict[str, ComponentSpec] = {
+        **network_template.nodes,
         "feedback": ComponentSpec(
             type="Channel",
             params={
@@ -296,7 +261,6 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
             input_ports=["input"],
             output_ports=["output"],
         ),
-        "network": network,
         "efferent": ComponentSpec(
             type="Channel",
             params={
@@ -315,15 +279,16 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
         ),
     }
     wires = [
+        *network_template.wires,
         WireSpec(
             source_node="feedback",
             source_port="output",
-            target_node="network",
-            target_port="feedback",
+            target_node=network_template.input_bindings["feedback"][0],
+            target_port=network_template.input_bindings["feedback"][1],
         ),
         WireSpec(
-            source_node="network",
-            source_port="output",
+            source_node=network_template.output_bindings["output"][0],
+            source_port=network_template.output_bindings["output"][1],
             target_node="efferent",
             target_port="input",
         ),
@@ -394,20 +359,20 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
         wires=wires,
         input_ports=["input"],
         output_ports=["effector"],
-        input_bindings={"input": ("network", "input")},
+        input_bindings={"input": network_template.input_bindings["input"]},
         output_bindings={"effector": ("mechanics", "effector")},
-        subgraphs={"network": network_subgraph} if network_subgraph is not None else None,
+        parameter_constraints=network_template.parameter_constraints,
     )
 
 
 BUILTIN_GRAPH_TEMPLATES: tuple[GraphTemplateMetadata, ...] = (
     GraphTemplateMetadata(
-        id="feedbax.templates.network",
-        name="Network Template",
+        id="feedbax.templates.recurrent_controller",
+        name="Recurrent Controller",
         category="Neural Networks",
         kind="executable",
-        description="Recurrent network as an executable GraphSpec subgraph.",
-        component_type="Network",
+        description="Explicit Mux, recurrent cell, and readout controller graph.",
+        component_type="Subgraph",
     ),
     GraphTemplateMetadata(
         id="feedbax.templates.simple_feedback",
@@ -425,7 +390,7 @@ __all__ = [
     "GraphTemplateMetadata",
     "network_recurrent_wires",
     "network_template_graph",
+    "recurrent_controller_template_graph",
     "recurrent_zero_initializer",
     "simple_feedback_template_graph",
-    "standard_network_subgraph",
 ]

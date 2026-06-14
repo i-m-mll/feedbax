@@ -118,18 +118,18 @@ def _network_task_binding_spec() -> dict:
         ],
         "bindings": [
             {
-                "id": "task:model_input->network:input",
+                "id": "task:model_input->input_mux:in_0",
                 "source_data_id": "model_input",
-                "target_node_id": "network",
-                "target_port": "input",
+                "target_node_id": "input_mux",
+                "target_port": "in_0",
                 "role": "model_input",
                 "metadata": {},
             },
             {
-                "id": "task:feedback->network:feedback",
+                "id": "task:feedback->input_mux:in_1",
                 "source_data_id": "feedback",
-                "target_node_id": "network",
-                "target_port": "feedback",
+                "target_node_id": "input_mux",
+                "target_port": "in_1",
                 "role": "model_input",
                 "metadata": {},
             },
@@ -270,7 +270,7 @@ def test_compile_training_run_uses_array_leaf_trainability_for_network_template(
     )
     trainable, _ = eqx.partition(compiled.graph, compiled.trainable_filter)
 
-    assert compiled.trainable_nodes == ("network",)
+    assert compiled.trainable_nodes == ("cell", "readout")
     assert all(
         eqx.is_inexact_array(leaf)
         for leaf in jax.tree_util.tree_leaves(trainable)

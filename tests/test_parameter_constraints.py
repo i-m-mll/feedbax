@@ -9,7 +9,7 @@ import pytest
 from feedbax._mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.graph import Graph
-from feedbax.graph_templates import network_template_graph, standard_network_subgraph
+from feedbax.graph_templates import network_template_graph, recurrent_controller_template_graph
 from feedbax.loss import AbstractLoss
 from feedbax.nn import (
     MaskedLinear,
@@ -191,7 +191,7 @@ def test_network_template_population_constraints_materialize_without_recurrent_m
             "population_structure": population.to_spec(),
         }
     )
-    subgraph = spec.subgraphs["network"]
+    subgraph = spec
 
     assert [(constraint.node, constraint.role) for constraint in subgraph.parameter_constraints] == [
         ("cell", "input_kernel"),
@@ -199,12 +199,11 @@ def test_network_template_population_constraints_materialize_without_recurrent_m
     ]
 
     graph = spec_to_graph(spec)
-    network = graph.nodes["network"]
     input_mask = population_input_kernel_mask(population, 2, gate_count=3)
     readout_mask = population_readout_kernel_mask(population, 2)
 
-    assert jnp.all(network.nodes["cell"].cell.weight_ih[~input_mask.astype(bool)] == 0.0)
-    assert jnp.all(network.nodes["readout"].layer.weight[~readout_mask.astype(bool)] == 0.0)
+    assert jnp.all(graph.nodes["cell"].cell.weight_ih[~input_mask.astype(bool)] == 0.0)
+    assert jnp.all(graph.nodes["readout"].layer.weight[~readout_mask.astype(bool)] == 0.0)
 
 
 @pytest.mark.parametrize(
@@ -229,7 +228,7 @@ def test_population_constraints_match_simplestagednetwork_fixed_assignment(
         key=jax.random.PRNGKey(1),
     )
     graph = spec_to_graph(
-        standard_network_subgraph(
+        recurrent_controller_template_graph(
             input_size=2,
             hidden_size=4,
             out_size=2,
@@ -254,7 +253,7 @@ def test_population_constraints_match_simplestagednetwork_fixed_assignment(
 def test_population_constraints_project_after_synthetic_update() -> None:
     population = _fixed_population_structure()
     graph = spec_to_graph(
-        standard_network_subgraph(
+        recurrent_controller_template_graph(
             input_size=2,
             hidden_size=4,
             out_size=2,
@@ -306,22 +305,22 @@ def test_population_constraints_round_trip_from_legacy_network_serialization() -
         )
     )
 
-    assert spec.nodes["network"].params["population_structure"] == population.to_spec()
-    assert spec.subgraphs["network"].parameter_constraints == list(
+    assert spec.subgraphs is None
+    assert "network" not in spec.nodes
+    assert spec.parameter_constraints == list(
         lower_population_constraints(
             population,
             hidden_size=4,
             input_size=2,
             out_size=2,
             cell_type="GRU",
+            cell_node="network_cell",
+            readout_node="network_readout",
         )
     )
 
     restored = graph_to_spec(spec_to_graph(spec))
-    assert (
-        restored.subgraphs["network"].parameter_constraints
-        == spec.subgraphs["network"].parameter_constraints
-    )
+    assert restored.parameter_constraints == spec.parameter_constraints
 
 
 def test_parameter_constraints_reject_incompatible_mask_shape() -> None:

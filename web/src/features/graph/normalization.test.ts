@@ -72,41 +72,23 @@ const runtimeGraph: GraphSpec = {
 };
 
 describe('graph authoring normalization', () => {
-  it('maps runtime network nodes, target ports, subgraphs, and legacy taps to Studio authoring shape', () => {
+  it('does not generate hidden network topology while normalizing legacy metadata', () => {
     const normalized = normalizeGraphAuthoringTypes(runtimeGraph);
 
     expect(normalized.nodes.network).toMatchObject({
-      type: 'Network',
-      params: { input_size: 4, hidden_size: 100, out_size: 2 },
-      input_ports: ['input', 'feedback'],
+      type: 'SimpleStagedNetwork',
+      params: { input_size: 4, hidden_size: 100, output_size: 2 },
+      input_ports: ['target', 'feedback'],
     });
-    expect(normalized.wires[0].target_port).toBe('input');
+    expect(normalized.wires[0].target_port).toBe('target');
     expect(normalized.input_ports).toEqual(['input']);
-    expect(normalized.input_bindings).toEqual({ input: ['network', 'input'] });
+    expect(normalized.input_bindings).toEqual({ input: ['network', 'target'] });
     expect(normalized.subgraphs?.child.nodes.inner).toMatchObject({
-      type: 'Network',
-      input_ports: ['input', 'feedback'],
+      type: 'SimpleStagedNetwork',
+      input_ports: ['target'],
     });
-    expect(normalized.subgraphs?.child.input_bindings).toEqual({ input: ['inner', 'input'] });
-    expect(normalized.subgraphs?.network.nodes.cell).toMatchObject({
-      type: 'GRU',
-      params: { input_size: 4, hidden_size: 100 },
-    });
-    expect(normalized.subgraphs?.network.nodes.readout).toMatchObject({
-      type: 'Linear',
-      params: { output_size: 2 },
-    });
-    expect(normalized.subgraphs?.network.wires).toContainEqual(
-      expect.objectContaining({
-        source_node: 'cell',
-        source_port: 'hidden',
-        target_node: 'cell',
-        target_port: 'hidden',
-        temporality: 'recurrent',
-        recurrent_initializer: expect.objectContaining({ kind: 'zeros', shape: [100] }),
-      })
-    );
-    expect(normalized.subgraphs?.network.output_bindings.hidden).toEqual(['cell', 'hidden']);
+    expect(normalized.subgraphs?.child.input_bindings).toEqual({ input: ['inner', 'target'] });
+    expect(normalized.subgraphs?.network).toBeUndefined();
     expect(normalized.taps).toEqual([
       {
         id: 'probe:legacy',
@@ -140,7 +122,7 @@ describe('graph authoring normalization', () => {
     expect(normalized.nodes.task_mux.params.n_inputs).toBe(3);
   });
 
-  it('does not generate special SISU input routing for Network authoring', () => {
+  it('does not turn unsupported runtime params into generated graph ports', () => {
     const graph: GraphSpec = {
       nodes: {
         network: {
@@ -149,8 +131,8 @@ describe('graph authoring normalization', () => {
             input_size: 4,
             hidden_size: 3,
             output_size: 2,
-            sisu_gating: 'multiplicative',
-            sisu_alpha: [0.1, -0.2, 0.3],
+            unsupported_gating: 'multiplicative',
+            unsupported_gain: [0.1, -0.2, 0.3],
           },
           input_ports: ['target', 'feedback'],
           output_ports: ['output', 'hidden'],
@@ -170,20 +152,13 @@ describe('graph authoring normalization', () => {
     };
 
     const normalized = normalizeGraphAuthoringTypes(graph);
-    const subgraph = normalized.subgraphs!.network;
 
-    expect(normalized.nodes.network.input_ports).toEqual(['input', 'feedback']);
-    expect(normalized.nodes.network.input_ports).not.toContain('sisu');
-    expect(subgraph.input_ports).not.toContain('sisu');
-    expect(subgraph.nodes.sisu_modulator).toBeUndefined();
-    expect(subgraph.nodes.cell.params.input_size).toBe(4);
-    expect(subgraph.output_bindings.hidden).toEqual(['cell', 'hidden']);
-    expect(normalized.nodes.network.params.sisu_gating).toBeUndefined();
-    expect(normalized.nodes.network.params.sisu_alpha).toBeUndefined();
+    expect(normalized.subgraphs?.network).toBeUndefined();
+    expect(normalized.nodes.network.type).toBe('SimpleStagedNetwork');
     expect(normalized.nodes.network.params.modulator_input).toBeUndefined();
   });
 
-  it('retargets task-data bindings from legacy Network target ports to input ports', () => {
+  it('preserves task-data bindings when runtime networks are not wrapped', () => {
     const graph = normalizeGraphForStudioAuthoring(runtimeGraph);
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
       {
@@ -206,10 +181,10 @@ describe('graph authoring normalization', () => {
 
     expect(normalized?.bindings).toEqual([
       {
-        id: 'task:inputs->network:input',
+        id: 'task:inputs->network:target',
         source_data_id: 'inputs',
         target_node_id: 'network',
-        target_port: 'input',
+        target_port: 'target',
         role: 'model_input',
         metadata: {},
       },
@@ -217,7 +192,24 @@ describe('graph authoring normalization', () => {
   });
 
   it('retargets saved mux task bindings after network subgraph normalization', () => {
-    const graph = normalizeGraphForStudioAuthoring(runtimeGraph).subgraphs!.network;
+    const graph: GraphSpec = {
+      nodes: {
+        input_mux: {
+          type: 'Mux',
+          params: { n_inputs: 2 },
+          input_ports: ['in_0', 'in_1'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: ['input', 'feedback'],
+      output_ports: ['output'],
+      input_bindings: {
+        input: ['input_mux', 'in_0'],
+        feedback: ['input_mux', 'in_1'],
+      },
+      output_bindings: {},
+    };
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
       {
         schema_version: 'feedbax.studio.task_bindings.v2',
@@ -249,20 +241,36 @@ describe('graph authoring normalization', () => {
     ]);
   });
 
-  it('flattens legacy Network model wrapper and upgrades hidden recurrence', () => {
-    const normalizedRuntime = normalizeGraphAuthoringTypes(runtimeGraph);
-    const legacyInner = {
-      ...normalizedRuntime.subgraphs!.network,
-      wires: normalizedRuntime.subgraphs!.network.wires.map((wire) => ({
-        ...wire,
-        temporality: 'instant' as const,
-        recurrent_initializer: null,
-      })),
+  it('preserves explicit legacy Network model wrappers without topology repair', () => {
+    const legacyInner: GraphSpec = {
+      nodes: {
+        cell: {
+          type: 'GRU',
+          params: { input_size: 4, hidden_size: 100 },
+          input_ports: ['input', 'hidden'],
+          output_ports: ['output', 'hidden'],
+        },
+      },
+      wires: [],
+      input_ports: ['input'],
       output_ports: ['output'],
-      output_bindings: { output: ['readout', 'output'] as [string, string] },
+      input_bindings: { input: ['cell', 'input'] },
+      output_bindings: { output: ['cell', 'output'] },
     };
     const graph: GraphSpec = {
-      ...normalizedRuntime,
+      nodes: {
+        network: {
+          type: 'Network',
+          params: {},
+          input_ports: ['input', 'feedback'],
+          output_ports: ['output'],
+        },
+      },
+      wires: [],
+      input_ports: ['input'],
+      output_ports: ['output'],
+      input_bindings: { input: ['network', 'input'] },
+      output_bindings: { output: ['network', 'output'] },
       subgraphs: {
         network: {
           nodes: {
@@ -290,24 +298,13 @@ describe('graph authoring normalization', () => {
 
     const normalized = normalizeGraphAuthoringTypes(graph);
     const subgraph = normalized.subgraphs!.network;
-    const hiddenWire = subgraph.wires.find(
-      (wire) =>
-        wire.source_node === 'cell' &&
-        wire.source_port === 'hidden' &&
-        wire.target_node === 'cell' &&
-        wire.target_port === 'hidden'
-    );
 
-    expect(subgraph.nodes.model).toBeUndefined();
-    expect(subgraph.nodes.cell.type).toBe('GRU');
-    expect(subgraph.output_bindings.hidden).toEqual(['cell', 'hidden']);
-    expect(hiddenWire).toMatchObject({
-      temporality: 'recurrent',
-      recurrent_initializer: expect.objectContaining({ kind: 'zeros' }),
-    });
+    expect(subgraph.nodes.model?.type).toBe('Subgraph');
+    expect(subgraph.subgraphs?.model.nodes.cell.type).toBe('GRU');
+    expect(subgraph.output_bindings).toEqual({ output: ['model', 'output'] });
   });
 
-  it('marks legacy Network feedback cycle cuts recurrent', () => {
+  it('does not rewrite legacy Network feedback cycle cuts', () => {
     const graph: GraphSpec = {
       nodes: {
         network: {
@@ -356,13 +353,10 @@ describe('graph authoring normalization', () => {
     };
 
     expect(normalizeGraphAuthoringTypes(graph).wires[2]).toMatchObject({
-      temporality: 'recurrent',
-      recurrent_initializer: {
-        kind: 'zeros',
-        scope: 'trial',
-        source: 'state_initializer',
-        state_slot: 'feedback',
-      },
+      source_node: 'feedback',
+      target_node: 'network',
+      target_port: 'feedback',
     });
+    expect(normalizeGraphAuthoringTypes(graph).wires[2].temporality).toBeUndefined();
   });
 });

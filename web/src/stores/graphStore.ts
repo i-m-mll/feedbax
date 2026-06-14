@@ -39,7 +39,6 @@ const DEFAULT_POSITION = { x: 200, y: 200 };
 const MAX_HISTORY = 50;
 const DEFAULT_EDGE_STYLE: EdgeRouting['style'] = 'bezier';
 const DEFAULT_COMPOSITE_TYPES = new Set([
-  'Network',
   'Subgraph',
   'Arm6MuscleRigidTendon', 'PointMass8MuscleRelu', 'AcausalSystem',
 ]);
@@ -252,17 +251,31 @@ function applyEdgeStates(
 export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState } {
   const graph: GraphSpec = {
     nodes: {
-      network: {
-        type: 'Network',
+      input_mux: {
+        type: 'Mux',
+        params: { n_inputs: 2 },
+        input_ports: ['in_0', 'in_1'],
+        output_ports: ['output'],
+      },
+      cell: {
+        type: 'GRU',
         params: {
-          hidden_size: 100,
           input_size: 6,
-          out_size: 2,
-          hidden_type: 'GRUCell',
-          out_nonlinearity: 'tanh',
+          hidden_size: 100,
         },
-        input_ports: ['input', 'feedback'],
+        input_ports: ['input', 'hidden'],
         output_ports: ['output', 'hidden'],
+      },
+      readout: {
+        type: 'Linear',
+        params: {
+          input_size: 100,
+          output_size: 2,
+          activation: 'tanh',
+          use_bias: true,
+        },
+        input_ports: ['input'],
+        output_ports: ['output'],
       },
       mechanics: {
         type: 'TwoLinkArm',
@@ -286,11 +299,37 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
       {
         source_node: 'feedback',
         source_port: 'output',
-        target_node: 'network',
-        target_port: 'feedback',
+        target_node: 'input_mux',
+        target_port: 'in_1',
       },
       {
-        source_node: 'network',
+        source_node: 'input_mux',
+        source_port: 'output',
+        target_node: 'cell',
+        target_port: 'input',
+      },
+      {
+        source_node: 'cell',
+        source_port: 'hidden',
+        target_node: 'readout',
+        target_port: 'input',
+      },
+      {
+        source_node: 'cell',
+        source_port: 'hidden',
+        target_node: 'cell',
+        target_port: 'hidden',
+        temporality: 'recurrent',
+        recurrent_initializer: {
+          kind: 'zeros',
+          scope: 'trial',
+          shape: [100],
+          source: 'state_initializer',
+          state_slot: 'hidden',
+        },
+      },
+      {
+        source_node: 'readout',
         source_port: 'output',
         target_node: 'mechanics',
         target_port: 'force',
@@ -322,9 +361,11 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
   const baseUiState: GraphUIState = {
     viewport: DEFAULT_VIEWPORT,
     node_states: {
-      network: { position: { x: 380, y: 200 }, collapsed: false, selected: false },
-      mechanics: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
-      feedback: { position: { x: 520, y: 400 }, collapsed: false, selected: false },
+      input_mux: { position: { x: 300, y: 200 }, collapsed: false, selected: false },
+      cell: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
+      readout: { position: { x: 660, y: 200 }, collapsed: false, selected: false },
+      mechanics: { position: { x: 840, y: 200 }, collapsed: false, selected: false },
+      feedback: { position: { x: 560, y: 400 }, collapsed: false, selected: false },
     },
   };
 
@@ -381,117 +422,11 @@ function createEmptySubgraph(label: string): { graph: GraphSpec; uiState: GraphU
 
 function getSubgraphContext(type: string): string {
   switch (type) {
-    case 'Network': return 'network';
     case 'Arm6MuscleRigidTendon':
     case 'PointMass8MuscleRelu': return 'muscle';
     case 'AcausalSystem': return 'acausal';
     default: return 'generic';
   }
-}
-
-function createNetworkSubgraph(
-  nodeId: string,
-  nodeSpec: ComponentSpec,
-): { graph: GraphSpec; uiState: GraphUIState } {
-  const now = new Date().toISOString();
-  const params = nodeSpec.params ?? {};
-
-  // Map outer hidden_type param to internal GRU/LSTM node type
-  const hiddenTypeRaw = (params.hidden_type as string) ?? 'GRUCell';
-  const cellType = (hiddenTypeRaw === 'LSTMCell' || hiddenTypeRaw === 'LSTM') ? 'LSTM' : 'GRU';
-
-  const hiddenSize = typeof params.hidden_size === 'number' ? params.hidden_size : 100;
-  const inputSize = typeof params.input_size === 'number' ? params.input_size : 6;
-  const outSize = typeof params.out_size === 'number' ? params.out_size : 2;
-  // Map outer out_nonlinearity to activation param on the Linear readout node
-  const readoutActivation = (params.out_nonlinearity as string) ?? 'tanh';
-
-  const cellInputPorts = cellType === 'LSTM' ? ['input', 'hidden', 'cell'] : ['input', 'hidden'];
-  const cellOutputPorts = cellType === 'LSTM' ? ['output', 'hidden', 'cell'] : ['output', 'hidden'];
-
-  const graph: GraphSpec = {
-    nodes: {
-      input_mux: {
-        type: 'Mux',
-        params: {
-          n_inputs: 2,
-        },
-        input_ports: ['in_0', 'in_1'],
-        output_ports: ['output'],
-      },
-      cell: {
-        type: cellType,
-        params: {
-          input_size: inputSize,
-          hidden_size: hiddenSize,
-        },
-        input_ports: cellInputPorts,
-        output_ports: cellOutputPorts,
-      },
-      readout: {
-        type: 'Linear',
-        params: {
-          input_size: hiddenSize,
-          output_size: outSize,
-          use_bias: true,
-          activation: readoutActivation,
-        },
-        input_ports: ['input'],
-        output_ports: ['output'],
-      },
-    },
-    wires: [
-      {
-        source_node: 'input_mux',
-        source_port: 'output',
-        target_node: 'cell',
-        target_port: 'input',
-      },
-      {
-        source_node: 'cell',
-        source_port: 'output',
-        target_node: 'readout',
-        target_port: 'input',
-      },
-      ...networkRecurrentWires(cellType, hiddenSize),
-    ],
-    input_ports: ['input', 'feedback'],
-    output_ports: ['output', 'hidden'],
-    input_bindings: {
-      input: ['input_mux', 'in_0'],
-      feedback: ['input_mux', 'in_1'],
-    },
-    output_bindings: {
-      output: ['readout', 'output'],
-      hidden: ['cell', 'hidden'],
-    },
-    taps: [],
-    subgraphs: {},
-    metadata: {
-      name: `${nodeId} internals`,
-      description: 'Recurrent cell and output projection.',
-      created_at: now,
-      updated_at: now,
-      version: '1.0.0',
-    },
-  };
-
-  const baseUiState: GraphUIState = {
-    viewport: DEFAULT_VIEWPORT,
-    node_states: {
-      input_mux: { position: { x: 40, y: 220 }, collapsed: false, selected: false },
-      cell: { position: { x: 200, y: 200 }, collapsed: false, selected: false },
-      readout: { position: { x: 480, y: 200 }, collapsed: false, selected: false },
-    },
-  };
-
-  return {
-    graph,
-    uiState: {
-      ...baseUiState,
-      edge_states: buildEdgeStates(graph, baseUiState, DEFAULT_EDGE_STYLE),
-    },
-  };
 }
 
 function createArm6MuscleSubgraph(
@@ -702,7 +637,6 @@ const SUBGRAPH_FACTORIES: Record<
   string,
   (label: string, nodeSpec: ComponentSpec) => { graph: GraphSpec; uiState: GraphUIState }
 > = {
-  Network: createNetworkSubgraph,
   Arm6MuscleRigidTendon: createArm6MuscleSubgraph,
   PointMass8MuscleRelu: createPointMass8MuscleSubgraph,
   AcausalSystem: (label) => createEmptySubgraph(label),
