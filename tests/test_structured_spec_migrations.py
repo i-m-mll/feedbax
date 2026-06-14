@@ -12,6 +12,7 @@ from feedbax.migrations import (
     default_spec_registry,
     migrate_studio_task_binding_spec,
 )
+from feedbax.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
 from feedbax.objective_spec import validate_objective_spec
 
@@ -21,23 +22,41 @@ def _registry() -> SpecSchemaRegistry:
     registry.register_family(
         SpecSchemaFamily(
             kind="DemoSpec",
-            schema_id="feedbax.demo",
-            current_version="demo.v2",
+            schema_id="feedbax.spec.demo",
+            current_version="feedbax.spec.demo.v2",
         )
     )
     return registry
 
 
+def test_structured_spec_registry_rejects_flat_feedbax_schema_identity() -> None:
+    registry = SpecSchemaRegistry()
+
+    with pytest.raises(SchemaNamespaceError) as excinfo:
+        registry.register_family(
+            SpecSchemaFamily(
+                kind="DemoSpec",
+                schema_id="feedbax.demo",
+                current_version="feedbax.demo.v1",
+            )
+        )
+
+    message = str(excinfo.value)
+    assert "DemoSpec" in message
+    assert "feedbax.demo" in message
+    assert "feedbax.spec." in message
+
+
 def test_structured_spec_registry_accepts_current_version_without_migration() -> None:
     registry = _registry()
-    payload = {"schema_version": "demo.v2", "value": 3}
+    payload = {"schema_version": "feedbax.spec.demo.v2", "value": 3}
 
     result = registry.migrate("DemoSpec", payload)
 
     assert result.kind == "DemoSpec"
-    assert result.schema_id == "feedbax.demo"
-    assert result.source_version == "demo.v2"
-    assert result.target_version == "demo.v2"
+    assert result.schema_id == "feedbax.spec.demo"
+    assert result.source_version == "feedbax.spec.demo.v2"
+    assert result.target_version == "feedbax.spec.demo.v2"
     assert result.payload == payload
     assert result.migration_records == []
     assert not result.migrated
@@ -49,8 +68,8 @@ def test_structured_spec_registry_treats_versionless_payload_as_current() -> Non
 
     result = registry.migrate("DemoSpec", payload)
 
-    assert result.source_version == "demo.v2"
-    assert result.target_version == "demo.v2"
+    assert result.source_version == "feedbax.spec.demo.v2"
+    assert result.target_version == "feedbax.spec.demo.v2"
     assert result.payload == payload
     assert "schema_version" not in result.payload
 
@@ -66,7 +85,7 @@ def test_structured_spec_registry_applies_registered_family_migration() -> None:
         "DemoSpec",
         SchemaMigration(
             source_version="demo.v1",
-            target_version="demo.v2",
+            target_version="feedbax.spec.demo.v2",
             migration_id="demo-spec-v1-to-v2",
             migrate=migrate_v1_to_v2,
             description="Rename old to renamed.",
@@ -78,13 +97,13 @@ def test_structured_spec_registry_applies_registered_family_migration() -> None:
         {"schema_version": "demo.v1", "old": 7},
     )
 
-    assert result.payload == {"schema_version": "demo.v2", "renamed": 7}
+    assert result.payload == {"schema_version": "feedbax.spec.demo.v2", "renamed": 7}
     assert result.migrated
     assert [record.migration_id for record in result.migration_records] == [
         "demo-spec-v1-to-v2"
     ]
     assert result.migration_records[0].source_schema_version == "demo.v1"
-    assert result.migration_records[0].target_schema_version == "demo.v2"
+    assert result.migration_records[0].target_schema_version == "feedbax.spec.demo.v2"
 
 
 def test_structured_spec_registry_rejects_explicit_unsupported_old_version() -> None:
@@ -100,9 +119,9 @@ def test_structured_spec_registry_rejects_explicit_unsupported_old_version() -> 
 
     message = str(excinfo.value)
     assert "family='DemoSpec'" in message
-    assert "schema_id='feedbax.demo'" in message
+    assert "schema_id='feedbax.spec.demo'" in message
     assert "source_version='demo.v0'" in message
-    assert "current_version='demo.v2'" in message
+    assert "current_version='feedbax.spec.demo.v2'" in message
     assert "migration_intentionally_absent=yes" in message
     assert "pre-release payloads were never durable" in message
 
@@ -128,21 +147,62 @@ def test_structured_spec_registry_reports_missing_migration_path() -> None:
     assert "No Feedbax structured spec migration path registered" in message
     assert "family='DemoSpec'" in message
     assert "source_version='demo.v1'" in message
-    assert "current_version='demo.v2'" in message
+    assert "current_version='feedbax.spec.demo.v2'" in message
     assert "no explicit unsupported-version policy" in message
 
 
 def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     families = {family.kind: family for family in default_spec_registry.families()}
 
-    assert families["GraphSpec"].identity == "feedbax.graph_spec"
+    assert families["GraphSpec"].identity == "feedbax.spec.graph"
+    assert families["GraphSpec"].namespace == SchemaNamespaceKind.SPEC
     assert families["GraphSpec"].current_version == GRAPH_SPEC_SCHEMA_VERSION
-    assert families["TrainingSpec"].identity == "feedbax.training_spec"
+    assert families["TrainingSpec"].identity == "feedbax.spec.training"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
-    assert families["SpecPayload"].identity == "feedbax.spec_payload"
+    assert families["SpecPayload"].identity == "feedbax.manifest.spec_payload"
+    assert families["SpecPayload"].namespace == SchemaNamespaceKind.MANIFEST
     assert not families["RegistryEntry"].durable
     assert not families["StudioSchemaRegistry"].durable
+
+
+def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> None:
+    spec_kinds = {
+        "GraphSpec",
+        "TrainingSpec",
+        "TaskSpec",
+        "ObjectiveSpec",
+        "EvaluationRunSpec",
+        "AnalysisRunSpec",
+        "ReportSpec",
+        "ExecutionSpec",
+        "StudioWorkspaceSpec",
+        "StudioTaskBindingSpec",
+        "StudioPipelineMaterializationRequest",
+    }
+    manifest_kinds = {
+        "SpecPayload",
+        "GraphSpecManifest",
+        "ModelArtifactManifest",
+        "ArrayStorePayload",
+        "ArrayRecord",
+        "ExecutionPlan",
+        "LocalExecutionResult",
+        "ProviderManifest",
+        "RegistrySnapshot",
+        "StudioPipelineMaterializationResult",
+    }
+
+    families = {family.kind: family for family in default_spec_registry.families()}
+
+    assert {families[kind].namespace for kind in spec_kinds} == {SchemaNamespaceKind.SPEC}
+    assert {families[kind].namespace for kind in manifest_kinds} == {
+        SchemaNamespaceKind.MANIFEST
+    }
+    assert not any(
+        family.namespace == SchemaNamespaceKind.COMPONENT_PARAMS
+        for family in default_spec_registry.families()
+    )
 
 
 
@@ -244,7 +304,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         {"schema_version": STUDIO_TASK_BINDING_LEGACY_V1},
     )
     assert migrated.migrated
-    assert migrated.target_version == "feedbax.studio.task_bindings.v2"
+    assert migrated.target_version == "feedbax.spec.studio.task_bindings.v2"
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate(
@@ -287,8 +347,8 @@ def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
     )
 
     assert result.source_version == STUDIO_TASK_BINDING_LEGACY_V1
-    assert result.target_version == "feedbax.studio.task_bindings.v2"
-    assert result.payload["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert result.target_version == "feedbax.spec.studio.task_bindings.v2"
+    assert result.payload["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
     assert result.payload["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in result.payload
     assert result.payload["bindings"][0]["source_data_id"] == "inputs"

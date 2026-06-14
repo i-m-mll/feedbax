@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-GRAPH_SPEC_SCHEMA_ID = "feedbax.graph_spec"
-GRAPH_SPEC_SCHEMA_VERSION = "feedbax.graph_spec.v2"
+GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v2"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
 
 
@@ -311,9 +311,9 @@ class AnalysisPageSpec(BaseModel):
     expanded_field_paths: List[str] = Field(default_factory=list)
 
 
-STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.studio.workspace.v1"
-STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
-STUDIO_STAGE_SCHEMA_VERSION = "feedbax.studio.stage.v1"
+STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v1"
+STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v1"
+STUDIO_STAGE_SCHEMA_VERSION = "feedbax.spec.studio.stage.v1"
 
 StudioStageKind = Literal[
     "train",
@@ -394,7 +394,7 @@ class StudioCollectionRef(BaseModel):
 class StudioValueSpec(BaseModel):
     """Declarative value used by Studio task timelines and parameter fields."""
 
-    schema_version: str = "feedbax.studio.value.v1"
+    schema_version: str = "feedbax.spec.studio.value.v1"
     mode: str
     value: Optional[Any] = None
     reference: Optional[Dict[str, Any]] = None
@@ -481,7 +481,7 @@ class StudioTaskTimelineSegmentSpec(BaseModel):
 class StudioTaskTimelineSpec(BaseModel):
     """Structured task timeline stored under Studio task specs."""
 
-    schema_version: str = "feedbax.studio.task_timeline.v1"
+    schema_version: str = "feedbax.spec.studio.task_timeline.v1"
     epochs: List[StudioTaskEpochSpec] = Field(default_factory=list)
     signals: List[StudioTaskTimelineSignalSpec] = Field(default_factory=list)
     segments: List[StudioTaskTimelineSegmentSpec] = Field(default_factory=list)
@@ -525,7 +525,7 @@ class StudioTaskBinding(BaseModel):
         if isinstance(data, dict) and "source_output_id" in data:
             raise ValueError(
                 "task_binding_spec.bindings[].source_output_id was renamed to "
-                "source_data_id in feedbax.studio.task_bindings.v2"
+                "source_data_id in feedbax.spec.studio.task_bindings.v2"
             )
         return data
 
@@ -535,7 +535,7 @@ class StudioTaskBindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "feedbax.studio.task_bindings.v2"
+    schema_version: str = "feedbax.spec.studio.task_bindings.v2"
     exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -548,12 +548,12 @@ class StudioTaskBindingSpec(BaseModel):
         if data.get("schema_version") == "feedbax.studio.task_bindings.v1":
             raise ValueError(
                 "feedbax.studio.task_bindings.v1 is no longer accepted; use "
-                "feedbax.studio.task_bindings.v2 with exposed_data and source_data_id"
+                "feedbax.spec.studio.task_bindings.v2 with exposed_data and source_data_id"
             )
         if "exposed_outputs" in data:
             raise ValueError(
                 "task_binding_spec.exposed_outputs was renamed to exposed_data in "
-                "feedbax.studio.task_bindings.v2"
+                "feedbax.spec.studio.task_bindings.v2"
             )
         return data
 

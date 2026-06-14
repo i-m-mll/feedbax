@@ -235,7 +235,7 @@ class ExecutionPlan(ExecutionModel):
     """Concrete, inspectable execution plan generated from an execution spec."""
 
     kind: Literal["ExecutionPlan"] = "ExecutionPlan"
-    schema_version: str = "feedbax.execution.v1"
+    schema_version: str = "feedbax.manifest.execution.v1"
     job_id: str
     backend: ExecutionBackend
     command: str

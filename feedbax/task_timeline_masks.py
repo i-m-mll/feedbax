@@ -199,7 +199,7 @@ def _delayed_reaches_timeline(params: Mapping[str, Any]) -> Mapping[str, Any]:
                 "label": label,
                 "index": index,
                 "length": {
-                    "schema_version": "feedbax.studio.value.v1",
+                    "schema_version": "feedbax.spec.studio.value.v1",
                     "mode": "constant",
                     "value": value,
                     "units": "steps",
@@ -209,7 +209,7 @@ def _delayed_reaches_timeline(params: Mapping[str, Any]) -> Mapping[str, Any]:
             }
         )
     return {
-        "schema_version": "feedbax.studio.task_timeline.v1",
+        "schema_version": "feedbax.spec.studio.task_timeline.v1",
         "epochs": epochs,
         "segments": [],
         "metadata": {

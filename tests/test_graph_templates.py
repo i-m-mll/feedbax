@@ -22,7 +22,7 @@ from feedbax.component_registry import ComponentRegistry
 
 def _task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
         "exposed_data": [
             {
                 "id": "inputs",
@@ -524,9 +524,9 @@ def test_stateful_prototype_preflight_error_includes_node_and_port() -> None:
 
 
 def test_spec_to_graph_rejects_unsupported_graph_spec_version() -> None:
-    spec = GraphSpec(schema_version="feedbax.graph_spec.v99")
+    spec = GraphSpec(schema_version="feedbax.spec.graph.v99")
 
-    with pytest.raises(ValueError, match="source_version='feedbax.graph_spec.v99'"):
+    with pytest.raises(ValueError, match="source_version='feedbax.spec.graph.v99'"):
         spec_to_graph(spec, {})
 
 
