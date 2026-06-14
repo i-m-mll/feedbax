@@ -9,7 +9,7 @@ force filter. Bug: 488042f.
 import jax.numpy as jnp
 import pytest
 
-from feedbax.dynamics import LinearSystem
+from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton import PointMass

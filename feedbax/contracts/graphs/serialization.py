@@ -5,7 +5,7 @@ from typing import Any, Literal, Mapping, cast
 import jax.numpy as jnp
 import jax.tree as jt
 
-from feedbax.bodies import FeedbackChannels
+from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import (
     Constant,
@@ -30,9 +30,9 @@ from feedbax.runtime.components import (
     Sum,
 )
 from feedbax.control.affine import AffineFeedbackController
-from feedbax.filters import FirstOrderFilter
+from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
-from feedbax.graph_templates import recurrent_controller_template_graph
+from feedbax.contracts.graphs.templates import recurrent_controller_template_graph
 from feedbax.intervene.intervene import (
     AddNoise,
     ConstantInput,
@@ -51,9 +51,9 @@ from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
-from feedbax.nn import SimpleStagedNetwork
-from feedbax.noise import CompositeNoise, Multiplicative, Normal
-from feedbax.penzai_component import PenzaiSubgraph
+from feedbax.models.networks import SimpleStagedNetwork
+from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
+from feedbax.components.penzai import PenzaiSubgraph
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.contracts.graph import (
     ComponentSpec,
@@ -63,8 +63,8 @@ from feedbax.contracts.graph import (
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
-from feedbax.serialization_builders import build_component, nonlinearity_name
-from feedbax.serialization_prototypes import (
+from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
+from feedbax.contracts.graphs.prototypes import (
     normalize_stateful_prototypes,
     prototypes_from_task_bindings,
     shape_from_proto,

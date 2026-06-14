@@ -1,4 +1,4 @@
-"""Tests for feedbax.nn_cde (CDENetwork, CDENetworkState).
+"""Tests for feedbax.models.cde (CDENetwork, CDENetworkState).
 
 Bug: 1d2192d
 """
@@ -10,7 +10,7 @@ import pytest
 
 import equinox as eqx
 
-from feedbax.nn_cde import CDENetwork, CDENetworkState
+from feedbax.models.cde import CDENetwork, CDENetworkState
 from feedbax.runtime.graph import init_state_from_component
 
 
@@ -291,11 +291,11 @@ class TestSimpleFeedbackIntegration:
         This tests the actual integration: CDENetwork plugged into the
         SimpleFeedback sensorimotor graph with mechanics and feedback channels.
         """
-        from feedbax.bodies import SimpleFeedback
+        from feedbax.models.feedback import SimpleFeedback
         from feedbax.mechanics import Mechanics
         from feedbax.mechanics.plant import DirectForceInput
         from feedbax.mechanics.skeleton.pointmass import PointMass
-        from feedbax.noise import Normal
+        from feedbax.runtime.noise import Normal
         from feedbax.runtime.state import CartesianState
 
         k1, k2, k3 = jr.split(key, 3)

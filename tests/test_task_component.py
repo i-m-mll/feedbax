@@ -8,7 +8,7 @@ from feedbax._mapping import WhereDict
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.intervene import TimeSeriesParam
 from feedbax.objectives.loss import AbstractLoss
-from feedbax.serialization_builders import build_component
+from feedbax.contracts.graphs.builders import build_component
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 try:

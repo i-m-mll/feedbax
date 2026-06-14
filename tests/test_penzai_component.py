@@ -16,7 +16,7 @@ from feedbax.runtime.graph import Component, Graph, Wire
 from equinox.nn import StateIndex
 
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.penzai_component import (
+from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     TREESCOPE_AVAILABLE,
     PenzaiSubgraph,
@@ -235,7 +235,7 @@ class TestPenzaiSubgraph:
         )
 
         # Mock penzai availability check
-        import feedbax.penzai_component as pc
+        import feedbax.components.penzai as pc
         original_require = pc._require_penzai
 
         # Temporarily bypass penzai requirement for mock testing
@@ -386,7 +386,7 @@ class TestFactoryRegistry:
 
     def test_register_and_get_builder(self):
         """Test registering and retrieving a builder."""
-        import feedbax.penzai_component as pc
+        import feedbax.components.penzai as pc
 
         # Bypass penzai requirement
         original_require = pc._require_penzai
@@ -423,7 +423,7 @@ class TestFactoryRegistry:
 
     def test_list_builders(self):
         """Test listing registered builders."""
-        import feedbax.penzai_component as pc
+        import feedbax.components.penzai as pc
 
         original_require = pc._require_penzai
         pc._require_penzai = lambda: None
@@ -446,7 +446,7 @@ class TestFactoryRegistry:
 
     def test_build_penzai_subgraph(self):
         """Test building PenzaiSubgraph from registered builder."""
-        import feedbax.penzai_component as pc
+        import feedbax.components.penzai as pc
 
         original_require = pc._require_penzai
         pc._require_penzai = lambda: None

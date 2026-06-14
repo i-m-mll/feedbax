@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.bodies import FeedbackChannels
+from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import (
     Constant,
@@ -32,7 +32,7 @@ from feedbax.runtime.components import (
     Sum,
 )
 from feedbax.control.affine import build_affine_feedback_controller
-from feedbax.filters import FirstOrderFilter
+from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
     AddNoise,
@@ -58,13 +58,13 @@ from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.nn import SimpleStagedNetwork, population_structure_from_spec
-from feedbax.noise import Multiplicative, Normal
-from feedbax.penzai_component import (
+from feedbax.models.networks import SimpleStagedNetwork, population_structure_from_spec
+from feedbax.runtime.noise import Multiplicative, Normal
+from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     build_penzai_subgraph,
 )
-from feedbax.serialization_prototypes import array_proto_from_shape
+from feedbax.contracts.graphs.prototypes import array_proto_from_shape
 from feedbax.runtime.state_feedback import build_state_feedback_selector
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.tasks.presets import (

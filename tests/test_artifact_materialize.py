@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from feedbax.nn import LeakyRNNCell
-from feedbax.artifact_materialize import (
+from feedbax.models.networks import LeakyRNNCell
+from feedbax.contracts.graphs.materialization import (
     UnsupportedArtifactSchemaError,
     materialize_array_store,
     materialize_model_artifact,

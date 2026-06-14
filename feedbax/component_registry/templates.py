@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
-from feedbax.graph_templates import (
+from feedbax.contracts.graphs.templates import (
     BUILTIN_GRAPH_TEMPLATES,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,

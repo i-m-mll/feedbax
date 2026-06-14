@@ -7,7 +7,7 @@ import jax.tree as jt
 import numpy as np
 import plotly.graph_objects as go
 from equinox import field
-from feedbax.bodies import SimpleFeedbackState
+from feedbax.models.feedback import SimpleFeedbackState
 from jax_cookbook import is_type
 from jaxtyping import PRNGKeyArray, PyTree
 

@@ -9,8 +9,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.graph_templates import network_template_graph
-from feedbax.graph_normalization import normalize_task_binding_spec_for_studio_authoring
+from feedbax.contracts.graphs.templates import network_template_graph
+from feedbax.contracts.graphs.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,

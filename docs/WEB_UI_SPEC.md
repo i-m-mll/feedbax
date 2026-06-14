@@ -726,7 +726,7 @@ from pathlib import Path
 import importlib.util
 
 from feedbax.runtime.graph import Component
-from feedbax.nn import SimpleStagedNetwork
+from feedbax.models.networks import SimpleStagedNetwork
 from feedbax.mechanics import Mechanics
 from feedbax.runtime.channel import FeedbackChannel
 # ... other built-in components

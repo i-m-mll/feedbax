@@ -8,16 +8,11 @@ from abc import abstractmethod
 from collections.abc import Callable
 from functools import partial, reduce
 import logging
-from typing import Any, Optional
 
 import equinox as eqx
-from equinox import AbstractVar
 # from equinox._pretty_print import tree_pp, bracketed
-import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax.tree as jt
-import jax._src.pretty_printer as pp
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
 from feedbax._tree import leaves_of_type

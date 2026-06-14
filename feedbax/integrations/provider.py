@@ -980,7 +980,7 @@ def _schema_issues_to_provider(
 
 
 def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidationResult:
-    from feedbax.graph_normalization import normalize_graph_for_studio_authoring
+    from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
     from feedbax.component_registry import ComponentRegistry
 
     migration_records: list[ArtifactMigrationRecord] = []
