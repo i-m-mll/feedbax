@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
+from feedbax.analysis.context import (
+    AnalysisArtifactFile,
+    AnalysisRunContext,
+    parent_ref_from_evaluation_manifest,
+)
 from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.analysis.materialization import (
+    AnalysisArtifactGroup,
+    ContextMaterializationPending,
+    ContextMaterializer,
+    ExistingAnalysisArtifact,
+    MaterializationResult,
+)
 from feedbax.manifest import (
     AnalysisRunSpec,
+    ArtifactRef,
+    ParentRef,
+    REGENERATION_SPEC_SCHEMA_ID,
+    RegenerationCommand,
+    RegenerationSpec,
     analysis_run_manifest_id,
     load_manifest,
 )
@@ -264,3 +282,171 @@ def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consump
         summary_ref.artifact_id,
         arrays_ref.artifact_id,
     }
+
+
+def test_context_materializer_emits_json_payload_with_explicit_compute_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
+    spec = AnalysisRunSpec(
+        analysis_type="toy_context_materializer",
+        params={"requested_outputs": ["materializer"]},
+    )
+    context = AnalysisRunContext(spec=spec, root=tmp_path)
+
+    def materialize(run_context: AnalysisRunContext) -> dict[str, object]:
+        return {
+            "kind": "toy.materialized.v1",
+            "manifest_id": run_context.manifest_id,
+            "value": 17,
+        }
+
+    analysis = ContextMaterializer(
+        materializer=materialize,
+        artifact_role="toy_materialized_payload",
+        logical_name="toy/materialized.json",
+        schema_boundary="toy-owned payload",
+    )
+    pending = analysis.compute(build_toy_analysis_data())
+
+    assert isinstance(pending, ContextMaterializationPending)
+    assert pending.status == "pending_context_artifact_emission"
+
+    _all_analyses, all_results, _all_figs = run_analyses_with_context(
+        {"materializer": analysis},
+        build_toy_analysis_data(),
+        context,
+    )
+
+    assert all_results["materializer"]["kind"] == "toy.materialized.v1"
+    manifest = load_manifest(context.manifest_path)
+    assert manifest.summary_metrics["artifact_count"] == 1
+    payload_ref = manifest.artifacts[0]
+    assert payload_ref.role == "toy_materialized_payload"
+    assert payload_ref.logical_name == "toy/materialized.json"
+    assert payload_ref.metadata["schema_boundary"] == "toy-owned payload"
+    payload = json.loads(Path(payload_ref.uri).read_text(encoding="utf-8"))
+    assert payload == all_results["materializer"]
+
+
+def test_context_materializer_records_embedded_refs_groups_and_regeneration_specs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
+    spec = AnalysisRunSpec(
+        analysis_type="toy_context_materializer_rich",
+        inputs=[ParentRef(kind="EvaluationRunManifest", id="eval-rich")],
+    )
+    context = AnalysisRunContext(spec=spec, root=tmp_path)
+
+    def materialize(run_context: AnalysisRunContext) -> MaterializationResult:
+        existing_path = run_context.results_cache_dir / "existing-summary.json"
+        existing_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_path.write_text('{"summary": true}\n', encoding="utf-8")
+
+        group_dir = run_context.results_cache_dir / "bulk"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        bulk_path = group_dir / "unit.npz"
+        np.savez_compressed(bulk_path, values=np.asarray([1, 2, 3], dtype=np.int64))
+
+        external_ref = ArtifactRef(
+            role="downstream_existing_ref",
+            logical_name="external/ref.json",
+            artifact_id="artifact://external/ref",
+            media_type="application/json",
+            uri="https://example.invalid/ref.json",
+        )
+        regeneration = RegenerationSpec(
+            command=RegenerationCommand(argv=["python", "make_payload.py"]),
+            parameters={"analysis_type": run_context.spec.analysis_type},
+            inputs=list(run_context.spec.inputs),
+            outputs=[
+                ArtifactRef(
+                    role="toy_materialized_payload",
+                    logical_name="toy/rich-materialized.json",
+                )
+            ],
+        )
+        return MaterializationResult(
+            payload={
+                "kind": "toy.rich-materialized.v1",
+                "nested": {
+                    "refs": [external_ref],
+                },
+            },
+            payload_metadata={"payload_schema": "toy.rich-materialized.v1"},
+            existing_artifacts=[
+                ExistingAnalysisArtifact(
+                    path=existing_path,
+                    role="toy_existing_summary",
+                    logical_name="toy/existing-summary.json",
+                    media_type="application/json",
+                )
+            ],
+            artifact_groups=[
+                AnalysisArtifactGroup(
+                    group_id="toy_bulk_group",
+                    metadata={"description": "opaque toy bulk group"},
+                    members=[
+                        AnalysisArtifactFile(
+                            path=bulk_path,
+                            role="toy_bulk_arrays",
+                            logical_name="toy/bulk/unit.npz",
+                            media_type="application/x-npz",
+                            group_role="bulk_arrays",
+                            metadata={"arrays": {"values": {"role": "toy_series"}}},
+                        )
+                    ],
+                )
+            ],
+            regeneration_specs=[regeneration],
+        )
+
+    analysis = ContextMaterializer(
+        materializer=materialize,
+        artifact_role="toy_materialized_payload",
+        logical_name="toy/rich-materialized.json",
+        schema_boundary="toy-owned payload",
+    )
+    _all_analyses, all_results, _all_figs = run_analyses_with_context(
+        {"materializer": analysis},
+        build_toy_analysis_data(),
+        context,
+    )
+
+    manifest = load_manifest(context.manifest_path)
+    assert all_results["materializer"]["nested"]["refs"][0]["artifact_id"] == (
+        "artifact://external/ref"
+    )
+    assert manifest.summary_metrics["artifact_count"] == 4
+
+    artifacts_by_role = {artifact.role: artifact for artifact in manifest.artifacts}
+    payload_ref = artifacts_by_role["toy_materialized_payload"]
+    external_ref = artifacts_by_role["downstream_existing_ref"]
+    existing_ref = artifacts_by_role["toy_existing_summary"]
+    bulk_ref = artifacts_by_role["toy_bulk_arrays"]
+
+    assert json.loads(Path(payload_ref.uri).read_text(encoding="utf-8"))["nested"]["refs"][0][
+        "artifact_id"
+    ] == external_ref.artifact_id
+    assert Path(existing_ref.uri).exists()
+    assert Path(bulk_ref.uri).exists()
+    assert bulk_ref.metadata["artifact_group"]["id"] == "toy_bulk_group"
+    assert bulk_ref.metadata["artifact_group"]["member_role"] == "bulk_arrays"
+    assert bulk_ref.metadata["artifact_group"]["metadata"] == {
+        "description": "opaque toy bulk group"
+    }
+    assert bulk_ref.metadata["arrays"]["values"]["role"] == "toy_series"
+
+    assert len(manifest.regeneration_specs) == 1
+    regeneration_payload = manifest.regeneration_specs[0]
+    assert regeneration_payload.kind == "RegenerationSpec"
+    assert regeneration_payload.schema_id == REGENERATION_SPEC_SCHEMA_ID
+    assert regeneration_payload.inline["parameters"] == {
+        "analysis_type": "toy_context_materializer_rich"
+    }
+    assert regeneration_payload.inline["outputs"][0]["logical_name"] == (
+        "toy/rich-materialized.json"
+    )
