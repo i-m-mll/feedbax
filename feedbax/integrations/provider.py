@@ -46,7 +46,10 @@ from feedbax.contracts.migrations import (
     migrate_studio_task_binding_spec,
     migrate_studio_workspace_spec,
 )
-from feedbax.objective_spec import objective_schema_models, validate_objective_spec as _validate_objective_spec
+from feedbax.objectives.spec import (
+    objective_schema_models,
+    validate_objective_spec as _validate_objective_spec,
+)
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
@@ -80,8 +83,8 @@ from feedbax.contracts.graph import (
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
-from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.task_presets import apply_delayed_reaches_preset
+from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.tasks.presets import apply_delayed_reaches_preset
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -850,13 +853,13 @@ def task_registry_snapshot() -> RegistrySnapshot:
 
 
 def loss_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.loss_service import NORM_FUNCTIONS
+    from feedbax.objectives.service import NORM_FUNCTIONS
 
     return RegistrySnapshot(
         kind="losses",
         entries=[
             RegistryEntry(
-                type_id="feedbax.loss.LossTermSpec",
+                type_id="feedbax.objectives.loss.LossTermSpec",
                 name="LossTermSpec",
                 category="Loss",
                 description="Structured Studio loss term with optional recursive children.",
@@ -1095,7 +1098,10 @@ def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidati
 
     _validate_graph(spec)
     if spec.retained_observables:
-        from feedbax.retained_observables import RetentionPlanError, lower_retention_plan
+        from feedbax.runtime.retained_observables import (
+            RetentionPlanError,
+            lower_retention_plan,
+        )
 
         try:
             lower_retention_plan(spec)
@@ -1271,7 +1277,10 @@ def validate_training_spec(
         errors.extend(graph_result.errors)
         warnings.extend(graph_result.warnings)
         if graph_result.valid:
-            from feedbax.retained_observables import RetentionPlanError, lower_retention_plan
+            from feedbax.runtime.retained_observables import (
+                RetentionPlanError,
+                lower_retention_plan,
+            )
 
             graph = (
                 graph_spec
@@ -1667,7 +1676,10 @@ def validate_analysis_spec(
         errors.extend(graph_result.errors)
         warnings.extend(graph_result.warnings)
         if graph_result.valid:
-            from feedbax.retained_observables import RetentionPlanError, lower_retention_plan
+            from feedbax.runtime.retained_observables import (
+                RetentionPlanError,
+                lower_retention_plan,
+            )
 
             graph = (
                 graph_spec
@@ -1688,7 +1700,10 @@ def validate_analysis_spec(
                     )
                 )
     else:
-        from feedbax.retained_observables import RetentionPlanError, normalize_selector_ref
+        from feedbax.runtime.retained_observables import (
+            RetentionPlanError,
+            normalize_selector_ref,
+        )
 
         for index, requirement in enumerate(spec.input_requirements):
             selector_value = (

@@ -2022,7 +2022,7 @@ def _infer_list_shape(value: list[Any]) -> list[Any]:
 
 
 def _graph_probe_selector_targets(graph: GraphSpec) -> list[SelectorTargetSchema]:
-    from feedbax.loss_service import loss_service
+    from feedbax.objectives.service import loss_service
 
     targets: list[SelectorTargetSchema] = []
     for probe in loss_service.get_available_probes(graph):
