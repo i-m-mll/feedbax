@@ -56,7 +56,7 @@ from feedbax.hyperparams import (
     flatten_hps,
     use_train_hps_when_none,
 )
-from feedbax.manifest import AnalysisRunSpec, evaluation_states_cache_path
+from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_path
 from feedbax.misc import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.setup_utils import query_and_load_model

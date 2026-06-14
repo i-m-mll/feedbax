@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     ArtifactRef,
     EntrypointRef,
@@ -24,7 +24,7 @@ from feedbax.manifest import (
     tree_hash_ref,
     write_manifest,
 )
-from feedbax.migrations import UnsupportedSpecVersion
+from feedbax.contracts.migrations import UnsupportedSpecVersion
 
 
 def test_file_and_tree_hash_refs_are_deterministic(tmp_path: Path) -> None:

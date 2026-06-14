@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from feedbax.execution_models import ExecutionSpec, LocalExecutionResult
 from feedbax.execution_plan import prepare_execution_plan
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     EntrypointRef,
     ManifestStatus,
     Provenance,

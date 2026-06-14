@@ -14,7 +14,7 @@ from feedbax.execution import (
     render_modal_app,
     run_local_execution,
 )
-from feedbax.provider import provider_manifest
+from feedbax.integrations.provider import provider_manifest
 from feedbax.web.app import create_app
 
 

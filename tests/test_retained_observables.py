@@ -8,10 +8,10 @@ from pathlib import Path
 import jax.numpy as jnp
 import pytest
 
-from feedbax.manifest import Provenance, load_manifest, write_training_run_manifest
-from feedbax.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.provider import provider_manifest, validate_graph_spec, validate_training_spec
-from feedbax.retention_artifact_schema import (
+from feedbax.contracts.manifest import Provenance, load_manifest, write_training_run_manifest
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.integrations.provider import provider_manifest, validate_graph_spec, validate_training_spec
+from feedbax.contracts.retention_artifact_schema import (
     RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
     RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
     RETENTION_PLAN_SCHEMA_ID,

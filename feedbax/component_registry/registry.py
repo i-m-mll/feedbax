@@ -17,7 +17,7 @@ from feedbax.contracts.component import (
     PortTypeSpec,
 )
 from feedbax.contracts.graph import ParamSchema
-from feedbax.migrations import (
+from feedbax.contracts.migrations import (
     ComponentMigration,
     ComponentMigrationPack,
     MissingComponentOwner,

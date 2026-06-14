@@ -296,7 +296,7 @@ class PopulationStructure(Module):
 
 def validate_population_structure_spec(spec: Mapping[str, object]) -> dict[str, object]:
     """Validate a serialized population-structure spec against the schema registry."""
-    from feedbax.migrations import default_spec_registry
+    from feedbax.contracts.migrations import default_spec_registry
 
     schema_id = spec.get("schema_id")
     if schema_id is not None and schema_id != POPULATION_STRUCTURE_SCHEMA_ID:

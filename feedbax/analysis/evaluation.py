@@ -9,7 +9,7 @@ from typing import Any
 
 import dill as pickle
 
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     ArtifactRef,
     EntrypointRef,
     EvaluationRunManifest,

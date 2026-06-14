@@ -61,7 +61,7 @@ from feedbax.contracts.graph import (
     WireSpec,
 )
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.migrations import migrate_graph_spec
+from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.serialization_builders import build_component, nonlinearity_name
 from feedbax.serialization_prototypes import (

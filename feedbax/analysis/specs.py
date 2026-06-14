@@ -14,7 +14,7 @@ from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.validation import AnalysisRecipeProtocol, validate_analysis_recipe
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,

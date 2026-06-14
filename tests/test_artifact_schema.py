@@ -5,15 +5,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from feedbax.artifact_schema import (
+from feedbax.contracts.artifact_schema import (
     ArrayStoreValidationError,
     array_store_ref,
     read_npz_array_store,
     validate_role_coverage,
     write_npz_array_store,
 )
-from feedbax.manifest import ModelArtifactManifest, spec_payload
-from feedbax.migrations import (
+from feedbax.contracts.manifest import ModelArtifactManifest, spec_payload
+from feedbax.contracts.migrations import (
     MigrationRegistry,
     SchemaMigration,
     UnsupportedMigrationPath,

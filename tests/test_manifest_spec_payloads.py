@@ -10,7 +10,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
 )
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     SpecPayload,
     canonical_json_bytes,
     load_manifest,
@@ -18,7 +18,7 @@ from feedbax.manifest import (
     sha256_bytes,
     spec_payload,
 )
-from feedbax.migrations import (
+from feedbax.contracts.migrations import (
     SchemaMigration,
     SpecSchemaFamily,
     SpecSchemaRegistry,

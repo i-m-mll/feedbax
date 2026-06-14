@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.studio_execution import (
+from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
     StudioExecutionPreparationError,
     StudioTrainingLocalRunRequest,
@@ -25,7 +25,7 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.manifest import EvaluationRunSpec, store_json_artifact
+from feedbax.contracts.manifest import EvaluationRunSpec, store_json_artifact
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (

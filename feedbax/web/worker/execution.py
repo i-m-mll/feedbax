@@ -18,7 +18,7 @@ import optax
 
 from feedbax.graph import Graph, GraphTraceRequest, init_state_from_component
 from feedbax.parameter_constraints import apply_parameter_constraints
-from feedbax.migrations import migrate_studio_task_binding_spec
+from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.retained_observables import (
     LossTermPlan,
     RetentionPlan,
@@ -28,7 +28,7 @@ from feedbax.retained_observables import (
     lower_retention_plan,
     retention_plan_to_json,
 )
-from feedbax.studio_schema import validate_graph_connection_schema, validate_task_binding_schema
+from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
 from feedbax.contracts.graph import (
     GraphSpec,
     StudioTaskBindingSpec,

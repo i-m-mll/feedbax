@@ -7,7 +7,7 @@ from .registry import (
     get_component_registry,
     register_component_type,
 )
-from feedbax.migrations import ComponentMigration, ComponentMigrationPack
+from feedbax.contracts.migrations import ComponentMigration, ComponentMigrationPack
 
 __all__ = [
     "ComponentBuilder",
