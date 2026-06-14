@@ -142,57 +142,125 @@ def test_task_objective_training_boundaries_use_canonical_modules() -> None:
     ]
 
 
-def test_root_compatibility_wrappers_export_canonical_objects() -> None:
+def test_canonical_contract_studio_provider_and_execution_imports() -> None:
     payload = _run_import_probe(
         """
+        import importlib
         import json
 
-        from feedbax import artifact_schema as root_artifact_schema
-        from feedbax import manifest as root_manifest
-        from feedbax import migrations as root_migrations
-        from feedbax import provider as root_provider
-        from feedbax import retention_artifact_schema as root_retention_artifact_schema
-        from feedbax import studio_execution as root_studio_execution
-        from feedbax import studio_protocol as root_studio_protocol
-        from feedbax import studio_schema as root_studio_schema
         from feedbax.contracts import artifact_schema
         from feedbax.contracts import manifest
         from feedbax.contracts import migrations
         from feedbax.contracts import retention_artifact_schema
+        from feedbax.cloud_backends import render_modal_app
+        from feedbax.execution_models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+        from feedbax.execution_plan import default_feedbax_sources, prepare_execution_plan
         from feedbax.integrations import provider
+        from feedbax.local_execution import run_local_execution
         from feedbax.studio import execution as studio_execution
         from feedbax.studio import protocol as studio_protocol
         from feedbax.studio import schema as studio_schema
 
+        canonical_modules = [
+            "feedbax.contracts.artifact_schema",
+            "feedbax.contracts.manifest",
+            "feedbax.contracts.migrations",
+            "feedbax.contracts.retention_artifact_schema",
+            "feedbax.cloud_backends",
+            "feedbax.execution_models",
+            "feedbax.execution_plan",
+            "feedbax.local_execution",
+            "feedbax.integrations.provider",
+            "feedbax.studio.execution",
+            "feedbax.studio.protocol",
+            "feedbax.studio.schema",
+        ]
+
         checks = {
-            "ArrayStorePayload": root_artifact_schema.ArrayStorePayload
-            is artifact_schema.ArrayStorePayload,
-            "ModelArtifactManifest": root_manifest.ModelArtifactManifest
-            is manifest.ModelArtifactManifest,
-            "SpecSchemaRegistry": root_migrations.SpecSchemaRegistry
-            is migrations.SpecSchemaRegistry,
-            "default_spec_registry": root_migrations.default_spec_registry
-            is migrations.default_spec_registry,
-            "provider_manifest": root_provider.provider_manifest
-            is provider.provider_manifest,
-            "RETENTION_PLAN_SCHEMA_ID": root_retention_artifact_schema.RETENTION_PLAN_SCHEMA_ID
-            == retention_artifact_schema.RETENTION_PLAN_SCHEMA_ID,
+            "modules": sorted(importlib.import_module(name).__name__ for name in canonical_modules),
+            "ArrayStorePayload": artifact_schema.ArrayStorePayload.__module__,
+            "ModelArtifactManifest": manifest.ModelArtifactManifest.__module__,
+            "SpecSchemaRegistry": migrations.SpecSchemaRegistry.__module__,
+            "default_spec_registry": migrations.default_spec_registry.__module__,
+            "provider_manifest": provider.provider_manifest.__module__,
+            "RETENTION_PLAN_SCHEMA_ID": retention_artifact_schema.RETENTION_PLAN_SCHEMA_ID,
             "prepare_studio_training_execution": (
-                root_studio_execution.prepare_studio_training_execution
-                is studio_execution.prepare_studio_training_execution
+                studio_execution.prepare_studio_training_execution.__module__
             ),
-            "parse_positive_n_steps": root_studio_protocol.parse_positive_n_steps
-            is studio_protocol.parse_positive_n_steps,
+            "parse_positive_n_steps": studio_protocol.parse_positive_n_steps.__module__,
             "enumerate_studio_schema_registry": (
-                root_studio_schema.enumerate_studio_schema_registry
-                is studio_schema.enumerate_studio_schema_registry
+                studio_schema.enumerate_studio_schema_registry.__module__
             ),
+            "ExecutionPlan": ExecutionPlan.__module__,
+            "ExecutionSpec": ExecutionSpec.__module__,
+            "LocalExecutionResult": LocalExecutionResult.__module__,
+            "default_feedbax_sources": default_feedbax_sources.__module__,
+            "prepare_execution_plan": prepare_execution_plan.__module__,
+            "render_modal_app": render_modal_app.__module__,
+            "run_local_execution": run_local_execution.__module__,
         }
         print(json.dumps(checks, sort_keys=True))
         """
     )
 
-    assert all(payload.values()), payload
+    assert payload["modules"] == [
+        "feedbax.cloud_backends",
+        "feedbax.contracts.artifact_schema",
+        "feedbax.contracts.manifest",
+        "feedbax.contracts.migrations",
+        "feedbax.contracts.retention_artifact_schema",
+        "feedbax.execution_models",
+        "feedbax.execution_plan",
+        "feedbax.integrations.provider",
+        "feedbax.local_execution",
+        "feedbax.studio.execution",
+        "feedbax.studio.protocol",
+        "feedbax.studio.schema",
+    ]
+    assert payload["ArrayStorePayload"] == "feedbax.contracts.artifact_schema"
+    assert payload["ModelArtifactManifest"] == "feedbax.contracts.manifest"
+    assert payload["SpecSchemaRegistry"] == "feedbax.contracts.migrations"
+    assert payload["default_spec_registry"] == "feedbax.contracts.migrations"
+    assert payload["provider_manifest"] == "feedbax.integrations.provider"
+    assert payload["RETENTION_PLAN_SCHEMA_ID"] == "feedbax.manifest.training.retention_plan"
+    assert payload["prepare_studio_training_execution"] == "feedbax.studio.execution"
+    assert payload["parse_positive_n_steps"] == "feedbax.studio.protocol"
+    assert payload["enumerate_studio_schema_registry"] == "feedbax.studio.schema"
+    assert payload["ExecutionPlan"] == "feedbax.execution_models"
+    assert payload["ExecutionSpec"] == "feedbax.execution_models"
+    assert payload["LocalExecutionResult"] == "feedbax.execution_models"
+    assert payload["default_feedbax_sources"] == "feedbax.execution_plan"
+    assert payload["prepare_execution_plan"] == "feedbax.execution_plan"
+    assert payload["render_modal_app"] == "feedbax.cloud_backends"
+    assert payload["run_local_execution"] == "feedbax.local_execution"
+
+
+def test_residual_root_compatibility_facades_are_absent() -> None:
+    payload = _run_import_probe(
+        """
+        import importlib.util
+        import json
+
+        obsolete_facades = [
+            "feedbax.artifact_schema",
+            "feedbax.manifest",
+            "feedbax.migrations",
+            "feedbax.provider",
+            "feedbax.retention_artifact_schema",
+            "feedbax.studio_execution",
+            "feedbax.studio_protocol",
+            "feedbax.studio_schema",
+            "feedbax.execution",
+        ]
+        facade_specs = {
+            module_name: importlib.util.find_spec(module_name) is not None
+            for module_name in obsolete_facades
+        }
+        print(json.dumps({"facade_specs": facade_specs}, sort_keys=True))
+        """
+    )
+
+    assert not any(payload["facade_specs"].values())
 
 
 def test_obsolete_web_alias_modules_are_absent() -> None:

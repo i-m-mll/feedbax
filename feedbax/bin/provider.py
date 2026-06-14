@@ -10,14 +10,10 @@ from typing import Any
 
 from feedbax.manifest_index import rebuild_manifest_index
 from feedbax.integrations.provider import health, provider_manifest, registry_snapshot, validate_spec
-from feedbax.execution import (
-    ExecutionSpec,
-    load_execution_spec,
-    prepare_execution_plan,
-    write_modal_app,
-    run_local_execution,
-    write_execution_plan,
-)
+from feedbax.cloud_backends import write_modal_app
+from feedbax.execution_models import ExecutionSpec
+from feedbax.execution_plan import load_execution_spec, prepare_execution_plan, write_execution_plan
+from feedbax.local_execution import run_local_execution
 
 
 def _read_json(path: str) -> dict[str, Any]:
