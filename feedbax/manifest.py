@@ -19,6 +19,12 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from feedbax.contracts.graph import AnalysisInputRequirement
+from feedbax.retention_artifact_schema import (
+    RETENTION_ARTIFACT_ROLE_SCHEMAS,
+    retained_observables_to_json,
+    retention_artifact_metadata,
+    retention_artifact_schema,
+)
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -562,6 +568,115 @@ def store_json_artifact(
     )
 
 
+def _validate_retention_artifact_version(
+    role: str,
+    payload: dict[str, Any],
+    *,
+    path: str,
+) -> dict[str, Any]:
+    """Validate or stamp a governed retention artifact payload."""
+    from feedbax.migrations import UnsupportedSpecVersion, default_spec_registry
+
+    kind, expected_schema_id, current_version = retention_artifact_schema(role)
+    schema_id = payload.get("schema_id")
+    if schema_id is not None and schema_id != expected_schema_id:
+        raise UnsupportedSpecVersion(
+            "Unsupported retention artifact schema identity: "
+            f"path={path!r}, role={role!r}, kind={kind!r}, "
+            f"schema_id={schema_id!r}, expected={expected_schema_id!r}"
+        )
+
+    source_version = payload.get("schema_version")
+    if source_version is not None and not isinstance(source_version, str):
+        raise UnsupportedSpecVersion(
+            "Retention artifact schema_version must be a string: "
+            f"path={path!r}, role={role!r}, kind={kind!r}, "
+            f"schema_version={source_version!r}"
+        )
+    if isinstance(source_version, str) and source_version and source_version != current_version:
+        try:
+            default_spec_registry.migrate(kind, payload, source_version=source_version)
+        except UnsupportedSpecVersion as exc:
+            raise UnsupportedSpecVersion(
+                "Unsupported retention artifact schema version: "
+                f"path={path!r}, role={role!r}, kind={kind!r}; {exc}"
+            ) from exc
+
+    stamped = dict(payload)
+    stamped["schema_id"] = expected_schema_id
+    stamped["schema_version"] = current_version
+    return stamped
+
+
+def _retention_artifact_payload(
+    role: str,
+    value: Any,
+    *,
+    path: str,
+) -> dict[str, Any]:
+    if role == "retained_observables":
+        if (
+            isinstance(value, dict)
+            and ("schema_id" in value or "schema_version" in value)
+            and "observables" in value
+        ):
+            payload = dict(value)
+        else:
+            payload = retained_observables_to_json(value)
+    elif role == "retention_plan":
+        if not isinstance(value, dict):
+            raise TypeError(
+                "retention_plan artifact payload must be a mapping: "
+                f"path={path!r}, got={type(value).__name__}"
+            )
+        payload = dict(value)
+    else:
+        payload = value
+    if not isinstance(payload, dict):
+        raise TypeError(
+            "retention artifact payload must be a mapping after schema wrapping: "
+            f"path={path!r}, role={role!r}, got={type(payload).__name__}"
+        )
+    return _validate_retention_artifact_version(role, payload, path=path)
+
+
+def _validate_retention_artifact_ref_metadata(data: dict[str, Any]) -> dict[str, Any]:
+    artifacts = data.get("artifacts")
+    if not isinstance(artifacts, list):
+        return data
+    normalized = dict(data)
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            continue
+        role = artifact.get("role")
+        if role not in RETENTION_ARTIFACT_ROLE_SCHEMAS:
+            continue
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        missing = [
+            key
+            for key in ("schema_id", "schema_version")
+            if not isinstance(metadata.get(key), str) or not metadata.get(key)
+        ]
+        if missing:
+            from feedbax.migrations import UnsupportedSpecVersion
+
+            raise UnsupportedSpecVersion(
+                "Retention artifact ref is missing governed schema metadata: "
+                f"path='artifacts/{index}/metadata', role={role!r}, missing={missing}"
+            )
+        _validate_retention_artifact_version(
+            role,
+            {
+                "schema_id": metadata["schema_id"],
+                "schema_version": metadata["schema_version"],
+            },
+            path=f"artifacts/{index}/metadata",
+        )
+    return normalized
+
+
 def _manifest_dir(root: Path, kind: str) -> Path:
     names = {
         "GraphSpecManifest": "graph_specs",
@@ -691,6 +806,7 @@ def load_manifest(path: Path | str) -> AnyManifest:
     """Load a known Feedbax manifest from disk."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     data = _normalize_manifest_data_spec_payloads(data)
+    data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")
     if not isinstance(raw_kind, str):
         raise ValueError(f"Unknown Feedbax manifest kind: {raw_kind!r}")
@@ -894,23 +1010,33 @@ def write_training_run_manifest(
     if retention_plan is not None:
         artifacts.append(
             store_json_artifact(
-                retention_plan,
+                _retention_artifact_payload(
+                    "retention_plan",
+                    retention_plan,
+                    path="retention_plan",
+                ),
                 root=root_path,
                 role="retention_plan",
                 logical_name=f"feedbax_retention_plan_{job_id}.json"
                 if job_id
                 else "feedbax_retention_plan.json",
+                metadata=retention_artifact_metadata("retention_plan"),
             )
         )
     if retained_observables is not None:
         artifacts.append(
             store_json_artifact(
-                retained_observables,
+                _retention_artifact_payload(
+                    "retained_observables",
+                    retained_observables,
+                    path="retained_observables",
+                ),
                 root=root_path,
                 role="retained_observables",
                 logical_name=f"feedbax_retained_observables_{job_id}.json"
                 if job_id
                 else "feedbax_retained_observables.json",
+                metadata=retention_artifact_metadata("retained_observables"),
             )
         )
 

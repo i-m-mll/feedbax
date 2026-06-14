@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import jax.numpy as jnp
 import pytest
 
 from feedbax.manifest import Provenance, load_manifest, write_training_run_manifest
+from feedbax.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.provider import provider_manifest, validate_graph_spec, validate_training_spec
+from feedbax.retention_artifact_schema import (
+    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
+    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
+    RETENTION_PLAN_SCHEMA_ID,
+    RETENTION_PLAN_SCHEMA_VERSION,
+)
 from feedbax.retained_observables import (
     RetentionPlanError,
     evaluate_loss_plan,
@@ -618,13 +626,17 @@ def test_training_manifest_stores_retention_plan_and_observable_artifacts(tmp_pa
         )
     )
     plan = lower_retention_plan(graph, training)
+    payload = retention_plan_to_json(plan)
+
+    assert payload["schema_id"] == RETENTION_PLAN_SCHEMA_ID
+    assert payload["schema_version"] == RETENTION_PLAN_SCHEMA_VERSION
 
     _manifest, path = write_training_run_manifest(
         job_id="job-retained",
         total_batches=1,
         training_spec=training.model_dump(mode="json", exclude_none=True),
         graph_spec=graph.model_dump(mode="json", exclude_none=True),
-        retention_plan=retention_plan_to_json(plan),
+        retention_plan=payload,
         retained_observables={"graph_output:effector": [[0.0, 1.0]]},
         root=tmp_path / "runs",
         provenance=Provenance(source_commit="abc123", dirty=False),
@@ -638,3 +650,99 @@ def test_training_manifest_stores_retention_plan_and_observable_artifacts(tmp_pa
             assert artifact.media_type == "application/json"
             assert artifact.uri is not None
             assert Path(artifact.uri).exists()
+            assert isinstance(artifact.metadata, dict)
+            stored = json.loads(Path(artifact.uri).read_text(encoding="utf-8"))
+            if artifact.role == "retention_plan":
+                assert artifact.metadata["schema_id"] == RETENTION_PLAN_SCHEMA_ID
+                assert artifact.metadata["schema_version"] == RETENTION_PLAN_SCHEMA_VERSION
+                assert stored["schema_id"] == RETENTION_PLAN_SCHEMA_ID
+                assert stored["schema_version"] == RETENTION_PLAN_SCHEMA_VERSION
+                assert "observables" in stored
+                assert "loss_terms" in stored
+            else:
+                assert artifact.metadata["schema_id"] == RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID
+                assert (
+                    artifact.metadata["schema_version"]
+                    == RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION
+                )
+                assert stored["schema_id"] == RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID
+                assert stored["schema_version"] == RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION
+                assert stored["observables"] == {"graph_output:effector": [[0.0, 1.0]]}
+
+
+def test_training_manifest_rejects_unsupported_retention_artifact_version(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(UnsupportedSpecVersion) as exc_info:
+        write_training_run_manifest(
+            job_id="job-old-retention",
+            total_batches=1,
+            retention_plan={
+                "schema_id": RETENTION_PLAN_SCHEMA_ID,
+                "schema_version": "feedbax.manifest.training.retention_plan.v0",
+                "observables": [],
+                "loss_terms": [],
+            },
+            root=tmp_path / "runs",
+            provenance=Provenance(source_commit="abc123", dirty=False),
+        )
+
+    message = str(exc_info.value)
+    assert "RetentionPlan" in message
+    assert "feedbax.manifest.training.retention_plan.v0" in message
+    assert "migration_intentionally_absent=yes" in message
+
+
+def test_load_manifest_rejects_unsupported_retention_artifact_ref_metadata(
+    tmp_path: Path,
+) -> None:
+    manifest, path = write_training_run_manifest(
+        job_id="job-retained-old-ref",
+        total_batches=1,
+        retention_plan={
+            "observables": [],
+            "loss_terms": [],
+        },
+        root=tmp_path / "runs",
+        provenance=Provenance(source_commit="abc123", dirty=False),
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    artifact = next(item for item in data["artifacts"] if item["role"] == "retention_plan")
+    artifact["metadata"]["schema_version"] = "feedbax.manifest.training.retention_plan.v0"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(UnsupportedSpecVersion) as exc_info:
+        load_manifest(path)
+
+    assert "artifacts/0/metadata" in str(exc_info.value)
+    assert manifest.id in data["id"]
+
+
+def test_retention_artifacts_are_registered_with_manifest_policy() -> None:
+    families = {
+        family.kind: family
+        for family in default_spec_registry.families()
+        if family.kind
+        in {
+            "RetentionPlan",
+            "RetainedObservablePlan",
+            "RetentionPolicyPlan",
+            "LossTermPlan",
+            "RetainedObservablesArtifact",
+            "RetainedObservableSpec",
+        }
+    }
+
+    assert families["RetainedObservableSpec"].identity == "feedbax.spec.graph.retained_observable"
+    for kind in (
+        "RetentionPlan",
+        "RetainedObservablePlan",
+        "RetentionPolicyPlan",
+        "LossTermPlan",
+        "RetainedObservablesArtifact",
+    ):
+        family = families[kind]
+        assert family.namespace is not None
+        assert family.namespace.value == "manifest"
+        assert family.policy is not None
+        assert family.policy.required_tests == ("tests/test_retained_observables.py",)

@@ -40,9 +40,14 @@ exports a reusable global parameter payload schema identity.
 
 - Graph, training, task, objective, evaluation, analysis, report, Studio, and
   execution request families are aligned under `feedbax.spec.*`.
-- Manifest models, `SpecPayload`, array-store payloads, provider records,
-  registry snapshots, execution plans, execution results, and artifact records
-  are aligned under `feedbax.manifest.*`.
+- Manifest models, `SpecPayload`, array-store payloads, produced training-run
+  retention artifacts, provider records, registry snapshots, execution plans,
+  execution results, and artifact records are aligned under
+  `feedbax.manifest.*`.
+- Graph-authored retained-observable request specs remain
+  `feedbax.spec.graph.retained_observable`; produced `retention_plan` and
+  `retained_observables` artifacts use distinct `feedbax.manifest.training.*`
+  identities because they are execution outputs, not request specs.
 - Legacy `feedbax.studio.task_bindings.v1` remains a registered migration input
   to `feedbax.spec.studio.task_bindings.v2`.
 - Legacy `feedbax.studio.task_bindings.v0` and `feedbax.objective.v0` remain

@@ -14,6 +14,18 @@ from feedbax.contracts.graph import (
     GraphSpec,
 )
 from feedbax.manifest import ArtifactMigrationRecord, SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION
+from feedbax.retention_artifact_schema import (
+    LOSS_TERM_PLAN_SCHEMA_ID,
+    LOSS_TERM_PLAN_SCHEMA_VERSION,
+    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
+    RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
+    RETAINED_OBSERVABLE_PLAN_SCHEMA_ID,
+    RETAINED_OBSERVABLE_PLAN_SCHEMA_VERSION,
+    RETENTION_PLAN_SCHEMA_ID,
+    RETENTION_PLAN_SCHEMA_VERSION,
+    RETENTION_POLICY_PLAN_SCHEMA_ID,
+    RETENTION_POLICY_PLAN_SCHEMA_VERSION,
+)
 from feedbax.schema_namespace import (
     SchemaNamespaceKind,
     validate_schema_identity,
@@ -1222,6 +1234,54 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 emitted_by=manifest_emitters,
                 consumed_by=("manifest load/write", "provider handoff"),
                 description=description,
+            )
+        )
+
+    for kind, schema_id, version, description in (
+        (
+            "RetentionPlan",
+            RETENTION_PLAN_SCHEMA_ID,
+            RETENTION_PLAN_SCHEMA_VERSION,
+            "Produced training-run retention-plan artifact payload.",
+        ),
+        (
+            "RetainedObservablesArtifact",
+            RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_ID,
+            RETAINED_OBSERVABLES_ARTIFACT_SCHEMA_VERSION,
+            "Produced retained-observable values artifact payload.",
+        ),
+        (
+            "RetainedObservablePlan",
+            RETAINED_OBSERVABLE_PLAN_SCHEMA_ID,
+            RETAINED_OBSERVABLE_PLAN_SCHEMA_VERSION,
+            "Executable retained-observable plan subrecord.",
+        ),
+        (
+            "RetentionPolicyPlan",
+            RETENTION_POLICY_PLAN_SCHEMA_ID,
+            RETENTION_POLICY_PLAN_SCHEMA_VERSION,
+            "Executable retention policy subrecord.",
+        ),
+        (
+            "LossTermPlan",
+            LOSS_TERM_PLAN_SCHEMA_ID,
+            LOSS_TERM_PLAN_SCHEMA_VERSION,
+            "Executable lowered loss term subrecord.",
+        ),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                version,
+                owner_module="feedbax.retained_observables",
+                emitted_by=(
+                    "feedbax.retained_observables.retention_plan_to_json",
+                    "TrainingRunManifest retention artifacts",
+                ),
+                consumed_by=("training-run manifest write/load", "analysis materialization"),
+                description=description,
+                required_tests=("tests/test_retained_observables.py",),
             )
         )
 
