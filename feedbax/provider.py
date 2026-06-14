@@ -32,8 +32,13 @@ from feedbax.manifest import (
     load_graph_spec_from_manifest,
     utc_now,
 )
-from feedbax.migrations import UnsupportedSpecVersion, migrate_graph_spec
-from feedbax.objective_spec import objective_schema_models
+from feedbax.migrations import (
+    UnsupportedSpecVersion,
+    migrate_graph_spec,
+    migrate_studio_task_binding_spec,
+    migrate_studio_workspace_spec,
+)
+from feedbax.objective_spec import objective_schema_models, validate_objective_spec as _validate_objective_spec
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
@@ -62,6 +67,8 @@ from feedbax.contracts.graph import (
     AdditiveGraphChannelTargetSpec,
     AnalysisInputRequirement,
     GraphSpec,
+    StudioTaskBindingSpec,
+    StudioWorkspaceSpec,
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
@@ -1541,6 +1548,62 @@ def validate_analysis_spec(
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
+def validate_objective_spec(payload: dict[str, Any]) -> ProviderValidationResult:
+    """Validate a durable objective payload through the registered migration path."""
+    try:
+        _validate_objective_spec(payload)
+    except (PydanticValidationError, ValueError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_objective_spec",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
+def validate_studio_workspace_spec(payload: dict[str, Any]) -> ProviderValidationResult:
+    """Validate a Studio workspace payload through the registered migration path."""
+    try:
+        migrated = migrate_studio_workspace_spec(payload).payload
+        StudioWorkspaceSpec.model_validate(migrated)
+    except (PydanticValidationError, ValueError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_studio_workspace_spec",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
+def validate_studio_task_binding_spec(payload: dict[str, Any]) -> ProviderValidationResult:
+    """Validate a Studio task-binding payload through the registered migration path."""
+    try:
+        migrated = migrate_studio_task_binding_spec(payload).payload
+        StudioTaskBindingSpec.model_validate(migrated)
+    except (PydanticValidationError, ValueError) as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_studio_task_binding_spec",
+                    message=str(exc),
+                    location={"path": "/schema_version"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
 def validate_spec(
     kind: str,
     payload: dict[str, Any],
@@ -1559,4 +1622,10 @@ def validate_spec(
         return validate_evaluation_spec(payload)
     if kind == "analysis":
         return validate_analysis_spec(payload)
+    if kind == "objective":
+        return validate_objective_spec(payload)
+    if kind == "studio_workspace":
+        return validate_studio_workspace_spec(payload)
+    if kind == "studio_task_binding":
+        return validate_studio_task_binding_spec(payload)
     raise ValueError(f"Unknown spec kind: {kind!r}")

@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.migrations import migrate_studio_workspace_spec
 from feedbax.manifest import SCHEMA_VERSION, utc_now
 from feedbax.studio_protocol import (
     GRAPH_BINDABLE_TASK_DATA_ROLES,
@@ -168,7 +169,7 @@ class RuntimeIntrospectionResult(StudioSchemaModel):
 class StudioSchemaEnumerationRequest(StudioSchemaModel):
     """HTTP request for static Studio schema enumeration."""
 
-    workspace: StudioWorkspaceSpec
+    workspace: StudioWorkspaceSpec | dict[str, Any]
     scenario_id: Optional[str] = None
     runtime_introspection: RuntimeIntrospectionOptions | bool | None = None
 
@@ -198,7 +199,9 @@ def enumerate_studio_schema_registry(
         workspace_spec = (
             workspace
             if isinstance(workspace, StudioWorkspaceSpec)
-            else StudioWorkspaceSpec.model_validate(workspace)
+            else StudioWorkspaceSpec.model_validate(
+                migrate_studio_workspace_spec(workspace).payload
+            )
         )
     except PydanticValidationError as exc:
         return StudioSchemaRegistry(
@@ -210,6 +213,17 @@ def enumerate_studio_schema_registry(
                     location={"path": "/" + "/".join(str(part) for part in error.get("loc", ()))},
                 )
                 for error in exc.errors()
+            ],
+        )
+    except ValueError as exc:
+        return StudioSchemaRegistry(
+            scenario_id=scenario_id,
+            issues=[
+                SchemaValidationIssue(
+                    type="workspace_schema_version_error",
+                    message=str(exc),
+                    location={"path": "/workspace/schema_version"},
+                )
             ],
         )
 

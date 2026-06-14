@@ -15,6 +15,7 @@ from feedbax.manifest import (
     GraphSpecManifest,
     ModelArtifactManifest,
     ParentRef,
+    SpecPayload,
     load_graph_spec_from_manifest,
     spec_payload,
     write_manifest,
@@ -283,9 +284,9 @@ def test_provider_validation_rejects_unsupported_manifest_graph_spec_version() -
     result = validate_graph_spec_manifest(
         GraphSpecManifest(
             id="feedbax-graph-spec:unsupported",
-            graph_spec=spec_payload(
-                "GraphSpec",
-                {
+            graph_spec=SpecPayload(
+                kind="GraphSpec",
+                inline={
                     "schema_id": GRAPH_SPEC_SCHEMA_ID,
                     "schema_version": "feedbax.graph_spec.v99",
                     "nodes": {},

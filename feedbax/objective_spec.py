@@ -346,5 +346,32 @@ def objective_schema_models() -> dict[str, type[BaseModel]]:
 def canonical_objective_payload(spec: ObjectiveSpec | dict[str, Any]) -> dict[str, Any]:
     """Validate and return a deterministic JSON-compatible payload."""
 
-    objective = spec if isinstance(spec, ObjectiveSpec) else ObjectiveSpec.model_validate(spec)
+    objective = validate_objective_spec(spec)
     return objective.model_dump(mode="json", exclude_none=True)
+
+
+def migrate_objective_spec(
+    spec: ObjectiveSpec | dict[str, Any],
+    *,
+    source_version: str | None = None,
+    target_version: str | None = None,
+) -> Any:
+    """Migrate or explicitly reject a durable objective payload by schema version."""
+    from feedbax.migrations import migrate_structured_spec_payload
+
+    payload = spec.model_dump(mode="json") if isinstance(spec, ObjectiveSpec) else spec
+    return migrate_structured_spec_payload(
+        "ObjectiveSpec",
+        payload,
+        source_version=source_version,
+        target_version=target_version,
+        path="objective_spec",
+    )
+
+
+def validate_objective_spec(spec: ObjectiveSpec | dict[str, Any]) -> ObjectiveSpec:
+    """Migrate a durable objective payload, then validate it as ``ObjectiveSpec``."""
+    if isinstance(spec, ObjectiveSpec):
+        return spec
+    migrated = migrate_objective_spec(spec).payload
+    return ObjectiveSpec.model_validate(migrated)

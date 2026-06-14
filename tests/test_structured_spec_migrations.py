@@ -4,13 +4,16 @@ import pytest
 
 from feedbax.migrations import (
     SchemaMigration,
+    STUDIO_TASK_BINDING_LEGACY_V1,
     SpecSchemaFamily,
     SpecSchemaRegistry,
     UnknownSpecFamily,
     UnsupportedSpecVersion,
     default_spec_registry,
+    migrate_studio_task_binding_spec,
 )
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
+from feedbax.objective_spec import validate_objective_spec
 
 
 def _registry() -> SpecSchemaRegistry:
@@ -142,6 +145,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert not families["StudioSchemaRegistry"].durable
 
 
+
 def test_default_policy_matrix_covers_registered_emitted_families() -> None:
     missing = default_spec_registry.families_missing_policy()
 
@@ -203,7 +207,6 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
                 assert migrated.source_version == old_version
                 assert migrated.target_version == family.current_version
                 assert migrated.migrated
-            continue
 
         for old_version in policy.rejected_old_versions:
             with pytest.raises(UnsupportedSpecVersion) as excinfo:
@@ -220,24 +223,87 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
             assert "migration_intentionally_absent=yes" in message
 
 
-def test_default_policy_matrix_distinguishes_graph_migration_from_task_binding_rejection() -> None:
+def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> None:
     graph_policy = default_spec_registry.resolve("GraphSpec").policy
     task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
+    objective_policy = default_spec_registry.resolve("ObjectiveSpec").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
     assert graph_policy.supported_old_versions == (LEGACY_GRAPH_SPEC_SCHEMA_VERSION,)
     assert task_binding_policy is not None
-    assert task_binding_policy.stance == "reject"
-    assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v1",)
+    assert task_binding_policy.stance == "migrate"
+    assert task_binding_policy.supported_old_versions == (STUDIO_TASK_BINDING_LEGACY_V1,)
+    assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v0",)
+    assert objective_policy is not None
+    assert objective_policy.stance == "reject"
+    assert objective_policy.rejected_old_versions == ("feedbax.objective.v0",)
+
+    migrated = default_spec_registry.migrate(
+        "StudioTaskBindingSpec",
+        {"schema_version": STUDIO_TASK_BINDING_LEGACY_V1},
+    )
+    assert migrated.migrated
+    assert migrated.target_version == "feedbax.studio.task_bindings.v2"
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate(
             "StudioTaskBindingSpec",
-            {"schema_version": "feedbax.studio.task_bindings.v1"},
+            {"schema_version": "feedbax.studio.task_bindings.v0"},
         )
 
     message = str(excinfo.value)
     assert "family='StudioTaskBindingSpec'" in message
-    assert "feedbax.studio.task_bindings.v1" in message
+    assert "feedbax.studio.task_bindings.v0" in message
     assert "migration_intentionally_absent=yes" in message
+
+
+def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
+    result = migrate_studio_task_binding_spec(
+        {
+            "schema_version": STUDIO_TASK_BINDING_LEGACY_V1,
+            "exposed_outputs": [
+                {
+                    "id": "inputs",
+                    "label": "Inputs",
+                    "kind": "signal",
+                    "path": "inputs",
+                    "bindable": True,
+                    "metadata": {},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:inputs->network:input",
+                    "source_output_id": "inputs",
+                    "target_node_id": "network",
+                    "target_port": "input",
+                    "role": "model_input",
+                    "metadata": {},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    assert result.source_version == STUDIO_TASK_BINDING_LEGACY_V1
+    assert result.target_version == "feedbax.studio.task_bindings.v2"
+    assert result.payload["schema_version"] == "feedbax.studio.task_bindings.v2"
+    assert result.payload["exposed_data"][0]["id"] == "inputs"
+    assert "exposed_outputs" not in result.payload
+    assert result.payload["bindings"][0]["source_data_id"] == "inputs"
+    assert "source_output_id" not in result.payload["bindings"][0]
+    assert [record.migration_id for record in result.migration_records] == [
+        "studio-task-bindings-v1-to-v2"
+    ]
+    assert result.migration_records[0].metadata["spec_path"] == "task_binding_spec"
+
+
+def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -> None:
+    with pytest.raises(UnsupportedSpecVersion, match="task_bindings.v0"):
+        migrate_studio_task_binding_spec({"schema_version": "feedbax.studio.task_bindings.v0"})
+
+
+def test_objective_entrypoint_rejects_explicit_unsupported_version() -> None:
+    with pytest.raises(UnsupportedSpecVersion, match="feedbax.objective.v0"):
+        validate_objective_spec({"schema_version": "feedbax.objective.v0"})

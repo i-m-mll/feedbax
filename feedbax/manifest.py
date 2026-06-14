@@ -788,18 +788,13 @@ def _migrate_manifest_graph_spec_payload(
     if payload.kind != "GraphSpec":
         raise TypeError(f"Expected GraphSpec payload, got {payload.kind!r}.")
 
-    from feedbax.migrations import migrate_graph_spec
-
-    migrated = migrate_graph_spec(payload.inline, path="graph_spec.inline")
-    migrated_payload = payload.model_copy(
-        update={
-            "inline": migrated.payload,
-            "sha256": sha256_bytes(canonical_json_bytes(migrated.payload)),
-        }
-    )
+    migrated_payload = migrate_spec_payload(payload, path="graph_spec")
+    applied_records = [
+        record for record in migrated_payload.migration_records if record.tool == "feedbax"
+    ]
     migration_records = _append_unique_migration_records(
         existing_records,
-        migrated.migration_records,
+        applied_records,
     )
     updated_manifest = manifest.model_copy(
         update={
@@ -808,11 +803,11 @@ def _migrate_manifest_graph_spec_payload(
         }
     )
     return GraphSpecLoadResult(
-        payload=migrated.payload,
+        payload=migrated_payload.inline,
         manifest=updated_manifest,
         custody_manifest_kind=custody_manifest_kind,
         custody_manifest_id=manifest.id,
-        applied_migration_records=migrated.migration_records,
+        applied_migration_records=applied_records,
         migration_records=migration_records,
         downstream_migration_records=_downstream_migration_records(migration_records),
     )

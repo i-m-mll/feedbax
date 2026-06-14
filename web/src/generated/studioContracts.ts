@@ -396,6 +396,7 @@ export interface StudioScenarioSpec {
 
 export interface StudioStageSpec {
   id: string;
+  schema_version?: string;
   kind: "train" | "eval" | "analysis" | "report" | "import" | "compare" | "export" | "protocol";
   label: string;
   status?: "draft" | "invalid" | "ready" | "running" | "completed" | "failed" | "cancelled";
@@ -1353,6 +1354,7 @@ export const StudioStageSpecSchema: z.ZodType<StudioStageSpec> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
+      "schema_version": z.string().optional(),
       "kind": z.union([z.literal("train"), z.literal("eval"), z.literal("analysis"), z.literal("report"), z.literal("import"), z.literal("compare"), z.literal("export"), z.literal("protocol")]),
       "label": z.string(),
       "status": z.union([z.literal("draft"), z.literal("invalid"), z.literal("ready"), z.literal("running"), z.literal("completed"), z.literal("failed"), z.literal("cancelled")]).optional(),
