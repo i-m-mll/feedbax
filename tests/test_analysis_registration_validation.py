@@ -21,7 +21,7 @@ from feedbax.analysis.specs import (
     register_analysis_recipe,
     unregister_analysis_recipe,
 )
-from feedbax.manifest import AnalysisRunSpec, EvaluationRunSpec
+from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec
 from feedbax.plugins import discovery
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArrayStoreRef,
@@ -29,7 +29,7 @@ from feedbax.manifest import (
     write_training_run_manifest,
 )
 from feedbax.manifest_index import rebuild_manifest_index
-from feedbax.provider import (
+from feedbax.integrations.provider import (
     component_registry_snapshot,
     provider_manifest,
     validate_analysis_spec,
@@ -40,7 +40,7 @@ from feedbax.provider import (
     validate_task_spec,
     validate_training_spec,
 )
-from feedbax.studio_schema import (
+from feedbax.studio.schema import (
     RuntimeIntrospectionResult,
     RuntimeSampleLeafSchema,
     enumerate_studio_schema_registry,
@@ -61,8 +61,8 @@ from feedbax.contracts.graph import (
     build_default_studio_workspace,
 )
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
-from feedbax.migrations import default_spec_registry
-from feedbax.studio_protocol import infer_task_n_steps
+from feedbax.contracts.migrations import default_spec_registry
+from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
     WorkerStatus,
     _Job,

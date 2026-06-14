@@ -21,7 +21,7 @@ from feedbax.execution_models import (
     PlanStep,
     RepoSource,
 )
-from feedbax.manifest import utc_now
+from feedbax.contracts.manifest import utc_now
 
 
 def default_feedbax_sources(feedbax_ref: str = "develop") -> list[RepoSource]:

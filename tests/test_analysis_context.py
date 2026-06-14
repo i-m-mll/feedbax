@@ -20,7 +20,7 @@ from feedbax.analysis.materialization import (
     ExistingAnalysisArtifact,
     MaterializationResult,
 )
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     ArtifactRef,
     ParentRef,

@@ -12,7 +12,7 @@ from pydantic import Field, model_validator
 
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,

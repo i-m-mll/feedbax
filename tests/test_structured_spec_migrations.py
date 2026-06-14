@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from feedbax.migrations import (
+from feedbax.contracts.migrations import (
     SchemaMigration,
     STUDIO_TASK_BINDING_LEGACY_V1,
     SpecSchemaFamily,
@@ -175,6 +175,64 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert not families["StudioSchemaRegistry"].durable
 
 
+def test_manifest_schema_identities_survive_contract_package_move() -> None:
+    families = {family.kind: family for family in default_spec_registry.families()}
+
+    expected_manifest_identities = {
+        "ArrayRecord": "feedbax.manifest.array_record",
+        "ArrayStorePayload": "feedbax.manifest.array_store",
+        "GraphSpecManifest": "feedbax.manifest.graph_spec",
+        "ModelArtifactManifest": "feedbax.manifest.model_artifact",
+        "ProviderManifest": "feedbax.manifest.provider",
+        "RegistrySnapshot": "feedbax.manifest.registry_snapshot",
+        "SpecPayload": "feedbax.manifest.spec_payload",
+        "StagedAnalysisBundleExecution": "feedbax.manifest.analysis_bundle_execution",
+        "StudioPipelineMaterializationResult": (
+            "feedbax.manifest.studio.pipeline_materialization_result"
+        ),
+        "StudioSchemaRegistry": "feedbax.manifest.studio.schema_registry",
+        "StudioTrainingLocalRunResult": "feedbax.manifest.studio.training_local_run_result",
+    }
+
+    for kind, identity in expected_manifest_identities.items():
+        assert families[kind].identity == identity
+        assert families[kind].namespace == SchemaNamespaceKind.MANIFEST
+        assert families[kind].current_version.startswith("feedbax.manifest.")
+
+
+def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
+    families = {family.kind: family for family in default_spec_registry.families()}
+
+    expected_policy_paths = {
+        "ArrayStorePayload": (
+            "feedbax.contracts.artifact_schema",
+            ("feedbax.contracts.artifact_schema", "provider_manifest.schemas"),
+        ),
+        "ModelArtifactManifest": (
+            "feedbax.contracts.manifest",
+            ("feedbax.contracts.manifest", "feedbax.integrations.provider"),
+        ),
+        "ProviderManifest": (
+            "feedbax.integrations.provider",
+            ("feedbax.integrations.provider.provider_manifest",),
+        ),
+        "StudioSchemaRegistry": (
+            "feedbax.studio.schema",
+            ("feedbax.studio.schema", "feedbax.integrations.provider"),
+        ),
+        "StudioTrainingExecutionRequest": (
+            "feedbax.studio.execution",
+            ("feedbax.studio.execution", "feedbax.integrations.provider"),
+        ),
+    }
+
+    for kind, (owner_module, emitted_by) in expected_policy_paths.items():
+        policy = families[kind].policy
+        assert policy is not None
+        assert policy.owner_module == owner_module
+        assert policy.emitted_by == emitted_by
+
+
 def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> None:
     spec_kinds = {
         "GraphSpec",
@@ -240,7 +298,7 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
 
 
 def test_default_policy_matrix_covers_provider_schema_exports_and_capability_refs() -> None:
-    from feedbax.provider import provider_manifest
+    from feedbax.integrations.provider import provider_manifest
 
     manifest = provider_manifest()
     schema_refs = set(manifest.schemas)

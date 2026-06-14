@@ -15,7 +15,7 @@ from feedbax.analysis.evaluation import (
     register_evaluation_recipe,
     unregister_evaluation_recipe,
 )
-from feedbax.manifest import EvaluationRunManifest, EvaluationRunSpec, ParentRef
+from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, ParentRef
 from feedbax.types import AnalysisInputData, TreeNamespace
 
 

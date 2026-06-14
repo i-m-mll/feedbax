@@ -26,7 +26,7 @@ from feedbax.tasks.timeline_masks import (
     build_task_timeline_mask,
 )
 from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec, TrainingSpec
-from feedbax.retention_artifact_schema import (
+from feedbax.contracts.retention_artifact_schema import (
     RETENTION_PLAN_SCHEMA_ID,
     RETENTION_PLAN_SCHEMA_VERSION,
 )

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from feedbax.manifest import AnalysisRunSpec, EvaluationRunSpec
+from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec
 
 if TYPE_CHECKING:
     from feedbax.analysis.evaluation import EvaluationRecipeResult

@@ -12,7 +12,7 @@ from feedbax.graph_normalization import (
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,
 )
-from feedbax.migrations import migrate_graph_project_payload
+from feedbax.contracts.migrations import migrate_graph_project_payload
 from feedbax.contracts.graph import (
     AnalysisPageSpec,
     GraphProject,

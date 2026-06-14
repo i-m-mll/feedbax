@@ -21,7 +21,7 @@ from feedbax.contracts.studio_api import (
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
 )
-from feedbax.manifest import AnalysisRunSpec, ParentRef, analysis_run_manifest_id
+from feedbax.contracts.manifest import AnalysisRunSpec, ParentRef, analysis_run_manifest_id
 from feedbax.web.services.analysis_service import JobStatus, job_tracker
 
 logger = logging.getLogger(__name__)

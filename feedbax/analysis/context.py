@@ -13,7 +13,7 @@ from jaxtyping import PyTree
 from sqlalchemy.orm import Session
 
 from feedbax.database import EvaluationRecord, ModelRecord, add_evaluation_figure
-from feedbax.manifest import (
+from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     ArtifactRef,

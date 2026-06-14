@@ -17,13 +17,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from feedbax.studio_schema import validate_task_binding_schema
-from feedbax.studio_protocol import infer_task_n_steps
+from feedbax.studio.schema import validate_task_binding_schema
+from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.graph_normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
-from feedbax.migrations import migrate_studio_task_binding_spec
+from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
 
 
@@ -139,7 +139,7 @@ def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
 def _write_job_manifest(job: _Job) -> None:
     """Write a durable training-run manifest for a completed worker job."""
     try:
-        from feedbax.manifest import write_training_run_manifest
+        from feedbax.contracts.manifest import write_training_run_manifest
 
         history_events = _manifest_history_events(job)
         with job._state_lock:
