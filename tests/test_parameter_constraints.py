@@ -13,11 +13,14 @@ from feedbax.graph_templates import network_template_graph, recurrent_controller
 from feedbax.loss import AbstractLoss
 from feedbax.nn import (
     MaskedLinear,
+    POPULATION_STRUCTURE_SCHEMA_ID,
+    POPULATION_STRUCTURE_SCHEMA_VERSION,
     PopulationStructure,
     SimpleStagedNetwork,
     lower_population_constraints,
     population_input_kernel_mask,
     population_readout_kernel_mask,
+    population_structure_from_spec,
 )
 from feedbax.parameter_constraints import apply_parameter_constraints
 from feedbax.serialization import graph_to_spec, spec_to_graph
@@ -134,6 +137,53 @@ def _fixed_population_structure() -> PopulationStructure:
         recurrent_only_indices=[2],
         input_readout_indices=[3],
     )
+
+
+def test_population_structure_to_spec_uses_governed_nested_schema_identity() -> None:
+    spec = _fixed_population_structure().to_spec()
+
+    assert spec["schema_id"] == POPULATION_STRUCTURE_SCHEMA_ID
+    assert spec["schema_version"] == POPULATION_STRUCTURE_SCHEMA_VERSION
+    assert spec["assignment"] == "explicit"
+    assert spec["input_only_indices"] == [0]
+    assert spec["readout_only_indices"] == [1]
+    assert spec["recurrent_only_indices"] == [2]
+    assert spec["input_readout_indices"] == [3]
+
+
+def test_population_structure_from_spec_accepts_current_explicit_indices() -> None:
+    restored = population_structure_from_spec(4, _fixed_population_structure().to_spec())
+
+    assert restored.n_input_only == 1
+    assert restored.n_readout_only == 1
+    assert restored.n_recurrent_only == 1
+    assert restored.n_input_readout == 1
+    assert jnp.array_equal(restored.input_only_indices, jnp.array([0]))
+    assert jnp.array_equal(restored.readout_only_indices, jnp.array([1]))
+    assert jnp.array_equal(restored.recurrent_only_indices, jnp.array([2]))
+    assert jnp.array_equal(restored.input_readout_indices, jnp.array([3]))
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    ["feedbax.population_structure.v1", "feedbax.spec.population_structure.v99"],
+)
+def test_population_structure_from_spec_rejects_old_or_unknown_schema_versions(
+    schema_version: str,
+) -> None:
+    spec = _fixed_population_structure().to_spec()
+    spec["schema_version"] = schema_version
+
+    with pytest.raises(ValueError, match="PopulationStructureSpec"):
+        population_structure_from_spec(4, spec)
+
+
+def test_population_structure_from_spec_rejects_wrong_schema_id() -> None:
+    spec = _fixed_population_structure().to_spec()
+    spec["schema_id"] = "feedbax.spec.other"
+
+    with pytest.raises(ValueError, match="schema_id"):
+        population_structure_from_spec(4, spec)
 
 
 def test_population_lowering_repeats_gate_rows_and_selects_readout_columns() -> None:

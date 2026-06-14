@@ -1063,6 +1063,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Target address for an additive graph-channel adapter.",
         ),
         _family(
+            "PopulationStructureSpec",
+            "feedbax.spec.population_structure",
+            "feedbax.spec.population_structure.v1",
+            owner_module="feedbax.nn",
+            emitted_by=("PopulationStructure.to_spec", "GraphSpec node params"),
+            consumed_by=("population_structure_from_spec", "serialization_builders"),
+            description="Reusable nested spec for hidden-unit population assignments.",
+            rejected_old_versions=("feedbax.population_structure.v1",),
+            required_tests=(
+                "tests/test_parameter_constraints.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "AnalysisInputRequirement",
             "feedbax.spec.analysis.input_requirement",
             "feedbax.spec.analysis.input_requirement.v1",
