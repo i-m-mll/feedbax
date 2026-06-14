@@ -36,7 +36,7 @@ from matplotlib.pyplot import get_cmap  # type: ignore
 from matplotlib.ticker import FormatStrFormatter
 from matplotlib.typing import ColorType
 
-from feedbax.bodies import SimpleFeedbackState
+from feedbax.models.feedback import SimpleFeedbackState
 from feedbax.objectives.loss import TermTree
 from feedbax.misc import corners_2d
 from feedbax.runtime.state import CartesianState

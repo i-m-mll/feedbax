@@ -6,17 +6,17 @@ import pytest
 
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import DelayLine, Linear
-from feedbax.filters import FirstOrderFilter
+from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph, Wire, init_state_from_component
-from feedbax.graph_templates import (
+from feedbax.contracts.graphs.templates import (
     network_template_graph,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
-from feedbax.graph_normalization import normalize_graph_for_studio_authoring
-from feedbax.nn import SimpleStagedNetwork
+from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+from feedbax.models.networks import SimpleStagedNetwork
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
 

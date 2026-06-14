@@ -64,10 +64,10 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
             "feedbax.contracts.migrations",
             "feedbax.contracts.retention_artifact_schema",
             "feedbax.contracts.training",
-            "feedbax.graph_templates",
+            "feedbax.contracts.graphs.templates",
             "feedbax.integrations.provider",
             "feedbax.objectives.service",
-            "feedbax.serialization",
+            "feedbax.contracts.graphs.serialization",
             "feedbax.studio.execution",
             "feedbax.studio.protocol",
             "feedbax.studio.schema",
@@ -203,8 +203,8 @@ def test_obsolete_web_alias_modules_are_absent() -> None:
         import json
 
         canonical_modules = [
-            "feedbax.graph_normalization",
-            "feedbax.serialization",
+            "feedbax.contracts.graphs.normalization",
+            "feedbax.contracts.graphs.serialization",
             "feedbax.objectives.service",
             "feedbax.component_registry",
         ]

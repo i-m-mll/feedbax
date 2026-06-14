@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
-from feedbax.dynamics import AbstractDynamicalSystem
+from feedbax.mechanics.dynamics import AbstractDynamicalSystem
 from feedbax.mechanics.muscle import AbstractMuscle, MuscleState
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.skeleton import AbstractSkeleton

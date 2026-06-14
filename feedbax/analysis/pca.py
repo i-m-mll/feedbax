@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 from equinox import Module
-from feedbax.bodies import SimpleFeedbackState
+from feedbax.models.feedback import SimpleFeedbackState
 from feedbax.misc import batch_reshape, nan_bypass
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree

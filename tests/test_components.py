@@ -12,8 +12,8 @@ from feedbax.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.misc import attr_str_tree_to_where_func, where_func_to_attr_str_tree
-from feedbax.nn import SimpleStagedNetwork
-from feedbax.bodies import SimpleFeedback
+from feedbax.models.networks import SimpleStagedNetwork
+from feedbax.models.feedback import SimpleFeedback
 
 
 def _call_modulator(component, signal, modulator):

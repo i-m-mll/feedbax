@@ -18,10 +18,10 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState
-from feedbax.filters import FilterState, FirstOrderFilter
+from feedbax.runtime.filters import FilterState, FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
 from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.noise import Normal
+from feedbax.runtime.noise import Normal
 from feedbax._tree import tree_sum_n_features
 
 if TYPE_CHECKING:

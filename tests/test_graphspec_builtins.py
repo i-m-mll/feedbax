@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from feedbax.bodies import FeedbackChannels
+from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
@@ -27,8 +27,8 @@ from feedbax.intervene import (
 from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.noise import CompositeNoise, Multiplicative, Normal
-from feedbax.serialization import graph_to_spec, spec_to_graph
+from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
+from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.runtime.state import CartesianState
 
 

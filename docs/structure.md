@@ -65,7 +65,7 @@ There are three main types of components, here.
 
 In control theory, the neural network is a *controller*. In reinforcement learning, we'd call it an *agent*—or at a given moment, a *policy*.
 
-So far there isn't an `AbstractNetwork` or `AbstractController` that defines how controllers should behave in general. If you want to be able to intervene on the hidden state of your network while also having a separate readout or encoding layers, then [`SimpleStagedNetwork`][feedbax.nn.SimpleStagedNetwork] is suitable. Otherwise, you can [use](/feedbax/examples/5_model_stages#using-non-staged-components) arbitrarily complex neural networks as controllers.
+So far there isn't an `AbstractNetwork` or `AbstractController` that defines how controllers should behave in general. If you want to be able to intervene on the hidden state of your network while also having a separate readout or encoding layers, then [`SimpleStagedNetwork`][feedbax.models.networks.SimpleStagedNetwork] is suitable. Otherwise, you can [use](/feedbax/examples/5_model_stages#using-non-staged-components) arbitrarily complex neural networks as controllers.
 
 ### Channels
 
@@ -82,7 +82,7 @@ Biomechanical models describe the physics of simplified limbs. Generally, there 
 
 Both of these aspects are captured by an [`AbstractPlant`][feedbax.mechanics.plant.AbstractPlant]. In particular, `AbstractPlant` is a subtype of
 
-1. [`AbstractDynamicalSystem`][feedbax.dynamics.AbstractDynamicalSystem], which is the base class for all modules that define a `vector_field` returning state derivatives. In particular, `AbstractPlant` can aggregate the vector fields of multiple dynamical components into a single vector field describing the continuous dynamics of the full biomechanical model.
+1. [`AbstractDynamicalSystem`][feedbax.mechanics.dynamics.AbstractDynamicalSystem], which is the base class for all modules that define a `vector_field` returning state derivatives. In particular, `AbstractPlant` can aggregate the vector fields of multiple dynamical components into a single vector field describing the continuous dynamics of the full biomechanical model.
 
 Each type of `AbstractPlant` defines continuous dynamics, which must be discretized and associated with a numerical solver. To do this, we [wrap](/feedbax/examples/1_train#building-the-model-ourselves-using-core-feedbax) an `AbstractPlant` as a [`Mechanics`][feedbax.mechanics.Mechanics] object. `Mechanics` uses [Diffrax](https://github.com/patrick-kidger/diffrax) for numerical integration.
 

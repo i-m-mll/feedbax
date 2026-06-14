@@ -13,7 +13,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.contracts.graph import GraphSpec
 from feedbax.runtime.graph import Graph, GraphTraceRequest
-from feedbax.serialization import spec_to_graph
+from feedbax.contracts.graphs.serialization import spec_to_graph
 
 GraphInputBuilder = Callable[[PyTree, int], Mapping[str, PyTree]]
 GraphOutputSelector = Callable[[Mapping[str, PyTree]], PyTree]

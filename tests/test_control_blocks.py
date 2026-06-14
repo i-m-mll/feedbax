@@ -15,7 +15,7 @@ from feedbax.control.pid import PID, PIDDiscrete
 from feedbax.runtime.components import DeadZone, Demux, Mux, RateLimiter, Switch
 
 # Filter components
-from feedbax.filters import BandPassFilter, HighPassFilter
+from feedbax.runtime.filters import BandPassFilter, HighPassFilter
 
 
 KEY = jax.random.PRNGKey(0)

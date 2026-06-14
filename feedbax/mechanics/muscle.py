@@ -26,7 +26,7 @@ import jax.tree as jt
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray, PyTree, Scalar
 import numpy as np
 
-from feedbax.dynamics import AbstractDynamicalSystem
+from feedbax.mechanics.dynamics import AbstractDynamicalSystem
 from feedbax.runtime.state import StateBounds
 
 

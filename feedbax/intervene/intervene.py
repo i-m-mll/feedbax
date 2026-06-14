@@ -14,7 +14,7 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
-from feedbax.noise import Normal
+from feedbax.runtime.noise import Normal
 
 
 def _float_param(value):

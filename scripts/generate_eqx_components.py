@@ -7,7 +7,7 @@ wrappers that can be used as leaf nodes in feedbax computation graphs.
 Usage:
     uv run scripts/generate_eqx_components.py
 
-The generated file will be written to feedbax/eqx_components.py
+The generated file will be written to feedbax/components/equinox.py
 """
 
 from __future__ import annotations
@@ -526,9 +526,9 @@ from feedbax.runtime.graph import Component
 
 def main():
     """Generate and write the components file."""
-    output_path = Path(__file__).parent.parent / "feedbax" / "eqx_components.py"
+    output_path = Path(__file__).parent.parent / "feedbax" / "components" / "equinox.py"
 
-    print(f"Generating Equinox component wrappers...")
+    print("Generating Equinox component wrappers...")
     content = generate_all_components()
 
     output_path.write_text(content)

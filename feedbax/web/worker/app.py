@@ -19,7 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.studio.protocol import infer_task_n_steps
-from feedbax.graph_normalization import (
+from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )

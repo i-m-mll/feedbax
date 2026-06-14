@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
-from feedbax.dynamics import LinearSystem, LTISystem
+from feedbax.mechanics.dynamics import LinearSystem, LTISystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
 from feedbax.runtime.state import CartesianState
 
