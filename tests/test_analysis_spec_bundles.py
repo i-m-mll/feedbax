@@ -9,7 +9,12 @@ from unittest.mock import patch
 import pytest
 
 from feedbax.analysis.bundles import (
+    ANALYSIS_BUNDLE_SCHEMA_VERSION,
+    AnalysisBundleSpec,
+    BundleStageOutputSpec,
+    BundleStageSpec,
     execute_analysis_bundle,
+    execute_staged_analysis_bundle,
     ManifestPredicate,
     expand_analysis_bundle,
     load_analysis_bundle,
@@ -33,8 +38,10 @@ from feedbax.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
     ParentRef,
+    TrainingRunManifest,
     evaluation_states_cache_path,
     load_manifest,
+    write_manifest,
 )
 from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
@@ -83,6 +90,16 @@ def _execute_toy_eval(root: Path, *, n_trials: int, method: str):
         metadata={"method": method, "cell": f"{method}-{n_trials}"},
         force=True,
     )
+
+
+def _write_toy_training(root: Path, *, method: str, run_id: str = "toy") -> TrainingRunManifest:
+    manifest = TrainingRunManifest(
+        id=f"feedbax-training-run:{run_id}",
+        status="completed",
+        metadata={"method": method},
+    )
+    write_manifest(manifest, root=root)
+    return manifest
 
 
 def _write_bundle_package(tmp_path: Path, monkeypatch) -> ExperimentRegistry:
@@ -362,6 +379,7 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path,
         registry = _write_bundle_package(tmp_path, monkeypatch)
 
         bundle = load_analysis_bundle("toy/matrix", registry=registry)
+        assert bundle.schema_version == ANALYSIS_BUNDLE_SCHEMA_VERSION
         matched = select_bundle_manifests(bundle, tmp_path)
         matched_ids = [manifest.id for manifest in matched]
         assert set(matched_ids) == {first.id, second.id}
@@ -397,6 +415,175 @@ def test_bundle_loading_predicates_and_per_run_grouped_expansion(tmp_path: Path,
         assert [ref.id for ref in expansions[2].spec.inputs] == matched_ids
         assert expansions[0].spec.params["requested_outputs"] == ["toy"]
     finally:
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None:
+    with pytest.raises(ValueError, match="unsupported AnalysisBundleSpec schema_version"):
+        AnalysisBundleSpec.model_validate(
+            {
+                "schema_version": "feedbax.spec.analysis_bundle.v1",
+                "name": "old_bundle",
+                "templates": [
+                    {
+                        "name": "legacy",
+                        "analysis_type": TOY_ANALYSIS_TYPE,
+                    }
+                ],
+            }
+        )
+
+
+def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
+    tmp_path: Path,
+) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        training = _write_toy_training(tmp_path, method="minimax")
+        bundle = AnalysisBundleSpec(
+            name="toy_staged",
+            predicate=ManifestPredicate(
+                manifest_kind="TrainingRunManifest",
+                metadata_equals={"method": "minimax"},
+            ),
+            stages=[
+                BundleStageSpec(
+                    name="eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    params={"n_trials": 3},
+                    outputs=[BundleStageOutputSpec(role="manifest")],
+                ),
+                BundleStageSpec(
+                    name="summary",
+                    kind="analysis",
+                    depends_on=["eval"],
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    requested_outputs=["toy"],
+                    params={"variant": "summary"},
+                    outputs=[BundleStageOutputSpec(role="manifest")],
+                ),
+                BundleStageSpec(
+                    name="detail",
+                    kind="analysis",
+                    depends_on=["eval"],
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    requested_outputs=["toy"],
+                    params={"variant": "detail"},
+                    outputs=[BundleStageOutputSpec(role="manifest")],
+                ),
+                BundleStageSpec(
+                    name="report",
+                    kind="report",
+                    depends_on=["summary", "detail"],
+                    report_type="toy_report",
+                    outputs=[BundleStageOutputSpec(role="report")],
+                ),
+            ],
+        )
+
+        result = execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            issues=["a6af537"],
+            fig_dump_formats=("json",),
+        )
+
+        assert result.matched_run_ids == [training.id]
+        assert [stage.name for stage in result.stages] == [
+            "eval",
+            "summary",
+            "detail",
+            "report",
+        ]
+        eval_ref = result.stages[0].manifest_refs[0]
+        assert eval_ref.kind == "EvaluationRunManifest"
+        assert result.stages[1].inputs == [eval_ref]
+        assert result.stages[2].inputs == [eval_ref]
+        report_inputs = result.stages[3].inputs
+        assert [ref.kind for ref in report_inputs] == [
+            "AnalysisRunManifest",
+            "AnalysisRunManifest",
+        ]
+        assert report_inputs == [
+            result.stages[1].manifest_refs[0],
+            result.stages[2].manifest_refs[0],
+        ]
+        assert result.stages[1].regeneration_specs[0].kind == "RegenerationSpec"
+        assert result.stages[3].regeneration_specs[0].kind == "RegenerationSpec"
+        assert result.report_outputs[0].status == "materialized"
+        report_manifest = load_manifest(result.stages[3].manifest_refs[0].uri)
+        assert report_manifest.kind == "ReportManifest"
+        assert report_manifest.regeneration_specs[0].kind == "RegenerationSpec"
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_records_optional_output_statuses(tmp_path: Path) -> None:
+    _register_toy_evaluation_recipe()
+    _register_toy_analysis_recipe()
+    try:
+        _write_toy_training(tmp_path, method="minimax")
+        bundle = AnalysisBundleSpec(
+            name="toy_optional_statuses",
+            predicate=ManifestPredicate(
+                manifest_kind="TrainingRunManifest",
+                metadata_equals={"method": "minimax"},
+            ),
+            stages=[
+                BundleStageSpec(
+                    name="eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    params={"n_trials": 1},
+                ),
+                BundleStageSpec(
+                    name="analysis",
+                    kind="analysis",
+                    depends_on=["eval"],
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    requested_outputs=["toy"],
+                    outputs=[
+                        BundleStageOutputSpec(role="manifest"),
+                        BundleStageOutputSpec(role="sidecar", required=False),
+                    ],
+                ),
+                BundleStageSpec(
+                    name="optional_sidecar",
+                    kind="analysis",
+                    depends_on=["analysis"],
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                    outputs=[BundleStageOutputSpec(role="sidecar", required=False)],
+                    skip_reason="sidecar disabled for this bundle",
+                ),
+                BundleStageSpec(
+                    name="materializer",
+                    kind="materialization",
+                    depends_on=["analysis"],
+                    outputs=[BundleStageOutputSpec(role="materialized_sidecar", required=False)],
+                    not_applicable_reason="context-bound materializer is owned by sibling issue",
+                ),
+            ],
+        )
+
+        result = execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+        )
+
+        analysis_outputs = {output.role: output for output in result.stages[1].outputs}
+        assert analysis_outputs["manifest"].status == "materialized"
+        assert analysis_outputs["sidecar"].status == "missing"
+        assert "optional output role" in analysis_outputs["sidecar"].reason
+        assert result.stages[2].outputs[0].status == "skipped"
+        assert result.stages[2].outputs[0].reason == "sidecar disabled for this bundle"
+        assert result.stages[3].outputs[0].status == "not_applicable"
+        assert "sibling issue" in result.stages[3].outputs[0].reason
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 

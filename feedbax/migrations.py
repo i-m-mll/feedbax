@@ -1167,6 +1167,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Declarative analysis run request.",
         ),
         _family(
+            "AnalysisBundleSpec",
+            "feedbax.spec.analysis_bundle",
+            "feedbax.spec.analysis_bundle.v2",
+            owner_module="feedbax.analysis.bundles",
+            emitted_by=("analysis bundle YAML", "StagedAnalysisBundleExecution"),
+            consumed_by=("feedbax.analysis.bundles", "downstream bundle consumers"),
+            description=(
+                "Schema-bearing analysis bundle plan for ordered evaluation, analysis, "
+                "materialization, and report stages."
+            ),
+            rejected_old_versions=("feedbax.spec.analysis_bundle.v1",),
+            required_tests=("tests/test_analysis_spec_bundles.py",),
+        ),
+        _family(
             "ReportSpec",
             "feedbax.spec.report",
             "feedbax.spec.report.v1",
@@ -1568,6 +1582,12 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
 
     for kind, schema_id, durable, description in (
         ("ProviderManifest", "feedbax.manifest.provider", True, "Provider capability manifest."),
+        (
+            "StagedAnalysisBundleExecution",
+            "feedbax.manifest.analysis_bundle_execution",
+            True,
+            "Durable staged analysis bundle execution provenance.",
+        ),
         ("ProviderHealth", "feedbax.manifest.provider_health", False, "Provider health response."),
         (
             "ProviderValidationResult",

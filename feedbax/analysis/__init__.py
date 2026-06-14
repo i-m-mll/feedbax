@@ -1,6 +1,12 @@
 from ..types import AnalysisInputData
 from .analysis import AbstractAnalysis, CallWithDeps
-from .bundles import AnalysisBundleSpec, execute_analysis_bundle, load_analysis_bundle
+from .bundles import (
+    AnalysisBundleSpec,
+    StagedAnalysisBundleExecution,
+    execute_analysis_bundle,
+    execute_staged_analysis_bundle,
+    load_analysis_bundle,
+)
 from .context import AnalysisRunContext
 from .controller import (
     GraphControllerAdapter,
@@ -47,8 +53,10 @@ __all__ = [
     "GraphControllerStep",
     "MaterializationResult",
     "RecipeValidationError",
+    "StagedAnalysisBundleExecution",
     "execute_analysis_bundle",
     "execute_analysis_run_spec",
+    "execute_staged_analysis_bundle",
     "feedbax_graph_controller",
     "graph_controller",
     "load_analysis_bundle",
