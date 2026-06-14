@@ -45,11 +45,16 @@ exports a reusable global parameter payload schema identity.
   GraphSpec node params and consumed by multiple network-lowering paths. Exact
   index arrays are the durable executable state; population counts, assignment
   policy, and seed remain authoring metadata unless lowered before persistence.
-- Manifest models, `SpecPayload`, array-store payloads, provider records,
-  registry snapshots, execution plans, execution results, and artifact records
-  are aligned under `feedbax.manifest.*`.
+- Manifest models, `SpecPayload`, array-store payloads, produced training-run
+  retention artifacts, provider records, registry snapshots, execution plans,
+  execution results, and artifact records are aligned under
+  `feedbax.manifest.*`.
 - Legacy flat `feedbax.population_structure.v1` payloads are rejected with an
   explicit unsupported-version policy instead of migrated.
+- Graph-authored retained-observable request specs remain
+  `feedbax.spec.graph.retained_observable`; produced `retention_plan` and
+  `retained_observables` artifacts use distinct `feedbax.manifest.training.*`
+  identities because they are execution outputs, not request specs.
 - Legacy `feedbax.studio.task_bindings.v1` remains a registered migration input
   to `feedbax.spec.studio.task_bindings.v2`.
 - Legacy `feedbax.studio.task_bindings.v0` and `feedbax.objective.v0` remain

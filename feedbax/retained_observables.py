@@ -26,6 +26,10 @@ from feedbax.task_timeline_masks import (
     build_task_timeline_mask,
 )
 from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec, TrainingSpec
+from feedbax.retention_artifact_schema import (
+    RETENTION_PLAN_SCHEMA_ID,
+    RETENTION_PLAN_SCHEMA_VERSION,
+)
 
 
 SelectorKind = Literal[
@@ -327,6 +331,8 @@ def retention_plan_to_json(plan: RetentionPlan) -> dict[str, Any]:
     """Serialize a retention plan for manifests/artifacts."""
 
     return {
+        "schema_id": RETENTION_PLAN_SCHEMA_ID,
+        "schema_version": RETENTION_PLAN_SCHEMA_VERSION,
         "observables": [
             {
                 "id": item.id,
