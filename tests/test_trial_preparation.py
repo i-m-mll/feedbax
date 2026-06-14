@@ -5,7 +5,7 @@ from equinox.nn import StateIndex
 from feedbax._mapping import WhereDict
 from feedbax.graph import Component, Graph, init_state_from_component
 from feedbax.intervene import TimeSeriesParam
-from feedbax.task import (
+from feedbax.tasks import (
     TaskTrialSpec,
     TrialTimeline,
     extract_timeseries_params,

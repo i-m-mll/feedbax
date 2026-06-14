@@ -25,9 +25,9 @@ Most Feedbax models are graphs of components. Each component performs a single s
 
 In Feedbax, models are trained to perform tasks. Typically, this means running the model through trials of the task, then scoring its performance, then getting an updated model that should perform slightly better on the next set of trials.
 
-The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
+The base class for all types of tasks is [`AbstractTask`][feedbax.tasks.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
 
-[Trial specifications][feedbax.task.TaskTrialSpec] are always composed of three things:
+[Trial specifications][feedbax.tasks.TaskTrialSpec] are always composed of three things:
 
 1. Data with which to initialize one or more parts of a model's state, prior to a trial;
 2. Target data which the loss function will use to score the history of a model's states, over a trial;
@@ -35,17 +35,17 @@ The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractT
 
 The loss function is not defined within the `AbstractTask`, but merely assigned to it as an attribute. This is because two tasks that are otherwise identical might vary in terms of their scoring mechanism. Therefore we specify the specific loss function we want to use, when we construct an instance of a particular type of task.
 
-The base class for all loss functions is [`AbstractLoss`][feedbax.loss.AbstractLoss]. A loss computation takes as input the states of a model across a trial, as well as the complete specification for that trial.
+The base class for all loss functions is [`AbstractLoss`][feedbax.objectives.loss.AbstractLoss]. A loss computation takes as input the states of a model across a trial, as well as the complete specification for that trial.
 
-Most types of loss are "simple" losses, which define one particular scoring mechanism. For example, [`NetworkActivityLoss`][feedbax.loss.NetworkActivityLoss] defines a penalty for the non-zero activities of the units ("neurons") in a model's neural network. Training on this loss will favour reducing the activity in the network as much as possible, given the other constraints.
+Most types of loss are "simple" losses, which define one particular scoring mechanism. For example, [`NetworkActivityLoss`][feedbax.objectives.loss.NetworkActivityLoss] defines a penalty for the non-zero activities of the units ("neurons") in a model's neural network. Training on this loss will favour reducing the activity in the network as much as possible, given the other constraints.
 
-The class [`CompositeLoss`][feedbax.loss.CompositeLoss] is used to aggregate (say, sum) multiple loss terms into a single loss function. Scoring of a task is usually based on multiple criteria, so the loss function that is assigned to an `AbstractTask` is usually a `CompositeLoss`.
+The class [`CompositeLoss`][feedbax.objectives.loss.CompositeLoss] is used to aggregate (say, sum) multiple loss terms into a single loss function. Scoring of a task is usually based on multiple criteria, so the loss function that is assigned to an `AbstractTask` is usually a `CompositeLoss`.
 
 ## Training
 
-A [`TaskTrainer`][feedbax.train.TaskTrainer] is used to [train](/feedbax/examples/1_train#training-the-model) a model to perform a task, over a sequence of many batches of training trials provided by an `AbstractTask`.
+A [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] is used to [train](/feedbax/examples/1_train#training-the-model) a model to perform a task, over a sequence of many batches of training trials provided by an `AbstractTask`.
 
-At the end of a training run, a `TaskTrainer` returns not just the trained model, but also a [`TaskTrainerHistory`][feedbax.train.TaskTrainerHistory] object. Normally this contains the value of the loss over all the batches. However, depending on the arguments given to `TaskTrainer`, it may also contain other information, like 1) the trial specifications on which the model was trained, or 2) the history of the model's trained parameters.
+At the end of a training run, a `TaskTrainer` returns not just the trained model, but also a [`TaskTrainerHistory`][feedbax.training.trainer.TaskTrainerHistory] object. Normally this contains the value of the loss over all the batches. However, depending on the arguments given to `TaskTrainer`, it may also contain other information, like 1) the trial specifications on which the model was trained, or 2) the history of the model's trained parameters.
 
 A `TaskTrainer` may also be used to train a set of [model replicates](/feedbax/examples/4_vmap) in parallel.
 

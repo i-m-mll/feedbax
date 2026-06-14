@@ -14,8 +14,8 @@ import optax  # type: ignore
 
 from feedbax import get_ensemble
 from feedbax.graph import Component
-from feedbax.task import AbstractTask, SimpleReaches
-from feedbax.train import TaskTrainer, TaskTrainerHistory
+from feedbax.tasks import AbstractTask, SimpleReaches
+from feedbax.training.trainer import TaskTrainer, TaskTrainerHistory
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
 
@@ -28,7 +28,7 @@ N_LOG_STEPS_DEFAULT = 10
 
 class TrainingContext(eqx.Module):
     """A model-task pairing with automatic construction of a
-    [`TaskTrainer`][feedbax.train.TaskTrainer] instance.
+    [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] instance.
 
     Attributes:
         model: The model.

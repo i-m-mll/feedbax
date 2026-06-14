@@ -170,7 +170,7 @@ def _timeline_from_task(task: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     if isinstance(timeline, Mapping):
         return timeline
     task_type = str(task.get("type", ""))
-    if task_type not in {"DelayedReaches", "feedbax.task.DelayedReaches"}:
+    if task_type not in {"DelayedReaches", "feedbax.tasks.DelayedReaches"}:
         return None
     params = task.get("params") if isinstance(task.get("params"), Mapping) else {}
     return _delayed_reaches_timeline(params)

@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 from equinox import field
 from feedbax.bodies import SimpleFeedback
 from feedbax.nn import NetworkState
-from feedbax.task import SimpleReaches
+from feedbax.tasks import SimpleReaches
 from jax_cookbook import is_type
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 from optax import GradientTransformation

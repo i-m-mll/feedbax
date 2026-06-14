@@ -30,7 +30,7 @@ def delayed_center_out_reaches_params(
     """Return compact params for delayed center-out reaches.
 
     ``n_control_stages`` is a serialized task-spec alias for the rollout/control
-    length.  Materializing a :class:`feedbax.task.DelayedReaches` instance from
+    length.  Materializing a :class:`feedbax.tasks.DelayedReaches` instance from
     these params maps it to ``n_steps = n_control_stages + 1`` because the task
     trial includes an initial state plus control transitions.
     """

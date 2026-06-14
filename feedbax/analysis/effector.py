@@ -9,7 +9,7 @@ import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.plot import AxesLabels
-from feedbax.task import AbstractTask
+from feedbax.tasks import AbstractTask
 from feedbax.types import SeqOfT
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree

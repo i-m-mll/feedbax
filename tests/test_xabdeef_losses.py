@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax._mapping import WhereDict
-from feedbax.loss import TargetSpec
+from feedbax.objectives.loss import TargetSpec
 from feedbax.xabdeef.losses import EffectorFixationLoss, delayed_reach_loss
 
 

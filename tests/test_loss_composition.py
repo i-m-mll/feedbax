@@ -13,7 +13,7 @@ import pytest
 
 
 try:
-    from feedbax.loss import (
+    from feedbax.objectives.loss import (
         AbstractLoss,
         CompositeLoss,
         EffectorPositionLoss,

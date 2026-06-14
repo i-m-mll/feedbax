@@ -825,7 +825,7 @@ import threading
 import queue
 
 import jax
-from feedbax.train import TaskTrainer
+from feedbax.training.trainer import TaskTrainer
 from feedbax.graph import Graph
 
 class TrainingStatus(Enum):

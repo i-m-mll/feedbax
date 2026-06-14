@@ -46,7 +46,7 @@ from feedbax.migrations import (
     migrate_studio_task_binding_spec,
     migrate_studio_workspace_spec,
 )
-from feedbax.objective_spec import objective_schema_models, validate_objective_spec as _validate_objective_spec
+from feedbax.objectives.spec import objective_schema_models, validate_objective_spec as _validate_objective_spec
 from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio_protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio_execution import (
@@ -81,7 +81,7 @@ from feedbax.contracts.graph import (
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
 from feedbax.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.task_presets import apply_delayed_reaches_preset
+from feedbax.tasks.presets import apply_delayed_reaches_preset
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -828,10 +828,10 @@ def component_registry_snapshot() -> RegistrySnapshot:
 
 def task_registry_snapshot() -> RegistrySnapshot:
     task_types = [
-        ("feedbax.task.ReachingTask", "ReachingTask", "Current Studio reaching task spec."),
-        ("feedbax.task.SimpleReaches", "SimpleReaches", "Built-in reaching task."),
-        ("feedbax.task.DelayedReaches", "DelayedReaches", "Built-in delayed reaching task."),
-        ("feedbax.task.Stabilization", "Stabilization", "Built-in stabilization task."),
+        ("feedbax.tasks.ReachingTask", "ReachingTask", "Current Studio reaching task spec."),
+        ("feedbax.tasks.SimpleReaches", "SimpleReaches", "Built-in reaching task."),
+        ("feedbax.tasks.DelayedReaches", "DelayedReaches", "Built-in delayed reaching task."),
+        ("feedbax.tasks.Stabilization", "Stabilization", "Built-in stabilization task."),
     ]
     return RegistrySnapshot(
         kind="tasks",
@@ -850,7 +850,7 @@ def task_registry_snapshot() -> RegistrySnapshot:
 
 
 def loss_registry_snapshot() -> RegistrySnapshot:
-    from feedbax.loss_service import NORM_FUNCTIONS
+    from feedbax.objectives.service import NORM_FUNCTIONS
 
     return RegistrySnapshot(
         kind="losses",
@@ -1311,7 +1311,7 @@ def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidation
             )
         )
     errors.extend(_validate_task_n_steps(spec))
-    if spec.type in {"DelayedReaches", "feedbax.task.DelayedReaches"}:
+    if spec.type in {"DelayedReaches", "feedbax.tasks.DelayedReaches"}:
         errors.extend(_validate_delayed_reaches_task_params(spec.params))
     return ProviderValidationResult(valid=not errors, errors=errors)
 

@@ -53,9 +53,9 @@ from feedbax._tree import (
 )
 from feedbax.nn_cde import CDENetwork, CDENetworkState
 from feedbax.intervene import is_intervenor
-from feedbax.loss import is_termtree
+from feedbax.objectives.loss import is_termtree
 from feedbax.misc import is_module
-from feedbax.task import (
+from feedbax.tasks import (
     AbstractTask,
     DelayedReaches,
     DelayedReachTaskInputs,
@@ -71,7 +71,7 @@ from feedbax.task import (
     get_scalar_epoch_seq,
     prepare_trial,
 )
-from feedbax.task_presets import (
+from feedbax.tasks.presets import (
     DELAYED_CENTER_OUT_PRESET,
     delayed_center_out_reaches_params,
 )

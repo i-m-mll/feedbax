@@ -1,9 +1,9 @@
 # Training
 
-::: feedbax.train.TaskTrainerHistory
+::: feedbax.training.trainer.TaskTrainerHistory
 
-::: feedbax.train.TaskTrainer
+::: feedbax.training.trainer.TaskTrainer
 
-<!-- ::: feedbax.train.SimpleTrainer -->
+<!-- ::: feedbax.training.trainer.SimpleTrainer -->
 
-<!-- feedbax.train.ActivityDependentWeightUpdate -->
+<!-- feedbax.training.trainer.ActivityDependentWeightUpdate -->

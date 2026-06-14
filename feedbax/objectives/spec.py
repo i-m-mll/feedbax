@@ -2,7 +2,7 @@
 
 These models describe objective/loss terms for saved artifacts and provider
 contracts. They intentionally do not execute losses; lowering into
-``feedbax.loss`` or a future streaming objective backend is a separate step.
+``feedbax.objectives.loss`` or a future streaming objective backend is a separate step.
 """
 
 from __future__ import annotations

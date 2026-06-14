@@ -3,8 +3,8 @@ import jax.random as jr
 import optax
 
 from feedbax import get_ensemble, save
-from feedbax.task import SimpleReaches
-from feedbax.train import TaskTrainer
+from feedbax.tasks import SimpleReaches
+from feedbax.training.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
 from feedbax.xabdeef.models import point_mass_nn
 

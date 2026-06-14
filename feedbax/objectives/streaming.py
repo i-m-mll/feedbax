@@ -26,7 +26,7 @@ from jaxtyping import Array
 
 from feedbax._model import AbstractModel
 from feedbax._streaming import current_state_from_window
-from feedbax.loss import (
+from feedbax.objectives.loss import (
     AbstractLoss,
     CompositeLoss,
     CrossTimestepLoss,

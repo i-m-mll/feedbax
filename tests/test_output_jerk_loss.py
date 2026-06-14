@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.loss import CompositeLoss, OutputJerkLoss
+from feedbax.objectives.loss import CompositeLoss, OutputJerkLoss
 
 
 # ---------------------------------------------------------------------------
@@ -183,12 +183,12 @@ class _ConstLoss(eqx.Module):
     label: str
 
     def __call__(self, states, trial_specs, model):
-        from feedbax.loss import TermTree
+        from feedbax.objectives.loss import TermTree
 
         return TermTree.leaf(self.label, jnp.array(11.0))
 
     def skeleton(self, batch_dims):
-        from feedbax.loss import TermTree
+        from feedbax.objectives.loss import TermTree
 
         return TermTree.leaf(self.label, jnp.empty(batch_dims))
 

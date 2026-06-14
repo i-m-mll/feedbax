@@ -355,12 +355,12 @@ def _convert_value(value: Any, to_type: type, from_type: type, exclude: Callable
     return value
 
 
-# --- Analysis-related types (require feedbax.task import) ---
+# --- Analysis-related types (require feedbax.tasks import) ---
 # These are imported lazily to avoid circular imports
 
 def _get_analysis_types():
-    """Lazy import of analysis types that depend on feedbax.task."""
-    from feedbax.task import AbstractTask
+    """Lazy import of analysis types that depend on feedbax.tasks."""
+    from feedbax.tasks import AbstractTask
 
     class AnalysisInputData(Module):
         models: PyTree[Module]
@@ -385,8 +385,8 @@ def _get_analysis_types():
 
 
 # Import the types at module level for convenience
-# This works because feedbax.task doesn't import feedbax.types
-from feedbax.task import AbstractTask
+# This works because feedbax.tasks doesn't import feedbax.types
+from feedbax.tasks import AbstractTask
 
 
 class AnalysisInputData(Module):

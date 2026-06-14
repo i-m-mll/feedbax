@@ -33,7 +33,7 @@ from feedbax._tree import (
     tree_take,
 )
 from feedbax.iterate import run_component
-from feedbax.loss import AbstractLoss, TermTree
+from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.misc import (
     BatchInfo,
     Timer,
@@ -45,7 +45,7 @@ from feedbax.misc import (
 from feedbax.parameter_constraints import project_component_parameters
 from feedbax.intervene.schedule import TimeSeriesParam
 from feedbax.state import StateT
-from feedbax.task import (
+from feedbax.tasks import (
     AbstractTask,
     TaskTrialSpec,
     extract_timeseries_params,
@@ -90,7 +90,7 @@ WhereFunc: TypeAlias = Callable[[Component], Any]
 
 class TaskTrainerHistory(eqx.Module):
     """A record of training history over a call to a
-    [`TaskTrainer`][feedbax.train.TaskTrainer] instance.
+    [`TaskTrainer`][feedbax.training.trainer.TaskTrainer] instance.
 
     Attributes:
         loss: The training losses.
@@ -980,7 +980,7 @@ class TaskTrainer(eqx.Module):
                 or if zero or more than one TaskComponent is found.
         """
         # Bug: 7d6dad4 — graph-based task discovery for TaskTrainer
-        from feedbax.task import TaskComponent
+        from feedbax.tasks import TaskComponent
 
         nodes = getattr(model, "nodes", None)
         if nodes is None:
