@@ -9,16 +9,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     ArrayStoreRef,
     ArtifactRef,
     EntrypointRef,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     ModelArtifactManifest,
     ParentRef,
     Provenance,
+    ReportManifest,
+    ReportSpec,
     TrainingRunManifest,
     load_manifest,
     sha256_file,
     spec_payload,
+    write_manifest,
     write_training_run_manifest,
 )
 from feedbax.manifest_index import rebuild_manifest_index
@@ -28,6 +35,7 @@ from feedbax.provider import (
     validate_analysis_spec,
     validate_evaluation_spec,
     validate_graph_spec,
+    validate_report_spec,
     validate_spec,
     validate_task_spec,
     validate_training_spec,
@@ -287,6 +295,47 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "MandibleManifestMapping" in manifest.schemas
 
 
+def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:
+    manifest = provider_manifest()
+
+    expected = {
+        "execute_evaluation_run": ("EvaluationRunSpec", "EvaluationRunManifest", "execute"),
+        "execute_analysis_run": ("AnalysisRunSpec", "AnalysisRunManifest", "execute"),
+        "materialize_report": ("ReportSpec", "ReportManifest", "execute"),
+        "inspect_evaluation_manifest": (
+            "EvaluationRunManifest",
+            "EvaluationRunManifest",
+            "inspect",
+        ),
+        "inspect_analysis_manifest": ("AnalysisRunManifest", "AnalysisRunManifest", "inspect"),
+        "inspect_report_manifest": ("ReportManifest", "ReportManifest", "inspect"),
+        "handoff_evaluation_artifacts": (
+            "EvaluationRunManifest",
+            "EvaluationRunManifest",
+            "handoff",
+        ),
+        "handoff_analysis_artifacts": ("AnalysisRunManifest", "AnalysisRunManifest", "handoff"),
+        "handoff_report_artifacts": ("ReportManifest", "ReportManifest", "handoff"),
+    }
+
+    for name, (input_schema, output_schema, action) in expected.items():
+        capability = manifest.capabilities[name]
+        assert capability.input_schema == input_schema
+        assert capability.output_schema == output_schema
+        assert capability.action == action
+
+    assert manifest.capabilities["validate_evaluation_spec"].input_schema == "EvaluationRunSpec"
+    assert manifest.capabilities["validate_analysis_spec"].input_schema == "AnalysisRunSpec"
+    assert manifest.capabilities["validate_report_spec"].input_schema == "ReportSpec"
+    assert "trajectory_dataset" in manifest.capabilities["execute_evaluation_run"].artifact_roles
+    assert "analysis_table" in manifest.capabilities["execute_analysis_run"].artifact_roles
+    assert "report" in manifest.capabilities["materialize_report"].artifact_roles
+    assert (
+        "artifact_id fields are optional and local URIs remain valid"
+        in manifest.capabilities["handoff_report_artifacts"].custody_expectations
+    )
+
+
 def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
     manifest = provider_manifest()
     contract_models = {
@@ -500,6 +549,142 @@ def test_model_artifact_manifest_mandible_mapping_fixture_includes_role_stores()
     assert manifest.state_store.roles == ["state.mechanics.position"]
     assert manifest.optimizer_store is not None
     assert manifest.optimizer_store.roles == ["optimizer.adam.momentum"]
+
+
+def test_eval_analysis_report_manifests_preserve_optional_handoff_artifact_ids(
+    tmp_path: Path,
+) -> None:
+    training_parent = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:provider-depth",
+        role="training_run",
+        uri="manifests/training_runs/provider-depth.json",
+    )
+    evaluation_spec = EvaluationRunSpec(
+        evaluation_type="provider_depth_eval",
+        inputs=[training_parent],
+        params={"split": "validation"},
+    )
+    evaluation = EvaluationRunManifest(
+        id="feedbax-evaluation-run:provider-depth",
+        status="completed",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            evaluation_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        input_training_runs=[training_parent],
+        provenance=Provenance(parents=[training_parent], issues=["63c798f"]),
+        artifacts=[
+            ArtifactRef(
+                role="trajectory_dataset",
+                logical_name="states.parquet",
+                uri="artifacts/eval/states.parquet",
+                media_type="application/vnd.apache.parquet",
+                metadata={"schema_id": "feedbax.manifest.evaluation_run"},
+            )
+        ],
+    )
+    evaluation_path = write_manifest(evaluation, root=tmp_path)
+
+    evaluation_parent = ParentRef(
+        kind="EvaluationRunManifest",
+        id=evaluation.id,
+        role="evaluation_run",
+        uri=str(evaluation_path.relative_to(tmp_path)),
+    )
+    analysis_spec = AnalysisRunSpec(
+        analysis_type="feedbax.analysis.plot",
+        inputs=[evaluation_parent],
+        params={"requested_outputs": ["summary_table"]},
+    )
+    analysis = AnalysisRunManifest(
+        id="feedbax-analysis-run:provider-depth",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            analysis_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        inputs=[evaluation_parent],
+        provenance=Provenance(parents=[evaluation_parent], issues=["63c798f"]),
+        artifacts=[
+            ArtifactRef(
+                role="analysis_table",
+                logical_name="summary.csv",
+                uri="artifacts/analysis/summary.csv",
+                media_type="text/csv",
+            )
+        ],
+    )
+    analysis_path = write_manifest(analysis, root=tmp_path)
+
+    analysis_parent = ParentRef(
+        kind="AnalysisRunManifest",
+        id=analysis.id,
+        role="analysis_run",
+        uri=str(analysis_path.relative_to(tmp_path)),
+    )
+    report_spec = ReportSpec(
+        report_type="provider_depth_report",
+        inputs=[analysis_parent],
+        params={"format": "html"},
+    )
+    report = ReportManifest(
+        id="feedbax-report:provider-depth",
+        status="completed",
+        report_spec=spec_payload(
+            "ReportSpec",
+            report_spec.model_dump(mode="json", exclude_none=True),
+        ),
+        inputs=[analysis_parent],
+        provenance=Provenance(parents=[analysis_parent], issues=["63c798f"]),
+        artifacts=[
+            ArtifactRef(
+                role="report",
+                logical_name="report-bundle.zip",
+                uri="artifacts/reports/report-bundle.zip",
+                media_type="application/zip",
+                metadata={"handoff": {"mandible_artifact_id": None}},
+            )
+        ],
+    )
+    report_path = write_manifest(report, root=tmp_path)
+
+    loaded = [load_manifest(path) for path in (evaluation_path, analysis_path, report_path)]
+    assert [manifest.kind for manifest in loaded] == [
+        "EvaluationRunManifest",
+        "AnalysisRunManifest",
+        "ReportManifest",
+    ]
+    assert all(manifest.artifacts[0].artifact_id is None for manifest in loaded)
+    assert loaded[0].artifacts[0].uri == "artifacts/eval/states.parquet"
+    assert loaded[1].analysis_spec.schema_id == "feedbax.spec.analysis_run"
+    assert loaded[2].report_spec.schema_version == "feedbax.spec.report.v1"
+
+    assert validate_spec(
+        "evaluation",
+        evaluation_spec.model_dump(mode="json", exclude_none=True),
+    ).valid
+    assert validate_spec("analysis", analysis_spec.model_dump(mode="json", exclude_none=True)).valid
+    assert validate_report_spec(report_spec).valid
+
+    index_path = rebuild_manifest_index(tmp_path)
+    with sqlite3.connect(index_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT m.kind, a.role, a.artifact_id, a.uri
+            FROM manifests AS m
+            JOIN artifacts AS a ON a.manifest_id = m.id
+            WHERE m.id IN (?, ?, ?)
+            ORDER BY m.kind
+            """,
+            (evaluation.id, analysis.id, report.id),
+        ).fetchall()
+
+    assert rows == [
+        ("AnalysisRunManifest", "analysis_table", None, "artifacts/analysis/summary.csv"),
+        ("EvaluationRunManifest", "trajectory_dataset", None, "artifacts/eval/states.parquet"),
+        ("ReportManifest", "report", None, "artifacts/reports/report-bundle.zip"),
+    ]
 
 
 def test_component_registry_snapshot_wraps_existing_registry() -> None:

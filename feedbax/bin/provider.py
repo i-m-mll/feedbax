@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
 
     validate_parser = subparsers.add_parser("validate", help="Validate a Feedbax spec JSON file")
     validate_parser.add_argument(
-        "kind", choices=["graph", "training", "task", "evaluation", "analysis"]
+        "kind", choices=["graph", "training", "task", "evaluation", "analysis", "report"]
     )
     validate_parser.add_argument("path", help="Path to JSON spec, or '-' for stdin")
     validate_parser.add_argument(
