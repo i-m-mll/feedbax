@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from feedbax.execution_models import (
+from feedbax.execution.models import (
     ArtifactPolicy,
     ExecutionBackend,
     LocalExecutionResult,
@@ -20,11 +20,11 @@ from feedbax.execution_models import (
     LocalBackendConfig,
     RepoSource,
 )
-from feedbax.execution_plan import (
+from feedbax.execution.planning import (
     default_feedbax_sources,
     prepare_execution_plan,
 )
-from feedbax.local_execution import run_local_execution
+from feedbax.execution.local import run_local_execution
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.contracts.manifest import (

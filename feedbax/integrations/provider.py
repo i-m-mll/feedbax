@@ -50,7 +50,7 @@ from feedbax.objectives.spec import (
     objective_schema_models,
     validate_objective_spec as _validate_objective_spec,
 )
-from feedbax.execution_models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+from feedbax.execution.models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,

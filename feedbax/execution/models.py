@@ -14,6 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from feedbax.contracts.manifest import ManifestStatus
 
 
+EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v1"
+EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v1"
+
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
 InstallMode = Literal["pypi", "github-ref", "local-rsync"]
@@ -185,6 +188,7 @@ class ModalBackendConfig(ExecutionModel):
 class ExecutionSpec(ExecutionModel):
     """Versioned request to prepare or run a Feedbax execution."""
 
+    schema_version: Literal[EXECUTION_SPEC_SCHEMA_VERSION] = EXECUTION_SPEC_SCHEMA_VERSION
     kind: ExecutionKind = "training"
     job_id: Optional[str] = None
     backend: ExecutionBackend = "local"
@@ -235,7 +239,7 @@ class ExecutionPlan(ExecutionModel):
     """Concrete, inspectable execution plan generated from an execution spec."""
 
     kind: Literal["ExecutionPlan"] = "ExecutionPlan"
-    schema_version: str = "feedbax.manifest.execution.v1"
+    schema_version: Literal[EXECUTION_PLAN_SCHEMA_VERSION] = EXECUTION_PLAN_SCHEMA_VERSION
     job_id: str
     backend: ExecutionBackend
     command: str

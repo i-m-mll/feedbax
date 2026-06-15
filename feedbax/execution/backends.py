@@ -9,7 +9,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from feedbax.execution_models import ExecutionCell, ExecutionSpec, PlanStep
+from feedbax.execution.models import ExecutionCell, ExecutionSpec, PlanStep
 
 
 def modal_bootstrap_steps(spec: ExecutionSpec) -> list[PlanStep]:
