@@ -1,3 +1,5 @@
+import importlib.util
+
 import feedbax
 import feedbax.tasks as task_api
 from feedbax.config.mapping import WhereDict
@@ -6,6 +8,13 @@ from feedbax.config.mapping import WhereDict
 def test_generic_tree_and_io_helpers_are_not_package_root_exports() -> None:
     for name in ("load", "load_with_hyperparameters", "save", "tree_take", "tree_labels"):
         assert not hasattr(feedbax, name)
+
+
+def test_root_support_helper_modules_are_removed() -> None:
+    assert importlib.util.find_spec("feedbax.tree_utils") is None
+    assert importlib.util.find_spec("feedbax.setup_utils") is None
+    assert importlib.util.find_spec("feedbax.config.tree") is not None
+    assert importlib.util.find_spec("feedbax.analysis.setup") is not None
 
 
 def test_task_exports_are_available_from_package_root() -> None:

@@ -29,7 +29,7 @@ from feedbax.persistence.database import (
 from feedbax.misc import (
     take_model,
 )
-from feedbax.tree_utils import (
+from feedbax.config.tree import (
     at_path,
     subdict,
 )

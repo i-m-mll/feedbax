@@ -48,7 +48,7 @@ from feedbax.persistence.database import (
 from feedbax.misc import log_version_info
 from feedbax.plot.utils import savefig
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.setup_utils import (
+from feedbax.analysis.setup import (
     setup_models_only,
     setup_tasks_only,
 )

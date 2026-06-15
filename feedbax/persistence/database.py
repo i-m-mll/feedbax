@@ -73,7 +73,7 @@ from feedbax.misc import (
     get_md5_hexdigest,
 )
 from feedbax.plot.utils import savefig
-from feedbax.tree_utils import pp
+from feedbax.config.tree import pp
 from feedbax.types import (
     LDict,
     TreeNamespace,

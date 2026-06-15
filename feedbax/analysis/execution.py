@@ -59,8 +59,8 @@ from feedbax.config.hyperparams import (
 from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_path
 from feedbax.misc import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.setup_utils import query_and_load_model
-from feedbax.tree_utils import tree_level_labels
+from feedbax.analysis.setup import query_and_load_model
+from feedbax.config.tree import tree_level_labels
 from feedbax.types import (
     AnalysisInputData,
     LDict,

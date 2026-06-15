@@ -14,7 +14,7 @@ from feedbax.analysis.analysis import (
 from feedbax.misc import deep_merge
 from feedbax.plot.experiments import get_violins
 from feedbax.plot.utils import get_label_str
-from feedbax.tree_utils import (
+from feedbax.config.tree import (
     ldict_label_only_fn,
     tree_level_types,
 )
