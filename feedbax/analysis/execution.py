@@ -39,7 +39,7 @@ from feedbax.constants import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
 # Added utilities for unflattening record hyperparameters into namespaces
-from feedbax.database import (
+from feedbax.persistence.database import (
     EvaluationRecord,
     ModelRecord,
     add_evaluation,

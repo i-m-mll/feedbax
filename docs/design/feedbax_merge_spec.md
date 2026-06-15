@@ -352,7 +352,7 @@ For CHANGELOG.md:
 
 ### Added
 - `feedbax.analysis` — lazy computation graph for analyses
-- `feedbax.database` — SQLite experiment catalog
+- `feedbax.persistence.database` — SQLite experiment catalog
 - `feedbax.plugins` — experiment registration system
 - CLI commands: `feedbax`, `feedbax-analysis`, `feedbax-train`
 

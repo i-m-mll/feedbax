@@ -33,7 +33,7 @@ from feedbax.analysis.state_utils import (
     vmap_eval_ensemble,
 )
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.database import (
+from feedbax.persistence.database import (
     MODEL_RECORD_BASE_ATTRS,
     EvaluationRecord,
     ModelRecord,

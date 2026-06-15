@@ -26,7 +26,7 @@ from jax_cookbook import is_type
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from sqlalchemy.orm import Session
 
-from feedbax.database import (
+from feedbax.persistence.database import (
     ModelRecord,
     db_session,
     get_db_session,

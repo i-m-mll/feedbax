@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from feedbax.manifest_index import rebuild_manifest_index
+from feedbax.persistence.manifest_index import rebuild_manifest_index
 from feedbax.integrations.provider import health, provider_manifest, registry_snapshot, validate_spec
 from feedbax.cloud_backends import write_modal_app
 from feedbax.execution_models import ExecutionSpec
