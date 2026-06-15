@@ -62,7 +62,7 @@ from feedbax.misc import (
     is_json_serializable,
 )
 from feedbax.plot.utils import figs_flatten_with_paths, savefig
-from feedbax.tree_utils import (
+from feedbax.analysis.tree import (
     DoNotHashTree,
     _align_trees_to_structure,
     _hash_pytree,

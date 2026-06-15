@@ -13,7 +13,7 @@ from jaxtyping import PyTree
 from feedbax.config import STRINGS, load_config
 from feedbax.config.defaults import get_iterations_to_save_model_parameters
 from feedbax.misc import copy_delattr
-from feedbax.tree_utils import tree_level_labels
+from feedbax.analysis.tree import tree_level_labels
 from feedbax.types import (
     LDict,
     TaskModelPair,
