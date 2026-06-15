@@ -5,9 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Optional
 
-import feedbax.plot as fbp
 import jax
-import jax.numpy as jnp
 import jax.tree as jt
 import matplotlib.figure as mplf
 import matplotlib.figure as mplfig

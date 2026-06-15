@@ -16,7 +16,7 @@ from jax_cookbook import MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import get_validation_trial_specs
-from feedbax.constants import REPLICATE_CRITERION
+from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.misc import dynamic_slice_with_padding
 from feedbax.types import LDict, TreeNamespace
 

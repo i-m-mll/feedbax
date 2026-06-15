@@ -1,20 +1,16 @@
 import logging
 import logging.handlers
 import re
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from queue import Queue
 from typing import Literal, Optional
 
-import jax.tree as jt
 from rich.highlighter import ReprHighlighter
 from rich.logging import RichHandler
 from rich.text import Text
 
 from feedbax.config import LOGGING, PATHS
-from feedbax.types import TreeNamespace
 
 SESSION_START_BANNER = "―" * 20 + " NEW SESSION STARTED " + "―" * 20
 

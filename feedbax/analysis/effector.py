@@ -17,12 +17,12 @@ from jaxtyping import Array, PyTree
 from feedbax.analysis.aligned import DEFAULT_VARSET, get_varset_labels
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.state_utils import get_pos_endpoints
-from feedbax.colors import COLORSCALES
+from feedbax.plot.color_setup import COLORSCALES
 from feedbax.config import PLOTLY_CONFIG
-from feedbax.constants import REPLICATE_CRITERION
+from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.misc import deep_merge
 from feedbax.plot.experiments import add_endpoint_traces
-from feedbax.plot_utils import get_label_str
+from feedbax.plot.utils import get_label_str
 from feedbax.types import AnalysisInputData, TreeNamespace, VarSpec
 
 MEAN_LIGHTEN_FACTOR = PLOTLY_CONFIG.mean_lighten_factor

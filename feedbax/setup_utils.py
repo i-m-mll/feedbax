@@ -17,7 +17,7 @@ from jax_cookbook import is_module, is_type
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS
-from feedbax.constants import (
+from feedbax.config.defaults import (
     TASK_EVAL_PARAMS,
 )
 from feedbax.database import (

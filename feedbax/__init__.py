@@ -71,7 +71,7 @@ from feedbax.tasks.presets import (
     delayed_center_out_reaches_params,
 )
 
-# from feedbax._logging import enable_central_logging
+# from feedbax.config.logging import enable_logging_handlers
 
 __all__ = [
     "AbstractTask",

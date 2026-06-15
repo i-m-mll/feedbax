@@ -5,7 +5,7 @@ import jax.numpy as jnp
 
 from feedbax._tree import filter_spec_leaves
 from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire, init_state_from_component
-from feedbax.iterate import iterate_component
+from feedbax.runtime.iteration import iterate_component
 from feedbax.misc import attr_str_tree_to_where_func
 
 

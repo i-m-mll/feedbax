@@ -1,7 +1,6 @@
 import logging
 from collections.abc import Callable, Sequence
 from copy import deepcopy
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, Optional, TypeVar
 
@@ -9,10 +8,10 @@ import equinox as eqx
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 from jax_cookbook import anyf, is_type, where_attr_strs_to_func
-from jaxtyping import ArrayLike, PyTree
+from jaxtyping import PyTree
 
 from feedbax.config import STRINGS, load_config
-from feedbax.constants import get_iterations_to_save_model_parameters
+from feedbax.config.defaults import get_iterations_to_save_model_parameters
 from feedbax.misc import copy_delattr
 from feedbax.tree_utils import tree_level_labels
 from feedbax.types import (

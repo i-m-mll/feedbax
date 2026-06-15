@@ -43,7 +43,7 @@ from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 from feedbax._mapping import WhereDict
 from feedbax._tree import is_type, tree_call, tree_call_with_keys
 from feedbax.runtime.graph import Component, Graph, init_state_from_component
-from feedbax.iterate import run_component
+from feedbax.runtime.iteration import run_component
 from feedbax.intervene import (
     InterventionSpec,
     TimeSeriesParam,

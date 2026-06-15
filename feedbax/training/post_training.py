@@ -46,7 +46,7 @@ from feedbax.database import (
     save_model_and_add_record,
 )
 from feedbax.misc import log_version_info
-from feedbax.plot_utils import savefig
+from feedbax.plot.utils import savefig
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.setup_utils import (
     setup_models_only,
