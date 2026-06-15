@@ -11,7 +11,8 @@ import jax.tree as jt
 from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.misc import BatchInfo, get_unique_label
+from feedbax.config.utils import get_unique_label
+from feedbax.runtime.batch import BatchInfo
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask

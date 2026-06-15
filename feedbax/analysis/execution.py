@@ -16,7 +16,7 @@ import optax
 import plotly
 import plotly.graph_objects as go
 from equinox import Module
-from jax_cookbook import is_module, is_none, is_type
+from jax_cookbook import LDict, is_module, is_none, is_type
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jax_cookbook.progress import piter
 from jaxtyping import PyTree
@@ -57,16 +57,12 @@ from feedbax.config.hyperparams import (
     use_train_hps_when_none,
 )
 from feedbax.contracts.manifest import AnalysisRunSpec, evaluation_states_cache_path
-from feedbax.misc import log_version_info
+from feedbax.training.support import log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.analysis.setup import query_and_load_model
 from feedbax.config.tree import tree_level_labels
-from feedbax.types import (
-    AnalysisInputData,
-    LDict,
-    TreeNamespace,
-    namespace_to_dict,
-)
+from feedbax.analysis.types import AnalysisInputData
+from feedbax.config.namespace import TreeNamespace, namespace_to_dict
 
 STATES_CACHE_SUBDIR = "states"
 

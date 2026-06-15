@@ -38,7 +38,7 @@ from matplotlib.typing import ColorType
 
 from feedbax.models.feedback import SimpleFeedbackState
 from feedbax.objectives.loss import TermTree
-from feedbax.misc import corners_2d
+from feedbax.mechanics.geometry import corners_2d
 from feedbax.runtime.state import CartesianState
 from feedbax.tasks import TaskTrialSpec
 

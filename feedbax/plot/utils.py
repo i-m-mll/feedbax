@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import functools
+import inspect
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Optional
@@ -17,9 +19,30 @@ import pyperclip as clip
 from jax_cookbook import is_type
 
 from feedbax.config import STRINGS
-from feedbax.misc import filename_join, with_caller_logger
-
 pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
+
+
+def filename_join(strs, joinwith="__"):
+    """Format filename parts while skipping empty strings."""
+    return joinwith.join(s for s in strs if s)
+
+
+def with_caller_logger(func):
+    """Provide the caller's logger to wrapped functions that accept `logger=`."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if "logger" not in kwargs:
+            caller_module = None
+            caller_frame = inspect.currentframe()
+            if caller_frame is not None:
+                caller_module = inspect.getmodule(caller_frame.f_back)
+            if caller_module is not None:
+                kwargs["logger"] = logging.getLogger(caller_module.__name__)
+            else:
+                kwargs["logger"] = logging.getLogger(func.__module__)
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _format_if_abbrev(s: str) -> str:

@@ -10,7 +10,8 @@ from jax_cookbook import is_type
 from jaxtyping import PyTree
 
 from feedbax.config import PLOTLY_CONFIG
-from feedbax.types import LDict, TreeNamespace
+from feedbax.config.namespace import TreeNamespace
+from jax_cookbook import LDict
 
 logger = logging.getLogger(__name__)
 

@@ -427,7 +427,7 @@ class RigidTendonMusculoskeletalArm(Component):
         """Compute effector Cartesian state."""
         xy_pos, length_components = self._forward_pos(arm_state.angle)
 
-        from feedbax.misc import SINCOS_GRAD_SIGNS
+        from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
         ang_vel_sum = jnp.cumsum(arm_state.d_angle)
         xy_vel = jnp.cumsum(
             SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,
@@ -820,7 +820,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     def _effector(self, arm_state: TwoLinkArmState) -> CartesianState:
         xy_pos, length_components = self._forward_pos(arm_state.angle)
 
-        from feedbax.misc import SINCOS_GRAD_SIGNS
+        from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
         ang_vel_sum = jnp.cumsum(arm_state.d_angle)
         xy_vel = jnp.cumsum(
             SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,

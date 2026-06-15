@@ -4,21 +4,23 @@ from types import MappingProxyType
 import equinox as eqx
 import jax.tree as jt
 import numpy as np
+from jax_cookbook import LDict, LDictConstructor
 from jaxtyping import PyTree
 
+from feedbax.analysis.types import AnalysisInputData
+from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
     InputOf,
 )
-from feedbax.misc import deep_merge
+from feedbax.config.utils import deep_merge
 from feedbax.plot.experiments import get_violins
 from feedbax.plot.utils import get_label_str
 from feedbax.config.tree import (
     ldict_label_only_fn,
     tree_level_types,
 )
-from feedbax.types import AnalysisInputData, LDict, LDictConstructor, TreeNamespace
 
 #! TODO
 # measure_ranges = {

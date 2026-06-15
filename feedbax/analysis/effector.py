@@ -1,7 +1,7 @@
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, ValuesView
 from functools import partial
 from types import MappingProxyType
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 import feedbax.plot as fbp
 import jax.tree as jt
@@ -10,20 +10,23 @@ import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.plot import AxesLabels
 from feedbax.tasks import AbstractTask
-from feedbax.types import SeqOfT
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 
+from feedbax.analysis.types import AnalysisInputData, VarSpec
+from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.aligned import DEFAULT_VARSET, get_varset_labels
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.state_utils import get_pos_endpoints
 from feedbax.plot.color_setup import COLORSCALES
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.defaults import REPLICATE_CRITERION
-from feedbax.misc import deep_merge
+from feedbax.config.utils import deep_merge
 from feedbax.plot.experiments import add_endpoint_traces
 from feedbax.plot.utils import get_label_str
-from feedbax.types import AnalysisInputData, TreeNamespace, VarSpec
+
+type SeqOf[S] = list[S] | tuple[S, ...] | ValuesView[S]
+type SeqOfT[S, Tag] = Annotated[SeqOf[S], Tag]
 
 MEAN_LIGHTEN_FACTOR = PLOTLY_CONFIG.mean_lighten_factor
 

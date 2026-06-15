@@ -34,7 +34,7 @@ from feedbax.config import (
     load_batch_config,
     load_config,
 )
-from feedbax.misc import deep_merge
+from feedbax.config.utils import deep_merge
 from feedbax.plugins import EXPERIMENT_REGISTRY
 
 logger = logging.getLogger(os.path.basename(__file__))

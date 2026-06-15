@@ -1,4 +1,4 @@
-from ..types import AnalysisInputData
+from .types import AnalysisInputData
 from .analysis import AbstractAnalysis, CallWithDeps
 from .bundles import (
     AnalysisBundleSpec,

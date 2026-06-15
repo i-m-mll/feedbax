@@ -34,6 +34,7 @@ import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.tasks import AbstractTask
 from jax_cookbook import (
+    LDict,
     LDictConstructor,
     MaskedArray,
     anyf,
@@ -49,18 +50,19 @@ from jaxtyping import Array, ArrayLike, PyTree
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS, STRINGS
+from feedbax.config.namespace import TreeNamespace
 from feedbax.config.yaml import get_yaml_loader
+from feedbax.config.utils import deep_merge
 from feedbax.persistence.database import EvaluationRecord, add_evaluation_figure
-from feedbax.misc import (
+from feedbax.analysis.support import (
     camel_to_snake,
-    deep_merge,
     field_names,
     get_dataclass_fields,
-    get_md5_hexdigest,
     get_name_of_callable,
     get_origin_type,
     is_json_serializable,
 )
+from feedbax.persistence.support import get_md5_hexdigest
 from feedbax.plot.utils import figs_flatten_with_paths, savefig
 from feedbax.config.tree import (
     DoNotHashTree,
@@ -72,11 +74,7 @@ from feedbax.config.tree import (
     subdict,
     tree_level_labels,
 )
-from feedbax.types import (
-    AnalysisInputData,
-    LDict,
-    TreeNamespace,
-)
+from feedbax.analysis.types import AnalysisInputData
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar

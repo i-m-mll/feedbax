@@ -21,7 +21,7 @@ from equinox import Module
 from jax_cookbook import is_module
 from jaxtyping import Array, Bool, Float, PRNGKeyArray, PyTree
 
-from feedbax.misc import squareform_pdist
+from feedbax.analysis.math import squareform_pdist
 
 # class FixedPoint(Module):
 #     value: Array

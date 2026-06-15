@@ -14,7 +14,7 @@ import feedbax.plot as fbp
 import jax.tree as jt
 import jax_cookbook.tree as jtree
 import plotly.graph_objects as go
-from jax_cookbook import is_type
+from jax_cookbook import LDict, is_type
 from jax_cookbook.misc import deep_merge
 from jax_cookbook.progress import map_rich
 from jaxtyping import Array, PyTree
@@ -24,12 +24,12 @@ from feedbax.analysis.analysis import (
     PortsType,
     SinglePort,
 )
+from feedbax.analysis.types import AnalysisInputData
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.hyperparams import flat_key_to_where_fn
 from feedbax.plot.experiments import set_axes_bounds_equal
 from feedbax.plot.utils import get_label_str
 from feedbax.config.tree import ldict_level_to_bottom
-from feedbax.types import AnalysisInputData, LDict
 
 logger = logging.getLogger(__name__)
 

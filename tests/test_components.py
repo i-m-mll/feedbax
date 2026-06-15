@@ -11,7 +11,7 @@ from feedbax.runtime.iteration import run_component
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.misc import attr_str_tree_to_where_func, where_func_to_attr_str_tree
+from feedbax.config.selectors import attr_str_tree_to_where_func, where_func_to_attr_str_tree
 from feedbax.models.networks import SimpleStagedNetwork
 from feedbax.models.feedback import SimpleFeedback
 

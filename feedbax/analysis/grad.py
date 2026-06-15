@@ -19,7 +19,7 @@ from jaxtyping import Array, PyTree
 
 from feedbax.analysis.analysis import AbstractAnalysis, InputOf
 from feedbax.analysis.func import CallerPorts, make_argwise_functional
-from feedbax.types import AnalysisInputData
+from feedbax.analysis.types import AnalysisInputData
 
 _Tuple = jtree.make_named_tuple_subclass("Tuple")
 

@@ -56,7 +56,7 @@ from feedbax.objectives.loss import (
     TermTree,
     power_discount,
 )
-from feedbax.misc import BatchInfo
+from feedbax.runtime.batch import BatchInfo
 from feedbax.runtime.state import CartesianState, StateT
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 

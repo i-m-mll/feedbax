@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
-from feedbax.misc import batch_reshape  # for flattening/unflattening
+from feedbax.analysis.transforms import batch_reshape  # for flattening/unflattening
 from jax_cookbook.misc import crop_to_shortest
 from jaxtyping import Array
 from sklearn.neighbors import KDTree
@@ -20,8 +20,8 @@ from feedbax.analysis.analysis import (
     Data,
     InputOf,
 )
+from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.tree import getitem_at_level
-from feedbax.types import AnalysisInputData
 
 
 class TanglingPorts(AbstractAnalysisPorts):
