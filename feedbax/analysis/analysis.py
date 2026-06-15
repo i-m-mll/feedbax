@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS, STRINGS
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.database import EvaluationRecord, add_evaluation_figure
+from feedbax.persistence.database import EvaluationRecord, add_evaluation_figure
 from feedbax.misc import (
     camel_to_snake,
     deep_merge,

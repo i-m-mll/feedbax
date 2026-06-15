@@ -34,7 +34,7 @@ from feedbax.contracts.manifest import (
     store_json_artifact,
     write_manifest,
 )
-from feedbax.manifest_index import iter_manifest_files
+from feedbax.persistence.manifest_index import iter_manifest_files
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.analysis.specs import execute_analysis_run_spec

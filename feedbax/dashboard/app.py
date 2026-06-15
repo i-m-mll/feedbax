@@ -14,7 +14,7 @@ from dash.exceptions import PreventUpdate
 from sqlalchemy.orm import Session
 
 from feedbax.config import configure_globals_for_package
-from feedbax.database import FigureRecord, get_db_session
+from feedbax.persistence.database import FigureRecord, get_db_session
 from feedbax.dashboard.backend.loader import FigureLoader
 from feedbax.dashboard.backend.presets import PresetManager
 from feedbax.dashboard.backend.query import FilterSpec, FigureQueryEngine

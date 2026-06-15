@@ -20,7 +20,7 @@ from feedbax.config import PATHS
 from feedbax.constants import (
     TASK_EVAL_PARAMS,
 )
-from feedbax.database import (
+from feedbax.persistence.database import (
     get_model_record,
     load_tree_with_hps,
     load_tree_without_hps,

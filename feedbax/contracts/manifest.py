@@ -1161,7 +1161,7 @@ def write_manifest(
         encoding="utf-8",
     )
     if index:
-        from feedbax.manifest_index import index_manifest_file
+        from feedbax.persistence.manifest_index import index_manifest_file
 
         index_manifest_file(path, root=root_path)
     return path

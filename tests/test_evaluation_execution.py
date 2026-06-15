@@ -17,7 +17,7 @@ from feedbax.contracts.manifest import (
     evaluation_states_cache_path,
     load_manifest,
 )
-from feedbax.manifest_index import rebuild_manifest_index
+from feedbax.persistence.manifest_index import rebuild_manifest_index
 
 
 def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_path: Path):

@@ -9,7 +9,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from feedbax.database import (
+from feedbax.persistence.database import (
     EvaluationRecord,
     ModelRecord,
     db_session,

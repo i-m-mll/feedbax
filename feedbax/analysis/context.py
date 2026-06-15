@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from jaxtyping import PyTree
 from sqlalchemy.orm import Session
 
-from feedbax.database import EvaluationRecord, ModelRecord, add_evaluation_figure
+from feedbax.persistence.database import EvaluationRecord, ModelRecord, add_evaluation_figure
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,

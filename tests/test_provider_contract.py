@@ -28,7 +28,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
     write_training_run_manifest,
 )
-from feedbax.manifest_index import rebuild_manifest_index
+from feedbax.persistence.manifest_index import rebuild_manifest_index
 from feedbax.integrations.provider import (
     component_registry_snapshot,
     provider_manifest,
