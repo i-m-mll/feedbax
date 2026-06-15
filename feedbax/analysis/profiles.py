@@ -15,7 +15,7 @@ from jaxtyping import Array, PyTree
 from feedbax.analysis.aligned import AlignedVars, get_varset_labels
 from feedbax.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
 from feedbax.plot.utils import get_label_str
-from feedbax.tree_utils import move_ldict_level_above, tree_level_labels
+from feedbax.analysis.tree import move_ldict_level_above, tree_level_labels
 from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 
 

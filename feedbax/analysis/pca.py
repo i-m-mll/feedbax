@@ -19,7 +19,7 @@ from feedbax.analysis.analysis import (
     InputOf,
     NoPorts,
 )
-from feedbax.tree_utils import (
+from feedbax.analysis.tree import (
     ldict_level_to_bottom,
     rearrange_ldict_levels,
     tree_level_labels,
