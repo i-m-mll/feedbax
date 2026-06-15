@@ -32,7 +32,7 @@ from feedbax.analysis.state_utils import (
     unsqueezer,
 )
 from feedbax.config.defaults import EVAL_REACH_LENGTH
-from feedbax.misc import _OptionalCallableFieldConverter
+from feedbax.analysis.support import _OptionalCallableFieldConverter
 from feedbax.plot.experiments import add_endpoint_traces
 from feedbax.types import (
     AnalysisInputData,

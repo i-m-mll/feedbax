@@ -17,7 +17,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import get_validation_trial_specs
 from feedbax.config.defaults import REPLICATE_CRITERION
-from feedbax.misc import dynamic_slice_with_padding
+from feedbax.analysis.math import dynamic_slice_with_padding
 from feedbax.types import LDict, TreeNamespace
 
 

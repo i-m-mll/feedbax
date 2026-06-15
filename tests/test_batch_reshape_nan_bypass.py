@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from feedbax.misc import batch_reshape, nan_bypass
+from feedbax.analysis.transforms import batch_reshape, nan_bypass
 
 ArrayFunc = Callable[[Any], Any]
 

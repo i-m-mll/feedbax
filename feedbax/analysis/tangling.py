@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
-from feedbax.misc import batch_reshape  # for flattening/unflattening
+from feedbax.analysis.transforms import batch_reshape  # for flattening/unflattening
 from jax_cookbook.misc import crop_to_shortest
 from jaxtyping import Array
 from sklearn.neighbors import KDTree

@@ -14,7 +14,7 @@ from plotly.colors import convert_colors_to_same_type, sample_colorscale
 from plotly.subplots import make_subplots
 
 from feedbax.models.feedback import SimpleFeedbackState
-from feedbax.misc import where_func_to_attr_str_tree
+from feedbax.config.selectors import where_func_to_attr_str_tree
 from feedbax.plot.colors import _compute_colors, arr_to_rgb
 from feedbax.plot.misc import (
     AxesLabels,

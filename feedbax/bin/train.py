@@ -29,7 +29,8 @@ from feedbax.config import (
     load_config,
 )
 from feedbax.persistence.database import ModelRecord, db_session
-from feedbax.misc import deep_merge, discard, log_version_info
+from feedbax.config.utils import deep_merge
+from feedbax.training.support import discard, log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.training.post_training import process_model_post_training
 from feedbax.training.train import (

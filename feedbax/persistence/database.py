@@ -26,7 +26,7 @@ import plotly.graph_objects as go
 import pyexiv2
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from feedbax.misc import attr_str_tree_to_where_func
+from feedbax.config.selectors import attr_str_tree_to_where_func
 from jax_cookbook import allf, arrays_to_lists, is_not_type, is_type, save
 from jaxtyping import PyTree
 from sqlalchemy import (
@@ -68,7 +68,7 @@ from feedbax.config.hyperparams import (
     load_hps,
     take_train_histories_hps,
 )
-from feedbax.misc import (
+from feedbax.persistence.support import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
 )

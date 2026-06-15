@@ -34,8 +34,8 @@ from tensorboardX import SummaryWriter  # type: ignore
 from feedbax.runtime.graph import Component, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.objectives.loss import AbstractLoss, TermTree
-from feedbax.misc import (
-    BatchInfo,
+from feedbax.runtime.batch import BatchInfo
+from feedbax.training.support import (
     Timer,
     batched_outer,
     delete_contents,

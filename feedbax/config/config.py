@@ -16,7 +16,7 @@ import jax.tree as jt
 from ruamel.yaml import YAML
 
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.misc import deep_merge
+from feedbax.config.utils import deep_merge
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.types import TreeNamespace, dict_to_namespace
 

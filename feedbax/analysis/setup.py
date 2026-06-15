@@ -26,9 +26,7 @@ from feedbax.persistence.database import (
     load_tree_without_hps,
     record_to_hps_train,
 )
-from feedbax.misc import (
-    take_model,
-)
+from feedbax.analysis.support import take_model
 from feedbax.config.tree import (
     at_path,
     subdict,

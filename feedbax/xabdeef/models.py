@@ -17,7 +17,6 @@ from jaxtyping import PRNGKeyArray
 
 from feedbax.models.feedback import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
-from feedbax.misc import identity_func
 from feedbax.runtime.graph import Component
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -28,6 +27,11 @@ from feedbax.tasks import AbstractTask
 
 
 logger = logging.getLogger(__name__)
+
+
+def identity_func(x):
+    """The identity function."""
+    return x
 
 
 def point_mass_nn(

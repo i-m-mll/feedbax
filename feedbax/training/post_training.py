@@ -15,7 +15,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objects as go
-from feedbax.misc import attr_str_tree_to_where_func
+from feedbax.config.selectors import attr_str_tree_to_where_func
 from feedbax.training.trainer import TaskTrainerHistory, WhereFunc, init_task_trainer_history
 from feedbax.xabdeef.losses import simple_reach_loss
 from jax_cookbook import anyf, identity, is_module, is_type
@@ -45,7 +45,7 @@ from feedbax.persistence.database import (
     query_model_records,
     save_model_and_add_record,
 )
-from feedbax.misc import log_version_info
+from feedbax.training.support import log_version_info
 from feedbax.plot.utils import savefig
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.analysis.setup import (

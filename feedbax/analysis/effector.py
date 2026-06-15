@@ -20,7 +20,7 @@ from feedbax.analysis.state_utils import get_pos_endpoints
 from feedbax.plot.color_setup import COLORSCALES
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.defaults import REPLICATE_CRITERION
-from feedbax.misc import deep_merge
+from feedbax.config.utils import deep_merge
 from feedbax.plot.experiments import add_endpoint_traces
 from feedbax.plot.utils import get_label_str
 from feedbax.types import AnalysisInputData, TreeNamespace, VarSpec
