@@ -1,5 +1,5 @@
 # Dimensionality reduction
 
-::: feedbax.dimred.pca
+::: feedbax.analysis.dimred.pca
 
-::: feedbax.dimred.PCAResults
+::: feedbax.analysis.dimred.PCAResults

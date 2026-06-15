@@ -22,7 +22,6 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 if TYPE_CHECKING:
     from feedbax.objectives.loss import TermTree
-    from feedbax.misc import BatchInfo
     from feedbax.tasks import TaskTrialSpec
 
 

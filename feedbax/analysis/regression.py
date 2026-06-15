@@ -17,7 +17,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.analysis.aligned import AlignedVars
 from feedbax.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
-from feedbax.tree_utils import ldict_level_keys, tree_level_labels
+from feedbax.config.tree import ldict_level_keys, tree_level_labels
 from feedbax.types import AnalysisInputData, LDictTree
 
 

@@ -20,13 +20,21 @@ import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objects as go
 from feedbax.intervene import is_intervenor
-from jax_cookbook import anyf, hash_callable, is_module, is_none, is_type
+from jax_cookbook import (
+    LDict,
+    LDictConstructor,
+    anyf,
+    hash_callable,
+    is_module,
+    is_none,
+    is_type,
+)
 from jax_cookbook._func import falsef
 from jaxtyping import Array, ArrayLike, PyTree, PyTreeDef
 
 from feedbax.config import STRINGS
 from feedbax.misc import deep_merge
-from feedbax.types import LDict, LDictConstructor, TreeNamespace, _Wrapped
+from feedbax.types import TreeNamespace, _Wrapped
 
 T = TypeVar("T")
 M = TypeVar("M", bound=Mapping)

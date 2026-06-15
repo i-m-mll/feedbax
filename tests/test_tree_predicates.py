@@ -1,4 +1,4 @@
-from feedbax._tree import allf, anyf, notf
+from jax_cookbook import allf, anyf, notf
 
 
 def test_anyf_returns_true_when_any_predicate_matches():
@@ -10,7 +10,7 @@ def test_anyf_returns_true_when_any_predicate_matches():
 
 
 def test_allf_returns_true_only_when_all_predicates_match():
-    is_even_and_positive = allf(lambda x: x % 2 == 0, lambda x: x > 0)
+    is_even_and_positive = allf(lambda x: True, lambda x: x % 2 == 0, lambda x: x > 0)
 
     assert is_even_and_positive(4)
     assert not is_even_and_positive(-4)

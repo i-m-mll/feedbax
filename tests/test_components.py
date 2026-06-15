@@ -3,11 +3,11 @@ import jax.numpy as jnp
 import equinox as eqx
 import pytest
 
-from feedbax._tree import filter_spec_leaves
+from jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.iterate import run_component
+from feedbax.runtime.iteration import run_component
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass

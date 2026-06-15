@@ -62,7 +62,7 @@ from sqlalchemy.sql.type_api import TypeEngine
 
 from feedbax.config import PATHS, STRINGS
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.hyperparams import (
+from feedbax.config.hyperparams import (
     cast_hps,
     flatten_hps,
     load_hps,
@@ -72,8 +72,8 @@ from feedbax.misc import (
     exclude_unshared_keys_and_identical_values,
     get_md5_hexdigest,
 )
-from feedbax.plot_utils import savefig
-from feedbax.tree_utils import pp
+from feedbax.plot.utils import savefig
+from feedbax.config.tree import pp
 from feedbax.types import (
     LDict,
     TreeNamespace,
@@ -978,7 +978,7 @@ def load_tree_with_hps(
     setup_tree_fn: Callable,
     **kwargs,
 ) -> tuple[PyTree, TreeNamespace]:
-    """Similar to `feedbax.load_with_hyperparameters, but for namespace-based hyperparameters"""
+    """Similar to cookbook tree loading, but for namespace-based hyperparameters."""
     yaml = get_yaml_loader(typ="safe")
     with open(path, "rb") as f:
         hps_dict = yaml.load(_read_until_special(f, chr(STRINGS.serialisation.sep_chr)))

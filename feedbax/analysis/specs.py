@@ -26,7 +26,7 @@ from feedbax.contracts.manifest import (
     evaluation_states_cache_path,
     load_manifest,
 )
-from feedbax.manifest_index import iter_manifest_files
+from feedbax.persistence.manifest_index import iter_manifest_files
 from feedbax.types import AnalysisInputData
 
 

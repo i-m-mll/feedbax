@@ -16,7 +16,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 import numpy as np
 import optax
-from feedbax._io import arrays_to_lists
+from jax_cookbook import arrays_to_lists
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.misc import attr_str_tree_to_where_func
 from feedbax.tasks import AbstractTask
@@ -26,21 +26,21 @@ from jax_cookbook import is_type
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from sqlalchemy.orm import Session
 
-from feedbax.database import (
+from feedbax.persistence.database import (
     ModelRecord,
     db_session,
     get_db_session,
     get_record,
     save_model_and_add_record,
 )
-from feedbax.hyperparams import config_to_hps, flatten_hps
+from feedbax.config.hyperparams import config_to_hps, flatten_hps
 from feedbax.misc import (
     GracefulInterruptHandler,
     GracefulStopRequested,
     log_version_info,
 )
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.tree_utils import pp
+from feedbax.config.tree import pp
 from feedbax.types import TaskModelPair, TreeNamespace, namespace_to_dict
 
 from .loss import get_readout_norm_loss

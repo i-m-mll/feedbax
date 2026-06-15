@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from feedbax.config import PATHS
-from feedbax.database import FigureRecord
+from feedbax.persistence.database import FigureRecord
 
 logger = logging.getLogger(__name__)
 

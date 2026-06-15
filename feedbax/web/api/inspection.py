@@ -80,7 +80,7 @@ def _render_graph_spec(
     Raises:
         HTTPException: If treescope is unavailable or rendering fails.
     """
-    from feedbax._treescope import (
+    from feedbax.integrations.treescope import (
         get_treescope_status,
         render_model_html,
     )
@@ -154,7 +154,7 @@ def _render_graph_spec(
 @router.get("/status")
 async def get_inspection_status() -> InspectionStatusResponse:
     """Get the status of inspection capabilities."""
-    from feedbax._treescope import get_treescope_status
+    from feedbax.integrations.treescope import get_treescope_status
 
     status = get_treescope_status()
 

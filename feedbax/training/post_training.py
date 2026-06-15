@@ -33,7 +33,7 @@ from feedbax.analysis.state_utils import (
     vmap_eval_ensemble,
 )
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.database import (
+from feedbax.persistence.database import (
     MODEL_RECORD_BASE_ATTRS,
     EvaluationRecord,
     ModelRecord,
@@ -46,9 +46,9 @@ from feedbax.database import (
     save_model_and_add_record,
 )
 from feedbax.misc import log_version_info
-from feedbax.plot_utils import savefig
+from feedbax.plot.utils import savefig
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.setup_utils import (
+from feedbax.analysis.setup import (
     setup_models_only,
     setup_tasks_only,
 )

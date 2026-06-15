@@ -1045,7 +1045,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     studio_schema_emitters = ("feedbax.studio.schema", "feedbax.integrations.provider")
     studio_execution_emitters = ("feedbax.studio.execution", "feedbax.integrations.provider")
     objective_emitters = ("feedbax.objective_spec", "feedbax.integrations.provider")
-    execution_emitters = ("feedbax.execution_models", "feedbax.integrations.provider")
+    execution_emitters = ("feedbax.execution.models", "feedbax.integrations.provider")
 
     families = [
         _family(
@@ -1431,7 +1431,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "ExecutionSpec"
                     else "feedbax.manifest.execution.v1"
                 ),
-                owner_module="feedbax.execution_models",
+                owner_module="feedbax.execution.models",
                 emitted_by=execution_emitters,
                 consumed_by=("execution planning", "Studio execution"),
                 description=description,

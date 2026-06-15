@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeAlias
 import equinox as eqx
 import jax
 import jax.tree as jt
+from jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.misc import BatchInfo, get_unique_label, is_module
+from feedbax.misc import BatchInfo, get_unique_label
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask

@@ -80,16 +80,16 @@ config packages.
 | `_warnings.py` | Move to private support or inline with CLI setup | Small warning de-dup helper used by CLI setup. Keep private or merge into CLI/setup support. |
 | `_tree.py` | Split: mostly cookbook, some local runtime | Replace generic helpers with `jax_cookbook.tree` or JAX core. Keep Feedbax-specific mask/call/shared-key helpers under `feedbax.runtime.tree` or private support. Delete unused helpers after public root export removal is coordinated. |
 | `types.py` | Split | Reexports of cookbook types should disappear or import from cookbook directly. Move `TreeNamespace` and namespace conversion near config, analysis data types to `feedbax.analysis.types`, and durable enum/spec-facing types near contracts/config. |
-| `tree_utils.py` | Split | Move analysis/config LDict helpers to `feedbax.analysis.tree` or `feedbax.config.tree`. Consider upstreaming reusable LDict level rearrangement helpers to `jax_cookbook` only after tests. Use JAX core for simple path flattening. |
+| `tree_utils.py` | Split | Move analysis/config LDict helpers to `feedbax.config.tree`. Consider upstreaming reusable LDict level rearrangement helpers to `jax_cookbook` only after tests. Use JAX core for simple path flattening. |
 | `misc.py` | Split aggressively | Generic helpers overlap `jax_cookbook.misc`, `jax_cookbook._where`, and `jax_cookbook._print`; domain math belongs in mechanics/analysis; logging, interrupt, filesystem, version, JSON/YAML, and location helpers belong in private support or config. Do not keep a new `utils.misc` dump. |
 | `database.py` | Move/split to persistence | Large SQLAlchemy persistence layer for model/evaluation/figure records, dynamic DB schema, old model save/load, and record-to-hyperparameter reconstruction. Move to `feedbax.persistence.database` or `feedbax.storage.database`; treat as high migration risk. |
 | `plot_utils.py` | Split into plot package | Move label helpers, figure flattening, annotation, Plotly widget, and save routines into `feedbax.plot.labels`, `feedbax.plot.figure_io`, and notebook-only integration modules. Coordinate `savefig` with persistence because `database.py` calls it. |
 | `colors.py` | Move to plot package | Hyperparameter color specs and color-map setup belong in `feedbax.plot.colors`. |
 | `setup_utils.py` | Split | Notebook file chooser belongs in `feedbax.integrations.notebook`; model loading, noise editing, task/model pair setup, replicate info, and query helpers belong with training or analysis support. |
-| `cloud_backends.py` | Move/split under execution integrations | Move to `feedbax.execution.backends` or split Modal and RunPod helpers into `feedbax.integrations.modal` and `feedbax.integrations.runpod`. Keep with execution schema tests. |
-| `execution_models.py` | Move to execution package with schema work | Move to `feedbax.execution.models`. `ExecutionPlan` has a schema version; `ExecutionSpec` is documented as versioned but lacks an explicit schema field. Add schema identity or explicit old-version rejection before treating it as durable. |
-| `execution_plan.py` | Move to execution package | Move to `feedbax.execution.planning`. It should stay in the same implementation slice as models, backends, CLI provider imports, and local execution. |
-| `local_execution.py` | Move to execution package | Move to `feedbax.execution.local`. It emits durable manifests and logs, so keep focused manifest/execution contract tests. |
+| `cloud_backends.py` | Moved under execution package | Canonical module is `feedbax.execution.backends`; Modal and RunPod helpers stay with execution schema tests. |
+| `execution_models.py` | Moved under execution package with schema identity | Canonical module is `feedbax.execution.models`. `ExecutionSpec` and `ExecutionPlan` now declare explicit schema versions. |
+| `execution_plan.py` | Moved under execution package | Canonical module is `feedbax.execution.planning`, with provider CLI and local execution imports updated. |
+| `local_execution.py` | Moved under execution package | Canonical module is `feedbax.execution.local`; focused execution contract tests cover manifest/log emission. |
 | `hyperparams.py` | Move to config package | Converts config/YAML dictionaries to `TreeNamespace`, handles LDict-wrapped where specs, flattening, and derived training parameters. Move to `feedbax.config.hyperparams`. |
 | `constants.py` | Move to config or analysis defaults | Contains evaluation defaults and replicate criterion, not generic constants. Move to `feedbax.config.defaults` or analysis/training defaults. |
 | `environment.py` | Move to training/runtime contract package | Protocols for supervised and RL training environments and tasks. Move to `feedbax.training.environment` or `feedbax.runtime.environment`; it is not a utility dump. |
@@ -120,12 +120,9 @@ cleanup, the umbrella should reassign it explicitly before editing.
 ## Proposed Follow-Up Issue Slices
 
 1. **Execution package and schema identity**
-   - Move `execution_models.py`, `execution_plan.py`, `cloud_backends.py`, and
-     `local_execution.py` into `feedbax.execution.*`.
-   - Update `feedbax/bin/provider.py`, web provider APIs, docs, and
-     `tests/test_execution_contract.py`.
-   - Add or assert explicit `ExecutionSpec` schema identity or rejection
-     behavior before durable spec emission.
+   - Completed in issue `49806b6`: root execution modules moved into
+     `feedbax.execution.*`, in-repo imports updated, and `ExecutionSpec`
+     schema identity/rejection coverage added.
 
 2. **Persistence and legacy model database split**
    - Move `database.py` into a persistence/storage package.

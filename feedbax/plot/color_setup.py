@@ -1,12 +1,10 @@
 import logging
 import warnings
 from collections.abc import Callable, Hashable, Sequence
-from types import SimpleNamespace
 from typing import Literal, NamedTuple, Optional, TypeVar, Union
 
 import feedbax.plot as fbp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
 import plotly.colors as plc
 from jax_cookbook import is_type
 from jaxtyping import PyTree

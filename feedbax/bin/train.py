@@ -28,7 +28,7 @@ from feedbax.config import (
     load_batch_config,
     load_config,
 )
-from feedbax.database import ModelRecord, db_session
+from feedbax.persistence.database import ModelRecord, db_session
 from feedbax.misc import deep_merge, discard, log_version_info
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.training.post_training import process_model_post_training
@@ -37,7 +37,7 @@ from feedbax.training.train import (
     train_and_save,
     train_and_save_from_config,
 )
-from feedbax.tree_utils import filter_varying_leaves
+from feedbax.config.tree import filter_varying_leaves
 from feedbax.types import TreeNamespace
 
 logger = logging.getLogger(os.path.basename(__file__))

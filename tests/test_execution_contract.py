@@ -3,21 +3,39 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from feedbax.cloud_backends import render_modal_app
-from feedbax.execution_models import (
+from feedbax.execution.backends import render_modal_app
+from feedbax.execution.local import run_local_execution
+from feedbax.execution.models import (
+    EXECUTION_SPEC_SCHEMA_VERSION,
     ExecutionCell,
     ExecutionSpec,
     RepoSource,
 )
-from feedbax.execution_plan import (
+from feedbax.execution.planning import (
     default_feedbax_sources,
     prepare_execution_plan,
 )
-from feedbax.local_execution import run_local_execution
 from feedbax.integrations.provider import provider_manifest
 from feedbax.web.app import create_app
+
+
+def test_execution_spec_declares_and_rejects_schema_versions() -> None:
+    spec = ExecutionSpec(command="python train.py")
+
+    assert spec.schema_version == EXECUTION_SPEC_SCHEMA_VERSION
+    assert spec.model_dump(mode="json")["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION
+
+    with pytest.raises(ValidationError):
+        ExecutionSpec.model_validate(
+            {
+                "schema_version": "feedbax.spec.execution.v0",
+                "command": "python train.py",
+            }
+        )
 
 
 def test_runpod_plan_uses_ssh_worker_contract() -> None:

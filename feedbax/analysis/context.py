@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from jaxtyping import PyTree
 from sqlalchemy.orm import Session
 
-from feedbax.database import EvaluationRecord, ModelRecord, add_evaluation_figure
+from feedbax.persistence.database import EvaluationRecord, ModelRecord, add_evaluation_figure
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -33,7 +33,7 @@ from feedbax.contracts.manifest import (
     store_json_artifact,
     write_manifest,
 )
-from feedbax.plot_utils import savefig
+from feedbax.plot.utils import savefig
 from jax_cookbook import arrays_to_lists
 
 

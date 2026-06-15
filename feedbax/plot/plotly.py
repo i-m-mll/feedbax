@@ -421,10 +421,10 @@ def activity_heatmap(
         of the hidden layer of the network:
 
         ```python
-        from feedbax import tree_take
+        import jax_cookbook.tree as jtree
 
         states = task.eval(model, key=key_eval)  # States for all validation trials.
-        states_trial0 = tree_take(states, 0)
+        states_trial0 = jtree.take(states, 0)
         activity_heatmap(states_trial0.net.hidden)
         ```
 

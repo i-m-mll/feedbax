@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from feedbax._mapping import WhereDict
+from feedbax.config.mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.runtime.graph import Graph
 from feedbax.contracts.graphs.templates import network_template_graph, recurrent_controller_template_graph

@@ -13,9 +13,9 @@ import equinox as eqx
 # from equinox._pretty_print import tree_pp, bracketed
 import jax.numpy as jnp
 import jax.random as jr
+import jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
-from feedbax._tree import leaves_of_type
 # from feedbax.misc import _simple_module_pprint
 
 
@@ -107,7 +107,7 @@ class Multiplicative(AbstractNoise):
 def replace_noise(tree, replace_fn: Callable = lambda _: None):
     """Replaces all `AbstractNoise` leaves of a PyTree, by default with `None`."""
     return eqx.tree_at(
-        partial(leaves_of_type, AbstractNoise),
+        partial(jtree.leaves_of_type, AbstractNoise),
         tree,
         replace_fn=replace_fn,
     )

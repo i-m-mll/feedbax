@@ -19,20 +19,20 @@ import jax.tree_util as jtu
 import numpy as np
 import optax  # type: ignore
 from equinox import field
+from jax_cookbook import is_type
+from jax_cookbook.tree import (
+    array_set as tree_set,
+    filter_spec_leaves,
+    infer_batch_size as tree_infer_batch_size,
+    take as tree_take,
+)
 from jax_cookbook.misc import mse
 from jax_cookbook.progress import piter, progress_piter
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 from tensorboardX import SummaryWriter  # type: ignore
 
-from feedbax import is_type
 from feedbax.runtime.graph import Component, init_state_from_component
-from feedbax._tree import (
-    filter_spec_leaves,
-    tree_infer_batch_size,
-    tree_set,
-    tree_take,
-)
-from feedbax.iterate import run_component
+from feedbax.runtime.iteration import run_component
 from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.misc import (
     BatchInfo,
@@ -224,8 +224,8 @@ class TaskTrainer(eqx.Module):
             training run, to resume it.
 
             Trying to load a checkpoint as a model at a later time may fail.
-            Use [`feedbax.save`][feedbax.save] and
-            [`feedbax.load`][feedbax.load] for longer-term storage.
+            Use `jax_cookbook.save` and `jax_cookbook.load` for longer-term
+            generic Equinox tree storage.
 
         Arguments:
             task: The task to train the model on.

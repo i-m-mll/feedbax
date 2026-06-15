@@ -17,10 +17,10 @@ from jax_cookbook import is_module, is_type
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS
-from feedbax.constants import (
+from feedbax.config.defaults import (
     TASK_EVAL_PARAMS,
 )
-from feedbax.database import (
+from feedbax.persistence.database import (
     get_model_record,
     load_tree_with_hps,
     load_tree_without_hps,
@@ -29,7 +29,7 @@ from feedbax.database import (
 from feedbax.misc import (
     take_model,
 )
-from feedbax.tree_utils import (
+from feedbax.config.tree import (
     at_path,
     subdict,
 )

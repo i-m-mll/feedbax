@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS, STRINGS
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.database import EvaluationRecord, add_evaluation_figure
+from feedbax.persistence.database import EvaluationRecord, add_evaluation_figure
 from feedbax.misc import (
     camel_to_snake,
     deep_merge,
@@ -61,8 +61,8 @@ from feedbax.misc import (
     get_origin_type,
     is_json_serializable,
 )
-from feedbax.plot_utils import figs_flatten_with_paths, savefig
-from feedbax.tree_utils import (
+from feedbax.plot.utils import figs_flatten_with_paths, savefig
+from feedbax.config.tree import (
     DoNotHashTree,
     _align_trees_to_structure,
     _hash_pytree,

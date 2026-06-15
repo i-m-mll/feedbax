@@ -30,7 +30,7 @@ from feedbax.contracts.manifest import (
     analysis_run_manifest_id,
     load_manifest,
 )
-from feedbax.manifest_index import rebuild_manifest_index
+from feedbax.persistence.manifest_index import rebuild_manifest_index
 from tests.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
     ToyAnalysis,
