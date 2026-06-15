@@ -20,8 +20,8 @@ from feedbax.analysis.analysis import (
     Data,
     InputOf,
 )
+from feedbax.analysis.types import AnalysisInputData
 from feedbax.config.tree import getitem_at_level
-from feedbax.types import AnalysisInputData
 
 
 class TanglingPorts(AbstractAnalysisPorts):

@@ -27,7 +27,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 from feedbax.persistence.manifest_index import iter_manifest_files
-from feedbax.types import AnalysisInputData
+from feedbax.analysis.types import AnalysisInputData
 
 
 @dataclass(frozen=True)

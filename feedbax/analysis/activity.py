@@ -8,14 +8,15 @@ import numpy as np
 import plotly.graph_objects as go
 from equinox import field
 from feedbax.models.feedback import SimpleFeedbackState
-from jax_cookbook import is_type
+from jax_cookbook import LDict, is_type
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.analysis.types import AnalysisInputData
+from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.pca import PCA
 from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.plot.utils import calculate_array_minmax, get_label_str
-from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 
 
 def activity_sample_units(

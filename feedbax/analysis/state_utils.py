@@ -12,13 +12,13 @@ from equinox import filter_vmap as vmap
 from feedbax.intervene import is_intervenor
 from feedbax.tasks import AbstractTask
 from jax import lax
-from jax_cookbook import MaskedArray, is_module, is_type
+from jax_cookbook import LDict, MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import get_validation_trial_specs
+from feedbax.config.namespace import TreeNamespace
 from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.misc import dynamic_slice_with_padding
-from feedbax.types import LDict, TreeNamespace
 
 
 def angle_between_vectors(v2, v1):

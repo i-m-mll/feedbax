@@ -34,6 +34,7 @@ import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.tasks import AbstractTask
 from jax_cookbook import (
+    LDict,
     LDictConstructor,
     MaskedArray,
     anyf,
@@ -49,6 +50,7 @@ from jaxtyping import Array, ArrayLike, PyTree
 from sqlalchemy.orm import Session
 
 from feedbax.config import PATHS, STRINGS
+from feedbax.config.namespace import TreeNamespace
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.persistence.database import EvaluationRecord, add_evaluation_figure
 from feedbax.misc import (
@@ -72,11 +74,7 @@ from feedbax.config.tree import (
     subdict,
     tree_level_labels,
 )
-from feedbax.types import (
-    AnalysisInputData,
-    LDict,
-    TreeNamespace,
-)
+from feedbax.analysis.types import AnalysisInputData
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar

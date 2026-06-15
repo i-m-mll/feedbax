@@ -2,7 +2,7 @@ from typing import Optional
 
 from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
-from feedbax.types import TreeNamespace
+from feedbax.config.namespace import TreeNamespace
 
 from .batch import load_batch_config
 from .config import (
@@ -66,6 +66,7 @@ __all__ = [
     "PLOTLY_CONFIG",
     "PRNG_CONFIG",
     "STRINGS",
+    "TreeNamespace",
     "load_config",
     "load_config_as_ns",
     "load_batch_config",

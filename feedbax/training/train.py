@@ -34,14 +34,15 @@ from feedbax.persistence.database import (
     save_model_and_add_record,
 )
 from feedbax.config.hyperparams import config_to_hps, flatten_hps
+from feedbax.config.namespace import TreeNamespace, namespace_to_dict
+from feedbax.config.tree import pp
 from feedbax.misc import (
     GracefulInterruptHandler,
     GracefulStopRequested,
     log_version_info,
 )
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.config.tree import pp
-from feedbax.types import TaskModelPair, TreeNamespace, namespace_to_dict
+from feedbax.training.types import TaskModelPair
 
 from .loss import get_readout_norm_loss
 from .post_training import process_model_post_training

@@ -9,14 +9,15 @@ import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objects as go
 from equinox import Module
-from jax_cookbook import is_type
+from jax_cookbook import LDict, is_type
 from jaxtyping import Array, PyTree
 
+from feedbax.analysis.types import AnalysisInputData
+from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.aligned import AlignedVars, get_varset_labels
 from feedbax.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
 from feedbax.plot.utils import get_label_str
 from feedbax.config.tree import move_ldict_level_above, tree_level_labels
-from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 
 
 class ProfilesPorts(AbstractAnalysisPorts):

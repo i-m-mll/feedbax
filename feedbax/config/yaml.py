@@ -3,8 +3,7 @@ from enum import Enum
 from pathlib import Path
 
 from ruamel.yaml import YAML, nodes
-
-from feedbax.types import Direction, LDict, ResponseVar
+from jax_cookbook import LDict
 
 
 class _YamlLiteral:
@@ -67,8 +66,6 @@ def _yaml_include_constructor(loader, node):
 
 REPRESENTERS: dict[type, Callable] = {
     LDict: _ldict_representer,
-    Direction: _represent_enum,
-    ResponseVar: _represent_enum,
     object: _represent_undefined,
 }
 
@@ -82,11 +79,21 @@ MULTI_CONSTRUCTORS: dict[str, Callable] = {
 }
 
 
+def _iter_representers():
+    yield from REPRESENTERS.items()
+    try:
+        from feedbax.analysis.types import Direction, ResponseVar
+    except (ImportError, AttributeError):
+        return
+    yield Direction, _represent_enum
+    yield ResponseVar, _represent_enum
+
+
 def get_yaml_loader(typ="safe") -> YAML:
     """Returns a ruamel.yaml.YAML instance with representers and constructors for custom types."""
     yaml = YAML(typ=typ)
     yaml.default_flow_style = None
-    for type_, representer in REPRESENTERS.items():
+    for type_, representer in _iter_representers():
         yaml.representer.add_representer(type_, representer)
     for tag, constructor in CONSTRUCTORS.items():
         yaml.constructor.add_constructor(tag, constructor)

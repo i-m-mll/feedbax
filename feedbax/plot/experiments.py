@@ -15,7 +15,7 @@ from jax_cookbook import is_type
 from jaxtyping import Array, Bool, Float, PyTree
 from sklearn.decomposition import PCA
 
-from feedbax.types import LDict
+from jax_cookbook import LDict
 
 
 def add_endpoint_traces(

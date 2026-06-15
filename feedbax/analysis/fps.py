@@ -9,9 +9,11 @@ import jax.random as jr
 import jax.tree as jt
 import plotly.graph_objects as go
 from equinox import field
+from jax_cookbook import LDict
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 from optax import GradientTransformation
 
+from feedbax.analysis.types import AnalysisInputData
 from feedbax.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
@@ -24,7 +26,6 @@ from feedbax.analysis.fp_finder import (
 from feedbax.analysis.pca import PCAResults, StatesPCA
 from feedbax.plot.experiments import plot_fp_pcs
 from feedbax.config.tree import ldict_level_to_bottom
-from feedbax.types import AnalysisInputData, LDict
 
 T = TypeVar("T")
 
