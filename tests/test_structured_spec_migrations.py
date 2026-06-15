@@ -12,7 +12,7 @@ from feedbax.contracts.migrations import (
     default_spec_registry,
     migrate_studio_task_binding_spec,
 )
-from feedbax.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
+from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
 from feedbax.objectives.spec import validate_objective_spec
 

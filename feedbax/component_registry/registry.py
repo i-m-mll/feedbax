@@ -77,7 +77,7 @@ class ComponentRegistry:
     def _register_builtins(self) -> None:
         with _registration_provenance("feedbax"):
             register_builtin_components(self)
-        from feedbax.serialization_builders import register_builtin_component_builders
+        from feedbax.contracts.graphs.builders import register_builtin_component_builders
 
         register_builtin_component_builders(self)
 

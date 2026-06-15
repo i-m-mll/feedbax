@@ -5,15 +5,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from feedbax.execution import (
+from feedbax.cloud_backends import render_modal_app
+from feedbax.execution_models import (
     ExecutionCell,
     ExecutionSpec,
     RepoSource,
+)
+from feedbax.execution_plan import (
     default_feedbax_sources,
     prepare_execution_plan,
-    render_modal_app,
-    run_local_execution,
 )
+from feedbax.local_execution import run_local_execution
 from feedbax.integrations.provider import provider_manifest
 from feedbax.web.app import create_app
 

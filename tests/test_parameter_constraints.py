@@ -9,9 +9,9 @@ import pytest
 from feedbax._mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.runtime.graph import Graph
-from feedbax.graph_templates import network_template_graph, recurrent_controller_template_graph
+from feedbax.contracts.graphs.templates import network_template_graph, recurrent_controller_template_graph
 from feedbax.objectives.loss import AbstractLoss
-from feedbax.nn import (
+from feedbax.models.networks import (
     MaskedLinear,
     POPULATION_STRUCTURE_SCHEMA_ID,
     POPULATION_STRUCTURE_SCHEMA_VERSION,
@@ -23,7 +23,7 @@ from feedbax.nn import (
     population_structure_from_spec,
 )
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
-from feedbax.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.tasks import AbstractTask, TaskInterventionSpecs, TaskTrialSpec, TrialSpecDependency
 from feedbax.training.trainer import TaskTrainer
 

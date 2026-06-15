@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import feedbax.serialization as serialization
+import feedbax.contracts.graphs.serialization as serialization
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,

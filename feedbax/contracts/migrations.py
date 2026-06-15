@@ -31,7 +31,7 @@ from feedbax.contracts.retention_artifact_schema import (
     RETENTION_POLICY_PLAN_SCHEMA_ID,
     RETENTION_POLICY_PLAN_SCHEMA_VERSION,
 )
-from feedbax.schema_namespace import (
+from feedbax.contracts.schema_namespace import (
     SchemaNamespaceKind,
     validate_schema_identity,
     validate_schema_version,
@@ -1054,7 +1054,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             GRAPH_SPEC_SCHEMA_VERSION,
             owner_module="feedbax.contracts.graph",
             emitted_by=("Studio canvas save/load", "provider_manifest.schemas"),
-            consumed_by=("feedbax.serialization.spec_to_graph", "Studio backend", "worker"),
+            consumed_by=(
+                "feedbax.contracts.graphs.serialization.spec_to_graph",
+                "Studio backend",
+                "worker",
+            ),
             description="Canvas-authored executable graph specification.",
             stance="migrate",
             supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION,),
@@ -1083,7 +1087,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "PopulationStructureSpec",
             "feedbax.spec.population_structure",
             "feedbax.spec.population_structure.v1",
-            owner_module="feedbax.nn",
+            owner_module="feedbax.models.networks",
             emitted_by=("PopulationStructure.to_spec", "GraphSpec node params"),
             consumed_by=("population_structure_from_spec", "serialization_builders"),
             description="Reusable nested spec for hidden-unit population assignments.",

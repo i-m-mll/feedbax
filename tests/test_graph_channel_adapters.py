@@ -13,7 +13,7 @@ from feedbax.contracts.graph import (
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.integrations.provider import validate_graph_spec
-from feedbax.serialization import spec_to_graph
+from feedbax.contracts.graphs.serialization import spec_to_graph
 
 
 def test_additive_channel_adapter_spec_round_trips_named_channel_metadata() -> None:

@@ -16,7 +16,7 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
-from feedbax.noise import Normal
+from feedbax.runtime.noise import Normal
 from feedbax._tree import random_split_like_tree
 
 

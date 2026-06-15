@@ -12,7 +12,7 @@ from equinox import Module
 from jax import Array
 from jaxtyping import PRNGKeyArray, Scalar
 
-from feedbax.dynamics import AbstractDynamicalSystem, LinearSystem
+from feedbax.mechanics.dynamics import AbstractDynamicalSystem, LinearSystem
 from feedbax.runtime.state import CartesianState
 
 

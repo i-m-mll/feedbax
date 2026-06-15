@@ -7,7 +7,7 @@ import json
 import uuid
 
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
-from feedbax.graph_normalization import (
+from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,

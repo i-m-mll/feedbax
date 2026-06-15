@@ -54,7 +54,7 @@ from feedbax.misc import get_unique_label
 from feedbax.runtime.state import State
 
 if TYPE_CHECKING:
-    from feedbax.bodies import SimpleFeedbackState
+    from feedbax.models.feedback import SimpleFeedbackState
     from feedbax.tasks import TaskTrialSpec
 
 

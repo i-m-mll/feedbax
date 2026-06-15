@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 import jax_cookbook.tree as jtree
-from feedbax.noise import Multiplicative, Normal
+from feedbax.runtime.noise import Multiplicative, Normal
 from jax_cookbook import is_module, is_type
 from sqlalchemy.orm import Session
 

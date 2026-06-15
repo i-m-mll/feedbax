@@ -35,7 +35,7 @@ from feedbax.contracts.graph import (
     StudioTaskDataSpec,
 )
 from feedbax.contracts.training import TrainingSpec
-from feedbax.serialization import prototypes_from_task_bindings, spec_to_graph
+from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings, spec_to_graph
 
 
 _DEFAULT_TRAINABLE_COMPONENT_TYPES = {

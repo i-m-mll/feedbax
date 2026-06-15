@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
-from feedbax.nn import (
+from feedbax.models.networks import (
     PopulationStructure,
     lower_population_constraints,
     population_structure_from_spec,

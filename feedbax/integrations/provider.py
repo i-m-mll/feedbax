@@ -50,7 +50,7 @@ from feedbax.objectives.spec import (
     objective_schema_models,
     validate_objective_spec as _validate_objective_spec,
 )
-from feedbax.execution import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+from feedbax.execution_models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
@@ -980,7 +980,7 @@ def _schema_issues_to_provider(
 
 
 def validate_graph_spec(payload: dict[str, Any] | GraphSpec) -> ProviderValidationResult:
-    from feedbax.graph_normalization import normalize_graph_for_studio_authoring
+    from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
     from feedbax.component_registry import ComponentRegistry
 
     migration_records: list[ArtifactMigrationRecord] = []

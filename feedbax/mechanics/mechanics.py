@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.dynamics import LinearSystem
+from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.backend import PhysicsBackend, PhysicsState
 from feedbax.mechanics.plant import AbstractPlant, PlantState

@@ -11,7 +11,7 @@ from feedbax._io import load, load_with_hyperparameters, save
 from feedbax._mapping import WhereDict
 from feedbax.runtime.selectors import Selection, select
 from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
-from feedbax.graph_templates import (
+from feedbax.contracts.graphs.templates import (
     BUILTIN_GRAPH_TEMPLATES,
     GraphTemplateMetadata,
     network_template_graph,
@@ -46,7 +46,7 @@ from feedbax._tree import (
     tree_unzip,
     tree_zip,
 )
-from feedbax.nn_cde import CDENetwork, CDENetworkState
+from feedbax.models.cde import CDENetwork, CDENetworkState
 from feedbax.intervene import is_intervenor
 from feedbax.objectives.loss import is_termtree
 from feedbax.misc import is_module

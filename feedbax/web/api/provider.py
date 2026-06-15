@@ -17,7 +17,8 @@ from feedbax.integrations.provider import (
     registry_snapshot,
     validate_spec,
 )
-from feedbax.execution import ExecutionPlan, ExecutionSpec, prepare_execution_plan
+from feedbax.execution_models import ExecutionPlan, ExecutionSpec
+from feedbax.execution_plan import prepare_execution_plan
 from feedbax.studio.schema import (
     StudioSchemaEnumerationRequest,
     StudioSchemaRegistry,

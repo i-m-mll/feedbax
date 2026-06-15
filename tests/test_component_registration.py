@@ -18,7 +18,7 @@ from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.runtime.graph import Component
-from feedbax.serialization import spec_to_graph
+from feedbax.contracts.graphs.serialization import spec_to_graph
 
 
 class _PrototypeSource(Component):
