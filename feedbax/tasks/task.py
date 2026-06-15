@@ -38,10 +38,11 @@ import jax.tree as jt
 import numpy as np
 import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]
 from equinox import AbstractVar, Module, field
+from jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
-from feedbax._mapping import WhereDict
-from feedbax._tree import is_type, tree_call, tree_call_with_keys
+from feedbax.config.mapping import WhereDict
+from feedbax.tasks._tree import tree_call, tree_call_with_keys
 from feedbax.runtime.graph import Component, Graph, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.intervene import (
@@ -55,7 +56,7 @@ from feedbax.objectives.loss import (
     TermTree,
     power_discount,
 )
-from feedbax.misc import BatchInfo, is_module, is_none
+from feedbax.misc import BatchInfo
 from feedbax.runtime.state import CartesianState, StateT
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 

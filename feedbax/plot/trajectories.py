@@ -3,6 +3,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Optional, TypeGuard, ValuesView
 
 import jax.tree as jt
+import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.express as px
 import plotly.graph_objs as go
@@ -12,7 +13,6 @@ from plotly.basedatatypes import BaseTraceType
 from plotly.colors import convert_colors_to_same_type, sample_colorscale
 from plotly.subplots import make_subplots
 
-from feedbax import tree_labels
 from feedbax.models.feedback import SimpleFeedbackState
 from feedbax.misc import where_func_to_attr_str_tree
 from feedbax.plot.colors import _compute_colors, arr_to_rgb
@@ -466,9 +466,9 @@ def trajectories[T](
         "subplots_data",
         subplot_titles,
         arg_label="subplot_titles",
-        #! The `leaves(tree_labels(...))` here will always just be range(len(vars_))
+        #! The `leaves(jtree.labels(...))` here will always just be range(len(vars_))
         #! so long as we're only dealing in sequence-likes
-        default_fn=lambda vars_: [f"<b>{label}</b>" for label in jt.leaves(tree_labels(vars_))],
+        default_fn=lambda vars_: [f"<b>{label}</b>" for label in jt.leaves(jtree.labels(vars_))],
         leaf_type=str,
     )
 

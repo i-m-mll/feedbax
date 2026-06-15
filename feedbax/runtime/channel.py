@@ -13,11 +13,11 @@ from equinox import Module, field
 from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 import jax.tree as jt
+import jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
 from feedbax.runtime.noise import Normal
-from feedbax._tree import random_split_like_tree
 
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ class Channel(Component):
         if self.add_noise and self.noise_func is not None:
             noise = jt.map(
                 self.noise_func,
-                random_split_like_tree(key, output),
+                jtree.random_split_like_tree(key, output),
                 output,
             )
             output = jt.map(lambda x, y: x + y, output, noise)

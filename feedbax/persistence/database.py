@@ -978,7 +978,7 @@ def load_tree_with_hps(
     setup_tree_fn: Callable,
     **kwargs,
 ) -> tuple[PyTree, TreeNamespace]:
-    """Similar to `feedbax.load_with_hyperparameters, but for namespace-based hyperparameters"""
+    """Similar to cookbook tree loading, but for namespace-based hyperparameters."""
     yaml = get_yaml_loader(typ="safe")
     with open(path, "rb") as f:
         hps_dict = yaml.load(_read_until_special(f, chr(STRINGS.serialisation.sep_chr)))

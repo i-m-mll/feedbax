@@ -1,5 +1,3 @@
 # Serialisation
 
-::: feedbax.save
-
-::: feedbax.load
+Generic Equinox tree save/load helpers live in `jax_cookbook._io`.

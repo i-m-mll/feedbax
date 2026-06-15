@@ -55,7 +55,7 @@ from jax_cookbook import is_type
 from jax_cookbook._func import wrap_to_accept_var_kwargs
 from jaxtyping import Array, ArrayLike, Float, Int, PyTree, Shaped
 
-from feedbax._progress import _tqdm_write
+from jax_cookbook.progress import _tqdm_write
 # Lazy import to avoid circular dependency
 # from feedbax.config.yaml import get_yaml_loader
 

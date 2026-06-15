@@ -22,7 +22,6 @@ from feedbax.runtime.filters import FilterState, FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
 from feedbax.mechanics import Mechanics, MechanicsState
 from feedbax.runtime.noise import Normal
-from feedbax._tree import tree_sum_n_features
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask
@@ -31,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T")
+
+
+def _tree_sum_n_features(tree: PyTree[Array]) -> int:
+    return jt.reduce(lambda x, y: x + y, jt.map(lambda x: x.shape[-1], tree))
 
 
 class SimpleFeedbackState(Module):
@@ -286,7 +289,7 @@ class SimpleFeedback(Graph):
             _convert_feedback_spec(feedback_spec),
             is_leaf=lambda x: isinstance(x, ChannelSpec),
         )
-        n_feedback = tree_sum_n_features(example_feedback)
+        n_feedback = _tree_sum_n_features(example_feedback)
         example_trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
-        n_task_inputs = tree_sum_n_features(example_trial_spec.inputs)
+        n_task_inputs = _tree_sum_n_features(example_trial_spec.inputs)
         return n_feedback + n_task_inputs

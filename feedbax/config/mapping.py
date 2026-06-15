@@ -1,4 +1,4 @@
-"""Custom mapping classes.
+"""Selector/config-facing custom mapping classes.
 
 :copyright: Copyright 2023-2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0, see LICENSE for details.
@@ -243,6 +243,5 @@ class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T])
     def __repr__(self) -> str:
         # now just forward to your own indent‐printer
         return self._repr_with_indent(0)
-
 
 

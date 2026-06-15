@@ -4,7 +4,7 @@ import jax.numpy as jnp
 
 import equinox as eqx
 
-from feedbax._mapping import WhereDict
+from feedbax.config.mapping import WhereDict
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.intervene import TimeSeriesParam
 from feedbax.objectives.loss import AbstractLoss

@@ -1,36 +1,10 @@
 # PyTree operations
 
-Feedbax collects a few convenient functions which operate on PyTrees, and which are not provided by its dependencies.
+Generic PyTree helpers live in `jax_cookbook.tree`. Feedbax keeps only task-specific
+callable evaluation helpers locally.
 
-## Indexing and assignment
+## Task callable evaluation
 
-::: feedbax.tree_take
+::: feedbax.tasks._tree.tree_call
 
-::: feedbax.tree_set
-
-## Mapping, unzipping, and stacking
-
-::: feedbax.get_ensemble
-
-::: feedbax.tree_unzip
-
-::: feedbax.tree_map_tqdm
-
-::: feedbax.tree_call
-
-::: feedbax.tree_stack
-
-## Leaf labels
-
-::: feedbax.tree_labels
-
-## Random keys
-
-::: feedbax.random_split_like_tree
-
-## Memory usage
-
-::: feedbax.tree_array_bytes
-
-::: feedbax.tree_struct_bytes
-
+::: feedbax.tasks._tree.tree_call_with_keys
