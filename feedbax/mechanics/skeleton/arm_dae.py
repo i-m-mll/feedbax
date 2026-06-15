@@ -26,7 +26,7 @@ import optimistix as optx
 from feedbax.mechanics.dae import DAEComponent, DAEParams
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.runtime.state import CartesianState
-from feedbax.misc import SINCOS_GRAD_SIGNS
+from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
 
 
 logger = logging.getLogger(__name__)

@@ -18,7 +18,7 @@ import numpy as np
 import optax
 from jax_cookbook import arrays_to_lists
 from feedbax.objectives.loss import AbstractLoss
-from feedbax.misc import attr_str_tree_to_where_func
+from feedbax.config.selectors import attr_str_tree_to_where_func
 from feedbax.tasks import AbstractTask
 from feedbax.training.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -34,7 +34,7 @@ from feedbax.persistence.database import (
     save_model_and_add_record,
 )
 from feedbax.config.hyperparams import config_to_hps, flatten_hps
-from feedbax.misc import (
+from feedbax.training.support import (
     GracefulInterruptHandler,
     GracefulStopRequested,
     log_version_info,

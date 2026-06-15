@@ -16,7 +16,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.state_utils import output_corr
-from feedbax.misc import center_and_rescale, ravel_except_last
+from feedbax.analysis.math import center_and_rescale, ravel_except_last
 from feedbax.plot.experiments import get_violins
 from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 

@@ -19,7 +19,7 @@ import jax.tree_util as jtu
 import jax.tree as jt
 from jaxtyping import Array, PyTree
 
-from feedbax.misc import unzip2, where_func_to_attr_str_tree
+from feedbax.config.selectors import unzip2, where_func_to_attr_str_tree
 
 
 logger = logging.getLogger(__name__)
@@ -243,5 +243,4 @@ class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T])
     def __repr__(self) -> str:
         # now just forward to your own indent‐printer
         return self._repr_with_indent(0)
-
 

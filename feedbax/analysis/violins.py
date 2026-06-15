@@ -11,7 +11,7 @@ from feedbax.analysis.analysis import (
     AbstractAnalysisPorts,
     InputOf,
 )
-from feedbax.misc import deep_merge
+from feedbax.config.utils import deep_merge
 from feedbax.plot.experiments import get_violins
 from feedbax.plot.utils import get_label_str
 from feedbax.config.tree import (

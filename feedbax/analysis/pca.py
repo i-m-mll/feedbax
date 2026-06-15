@@ -8,7 +8,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 from equinox import Module
 from feedbax.models.feedback import SimpleFeedbackState
-from feedbax.misc import batch_reshape, nan_bypass
+from feedbax.analysis.transforms import batch_reshape, nan_bypass
 from jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 from sklearn.decomposition import PCA

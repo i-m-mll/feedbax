@@ -16,7 +16,6 @@ import jax.random as jr
 import jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
-# from feedbax.misc import _simple_module_pprint
 
 
 logger = logging.getLogger(__name__)

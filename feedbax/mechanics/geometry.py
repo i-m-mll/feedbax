@@ -19,10 +19,19 @@ import logging
 from equinox import Module, field
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 from jaxtyping import Array, Float
 
 
 logger = logging.getLogger(__name__)
+
+SINCOS_GRAD_SIGNS = jnp.array([(1, 1), (1, -1), (-1, -1), (-1, 1)])
+
+
+def corners_2d(bounds: Float[Array, "2 xy=2"]):
+    """Generate the corners of a rectangle from its bounds."""
+    xy = jt.map(jnp.ravel, jnp.meshgrid(*bounds.T))
+    return jnp.vstack(xy)
 
 
 # ============================================================================

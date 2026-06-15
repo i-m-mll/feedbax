@@ -50,7 +50,7 @@ from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax.config.mapping import WhereDict
 from feedbax.runtime.graph import Component
-from feedbax.misc import get_unique_label
+from feedbax.config.utils import get_unique_label
 from feedbax.runtime.state import State
 
 if TYPE_CHECKING:

@@ -20,7 +20,7 @@ from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
-from feedbax.misc import (
+from feedbax.models.support import (
     identity_func,
     interleave_unequal,
     n_positional_args,

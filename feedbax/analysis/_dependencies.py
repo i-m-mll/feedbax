@@ -40,7 +40,7 @@ from feedbax.analysis.analysis import (
     _FinalOp,
     _format_dict_of_params,
 )
-from feedbax.misc import get_md5_hexdigest
+from feedbax.persistence.support import get_md5_hexdigest
 from feedbax.types import AnalysisInputData
 
 logger = logging.getLogger(__name__)
