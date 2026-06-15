@@ -152,11 +152,11 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
         from feedbax.contracts import manifest
         from feedbax.contracts import migrations
         from feedbax.contracts import retention_artifact_schema
-        from feedbax.cloud_backends import render_modal_app
-        from feedbax.execution_models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
-        from feedbax.execution_plan import default_feedbax_sources, prepare_execution_plan
+        from feedbax.execution.backends import render_modal_app
+        from feedbax.execution.models import ExecutionPlan, ExecutionSpec, LocalExecutionResult
+        from feedbax.execution.planning import default_feedbax_sources, prepare_execution_plan
         from feedbax.integrations import provider
-        from feedbax.local_execution import run_local_execution
+        from feedbax.execution.local import run_local_execution
         from feedbax.studio import execution as studio_execution
         from feedbax.studio import protocol as studio_protocol
         from feedbax.studio import schema as studio_schema
@@ -166,10 +166,10 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
             "feedbax.contracts.manifest",
             "feedbax.contracts.migrations",
             "feedbax.contracts.retention_artifact_schema",
-            "feedbax.cloud_backends",
-            "feedbax.execution_models",
-            "feedbax.execution_plan",
-            "feedbax.local_execution",
+            "feedbax.execution.backends",
+            "feedbax.execution.models",
+            "feedbax.execution.planning",
+            "feedbax.execution.local",
             "feedbax.integrations.provider",
             "feedbax.studio.execution",
             "feedbax.studio.protocol",
@@ -204,15 +204,15 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
     )
 
     assert payload["modules"] == [
-        "feedbax.cloud_backends",
         "feedbax.contracts.artifact_schema",
         "feedbax.contracts.manifest",
         "feedbax.contracts.migrations",
         "feedbax.contracts.retention_artifact_schema",
-        "feedbax.execution_models",
-        "feedbax.execution_plan",
+        "feedbax.execution.backends",
+        "feedbax.execution.local",
+        "feedbax.execution.models",
+        "feedbax.execution.planning",
         "feedbax.integrations.provider",
-        "feedbax.local_execution",
         "feedbax.studio.execution",
         "feedbax.studio.protocol",
         "feedbax.studio.schema",
@@ -226,13 +226,13 @@ def test_canonical_contract_studio_provider_and_execution_imports() -> None:
     assert payload["prepare_studio_training_execution"] == "feedbax.studio.execution"
     assert payload["parse_positive_n_steps"] == "feedbax.studio.protocol"
     assert payload["enumerate_studio_schema_registry"] == "feedbax.studio.schema"
-    assert payload["ExecutionPlan"] == "feedbax.execution_models"
-    assert payload["ExecutionSpec"] == "feedbax.execution_models"
-    assert payload["LocalExecutionResult"] == "feedbax.execution_models"
-    assert payload["default_feedbax_sources"] == "feedbax.execution_plan"
-    assert payload["prepare_execution_plan"] == "feedbax.execution_plan"
-    assert payload["render_modal_app"] == "feedbax.cloud_backends"
-    assert payload["run_local_execution"] == "feedbax.local_execution"
+    assert payload["ExecutionPlan"] == "feedbax.execution.models"
+    assert payload["ExecutionSpec"] == "feedbax.execution.models"
+    assert payload["LocalExecutionResult"] == "feedbax.execution.models"
+    assert payload["default_feedbax_sources"] == "feedbax.execution.planning"
+    assert payload["prepare_execution_plan"] == "feedbax.execution.planning"
+    assert payload["render_modal_app"] == "feedbax.execution.backends"
+    assert payload["run_local_execution"] == "feedbax.execution.local"
 
 
 def test_residual_root_compatibility_facades_are_absent() -> None:
@@ -243,6 +243,9 @@ def test_residual_root_compatibility_facades_are_absent() -> None:
 
         obsolete_facades = [
             "feedbax.artifact_schema",
+            "feedbax.cloud_backends",
+            "feedbax.execution_models",
+            "feedbax.execution_plan",
             "feedbax.manifest",
             "feedbax.migrations",
             "feedbax.provider",
@@ -250,7 +253,7 @@ def test_residual_root_compatibility_facades_are_absent() -> None:
             "feedbax.studio_execution",
             "feedbax.studio_protocol",
             "feedbax.studio_schema",
-            "feedbax.execution",
+            "feedbax.local_execution",
         ]
         facade_specs = {
             module_name: importlib.util.find_spec(module_name) is not None
