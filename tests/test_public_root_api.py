@@ -13,7 +13,7 @@ def test_generic_tree_and_io_helpers_are_not_package_root_exports() -> None:
 def test_root_support_helper_modules_are_removed() -> None:
     assert importlib.util.find_spec("feedbax.tree_utils") is None
     assert importlib.util.find_spec("feedbax.setup_utils") is None
-    assert importlib.util.find_spec("feedbax.analysis.tree") is not None
+    assert importlib.util.find_spec("feedbax.config.tree") is not None
     assert importlib.util.find_spec("feedbax.analysis.setup") is not None
 
 

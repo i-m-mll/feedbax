@@ -20,7 +20,7 @@ from feedbax.analysis.analysis import (
     Data,
     InputOf,
 )
-from feedbax.analysis.tree import getitem_at_level
+from feedbax.config.tree import getitem_at_level
 from feedbax.types import AnalysisInputData
 
 

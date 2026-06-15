@@ -28,7 +28,7 @@ from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.hyperparams import flat_key_to_where_fn
 from feedbax.plot.experiments import set_axes_bounds_equal
 from feedbax.plot.utils import get_label_str
-from feedbax.analysis.tree import ldict_level_to_bottom
+from feedbax.config.tree import ldict_level_to_bottom
 from feedbax.types import AnalysisInputData, LDict
 
 logger = logging.getLogger(__name__)

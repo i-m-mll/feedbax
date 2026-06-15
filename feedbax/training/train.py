@@ -40,7 +40,7 @@ from feedbax.misc import (
     log_version_info,
 )
 from feedbax.plugins import EXPERIMENT_REGISTRY
-from feedbax.analysis.tree import pp
+from feedbax.config.tree import pp
 from feedbax.types import TaskModelPair, TreeNamespace, namespace_to_dict
 
 from .loss import get_readout_norm_loss

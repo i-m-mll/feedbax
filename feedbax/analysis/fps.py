@@ -23,7 +23,7 @@ from feedbax.analysis.fp_finder import (
 )
 from feedbax.analysis.pca import PCAResults, StatesPCA
 from feedbax.plot.experiments import plot_fp_pcs
-from feedbax.analysis.tree import ldict_level_to_bottom
+from feedbax.config.tree import ldict_level_to_bottom
 from feedbax.types import AnalysisInputData, LDict
 
 T = TypeVar("T")
