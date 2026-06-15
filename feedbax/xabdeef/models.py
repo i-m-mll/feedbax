@@ -15,7 +15,6 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
-from feedbax import get_ensemble
 from feedbax.models.feedback import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.misc import identity_func

@@ -16,7 +16,7 @@ import jax.tree as jt
 import jax_cookbook.tree as jtree
 import numpy as np
 import optax
-from feedbax._io import arrays_to_lists
+from jax_cookbook import arrays_to_lists
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.misc import attr_str_tree_to_where_func
 from feedbax.tasks import AbstractTask

@@ -12,7 +12,7 @@ import equinox as eqx
 from jaxtyping import PRNGKeyArray
 import optax  # type: ignore
 
-from feedbax import get_ensemble
+import jax_cookbook.tree as jtree
 from feedbax.runtime.graph import Component
 from feedbax.tasks import AbstractTask, SimpleReaches
 from feedbax.training.trainer import TaskTrainer, TaskTrainerHistory
@@ -154,7 +154,7 @@ def point_mass_nn_simple_reaches(
         )
         ensembled = False
     elif n_replicates > 1:
-        model = get_ensemble(
+        model = jtree.get_ensemble(
             point_mass_nn,
             task,
             n_steps=n_steps,

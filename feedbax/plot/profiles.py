@@ -10,8 +10,6 @@ import plotly.graph_objs as go
 from jaxtyping import Array, Float, PyTree
 from plotly.colors import convert_colors_to_same_type
 
-from feedbax import tree_labels
-from feedbax._tree import tree_prefix_expand, tree_zip
 from feedbax.plot.colors import (
     DEFAULT_COLORS,
     color_add_alpha,
@@ -80,10 +78,10 @@ def profiles(
             is_leaf=is_leaf_ma,
         )
     else:
-        timesteps = tree_prefix_expand(timesteps, vars_, is_leaf=is_leaf_ma)
+        timesteps = jtree.prefix_expand(timesteps, vars_, is_leaf=is_leaf_ma)
 
     if labels is None:
-        labels = tree_labels(vars_, is_leaf=is_leaf_ma)
+        labels = jtree.labels(vars_, is_leaf=is_leaf_ma)
 
     batch_axes = jt.map(
         lambda x: tuple(range((x.data if isinstance(x, MaskedArray) else x).ndim - 1)),
@@ -96,7 +94,7 @@ def profiles(
         mean_axes = jt.map(
             lambda axes, axis: tuple(ax for ax in axes if ax != axis),
             batch_axes,
-            tree_prefix_expand(keep_axis, vars_, is_leaf=is_leaf_ma),
+            jtree.prefix_expand(keep_axis, vars_, is_leaf=is_leaf_ma),
             is_leaf=lambda x: isinstance(x, tuple) and eqx.is_array_like(x[0]),
         )
 
@@ -214,7 +212,7 @@ def profiles(
 
     # Treat MaskedArray as a leaf and tuples as leaves when flattening for plotting
     plot_data = jt.leaves(
-        tree_zip(vars_flat, means, ubs, lbs, timesteps, labels, is_leaf=is_leaf_ma),
+        jtree.zip_(vars_flat, means, ubs, lbs, timesteps, labels, is_leaf=is_leaf_ma),
         is_leaf=lambda x: isinstance(x, tuple) or isinstance(x, MaskedArray),
     )
 

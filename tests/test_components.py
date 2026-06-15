@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import equinox as eqx
 import pytest
 
-from feedbax._tree import filter_spec_leaves
+from jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component

@@ -2,7 +2,8 @@
 import jax.random as jr
 import optax
 
-from feedbax import get_ensemble, save
+import jax_cookbook.tree as jtree
+from jax_cookbook import save
 from feedbax.tasks import SimpleReaches
 from feedbax.training.trainer import TaskTrainer
 from feedbax.xabdeef.losses import simple_reach_loss
@@ -31,7 +32,7 @@ def setup(
         n_steps=n_steps,
     )
 
-    models = get_ensemble(
+    models = jtree.get_ensemble(
         point_mass_nn,
         task,  # We need to pass anything we would need to pass to `point_mass_nn`
         dt=dt,  # We can also pass keyword arguments that `point_mass_nn` accepts

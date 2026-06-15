@@ -3,13 +3,12 @@ from typing import Any, Literal, NamedTuple, Optional, TypeAlias, TypeGuard, Typ
 
 import equinox as eqx
 import jax.tree as jt
+import jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objs as go
 import polars as pl
 from jaxtyping import Array, PyTree, Shaped
 from plotly.basedatatypes import BaseTraceType
-
-from feedbax import tree_labels
 
 AggMode: TypeAlias = Literal["standard", "circular"]
 
@@ -109,7 +108,7 @@ def tree_of_2d_timeseries_to_df(
     arrays_flat = map(np.array, jt.leaves(eqx.filter(tree, array_spec)))
 
     if labels is None:
-        labels = tree_labels(tree, join_with=" ")
+        labels = jtree.labels(tree, join_with=" ")
 
     labels_flat = jt.leaves(eqx.filter(labels, array_spec))
 
