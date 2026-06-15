@@ -38,8 +38,8 @@ from feedbax.training.train import (
     train_and_save,
     train_and_save_from_config,
 )
+from feedbax.config.namespace import TreeNamespace
 from feedbax.config.tree import filter_varying_leaves
-from feedbax.types import TreeNamespace
 
 logger = logging.getLogger(os.path.basename(__file__))
 

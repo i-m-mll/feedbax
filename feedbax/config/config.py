@@ -18,7 +18,7 @@ from ruamel.yaml import YAML
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.config.utils import deep_merge
 from feedbax.plugins.registry import ExperimentRegistry
-from feedbax.types import TreeNamespace, dict_to_namespace
+from feedbax.config.namespace import TreeNamespace, dict_to_namespace
 
 logger = logging.getLogger(__name__)
 

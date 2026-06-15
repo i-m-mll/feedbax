@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import importlib
 import warnings
 
 import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.figure as mplfig
 
+from feedbax.analysis.types import AnalysisInputData
 from feedbax.analysis.dimred import PCAResults, pca
 from feedbax.config.defaults import get_iterations_to_save_model_parameters
 from feedbax.config.hyperparams import flat_key_to_where_fn, flatten_hps
 from feedbax.config.logging import BacktickPathHighlighter, enable_logging_handlers
+from feedbax.config.namespace import TreeNamespace
 from feedbax.config.warnings import enable_warning_dedup
 from feedbax.intervene.perturbations import feedback_impulse
 from feedbax.plot.utils import get_label_str, savefig
 from feedbax.training.environment import EnvironmentProtocol, EnvironmentStep
-from feedbax.types import TreeNamespace
 
 
 def test_plot_utils_label_and_matplotlib_save(tmp_path):
@@ -48,6 +50,33 @@ def test_hyperparams_and_defaults_import_from_config_home():
         10,
         20,
     ]
+
+
+def test_tree_namespace_merge_and_update_none_leaves():
+    base = TreeNamespace(train=TreeNamespace(batch_size=None, n_batches=10))
+    source = TreeNamespace(train=TreeNamespace(batch_size=32))
+
+    updated = base.update_none_leaves(source)
+    merged = updated | {"train": {"n_batches": 20}}
+
+    assert updated.train.batch_size == 32
+    assert merged.train.batch_size == 32
+    assert merged.train.n_batches == 20
+
+
+def test_analysis_types_import_from_analysis_home():
+    data = AnalysisInputData(models=None, tasks=None, states=None, hps=None, extras=None)
+
+    assert data.models is None
+
+
+def test_root_types_module_removed():
+    try:
+        importlib.import_module("feedbax.types")
+    except ModuleNotFoundError:
+        pass
+    else:
+        raise AssertionError("feedbax.types should not remain as a root compatibility facade")
 
 
 def test_training_environment_protocol_home():

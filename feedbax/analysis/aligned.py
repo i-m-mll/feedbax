@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.tasks import AbstractTask
 from jax_cookbook import (
+    LDict,
     compose,
     is_module,
     is_type,
@@ -33,14 +34,13 @@ from feedbax.analysis.state_utils import (
 )
 from feedbax.config.defaults import EVAL_REACH_LENGTH
 from feedbax.analysis.support import _OptionalCallableFieldConverter
+from feedbax.config.namespace import TreeNamespace
 from feedbax.plot.experiments import add_endpoint_traces
-from feedbax.types import (
+from feedbax.analysis.types import (
     AnalysisInputData,
     Direction,
     Labels,
-    LDict,
     ResponseVar,
-    TreeNamespace,
     VarSpec,
 )
 

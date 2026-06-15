@@ -7,20 +7,15 @@ from typing import Literal, Optional, TypeVar
 import equinox as eqx
 import jax.tree as jt
 import jax_cookbook.tree as jtree
-from jax_cookbook import anyf, is_type, where_attr_strs_to_func
+from jax_cookbook import LDict, anyf, is_type, where_attr_strs_to_func
 from jaxtyping import PyTree
 
 from feedbax.config import STRINGS, load_config
 from feedbax.config.defaults import get_iterations_to_save_model_parameters
-from feedbax.config.utils import copy_delattr
+from feedbax.config.namespace import TreeNamespace, dict_to_namespace, is_dict_with_int_keys
 from feedbax.config.tree import tree_level_labels
-from feedbax.types import (
-    LDict,
-    TaskModelPair,
-    TreeNamespace,
-    dict_to_namespace,
-    is_dict_with_int_keys,
-)
+from feedbax.config.utils import copy_delattr
+from feedbax.training.types import TaskModelPair
 
 T = TypeVar("T")
 NT = TypeVar("NT", bound=SimpleNamespace)

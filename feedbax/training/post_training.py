@@ -52,7 +52,9 @@ from feedbax.analysis.setup import (
     setup_models_only,
     setup_tasks_only,
 )
-from feedbax.types import LDict, TaskModelPair, TreeNamespace, namespace_to_dict
+from feedbax.config.namespace import TreeNamespace, namespace_to_dict
+from feedbax.training.types import TaskModelPair
+from jax_cookbook import LDict
 
 logger = logging.getLogger(__name__)
 

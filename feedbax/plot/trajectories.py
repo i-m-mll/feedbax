@@ -1,6 +1,6 @@
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, ValuesView
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeGuard, ValuesView
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, TypeGuard
 
 import jax.tree as jt
 import jax_cookbook.tree as jtree
@@ -26,11 +26,13 @@ from feedbax.plot.misc import (
     tree_of_2d_timeseries_to_df,
     unshare_axes,
 )
-from feedbax.types import SeqOf, SeqOfT
 from jax_cookbook import MaskedArray
 
 if TYPE_CHECKING:
     from feedbax.tasks import TaskTrialSpec
+
+type SeqOf[S] = list[S] | tuple[S, ...] | ValuesView[S]
+type SeqOfT[S, Tag] = Annotated[SeqOf[S], Tag]
 
 
 def _unwrap_masked_array(x):

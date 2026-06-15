@@ -13,7 +13,7 @@ from feedbax.analysis.analysis import (
     InputOf,
     SinglePort,
 )
-from feedbax.types import AnalysisInputData
+from feedbax.analysis.types import AnalysisInputData
 
 
 class ApplyFns(AbstractAnalysis[SinglePort[PyTree[Any]]]):

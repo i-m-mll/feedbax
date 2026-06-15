@@ -34,7 +34,7 @@ from jaxtyping import Array, ArrayLike, PyTree, PyTreeDef
 
 from feedbax.config import STRINGS
 from feedbax.config.utils import deep_merge
-from feedbax.types import TreeNamespace, _Wrapped
+from feedbax.config.namespace import TreeNamespace, _Wrapped
 
 T = TypeVar("T")
 M = TypeVar("M", bound=Mapping)

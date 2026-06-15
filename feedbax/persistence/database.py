@@ -61,27 +61,27 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.type_api import TypeEngine
 
 from feedbax.config import PATHS, STRINGS
-from feedbax.config.yaml import get_yaml_loader
-from feedbax.config.hyperparams import (
-    cast_hps,
-    flatten_hps,
-    load_hps,
-    take_train_histories_hps,
-)
-from feedbax.persistence.support import (
-    exclude_unshared_keys_and_identical_values,
-    get_md5_hexdigest,
-)
-from feedbax.plot.utils import savefig
-from feedbax.config.tree import pp
-from feedbax.types import (
-    LDict,
+from feedbax.config.namespace import (
     TreeNamespace,
     dict_to_namespace,
     is_dict_with_int_keys,
     namespace_to_dict,
     unflatten_dict_keys,
 )
+from feedbax.config.hyperparams import (
+    cast_hps,
+    flatten_hps,
+    load_hps,
+    take_train_histories_hps,
+)
+from feedbax.config.tree import pp
+from feedbax.config.yaml import get_yaml_loader
+from feedbax.persistence.support import (
+    exclude_unshared_keys_and_identical_values,
+    get_md5_hexdigest,
+)
+from feedbax.plot.utils import savefig
+from jax_cookbook import LDict
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

@@ -9,10 +9,12 @@ import jax_cookbook.tree as jtree
 from equinox import Module
 from feedbax.models.feedback import SimpleFeedbackState
 from feedbax.analysis.transforms import batch_reshape, nan_bypass
-from jax_cookbook import is_module, is_type
+from jax_cookbook import LDict, is_module, is_type
 from jaxtyping import Array, PyTree
 from sklearn.decomposition import PCA
 
+from feedbax.analysis.types import AnalysisInputData
+from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.analysis import (
     AbstractAnalysis,
     AbstractAnalysisPorts,
@@ -24,7 +26,6 @@ from feedbax.config.tree import (
     rearrange_ldict_levels,
     tree_level_labels,
 )
-from feedbax.types import AnalysisInputData, LDict, TreeNamespace
 
 
 class PCAResults(Module):

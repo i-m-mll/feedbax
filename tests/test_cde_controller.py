@@ -364,8 +364,7 @@ class TestSimpleFeedbackIntegration:
         assert outputs["effector"].pos.shape[0] == n_steps
 
     @pytest.mark.xfail(
-        reason="Pre-existing circular import: feedbax.tasks -> feedbax.plot "
-               "-> feedbax.types -> feedbax.tasks",
+        reason="Pre-existing circular import in the full CDE builder import path",
         strict=True,
     )
     def test_full_model_builder(self, key):

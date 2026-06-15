@@ -16,7 +16,8 @@ from feedbax.analysis.evaluation import (
     unregister_evaluation_recipe,
 )
 from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, ParentRef
-from feedbax.types import AnalysisInputData, TreeNamespace
+from feedbax.analysis.types import AnalysisInputData
+from feedbax.config.namespace import TreeNamespace
 
 
 TOY_EVALUATION_TYPE = "feedbax_test_toy_eval"
