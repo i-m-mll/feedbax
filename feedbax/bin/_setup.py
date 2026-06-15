@@ -49,11 +49,11 @@ def setup(
 
     # Now that we're capturing logs, import other package components
     if warn_dedup_default:
-        from feedbax._warnings import enable_warning_dedup
+        from feedbax.config.warnings import enable_warning_dedup
 
         enable_warning_dedup()
 
-    from feedbax._logging import enable_logging_handlers
+    from feedbax.config.logging import enable_logging_handlers
     from feedbax.config import configure_globals_for_package
     from feedbax.plugins import EXPERIMENT_REGISTRY
 

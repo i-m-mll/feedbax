@@ -1,5 +1,5 @@
 try:
-    from ..hyperparams import load_hps
+    from ..config.hyperparams import load_hps
     from .trainer import (
         ActivityDependentWeightUpdate,
         SimpleTrainer,

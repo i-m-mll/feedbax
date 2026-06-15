@@ -4,9 +4,8 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from feedbax.intervene import ConstantInput
+from feedbax.intervene import ConstantInput, ConstantInputParams
 from feedbax.intervene.schedule import TimeSeriesParam
-from jax_cookbook import is_type
 from jaxtyping import Array, PRNGKeyArray
 
 
@@ -53,15 +52,17 @@ def feedback_impulse(
     trial_mask = jnp.zeros((n_steps - 1,), bool).at[idxs_impulse].set(True)
 
     if feedback_dim is None:
-        array = lambda trial_spec, batch_info, key: random_unit_vector(key, 2)
+        def array(trial_spec, batch_info, key):
+            return random_unit_vector(key, 2)
     else:
         array = jnp.zeros((2,)).at[feedback_dim].set(1)
 
-    return ConstantInput.with_params(
-        out_where=lambda channel_state: channel_state.output[feedback_var],
-        scale=amplitude,
-        arrays=array,
-        active=TimeSeriesParam(trial_mask),
+    return ConstantInput(
+        params=ConstantInputParams(
+            scale=amplitude,
+            arrays=array,
+            active=trial_mask,
+        ),
         # active=impulse_active(
         #     model_info.n_steps,
         #     impulse_duration,

@@ -8,13 +8,13 @@ and ``RLEnvConfig``.  It exposes the two methods required by ``EnvironmentProtoc
   and maps the functional return values to an ``EnvironmentStep`` NamedTuple.
 
 The import of the protocol types is guarded by ``TYPE_CHECKING`` so the module
-remains importable even before ``feedbax/environment.py`` exists.  The class
+remains importable even before ``feedbax/training/environment.py`` exists.  The class
 satisfies the protocol structurally (duck typing) at runtime.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 from jaxtyping import Array, Float, PRNGKeyArray
@@ -29,7 +29,7 @@ from feedbax.training.rl.env import (
 from feedbax.training.rl.tasks import TaskParams
 
 if TYPE_CHECKING:
-    from feedbax.environment import EnvironmentProtocol, EnvironmentStep  # noqa: F401
+    from feedbax.training.environment import EnvironmentProtocol, EnvironmentStep  # noqa: F401
 
 
 class RLEnvironmentAdapter(eqx.Module):
@@ -105,8 +105,8 @@ class RLEnvironmentAdapter(eqx.Module):
             - ``done``: episode-done flag (0.0 or 1.0)
         """
         # Import here to avoid a hard dependency at module load time.
-        # feedbax/environment.py may not exist yet (parallel partition).
-        from feedbax.environment import EnvironmentStep  # type: ignore[import]
+        # feedbax/training/environment.py may not exist yet (parallel partition).
+        from feedbax.training.environment import EnvironmentStep  # type: ignore[import]
 
         new_state, obs, reward, done = rl_env_step(
             self.plant, self.config, env_state, action

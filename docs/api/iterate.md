@@ -1,6 +1,6 @@
 # Iterating components
 
-::: feedbax.iterate.iterate_component
+::: feedbax.runtime.iteration.iterate_component
 
-::: feedbax.iterate.run_component
+::: feedbax.runtime.iteration.run_component
     

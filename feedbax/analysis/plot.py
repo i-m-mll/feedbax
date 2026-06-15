@@ -25,9 +25,9 @@ from feedbax.analysis.analysis import (
     SinglePort,
 )
 from feedbax.config import PLOTLY_CONFIG
-from feedbax.hyperparams import flat_key_to_where_fn
+from feedbax.config.hyperparams import flat_key_to_where_fn
 from feedbax.plot.experiments import set_axes_bounds_equal
-from feedbax.plot_utils import get_label_str
+from feedbax.plot.utils import get_label_str
 from feedbax.tree_utils import ldict_level_to_bottom
 from feedbax.types import AnalysisInputData, LDict
 

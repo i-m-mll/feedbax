@@ -32,7 +32,7 @@ from feedbax._tree import (
     tree_set,
     tree_take,
 )
-from feedbax.iterate import run_component
+from feedbax.runtime.iteration import run_component
 from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.misc import (
     BatchInfo,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from feedbax.runtime._graph import detect_cycles_and_sort
-from feedbax._treescope import (
+from feedbax.integrations.treescope import (
     CycleAnnotation,
     TreeProjection,
     get_treescope_status,
@@ -144,7 +144,7 @@ class TestGraphToTree:
     def test_invalid_strategy(self):
         """Test that invalid cut strategy raises error."""
         # We need a minimal Graph-like object
-        from feedbax.runtime.graph import Component, Graph, Wire
+        from feedbax.runtime.graph import Component, Graph
 
         # Create a simple graph (using the real Graph class)
         class DummyComponent(Component):

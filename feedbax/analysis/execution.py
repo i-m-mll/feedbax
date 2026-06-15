@@ -30,12 +30,12 @@ from feedbax.analysis.analysis import (
     logger,
 )
 from feedbax.analysis.context import AnalysisRunContext, parent_ref_from_evaluation_manifest
-from feedbax.colors import COMMON_COLOR_SPECS, setup_colors
+from feedbax.plot.color_setup import COMMON_COLOR_SPECS, setup_colors
 
 # Access project paths and string constants
 from feedbax.config import PATHS
 from feedbax.config.yaml import get_yaml_loader
-from feedbax.constants import REPLICATE_CRITERION
+from feedbax.config.defaults import REPLICATE_CRITERION
 
 # `record_to_dict` converts SQLAlchemy records to plain dicts
 # Added utilities for unflattening record hyperparameters into namespaces
@@ -51,7 +51,7 @@ from feedbax.persistence.database import (
 )
 
 # `cast_hps` is needed to convert dictionaries (e.g. `where`) back into the expected objects
-from feedbax.hyperparams import (
+from feedbax.config.hyperparams import (
     config_to_hps,
     flatten_hps,
     use_train_hps_when_none,

@@ -33,7 +33,7 @@ from feedbax.contracts.manifest import (
     store_json_artifact,
     write_manifest,
 )
-from feedbax.plot_utils import savefig
+from feedbax.plot.utils import savefig
 from jax_cookbook import arrays_to_lists
 
 

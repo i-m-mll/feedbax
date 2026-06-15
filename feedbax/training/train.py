@@ -33,7 +33,7 @@ from feedbax.persistence.database import (
     get_record,
     save_model_and_add_record,
 )
-from feedbax.hyperparams import config_to_hps, flatten_hps
+from feedbax.config.hyperparams import config_to_hps, flatten_hps
 from feedbax.misc import (
     GracefulInterruptHandler,
     GracefulStopRequested,
