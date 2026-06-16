@@ -1,10 +1,10 @@
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
-import jax.tree as jt
 import jax_cookbook.tree as jtree
 
 from feedbax.config.mapping import WhereDict
+from feedbax.objectives.loss import TermTree
 from feedbax.tasks._tree import is_marked_shared, mark_shared, tree_call_with_keys
 
 
@@ -31,6 +31,32 @@ def test_cookbook_array_set_handles_none_non_array_leaves() -> None:
 
     assert jnp.array_equal(updated["x"], jnp.array([0.0, 4.0]))
     assert updated["name"] == "replacement"
+
+
+def test_cookbook_array_set_handles_termtree_none_value_leaves() -> None:
+    history = TermTree.branch(
+        "loss",
+        {
+            "position": TermTree.leaf("position", jnp.zeros((3,)), weight=1.0),
+            "velocity": TermTree.leaf("velocity", jnp.zeros((3,)), weight=0.5),
+        },
+        weight=1.0,
+    )
+    values = TermTree.branch(
+        "loss",
+        {
+            "position": TermTree.leaf("position", jnp.array(2.0), weight=1.0),
+            "velocity": TermTree.leaf("velocity", jnp.array(3.0), weight=0.5),
+        },
+        weight=1.0,
+    )
+
+    updated = jtree.array_set(history, values, 1)
+
+    assert jnp.array_equal(updated["position"].value, jnp.array([0.0, 2.0, 0.0]))
+    assert jnp.array_equal(updated["velocity"].value, jnp.array([0.0, 3.0, 0.0]))
+    assert updated["position"].weight == 1.0
+    assert updated["velocity"].weight == 0.5
 
 
 def test_tree_call_with_keys_honors_shared_key_markers() -> None:
