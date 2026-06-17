@@ -445,6 +445,7 @@ rsync_repo() {
         --exclude .mypy_cache \
         --exclude .ruff_cache \
         --exclude .DS_Store \
+        --exclude worktrees \
         --exclude node_modules \
         --exclude web/node_modules \
         --exclude web/dist \
