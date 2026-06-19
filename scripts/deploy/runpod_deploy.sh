@@ -26,6 +26,8 @@ RUNPOD_SSH_KEY="${RUNPOD_SSH_KEY:-~/.runpod/ssh/RunPod-Key-Go}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-900}"
 READINESS_POLL_SECONDS="${READINESS_POLL_SECONDS:-15}"
+ENDPOINT_CLASSIFIER_TIMEOUT_SECONDS="${ENDPOINT_CLASSIFIER_TIMEOUT_SECONDS:-90}"
+ENDPOINT_CLASSIFIER_POLL_SECONDS="${ENDPOINT_CLASSIFIER_POLL_SECONDS:-5}"
 SENTINEL_TIMEOUT_SECONDS="${SENTINEL_TIMEOUT_SECONDS:-7200}"
 SENTINEL_POLL_SECONDS="${SENTINEL_POLL_SECONDS:-30}"
 
@@ -38,12 +40,17 @@ TRAIN_COMMAND="${TRAIN_COMMAND:-}"
 
 CONFIG_FILE=""
 DRY_RUN=0
+ACQUIRE_ONLY=0
 POD_ID="${POD_ID:-}"
 TRAIN_SPEC="${TRAIN_SPEC:-}"
 SKIP_IMAGE_CHECK=0
 
 SSH_HOST=""
 SSH_PORT=""
+PROVIDED_ENDPOINT=0
+ENDPOINT_SOURCE="missing"
+ENDPOINT_CLASSIFICATION="missing_direct_endpoint"
+SSH_ERROR=""
 
 usage() {
     cat <<'USAGE'
@@ -52,7 +59,10 @@ Usage: scripts/deploy/runpod_deploy.sh [options]
 Options:
   --config <file>           Source a bash config file after defaults.
   --dry-run                 Print commands without executing them.
+  --acquire-only            Create/attach/probe SSH+GPU and exit before deploy.
   --pod-id <id>             Reuse an existing RunPod pod instead of creating one.
+  --ssh-host <host>         Use an already-known direct SSH host; skips discovery.
+  --ssh-port <port>         Use an already-known direct SSH port; skips discovery.
   --train-spec <json>       Required when a training launch command is configured.
   --launch-command <cmd>    Remote training command to launch after bootstrap.
   --skip-image-check        Skip Docker Hub tag existence check.
@@ -138,10 +148,23 @@ parse_args() {
             --dry-run)
                 DRY_RUN=1
                 ;;
+            --acquire-only)
+                ACQUIRE_ONLY=1
+                ;;
             --pod-id)
                 shift
                 [ "$#" -gt 0 ] || die "--pod-id requires a value"
                 POD_ID=$1
+                ;;
+            --ssh-host)
+                shift
+                [ "$#" -gt 0 ] || die "--ssh-host requires a value"
+                SSH_HOST=$1
+                ;;
+            --ssh-port)
+                shift
+                [ "$#" -gt 0 ] || die "--ssh-port requires a value"
+                SSH_PORT=$1
                 ;;
             --train-spec)
                 shift
@@ -183,12 +206,20 @@ require_command() {
 
 require_real_commands() {
     [ "$DRY_RUN" -eq 1 ] && return 0
-    require_command curl
+    if ! has_provided_endpoint; then
+        require_command curl
+        require_command runpodctl
+    fi
     require_command jq
-    require_command perl
-    require_command rsync
-    require_command runpodctl
     require_command ssh
+    if [ "$ACQUIRE_ONLY" -eq 0 ]; then
+        require_command perl
+        require_command rsync
+    fi
+}
+
+has_provided_endpoint() {
+    [ "$PROVIDED_ENDPOINT" -eq 1 ]
 }
 
 default_path_patches() {
@@ -340,6 +371,25 @@ extract_ssh_command() {
     '
 }
 
+extract_ssh_error() {
+    jq -r '
+        .ssh as $ssh
+        | (
+            if ($ssh | type) == "object" then
+                ($ssh.error // $ssh.message // $ssh.reason // empty)
+            else
+                empty
+            end
+          ) // .sshError // .runtime.sshError // empty
+    '
+}
+
+safe_status_value() {
+    local value=${1:-none}
+    value=${value:-none}
+    printf '%s\n' "$value" | tr '[:space:]' '_' | tr -cd '[:alnum:]_.:/=@,+-'
+}
+
 parse_ssh_command_fields() {
     local ssh_command=$1
     if [ -z "$SSH_PORT" ] && [[ $ssh_command =~ -p[[:space:]]+([0-9]+) ]]; then
@@ -348,6 +398,73 @@ parse_ssh_command_fields() {
     if [ -z "$SSH_HOST" ] && [[ $ssh_command =~ root@([^[:space:]]+) ]]; then
         SSH_HOST=${BASH_REMATCH[1]}
     fi
+}
+
+clear_discovered_endpoint() {
+    if [ "$ENDPOINT_SOURCE" != "provided" ]; then
+        SSH_HOST=""
+        SSH_PORT=""
+    fi
+}
+
+classify_endpoint_detail() {
+    local detail=$1
+    local ssh_ip ssh_port ssh_command ssh_error
+    if has_provided_endpoint; then
+        ENDPOINT_SOURCE="provided"
+        ENDPOINT_CLASSIFICATION="known_direct_endpoint"
+        SSH_ERROR="none"
+        return 0
+    fi
+
+    clear_discovered_endpoint
+    ssh_ip=$(printf '%s\n' "$detail" | extract_ssh_field ip)
+    ssh_port=$(printf '%s\n' "$detail" | extract_ssh_field port)
+    if [ -z "$ssh_ip" ]; then
+        ssh_ip=$(printf '%s\n' "$detail" | extract_ssh_field host)
+    fi
+    if [ -n "$ssh_ip" ]; then
+        SSH_HOST=$ssh_ip
+    fi
+    if [ -n "$ssh_port" ]; then
+        SSH_PORT=$ssh_port
+    fi
+
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
+        ENDPOINT_SOURCE="ssh_object"
+        ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+        SSH_ERROR="none"
+        return 0
+    fi
+
+    ssh_command=$(printf '%s\n' "$detail" | extract_ssh_command)
+    parse_ssh_command_fields "$ssh_command"
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
+        ENDPOINT_SOURCE="ssh_command"
+        ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+        SSH_ERROR="none"
+        return 0
+    fi
+
+    ssh_error=$(printf '%s\n' "$detail" | extract_ssh_error)
+    SSH_ERROR=$(safe_status_value "${ssh_error:-missing_ssh_metadata}")
+    if [ -n "$SSH_HOST" ] || [ -n "$SSH_PORT" ] || [ -n "$ssh_command" ]; then
+        ENDPOINT_SOURCE="partial"
+        ENDPOINT_CLASSIFICATION="partial_direct_endpoint"
+    else
+        ENDPOINT_SOURCE="missing"
+        ENDPOINT_CLASSIFICATION="missing_direct_endpoint"
+    fi
+}
+
+print_endpoint_info() {
+    printf 'pod_id=%s\n' "${POD_ID:-none}"
+    printf 'endpoint_source=%s\n' "$ENDPOINT_SOURCE"
+    printf 'endpoint_classification=%s\n' "$ENDPOINT_CLASSIFICATION"
+    printf 'ssh_host=%s\n' "${SSH_HOST:-none}"
+    printf 'ssh_port=%s\n' "${SSH_PORT:-none}"
+    printf 'ssh_key=%s\n' "$(expand_path "$RUNPOD_SSH_KEY")"
+    printf 'ssh_error=%s\n' "${SSH_ERROR:-none}"
 }
 
 remote_cmd() {
@@ -387,30 +504,50 @@ probe_ssh_gpu() {
 }
 
 wait_for_ssh_ready() {
+    if has_provided_endpoint; then
+        ENDPOINT_SOURCE="provided"
+        ENDPOINT_CLASSIFICATION="known_direct_endpoint"
+        SSH_ERROR="none"
+        probe_ssh_gpu
+        ENDPOINT_CLASSIFICATION="direct_endpoint_ready"
+        log "known ssh endpoint and nvidia-smi are ready"
+        return 0
+    fi
+
     if [ "$DRY_RUN" -eq 1 ]; then
         run_cmd runpodctl pod get "$POD_ID" --output json
         SSH_HOST="dry-run-host"
         SSH_PORT="22"
+        ENDPOINT_SOURCE="ssh_object"
+        ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+        SSH_ERROR="none"
         probe_ssh_gpu
+        ENDPOINT_CLASSIFICATION="direct_endpoint_ready"
         return 0
     fi
 
-    local deadline detail ssh_ip ssh_port ssh_command
+    local deadline classifier_deadline detail poll_seconds
     deadline=$((SECONDS + READINESS_TIMEOUT_SECONDS))
+    classifier_deadline=$((SECONDS + ENDPOINT_CLASSIFIER_TIMEOUT_SECONDS))
     while [ "$SECONDS" -lt "$deadline" ]; do
         detail=$(capture_cmd runpodctl pod get "$POD_ID" --output json)
-        ssh_ip=$(printf '%s\n' "$detail" | extract_ssh_field ip)
-        ssh_port=$(printf '%s\n' "$detail" | extract_ssh_field port)
-        if [ -z "$ssh_ip" ]; then
-            ssh_ip=$(printf '%s\n' "$detail" | extract_ssh_field host)
-        fi
-        SSH_HOST=$ssh_ip
-        SSH_PORT=$ssh_port
+        classify_endpoint_detail "$detail"
+        log "endpoint source=$ENDPOINT_SOURCE classification=$ENDPOINT_CLASSIFICATION ssh_error=${SSH_ERROR:-none}"
         if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
-            ssh_command=$(printf '%s\n' "$detail" | extract_ssh_command)
-            parse_ssh_command_fields "$ssh_command"
+            if [ "$SECONDS" -ge "$classifier_deadline" ]; then
+                print_endpoint_info >&2
+                die "no direct ssh endpoint after ${ENDPOINT_CLASSIFIER_TIMEOUT_SECONDS}s; not waiting full readiness timeout"
+            fi
+            poll_seconds=$ENDPOINT_CLASSIFIER_POLL_SECONDS
+            if [ "$poll_seconds" -le 0 ]; then
+                poll_seconds=1
+            fi
+            sleep "$poll_seconds"
+            continue
         fi
         if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ] && probe_ssh_gpu; then
+            ENDPOINT_CLASSIFICATION="direct_endpoint_ready"
+            SSH_ERROR="none"
             log "pod ssh and nvidia-smi are ready"
             return 0
         fi
@@ -560,15 +697,33 @@ main() {
     first_pass_config "${original_args[@]}"
     load_config
     parse_args "${original_args[@]}"
+    if { [ -n "$SSH_HOST" ] && [ -z "$SSH_PORT" ]; } ||
+        { [ -z "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; }; then
+        die "--ssh-host and --ssh-port must be provided together"
+    fi
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
+        PROVIDED_ENDPOINT=1
+    fi
     finalize_remote_defaults
     default_path_patches
     require_command jq
-    validate_train_spec_gate
+    if [ "$ACQUIRE_ONLY" -eq 0 ]; then
+        validate_train_spec_gate
+    fi
     require_real_commands
 
-    check_docker_hub_tag
-    create_pod
+    if ! has_provided_endpoint; then
+        check_docker_hub_tag
+        create_pod
+    else
+        log "using provided ssh endpoint $SSH_HOST:$SSH_PORT"
+    fi
     wait_for_ssh_ready
+    if [ "$ACQUIRE_ONLY" -eq 1 ]; then
+        print_endpoint_info
+        log "acquire-only complete for pod ${POD_ID:-<provided-endpoint>}"
+        exit 0
+    fi
     sync_repos
     apply_path_patches
     bootstrap_remote_env

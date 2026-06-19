@@ -12,6 +12,9 @@ REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-$REMOTE_RUN_DIR/sentinels}"
 POD_ID="${POD_ID:-}"
 SSH_HOST="${SSH_HOST:-}"
 SSH_PORT="${SSH_PORT:-}"
+ENDPOINT_SOURCE="missing"
+ENDPOINT_CLASSIFICATION="missing_direct_endpoint"
+SSH_ERROR="missing_ssh_metadata"
 STARTED_AT_EPOCH="${STARTED_AT_EPOCH:-}"
 CADENCE_SECONDS=""
 DRY_RUN=0
@@ -29,7 +32,7 @@ Options:
   --dry-run                  Print commands without executing; does not sleep.
   -h, --help                 Show this help.
 
-The script sleeps internally, then prints exactly one status line.
+The script prints exactly one status line, then sleeps for the selected cadence.
 USAGE
 }
 
@@ -68,6 +71,12 @@ expand_path() {
     else
         printf '%s\n' "$value"
     fi
+}
+
+safe_status_value() {
+    local value=${1:-none}
+    value=${value:-none}
+    printf '%s\n' "$value" | tr '[:space:]' '_' | tr -cd '[:alnum:]_.:/=@,+-'
 }
 
 parse_args() {
@@ -132,9 +141,22 @@ choose_cadence() {
 
 extract_ssh() {
     local detail=$1
-    [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ] && return 0
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
+        ENDPOINT_SOURCE="provided"
+        ENDPOINT_CLASSIFICATION="known_direct_endpoint"
+        SSH_ERROR="none"
+        return 0
+    fi
+
     SSH_HOST=$(printf '%s\n' "$detail" | jq -r '(.ssh.ip // .ssh.host // empty)')
     SSH_PORT=$(printf '%s\n' "$detail" | jq -r '(.ssh.port // empty)')
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
+        ENDPOINT_SOURCE="ssh_object"
+        ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+        SSH_ERROR="none"
+        return 0
+    fi
+
     if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
         local ssh_command
         ssh_command=$(printf '%s\n' "$detail" |
@@ -146,10 +168,38 @@ extract_ssh() {
             SSH_HOST=${BASH_REMATCH[1]}
         fi
     fi
+    if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
+        ENDPOINT_SOURCE="ssh_command"
+        ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+        SSH_ERROR="none"
+        return 0
+    fi
+
+    local ssh_error
+    ssh_error=$(printf '%s\n' "$detail" |
+        jq -r '
+            .ssh as $ssh
+            | (
+                if ($ssh | type) == "object" then
+                    ($ssh.error // $ssh.message // $ssh.reason // empty)
+                else
+                    empty
+                end
+              ) // .sshError // .runtime.sshError // empty
+        ')
+    SSH_ERROR=$(safe_status_value "${ssh_error:-missing_ssh_metadata}")
+    if [ -n "$SSH_HOST" ] || [ -n "$SSH_PORT" ]; then
+        ENDPOINT_SOURCE="partial"
+        ENDPOINT_CLASSIFICATION="partial_direct_endpoint"
+    else
+        ENDPOINT_SOURCE="missing"
+        ENDPOINT_CLASSIFICATION="missing_direct_endpoint"
+    fi
 }
 
 remote_status() {
     if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
+        SSH_ERROR=${SSH_ERROR:-missing_ssh_endpoint}
         printf 'ssh=missing gpu=unknown uv=unknown jax=unknown training=unknown done=unknown failed=unknown'
         return 0
     fi
@@ -178,9 +228,11 @@ remote_status() {
          done; \
          if [ -f '$REMOTE_SENTINEL_DIR/training.done' ]; then printf 'done=true '; else printf 'done=false '; fi; \
          if ls '$REMOTE_SENTINEL_DIR/'*.failed >/dev/null 2>&1; then printf 'failed=true'; else printf 'failed=false'; fi"); then
+        SSH_ERROR="ssh_probe_failed"
         printf 'ssh=failed gpu=unknown uv=unknown jax=unknown training=unknown done=unknown failed=unknown'
         return 0
     fi
+    SSH_ERROR="none"
     printf '%s' "$output"
 }
 
@@ -189,13 +241,11 @@ main() {
     [ -n "$POD_ID" ] || die "--pod-id is required"
     command -v jq >/dev/null 2>&1 || die "required command not found: jq"
 
-    local cadence detail desired_status timestamp status
+    local cadence detail desired_status timestamp status endpoint_context
     cadence=$(choose_cadence)
     if [ "$DRY_RUN" -eq 1 ]; then
-        run_cmd sleep "$cadence"
         detail='{"desiredStatus":"DRY_RUN","ssh":{"ip":"dry-run-host","port":22}}'
     else
-        sleep "$cadence"
         detail=$(capture_cmd runpodctl pod get "$POD_ID" --output json)
     fi
 
@@ -203,8 +253,15 @@ main() {
         jq -r '(.desiredStatus // .status // .runtime.status // "unknown")')
     extract_ssh "$detail"
     status=$(remote_status)
+    endpoint_context="endpoint_source=$ENDPOINT_SOURCE endpoint_classification=$ENDPOINT_CLASSIFICATION ssh_error=${SSH_ERROR:-none}"
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    printf '%s pod=%s pod_status=%s %s\n' "$timestamp" "$POD_ID" "$desired_status" "$status"
+    printf '%s pod=%s pod_status=%s %s %s\n' \
+        "$timestamp" "$POD_ID" "$desired_status" "$endpoint_context" "$status"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        run_cmd sleep "$cadence"
+    else
+        sleep "$cadence"
+    fi
 }
 
 main "$@"

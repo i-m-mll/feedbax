@@ -79,6 +79,12 @@
   SSH and GPU readiness checks, rsync paths, local editable path patching,
   CUDA JAX bootstrapping, remote GPU/JAX verification, train-spec sync, and
   sentinel/nohup launch behavior.
+- Normal RunPod workflow is acquire first, deploy second. Use
+  `scripts/deploy/runpod_deploy.sh --acquire-only` to create or attach to a pod,
+  prove the direct `.ssh` endpoint with `~/.runpod/ssh/RunPod-Key-Go`, and
+  verify `nvidia-smi` before any rsync, bootstrap, or training launch. If a
+  direct endpoint is already known, pass `--ssh-host` and `--ssh-port` so the
+  script skips endpoint discovery while still proving GPU readiness.
 - Treat hand-rolled `runpodctl` calls, custom SSH readiness loops, ad hoc
   rsync/path patching, manual CUDA JAX install steps, direct nohup/sentinel
   launch snippets, and bespoke polling cadence instructions as fallback,

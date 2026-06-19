@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,13 +11,17 @@ RUNPOD_DEPLOY = REPO_ROOT / "scripts" / "deploy" / "runpod_deploy.sh"
 POLL_RUN = REPO_ROOT / "scripts" / "deploy" / "poll_run.sh"
 
 
-def run_script(*args: str) -> subprocess.CompletedProcess[str]:
+def run_script(
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(RUNPOD_DEPLOY), *args],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
 
 
@@ -108,7 +113,87 @@ def test_dry_run_prints_deterministic_deploy_commands(tmp_path: Path) -> None:
     assert "uv run --no-sync python" in normalized
 
 
-def test_poll_run_dry_run_sleeps_and_prints_one_status_line() -> None:
+def test_acquire_only_dry_run_stops_before_deploy(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--acquire-only",
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "runpodctl pod create" in output
+    assert "runpodctl pod get dry-run-pod" in output
+    assert "nvidia-smi" in output
+    assert "endpoint_source=ssh_object" in output
+    assert "endpoint_classification=direct_endpoint_ready" in output
+    assert "rsync -az" not in output
+    assert "uv sync" not in output
+
+
+def test_known_endpoint_acquire_only_skips_runpod_discovery(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+
+    result = run_script(
+        "--dry-run",
+        "--config",
+        str(config),
+        "--acquire-only",
+        "--ssh-host",
+        "198.51.100.10",
+        "--ssh-port",
+        "2222",
+    )
+
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "runpodctl pod create" not in output
+    assert "runpodctl pod get" not in output
+    assert "root@198.51.100.10" in output
+    assert "-p 2222" in output
+    assert "endpoint_source=provided" in output
+    assert "endpoint_classification=direct_endpoint_ready" in output
+
+
+def test_acquire_only_classifies_missing_direct_endpoint_quickly(tmp_path: Path) -> None:
+    config = write_config(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_runpodctl = bin_dir / "runpodctl"
+    fake_runpodctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' "
+        "'{\"desiredStatus\":\"RUNNING\",\"ssh\":{\"error\":\"no direct endpoint\"}}'\n",
+        encoding="utf-8",
+    )
+    fake_runpodctl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ENDPOINT_CLASSIFIER_TIMEOUT_SECONDS": "0",
+    }
+
+    result = run_script(
+        "--config",
+        str(config),
+        "--acquire-only",
+        "--pod-id",
+        "pod-missing-endpoint",
+        "--skip-image-check",
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "no direct ssh endpoint after 0s" in result.stderr
+    assert "endpoint_classification=missing_direct_endpoint" in result.stderr
+    assert "ssh_error=no_direct_endpoint" in result.stderr
+    assert "rsync -az" not in result.stdout + result.stderr
+
+
+def test_poll_run_dry_run_prints_status_before_sleep() -> None:
     result = subprocess.run(
         [
             str(POLL_RUN),
@@ -129,4 +214,8 @@ def test_poll_run_dry_run_sleeps_and_prints_one_status_line() -> None:
     status_lines = [line for line in result.stdout.splitlines() if " pod=pod-123 " in line]
     assert len(status_lines) == 1
     assert "pod_status=DRY_RUN" in status_lines[0]
+    assert "endpoint_source=ssh_object" in status_lines[0]
+    assert "endpoint_classification=direct_endpoint_discovered" in status_lines[0]
+    assert "ssh_error=none" in status_lines[0]
     assert "gpu=dry-run" in status_lines[0]
+    assert result.stdout.index(" pod=pod-123 ") < result.stdout.index("+ sleep 0")
