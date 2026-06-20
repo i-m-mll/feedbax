@@ -239,6 +239,78 @@ case "$rendered" in
 esac
 
 # ---------------------------------------------------------------------------
+section "FIX 1 pod_ids_by_name_prefix (create-leak sweep)"
+PREFIX="feedbax-rlrmp-run-rPID-123"
+out=$(pod_ids_by_name_prefix "$PREFIX" < "$FIX/pod_list.json" | sort | tr '\n' ',')
+eq "matches all our-prefix pods (skips others)" \
+   "pod-keep-001,pod-leak-002,pod-leak-004," "$out"
+
+out=$(printf '%s' '{}' | pod_ids_by_name_prefix "$PREFIX")
+eq "object without pods -> empty" "" "$out"
+out=$(printf 'not json' | pod_ids_by_name_prefix "$PREFIX")
+eq "garbage -> empty (no crash)" "" "$out"
+out=$(printf '[]' | pod_ids_by_name_prefix "$PREFIX")
+eq "empty array -> empty" "" "$out"
+# Wrapper shape {"pods":[...]}.
+out=$(printf '%s' '{"pods":[{"id":"x1","name":"feedbax-rlrmp-run-rPID-123-z"},{"id":"x2","name":"nope"}]}' \
+    | pod_ids_by_name_prefix "$PREFIX")
+eq "wrapper .pods shape" "x1" "$out"
+# Empty prefix matches nothing safely.
+out=$(pod_ids_by_name_prefix "" < "$FIX/pod_list.json")
+eq "empty prefix -> nothing" "" "$out"
+
+# ---------------------------------------------------------------------------
+section "FIX 4 validate_row_id (unsafe ids rejected)"
+for good in row_a Row.1 a-b_c 123 A.B-C_d; do
+    out=$(validate_row_id "$good"); rc=$?
+    eq "good id '$good' -> ok" "ok" "$out"
+    eq "good id '$good' -> rc 0" "0" "$rc"
+done
+# Bad ids: slash, space, glob, metacharacters, command substitution, newline.
+bad_slash='a/b'
+bad_space='a b'
+bad_glob='a*'
+bad_semi='a;rm -rf /'
+bad_dollar='a$(touch x)'
+bad_backtick='a`id`'
+bad_newline=$'a\nb'
+bad_pipe='a|b'
+for label in slash space glob semi dollar backtick newline pipe; do
+    var="bad_$label"
+    out=$(validate_row_id "${!var}"); rc=$?
+    eq "bad id ($label) -> error" "error unsafe_row_id" "$out"
+    eq "bad id ($label) -> rc 1" "1" "$rc"
+done
+out=$(validate_row_id ""); rc=$?
+eq "empty id -> error" "error empty_row_id" "$out"
+eq "empty id -> rc 1" "1" "$rc"
+
+# validate_rows_manifest must reject a manifest carrying an unsafe id.
+out=$(printf '%s' '{"schema_version":1,"rows":[{"id":"a/b","command":"x"}]}' \
+    | validate_rows_manifest); rc=$?
+eq "manifest unsafe id -> error" "error unsafe_row_id" "$out"
+eq "manifest unsafe id -> rc 1" "1" "$rc"
+out=$(printf '%s' '{"schema_version":1,"rows":[{"id":"a b","command":"x"}]}' \
+    | validate_rows_manifest)
+eq "manifest space id -> error" "error unsafe_row_id" "$out"
+out=$(printf '%s' '{"schema_version":1,"rows":[{"id":"a*","command":"x"}]}' \
+    | validate_rows_manifest)
+eq "manifest glob id -> error" "error unsafe_row_id" "$out"
+
+# ---------------------------------------------------------------------------
+section "FIX 3 row_state/discover include synchronous .started marker"
+SR="$TMP/started"
+mkdir -p "$SR"
+# row with only a .started reservation (job hasn't written .pid yet) is running.
+: > "$SR/rx.started"
+eq "started-only -> running" "running" "$(row_state "$SR" rx)"
+out=$(discover_row_ids "$SR" | tr '\n' ',')
+eq "discover finds started-only row" "rx," "$out"
+# terminal sentinel wins over .started.
+: > "$SR/rx.done"
+eq "started+done -> done" "done" "$(row_state "$SR" rx)"
+
+# ---------------------------------------------------------------------------
 printf '\n== summary ==\n'
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

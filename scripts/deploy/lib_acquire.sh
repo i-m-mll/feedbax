@@ -132,6 +132,56 @@ rank_datacenters_for_gpu() {
     '
 }
 
+# pod_ids_by_name_prefix <prefix>  (runpodctl `pod list --output json` on stdin)
+# Prints the id of every pod whose name starts with <prefix>, one per line.
+# Used by the name-based create-leak sweep (FIX 1): the driver tags each create
+# attempt with a unique per-run name, then sweeps `pod list` by that name so a
+# pod that was created server-side but whose CLI result was nonzero/unparseable
+# (or a pod created right before a SIGINT) is still found and torn down even
+# when POD_ID was never parsed. Tolerates both a bare array and common wrapper
+# shapes (.pods / .data / .data.pods); empty / unparseable input prints nothing.
+pod_ids_by_name_prefix() {
+    local prefix=$1
+    [ -n "$prefix" ] || return 0
+    jq -r --arg prefix "$prefix" '
+        ( if type == "array" then .
+          elif type == "object" then
+            (.pods // .data // (.data.pods) // [])
+          else [] end )
+        | ( if type == "array" then . else [] end )
+        | .[]
+        | select(type == "object")
+        | { id: (.id // .podId // .pod.id // empty),
+            name: (.name // .pod.name // "") }
+        | select(.id != null and .id != "")
+        | select(.name | startswith($prefix))
+        | .id
+    ' 2>/dev/null || true
+}
+
+# validate_row_id <id>  (FIX 4)
+# Row ids are interpolated into remote sentinel/log/pid paths and split as shell
+# words in poll_run.sh, so they must be constrained to a safe character class.
+# Prints "ok" rc 0 for a safe id; "error <reason>" rc 1 otherwise.
+validate_row_id() {
+    local id=$1 stripped
+    if [ -z "$id" ]; then
+        printf 'error empty_row_id\n'
+        return 1
+    fi
+    # Reject anything outside [A-Za-z0-9_.-]. Strip the allowed class with tr and
+    # compare LENGTHS (not contents) so an embedded newline — which command
+    # substitution would otherwise trim away — is still detected. A safe id
+    # consists entirely of allowed characters, so stripping leaves length 0.
+    stripped=$(printf '%s' "$id" | tr -d 'A-Za-z0-9_.-' | wc -c | tr -d ' ')
+    if [ "$stripped" != "0" ]; then
+        printf 'error unsafe_row_id\n'
+        return 1
+    fi
+    printf 'ok\n'
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Balance precheck  (W1 - issue c272111)
 # ---------------------------------------------------------------------------
@@ -188,7 +238,9 @@ validate_rows_manifest() {
             "$ROWS_MANIFEST_SCHEMA_VERSION" "$version"
         return 1
     fi
-    # Every row needs a non-empty id and command; ids must be unique.
+    # Every row needs a non-empty id and command; ids must be unique and safe.
+    # Row ids are interpolated into remote sentinel/log/pid paths and split as
+    # shell words in poll, so constrain them to [A-Za-z0-9_.-] (FIX 4).
     local problem
     problem=$(printf '%s' "$manifest" | jq -r '
         (.rows // []) as $rows
@@ -196,6 +248,7 @@ validate_rows_manifest() {
           elif ($rows | map(select((.id // "") == "")) | length) > 0 then "row_missing_id"
           elif ($rows | map(select((.command // "") == "")) | length) > 0 then "row_missing_command"
           elif (($rows | map(.id) | unique | length) != ($rows | length)) then "duplicate_row_id"
+          elif ($rows | map(select((.id | tostring | test("^[A-Za-z0-9_.-]+$") | not))) | length) > 0 then "unsafe_row_id"
           else "ok" end
     ')
     if [ "$problem" != "ok" ]; then
@@ -323,29 +376,33 @@ max_checkpoint_step() {
 
 # discover_row_ids <sentinel_dir>  -> one row id per line.
 # Row identity is derived from the per-row marker files the launcher writes
-# (<id>.pid / <id>.done / <id>.failed) so no jq / manifest is needed remotely.
-# Falls back to nothing when the dir is absent.
+# (<id>.started / <id>.pid / <id>.done / <id>.failed) so no jq / manifest is
+# needed remotely. The synchronous `.started` reservation marker (FIX 3) makes a
+# row discoverable the instant it is launched, before the backgrounded job has
+# written its `.pid`. Falls back to nothing when the dir is absent.
 discover_row_ids() {
     local sentinel_dir=$1 f base
     [ -d "$sentinel_dir" ] || return 0
-    for f in "$sentinel_dir"/*.pid "$sentinel_dir"/*.done "$sentinel_dir"/*.failed; do
+    for f in "$sentinel_dir"/*.started "$sentinel_dir"/*.pid \
+             "$sentinel_dir"/*.done "$sentinel_dir"/*.failed; do
         [ -e "$f" ] || continue
         base=${f##*/}
-        base=${base%.pid}; base=${base%.done}; base=${base%.failed}
+        base=${base%.started}; base=${base%.pid}
+        base=${base%.done}; base=${base%.failed}
         printf '%s\n' "$base"
     done | sort -u
 }
 
 # row_state <sentinel_dir> <id>  -> done|failed|running|pending.
-#   <id>.done present      -> done
-#   <id>.failed present    -> failed
-#   <id>.pid present       -> running (launched, no terminal sentinel yet)
-#   otherwise              -> pending
+#   <id>.done present              -> done
+#   <id>.failed present            -> failed
+#   <id>.started or <id>.pid       -> running (launched, no terminal sentinel)
+#   otherwise                      -> pending
 row_state() {
     local sentinel_dir=$1 id=$2
     if [ -f "$sentinel_dir/$id.done" ]; then printf 'done\n'
     elif [ -f "$sentinel_dir/$id.failed" ]; then printf 'failed\n'
-    elif [ -f "$sentinel_dir/$id.pid" ]; then printf 'running\n'
+    elif [ -f "$sentinel_dir/$id.started" ] || [ -f "$sentinel_dir/$id.pid" ]; then printf 'running\n'
     else printf 'pending\n'; fi
 }
 

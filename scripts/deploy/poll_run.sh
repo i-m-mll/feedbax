@@ -223,9 +223,9 @@ for name in uv_sync jax_cuda; do
   else printf '%s=pending ' "\$name"; fi
 done
 sdir='$sentinel_dir'
-ids=\$( { for f in "\$sdir"/*.pid "\$sdir"/*.done "\$sdir"/*.failed; do
+ids=\$( { for f in "\$sdir"/*.started "\$sdir"/*.pid "\$sdir"/*.done "\$sdir"/*.failed; do
            [ -e "\$f" ] || continue
-           b=\${f##*/}; b=\${b%.pid}; b=\${b%.done}; b=\${b%.failed}
+           b=\${f##*/}; b=\${b%.started}; b=\${b%.pid}; b=\${b%.done}; b=\${b%.failed}
            echo "\$b"
          done; } | grep -v '^uv_sync\$' | grep -v '^jax_cuda\$' | sort -u )
 nd=0; nf=0; nr=0; np=0; nt=0; detail=''
@@ -233,7 +233,7 @@ for id in \$ids; do
   nt=\$((nt+1))
   if [ -f "\$sdir/\$id.done" ]; then st=done; nd=\$((nd+1))
   elif [ -f "\$sdir/\$id.failed" ]; then st=failed; nf=\$((nf+1))
-  elif [ -f "\$sdir/\$id.pid" ]; then st=running; nr=\$((nr+1))
+  elif [ -f "\$sdir/\$id.started" ] || [ -f "\$sdir/\$id.pid" ]; then st=running; nr=\$((nr+1))
   else st=pending; np=\$((np+1)); fi
   detail="\${detail:+\$detail,}\$id:\$st"
 done

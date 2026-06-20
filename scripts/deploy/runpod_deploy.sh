@@ -63,6 +63,20 @@ ACQUIRED_DC=""
 POD_CREATED_BY_US=0
 ACQUIRE_LOCK_HELD=0
 
+# Per-run unique name prefix for create-leak sweeping (FIX 1). Every `pod create`
+# attempt gets a UNIQUE name that starts with this prefix, so a name-based
+# `pod list` sweep can find and tear down any pod created server-side even when
+# the CLI result was nonzero/unparseable or a signal interrupted the create.
+RUN_TAG="${RUN_TAG:-${RUNPOD_NAME}-r$$-$(date +%s)}"
+# Monotonic counter feeding the per-attempt suffix (no Math.random dependency).
+POD_NAME_COUNTER=0
+# Name we passed to the most recent create attempt (may have leaked a pod even
+# if POD_ID was never parsed).
+LAST_CREATE_NAME=""
+# Idempotency guard so EXIT cleanup does not double-run after a signal handler
+# already ran it.
+ACQUIRE_CLEANUP_DONE=0
+
 CONFIG_FILE=""
 DRY_RUN=0
 ACQUIRE_ONLY=0
@@ -393,32 +407,112 @@ teardown_pod() {
         log "warning: teardown of pod $pod_id reported a non-zero status"
 }
 
-# acquire_trap fires on EVERY exit path. If we created a pod but never reached
-# the acquired state, tear it down so a failed/timed-out attempt never leaves a
-# billable pod running. Always releases the lock.
+# next_pod_name returns a UNIQUE pod name for the next create attempt (FIX 1).
+# The randomness is derived from $$, the epoch, and a monotonic counter — no
+# Math.random / external entropy. The name starts with RUN_TAG so the sweep can
+# find every pod this run created by prefix.
+next_pod_name() {
+    local dc=${1:-auto}
+    dc=$(printf '%s' "$dc" | tr -cd '[:alnum:]_.-')
+    [ -n "$dc" ] || dc=auto
+    POD_NAME_COUNTER=$((POD_NAME_COUNTER + 1))
+    local rand
+    rand="$$$(date +%s)$POD_NAME_COUNTER"
+    printf '%s-%s-%s-%s' "$RUN_TAG" "$dc" "$POD_NAME_COUNTER" "$rand"
+}
+
+# sweep_created_pods lists pods by this run's unique name prefix and tears down
+# any match we are NOT keeping (FIX 1). It runs after every create-attempt
+# outcome (success, nonzero, unparseable) and in cleanup, so a pod created
+# server-side with no parseable id — or one created right before a signal — is
+# still found and removed. Safe and idempotent when the list is empty.
+#   $1 (optional) pod id to KEEP (e.g. the acquired pod); empty keeps nothing.
+sweep_created_pods() {
+    local keep=${1:-}
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    command -v runpodctl >/dev/null 2>&1 || return 0
+    [ -n "$RUN_TAG" ] || return 0
+    local list_json pid
+    list_json=$(runpodctl pod list --output json 2>/dev/null) || return 0
+    [ -n "$list_json" ] || return 0
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        [ -n "$keep" ] && [ "$pid" = "$keep" ] && continue
+        log "sweep: tearing down leaked pod $pid (name prefix $RUN_TAG)"
+        teardown_pod "$pid"
+    done < <(printf '%s' "$list_json" | pod_ids_by_name_prefix "$RUN_TAG")
+}
+
+# acquire_cleanup tears down any pod this run created/leaked and releases the
+# lock. Idempotent: guarded so the EXIT handler does not repeat work a signal
+# handler already did.  $1 is the pod id to KEEP (the acquired pod), if any.
 ACQUIRED=0
-acquire_trap() {
-    local rc=$?
-    if [ "$POD_CREATED_BY_US" -eq 1 ] && [ "$ACQUIRED" -eq 0 ] && [ -n "${POD_ID:-}" ]; then
+acquire_cleanup() {
+    [ "$ACQUIRE_CLEANUP_DONE" -eq 1 ] && return 0
+    ACQUIRE_CLEANUP_DONE=1
+    local keep=${1:-}
+    # Tear down a parsed-but-unacquired pod first (fast path), then sweep by name
+    # to catch any server-side pod whose id we never parsed.
+    if [ "$ACQUIRED" -eq 0 ] && [ -n "${POD_ID:-}" ]; then
         teardown_pod "$POD_ID"
     fi
+    if [ "$ACQUIRED" -eq 1 ]; then
+        keep=${keep:-${POD_ID:-}}
+    fi
+    sweep_created_pods "$keep"
     acquire_lock_release
+}
+
+# acquire_trap fires on EXIT. If we created a pod but never reached the acquired
+# state, tear it down so a failed/timed-out attempt never leaves a billable pod
+# running. Always releases the lock. Idempotent via acquire_cleanup's guard.
+acquire_trap() {
+    local rc=$?
+    acquire_cleanup
     return "$rc"
 }
 
+# acquire_signal_trap handles INT/TERM (FIX 2): run cleanup, then EXIT with the
+# conventional signal status (130 INT, 143 TERM) so no acquisition/deploy code
+# can resume after a handled signal. EXIT cleanup is a no-op afterward (guarded).
+acquire_signal_trap() {
+    local signame=$1
+    log "received SIG$signame during acquisition; cleaning up and exiting"
+    acquire_cleanup
+    case "$signame" in
+        INT) exit 130 ;;
+        TERM) exit 143 ;;
+        *) exit 1 ;;
+    esac
+}
+
+# precheck_balance fails CLOSED (FIX 5): if the balance cannot be read or parsed
+# (transport/auth/CLI failure, or a non-numeric balance), refuse to create the
+# pod rather than bypassing the cost guard. Set ALLOW_UNKNOWN_BALANCE=1 to opt
+# out deliberately (then it only warns); the default is fail-closed.
+ALLOW_UNKNOWN_BALANCE="${ALLOW_UNKNOWN_BALANCE:-0}"
 precheck_balance() {
     [ "$DRY_RUN" -eq 1 ] && return 0
     has_provided_endpoint && return 0
     [ -n "$POD_ID" ] && return 0
     local user_json result
-    user_json=$(capture_cmd runpodctl user --output json 2>/dev/null) || {
-        log "warning: could not read account balance; continuing"
+    if ! user_json=$(capture_cmd runpodctl user --output json 2>/dev/null); then
+        if [ "$ALLOW_UNKNOWN_BALANCE" -eq 1 ]; then
+            log "warning: could not read account balance; ALLOW_UNKNOWN_BALANCE=1, continuing"
+            return 0
+        fi
+        die "account balance could not be read (runpodctl user failed); refusing to create a pod (set ALLOW_UNKNOWN_BALANCE=1 to override)"
+    fi
+    # check_balance_floor: rc 0 ok, rc 1 below floor, rc 2 unparseable balance.
+    if result=$(printf '%s' "$user_json" | check_balance_floor "$MIN_BALANCE_USD"); then
+        log "balance precheck $result"
         return 0
-    }
-    result=$(printf '%s' "$user_json" | check_balance_floor "$MIN_BALANCE_USD") || {
-        die "account balance precheck failed: $result (floor \$$MIN_BALANCE_USD)"
-    }
-    log "balance precheck $result"
+    fi
+    if [ "$result" = "unknown" ] && [ "$ALLOW_UNKNOWN_BALANCE" -eq 1 ]; then
+        log "warning: account balance unparseable; ALLOW_UNKNOWN_BALANCE=1, continuing"
+        return 0
+    fi
+    die "account balance precheck failed: $result (floor \$$MIN_BALANCE_USD); refusing to create a pod"
 }
 
 # rank_candidate_dcs prints the ordered DC list for the create loop, one per
@@ -454,7 +548,11 @@ rank_candidate_dcs() {
 # call itself fails (so the loop can advance to the next DC).
 create_pod_in_dc() {
     local dc=${1:-}
-    local cmd output pod_id
+    local cmd output pod_id pod_name rc
+    # Unique per-attempt name so the name-based sweep can find this pod even if
+    # the create result is nonzero/unparseable or a signal interrupts us (FIX 1).
+    pod_name=$(next_pod_name "$dc")
+    LAST_CREATE_NAME=$pod_name
     cmd=(
         runpodctl pod create
         --image "$RUNPOD_IMAGE"
@@ -465,7 +563,7 @@ create_pod_in_dc() {
         --volume-in-gb "$RUNPOD_VOLUME_GB"
         --volume-mount-path "$RUNPOD_VOLUME_MOUNT"
         --ports "$RUNPOD_PORTS"
-        --name "$RUNPOD_NAME"
+        --name "$pod_name"
         --env "$RUNPOD_ENV_JSON"
         --output json
     )
@@ -481,14 +579,30 @@ create_pod_in_dc() {
         return 0
     fi
 
-    output=$(capture_cmd "${cmd[@]}") || return 1
+    # Capture the create result without letting a nonzero exit abort the script;
+    # a server-side pod may exist even on a nonzero/unparseable CLI result, so we
+    # must sweep by name afterward regardless of the outcome.
+    set +e
+    output=$(capture_cmd "${cmd[@]}")
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+        # The create may still have created a pod server-side; sweep by name.
+        sweep_created_pods
+        return 1
+    fi
     pod_id=$(printf '%s\n' "$output" |
         jq -r '(.id // .pod.id // .podId // .data.id // .data.pod.id // empty)')
-    [ -n "$pod_id" ] || return 1
+    if [ -z "$pod_id" ]; then
+        # Unparseable result but the pod may exist server-side under our unique
+        # name; sweep so it is not leaked.
+        sweep_created_pods
+        return 1
+    fi
     POD_ID=$pod_id
     POD_CREATED_BY_US=1
     ACQUIRED_DC=${dc:-auto}
-    log "created pod $POD_ID${dc:+ in $dc}"
+    log "created pod $POD_ID${dc:+ in $dc} (name $pod_name)"
     return 0
 }
 
@@ -596,6 +710,8 @@ acquire_pod() {
             write_boot_heartbeat
             ACQUIRED=1
             acquire_status acquired
+            # Keep this pod; sweep any earlier-attempt pods that leaked.
+            sweep_created_pods "$POD_ID"
             log "acquired pod $POD_ID in ${ACQUIRED_DC} after $attempted attempt(s)"
             return 0
         fi
@@ -990,25 +1106,45 @@ sync_rows_manifest() {
 # launch_row starts one training row via the nohup+sentinel pattern with per-row
 # done/failed/log paths derived from the row id, injecting
 # XLA_PYTHON_CLIENT_PREALLOCATE=false so parallel rows don't each grab all VRAM.
+#
+# Slot reservation (FIX 3): the SSH command reserves the row's slot SYNCHRONOUSLY
+# by creating the `.started` marker as a foreground step that completes BEFORE
+# the SSH call returns (i.e. before the `&` that backgrounds the actual job). The
+# cap counts `.started` markers (minus terminal sentinels), so it cannot
+# under-count a just-launched row — the previous `.pid`-inside-nohup marker was
+# written asynchronously after the SSH call returned, which let row k+1 start
+# while row k was still racing to write its marker. The `.pid` is still written
+# inside the job for diagnostics; the cap no longer depends on it.
 launch_row() {
     local row_id=$1 workdir=$2 command=$3
-    local done_file failed_file log_file pid_file remote
+    local done_file failed_file log_file pid_file started_file remote
+    # Defence in depth (FIX 4): the id is interpolated into remote paths, so
+    # reject anything outside [A-Za-z0-9_.-] even though validate_rows_manifest
+    # already screened manifest ids.
+    validate_row_id "$row_id" >/dev/null ||
+        die "unsafe row id: $row_id (must match [A-Za-z0-9_.-]+)"
     done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
     failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
     log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
     pid_file="$REMOTE_SENTINEL_DIR/${row_id}.pid"
-    # Per-row nohup: write pid, run command (with PREALLOCATE=false), then touch
-    # done or failed. Robust quoting throughout; command runs under bash -lc.
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && { $command; touch $(sq "$done_file"); } || { touch $(sq "$failed_file"); exit 1; }") >$(sq "$log_file") 2>&1 &"
+    started_file="$REMOTE_SENTINEL_DIR/${row_id}.started"
+    # Foreground reservation + setup, THEN background the job. The leading
+    # `mkdir/rm/touch .started` run synchronously and finish before the SSH
+    # command returns, so the slot is held the instant launch_row returns.
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && { $command; touch $(sq "$done_file"); } || { touch $(sq "$failed_file"); exit 1; }") >$(sq "$log_file") 2>&1 &"
     log "launching row $row_id"
     remote_cmd "$remote"
 }
 
-# count_running_rows returns how many rows are still in flight (pid file exists,
-# neither done nor failed sentinel present) — used to honor MAX_PARALLEL_ROWS.
+# count_running_rows returns how many rows are still in flight — used to honor
+# MAX_PARALLEL_ROWS. Counts `.started` reservation markers (written
+# synchronously by launch_row before it returns) minus any with a terminal
+# done/failed sentinel. This closes the FIX 3 race where the prior `.pid`-based
+# count under-counted a row whose pid marker had not yet been written by the
+# backgrounded job.
 count_running_rows() {
     [ "$DRY_RUN" -eq 1 ] && { printf '0\n'; return 0; }
-    remote_capture "n=0; for pid in $(sq "$REMOTE_SENTINEL_DIR")/*.pid; do [ -e \"\$pid\" ] || continue; base=\${pid%.pid}; if [ ! -f \"\$base.done\" ] && [ ! -f \"\$base.failed\" ]; then n=\$((n+1)); fi; done; printf '%s' \"\$n\"" 2>/dev/null || printf '0'
+    remote_capture "n=0; for s in $(sq "$REMOTE_SENTINEL_DIR")/*.started; do [ -e \"\$s\" ] || continue; base=\${s%.started}; if [ ! -f \"\$base.done\" ] && [ ! -f \"\$base.failed\" ]; then n=\$((n+1)); fi; done; printf '%s' \"\$n\"" 2>/dev/null || printf '0'
 }
 
 # launch_training launches one or more training rows. With --rows-manifest it
@@ -1077,9 +1213,14 @@ main() {
     fi
     require_real_commands
 
-    # Trap guarantees teardown of any pod THIS script created on every
-    # non-acquired exit path, and always releases the acquisition lock.
-    trap 'acquire_trap' EXIT INT TERM
+    # Trap guarantees teardown of any pod THIS script created/leaked on every
+    # non-acquired exit path, and always releases the acquisition lock. INT/TERM
+    # get a dedicated handler that cleans up then EXITS with the conventional
+    # signal status (FIX 2), so no acquisition/deploy code can resume after a
+    # handled signal; the EXIT handler is idempotent (acquire_cleanup guard).
+    trap 'acquire_trap' EXIT
+    trap 'acquire_signal_trap INT' INT
+    trap 'acquire_signal_trap TERM' TERM
 
     if has_provided_endpoint; then
         log "using provided ssh endpoint $SSH_HOST:$SSH_PORT"
