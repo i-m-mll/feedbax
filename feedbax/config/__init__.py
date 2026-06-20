@@ -1,6 +1,6 @@
 from typing import Optional
 
-from feedbax.plugins import EXPERIMENT_REGISTRY
+import feedbax.plugins
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.config.namespace import TreeNamespace
 
@@ -50,12 +50,26 @@ def configure_globals_for_package(
     _overwrite_namespace(STRINGS, strings)
 
 
+# Populate the global namespaces from the base feedbax config BEFORE triggering
+# plugin discovery. Discovery imports experiment packages (e.g. `rlrmp`), whose
+# own import chains read populated config values such as
+# `STRINGS.hps_level_label_sep` at import time (e.g. as default argument values
+# in `feedbax.config.hyperparams`). Loading the base config first guarantees
+# those reads succeed; if a single experiment package is then discovered, we
+# re-load with package-override precedence below. See issue ccfe63a.
+configure_globals_for_package("feedbax", None)
+
+# Access `EXPERIMENT_REGISTRY` only now — this is what triggers plugin discovery.
+# Deferring it to here (rather than as an import-time side effect of
+# `feedbax.plugins`) means `feedbax.config` is already importable and its
+# globals are populated when experiment packages import back into it.
+EXPERIMENT_REGISTRY = feedbax.plugins.EXPERIMENT_REGISTRY
+
 single_package_name = EXPERIMENT_REGISTRY.single_package_name()
 if single_package_name is not None:
+    # Re-load with package-override precedence now that the single experiment
+    # package is registered.
     configure_globals_for_package(single_package_name, EXPERIMENT_REGISTRY)
-else:
-    # Default to base config if no single package is set
-    configure_globals_for_package("feedbax", None)
 
 
 __all__ = [
