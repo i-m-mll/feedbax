@@ -1,0 +1,13 @@
+{
+  "id": "podabc123",
+  "name": "feedbax-rlrmp-probe",
+  "desiredStatus": "TERMINATED",
+  "runtime": null,
+  "uptimeSeconds": 0,
+  "lastStatusChange": "Exited by user: 2026-06-20T10:05:00Z",
+  "ssh": {
+    "error": "pod not ready",
+    "id": "podabc123",
+    "status": "TERMINATED"
+  }
+}

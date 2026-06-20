@@ -1,0 +1,19 @@
+{
+  "id": "podabc123",
+  "name": "feedbax-rlrmp-probe",
+  "desiredStatus": "EXITED",
+  "runtime": null,
+  "uptimeSeconds": 0,
+  "lastStatusChange": "Exited by Runpod: image pull failed",
+  "machine": {
+    "dataCenterId": "EU-RO-1",
+    "gpuId": "NVIDIA RTX PRO 4500 Blackwell",
+    "secureCloud": true
+  },
+  "ssh": {
+    "error": "pod not ready",
+    "id": "podabc123",
+    "name": "feedbax-rlrmp-probe",
+    "status": "EXITED"
+  }
+}
