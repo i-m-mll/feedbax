@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib_acquire.sh
+source "$SCRIPT_DIR/lib_acquire.sh"
+
 EARLY_CADENCE_SECONDS="${EARLY_CADENCE_SECONDS:-300}"
 STEADY_CADENCE_SECONDS="${STEADY_CADENCE_SECONDS:-1800}"
 EARLY_WINDOW_SECONDS="${EARLY_WINDOW_SECONDS:-3600}"
@@ -8,6 +12,10 @@ RUNPOD_SSH_KEY="${RUNPOD_SSH_KEY:-~/.runpod/ssh/RunPod-Key-Go}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-/workspace/feedbax_runs/runpod-deploy}"
 REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-$REMOTE_RUN_DIR/sentinels}"
+REMOTE_RLRMP_ROOT="${REMOTE_RLRMP_ROOT:-/workspace/rlrmp}"
+# Where to look for checkpoint step dirs and per-row training logs on the pod.
+REMOTE_CHECKPOINT_DIR="${REMOTE_CHECKPOINT_DIR:-$REMOTE_RUN_DIR}"
+REMOTE_LOG_DIR="${REMOTE_LOG_DIR:-$REMOTE_RUN_DIR/logs}"
 
 POD_ID="${POD_ID:-}"
 SSH_HOST="${SSH_HOST:-}"
@@ -197,39 +205,82 @@ extract_ssh() {
     fi
 }
 
+# build_remote_status_command renders the self-contained remote bash that the
+# pod runs over SSH. It reports gpu, the legacy bootstrap sentinels
+# (uv_sync/jax_cuda), and the per-row aggregate progress (rows roll-up,
+# last_checkpoint, last_batch) so "compiling" is distinguishable from "training"
+# from "stalled". The progress block mirrors lib_acquire.sh::progress_report,
+# which is unit-tested locally over a mock remote layout. One status line, no jq.
+build_remote_status_command() {
+    local sentinel_dir=$1 checkpoint_dir=$2 log_dir=$3
+    cat <<REMOTE
+gpu=\$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+gpu_safe=\$(printf '%s' "\${gpu:-unknown}" | tr ' ' '_')
+printf 'ssh=ready gpu=%s ' "\$gpu_safe"
+for name in uv_sync jax_cuda; do
+  if [ -f '$sentinel_dir/'"\$name"'.done' ]; then printf '%s=done ' "\$name"
+  elif [ -f '$sentinel_dir/'"\$name"'.failed' ]; then printf '%s=failed ' "\$name"
+  else printf '%s=pending ' "\$name"; fi
+done
+sdir='$sentinel_dir'
+ids=\$( { for f in "\$sdir"/*.pid "\$sdir"/*.done "\$sdir"/*.failed; do
+           [ -e "\$f" ] || continue
+           b=\${f##*/}; b=\${b%.pid}; b=\${b%.done}; b=\${b%.failed}
+           echo "\$b"
+         done; } | grep -v '^uv_sync\$' | grep -v '^jax_cuda\$' | sort -u )
+nd=0; nf=0; nr=0; np=0; nt=0; detail=''
+for id in \$ids; do
+  nt=\$((nt+1))
+  if [ -f "\$sdir/\$id.done" ]; then st=done; nd=\$((nd+1))
+  elif [ -f "\$sdir/\$id.failed" ]; then st=failed; nf=\$((nf+1))
+  elif [ -f "\$sdir/\$id.pid" ]; then st=running; nr=\$((nr+1))
+  else st=pending; np=\$((np+1)); fi
+  detail="\${detail:+\$detail,}\$id:\$st"
+done
+printf 'rows_done=%s rows_failed=%s rows_running=%s rows_pending=%s rows_total=%s ' "\$nd" "\$nf" "\$nr" "\$np" "\$nt"
+ckpt=none
+for d in \$(find '$checkpoint_dir' -maxdepth 2 \( -type f -o -type d \) 2>/dev/null); do
+  n=\$(printf '%s' "\${d##*/}" | grep -oE '[0-9]+' | tail -1)
+  [ -z "\$n" ] && continue
+  if [ "\$ckpt" = none ] || [ "\$n" -gt "\$ckpt" ]; then ckpt=\$n; fi
+done
+batch=none
+for lf in '$log_dir'/*.log; do
+  [ -e "\$lf" ] || continue
+  b=\$(grep -oiE '(batch|step|iter|it)[[:space:]=:]+[0-9]+' "\$lf" 2>/dev/null | grep -oE '[0-9]+' | tail -1)
+  [ -z "\$b" ] && continue
+  if [ "\$batch" = none ] || [ "\$b" -gt "\$batch" ]; then batch=\$b; fi
+done
+printf 'last_checkpoint=%s last_batch=%s rows=%s' "\$ckpt" "\$batch" "\${detail:-none}"
+REMOTE
+}
+
 remote_status() {
     if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
         SSH_ERROR=${SSH_ERROR:-missing_ssh_endpoint}
-        printf 'ssh=missing gpu=unknown uv=unknown jax=unknown training=unknown done=unknown failed=unknown'
+        printf 'ssh=missing gpu=unknown uv_sync=unknown jax_cuda=unknown rows_done=0 rows_failed=0 rows_running=0 rows_pending=0 rows_total=0 last_checkpoint=none last_batch=none rows=none'
         return 0
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
         print_cmd ssh -p "$SSH_PORT" "root@$SSH_HOST" \
             "nvidia-smi && test -d '$REMOTE_SENTINEL_DIR'" >&2
-        printf 'ssh=dry-run gpu=dry-run uv=dry-run jax=dry-run training=dry-run done=dry-run failed=dry-run'
+        printf 'ssh=dry-run gpu=dry-run uv_sync=dry-run jax_cuda=dry-run rows_done=0 rows_failed=0 rows_running=0 rows_pending=0 rows_total=0 last_checkpoint=none last_batch=none rows=none'
         return 0
     fi
 
-    local key_path output
+    local key_path output remote_cmd
     key_path=$(expand_path "$RUNPOD_SSH_KEY")
+    remote_cmd=$(build_remote_status_command \
+        "$REMOTE_SENTINEL_DIR" "$REMOTE_CHECKPOINT_DIR" "$REMOTE_LOG_DIR")
     if ! output=$(ssh -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new \
         -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
         -i "$key_path" \
         -p "$SSH_PORT" \
         "root@$SSH_HOST" \
-        "gpu=\$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true); \
-         gpu_safe=\$(printf '%s' \"\${gpu:-unknown}\" | tr ' ' '_'); \
-         printf 'ssh=ready gpu=%s ' \"\$gpu_safe\"; \
-         for name in uv_sync jax_cuda training; do \
-           if [ -f '$REMOTE_SENTINEL_DIR/'\"\$name\"'.done' ]; then printf '%s=done ' \"\$name\"; \
-           elif [ -f '$REMOTE_SENTINEL_DIR/'\"\$name\"'.failed' ]; then printf '%s=failed ' \"\$name\"; \
-           else printf '%s=pending ' \"\$name\"; fi; \
-         done; \
-         if [ -f '$REMOTE_SENTINEL_DIR/training.done' ]; then printf 'done=true '; else printf 'done=false '; fi; \
-         if ls '$REMOTE_SENTINEL_DIR/'*.failed >/dev/null 2>&1; then printf 'failed=true'; else printf 'failed=false'; fi"); then
+        "$remote_cmd"); then
         SSH_ERROR="ssh_probe_failed"
-        printf 'ssh=failed gpu=unknown uv=unknown jax=unknown training=unknown done=unknown failed=unknown'
+        printf 'ssh=failed gpu=unknown uv_sync=unknown jax_cuda=unknown rows_done=0 rows_failed=0 rows_running=0 rows_pending=0 rows_total=0 last_checkpoint=none last_batch=none rows=none'
         return 0
     fi
     SSH_ERROR="none"
