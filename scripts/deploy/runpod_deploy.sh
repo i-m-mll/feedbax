@@ -4,6 +4,8 @@ set -euo pipefail
 # Deterministic RunPod deploy for the rlrmp/feedbax/jax-cookbook workflow.
 # Override these values with environment variables or `--config <file>`.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib_acquire.sh
+source "$SCRIPT_DIR/lib_acquire.sh"
 FEEDBAX_ROOT="${FEEDBAX_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd -P)}"
 PROJECTS_ROOT="${PROJECTS_ROOT:-$(cd "$FEEDBAX_ROOT/../.." && pwd -P)}"
 UTILS_ROOT="${UTILS_ROOT:-$(cd "$FEEDBAX_ROOT/../../.." && pwd -P)/05 Utils}"
@@ -31,12 +33,35 @@ ENDPOINT_CLASSIFIER_POLL_SECONDS="${ENDPOINT_CLASSIFIER_POLL_SECONDS:-5}"
 SENTINEL_TIMEOUT_SECONDS="${SENTINEL_TIMEOUT_SECONDS:-7200}"
 SENTINEL_POLL_SECONDS="${SENTINEL_POLL_SECONDS:-30}"
 
+# --- Deterministic acquisition (W1, issue c272111) ---------------------------
+# Auto-rank candidate datacenters by stock for RUNPOD_GPU_ID and try one DC per
+# create when RUNPOD_DATA_CENTER_IDS is unset. The endpoint-assignment grace
+# window for a still-RUNNING pod must be generous (real probe: ~238s); the
+# dead-state fast-fail is caught separately in seconds.
+RUNPOD_DC_FALLBACK="${RUNPOD_DC_FALLBACK:-1}"
+ACQUIRE_WALL_CLOCK_CAP_SECONDS="${ACQUIRE_WALL_CLOCK_CAP_SECONDS:-1800}"
+ENDPOINT_GRACE_SECONDS="${ENDPOINT_GRACE_SECONDS:-420}"
+DEAD_STATE_POLL_SECONDS="${DEAD_STATE_POLL_SECONDS:-5}"
+MIN_BALANCE_USD="${MIN_BALANCE_USD:-1.0}"
+ACQUIRE_LOCK_FILE="${ACQUIRE_LOCK_FILE:-${TMPDIR:-/tmp}/runpod_acquire_${RUNPOD_NAME}.lock}"
+
 REMOTE_RLRMP_ROOT="${REMOTE_RLRMP_ROOT:-}"
 REMOTE_FEEDBAX_ROOT="${REMOTE_FEEDBAX_ROOT:-}"
 REMOTE_JAX_COOKBOOK_ROOT="${REMOTE_JAX_COOKBOOK_ROOT:-}"
 REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-}"
 REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-}"
+REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-}"
 TRAIN_COMMAND="${TRAIN_COMMAND:-}"
+
+# --- Parallel multi-row launch (W2, issue 9ca50b1) ---------------------------
+ROWS_MANIFEST="${ROWS_MANIFEST:-}"
+ROW_LAUNCH_STAGGER_SECONDS="${ROW_LAUNCH_STAGGER_SECONDS:-10}"
+MAX_PARALLEL_ROWS="${MAX_PARALLEL_ROWS:-4}"
+
+# Acquisition bookkeeping.
+ACQUIRED_DC=""
+POD_CREATED_BY_US=0
+ACQUIRE_LOCK_HELD=0
 
 CONFIG_FILE=""
 DRY_RUN=0
@@ -65,8 +90,16 @@ Options:
   --ssh-port <port>         Use an already-known direct SSH port; skips discovery.
   --train-spec <json>       Required when a training launch command is configured.
   --launch-command <cmd>    Remote training command to launch after bootstrap.
+  --rows-manifest <json>    Launch N training rows from a rows-manifest instead
+                            of a single --launch-command.
   --skip-image-check        Skip Docker Hub tag existence check.
   -h, --help                Show this help.
+
+Acquisition: when --pod-id / --ssh-host are not given and RUNPOD_DATA_CENTER_IDS
+is empty, candidate datacenters are ranked by stock for RUNPOD_GPU_ID and tried
+one-per-create. Dead-state pods (EXITED/TERMINATED) are torn down within seconds;
+a still-RUNNING pod gets ENDPOINT_GRACE_SECONDS to assign an endpoint. A trap
+tears down any pod this script created on every non-acquired exit path.
 
 The training launch is refused unless --train-spec points to JSON containing
 `"user_confirmed": true`; failure prints the spec table and exits 2.
@@ -176,6 +209,11 @@ parse_args() {
                 [ "$#" -gt 0 ] || die "--launch-command requires a command string"
                 TRAIN_COMMAND=$1
                 ;;
+            --rows-manifest)
+                shift
+                [ "$#" -gt 0 ] || die "--rows-manifest requires a JSON file"
+                ROWS_MANIFEST=$1
+                ;;
             --skip-image-check)
                 SKIP_IMAGE_CHECK=1
                 ;;
@@ -237,6 +275,7 @@ finalize_remote_defaults() {
     REMOTE_JAX_COOKBOOK_ROOT="${REMOTE_JAX_COOKBOOK_ROOT:-$RUNPOD_VOLUME_MOUNT/jax-cookbook}"
     REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-$RUNPOD_VOLUME_MOUNT/feedbax_runs/runpod-deploy}"
     REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-$REMOTE_RUN_DIR/sentinels}"
+    REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-$REMOTE_RLRMP_ROOT/_artifacts}"
 }
 
 print_spec_table() {
@@ -270,7 +309,9 @@ print_spec_table() {
 }
 
 validate_train_spec_gate() {
-    [ -n "$TRAIN_COMMAND" ] || return 0
+    # The spec-confirmation gate applies to any training launch, single-command
+    # or multi-row.
+    [ -n "$TRAIN_COMMAND" ] || [ -n "$ROWS_MANIFEST" ] || return 0
     if [ -z "$TRAIN_SPEC" ] || [ ! -f "$TRAIN_SPEC" ]; then
         print_spec_table "$TRAIN_SPEC"
         exit 2
@@ -309,12 +350,110 @@ check_docker_hub_tag() {
     run_cmd curl --fail --silent --show-error --location "$url" --output /dev/null
 }
 
-create_pod() {
-    if [ -n "$POD_ID" ]; then
-        log "using existing pod $POD_ID"
+# acquire_status emits the machine-readable acquisition vocabulary, one line
+# per poll/event: provisioning / endpoint_assigned / ssh_ready / dead_exited /
+# attempt_timeout / acquired. Parseable without jq.
+acquire_status() {
+    local state=$1
+    local dc=${2:-${ACQUIRED_DC:-none}}
+    printf 'acquire_status=%s pod=%s dc=%s ssh_host=%s ssh_port=%s\n' \
+        "$state" "${POD_ID:-none}" "${dc:-none}" "${SSH_HOST:-none}" "${SSH_PORT:-none}" >&2
+}
+
+acquire_lock_acquire() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    local dir
+    dir=$(dirname "$ACQUIRE_LOCK_FILE")
+    mkdir -p "$dir" 2>/dev/null || true
+    # mkdir is atomic: a directory lock prevents two loops racing the same run.
+    if mkdir "$ACQUIRE_LOCK_FILE" 2>/dev/null; then
+        ACQUIRE_LOCK_HELD=1
+        printf '%s\n' "$$" >"$ACQUIRE_LOCK_FILE/pid" 2>/dev/null || true
         return 0
     fi
+    die "acquisition lock held: $ACQUIRE_LOCK_FILE (another deploy loop is running for $RUNPOD_NAME)"
+}
 
+acquire_lock_release() {
+    [ "$ACQUIRE_LOCK_HELD" -eq 1 ] || return 0
+    rm -rf "$ACQUIRE_LOCK_FILE" 2>/dev/null || true
+    ACQUIRE_LOCK_HELD=0
+}
+
+# teardown_pod removes a pod by id. Robust against word-splitting: the id is a
+# single quoted scalar and we never iterate an unquoted array (a recent manual
+# probe lost teardown to shell word-splitting, so keep this defensive).
+teardown_pod() {
+    local pod_id=${1:-}
+    [ -n "$pod_id" ] || return 0
+    [ "$DRY_RUN" -eq 1 ] && { log "dry-run: would tear down pod $pod_id"; return 0; }
+    log "tearing down pod $pod_id"
+    runpodctl pod remove "$pod_id" >/dev/null 2>&1 ||
+        runpodctl pod stop "$pod_id" >/dev/null 2>&1 ||
+        log "warning: teardown of pod $pod_id reported a non-zero status"
+}
+
+# acquire_trap fires on EVERY exit path. If we created a pod but never reached
+# the acquired state, tear it down so a failed/timed-out attempt never leaves a
+# billable pod running. Always releases the lock.
+ACQUIRED=0
+acquire_trap() {
+    local rc=$?
+    if [ "$POD_CREATED_BY_US" -eq 1 ] && [ "$ACQUIRED" -eq 0 ] && [ -n "${POD_ID:-}" ]; then
+        teardown_pod "$POD_ID"
+    fi
+    acquire_lock_release
+    return "$rc"
+}
+
+precheck_balance() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    has_provided_endpoint && return 0
+    [ -n "$POD_ID" ] && return 0
+    local user_json result
+    user_json=$(capture_cmd runpodctl user --output json 2>/dev/null) || {
+        log "warning: could not read account balance; continuing"
+        return 0
+    }
+    result=$(printf '%s' "$user_json" | check_balance_floor "$MIN_BALANCE_USD") || {
+        die "account balance precheck failed: $result (floor \$$MIN_BALANCE_USD)"
+    }
+    log "balance precheck $result"
+}
+
+# rank_candidate_dcs prints the ordered DC list for the create loop, one per
+# line. Honors an explicit RUNPOD_DATA_CENTER_IDS override; otherwise ranks by
+# stock for RUNPOD_GPU_ID when RUNPOD_DC_FALLBACK is enabled. Falls back to a
+# single empty entry (let RunPod pick) when ranking yields nothing.
+rank_candidate_dcs() {
+    if [ -n "$RUNPOD_DATA_CENTER_IDS" ]; then
+        printf '%s\n' "$RUNPOD_DATA_CENTER_IDS" | tr ',' '\n'
+        return 0
+    fi
+    if [ "$RUNPOD_DC_FALLBACK" -ne 1 ] || [ "$DRY_RUN" -eq 1 ]; then
+        printf '\n'
+        return 0
+    fi
+    local dc_json ranked
+    dc_json=$(capture_cmd runpodctl datacenter list --output json 2>/dev/null) || {
+        log "warning: datacenter list failed; letting RunPod choose"
+        printf '\n'
+        return 0
+    }
+    ranked=$(printf '%s' "$dc_json" | rank_datacenters_for_gpu "$RUNPOD_GPU_ID")
+    if [ -z "$ranked" ]; then
+        log "warning: no datacenter reports stock for $RUNPOD_GPU_ID; letting RunPod choose"
+        printf '\n'
+        return 0
+    fi
+    printf '%s\n' "$ranked"
+}
+
+# create_pod_in_dc issues one `pod create`, optionally pinned to a single DC.
+# Sets POD_ID and POD_CREATED_BY_US on success. Returns non-zero if the create
+# call itself fails (so the loop can advance to the next DC).
+create_pod_in_dc() {
+    local dc=${1:-}
     local cmd output pod_id
     cmd=(
         runpodctl pod create
@@ -330,22 +469,143 @@ create_pod() {
         --env "$RUNPOD_ENV_JSON"
         --output json
     )
-    if [ -n "$RUNPOD_DATA_CENTER_IDS" ]; then
-        cmd+=(--data-center-ids "$RUNPOD_DATA_CENTER_IDS")
+    if [ -n "$dc" ]; then
+        cmd+=(--data-center-ids "$dc")
     fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
         run_cmd "${cmd[@]}"
         POD_ID="dry-run-pod"
+        POD_CREATED_BY_US=1
+        ACQUIRED_DC=${dc:-dry-run-dc}
         return 0
     fi
 
-    output=$(capture_cmd "${cmd[@]}")
+    output=$(capture_cmd "${cmd[@]}") || return 1
     pod_id=$(printf '%s\n' "$output" |
         jq -r '(.id // .pod.id // .podId // .data.id // .data.pod.id // empty)')
-    [ -n "$pod_id" ] || die "could not parse pod id from runpodctl output"
+    [ -n "$pod_id" ] || return 1
     POD_ID=$pod_id
-    log "created pod $POD_ID"
+    POD_CREATED_BY_US=1
+    ACQUIRED_DC=${dc:-auto}
+    log "created pod $POD_ID${dc:+ in $dc}"
+    return 0
+}
+
+# wait_for_endpoint_or_dead polls a freshly-created pod until it either assigns
+# an endpoint (rc 0, SSH_HOST/SSH_PORT set), flips to a dead state (rc 3), or
+# exceeds the per-attempt grace window (rc 1). Dead-state is caught in seconds;
+# the grace window only governs the still-RUNNING/no-endpoint case.
+wait_for_endpoint_or_dead() {
+    [ "$DRY_RUN" -eq 1 ] && {
+        SSH_HOST="dry-run-host"; SSH_PORT="22"
+        ENDPOINT_SOURCE="ssh_object"
+        ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+        acquire_status endpoint_assigned
+        return 0
+    }
+    local deadline detail class rest ip port
+    deadline=$((SECONDS + ENDPOINT_GRACE_SECONDS))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        detail=$(capture_cmd runpodctl pod get "$POD_ID" --output json) || {
+            sleep "$DEAD_STATE_POLL_SECONDS"; continue
+        }
+        class=$(printf '%s' "$detail" | classify_pod_state)
+        case "$class" in
+            ready\ *)
+                read -r _ ip port <<<"$class"
+                SSH_HOST=$ip; SSH_PORT=$port
+                ENDPOINT_SOURCE="ssh_object"
+                ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
+                SSH_ERROR="none"
+                acquire_status endpoint_assigned
+                return 0
+                ;;
+            dead\ *)
+                rest=${class#dead }
+                SSH_ERROR=$(safe_status_value "$rest")
+                acquire_status dead_exited
+                return 3
+                ;;
+            *)
+                acquire_status provisioning
+                sleep "$DEAD_STATE_POLL_SECONDS"
+                ;;
+        esac
+    done
+    acquire_status attempt_timeout
+    return 1
+}
+
+# write_boot_heartbeat drops an in-pod heartbeat after the first successful SSH
+# so the compile phase stays distinguishable from death: a live but silent pod
+# keeps a recent heartbeat mtime, a dead one does not.
+write_boot_heartbeat() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR") && date -u +%Y-%m-%dT%H:%M:%SZ > $(sq "$REMOTE_RUN_DIR/boot_heartbeat")" ||
+        log "warning: could not write boot heartbeat"
+}
+
+# acquire_pod is the deterministic, watched acquisition phase. It iterates the
+# ranked datacenters one-create-at-a-time, fast-fails dead pods within seconds,
+# grants a generous endpoint grace to still-RUNNING pods, proves SSH+GPU, and is
+# bounded by a hard wall-clock cap. The acquire_trap guarantees teardown of any
+# pod we created on every non-acquired exit path.
+acquire_pod() {
+    if [ -n "$POD_ID" ]; then
+        log "using existing pod $POD_ID"
+        if ! wait_for_ssh_ready; then
+            die "provided pod $POD_ID did not become ssh-ready"
+        fi
+        ACQUIRED=1
+        acquire_status acquired
+        return 0
+    fi
+
+    acquire_lock_acquire
+    precheck_balance
+
+    local wall_deadline candidates dc attempted=0
+    wall_deadline=$((SECONDS + ACQUIRE_WALL_CLOCK_CAP_SECONDS))
+    read_lines_into candidates < <(rank_candidate_dcs)
+    log "candidate datacenters: ${candidates[*]:-<runpod-choice>}"
+
+    for dc in "${candidates[@]}"; do
+        if [ "$SECONDS" -ge "$wall_deadline" ]; then
+            die "acquisition wall-clock cap (${ACQUIRE_WALL_CLOCK_CAP_SECONDS}s) reached before acquiring a pod"
+        fi
+        attempted=$((attempted + 1))
+        acquire_status provisioning "${dc:-runpod-choice}"
+        if ! create_pod_in_dc "$dc"; then
+            log "create failed for dc=${dc:-<runpod-choice>}; trying next"
+            POD_ID=""; POD_CREATED_BY_US=0
+            continue
+        fi
+
+        if ! wait_for_endpoint_or_dead; then
+            # attempt_timeout or dead: tear down THIS pod, advance to next DC.
+            teardown_pod "$POD_ID"
+            POD_ID=""; POD_CREATED_BY_US=0; SSH_HOST=""; SSH_PORT=""
+            continue
+        fi
+
+        if probe_ssh_gpu; then
+            ENDPOINT_CLASSIFICATION="direct_endpoint_ready"
+            SSH_ERROR="none"
+            acquire_status ssh_ready
+            write_boot_heartbeat
+            ACQUIRED=1
+            acquire_status acquired
+            log "acquired pod $POD_ID in ${ACQUIRED_DC} after $attempted attempt(s)"
+            return 0
+        fi
+
+        log "pod $POD_ID assigned an endpoint but nvidia-smi probe failed; tearing down"
+        teardown_pod "$POD_ID"
+        POD_ID=""; POD_CREATED_BY_US=0; SSH_HOST=""; SSH_PORT=""
+    done
+
+    die "could not acquire a working pod after $attempted attempt(s) across candidate datacenters"
 }
 
 extract_ssh_field() {
@@ -526,11 +786,17 @@ wait_for_ssh_ready() {
         return 0
     fi
 
-    local deadline classifier_deadline detail poll_seconds
+    local deadline classifier_deadline detail poll_seconds pod_class
     deadline=$((SECONDS + READINESS_TIMEOUT_SECONDS))
     classifier_deadline=$((SECONDS + ENDPOINT_CLASSIFIER_TIMEOUT_SECONDS))
     while [ "$SECONDS" -lt "$deadline" ]; do
         detail=$(capture_cmd runpodctl pod get "$POD_ID" --output json)
+        pod_class=$(printf '%s' "$detail" | classify_pod_state)
+        if [[ $pod_class == dead\ * ]]; then
+            SSH_ERROR=$(safe_status_value "${pod_class#dead }")
+            print_endpoint_info >&2
+            die "pod $POD_ID entered dead state (${pod_class#dead })"
+        fi
         classify_endpoint_detail "$detail"
         log "endpoint source=$ENDPOINT_SOURCE classification=$ENDPOINT_CLASSIFICATION ssh_error=${SSH_ERROR:-none}"
         if [ -z "$SSH_HOST" ] || [ -z "$SSH_PORT" ]; then
@@ -646,6 +912,33 @@ wait_for_sentinel() {
     die "timed out waiting for $label sentinel"
 }
 
+# repair_remote_artifacts fixes the _artifacts path on the pod after rsync.
+# Locally _artifacts is a shared-worktree symlink (rlrmp Bug 0887e3e); rsync
+# copies it dangling, so a later `mkdir -p _artifacts/...` fails and aborts the
+# launch. Mirror lib_acquire.sh::repair_artifacts_symlink remotely and
+# idempotently: dangling symlink -> real dir; real dir -> leave; valid symlink
+# -> warn + leave. The local logic is unit-tested over all three cases.
+repair_remote_artifacts() {
+    local path=$REMOTE_ARTIFACTS_DIR
+    [ -n "$path" ] || return 0
+    local snippet
+    # shellcheck disable=SC2016
+    snippet='p='"$(sq "$path")"'
+if [ -L "$p" ] && [ ! -e "$p" ]; then
+    echo "artifacts: dangling symlink -> replacing with real dir" >&2
+    rm -f "$p" && mkdir -p "$p"
+elif [ -L "$p" ] && [ -e "$p" ]; then
+    echo "artifacts: valid symlink, leaving in place" >&2
+elif [ -d "$p" ]; then
+    echo "artifacts: real dir, leaving in place" >&2
+elif [ -e "$p" ]; then
+    echo "artifacts: WARNING non-dir file present at $p; leaving in place" >&2
+else
+    mkdir -p "$p"
+fi'
+    remote_cmd "$snippet"
+}
+
 bootstrap_remote_env() {
     local uv_done uv_failed jax_done jax_failed
     uv_done="$REMOTE_SENTINEL_DIR/uv_sync.done"
@@ -683,13 +976,85 @@ sync_train_spec() {
         "$TRAIN_SPEC" "root@$SSH_HOST:$REMOTE_RUN_DIR/train-spec.json"
 }
 
+# sync_rows_manifest copies the rows manifest to the pod so poll_run.sh can read
+# the same row identities for aggregate progress (W4).
+sync_rows_manifest() {
+    [ -n "$ROWS_MANIFEST" ] || return 0
+    local rsh
+    rsh=$(rsync_rsh)
+    remote_cmd "mkdir -p $(sq "$REMOTE_RUN_DIR")"
+    run_cmd rsync -az --no-owner --no-group --stats -e "$rsh" \
+        "$ROWS_MANIFEST" "root@$SSH_HOST:$REMOTE_RUN_DIR/rows-manifest.json"
+}
+
+# launch_row starts one training row via the nohup+sentinel pattern with per-row
+# done/failed/log paths derived from the row id, injecting
+# XLA_PYTHON_CLIENT_PREALLOCATE=false so parallel rows don't each grab all VRAM.
+launch_row() {
+    local row_id=$1 workdir=$2 command=$3
+    local done_file failed_file log_file pid_file remote
+    done_file="$REMOTE_SENTINEL_DIR/${row_id}.done"
+    failed_file="$REMOTE_SENTINEL_DIR/${row_id}.failed"
+    log_file="$REMOTE_RUN_DIR/logs/${row_id}.log"
+    pid_file="$REMOTE_SENTINEL_DIR/${row_id}.pid"
+    # Per-row nohup: write pid, run command (with PREALLOCATE=false), then touch
+    # done or failed. Robust quoting throughout; command runs under bash -lc.
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && { $command; touch $(sq "$done_file"); } || { touch $(sq "$failed_file"); exit 1; }") >$(sq "$log_file") 2>&1 &"
+    log "launching row $row_id"
+    remote_cmd "$remote"
+}
+
+# count_running_rows returns how many rows are still in flight (pid file exists,
+# neither done nor failed sentinel present) — used to honor MAX_PARALLEL_ROWS.
+count_running_rows() {
+    [ "$DRY_RUN" -eq 1 ] && { printf '0\n'; return 0; }
+    remote_capture "n=0; for pid in $(sq "$REMOTE_SENTINEL_DIR")/*.pid; do [ -e \"\$pid\" ] || continue; base=\${pid%.pid}; if [ ! -f \"\$base.done\" ] && [ ! -f \"\$base.failed\" ]; then n=\$((n+1)); fi; done; printf '%s' \"\$n\"" 2>/dev/null || printf '0'
+}
+
+# launch_training launches one or more training rows. With --rows-manifest it
+# launches each row with a stagger and a concurrency cap; the single
+# --launch-command path is the N=1 degenerate case (synthesized as a one-row
+# manifest in memory). No training launch when neither is configured.
 launch_training() {
+    local ids workdir command default_wd
+    default_wd=$REMOTE_RLRMP_ROOT
+
+    if [ -n "$ROWS_MANIFEST" ]; then
+        [ -f "$ROWS_MANIFEST" ] || die "rows manifest not found: $ROWS_MANIFEST"
+        local validation
+        validation=$(validate_rows_manifest <"$ROWS_MANIFEST") ||
+            die "invalid rows manifest: $validation"
+        log "rows manifest $validation (stagger=${ROW_LAUNCH_STAGGER_SECONDS}s cap=${MAX_PARALLEL_ROWS})"
+        sync_rows_manifest
+        read_lines_into ids < <(rows_manifest_ids <"$ROWS_MANIFEST")
+        local first=1 running
+        for row_id in "${ids[@]}"; do
+            workdir=$(rows_manifest_field "$row_id" workdir <"$ROWS_MANIFEST")
+            [ -n "$workdir" ] || workdir=$default_wd
+            command=$(rows_manifest_field "$row_id" command <"$ROWS_MANIFEST")
+            # Concurrency cap: wait until a slot frees before launching the next.
+            if [ "$DRY_RUN" -eq 0 ] && [ "$MAX_PARALLEL_ROWS" -gt 0 ]; then
+                while :; do
+                    running=$(count_running_rows)
+                    [ "${running:-0}" -lt "$MAX_PARALLEL_ROWS" ] && break
+                    log "row cap reached ($running/$MAX_PARALLEL_ROWS in flight); waiting"
+                    sleep "$SENTINEL_POLL_SECONDS"
+                done
+            fi
+            # Stagger between launches (skip before the very first).
+            if [ "$first" -eq 0 ] && [ "$ROW_LAUNCH_STAGGER_SECONDS" -gt 0 ]; then
+                [ "$DRY_RUN" -eq 0 ] && sleep "$ROW_LAUNCH_STAGGER_SECONDS"
+            fi
+            first=0
+            launch_row "$row_id" "$workdir" "$command"
+        done
+        log "launched ${#ids[@]} row(s)"
+        return 0
+    fi
+
     [ -n "$TRAIN_COMMAND" ] || return 0
-    local train_done train_failed
-    train_done="$REMOTE_SENTINEL_DIR/training.done"
-    train_failed="$REMOTE_SENTINEL_DIR/training.failed"
-    remote_nohup_sentinel "training" "$REMOTE_RLRMP_ROOT" "$TRAIN_COMMAND" \
-        "$train_done" "$train_failed" "$REMOTE_RUN_DIR/logs/training.log"
+    # N=1 degenerate case: one row named "training".
+    launch_row "training" "$default_wd" "$TRAIN_COMMAND"
 }
 
 main() {
@@ -712,19 +1077,26 @@ main() {
     fi
     require_real_commands
 
-    if ! has_provided_endpoint; then
-        check_docker_hub_tag
-        create_pod
-    else
+    # Trap guarantees teardown of any pod THIS script created on every
+    # non-acquired exit path, and always releases the acquisition lock.
+    trap 'acquire_trap' EXIT INT TERM
+
+    if has_provided_endpoint; then
         log "using provided ssh endpoint $SSH_HOST:$SSH_PORT"
+        wait_for_ssh_ready
+        ACQUIRED=1
+    else
+        check_docker_hub_tag
+        acquire_pod
     fi
-    wait_for_ssh_ready
+
     if [ "$ACQUIRE_ONLY" -eq 1 ]; then
         print_endpoint_info
         log "acquire-only complete for pod ${POD_ID:-<provided-endpoint>}"
         exit 0
     fi
     sync_repos
+    repair_remote_artifacts
     apply_path_patches
     bootstrap_remote_env
     verify_remote_device
