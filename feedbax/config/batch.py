@@ -11,7 +11,6 @@ from ruamel.yaml import YAML
 
 from feedbax.config.yaml import _YamlLiteral, get_yaml_loader
 from feedbax.config.utils import deep_merge
-from feedbax.plugins import EXPERIMENT_REGISTRY
 from feedbax.plugins.registry import ExperimentRegistry
 
 
@@ -175,6 +174,11 @@ def load_batch_config(
       - type=cases:   union of children
     """
     if registry is None:
+        # Imported lazily so this module does not trigger plugin discovery at
+        # import time (which would re-enter a partially initialized
+        # `feedbax.config`). See issue ccfe63a.
+        from feedbax.plugins import EXPERIMENT_REGISTRY
+
         registry = EXPERIMENT_REGISTRY
 
     yaml = get_yaml_loader(typ="safe")
