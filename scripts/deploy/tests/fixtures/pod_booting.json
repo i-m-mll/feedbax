@@ -1,0 +1,21 @@
+{
+  "id": "podabc123",
+  "name": "feedbax-rlrmp-probe",
+  "desiredStatus": "RUNNING",
+  "runtime": null,
+  "uptimeSeconds": 0,
+  "lastStatusChange": "Started by user: 2026-06-20T10:00:00Z",
+  "machine": {
+    "dataCenterId": "EU-RO-1",
+    "gpuId": "NVIDIA RTX PRO 4500 Blackwell",
+    "secureCloud": true,
+    "maxDownloadSpeedMbps": 1000,
+    "diskThroughputMBps": 500
+  },
+  "ssh": {
+    "error": "pod not ready",
+    "id": "podabc123",
+    "name": "feedbax-rlrmp-probe",
+    "status": "RUNNING"
+  }
+}

@@ -1,0 +1,49 @@
+[
+  {
+    "id": "AP-IN-1",
+    "location": "India",
+    "name": "AP-IN-1",
+    "gpuAvailability": [
+      { "displayName": "RTX 5090", "gpuId": "NVIDIA GeForce RTX 5090", "stockStatus": "Low" }
+    ]
+  },
+  {
+    "id": "EU-RO-1",
+    "location": "Romania",
+    "name": "EU-RO-1",
+    "gpuAvailability": [
+      { "displayName": "RTX 5090", "gpuId": "NVIDIA GeForce RTX 5090", "stockStatus": "High" },
+      { "displayName": "RTX 4090", "gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "Medium" }
+    ]
+  },
+  {
+    "id": "US-KS-2",
+    "location": "Kansas",
+    "name": "US-KS-2",
+    "gpuAvailability": [
+      { "displayName": "RTX 5090", "gpuId": "NVIDIA GeForce RTX 5090", "stockStatus": "Medium" }
+    ]
+  },
+  {
+    "id": "EU-SE-1",
+    "location": "Sweden",
+    "name": "EU-SE-1",
+    "gpuAvailability": [
+      { "displayName": "RTX 5090", "gpuId": "NVIDIA GeForce RTX 5090", "stockStatus": "" }
+    ]
+  },
+  {
+    "id": "CA-MTL-1",
+    "location": "Montreal",
+    "name": "CA-MTL-1",
+    "gpuAvailability": null
+  },
+  {
+    "id": "US-TX-3",
+    "location": "Texas",
+    "name": "US-TX-3",
+    "gpuAvailability": [
+      { "displayName": "RTX 4090", "gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "High" }
+    ]
+  }
+]
