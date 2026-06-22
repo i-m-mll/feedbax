@@ -1194,10 +1194,9 @@ launch_training() {
 }
 
 main() {
-    local original_args=("$@")
-    first_pass_config "${original_args[@]}"
+    first_pass_config "$@"
     load_config
-    parse_args "${original_args[@]}"
+    parse_args "$@"
     if { [ -n "$SSH_HOST" ] && [ -z "$SSH_PORT" ]; } ||
         { [ -z "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; }; then
         die "--ssh-host and --ssh-port must be provided together"
