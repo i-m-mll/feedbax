@@ -22,6 +22,50 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
+section "argument forwarding: no CLI args reaches guarded acquisition"
+
+NOARGS="$WORK/noargs"; mkdir -p "$NOARGS/stubs"
+CLOG0="$NOARGS/create.log"; : > "$CLOG0"
+cat > "$NOARGS/stubs/runpodctl" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pod create") echo "create" >> "$CLOG0"; echo '{"id":"should-not-happen"}' ;;
+  "user --output"|"user -o"|"user ") echo 'transport error' >&2; exit 7 ;;
+  "datacenter list") cat "$FIX/datacenter_list.json" ;;
+  *) echo '{}' ;;
+esac
+STUB
+chmod +x "$NOARGS/stubs/runpodctl"
+for tool in ssh rsync curl; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$NOARGS/stubs/$tool"; chmod +x "$NOARGS/stubs/$tool"
+done
+
+set +e
+PATH="$NOARGS/stubs:$PATH" \
+RUNPOD_NAME="itest-noargs-$$" \
+ACQUIRE_LOCK_FILE="$NOARGS/lock" \
+bash "$DEPLOY_DIR/runpod_deploy.sh" \
+  >"$NOARGS/out" 2>"$NOARGS/err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && grep -q 'balance could not be read' "$NOARGS/err"; then
+  ok "no-args invocation reaches balance guard"
+else
+  no "no-args invocation should reach balance guard" "rc=$rc; $(tail -5 "$NOARGS/err" | tr '\n' '|')"
+fi
+if ! grep -q 'original_args' "$NOARGS/err"; then
+  ok "no-args invocation does not trip original_args nounset"
+else
+  no "no-args invocation must not trip original_args nounset" "$(cat "$NOARGS/err" | tr '\n' '|')"
+fi
+n_create0=$( { grep -c '^create' "$CLOG0" || true; } | head -1); n_create0=${n_create0:-0}
+if [ "$n_create0" -eq 0 ]; then
+  ok "no-args regression creates no pod"
+else
+  no "no-args regression must not create a pod" "creates=$n_create0"
+fi
+
+# ---------------------------------------------------------------------------
 section "W1 trap teardown on simulated dead-state acquisition"
 
 STUBS="$WORK/stubs"
