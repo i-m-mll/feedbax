@@ -6,6 +6,7 @@
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from functools import partial, wraps
 from pathlib import Path
 from typing import Any, Optional, Tuple, TypeAlias
@@ -58,6 +59,10 @@ LOSS_FMT = ".2e"
 
 
 logger = logging.getLogger(__name__)
+
+
+def _as_host_scalar(value: Array) -> float:
+    return float(jax.device_get(value))
 
 
 def _cast_to_state_dtypes(new_value, current_value):
@@ -556,14 +561,22 @@ class TaskTrainer(eqx.Module):
         # Could also use `np.in1d` to do this out-of-place, but it's slightly slower
         log_batches_mask[log_batches] = True
         log_batches_mask[-1] = True
+        progress_scalar_batches_mask = log_batches_mask.copy()
+        progress_scalar_batches_mask[start_batch] = True
 
         keys = jr.split(key, n_batches)
-        with progress_piter(
-            jnp.arange(start_batch, idx_end),
-            description=run_label or "",
-            completed=start_batch,
-            total=idx_end,
-        ) as (batches, update_pbar):
+        batch_iter = jnp.arange(start_batch, idx_end)
+        progress_context = (
+            progress_piter(
+                batch_iter,
+                description=run_label or "",
+                completed=start_batch,
+                total=idx_end,
+            )
+            if not disable_progress
+            else nullcontext((batch_iter, None))
+        )
+        with progress_context as (batches, update_pbar):
             # Assume 1 epoch (i.e. batch iterations only; no fixed dataset).
             for batch in batches:
                 key_train, key_eval = jr.split(keys[batch], 2)
@@ -629,9 +642,10 @@ class TaskTrainer(eqx.Module):
                     pre_step_fn,
                 )
 
-                update_pbar.subdescription(
-                    f"training loss: {losses.total.mean().item():{LOSS_FMT}}"
-                )
+                if update_pbar is not None and progress_scalar_batches_mask[batch]:
+                    update_pbar.subdescription(
+                        f"training loss: {_as_host_scalar(losses.total.mean()):{LOSS_FMT}}"
+                    )
 
                 if batch_callbacks is not None and batch in batch_callbacks:
                     for func in batch_callbacks[batch]:
@@ -690,14 +704,16 @@ class TaskTrainer(eqx.Module):
                     losses_mean = losses
                     ensembled_str = ""
 
-                if self._use_tb and self.writer is not None:
+                if self._use_tb and self.writer is not None and log_batches_mask[batch]:
                     self.writer.add_scalar(
-                        f"loss/{ensembled_str}train", losses_mean.total.item(), batch
+                        f"loss/{ensembled_str}train",
+                        _as_host_scalar(losses_mean.total),
+                        batch,
                     )
                     for loss_term_label, loss_term in losses_mean.flatten().items():
                         self.writer.add_scalar(
                             f"loss/{ensembled_str}train/{loss_term_label}",
-                            loss_term.item(),
+                            _as_host_scalar(loss_term),
                             batch,
                         )
 
@@ -766,7 +782,7 @@ class TaskTrainer(eqx.Module):
                             self.writer.add_figure(f"validation/{label}", fig, batch)
                         self.writer.add_scalar(
                             f"loss/{ensembled_str}validation",
-                            losses_validation_mean.total.item(),
+                            _as_host_scalar(losses_validation_mean.total),
                             batch,
                         )
                         for (
@@ -775,7 +791,7 @@ class TaskTrainer(eqx.Module):
                         ) in losses_validation_mean.flatten().items():
                             self.writer.add_scalar(
                                 f"loss/{ensembled_str}validation/{loss_term_label}",
-                                loss_term.item(),
+                                _as_host_scalar(loss_term),
                                 batch,
                             )
 

@@ -334,6 +334,32 @@ def test_run_training_graph_trains_tiny_full_graph() -> None:
     assert "task_data:inputs.model" in result.retained_observables["task_data"]
 
 
+def test_run_training_graph_emits_progress_on_snapshot_cadence() -> None:
+    compiled = compile_training_run(
+        graph_spec=_linear_graph_spec(),
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_task_binding_spec(),
+        cfg=_cfg(),
+    )
+    events: list[dict] = []
+
+    run_training_graph(
+        compiled,
+        job_id="test-job",
+        total_batches=5,
+        cfg=_cfg(snapshot_interval=3),
+        stop_event=threading.Event(),
+        emit=events.append,
+    )
+
+    progress_batches = [event["batch"] for event in events if event["type"] == "training_progress"]
+    log_batches = [event["batch"] for event in events if event["type"] == "training_log"]
+
+    assert progress_batches == [1, 3, 5]
+    assert log_batches == [1, 3, 5]
+
+
 def test_run_training_graph_projects_parameter_constraints_after_update() -> None:
     graph_spec = GraphSpec.model_validate(_linear_graph_spec())
     graph_spec.parameter_constraints = [
@@ -399,6 +425,8 @@ def test_compile_training_run_rejects_task_binding_to_occupied_port() -> None:
             task_binding_spec=_task_binding_spec(),
             cfg=_cfg(),
         )
+
+
 def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     graph_spec = GraphSpec(
         nodes={
