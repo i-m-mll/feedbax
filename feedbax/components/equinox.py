@@ -13,6 +13,7 @@ from collections.abc import Hashable
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import jax
+import jax.numpy as jnp
 import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
@@ -59,23 +60,39 @@ __all__ = [
 # LINEAR LAYERS
 # ============================================================
 
+
 class Linear(Component):
     """Linear transformation layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Linear
-    in_features: Union[int, Literal['scalar']]
-    out_features: Union[int, Literal['scalar']]
+    in_features: Union[int, Literal["scalar"]]
+    out_features: Union[int, Literal["scalar"]]
     use_bias: bool
     dtype: Any
-    def __init__(self, in_features: Union[int, Literal['scalar']], out_features: Union[int, Literal['scalar']], use_bias: bool = True, dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_features: Union[int, Literal["scalar"]],
+        out_features: Union[int, Literal["scalar"]],
+        use_bias: bool = True,
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_features = in_features
         self.out_features = out_features
         self.use_bias = use_bias
         self.dtype = dtype
-        self.layer = eqx.nn.Linear(in_features=in_features, out_features=out_features, use_bias=use_bias, dtype=dtype, key=key)
+        self.layer = eqx.nn.Linear(
+            in_features=in_features,
+            out_features=out_features,
+            use_bias=use_bias,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -87,16 +104,16 @@ class Linear(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class Identity(Component):
     """Identity layer (passes input through unchanged)."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Identity
 
     def __init__(self):
-
         self.layer = eqx.nn.Identity()
 
     def __call__(
@@ -109,15 +126,16 @@ class Identity(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class MLP(Component):
     """Multi-layer perceptron with configurable depth and activations."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.MLP
-    in_size: Union[int, Literal['scalar']]
-    out_size: Union[int, Literal['scalar']]
+    in_size: Union[int, Literal["scalar"]]
+    out_size: Union[int, Literal["scalar"]]
     width_size: int
     depth: int
     activation: Callable
@@ -125,7 +143,21 @@ class MLP(Component):
     use_bias: bool
     use_final_bias: bool
     dtype: Any
-    def __init__(self, in_size: Union[int, Literal['scalar']], out_size: Union[int, Literal['scalar']], width_size: int, depth: int, activation: Callable = jax.nn.relu, final_activation: Callable = lambda x: x, use_bias: bool = True, use_final_bias: bool = True, dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_size: Union[int, Literal["scalar"]],
+        out_size: Union[int, Literal["scalar"]],
+        width_size: int,
+        depth: int,
+        activation: Callable = jax.nn.relu,
+        final_activation: Callable = lambda x: x,
+        use_bias: bool = True,
+        use_final_bias: bool = True,
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_size = in_size
         self.out_size = out_size
         self.width_size = width_size
@@ -135,7 +167,18 @@ class MLP(Component):
         self.use_bias = use_bias
         self.use_final_bias = use_final_bias
         self.dtype = dtype
-        self.layer = eqx.nn.MLP(in_size=in_size, out_size=out_size, width_size=width_size, depth=depth, activation=activation, final_activation=final_activation, use_bias=use_bias, use_final_bias=use_final_bias, dtype=dtype, key=key)
+        self.layer = eqx.nn.MLP(
+            in_size=in_size,
+            out_size=out_size,
+            width_size=width_size,
+            depth=depth,
+            activation=activation,
+            final_activation=final_activation,
+            use_bias=use_bias,
+            use_final_bias=use_final_bias,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -147,15 +190,17 @@ class MLP(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 # ============================================================
 # CONV LAYERS
 # ============================================================
 
+
 class Conv1d(Component):
     """1D convolution layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Conv1d
     in_channels: int
@@ -168,7 +213,22 @@ class Conv1d(Component):
     use_bias: bool
     padding_mode: str
     dtype: Any
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = 0, dilation: Union[int, Sequence[int]] = 1, groups: int = 1, use_bias: bool = True, padding_mode: str = 'ZEROS', dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        dilation: Union[int, Sequence[int]] = 1,
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -179,7 +239,19 @@ class Conv1d(Component):
         self.use_bias = use_bias
         self.padding_mode = padding_mode
         self.dtype = dtype
-        self.layer = eqx.nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, use_bias=use_bias, padding_mode=padding_mode, dtype=dtype, key=key)
+        self.layer = eqx.nn.Conv1d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -191,11 +263,12 @@ class Conv1d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class Conv2d(Component):
     """2D convolution layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Conv2d
     in_channels: int
@@ -208,7 +281,22 @@ class Conv2d(Component):
     use_bias: bool
     padding_mode: str
     dtype: Any
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = (1, 1), padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0), dilation: Union[int, Sequence[int]] = (1, 1), groups: int = 1, use_bias: bool = True, padding_mode: str = 'ZEROS', dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = (1, 1),
+        padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0),
+        dilation: Union[int, Sequence[int]] = (1, 1),
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -219,7 +307,19 @@ class Conv2d(Component):
         self.use_bias = use_bias
         self.padding_mode = padding_mode
         self.dtype = dtype
-        self.layer = eqx.nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, use_bias=use_bias, padding_mode=padding_mode, dtype=dtype, key=key)
+        self.layer = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -231,11 +331,12 @@ class Conv2d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class Conv3d(Component):
     """3D convolution layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Conv3d
     in_channels: int
@@ -248,7 +349,22 @@ class Conv3d(Component):
     use_bias: bool
     padding_mode: str
     dtype: Any
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = (1, 1, 1), padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0, 0), dilation: Union[int, Sequence[int]] = (1, 1, 1), groups: int = 1, use_bias: bool = True, padding_mode: str = 'ZEROS', dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = (1, 1, 1),
+        padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0, 0),
+        dilation: Union[int, Sequence[int]] = (1, 1, 1),
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -259,7 +375,19 @@ class Conv3d(Component):
         self.use_bias = use_bias
         self.padding_mode = padding_mode
         self.dtype = dtype
-        self.layer = eqx.nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, use_bias=use_bias, padding_mode=padding_mode, dtype=dtype, key=key)
+        self.layer = eqx.nn.Conv3d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -271,11 +399,12 @@ class Conv3d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class ConvTranspose1d(Component):
     """1D transposed convolution (deconvolution) layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.ConvTranspose1d
     in_channels: int
@@ -289,7 +418,23 @@ class ConvTranspose1d(Component):
     use_bias: bool
     padding_mode: str
     dtype: Any
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, output_padding: Union[int, Sequence[int]] = 0, padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = 0, dilation: Union[int, Sequence[int]] = 1, groups: int = 1, use_bias: bool = True, padding_mode: str = 'ZEROS', dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        output_padding: Union[int, Sequence[int]] = 0,
+        padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        dilation: Union[int, Sequence[int]] = 1,
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -301,7 +446,20 @@ class ConvTranspose1d(Component):
         self.use_bias = use_bias
         self.padding_mode = padding_mode
         self.dtype = dtype
-        self.layer = eqx.nn.ConvTranspose1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, output_padding=output_padding, padding=padding, dilation=dilation, groups=groups, use_bias=use_bias, padding_mode=padding_mode, dtype=dtype, key=key)
+        self.layer = eqx.nn.ConvTranspose1d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            output_padding=output_padding,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -313,11 +471,12 @@ class ConvTranspose1d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class ConvTranspose2d(Component):
     """2D transposed convolution (deconvolution) layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.ConvTranspose2d
     in_channels: int
@@ -331,7 +490,23 @@ class ConvTranspose2d(Component):
     use_bias: bool
     padding_mode: str
     dtype: Any
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = (1, 1), output_padding: Union[int, Sequence[int]] = (0, 0), padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0), dilation: Union[int, Sequence[int]] = (1, 1), groups: int = 1, use_bias: bool = True, padding_mode: str = 'ZEROS', dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = (1, 1),
+        output_padding: Union[int, Sequence[int]] = (0, 0),
+        padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0),
+        dilation: Union[int, Sequence[int]] = (1, 1),
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -343,7 +518,20 @@ class ConvTranspose2d(Component):
         self.use_bias = use_bias
         self.padding_mode = padding_mode
         self.dtype = dtype
-        self.layer = eqx.nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, output_padding=output_padding, padding=padding, dilation=dilation, groups=groups, use_bias=use_bias, padding_mode=padding_mode, dtype=dtype, key=key)
+        self.layer = eqx.nn.ConvTranspose2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            output_padding=output_padding,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -355,11 +543,12 @@ class ConvTranspose2d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class ConvTranspose3d(Component):
     """3D transposed convolution (deconvolution) layer."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.ConvTranspose3d
     in_channels: int
@@ -373,7 +562,23 @@ class ConvTranspose3d(Component):
     use_bias: bool
     padding_mode: str
     dtype: Any
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = (1, 1, 1), output_padding: Union[int, Sequence[int]] = (0, 0, 0), padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0, 0), dilation: Union[int, Sequence[int]] = (1, 1, 1), groups: int = 1, use_bias: bool = True, padding_mode: str = 'ZEROS', dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = (1, 1, 1),
+        output_padding: Union[int, Sequence[int]] = (0, 0, 0),
+        padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]] = (0, 0, 0),
+        dilation: Union[int, Sequence[int]] = (1, 1, 1),
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -385,7 +590,20 @@ class ConvTranspose3d(Component):
         self.use_bias = use_bias
         self.padding_mode = padding_mode
         self.dtype = dtype
-        self.layer = eqx.nn.ConvTranspose3d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, output_padding=output_padding, padding=padding, dilation=dilation, groups=groups, use_bias=use_bias, padding_mode=padding_mode, dtype=dtype, key=key)
+        self.layer = eqx.nn.ConvTranspose3d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            output_padding=output_padding,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -397,27 +615,40 @@ class ConvTranspose3d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 # ============================================================
 # RNN LAYERS
 # ============================================================
 
+
 class GRUCell(Component):
     """Gated Recurrent Unit cell."""
 
-    input_ports = ('input', 'hidden')
-    output_ports = ('output', 'hidden')
+    input_ports = ("input", "hidden")
+    output_ports = ("output", "hidden")
 
     layer: eqx.nn.GRUCell
     input_size: int
     hidden_size: int
     use_bias: bool
     dtype: Any
-    def __init__(self, input_size: int, hidden_size: int, use_bias: bool = True, dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        use_bias: bool = True,
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.use_bias = use_bias
         self.dtype = dtype
-        self.layer = eqx.nn.GRUCell(input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key)
+        self.layer = eqx.nn.GRUCell(
+            input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key
+        )
 
     def __call__(
         self,
@@ -430,23 +661,35 @@ class GRUCell(Component):
         new_hidden = self.layer(inputs["input"], hidden)
         return {"output": new_hidden, "hidden": new_hidden}, state
 
+
 class LSTMCell(Component):
     """Long Short-Term Memory cell."""
 
-    input_ports = ('input', 'hidden', 'cell')
-    output_ports = ('output', 'hidden', 'cell')
+    input_ports = ("input", "hidden", "cell")
+    output_ports = ("output", "hidden", "cell")
 
     layer: eqx.nn.LSTMCell
     input_size: int
     hidden_size: int
     use_bias: bool
     dtype: Any
-    def __init__(self, input_size: int, hidden_size: int, use_bias: bool = True, dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        use_bias: bool = True,
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.use_bias = use_bias
         self.dtype = dtype
-        self.layer = eqx.nn.LSTMCell(input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key)
+        self.layer = eqx.nn.LSTMCell(
+            input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key
+        )
 
     def __call__(
         self,
@@ -460,15 +703,17 @@ class LSTMCell(Component):
         new_hidden, new_cell = self.layer(inputs["input"], (hidden, cell_state), key=key)
         return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
 
+
 # ============================================================
 # NORM LAYERS
 # ============================================================
 
+
 class LayerNorm(Component):
     """Layer normalization."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.LayerNorm
     shape: Union[int, Sequence[int]]
@@ -477,14 +722,30 @@ class LayerNorm(Component):
     use_bias: bool
     dtype: Any
     elementwise_affine: Optional[bool]
-    def __init__(self, shape: Union[int, Sequence[int]], eps: float = 1e-05, use_weight: bool = True, use_bias: bool = True, dtype = None, elementwise_affine: Optional[bool] = None):
+
+    def __init__(
+        self,
+        shape: Union[int, Sequence[int]],
+        eps: float = 1e-05,
+        use_weight: bool = True,
+        use_bias: bool = True,
+        dtype=jnp.float32,
+        elementwise_affine: Optional[bool] = None,
+    ):
         self.shape = shape
         self.eps = eps
         self.use_weight = use_weight
         self.use_bias = use_bias
         self.dtype = dtype
         self.elementwise_affine = elementwise_affine
-        self.layer = eqx.nn.LayerNorm(shape=shape, eps=eps, use_weight=use_weight, use_bias=use_bias, dtype=dtype, elementwise_affine=elementwise_affine)
+        self.layer = eqx.nn.LayerNorm(
+            shape=shape,
+            eps=eps,
+            use_weight=use_weight,
+            use_bias=use_bias,
+            dtype=dtype,
+            elementwise_affine=elementwise_affine,
+        )
 
     def __call__(
         self,
@@ -496,11 +757,12 @@ class LayerNorm(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class RMSNorm(Component):
     """Root Mean Square normalization."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.RMSNorm
     shape: Union[int, Sequence[int]]
@@ -508,13 +770,23 @@ class RMSNorm(Component):
     use_weight: bool
     use_bias: bool
     dtype: Any
-    def __init__(self, shape: Union[int, Sequence[int]], eps: float = 1e-05, use_weight: bool = True, use_bias: bool = True, dtype = None):
+
+    def __init__(
+        self,
+        shape: Union[int, Sequence[int]],
+        eps: float = 1e-05,
+        use_weight: bool = True,
+        use_bias: bool = True,
+        dtype=jnp.float32,
+    ):
         self.shape = shape
         self.eps = eps
         self.use_weight = use_weight
         self.use_bias = use_bias
         self.dtype = dtype
-        self.layer = eqx.nn.RMSNorm(shape=shape, eps=eps, use_weight=use_weight, use_bias=use_bias, dtype=dtype)
+        self.layer = eqx.nn.RMSNorm(
+            shape=shape, eps=eps, use_weight=use_weight, use_bias=use_bias, dtype=dtype
+        )
 
     def __call__(
         self,
@@ -526,11 +798,12 @@ class RMSNorm(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class GroupNorm(Component):
     """Group normalization."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.GroupNorm
     groups: int
@@ -538,13 +811,27 @@ class GroupNorm(Component):
     eps: float
     channelwise_affine: bool
     dtype: Any
-    def __init__(self, groups: int, channels: Optional[int] = None, eps: float = 1e-05, channelwise_affine: bool = True, dtype = None):
+
+    def __init__(
+        self,
+        groups: int,
+        channels: Optional[int] = None,
+        eps: float = 1e-05,
+        channelwise_affine: bool = True,
+        dtype=jnp.float32,
+    ):
         self.groups = groups
         self.channels = channels
         self.eps = eps
         self.channelwise_affine = channelwise_affine
         self.dtype = dtype
-        self.layer = eqx.nn.GroupNorm(groups=groups, channels=channels, eps=eps, channelwise_affine=channelwise_affine, dtype=dtype)
+        self.layer = eqx.nn.GroupNorm(
+            groups=groups,
+            channels=channels,
+            eps=eps,
+            channelwise_affine=channelwise_affine,
+            dtype=dtype,
+        )
 
     def __call__(
         self,
@@ -556,11 +843,12 @@ class GroupNorm(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class BatchNorm(Component):
     """Batch normalization. Uses inference mode by default in graph execution."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.BatchNorm
     input_size: int
@@ -570,7 +858,17 @@ class BatchNorm(Component):
     momentum: float
     inference: bool
     dtype: Any
-    def __init__(self, input_size: int, axis_name: Union[Hashable, Sequence[Hashable]], eps: float = 1e-05, channelwise_affine: bool = True, momentum: float = 0.99, inference: bool = False, dtype = None):
+
+    def __init__(
+        self,
+        input_size: int,
+        axis_name: Union[Hashable, Sequence[Hashable]],
+        eps: float = 1e-05,
+        channelwise_affine: bool = True,
+        momentum: float = 0.99,
+        inference: bool = False,
+        dtype=jnp.float32,
+    ):
         self.input_size = input_size
         self.axis_name = axis_name
         self.eps = eps
@@ -578,7 +876,15 @@ class BatchNorm(Component):
         self.momentum = momentum
         self.inference = inference
         self.dtype = dtype
-        self.layer = eqx.nn.BatchNorm(input_size=input_size, axis_name=axis_name, eps=eps, channelwise_affine=channelwise_affine, momentum=momentum, inference=inference, dtype=dtype)
+        self.layer = eqx.nn.BatchNorm(
+            input_size=input_size,
+            axis_name=axis_name,
+            eps=eps,
+            channelwise_affine=channelwise_affine,
+            momentum=momentum,
+            inference=inference,
+            dtype=dtype,
+        )
 
     def __call__(
         self,
@@ -590,27 +896,38 @@ class BatchNorm(Component):
         output = eqx.nn.inference_mode(self.layer)(inputs["input"])
         return {"output": output}, state
 
+
 # ============================================================
 # POOL LAYERS
 # ============================================================
 
+
 class MaxPool1d(Component):
     """1D max pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.MaxPool1d
     kernel_size: Union[int, Sequence[int]]
     stride: Union[int, Sequence[int]]
     padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
     use_ceil: bool
-    def __init__(self, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0, use_ceil: bool = False):
+
+    def __init__(
+        self,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        use_ceil: bool = False,
+    ):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.use_ceil = use_ceil
-        self.layer = eqx.nn.MaxPool1d(kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil)
+        self.layer = eqx.nn.MaxPool1d(
+            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+        )
 
     def __call__(
         self,
@@ -622,23 +939,33 @@ class MaxPool1d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class MaxPool2d(Component):
     """2D max pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.MaxPool2d
     kernel_size: Union[int, Sequence[int]]
     stride: Union[int, Sequence[int]]
     padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
     use_ceil: bool
-    def __init__(self, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0, use_ceil: bool = False):
+
+    def __init__(
+        self,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        use_ceil: bool = False,
+    ):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.use_ceil = use_ceil
-        self.layer = eqx.nn.MaxPool2d(kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil)
+        self.layer = eqx.nn.MaxPool2d(
+            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+        )
 
     def __call__(
         self,
@@ -650,23 +977,33 @@ class MaxPool2d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class MaxPool3d(Component):
     """3D max pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.MaxPool3d
     kernel_size: Union[int, Sequence[int]]
     stride: Union[int, Sequence[int]]
     padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
     use_ceil: bool
-    def __init__(self, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0, use_ceil: bool = False):
+
+    def __init__(
+        self,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        use_ceil: bool = False,
+    ):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.use_ceil = use_ceil
-        self.layer = eqx.nn.MaxPool3d(kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil)
+        self.layer = eqx.nn.MaxPool3d(
+            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+        )
 
     def __call__(
         self,
@@ -678,23 +1015,33 @@ class MaxPool3d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AvgPool1d(Component):
     """1D average pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AvgPool1d
     kernel_size: Union[int, Sequence[int]]
     stride: Union[int, Sequence[int]]
     padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
     use_ceil: bool
-    def __init__(self, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0, use_ceil: bool = False):
+
+    def __init__(
+        self,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        use_ceil: bool = False,
+    ):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.use_ceil = use_ceil
-        self.layer = eqx.nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil)
+        self.layer = eqx.nn.AvgPool1d(
+            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+        )
 
     def __call__(
         self,
@@ -706,23 +1053,33 @@ class AvgPool1d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AvgPool2d(Component):
     """2D average pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AvgPool2d
     kernel_size: Union[int, Sequence[int]]
     stride: Union[int, Sequence[int]]
     padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
     use_ceil: bool
-    def __init__(self, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0, use_ceil: bool = False):
+
+    def __init__(
+        self,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        use_ceil: bool = False,
+    ):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.use_ceil = use_ceil
-        self.layer = eqx.nn.AvgPool2d(kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil)
+        self.layer = eqx.nn.AvgPool2d(
+            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+        )
 
     def __call__(
         self,
@@ -734,23 +1091,33 @@ class AvgPool2d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AvgPool3d(Component):
     """3D average pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AvgPool3d
     kernel_size: Union[int, Sequence[int]]
     stride: Union[int, Sequence[int]]
     padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
     use_ceil: bool
-    def __init__(self, kernel_size: Union[int, Sequence[int]], stride: Union[int, Sequence[int]] = 1, padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0, use_ceil: bool = False):
+
+    def __init__(
+        self,
+        kernel_size: Union[int, Sequence[int]],
+        stride: Union[int, Sequence[int]] = 1,
+        padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
+        use_ceil: bool = False,
+    ):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
         self.use_ceil = use_ceil
-        self.layer = eqx.nn.AvgPool3d(kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil)
+        self.layer = eqx.nn.AvgPool3d(
+            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+        )
 
     def __call__(
         self,
@@ -762,14 +1129,16 @@ class AvgPool3d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AdaptiveMaxPool1d(Component):
     """1D adaptive max pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AdaptiveMaxPool1d
     target_shape: Union[int, Sequence[int]]
+
     def __init__(self, target_shape: Union[int, Sequence[int]]):
         self.target_shape = target_shape
         self.layer = eqx.nn.AdaptiveMaxPool1d(target_shape=target_shape)
@@ -784,14 +1153,16 @@ class AdaptiveMaxPool1d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AdaptiveMaxPool2d(Component):
     """2D adaptive max pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AdaptiveMaxPool2d
     target_shape: Union[int, Sequence[int]]
+
     def __init__(self, target_shape: Union[int, Sequence[int]]):
         self.target_shape = target_shape
         self.layer = eqx.nn.AdaptiveMaxPool2d(target_shape=target_shape)
@@ -806,14 +1177,16 @@ class AdaptiveMaxPool2d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AdaptiveMaxPool3d(Component):
     """3D adaptive max pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AdaptiveMaxPool3d
     target_shape: Union[int, Sequence[int]]
+
     def __init__(self, target_shape: Union[int, Sequence[int]]):
         self.target_shape = target_shape
         self.layer = eqx.nn.AdaptiveMaxPool3d(target_shape=target_shape)
@@ -828,14 +1201,16 @@ class AdaptiveMaxPool3d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AdaptiveAvgPool1d(Component):
     """1D adaptive average pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AdaptiveAvgPool1d
     target_shape: Union[int, Sequence[int]]
+
     def __init__(self, target_shape: Union[int, Sequence[int]]):
         self.target_shape = target_shape
         self.layer = eqx.nn.AdaptiveAvgPool1d(target_shape=target_shape)
@@ -850,14 +1225,16 @@ class AdaptiveAvgPool1d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AdaptiveAvgPool2d(Component):
     """2D adaptive average pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AdaptiveAvgPool2d
     target_shape: Union[int, Sequence[int]]
+
     def __init__(self, target_shape: Union[int, Sequence[int]]):
         self.target_shape = target_shape
         self.layer = eqx.nn.AdaptiveAvgPool2d(target_shape=target_shape)
@@ -872,14 +1249,16 @@ class AdaptiveAvgPool2d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class AdaptiveAvgPool3d(Component):
     """3D adaptive average pooling."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.AdaptiveAvgPool3d
     target_shape: Union[int, Sequence[int]]
+
     def __init__(self, target_shape: Union[int, Sequence[int]]):
         self.target_shape = target_shape
         self.layer = eqx.nn.AdaptiveAvgPool3d(target_shape=target_shape)
@@ -894,15 +1273,17 @@ class AdaptiveAvgPool3d(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 # ============================================================
 # ATTENTION LAYERS
 # ============================================================
 
+
 class MultiheadAttention(Component):
     """Multi-head attention layer."""
 
-    input_ports = ('query', 'key_', 'value')
-    output_ports = ('output',)
+    input_ports = ("query", "key_", "value")
+    output_ports = ("output",)
 
     layer: eqx.nn.MultiheadAttention
     num_heads: int
@@ -919,7 +1300,26 @@ class MultiheadAttention(Component):
     dropout_p: float
     inference: bool
     dtype: Any
-    def __init__(self, num_heads: int, query_size: int, key_size: Optional[int] = None, value_size: Optional[int] = None, output_size: Optional[int] = None, qk_size: Optional[int] = None, vo_size: Optional[int] = None, use_query_bias: bool = False, use_key_bias: bool = False, use_value_bias: bool = False, use_output_bias: bool = False, dropout_p: float = 0.0, inference: bool = False, dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        num_heads: int,
+        query_size: int,
+        key_size: Optional[int] = None,
+        value_size: Optional[int] = None,
+        output_size: Optional[int] = None,
+        qk_size: Optional[int] = None,
+        vo_size: Optional[int] = None,
+        use_query_bias: bool = False,
+        use_key_bias: bool = False,
+        use_value_bias: bool = False,
+        use_output_bias: bool = False,
+        dropout_p: float = 0.0,
+        inference: bool = False,
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.num_heads = num_heads
         self.query_size = query_size
         self.key_size = key_size
@@ -934,7 +1334,23 @@ class MultiheadAttention(Component):
         self.dropout_p = dropout_p
         self.inference = inference
         self.dtype = dtype
-        self.layer = eqx.nn.MultiheadAttention(num_heads=num_heads, query_size=query_size, key_size=key_size, value_size=value_size, output_size=output_size, qk_size=qk_size, vo_size=vo_size, use_query_bias=use_query_bias, use_key_bias=use_key_bias, use_value_bias=use_value_bias, use_output_bias=use_output_bias, dropout_p=dropout_p, inference=inference, dtype=dtype, key=key)
+        self.layer = eqx.nn.MultiheadAttention(
+            num_heads=num_heads,
+            query_size=query_size,
+            key_size=key_size,
+            value_size=value_size,
+            output_size=output_size,
+            qk_size=qk_size,
+            vo_size=vo_size,
+            use_query_bias=use_query_bias,
+            use_key_bias=use_key_bias,
+            use_value_bias=use_value_bias,
+            use_output_bias=use_output_bias,
+            dropout_p=dropout_p,
+            inference=inference,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -950,21 +1366,25 @@ class MultiheadAttention(Component):
         )
         return {"output": output}, state
 
+
 class RotaryPositionalEmbedding(Component):
     """Rotary positional embedding for attention."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.RotaryPositionalEmbedding
     embedding_size: int
     theta: float
     dtype: Any
+
     def __init__(self, embedding_size: int, theta: float = 10000.0, dtype: Any = None):
         self.embedding_size = embedding_size
         self.theta = theta
         self.dtype = dtype
-        self.layer = eqx.nn.RotaryPositionalEmbedding(embedding_size=embedding_size, theta=theta, dtype=dtype)
+        self.layer = eqx.nn.RotaryPositionalEmbedding(
+            embedding_size=embedding_size, theta=theta, dtype=dtype
+        )
 
     def __call__(
         self,
@@ -975,28 +1395,45 @@ class RotaryPositionalEmbedding(Component):
     ) -> tuple[dict[str, PyTree], State]:
         output = self.layer(inputs["input"])
         return {"output": output}, state
+
 
 # ============================================================
 # OTHER LAYERS
 # ============================================================
 
+
 class Embedding(Component):
     """Embedding layer for discrete tokens."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Embedding
     num_embeddings: Optional[int]
     embedding_size: Optional[int]
-    weight: Optional[Float[Array, 'num_embeddings embedding_size']]
+    weight: Optional[Float[Array, "num_embeddings embedding_size"]]
     dtype: Any
-    def __init__(self, num_embeddings: Optional[int] = None, embedding_size: Optional[int] = None, weight: Optional[Float[Array, 'num_embeddings embedding_size']] = None, dtype = None, *, key: PRNGKeyArray):
+
+    def __init__(
+        self,
+        num_embeddings: Optional[int] = None,
+        embedding_size: Optional[int] = None,
+        weight: Optional[Float[Array, "num_embeddings embedding_size"]] = None,
+        dtype=jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.num_embeddings = num_embeddings
         self.embedding_size = embedding_size
         self.weight = weight
         self.dtype = dtype
-        self.layer = eqx.nn.Embedding(num_embeddings=num_embeddings, embedding_size=embedding_size, weight=weight, dtype=dtype, key=key)
+        self.layer = eqx.nn.Embedding(
+            num_embeddings=num_embeddings,
+            embedding_size=embedding_size,
+            weight=weight,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(
         self,
@@ -1008,17 +1445,21 @@ class Embedding(Component):
         output = self.layer(inputs["input"])
         return {"output": output}, state
 
+
 class Dropout(Component):
     """Dropout layer. Disabled by default in graph execution (inference mode)."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.Dropout
     p: float
     inference: bool
     deterministic: Optional[bool]
-    def __init__(self, p: float = 0.5, inference: bool = False, deterministic: Optional[bool] = None):
+
+    def __init__(
+        self, p: float = 0.5, inference: bool = False, deterministic: Optional[bool] = None
+    ):
         self.p = p
         self.inference = inference
         self.deterministic = deterministic
@@ -1034,14 +1475,16 @@ class Dropout(Component):
         output = eqx.nn.inference_mode(self.layer)(inputs["input"])
         return {"output": output}, state
 
+
 class PReLU(Component):
     """Parametric ReLU activation."""
 
-    input_ports = ('input',)
-    output_ports = ('output',)
+    input_ports = ("input",)
+    output_ports = ("output",)
 
     layer: eqx.nn.PReLU
     init_alpha: Union[float, Array, None]
+
     def __init__(self, init_alpha: Union[float, Array, None] = 0.25):
         self.init_alpha = init_alpha
         self.layer = eqx.nn.PReLU(init_alpha=init_alpha)

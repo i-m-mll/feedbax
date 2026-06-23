@@ -9,7 +9,10 @@ import pytest
 from feedbax.config.mapping import WhereDict
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.runtime.graph import Graph
-from feedbax.contracts.graphs.templates import network_template_graph, recurrent_controller_template_graph
+from feedbax.contracts.graphs.templates import (
+    network_template_graph,
+    recurrent_controller_template_graph,
+)
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.models.networks import (
     MaskedLinear,
@@ -243,7 +246,9 @@ def test_network_template_population_constraints_materialize_without_recurrent_m
     )
     subgraph = spec
 
-    assert [(constraint.node, constraint.role) for constraint in subgraph.parameter_constraints] == [
+    assert [
+        (constraint.node, constraint.role) for constraint in subgraph.parameter_constraints
+    ] == [
         ("cell", "input_kernel"),
         ("readout", "weight"),
     ]
@@ -298,6 +303,41 @@ def test_population_constraints_match_simplestagednetwork_fixed_assignment(
         legacy_readout_weight == 0.0,
         graph.nodes["readout"].layer.weight == 0.0,
     )
+
+
+def test_simplestagednetwork_uses_plain_linear_for_all_ones_population_masks() -> None:
+    population = PopulationStructure.create(
+        hidden_size=4,
+        key=jax.random.PRNGKey(0),
+    )
+
+    network = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert isinstance(network.encoder, eqx.nn.Linear)
+    assert isinstance(network.readout, eqx.nn.Linear)
+    assert not isinstance(network.encoder, MaskedLinear)
+    assert not isinstance(network.readout, MaskedLinear)
+
+
+def test_simplestagednetwork_keeps_maskedlinear_for_structured_population_masks() -> None:
+    network = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=_fixed_population_structure(),
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert isinstance(network.readout, MaskedLinear)
+    assert not jnp.all(network.readout.mask == 1)
 
 
 def test_population_constraints_project_after_synthetic_update() -> None:

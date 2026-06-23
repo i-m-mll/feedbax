@@ -4,8 +4,11 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+from __future__ import annotations
+
 import logging
 import math
+import inspect
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 from typing import Literal, Optional, cast
@@ -417,6 +420,55 @@ def infer_recurrent_gate_count(weight_rows: int, hidden_size: int) -> int:
     return weight_rows // hidden_size
 
 
+def _supports_keyword(factory: Callable[..., Module], keyword: str) -> bool:
+    """Return whether ``factory`` accepts ``keyword`` without calling it."""
+
+    try:
+        params = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        return False
+    return keyword in params or any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+
+
+def _trainable_dtype_kwargs(factory: Callable[..., Module], dtype: object) -> dict[str, object]:
+    if _supports_keyword(factory, "dtype"):
+        return {"dtype": dtype}
+    return {}
+
+
+def _is_all_ones_mask(mask: Array) -> bool:
+    return bool(jnp.all(jnp.asarray(mask) == 1))
+
+
+def _linear_for_population_mask(
+    in_features: int,
+    out_features: int,
+    mask: Array,
+    *,
+    use_bias: bool,
+    dtype: object,
+    key: PRNGKeyArray,
+) -> eqx.nn.Linear | "MaskedLinear":
+    if _is_all_ones_mask(mask):
+        return eqx.nn.Linear(
+            in_features,
+            out_features,
+            use_bias=use_bias,
+            dtype=dtype,
+            key=key,
+        )
+    return MaskedLinear(
+        in_features,
+        out_features,
+        mask,
+        use_bias=use_bias,
+        dtype=dtype,
+        key=key,
+    )
+
+
 def lower_population_constraints(
     population_structure: PopulationStructure | Mapping[str, object],
     *,
@@ -472,6 +524,7 @@ class MaskedLinear(Module):
         out_features: int,
         mask: Array,
         use_bias: bool = True,
+        dtype: object = jnp.float32,
         *,
         key: PRNGKeyArray,
     ):
@@ -482,10 +535,17 @@ class MaskedLinear(Module):
             out_features: Number of output features.
             mask: Binary mask of shape (out_features, in_features). 1 = trainable, 0 = always zero.
             use_bias: Whether to include a bias term.
+            dtype: Dtype for trainable weight and bias leaves.
             key: Random key for weight initialization.
         """
-        self.linear = eqx.nn.Linear(in_features, out_features, use_bias=use_bias, key=key)
-        self.mask = mask
+        self.linear = eqx.nn.Linear(
+            in_features,
+            out_features,
+            use_bias=use_bias,
+            dtype=dtype,
+            key=key,
+        )
+        self.mask = jnp.asarray(mask, dtype=self.linear.weight.dtype)
 
     @property
     def weight(self) -> Array:
@@ -539,6 +599,7 @@ class SimpleStagedNetwork(Component):
     encoding_size: Optional[int] = None
     encoder: Optional[Module] = None
     population_structure: Optional[PopulationStructure] = None
+    dtype: object = field(default=jnp.float32, static=True)
     sisu_gating: str = field(default="additive", static=True)
     sisu_alpha: Optional[Array] = None  # shape (hidden_size,) when multiplicative
 
@@ -560,6 +621,7 @@ class SimpleStagedNetwork(Component):
         hidden_noise_std: Optional[float] = None,
         population_structure: Optional[PopulationStructure] = None,
         sisu_gating: str = "additive",
+        dtype: object = jnp.float32,
         *,
         key: PRNGKeyArray,
     ):
@@ -611,12 +673,14 @@ class SimpleStagedNetwork(Component):
                 from the input and instead applies post-hidden gain modulation:
                 ``h * (1 + alpha * sisu)``, where ``alpha`` is a learned per-unit vector
                 initialized to zeros.
+            dtype: Dtype for trainable neural/controller leaves and initial state arrays.
             key: Random key for initialising the network.
         """
         key1, key2, key3 = jr.split(key, 3)
 
         self.input_size = input_size
         self.population_structure = population_structure
+        self.dtype = dtype
 
         # When using multiplicative SISU gating, the SISU channel is stripped
         # from the input before entering the layers, so layer dimensions use
@@ -631,11 +695,21 @@ class SimpleStagedNetwork(Component):
                 # For simplicity, allow all encoder units to receive all inputs
                 # The masking will happen at the encoder->hidden connection instead
                 encoder_mask = jnp.ones((encoding_size, layer_input_size))
-                self.encoder = MaskedLinear(
-                    layer_input_size, encoding_size, encoder_mask, use_bias=use_bias, key=key2
+                self.encoder = _linear_for_population_mask(
+                    layer_input_size,
+                    encoding_size,
+                    encoder_mask,
+                    use_bias=use_bias,
+                    dtype=dtype,
+                    key=key2,
                 )
             else:
-                self.encoder = encoder_type(layer_input_size, encoding_size, key=key2)
+                self.encoder = encoder_type(
+                    layer_input_size,
+                    encoding_size,
+                    key=key2,
+                    **_trainable_dtype_kwargs(encoder_type, dtype),
+                )
             self.encoding_size = encoding_size
 
             # Create hidden layer - if we have population structure, we need to mask
@@ -643,7 +717,13 @@ class SimpleStagedNetwork(Component):
             if population_structure is not None:
                 # For RNN cells like GRUCell, we need to mask the input weights
                 # Create the hidden layer first, then mask its input weights
-                hidden = hidden_type(encoding_size, hidden_size, use_bias=use_bias, key=key1)
+                hidden = hidden_type(
+                    encoding_size,
+                    hidden_size,
+                    use_bias=use_bias,
+                    key=key1,
+                    **_trainable_dtype_kwargs(hidden_type, dtype),
+                )
 
                 # Mask the input->hidden weights (weight_ih for GRU/RNN)
                 if hasattr(hidden, "weight_ih"):
@@ -662,11 +742,23 @@ class SimpleStagedNetwork(Component):
 
                 self.hidden = hidden
             else:
-                self.hidden = hidden_type(encoding_size, hidden_size, use_bias=use_bias, key=key1)
+                self.hidden = hidden_type(
+                    encoding_size,
+                    hidden_size,
+                    use_bias=use_bias,
+                    key=key1,
+                    **_trainable_dtype_kwargs(hidden_type, dtype),
+                )
         else:
             # No encoder - input goes directly to hidden layer
             if population_structure is not None:
-                hidden = hidden_type(layer_input_size, hidden_size, use_bias=use_bias, key=key1)
+                hidden = hidden_type(
+                    layer_input_size,
+                    hidden_size,
+                    use_bias=use_bias,
+                    key=key1,
+                    **_trainable_dtype_kwargs(hidden_type, dtype),
+                )
 
                 # Mask the input->hidden weights
                 if hasattr(hidden, "weight_ih"):
@@ -684,7 +776,13 @@ class SimpleStagedNetwork(Component):
 
                 self.hidden = hidden
             else:
-                self.hidden = hidden_type(layer_input_size, hidden_size, use_bias=use_bias, key=key1)
+                self.hidden = hidden_type(
+                    layer_input_size,
+                    hidden_size,
+                    use_bias=use_bias,
+                    key=key1,
+                    **_trainable_dtype_kwargs(hidden_type, dtype),
+                )
 
         self.hidden_size = hidden_size
         self.hidden_nonlinearity = hidden_nonlinearity
@@ -693,7 +791,7 @@ class SimpleStagedNetwork(Component):
         # Multiplicative SISU gating: learn per-unit gain modulation alpha
         self.sisu_gating = sisu_gating
         if sisu_gating == "multiplicative":
-            self.sisu_alpha = jnp.zeros(hidden_size)
+            self.sisu_alpha = jnp.zeros(hidden_size, dtype=dtype)
         else:
             self.sisu_alpha = None
 
@@ -701,11 +799,21 @@ class SimpleStagedNetwork(Component):
         if out_size is not None:
             if population_structure is not None:
                 readout_mask = population_readout_kernel_mask(population_structure, out_size)
-                readout = MaskedLinear(
-                    hidden_size, out_size, readout_mask, use_bias=use_bias, key=key3
+                readout = _linear_for_population_mask(
+                    hidden_size,
+                    out_size,
+                    readout_mask,
+                    use_bias=use_bias,
+                    dtype=dtype,
+                    key=key3,
                 )
             else:
-                readout = readout_type(hidden_size, out_size, key=key3)
+                readout = readout_type(
+                    hidden_size,
+                    out_size,
+                    key=key3,
+                    **_trainable_dtype_kwargs(readout_type, dtype),
+                )
 
             if (bias := getattr(readout, "bias", None)) is not None:
                 if isinstance(readout, MaskedLinear):
@@ -729,10 +837,14 @@ class SimpleStagedNetwork(Component):
             self.out_size = hidden_size
 
         init_state = NetworkState(
-            input=jnp.zeros(layer_input_size),
-            hidden=jnp.zeros(self.hidden_size),
-            output=jnp.zeros(self.out_size) if self.out_size is not None else None,
-            encoding=jnp.zeros(self.encoding_size) if self.encoding_size is not None else None,
+            input=jnp.zeros(layer_input_size, dtype=dtype),
+            hidden=jnp.zeros(self.hidden_size, dtype=dtype),
+            output=jnp.zeros(self.out_size, dtype=dtype) if self.out_size is not None else None,
+            encoding=(
+                jnp.zeros(self.encoding_size, dtype=dtype)
+                if self.encoding_size is not None
+                else None
+            ),
         )
         self._initial_state = init_state
         self.state_index = StateIndex(init_state)
@@ -740,7 +852,8 @@ class SimpleStagedNetwork(Component):
     def _add_hidden_noise(self, input, state, *, key):
         if self.hidden_noise_std is None:
             return state
-        return state + self.hidden_noise_std * jr.normal(key, state.shape)
+        return state + self.hidden_noise_std * jr.normal(key, state.shape, dtype=state.dtype)
+
     input_ports = ("input", "feedback")
     output_ports = ("output", "hidden")
 
@@ -760,14 +873,16 @@ class SimpleStagedNetwork(Component):
             raise ValueError("SimpleStagedNetwork requires at least one input.")
 
         if input_value is None:
-            flat_input = jnp.zeros((0,))
+            flat_input = jnp.zeros((0,), dtype=self.dtype)
         else:
             flat_input, _ = ravel_pytree(input_value)
+            flat_input = jnp.asarray(flat_input, dtype=self.dtype)
 
         if feedback_value is None:
-            flat_feedback = jnp.zeros((0,))
+            flat_feedback = jnp.zeros((0,), dtype=self.dtype)
         else:
             flat_feedback, _ = ravel_pytree(feedback_value)
+            flat_feedback = jnp.asarray(flat_feedback, dtype=self.dtype)
 
         x = jnp.concatenate([flat_input, flat_feedback], axis=-1)
 
@@ -816,14 +931,18 @@ class SimpleStagedNetwork(Component):
         return {"output": output, "hidden": hidden}, state
 
     def init(self):
-        output = jnp.zeros(self.out_size) if self.out_size is not None else None
-        encoding = jnp.zeros(self.encoding_size) if self.encoding_size is not None else None
+        output = jnp.zeros(self.out_size, dtype=self.dtype) if self.out_size is not None else None
+        encoding = (
+            jnp.zeros(self.encoding_size, dtype=self.dtype)
+            if self.encoding_size is not None
+            else None
+        )
         layer_input_size = (
             self.input_size - 1 if self.sisu_gating == "multiplicative" else self.input_size
         )
         return NetworkState(
-            input=jnp.zeros(layer_input_size),
-            hidden=jnp.zeros(self.hidden_size),
+            input=jnp.zeros(layer_input_size, dtype=self.dtype),
+            hidden=jnp.zeros(self.hidden_size, dtype=self.dtype),
             output=output,
             encoding=encoding,
         )

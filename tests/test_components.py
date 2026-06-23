@@ -3,6 +3,8 @@ import jax.numpy as jnp
 import equinox as eqx
 import pytest
 
+import feedbax.components.equinox as graph_eqx
+import feedbax.runtime.components as runtime_components
 from jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
@@ -14,6 +16,80 @@ from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.config.selectors import attr_str_tree_to_where_func, where_func_to_attr_str_tree
 from feedbax.models.networks import SimpleStagedNetwork
 from feedbax.models.feedback import SimpleFeedback
+
+
+def test_generated_equinox_components_default_trainable_leaves_to_float32():
+    layer = graph_eqx.Linear(2, 3, key=jax.random.PRNGKey(0))
+    gru = graph_eqx.GRUCell(2, 3, key=jax.random.PRNGKey(1))
+
+    assert layer.layer.weight.dtype == jnp.float32
+    assert layer.layer.bias.dtype == jnp.float32
+    assert gru.layer.weight_ih.dtype == jnp.float32
+    assert gru.layer.weight_hh.dtype == jnp.float32
+
+
+def test_generated_equinox_components_preserve_explicit_float64():
+    with jax.experimental.enable_x64():
+        layer = graph_eqx.Linear(2, 3, dtype=jnp.float64, key=jax.random.PRNGKey(0))
+        gru = graph_eqx.GRUCell(2, 3, dtype=jnp.float64, key=jax.random.PRNGKey(1))
+
+        assert layer.layer.weight.dtype == jnp.float64
+        assert layer.layer.bias.dtype == jnp.float64
+        assert gru.layer.weight_ih.dtype == jnp.float64
+        assert gru.layer.weight_hh.dtype == jnp.float64
+
+
+def test_runtime_neural_components_default_trainable_leaves_to_float32():
+    linear = runtime_components.Linear(2, 3, key=jax.random.PRNGKey(0))
+    mlp = runtime_components.MLP(2, 3, hidden_sizes=(4,), key=jax.random.PRNGKey(1))
+    gru = runtime_components.GRU(2, 3, key=jax.random.PRNGKey(2))
+
+    assert linear.layer.weight.dtype == jnp.float32
+    assert mlp.linears[0].weight.dtype == jnp.float32
+    assert gru.cell.weight_ih.dtype == jnp.float32
+    assert gru._initial_state.hidden.dtype == jnp.float32
+
+
+def test_simplestagednetwork_defaults_trainable_leaves_to_float32_with_float64_inputs():
+    with jax.experimental.enable_x64():
+        net = SimpleStagedNetwork(
+            input_size=2,
+            hidden_size=3,
+            out_size=1,
+            key=jax.random.PRNGKey(0),
+        )
+        state = init_state_from_component(net)
+
+        outputs, state = net(
+            {
+                "input": jnp.ones((2,), dtype=jnp.float64),
+            },
+            state,
+            key=jax.random.PRNGKey(1),
+        )
+
+        assert net.hidden.weight_ih.dtype == jnp.float32
+        assert net.hidden.weight_hh.dtype == jnp.float32
+        assert net.readout.weight.dtype == jnp.float32
+        assert net._initial_state.hidden.dtype == jnp.float32
+        assert outputs["output"].dtype == jnp.float32
+        assert outputs["output"].shape == (1,)
+
+
+def test_simplestagednetwork_preserves_explicit_float64_trainable_leaves():
+    with jax.experimental.enable_x64():
+        net = SimpleStagedNetwork(
+            input_size=2,
+            hidden_size=3,
+            out_size=1,
+            dtype=jnp.float64,
+            key=jax.random.PRNGKey(0),
+        )
+
+        assert net.hidden.weight_ih.dtype == jnp.float64
+        assert net.hidden.weight_hh.dtype == jnp.float64
+        assert net.readout.weight.dtype == jnp.float64
+        assert net._initial_state.hidden.dtype == jnp.float64
 
 
 def _call_modulator(component, signal, modulator):
@@ -228,12 +304,8 @@ def test_simplefeedback_model_net_update_replaces_executable_graph_node():
 
     updated = eqx.tree_at(lambda item: item.net, model, replacement)
 
-    updated_leaves = [
-        leaf for leaf in jax.tree.leaves(updated.net) if hasattr(leaf, "shape")
-    ]
-    replacement_leaves = [
-        leaf for leaf in jax.tree.leaves(replacement) if hasattr(leaf, "shape")
-    ]
+    updated_leaves = [leaf for leaf in jax.tree.leaves(updated.net) if hasattr(leaf, "shape")]
+    replacement_leaves = [leaf for leaf in jax.tree.leaves(replacement) if hasattr(leaf, "shape")]
 
     assert updated.net is updated.nodes["net"]
     assert all(
