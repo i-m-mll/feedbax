@@ -338,6 +338,7 @@ def test_simplestagednetwork_keeps_maskedlinear_for_structured_population_masks(
 
     assert isinstance(network.readout, MaskedLinear)
     assert not jnp.all(network.readout.mask == 1)
+    assert network.readout.mask.dtype == jnp.bool_
 
 
 def test_population_constraints_project_after_synthetic_update() -> None:

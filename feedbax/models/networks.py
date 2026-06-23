@@ -545,7 +545,7 @@ class MaskedLinear(Module):
             dtype=dtype,
             key=key,
         )
-        self.mask = jnp.asarray(mask, dtype=self.linear.weight.dtype)
+        self.mask = jnp.asarray(mask, dtype=bool)
 
     @property
     def weight(self) -> Array:
