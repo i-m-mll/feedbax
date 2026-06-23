@@ -48,6 +48,11 @@ _DEFAULT_TRAINABLE_COMPONENT_TYPES = {
 }
 
 
+def _should_emit_training_progress(batch: int, total_batches: int, interval: int) -> bool:
+    """Return whether a one-based training batch should synchronize progress scalars."""
+    return batch == 1 or batch == total_batches or batch % interval == 0
+
+
 @dataclass(frozen=True)
 class TaskInputPlan:
     """A task-data stream bound to one graph input port."""
@@ -155,7 +160,9 @@ def compile_training_run(
     except NotImplementedError as exc:
         raise ValueError(f"GraphSpec contains unsupported executable component: {exc}") from exc
     except Exception as exc:
-        raise ValueError(f"GraphSpec could not be instantiated for worker execution: {exc}") from exc
+        raise ValueError(
+            f"GraphSpec could not be instantiated for worker execution: {exc}"
+        ) from exc
 
     graph, task_inputs = _expose_task_inputs(graph, binding_model)
     n_steps = int(getattr(cfg, "n_reach_steps", None) or training_model.n_batches or 1)
@@ -241,47 +248,49 @@ def run_training_graph(
         trainable, static = eqx.partition(graph, compiled.trainable_filter)
         compiled.graph = graph
 
-        final_loss = float(jax.block_until_ready(loss_value))
-        final_terms = {
-            key: float(jax.block_until_ready(value)) for key, value in loss_terms.items()
-        }
-        grad_norm_value = float(jax.block_until_ready(grad_norm))
-        step_time_ms = (time.perf_counter() - step_t0) * 1000.0
-
-        emit(
-            {
-                "type": "training_progress",
-                "job_id": job_id,
-                "batch": batch + 1,
-                "total_batches": total_batches,
-                "loss": final_loss,
-                "loss_terms": final_terms,
-                "grad_norm": grad_norm_value,
-                "step_time_ms": step_time_ms,
-                "status": "running",
-                "execution": "generic_graph",
+        batch_one_based = batch + 1
+        if _should_emit_training_progress(batch_one_based, total_batches, snapshot_interval):
+            final_loss = float(jax.block_until_ready(loss_value))
+            final_terms = {
+                key: float(jax.block_until_ready(value)) for key, value in loss_terms.items()
             }
-        )
-        emit(
-            {
-                "type": "training_log",
-                "job_id": job_id,
-                "batch": batch + 1,
-                "level": "info",
-                "message": (
-                    f"Step {batch + 1} | loss={final_loss:.4f} | "
-                    f"grad_norm={grad_norm_value:.3f} | {step_time_ms:.0f}ms"
-                ),
-            }
-        )
+            grad_norm_value = float(jax.block_until_ready(grad_norm))
+            step_time_ms = (time.perf_counter() - step_t0) * 1000.0
 
-        if (batch + 1) % snapshot_interval == 0 or batch + 1 == total_batches:
+            emit(
+                {
+                    "type": "training_progress",
+                    "job_id": job_id,
+                    "batch": batch_one_based,
+                    "total_batches": total_batches,
+                    "loss": final_loss,
+                    "loss_terms": final_terms,
+                    "grad_norm": grad_norm_value,
+                    "step_time_ms": step_time_ms,
+                    "status": "running",
+                    "execution": "generic_graph",
+                }
+            )
+            emit(
+                {
+                    "type": "training_log",
+                    "job_id": job_id,
+                    "batch": batch_one_based,
+                    "level": "info",
+                    "message": (
+                        f"Step {batch_one_based} | loss={final_loss:.4f} | "
+                        f"grad_norm={grad_norm_value:.3f} | {step_time_ms:.0f}ms"
+                    ),
+                }
+            )
+
+        if batch_one_based % snapshot_interval == 0 or batch_one_based == total_batches:
             snapshot = _trajectory_snapshot(graph, compiled, step_key)
             emit(
                 {
                     "type": "training_trajectory",
                     "job_id": job_id,
-                    "batch": batch + 1,
+                    "batch": batch_one_based,
                     "trajectory": snapshot,
                     "execution": "generic_graph",
                 }
@@ -351,8 +360,7 @@ def _expose_task_inputs(
         target_key = (binding.target_node_id, binding.target_port)
         if binding.target_node_id not in graph.nodes:
             raise ValueError(
-                f"Task binding {binding.id!r} targets missing node "
-                f"{binding.target_node_id!r}"
+                f"Task binding {binding.id!r} targets missing node {binding.target_node_id!r}"
             )
         if binding.target_port not in graph.nodes[binding.target_node_id].input_ports:
             raise ValueError(
@@ -388,7 +396,9 @@ def _expose_task_inputs(
 
 def _task_data_by_id(spec: StudioTaskBindingSpec) -> dict[str, StudioTaskDataSpec]:
     data = {item.id: item for item in spec.exposed_data}
-    missing = [binding.source_data_id for binding in spec.bindings if binding.source_data_id not in data]
+    missing = [
+        binding.source_data_id for binding in spec.bindings if binding.source_data_id not in data
+    ]
     if missing:
         raise ValueError(f"Task bindings reference unknown task data ids: {sorted(set(missing))}")
     return data
@@ -627,12 +637,8 @@ def _trajectory_snapshot(
     key: jax.Array,
 ) -> dict[str, Any]:
     rollout = rollout_graph(graph, compiled, key=key)
-    observables = {
-        key: _jsonable_value(value) for key, value in rollout["trace"].items()
-    }
-    outputs = {
-        key: _jsonable_value(value) for key, value in rollout["outputs"].items()
-    }
+    observables = {key: _jsonable_value(value) for key, value in rollout["trace"].items()}
+    outputs = {key: _jsonable_value(value) for key, value in rollout["outputs"].items()}
     trajectory: dict[str, Any] = {
         "n_steps": compiled.n_steps,
         "t": list(range(compiled.n_steps)),
@@ -651,9 +657,7 @@ def _trajectory_snapshot(
 
 def _retained_observables_payload(rollout: dict[str, Any]) -> dict[str, Any]:
     return {
-        "observables": {
-            key: _jsonable_value(value) for key, value in rollout["trace"].items()
-        },
+        "observables": {key: _jsonable_value(value) for key, value in rollout["trace"].items()},
         "outputs": {
             f"graph_output:{key}": _jsonable_value(value)
             for key, value in rollout["outputs"].items()
@@ -684,10 +688,7 @@ def _jsonable_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _jsonable_value(item) for key, item in value.items()}
     if isinstance(value, tuple) and hasattr(value, "_fields"):
-        return {
-            str(key): _jsonable_value(getattr(value, key))
-            for key in getattr(value, "_fields")
-        }
+        return {str(key): _jsonable_value(getattr(value, key)) for key in getattr(value, "_fields")}
     if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
         return [_jsonable_value(item) for item in value]
     return repr(value)
