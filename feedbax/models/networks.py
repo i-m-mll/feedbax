@@ -449,9 +449,11 @@ def _linear_for_population_mask(
     *,
     use_bias: bool,
     dtype: object,
+    lower_all_ones: bool,
+    mask_dtype: object | None,
     key: PRNGKeyArray,
 ) -> eqx.nn.Linear | "MaskedLinear":
-    if _is_all_ones_mask(mask):
+    if lower_all_ones and _is_all_ones_mask(mask):
         return eqx.nn.Linear(
             in_features,
             out_features,
@@ -465,6 +467,7 @@ def _linear_for_population_mask(
         mask,
         use_bias=use_bias,
         dtype=dtype,
+        mask_dtype=mask_dtype,
         key=key,
     )
 
@@ -525,6 +528,7 @@ class MaskedLinear(Module):
         mask: Array,
         use_bias: bool = True,
         dtype: object = jnp.float32,
+        mask_dtype: object | None = bool,
         *,
         key: PRNGKeyArray,
     ):
@@ -536,6 +540,8 @@ class MaskedLinear(Module):
             mask: Binary mask of shape (out_features, in_features). 1 = trainable, 0 = always zero.
             use_bias: Whether to include a bias term.
             dtype: Dtype for trainable weight and bias leaves.
+            mask_dtype: Dtype for the mask leaf. ``None`` preserves the input mask dtype for
+                legacy serialized-template compatibility; bool is preferred for new templates.
             key: Random key for weight initialization.
         """
         self.linear = eqx.nn.Linear(
@@ -545,7 +551,7 @@ class MaskedLinear(Module):
             dtype=dtype,
             key=key,
         )
-        self.mask = jnp.asarray(mask, dtype=bool)
+        self.mask = jnp.asarray(mask, dtype=mask_dtype)
 
     @property
     def weight(self) -> Array:
@@ -599,6 +605,10 @@ class SimpleStagedNetwork(Component):
     encoding_size: Optional[int] = None
     encoder: Optional[Module] = None
     population_structure: Optional[PopulationStructure] = None
+    population_mask_mode: Literal["legacy_masked", "plain_all_ones"] = field(
+        default="legacy_masked",
+        static=True,
+    )
     dtype: object = field(default=jnp.float32, static=True)
     sisu_gating: str = field(default="additive", static=True)
     sisu_alpha: Optional[Array] = None  # shape (hidden_size,) when multiplicative
@@ -620,6 +630,7 @@ class SimpleStagedNetwork(Component):
         out_nonlinearity: Callable[[Float], Float] = identity_func,
         hidden_noise_std: Optional[float] = None,
         population_structure: Optional[PopulationStructure] = None,
+        population_mask_mode: Literal["legacy_masked", "plain_all_ones"] = "legacy_masked",
         sisu_gating: str = "additive",
         dtype: object = jnp.float32,
         *,
@@ -668,6 +679,11 @@ class SimpleStagedNetwork(Component):
             population_structure: Optional population structure defining which hidden units
                 receive inputs and/or contribute to readout. If provided, input and readout
                 weights will be masked to enforce the specified connectivity pattern.
+            population_mask_mode: How population masks are materialized. ``"legacy_masked"``
+                always uses ``MaskedLinear`` when a population structure is present, preserving
+                the PyTree template expected by older serialized artifacts. ``"plain_all_ones"``
+                lowers structurally all-ones masks to plain ``eqx.nn.Linear`` for new artifacts
+                that explicitly opt into the optimized template.
             sisu_gating: How to incorporate the SISU signal. ``"additive"`` (default)
                 concatenates SISU with the input vector. ``"multiplicative"`` removes SISU
                 from the input and instead applies post-hidden gain modulation:
@@ -680,7 +696,15 @@ class SimpleStagedNetwork(Component):
 
         self.input_size = input_size
         self.population_structure = population_structure
+        if population_mask_mode not in {"legacy_masked", "plain_all_ones"}:
+            raise ValueError(
+                "population_mask_mode must be 'legacy_masked' or 'plain_all_ones', "
+                f"got {population_mask_mode!r}"
+            )
+        self.population_mask_mode = population_mask_mode
         self.dtype = dtype
+        lower_all_ones_masks = population_mask_mode == "plain_all_ones"
+        mask_dtype = bool if lower_all_ones_masks else None
 
         # When using multiplicative SISU gating, the SISU channel is stripped
         # from the input before entering the layers, so layer dimensions use
@@ -701,6 +725,8 @@ class SimpleStagedNetwork(Component):
                     encoder_mask,
                     use_bias=use_bias,
                     dtype=dtype,
+                    lower_all_ones=lower_all_ones_masks,
+                    mask_dtype=mask_dtype,
                     key=key2,
                 )
             else:
@@ -805,6 +831,8 @@ class SimpleStagedNetwork(Component):
                     readout_mask,
                     use_bias=use_bias,
                     dtype=dtype,
+                    lower_all_ones=lower_all_ones_masks,
+                    mask_dtype=mask_dtype,
                     key=key3,
                 )
             else:

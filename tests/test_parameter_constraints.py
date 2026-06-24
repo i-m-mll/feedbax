@@ -26,6 +26,7 @@ from feedbax.models.networks import (
     population_structure_from_spec,
 )
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
+from feedbax.contracts.graphs import builders as graph_builders
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.tasks import AbstractTask, TaskInterventionSpecs, TaskTrialSpec, TrialSpecDependency
 from feedbax.training.trainer import TaskTrainer
@@ -36,6 +37,39 @@ class _WeightSumLoss(AbstractLoss):
 
     def term(self, states, trial_specs, model):
         return jnp.ones((1,)) * jnp.sum(model.nodes["readout"].layer.weight)
+
+
+def _floating_leaf_dtypes(tree) -> set[jnp.dtype]:
+    return {
+        leaf.dtype
+        for leaf in jax.tree.leaves(tree)
+        if eqx.is_array(leaf) and jnp.issubdtype(leaf.dtype, jnp.floating)
+    }
+
+
+def test_compat_builders_preserve_legacy_default_dtype_under_x64(tmp_path) -> None:
+    builders = [
+        lambda params: graph_builders._build_linear({"input_size": 2, "output_size": 3, **params}),
+        lambda params: graph_builders._build_mlp(
+            {"input_size": 2, "output_size": 3, "hidden_sizes": [4], **params}
+        ),
+        lambda params: graph_builders._build_gru({"input_size": 2, "hidden_size": 3, **params}),
+        lambda params: graph_builders._build_lstm({"input_size": 2, "hidden_size": 3, **params}),
+        lambda params: graph_builders._build_network(
+            {"input_size": 2, "hidden_size": 3, "out_size": 1, **params}
+        ),
+    ]
+    with jax.experimental.enable_x64():
+        for index, build in enumerate(builders):
+            legacy = build({})
+            explicit = build({"dtype": "float32"})
+            path = tmp_path / f"legacy_dtype_{index}.eqx"
+            eqx.tree_serialise_leaves(path, legacy)
+            loaded = eqx.tree_deserialise_leaves(path, build({}))
+
+            assert _floating_leaf_dtypes(legacy) == {jnp.dtype(jnp.float64)}
+            assert _floating_leaf_dtypes(loaded) == {jnp.dtype(jnp.float64)}
+            assert _floating_leaf_dtypes(explicit) == {jnp.dtype(jnp.float32)}
 
 
 class _TinyTask(AbstractTask):
@@ -305,7 +339,7 @@ def test_population_constraints_match_simplestagednetwork_fixed_assignment(
     )
 
 
-def test_simplestagednetwork_uses_plain_linear_for_all_ones_population_masks() -> None:
+def test_simplestagednetwork_defaults_to_legacy_maskedlinear_for_all_ones_masks() -> None:
     population = PopulationStructure.create(
         hidden_size=4,
         key=jax.random.PRNGKey(0),
@@ -317,6 +351,30 @@ def test_simplestagednetwork_uses_plain_linear_for_all_ones_population_masks() -
         out_size=2,
         encoding_size=3,
         population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert isinstance(network.encoder, MaskedLinear)
+    assert isinstance(network.readout, MaskedLinear)
+    assert jnp.all(network.encoder.mask)
+    assert jnp.all(network.readout.mask)
+    assert jnp.issubdtype(network.encoder.mask.dtype, jnp.floating)
+    assert jnp.issubdtype(network.readout.mask.dtype, jnp.floating)
+
+
+def test_simplestagednetwork_uses_plain_linear_for_explicit_all_ones_mask_opt_in() -> None:
+    population = PopulationStructure.create(
+        hidden_size=4,
+        key=jax.random.PRNGKey(0),
+    )
+
+    network = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        population_mask_mode="plain_all_ones",
         key=jax.random.PRNGKey(1),
     )
 
@@ -333,12 +391,126 @@ def test_simplestagednetwork_keeps_maskedlinear_for_structured_population_masks(
         out_size=2,
         encoding_size=3,
         population_structure=_fixed_population_structure(),
+        population_mask_mode="plain_all_ones",
         key=jax.random.PRNGKey(1),
     )
 
     assert isinstance(network.readout, MaskedLinear)
     assert not jnp.all(network.readout.mask == 1)
     assert network.readout.mask.dtype == jnp.bool_
+
+
+def test_legacy_all_ones_maskedlinear_serialization_loads_with_default_template(tmp_path) -> None:
+    population = PopulationStructure.create(
+        hidden_size=4,
+        key=jax.random.PRNGKey(0),
+    )
+    legacy = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+    optimized_template = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        population_mask_mode="plain_all_ones",
+        key=jax.random.PRNGKey(1),
+    )
+    default_template = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+    path = tmp_path / "legacy.eqx"
+    eqx.tree_serialise_leaves(path, legacy)
+
+    with pytest.raises(Exception):
+        eqx.tree_deserialise_leaves(path, optimized_template)
+
+    loaded = eqx.tree_deserialise_leaves(path, default_template)
+
+    assert isinstance(loaded.encoder, MaskedLinear)
+    assert isinstance(loaded.readout, MaskedLinear)
+    assert jnp.array_equal(loaded.encoder.linear.weight, legacy.encoder.linear.weight)
+    assert jnp.array_equal(loaded.readout.linear.weight, legacy.readout.linear.weight)
+    assert len(jax.tree.leaves(optimized_template)) != len(jax.tree.leaves(default_template))
+
+
+def test_legacy_structured_float_mask_serialization_loads_with_default_template(tmp_path) -> None:
+    population = _fixed_population_structure()
+    legacy = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+    default_template = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        key=jax.random.PRNGKey(1),
+    )
+    explicit_new_template = SimpleStagedNetwork(
+        input_size=2,
+        hidden_size=4,
+        out_size=2,
+        encoding_size=3,
+        population_structure=population,
+        population_mask_mode="plain_all_ones",
+        key=jax.random.PRNGKey(1),
+    )
+    path = tmp_path / "legacy_structured.eqx"
+    eqx.tree_serialise_leaves(path, legacy)
+
+    loaded = eqx.tree_deserialise_leaves(path, default_template)
+
+    assert isinstance(loaded.readout, MaskedLinear)
+    assert jnp.issubdtype(loaded.readout.mask.dtype, jnp.floating)
+    assert jnp.array_equal(loaded.readout.mask, legacy.readout.mask)
+    assert explicit_new_template.readout.mask.dtype == jnp.bool_
+
+
+def test_network_compat_builder_requires_explicit_plain_all_ones_mask_opt_in() -> None:
+    population = PopulationStructure.create(
+        hidden_size=4,
+        key=jax.random.PRNGKey(0),
+    )
+    base_params = {
+        "input_size": 2,
+        "hidden_size": 4,
+        "out_size": 2,
+        "encoding_size": 3,
+        "population_structure": {
+            "assignment": "explicit",
+            "input_only_indices": population.input_only_indices.tolist(),
+            "readout_only_indices": population.readout_only_indices.tolist(),
+            "recurrent_only_indices": population.recurrent_only_indices.tolist(),
+            "input_readout_indices": population.input_readout_indices.tolist(),
+        },
+    }
+
+    legacy = graph_builders._build_network(base_params)
+    optimized = graph_builders._build_network(
+        {**base_params, "population_mask_mode": "plain_all_ones"},
+    )
+
+    assert isinstance(legacy.encoder, MaskedLinear)
+    assert isinstance(legacy.readout, MaskedLinear)
+    assert isinstance(optimized.encoder, eqx.nn.Linear)
+    assert isinstance(optimized.readout, eqx.nn.Linear)
 
 
 def test_population_constraints_project_after_synthetic_update() -> None:

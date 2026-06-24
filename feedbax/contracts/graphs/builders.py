@@ -135,6 +135,8 @@ def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
         out_nonlinearity=out_nonlinearity,
         hidden_noise_std=hidden_noise_std,
         population_structure=population_structure,
+        population_mask_mode=str(params.get("population_mask_mode", "legacy_masked")),
+        dtype=params.get("dtype", None),
         key=jr.PRNGKey(0),
     )
 
@@ -280,7 +282,9 @@ def _path_selector(paths: tuple[str, ...]):
             value = mechanics_state
             for part in path.split("."):
                 if not hasattr(value, part):
-                    raise AttributeError(f"Mechanics feedback selector path {path!r} has no {part!r}")
+                    raise AttributeError(
+                        f"Mechanics feedback selector path {path!r} has no {part!r}"
+                    )
                 value = getattr(value, part)
             values.append(value)
         return values[0] if len(values) == 1 else tuple(values)
@@ -535,6 +539,7 @@ def _build_mlp(params: Mapping[str, Any]) -> MLP:
         hidden_sizes=hidden_sizes,
         activation=str(params.get("activation", "relu")),
         final_activation=str(params.get("final_activation", "identity")),
+        dtype=params.get("dtype", None),
         key=jr.PRNGKey(0),
     )
 
@@ -545,6 +550,7 @@ def _build_linear(params: Mapping[str, Any]) -> Linear:
         output_size=int(params.get("output_size", 1)),
         use_bias=bool(params.get("use_bias", True)),
         activation=str(params.get("activation", "identity")),
+        dtype=params.get("dtype", None),
         key=jr.PRNGKey(0),
     )
 
@@ -564,6 +570,7 @@ def _build_gru(params: Mapping[str, Any]) -> GRU:
     return GRU(
         input_size=int(params.get("input_size", 1)),
         hidden_size=int(params.get("hidden_size", 1)),
+        dtype=params.get("dtype", None),
         key=jr.PRNGKey(0),
     )
 
@@ -572,6 +579,7 @@ def _build_lstm(params: Mapping[str, Any]) -> LSTM:
     return LSTM(
         input_size=int(params.get("input_size", 1)),
         hidden_size=int(params.get("hidden_size", 1)),
+        dtype=params.get("dtype", None),
         key=jr.PRNGKey(0),
     )
 
@@ -639,9 +647,7 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
     if delta_A.ndim != 2:
         raise ValueError("DynamicsMatrixPerturb delta_A must be a rank-2 array")
     if delta_A.shape[1] != 2 * delta_A.shape[0]:
-        raise ValueError(
-            "DynamicsMatrixPerturb delta_A must have shape (n_dim, 2 * n_dim)"
-        )
+        raise ValueError("DynamicsMatrixPerturb delta_A must have shape (n_dim, 2 * n_dim)")
     return DynamicsMatrixPerturb(
         params=DynamicsMatrixPerturbParams(
             scale=float(params.get("scale", 1.0)),
