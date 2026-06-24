@@ -19,6 +19,9 @@ from typing import Literal
 
 import equinox.nn as nn
 
+TRAINABLE_DTYPE_PARAMS = {"dtype"}
+DEFAULT_TRAINABLE_DTYPE = "jnp.float32"
+
 
 @dataclass
 class ComponentSpec:
@@ -323,6 +326,14 @@ def format_default(default) -> str:
     return repr(default)
 
 
+def default_for_param(name: str, default) -> str:
+    """Return generated defaults, overriding trainable dtype to float32."""
+
+    if name in TRAINABLE_DTYPE_PARAMS and default is None:
+        return DEFAULT_TRAINABLE_DTYPE
+    return format_default(default)
+
+
 def generate_component_class(spec: ComponentSpec) -> str:
     """Generate the Component wrapper class for a given spec."""
     eqx_class = getattr(nn, spec.eqx_class_name)
@@ -369,7 +380,7 @@ def generate_component_class(spec: ComponentSpec) -> str:
 
     for name, param in keyword_params:
         type_hint = format_type_annotation(param.annotation)
-        default = format_default(param.default)
+        default = default_for_param(name, param.default)
         if type_hint and default:
             init_params.append(f"{name}: {type_hint} = {default}")
         elif type_hint:
@@ -399,36 +410,36 @@ def generate_component_class(spec: ComponentSpec) -> str:
     if spec.is_rnn_cell:
         if spec.has_cell_state:
             # LSTM cell
-            call_body = '''
+            call_body = """
         hidden = inputs["hidden"]
         cell_state = inputs["cell"]
-        new_hidden, new_cell = self.layer(inputs["input"], hidden, cell_state)
-        return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state'''
+        new_hidden, new_cell = self.layer(inputs["input"], (hidden, cell_state), key=key)
+        return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state"""
         else:
             # GRU cell
-            call_body = '''
+            call_body = """
         hidden = inputs["hidden"]
         new_hidden = self.layer(inputs["input"], hidden)
-        return {"output": new_hidden, "hidden": new_hidden}, state'''
+        return {"output": new_hidden, "hidden": new_hidden}, state"""
     elif spec.needs_inference_mode:
         # Dropout, BatchNorm - use inference_mode
-        call_body = '''
+        call_body = """
         output = eqx.nn.inference_mode(self.layer)(inputs["input"])
-        return {"output": output}, state'''
+        return {"output": output}, state"""
     elif spec.eqx_class_name == "MultiheadAttention":
         # Attention has special input handling
-        call_body = '''
+        call_body = """
         output = self.layer(
             query=inputs["query"],
             key_=inputs["key_"],
             value=inputs["value"],
         )
-        return {"output": output}, state'''
+        return {"output": output}, state"""
     else:
         # Standard stateless layer
-        call_body = '''
+        call_body = """
         output = self.layer(inputs["input"])
-        return {"output": output}, state'''
+        return {"output": output}, state"""
 
     # Generate attribute declarations for stored params
     attr_declarations = []
@@ -493,6 +504,7 @@ from collections.abc import Hashable
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import jax
+import jax.numpy as jnp
 import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree

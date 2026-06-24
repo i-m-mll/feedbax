@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import equinox as eqx
 from equinox import Module, field
@@ -105,9 +105,7 @@ class ElementwiseAffineModulator(Component):
         if not shape:
             raise ValueError("ElementwiseAffineModulator signal_shape must be non-empty")
         if any(dim <= 0 for dim in shape):
-            raise ValueError(
-                "ElementwiseAffineModulator signal_shape dimensions must be positive"
-            )
+            raise ValueError("ElementwiseAffineModulator signal_shape dimensions must be positive")
         self.signal_shape = shape
         self.baseline = _affine_param(baseline, shape, "baseline")
         self.gain = _affine_param(gain_init, shape, "gain_init")
@@ -380,6 +378,7 @@ class Linear(Component):
     input_size: int = field(static=True)
     output_size: int = field(static=True)
     use_bias: bool = field(static=True)
+    dtype: Any = field(static=True)
 
     def __init__(
         self,
@@ -387,15 +386,23 @@ class Linear(Component):
         output_size: int,
         use_bias: bool = True,
         activation: str = "identity",
+        dtype: Any = jnp.float32,
         *,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.use_bias = bool(use_bias)
+        self.dtype = dtype
         self.activation_name = activation
         self.activation = _activation_fn(self.activation_name)
-        self.layer = eqx.nn.Linear(self.input_size, self.output_size, use_bias=self.use_bias, key=key)
+        self.layer = eqx.nn.Linear(
+            self.input_size,
+            self.output_size,
+            use_bias=self.use_bias,
+            dtype=dtype,
+            key=key,
+        )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output = self.activation(self.layer(inputs["input"]))
@@ -416,6 +423,7 @@ class MLP(Component):
     hidden_sizes: tuple[int, ...] = field(static=True)
     activation_name: str = field(static=True)
     final_activation_name: str = field(static=True)
+    dtype: Any = field(static=True)
 
     def __init__(
         self,
@@ -424,18 +432,20 @@ class MLP(Component):
         hidden_sizes: Sequence[int] = (64,),
         activation: str = "relu",
         final_activation: str = "identity",
+        dtype: Any = jnp.float32,
         *,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.hidden_sizes = tuple(int(x) for x in hidden_sizes)
+        self.dtype = dtype
         self.activation_name = activation
         self.final_activation_name = final_activation
         sizes = [self.input_size, *self.hidden_sizes, self.output_size]
         keys = jax.random.split(key, len(sizes) - 1)
         self.linears = tuple(
-            eqx.nn.Linear(sizes[i], sizes[i + 1], key=keys[i])
+            eqx.nn.Linear(sizes[i], sizes[i + 1], dtype=dtype, key=keys[i])
             for i in range(len(sizes) - 1)
         )
         self.activation = _activation_fn(self.activation_name)
@@ -468,14 +478,23 @@ class GRU(Component):
     cell: eqx.nn.GRUCell
     input_size: int = field(static=True)
     hidden_size: int = field(static=True)
+    dtype: Any = field(static=True)
     state_index: StateIndex
     _initial_state: GRUState = field(static=True)
 
-    def __init__(self, input_size: int, hidden_size: int, *, key: PRNGKeyArray):
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        dtype: Any = jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
-        self.cell = eqx.nn.GRUCell(self.input_size, self.hidden_size, key=key)
-        hidden = jnp.zeros(self.hidden_size)
+        self.dtype = dtype
+        self.cell = eqx.nn.GRUCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
+        hidden = jnp.zeros(self.hidden_size, dtype=dtype)
         self._initial_state = GRUState(hidden=hidden, output=hidden)
         self.state_index = StateIndex(self._initial_state)
 
@@ -504,15 +523,24 @@ class LSTM(Component):
     cell: eqx.nn.LSTMCell
     input_size: int = field(static=True)
     hidden_size: int = field(static=True)
+    dtype: Any = field(static=True)
     state_index: StateIndex
     _initial_state: LSTMState = field(static=True)
 
-    def __init__(self, input_size: int, hidden_size: int, *, key: PRNGKeyArray):
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        dtype: Any = jnp.float32,
+        *,
+        key: PRNGKeyArray,
+    ):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
-        self.cell = eqx.nn.LSTMCell(self.input_size, self.hidden_size, key=key)
-        hidden = jnp.zeros(self.hidden_size)
-        cell = jnp.zeros(self.hidden_size)
+        self.dtype = dtype
+        self.cell = eqx.nn.LSTMCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
+        hidden = jnp.zeros(self.hidden_size, dtype=dtype)
+        cell = jnp.zeros(self.hidden_size, dtype=dtype)
         self._initial_state = LSTMState(hidden=hidden, cell=cell, output=hidden)
         self.state_index = StateIndex(self._initial_state)
 
@@ -605,7 +633,7 @@ class Demux(Component):
         outputs: dict[str, PyTree] = {}
         start = 0
         for i, sz in enumerate(self.sizes):
-            outputs[f"out_{i}"] = x[..., start:start + sz]
+            outputs[f"out_{i}"] = x[..., start : start + sz]
             start += sz
         return outputs, state
 
