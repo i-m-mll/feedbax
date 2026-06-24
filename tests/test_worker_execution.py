@@ -360,6 +360,38 @@ def test_run_training_graph_emits_progress_on_snapshot_cadence() -> None:
     assert log_batches == [1, 3, 5]
 
 
+def test_run_training_graph_stopped_run_returns_latest_batch_loss() -> None:
+    class StopAfterTwoChecks:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_set(self) -> bool:
+            self.calls += 1
+            return self.calls > 2
+
+    compiled = compile_training_run(
+        graph_spec=_linear_graph_spec(),
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=_task_binding_spec(),
+        cfg=_cfg(),
+    )
+    events: list[dict] = []
+
+    result = run_training_graph(
+        compiled,
+        job_id="test-job",
+        total_batches=5,
+        cfg=_cfg(snapshot_interval=5),
+        stop_event=StopAfterTwoChecks(),
+        emit=events.append,
+    )
+
+    progress_losses = [event["loss"] for event in events if event["type"] == "training_progress"]
+    assert len(progress_losses) == 1
+    assert result.final_loss < progress_losses[0]
+
+
 def test_run_training_graph_projects_parameter_constraints_after_update() -> None:
     graph_spec = GraphSpec.model_validate(_linear_graph_spec())
     graph_spec.parameter_constraints = [

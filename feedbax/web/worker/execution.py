@@ -224,6 +224,8 @@ def run_training_graph(
     rng_key = jr.PRNGKey(0)
     final_terms: dict[str, float] = {}
     final_loss = 0.0
+    latest_loss_value = None
+    latest_loss_terms = None
 
     def _loss_from_trainable(trainable_graph, static_graph, step_key):
         current_graph = eqx.combine(static_graph, trainable_graph)
@@ -240,6 +242,8 @@ def run_training_graph(
             _loss_from_trainable,
             has_aux=True,
         )(trainable, static, step_key)
+        latest_loss_value = loss_value
+        latest_loss_terms = loss_terms
         grad_norm = optax.global_norm(grads)
         updates, opt_state = optimizer.update(grads, opt_state, trainable)
         trainable = eqx.apply_updates(trainable, updates)
@@ -295,6 +299,12 @@ def run_training_graph(
                     "execution": "generic_graph",
                 }
             )
+
+    if latest_loss_value is not None and latest_loss_terms is not None:
+        final_loss = float(jax.block_until_ready(latest_loss_value))
+        final_terms = {
+            key: float(jax.block_until_ready(value)) for key, value in latest_loss_terms.items()
+        }
 
     checkpoint_path = _write_checkpoint(job_id, graph)
     final_rollout = rollout_graph(graph, compiled, key=rng_key)
