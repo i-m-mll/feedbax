@@ -32,7 +32,7 @@ from jax_cookbook.progress import piter, progress_piter
 from jaxtyping import Array, Float, Int, PRNGKeyArray, PyTree
 from tensorboardX import SummaryWriter  # type: ignore
 
-from feedbax.runtime.graph import Component, init_state_from_component
+from feedbax.runtime.graph import Component, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.runtime.batch import BatchInfo
@@ -215,6 +215,7 @@ class TaskTrainer(eqx.Module):
         loss_update_iterations: bool | Int[Array, "_"] = True,  # noqa: F821
         loss_reduction_fn: Optional[Callable[[Array], Array]] = None,
         pre_step_fn: Optional[Callable] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -481,6 +482,7 @@ class TaskTrainer(eqx.Module):
                 key_in_axis,
                 None,  # loss_reduction_fn
                 None,  # pre_step_fn
+                None,  # rollout_step_hook
             )
             # Use eqx.if_array(0) for losses and grads rather than plain 0, so that
             # non-array leaves in the output pytrees (e.g., TermTree.weight stored as
@@ -507,11 +509,18 @@ class TaskTrainer(eqx.Module):
                     n_replicates,
                     key,
                     ensemble_random_trials=ensemble_random_trials,
+                    rollout_step_hook=rollout_step_hook,
                 )
 
         else:
             train_step = self._train_step
-            evaluate = task.eval_with_loss
+
+            def evaluate(model, key):
+                return task.eval_with_loss(
+                    model,
+                    key,
+                    rollout_step_hook=rollout_step_hook,
+                )
 
         # Finish the JIT compilation before the first training iteration.
         # TODO: <https://jax.readthedocs.io/en/latest/aot.html>
@@ -542,6 +551,7 @@ class TaskTrainer(eqx.Module):
                     key_compile,
                     loss_reduction_fn,
                     pre_step_fn,
+                    rollout_step_hook,
                 )
 
             logger.info(f"Training step compiled in {timer.time:.2f} seconds.")
@@ -640,6 +650,7 @@ class TaskTrainer(eqx.Module):
                     key_train,
                     loss_reduction_fn,
                     pre_step_fn,
+                    rollout_step_hook,
                 )
 
                 if update_pbar is not None and progress_scalar_batches_mask[batch]:
@@ -850,6 +861,7 @@ class TaskTrainer(eqx.Module):
         key: PRNGKeyArray,
         loss_reduction_fn: Optional[Callable] = None,
         pre_step_fn: Optional[Callable] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ):
         """Executes a single training step of the model.
 
@@ -938,7 +950,12 @@ class TaskTrainer(eqx.Module):
         opt_state = jtu.tree_unflatten(treedef_opt_state, flat_opt_state)
 
         (_, (losses, states)), grads = eqx.filter_value_and_grad(
-            grad_wrap_abstract_loss(loss_func, loss_reduction_fn=loss_reduction_fn), has_aux=True
+            grad_wrap_abstract_loss(
+                loss_func,
+                loss_reduction_fn=loss_reduction_fn,
+                rollout_step_hook=rollout_step_hook,
+            ),
+            has_aux=True,
         )(
             diff_model,
             static_model,
@@ -1276,7 +1293,11 @@ def _extract_intervene_inputs(
     return result
 
 
-def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional[Callable] = None):
+def grad_wrap_abstract_loss(
+    loss_func: AbstractLoss,
+    loss_reduction_fn: Optional[Callable] = None,
+    rollout_step_hook: Optional[RolloutStepHook] = None,
+):
     """Wraps a task loss function taking state to a `grad`-able one taking a model.
 
     It is convenient to first define the loss function in terms of a
@@ -1329,6 +1350,7 @@ def grad_wrap_abstract_loss(loss_func: AbstractLoss, loss_reduction_fn: Optional
                 init_state,
                 key=key,
                 n_steps=n_steps,
+                rollout_step_hook=rollout_step_hook,
             )
             # State history includes the initial state (n_steps + 1 entries).
             # Strip the initial state so the history length matches the

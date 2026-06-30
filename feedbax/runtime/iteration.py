@@ -22,7 +22,27 @@ from feedbax.runtime.streaming import (
     init_streaming_state_window,
     update_streaming_state_window,
 )
-from feedbax.runtime.graph import Component, Graph
+from feedbax.runtime.graph import Component, Graph, RolloutStepHook
+
+
+def _run_component_step(
+    component: Component,
+    step_input: PyTree,
+    state: State,
+    *,
+    key: PRNGKeyArray,
+    t: PyTree,
+    rollout_step_hook: Optional[RolloutStepHook],
+):
+    if isinstance(component, Graph):
+        return component(
+            step_input,
+            state,
+            key=key,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+        )
+    return component(step_input, state, key=key)
 
 
 def iterate_component(
@@ -34,6 +54,7 @@ def iterate_component(
     state_filter: PyTree[bool] = True,
     checkpoint: bool = False,
     streaming_loss_fn: Optional[Callable] = None,
+    rollout_step_hook: Optional[RolloutStepHook] = None,
 ) -> tuple[PyTree, State, PyTree | None]:
     """Iterate an acyclic component over multiple timesteps.
 
@@ -57,7 +78,14 @@ def iterate_component(
         def step(carry, args):
             state, state_window, loss_accum = carry
             (step_input, step_key), t = args
-            outputs, new_state = component(step_input, state, key=step_key)
+            outputs, new_state = _run_component_step(
+                component,
+                step_input,
+                state,
+                key=step_key,
+                t=t,
+                rollout_step_hook=rollout_step_hook,
+            )
             state_view = component.state_view(new_state)
             loss_input = state_view
             if streaming_order > 0:
@@ -86,9 +114,16 @@ def iterate_component(
 
     def step(carry, args):
         state = carry
-        step_input, step_key = args
+        (step_input, step_key), t = args
 
-        outputs, new_state = component(step_input, state, key=step_key)
+        outputs, new_state = _run_component_step(
+            component,
+            step_input,
+            state,
+            key=step_key,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+        )
 
         if save_history:
             state_view = component.state_view(new_state)
@@ -103,7 +138,7 @@ def iterate_component(
 
     if save_history:
         final_state, (outputs, state_history) = lax.scan(
-            step, init_state, (step_inputs, keys)
+            step, init_state, ((step_inputs, keys), jnp.arange(n_steps))
         )
         init_state_view = eqx.filter(init_state_view, state_filter)
 
@@ -115,7 +150,7 @@ def iterate_component(
         state_history = jt.map(_prepend, init_state_view, state_history)
         return outputs, final_state, state_history
 
-    final_state, outputs = lax.scan(step, init_state, (step_inputs, keys))
+    final_state, outputs = lax.scan(step, init_state, ((step_inputs, keys), jnp.arange(n_steps)))
     return outputs, final_state, None
 
 
@@ -128,6 +163,7 @@ def run_component(
     n_steps: Optional[int] = None,
     state_filter: PyTree[bool] = True,
     streaming_loss_fn: Optional[Callable] = None,
+    rollout_step_hook: Optional[RolloutStepHook] = None,
 ):
     """Run a component, iterating if needed, returning outputs and state history.
 
@@ -143,10 +179,11 @@ def run_component(
             return_state_history=streaming_loss_fn is None,
             state_filter=state_filter,
             streaming_loss_fn=streaming_loss_fn,
+            rollout_step_hook=rollout_step_hook,
         )
     if n_steps is None:
         raise ValueError("n_steps is required for acyclic components")
-    checkpoint = getattr(component, 'checkpoint', False)
+    checkpoint = getattr(component, "checkpoint", False)
     return iterate_component(
         component,
         inputs,
@@ -156,4 +193,5 @@ def run_component(
         state_filter=state_filter,
         checkpoint=checkpoint,
         streaming_loss_fn=streaming_loss_fn,
+        rollout_step_hook=rollout_step_hook,
     )

@@ -152,6 +152,39 @@ class Component(Module):
         return {}
 
 
+class RolloutStepContext(Module):
+    """Context passed to an optional graph rollout-step hook."""
+
+    graph: "Graph"
+    component: Component
+    t: PyTree
+    key: PRNGKeyArray
+    state: State
+    step_inputs: dict[str, PyTree]
+    port_values: dict[tuple[str, str], PyTree]
+    node_name: str = field(static=True)
+    node_inputs: dict[str, PyTree]
+
+
+class RolloutStepHookResult(Module):
+    """Replacement values returned by a graph rollout-step hook.
+
+    ``port_values`` is the complete replacement mapping for the current graph
+    step. Hooks that only need to update one port should copy
+    ``context.port_values`` first and mutate the copy, so other live port values
+    remain available to downstream nodes.
+    """
+
+    port_values: Optional[dict[tuple[str, str], PyTree]] = None
+    state: Optional[State] = None
+
+
+RolloutStepHook = Callable[
+    [RolloutStepContext],
+    RolloutStepHookResult | tuple[Optional[dict[tuple[str, str], PyTree]], Optional[State]] | None,
+]
+
+
 class Wire(Module):
     """A connection between an output port and an input port."""
 
@@ -447,6 +480,8 @@ class Graph(Component):
         state_filter: PyTree[bool] = True,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
         streaming_loss_fn: Optional[Callable] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+        t: PyTree = 0,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if self._needs_iteration:
             return self._call_with_iteration(
@@ -458,8 +493,15 @@ class Graph(Component):
                 state_filter=state_filter,
                 cycle_init=cycle_init,
                 streaming_loss_fn=streaming_loss_fn,
+                rollout_step_hook=rollout_step_hook,
             )
-        outputs, state = self._call_single_step(inputs, state, key=key)
+        outputs, state = self._call_single_step(
+            inputs,
+            state,
+            key=key,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+        )
         if return_state_history:
             state_view = self.state_view(state)
             return outputs, state, state_view
@@ -471,30 +513,23 @@ class Graph(Component):
         state: State,
         *,
         key: PRNGKeyArray,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+        t: PyTree = 0,
     ) -> tuple[dict[str, PyTree], State]:
-        keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
-
         port_values: dict[tuple[str, str], PyTree] = {}
 
         for ext_port, (node_name, node_port) in self.input_bindings.items():
             if ext_port in inputs:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
-        for node_name, node_key in zip(self._execution_order, keys):
-            node = self.nodes[node_name]
-            node_inputs = {
-                port_name: port_values[(node_name, port_name)]
-                for port_name in node.input_ports
-                if (node_name, port_name) in port_values
-            }
-            node_outputs, state = node(node_inputs, state, key=node_key)
-
-            for port_name, value in node_outputs.items():
-                port_values[(node_name, port_name)] = value
-                for wire in self._outgoing_wires.get((node_name, port_name), []):
-                    if wire in self._cycle_wire_set:
-                        continue
-                    port_values[(wire.target_node, wire.target_port)] = value
+        port_values, state = self._execute_step(
+            port_values,
+            state,
+            key=key,
+            step_inputs=inputs,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+        )
 
         outputs = {
             ext_port: port_values[(node_name, node_port)]
@@ -510,6 +545,8 @@ class Graph(Component):
         cycle_port_values: Optional[dict[tuple[str, str], PyTree]] = None,
         *,
         key: PRNGKeyArray,
+        t: PyTree = 0,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree]]:
         """Advance the graph by one timestep.
 
@@ -543,7 +580,13 @@ class Graph(Component):
                 without cycles.
         """
         if not self._needs_iteration:
-            outputs, new_state = self._call_single_step(inputs, state, key=key)
+            outputs, new_state = self._call_single_step(
+                inputs,
+                state,
+                key=key,
+                t=t,
+                rollout_step_hook=rollout_step_hook,
+            )
             return outputs, new_state, {}
 
         if cycle_port_values is None:
@@ -555,7 +598,14 @@ class Graph(Component):
             if ext_port in inputs:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
-        port_values, new_state = self._execute_step(port_values, state, key=key)
+        port_values, new_state = self._execute_step(
+            port_values,
+            state,
+            key=key,
+            step_inputs=inputs,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+        )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
         for wire in self._cycle_wires:
@@ -581,6 +631,8 @@ class Graph(Component):
         *,
         key: PRNGKeyArray,
         trace: tuple[GraphTraceRequest, ...] = (),
+        t: PyTree = 0,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[
         dict[str, PyTree],
         State,
@@ -605,7 +657,14 @@ class Graph(Component):
             if ext_port in inputs:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
-        port_values, new_state = self._execute_step(port_values, state, key=key)
+        port_values, new_state = self._execute_step(
+            port_values,
+            state,
+            key=key,
+            step_inputs=inputs,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+        )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
         for wire in self._cycle_wires:
@@ -635,6 +694,9 @@ class Graph(Component):
         state: State,
         *,
         key: PRNGKeyArray,
+        step_inputs: dict[str, PyTree],
+        t: PyTree,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
         keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
         nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
@@ -650,12 +712,37 @@ class Graph(Component):
                 for port_name in node.input_ports
                 if (node_name, port_name) in port_values
             }
+            if rollout_step_hook is not None:
+                context = RolloutStepContext(
+                    graph=self,
+                    component=node,
+                    t=t,
+                    key=node_key,
+                    state=state,
+                    step_inputs=step_inputs,
+                    port_values=port_values,
+                    node_name=node_name,
+                    node_inputs=node_inputs,
+                )
+                port_values, state = self._apply_rollout_step_hook(
+                    rollout_step_hook,
+                    context,
+                    port_values,
+                    state,
+                )
+                node_inputs = {
+                    port_name: port_values[(node_name, port_name)]
+                    for port_name in node.input_ports
+                    if (node_name, port_name) in port_values
+                }
             if isinstance(node, Graph):
                 node_outputs, state, node_cycle_values = node.step(
                     node_inputs,
                     state,
                     nested_cycle_values.get(node_name),
                     key=node_key,
+                    t=t,
+                    rollout_step_hook=rollout_step_hook,
                 )
                 if node_cycle_values:
                     next_nested_cycle_values[node_name] = node_cycle_values
@@ -673,6 +760,46 @@ class Graph(Component):
             port_values[_nested_cycle_key(node_name)] = node_cycle_values
 
         return port_values, state
+
+    def _apply_rollout_step_hook(
+        self,
+        rollout_step_hook: RolloutStepHook,
+        context: RolloutStepContext,
+        port_values: dict[tuple[str, str], PyTree],
+        state: State,
+    ) -> tuple[dict[tuple[str, str], PyTree], State]:
+        result = rollout_step_hook(context)
+        if result is None:
+            return port_values, state
+        if isinstance(result, RolloutStepHookResult):
+            new_port_values = result.port_values
+            new_state = result.state
+        elif isinstance(result, tuple) and len(result) == 2:
+            new_port_values, new_state = result
+        else:
+            raise TypeError(
+                "rollout_step_hook must return None, RolloutStepHookResult, or (port_values, state)"
+            )
+        if new_port_values is not None:
+            self._validate_rollout_hook_port_keys(new_port_values)
+            port_values = new_port_values
+        if new_state is not None:
+            state = new_state
+        return port_values, state
+
+    def _validate_rollout_hook_port_keys(
+        self,
+        port_values: dict[tuple[str, str], PyTree],
+    ) -> None:
+        for node_name, port_name in port_values:
+            if _is_nested_cycle_key((node_name, port_name)):
+                continue
+            if node_name not in self.nodes:
+                raise ValueError(f"rollout_step_hook returned unknown node {node_name!r}")
+            node = self.nodes[node_name]
+            known_ports = set(node.input_ports) | set(node.output_ports)
+            if port_name not in known_ports:
+                raise ValueError(f"rollout_step_hook returned unknown port {node_name}.{port_name}")
 
     def _collect_trace_values(
         self,
@@ -908,6 +1035,7 @@ class Graph(Component):
         state_filter: PyTree[bool] = True,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
         streaming_loss_fn: Optional[Callable] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if n_steps is None:
             if not inputs:
@@ -951,6 +1079,8 @@ class Graph(Component):
                     state,
                     prev_cycle_values,
                     key=step_key,
+                    t=t,
+                    rollout_step_hook=rollout_step_hook,
                 )
 
                 state_view = self.state_view(state)
@@ -974,13 +1104,15 @@ class Graph(Component):
         # --- standard paths ---
         def step_body(carry, args):
             state, prev_cycle_values = carry
-            step_inputs, step_key = args
+            (step_inputs, step_key), t = args
 
             outputs, state, new_cycle_values = self.step(
                 step_inputs,
                 state,
                 prev_cycle_values,
                 key=step_key,
+                t=t,
+                rollout_step_hook=rollout_step_hook,
             )
 
             if save_history:
@@ -997,7 +1129,7 @@ class Graph(Component):
             (final_state, _), (outputs_seq, state_history) = lax.scan(
                 step_body,
                 (state, init_cycle_values),
-                (step_inputs_seq, keys),
+                ((step_inputs_seq, keys), jnp.arange(n_steps)),
             )
 
             # Prepend initial state to history
@@ -1016,7 +1148,7 @@ class Graph(Component):
         (final_state, _), outputs_seq = lax.scan(
             step_body,
             (state, init_cycle_values),
-            (step_inputs_seq, keys),
+            ((step_inputs_seq, keys), jnp.arange(n_steps)),
         )
 
         return outputs_seq, final_state
