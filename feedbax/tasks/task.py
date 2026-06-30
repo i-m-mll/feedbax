@@ -43,7 +43,7 @@ from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax.config.mapping import WhereDict
 from feedbax.tasks._tree import tree_call, tree_call_with_keys
-from feedbax.runtime.graph import Component, Graph, init_state_from_component
+from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.intervene import (
     InterventionSpec,
@@ -872,6 +872,7 @@ class AbstractTask(Module):
         model: Component,
         trial_specs: TaskTrialSpec,
         keys: PRNGKeyArray,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> Tuple[StateT, TermTree]:
         """Evaluate a model on a set of trials, returning states and losses.
 
@@ -880,7 +881,12 @@ class AbstractTask(Module):
             trial_specs: The set of trials to evaluate the model on.
             keys: For providing randomness during model evaluation.
         """
-        states = self.eval_trials(model, trial_specs, keys)
+        states = self.eval_trials(
+            model,
+            trial_specs,
+            keys,
+            rollout_step_hook=rollout_step_hook,
+        )
         losses = self.loss_func(states, trial_specs, model)
         return states, losses
 
@@ -891,6 +897,7 @@ class AbstractTask(Module):
         model: Component,
         trial_specs: TaskTrialSpec,
         keys: PRNGKeyArray,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> StateT:
         """Evaluate a model on a set of trials, returning states.
 
@@ -909,6 +916,7 @@ class AbstractTask(Module):
                 prepared.init_state,
                 key=key_run,
                 n_steps=prepared.n_steps,
+                rollout_step_hook=rollout_step_hook,
             )
             # Strip prepended initial state so history length matches targets.
             state_history = jt.map(
@@ -923,6 +931,7 @@ class AbstractTask(Module):
         self,
         model: Component,
         key: PRNGKeyArray,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> Tuple[StateT, TermTree]:
         """Evaluate a model on the task's validation set of trials.
 
@@ -938,12 +947,18 @@ class AbstractTask(Module):
         keys = jr.split(key, self.n_validation_trials)
         trial_specs = self.validation_trials
 
-        return self.eval_trials_with_loss(model, trial_specs, keys)
+        return self.eval_trials_with_loss(
+            model,
+            trial_specs,
+            keys,
+            rollout_step_hook=rollout_step_hook,
+        )
 
     def eval(
         self,
         model: Component,
         key: PRNGKeyArray,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> StateT:
         """Return states for a model evaluated on the tasks's set of validation trials.
 
@@ -954,7 +969,12 @@ class AbstractTask(Module):
         keys = jr.split(key, self.n_validation_trials)
         trial_specs = self.validation_trials
 
-        return self.eval_trials(model, trial_specs, keys)
+        return self.eval_trials(
+            model,
+            trial_specs,
+            keys,
+            rollout_step_hook=rollout_step_hook,
+        )
 
     @eqx.filter_jit
     def _eval_ensemble(
@@ -964,6 +984,7 @@ class AbstractTask(Module):
         n_replicates: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> T:
         # Partition into arrays that have the ensemble (batch) dimension
         # and everything else.  StateIndex.init leaves may be arrays without
@@ -978,7 +999,7 @@ class AbstractTask(Module):
 
         def evaluate_single(model_arrays, model_other, key):
             model = eqx.combine(model_arrays, model_other)
-            return eval_fn(model, key)
+            return eval_fn(model, key, rollout_step_hook=rollout_step_hook)
 
         # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
         # if they are vmapping `eval`.
@@ -998,6 +1019,7 @@ class AbstractTask(Module):
         n_replicates: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[StateT, TermTree]:
         """Return states and losses for an ensemble of models evaluated on the tasks's set of
         validation trials.
@@ -1016,6 +1038,7 @@ class AbstractTask(Module):
             n_replicates,
             key,
             ensemble_random_trials=ensemble_random_trials,
+            rollout_step_hook=rollout_step_hook,
         )
 
     def eval_ensemble(
@@ -1024,6 +1047,7 @@ class AbstractTask(Module):
         n_replicates: int,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> StateT:
         """Return states for an ensemble of models evaluated on the tasks's set of
         validation trials.
@@ -1042,6 +1066,7 @@ class AbstractTask(Module):
             n_replicates,
             key,
             ensemble_random_trials=ensemble_random_trials,
+            rollout_step_hook=rollout_step_hook,
         )
 
     @eqx.filter_jit
@@ -1050,6 +1075,7 @@ class AbstractTask(Module):
         model: Component,
         batch_info: BatchInfo,
         key: PRNGKeyArray,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> Tuple[StateT, TermTree, TaskTrialSpec]:
         """Evaluate a model on a single batch of training trials.
 
@@ -1074,7 +1100,12 @@ class AbstractTask(Module):
             )
         )(keys_batch)
 
-        states, losses = self.eval_trials_with_loss(model, trial_specs, keys_eval)
+        states, losses = self.eval_trials_with_loss(
+            model,
+            trial_specs,
+            keys_eval,
+            rollout_step_hook=rollout_step_hook,
+        )
 
         return states, losses, trial_specs
 
@@ -1086,6 +1117,7 @@ class AbstractTask(Module):
         batch_info: BatchInfo,
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> Tuple[StateT, TermTree[AbstractLoss], TaskTrialSpec]:
         """Evaluate an ensemble of models on a single training batch.
 
@@ -1109,7 +1141,12 @@ class AbstractTask(Module):
 
         def evaluate_single(model_arrays, model_other, batch_info, key):
             model = eqx.combine(model_arrays, model_other)
-            return self.eval_train_batch(model, batch_info, key)
+            return self.eval_train_batch(
+                model,
+                batch_info,
+                key,
+                rollout_step_hook=rollout_step_hook,
+            )
 
         if ensemble_random_trials:
             key = jr.split(key, n_replicates)
@@ -1535,9 +1572,7 @@ class DelayedReaches(AbstractTask):
             logger.error(err_msg)
             raise ValueError(err_msg)
         if self.catch_metadata_policy not in ("none", "flag"):
-            raise ValueError(
-                "DelayedReaches catch_metadata_policy must be one of 'none' or 'flag'"
-            )
+            raise ValueError("DelayedReaches catch_metadata_policy must be one of 'none' or 'flag'")
         if self.preset not in (None, "default", "delayed_center_out"):
             raise ValueError(
                 "DelayedReaches preset must be 'delayed_center_out', 'default', or None"

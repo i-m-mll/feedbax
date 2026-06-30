@@ -4,7 +4,15 @@ import jax
 import jax.numpy as jnp
 
 from jax_cookbook.tree import filter_spec_leaves
-from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire, init_state_from_component
+from feedbax.runtime.graph import (
+    Component,
+    Graph,
+    GraphTraceRequest,
+    RolloutStepHookResult,
+    Wire,
+    init_state_from_component,
+)
+from feedbax.runtime.iteration import run_component
 from feedbax.runtime.iteration import iterate_component
 from feedbax.config.selectors import attr_str_tree_to_where_func
 
@@ -32,6 +40,29 @@ class Counter(Component):
         count = count + 1
         state = state.set(self.state_index, count)
         return {"output": count}, state
+
+
+class Accumulator(Component):
+    input_ports = ("delta", "base")
+    output_ports = ("total",)
+
+    state_index: StateIndex
+
+    def __init__(self):
+        self.state_index = StateIndex(jnp.array(0.0, dtype=jnp.float32))
+
+    def __call__(self, inputs, state, *, key):
+        total = state.get(self.state_index) + inputs["delta"]
+        state = state.set(self.state_index, total)
+        return {"total": total + 0.0 * inputs.get("base", 0.0)}, state
+
+    def state_view(self, state):
+        return state.get(self.state_index)
+
+    def initial_outputs(self, state_value):
+        if state_value is None:
+            return {}
+        return {"total": state_value}
 
 
 def test_graph_cycle_iteration():
@@ -69,6 +100,152 @@ def test_iterate_component_state_history():
 
     assert history is not None
     assert (history == jnp.array([0, 1, 2])).all()
+
+
+def _make_dynamic_input_graph():
+    return Graph(
+        nodes={"counter": Counter(), "acc": Accumulator()},
+        wires=(Wire("counter", "output", "acc", "base"),),
+        input_ports=("delta",),
+        output_ports=("total",),
+        input_bindings={"delta": ("acc", "delta")},
+        output_bindings={"total": ("acc", "total")},
+    )
+
+
+def _counter_to_accumulator_delta_hook(context):
+    if context.node_name != "acc":
+        return None
+    assert context.graph.nodes[context.node_name] is context.component
+    assert "base" in context.node_inputs
+    updated = dict(context.port_values)
+    updated[(context.node_name, "delta")] = context.port_values[("counter", "output")]
+    return RolloutStepHookResult(port_values=updated)
+
+
+def test_rollout_step_hook_none_preserves_scan_behavior():
+    graph = _make_dynamic_input_graph()
+    state_a = init_state_from_component(graph)
+    state_b = init_state_from_component(graph)
+    inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
+
+    outputs_a, final_state_a, _ = run_component(
+        graph,
+        inputs,
+        state_a,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+    outputs_b, final_state_b, _ = run_component(
+        graph,
+        inputs,
+        state_b,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        rollout_step_hook=None,
+    )
+
+    assert jnp.allclose(outputs_a["total"], outputs_b["total"])
+    assert jnp.allclose(
+        graph.state_view(final_state_a).nodes["acc"],
+        graph.state_view(final_state_b).nodes["acc"],
+    )
+
+
+def test_rollout_step_hook_updates_node_input_from_live_port_values():
+    graph = _make_dynamic_input_graph()
+    inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
+
+    outputs_no_hook, _, _ = run_component(
+        graph,
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+    outputs_hook, _, _ = run_component(
+        graph,
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        rollout_step_hook=_counter_to_accumulator_delta_hook,
+    )
+
+    assert jnp.allclose(outputs_no_hook["total"], jnp.array([0.0, 0.0, 0.0]))
+    assert jnp.allclose(outputs_hook["total"], jnp.array([1.0, 3.0, 6.0]))
+
+
+def test_rollout_step_hook_affects_streaming_loss_without_state_history():
+    graph = _make_dynamic_input_graph()
+    inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
+
+    def streaming_loss_fn(state_view, t):
+        return state_view.nodes["acc"]
+
+    _, _, no_hook_loss = run_component(
+        graph,
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        streaming_loss_fn=streaming_loss_fn,
+    )
+    _, _, hook_loss = run_component(
+        graph,
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        streaming_loss_fn=streaming_loss_fn,
+        rollout_step_hook=_counter_to_accumulator_delta_hook,
+    )
+
+    assert no_hook_loss == jnp.array(0.0)
+    assert hook_loss == jnp.array(10.0)
+
+
+def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
+    graph = Graph(
+        nodes={"acc": Accumulator()},
+        wires=(Wire("acc", "total", "acc", "base", temporality="recurrent"),),
+        input_ports=("delta",),
+        output_ports=("total",),
+        input_bindings={"delta": ("acc", "delta")},
+        output_bindings={"total": ("acc", "total")},
+    )
+    inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
+
+    def streaming_loss_fn(state_view, t):
+        return state_view.nodes["acc"]
+
+    def recurrent_base_to_delta_hook(context):
+        if context.node_name != "acc":
+            return None
+        updated = dict(context.port_values)
+        updated[(context.node_name, "delta")] = context.node_inputs["base"] + 1.0
+        return RolloutStepHookResult(port_values=updated)
+
+    _, _, no_hook_loss = run_component(
+        graph,
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        streaming_loss_fn=streaming_loss_fn,
+    )
+    _, _, hook_loss = run_component(
+        graph,
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        streaming_loss_fn=streaming_loss_fn,
+        rollout_step_hook=recurrent_base_to_delta_hook,
+    )
+
+    assert no_hook_loss == jnp.array(0.0)
+    assert hook_loss == jnp.array(11.0)
 
 
 # =============================================================================

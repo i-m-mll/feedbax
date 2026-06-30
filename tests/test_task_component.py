@@ -3,9 +3,16 @@ import jax
 import jax.numpy as jnp
 
 import equinox as eqx
+from equinox.nn import StateIndex
 
 from feedbax.config.mapping import WhereDict
-from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.graph import (
+    Component,
+    Graph,
+    RolloutStepHookResult,
+    Wire,
+    init_state_from_component,
+)
 from feedbax.intervene import TimeSeriesParam
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.contracts.graphs.builders import build_component
@@ -59,6 +66,67 @@ class DummyTask(AbstractTask):
         return 1
 
 
+class _EvalCounter(Component):
+    input_ports = ()
+    output_ports = ("output",)
+
+    state_index: StateIndex
+
+    def __init__(self):
+        self.state_index = StateIndex(jnp.array(0.0, dtype=jnp.float32))
+
+    def __call__(self, inputs, state, *, key):
+        count = state.get(self.state_index) + 1.0
+        state = state.set(self.state_index, count)
+        return {"output": count}, state
+
+
+class _EvalAccumulator(Component):
+    input_ports = ("delta", "base")
+    output_ports = ("total",)
+
+    state_index: StateIndex
+
+    def __init__(self):
+        self.state_index = StateIndex(jnp.array(0.0, dtype=jnp.float32))
+
+    def __call__(self, inputs, state, *, key):
+        total = state.get(self.state_index) + inputs["delta"]
+        state = state.set(self.state_index, total)
+        return {"total": total + 0.0 * inputs["base"]}, state
+
+    def state_view(self, state):
+        return state.get(self.state_index)
+
+
+class DynamicInputTask(DummyTask):
+    def get_train_trial(self, key, batch_info=None):
+        return TaskTrialSpec(
+            inits=WhereDict(),
+            targets=WhereDict(),
+            inputs={"delta": jnp.zeros((self.n_steps,), dtype=jnp.float32)},
+        )
+
+
+def _make_dynamic_eval_graph():
+    return Graph(
+        nodes={"counter": _EvalCounter(), "acc": _EvalAccumulator()},
+        wires=(Wire("counter", "output", "acc", "base"),),
+        input_ports=("delta",),
+        output_ports=("total",),
+        input_bindings={"delta": ("acc", "delta")},
+        output_bindings={"total": ("acc", "total")},
+    )
+
+
+def _eval_hook(context):
+    if context.node_name != "acc":
+        return None
+    updated = dict(context.port_values)
+    updated[(context.node_name, "delta")] = context.port_values[("counter", "output")]
+    return RolloutStepHookResult(port_values=updated)
+
+
 def test_task_component_open_loop_steps():
     task = DummyTask()
     inputs = jnp.array([[1.0], [2.0], [3.0]])
@@ -83,6 +151,62 @@ def test_task_component_open_loop_steps():
     assert out1["intervene"]["foo"] == intervene["foo"].value[0]
     assert out2["intervene"]["foo"] == intervene["foo"].value[1]
     assert out3["intervene"]["foo"] == intervene["foo"].value[2]
+
+
+def test_eval_trials_rollout_step_hook_runs_inside_rollout():
+    task = DynamicInputTask()
+    model = _make_dynamic_eval_graph()
+    keys = jax.random.split(jax.random.PRNGKey(0), 2)
+    trial_specs = eqx.filter_vmap(task.get_train_trial)(keys)
+
+    states_no_hook = task.eval_trials(model, trial_specs, keys)
+    states_hook = task.eval_trials(
+        model,
+        trial_specs,
+        keys,
+        rollout_step_hook=_eval_hook,
+    )
+
+    assert jnp.allclose(states_no_hook.nodes["acc"], jnp.zeros((2, task.n_steps)))
+    assert jnp.allclose(
+        states_hook.nodes["acc"],
+        jnp.array([[1.0, 3.0, 6.0], [1.0, 3.0, 6.0]], dtype=jnp.float32),
+    )
+
+
+def test_trainer_loss_wrapper_rollout_step_hook_runs_inside_rollout():
+    from feedbax.training.trainer import grad_wrap_abstract_loss
+
+    task = DynamicInputTask()
+    model = _make_dynamic_eval_graph()
+    keys = jax.random.split(jax.random.PRNGKey(0), 2)
+    trial_specs = eqx.filter_vmap(task.get_train_trial)(keys)
+    init_states = eqx.filter_vmap(lambda _: init_state_from_component(model))(keys)
+    diff_model, static_model = eqx.partition(model, eqx.is_array)
+
+    _, (_, states_no_hook) = grad_wrap_abstract_loss(task.loss_func)(
+        diff_model,
+        static_model,
+        trial_specs,
+        init_states,
+        keys,
+    )
+    _, (_, states_hook) = grad_wrap_abstract_loss(
+        task.loss_func,
+        rollout_step_hook=_eval_hook,
+    )(
+        diff_model,
+        static_model,
+        trial_specs,
+        init_states,
+        keys,
+    )
+
+    assert jnp.allclose(states_no_hook.nodes["acc"], jnp.zeros((2, task.n_steps)))
+    assert jnp.allclose(
+        states_hook.nodes["acc"],
+        jnp.array([[1.0, 3.0, 6.0], [1.0, 3.0, 6.0]], dtype=jnp.float32),
+    )
 
 
 def test_delayed_reaches_can_sample_center_out_training_trials():
