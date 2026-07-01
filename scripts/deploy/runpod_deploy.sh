@@ -959,7 +959,7 @@ rsync_repo() {
     run_cmd rsync -az --delete --no-owner --no-group --stats \
         --exclude .git \
         --exclude .venv \
-        --exclude /_artifacts/ \
+        --exclude /_artifacts \
         --exclude __pycache__ \
         --exclude .pytest_cache \
         --exclude .mypy_cache \
