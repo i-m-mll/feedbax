@@ -97,9 +97,10 @@ def test_dry_run_prints_deterministic_deploy_commands(tmp_path: Path) -> None:
     assert "hub.docker.com/v2/repositories/runpod/pytorch/tags/" in output
     assert "runpodctl pod create" in output
     assert "--ports 22/tcp\\,8080/http" in output or "--ports 22/tcp,8080/http" in output
-    assert "runpodctl pod get dry-run-pod" in output
+    assert "acquire_status=endpoint_assigned pod=dry-run-pod" in output
     assert "nvidia-smi" in output
     assert "rsync -az --delete --no-owner --no-group --stats" in output
+    assert "--exclude /_artifacts/" in output
     assert "feedbax/" in output
     assert "web/node_modules" in output
     assert "perl" in output
@@ -126,7 +127,7 @@ def test_acquire_only_dry_run_stops_before_deploy(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     output = result.stdout + result.stderr
     assert "runpodctl pod create" in output
-    assert "runpodctl pod get dry-run-pod" in output
+    assert "acquire_status=endpoint_assigned pod=dry-run-pod" in output
     assert "nvidia-smi" in output
     assert "endpoint_source=ssh_object" in output
     assert "endpoint_classification=direct_endpoint_ready" in output

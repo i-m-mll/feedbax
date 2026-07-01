@@ -959,6 +959,7 @@ rsync_repo() {
     run_cmd rsync -az --delete --no-owner --no-group --stats \
         --exclude .git \
         --exclude .venv \
+        --exclude /_artifacts/ \
         --exclude __pycache__ \
         --exclude .pytest_cache \
         --exclude .mypy_cache \
@@ -999,7 +1000,7 @@ remote_nohup_sentinel() {
     local failed_file=$5
     local log_file=$6
     local remote
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && { $command; touch $(sq "$done_file"); } || { touch $(sq "$failed_file"); exit 1; }") >$(sq "$log_file") 2>&1 &"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && ( $command ) && touch $(sq "$done_file") || { rc=\$?; touch $(sq "$failed_file"); exit \$rc; }") >$(sq "$log_file") 2>&1 &"
     log "starting $label"
     remote_cmd "$remote"
 }
@@ -1028,12 +1029,10 @@ wait_for_sentinel() {
     die "timed out waiting for $label sentinel"
 }
 
-# repair_remote_artifacts fixes the _artifacts path on the pod after rsync.
-# Locally _artifacts is a shared-worktree symlink (rlrmp Bug 0887e3e); rsync
-# copies it dangling, so a later `mkdir -p _artifacts/...` fails and aborts the
-# launch. Mirror lib_acquire.sh::repair_artifacts_symlink remotely and
-# idempotently: dangling symlink -> real dir; real dir -> leave; valid symlink
-# -> warn + leave. The local logic is unit-tested over all three cases.
+# repair_remote_artifacts fixes the _artifacts path on the pod after repo sync.
+# Code rsync excludes top-level _artifacts so remote checkpoint/run state is not
+# deleted or replaced. This repair remains for fresh pods and for older pods
+# that may already contain a dangling shared-worktree symlink.
 repair_remote_artifacts() {
     local path=$REMOTE_ARTIFACTS_DIR
     [ -n "$path" ] || return 0
@@ -1131,7 +1130,7 @@ launch_row() {
     # Foreground reservation + setup, THEN background the job. The leading
     # `mkdir/rm/touch .started` run synchronously and finish before the SSH
     # command returns, so the slot is held the instant launch_row returns.
-    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && { $command; touch $(sq "$done_file"); } || { touch $(sq "$failed_file"); exit 1; }") >$(sq "$log_file") 2>&1 &"
+    remote="mkdir -p $(sq "$REMOTE_SENTINEL_DIR") $(sq "$REMOTE_RUN_DIR/logs") && rm -f $(sq "$done_file") $(sq "$failed_file") && touch $(sq "$started_file") && nohup bash -lc $(sq "cd $(sq "$workdir") && echo \$\$ > $(sq "$pid_file") && export XLA_PYTHON_CLIENT_PREALLOCATE=false && ( $command ) && touch $(sq "$done_file") || { rc=\$?; touch $(sq "$failed_file"); exit \$rc; }") >$(sq "$log_file") 2>&1 &"
     log "launching row $row_id"
     remote_cmd "$remote"
 }
