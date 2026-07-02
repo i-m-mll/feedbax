@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.contracts.migrations import migrate_studio_workspace_spec
 from feedbax.contracts.manifest import SCHEMA_VERSION, utc_now
 from feedbax.studio.protocol import (
@@ -27,34 +28,11 @@ from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_te
 from feedbax.contracts.component import PortType
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
 
-SchemaOrigin = Literal[
-    "declared",
-    "inferred_static",
-    "runtime_sample",
-    "curated_fallback",
-    "unknown",
-]
-
 
 class StudioSchemaModel(BaseModel):
     """Base model for static Studio schema records."""
 
     model_config = ConfigDict(extra="forbid")
-
-
-class ValueSchema(StudioSchemaModel):
-    """Provider-owned value type metadata for selectable Studio surfaces."""
-
-    id: str
-    label: str
-    kind: str
-    dtype: Optional[str] = None
-    shape: Optional[list[Any]] = None
-    rank: Optional[int] = None
-    units: Optional[str] = None
-    frame: Optional[str] = None
-    origin: SchemaOrigin = "unknown"
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PortSchema(StudioSchemaModel):
