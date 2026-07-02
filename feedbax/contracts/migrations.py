@@ -1283,6 +1283,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
+        _family(
+            "ObjectiveExecutionRequirements",
+            "feedbax.spec.objective.execution_requirements",
+            "feedbax.spec.objective.v1",
+            owner_module="feedbax.objective_spec",
+            emitted_by=("feedbax.objectives.service", "provider_manifest.schemas"),
+            consumed_by=("feedbax.training.worker_validation",),
+            description=(
+                "Axis and aggregation declaration emitted by objective lowering for "
+                "worker reducer validation."
+            ),
+            required_tests=(
+                "tests/test_loss_schedule_specs.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
     ]
 
     for kind in (

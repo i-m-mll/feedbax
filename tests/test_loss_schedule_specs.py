@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.objectives.spec import (
     EpochMaskSpec,
     FiniteDifferenceLossSpec,
@@ -10,6 +11,7 @@ from feedbax.objectives.spec import (
     MatrixQuadraticLossSpec,
     MetricSpec,
     MovementEpochRampScheduleSpec,
+    ObjectiveExecutionRequirements,
     ObjectiveSpec,
     PowerLawScheduleSpec,
     SelectorAddressSpec,
@@ -302,7 +304,28 @@ def test_provider_manifest_exposes_objective_schema_models() -> None:
     schemas = provider_manifest().schemas
 
     assert "ObjectiveSpec" in schemas
+    assert "ObjectiveExecutionRequirements" in schemas
     assert "FiniteDifferenceLossSpec" in schemas
     assert "MatrixQuadraticLossSpec" in schemas
     assert "MatrixPayloadSpec" in schemas
     assert "MovementEpochRampScheduleSpec" in schemas
+
+
+def test_objective_execution_requirements_round_trip_and_old_version_rejection() -> None:
+    requirements = ObjectiveExecutionRequirements(
+        requires_axes=["realization"],
+        aggregation_semantics={"realization": "tail"},
+    )
+    payload = requirements.model_dump(mode="json")
+    round_tripped = ObjectiveExecutionRequirements.model_validate(payload)
+    registry_result = default_spec_registry.migrate("ObjectiveExecutionRequirements", payload)
+
+    assert round_tripped == requirements
+    assert registry_result.payload == payload
+    assert not registry_result.migrated
+
+    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
+        default_spec_registry.migrate(
+            "ObjectiveExecutionRequirements",
+            {"schema_version": "feedbax.spec.objective.execution_requirements.v0"},
+        )

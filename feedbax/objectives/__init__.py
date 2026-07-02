@@ -1,10 +1,13 @@
 """Objective specifications, loss terms, and loss services."""
 
-from .loss import *
+from .loss import *  # noqa: F403
 from .service import (
+    LoweredObjective,
     NORM_FUNCTIONS,
     LossService,
+    ObjectiveLoweringError,
     ProbeInfo,
+    SelectorObjectiveLoss,
     TargetSpecResult,
     TimeRange,
     loss_service,
@@ -17,6 +20,7 @@ from .spec import (
     MetricSpec,
     MovementEpochRampScheduleSpec,
     ObjectiveSpec,
+    ObjectiveExecutionRequirements,
     ObjectiveSpecModel,
     ObjectiveTermSpec,
     PowerLawScheduleSpec,
@@ -41,11 +45,14 @@ __all__ = [
     "ConstantScheduleSpec",
     "EpochMaskSpec",
     "LossService",
+    "LoweredObjective",
     "MatrixPayloadSpec",
     "MetricSpec",
     "MovementEpochRampScheduleSpec",
     "NORM_FUNCTIONS",
     "OBJECTIVE_SCHEMA_VERSION",
+    "ObjectiveExecutionRequirements",
+    "ObjectiveLoweringError",
     "ObjectiveSpec",
     "ObjectiveSpecModel",
     "ObjectiveTermSpec",
@@ -56,6 +63,7 @@ __all__ = [
     "ReductionSpec",
     "ScheduleSpec",
     "SelectorAddressSpec",
+    "SelectorObjectiveLoss",
     "TargetSpecResult",
     "TargetStateLossSpec",
     "TargetValueSpec",
