@@ -36,7 +36,7 @@ from feedbax.acausal.rotational import (
 )
 from feedbax.mechanics.dae import DAEState
 
-jax.config.update("jax_enable_x64", True)
+pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
 # =========================================================================

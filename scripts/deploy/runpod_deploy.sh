@@ -612,6 +612,7 @@ create_pod_in_dc() {
 # the grace window only governs the still-RUNNING/no-endpoint case.
 wait_for_endpoint_or_dead() {
     [ "$DRY_RUN" -eq 1 ] && {
+        run_cmd runpodctl pod get "$POD_ID" --output json
         SSH_HOST="dry-run-host"; SSH_PORT="22"
         ENDPOINT_SOURCE="ssh_object"
         ENDPOINT_CLASSIFICATION="direct_endpoint_discovered"
