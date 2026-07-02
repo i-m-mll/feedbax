@@ -10,12 +10,14 @@ from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph, Wire, init_state_from_component
 from feedbax.contracts.graphs.templates import (
     network_template_graph,
+    recurrent_graph_input_initializer,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.models.networks import SimpleStagedNetwork
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
 from feedbax.component_registry import ComponentRegistry
 
@@ -141,6 +143,90 @@ def test_lstm_network_subgraph_runs_with_recurrent_zero_initializers() -> None:
 
     assert outputs["output"].shape == (3, 2)
     assert outputs["hidden"].shape == (3, 4)
+
+
+def _graph_input_recurrent_spec() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 0.5},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        wires=[
+            WireSpec(
+                source_node="gain",
+                source_port="output",
+                target_node="gain",
+                target_port="input",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_graph_input_initializer(
+                    "seed",
+                    state_slot="input",
+                ),
+            )
+        ],
+        input_ports=["seed"],
+        output_ports=["out"],
+        output_bindings={"out": ("gain", "output")},
+    )
+
+
+def test_graph_input_recurrent_initializer_graphspec_runs_from_external_input() -> None:
+    graph = spec_to_graph(
+        _graph_input_recurrent_spec(),
+        {},
+        input_prototypes={("__graph__", "seed"): jnp.zeros((2,))},
+    )
+    state = init_state_from_component(graph)
+
+    outputs, _ = graph(
+        {"seed": jnp.array([8.0, 10.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert jnp.allclose(
+        outputs["out"],
+        jnp.array([[4.0, 5.0], [2.0, 2.5], [1.0, 1.25]]),
+    )
+
+
+def test_graph_input_recurrent_initializer_serializes_verbatim() -> None:
+    spec = _graph_input_recurrent_spec()
+
+    json_roundtrip = GraphSpec.model_validate_json(spec.model_dump_json())
+    runtime_roundtrip = graph_to_spec(
+        spec_to_graph(
+            spec,
+            {},
+            input_prototypes={("__graph__", "seed"): jnp.zeros((2,))},
+        )
+    )
+
+    assert json_roundtrip.wires[0].recurrent_initializer == {
+        "kind": "graph-input",
+        "scope": "trial",
+        "source": "seed",
+        "state_slot": "input",
+    }
+    assert runtime_roundtrip.wires[0].recurrent_initializer == spec.wires[0].recurrent_initializer
+
+
+def test_graph_input_recurrent_initializer_feeds_prototype_inference() -> None:
+    spec = _graph_input_recurrent_spec()
+
+    input_prototypes = infer_node_input_prototypes(
+        spec,
+        {("__graph__", "seed"): jnp.zeros((3,))},
+        {},
+        component_registry={},
+    )
+
+    assert input_prototypes[("gain", "input")].shape == (3,)
 
 
 def test_recurrent_controller_template_is_explicit_plain_graph() -> None:

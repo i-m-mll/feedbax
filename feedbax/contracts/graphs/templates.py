@@ -50,6 +50,17 @@ def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> 
     return initializer
 
 
+def recurrent_graph_input_initializer(source: str, *, state_slot: str) -> dict[str, Any]:
+    """Return a recurrent initializer supplied by an external graph input."""
+
+    return {
+        "kind": "graph-input",
+        "scope": "trial",
+        "source": str(source),
+        "state_slot": state_slot,
+    }
+
+
 def network_recurrent_wires(
     cell_type: str,
     hidden_size: int,
