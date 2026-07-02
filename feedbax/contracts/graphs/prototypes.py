@@ -475,6 +475,10 @@ def infer_node_input_prototypes(
             init_proto = array_proto_from_shape(initializer.get("shape"))
         elif initializer.get("kind") == "constant" and "value" in initializer:
             init_proto = proto_from_value(initializer["value"])
+        elif initializer.get("kind") == "graph-input":
+            source = initializer.get("source")
+            if isinstance(source, str):
+                init_proto = external_input_prototypes.get(("__graph__", source))
         if init_proto is not None:
             input_prototypes[(wire.target_node, wire.target_port)] = init_proto
 
