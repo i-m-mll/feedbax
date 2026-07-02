@@ -40,6 +40,19 @@ class ComponentMeta:
     supported_param_schema_versions: List[str] = field(default_factory=list)
     migrations: List[ComponentMigrationInfo] = field(default_factory=list)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        if (
+            name == "output_prototype_fn"
+            and hasattr(self, "output_prototype_fn")
+            and getattr(self, "provenance", None) == "feedbax"
+            and value is not getattr(self, "output_prototype_fn")
+        ):
+            raise AttributeError(
+                "Feedbax-owned ComponentMeta.output_prototype_fn is immutable; "
+                "register output prototypes in feedbax component metadata"
+            )
+        super().__setattr__(name, value)
+
     def __post_init__(self) -> None:
         if not self.supported_param_schema_versions:
             self.supported_param_schema_versions = [self.param_schema_version]

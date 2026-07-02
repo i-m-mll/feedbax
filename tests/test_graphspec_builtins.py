@@ -34,6 +34,7 @@ from feedbax.contracts.graphs.serialization import (
     prototypes_from_task_bindings,
     spec_to_graph,
 )
+from feedbax.contracts.graphs.prototypes import output_prototypes_for_node
 from feedbax.runtime.state import CartesianState
 
 
@@ -536,6 +537,62 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
         if component_type == "DynamicsMatrixPerturb":
             assert "delta_A" in meta.default_params
             assert "mass" in meta.default_params
+
+
+@pytest.mark.parametrize(
+    ("component_type", "input_ports"),
+    [
+        ("FixedField", ["force", "params_override"]),
+        ("CurlField", ["effector", "force", "params_override"]),
+        ("DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+    ],
+)
+def test_force_field_output_prototypes_passthrough_force(
+    component_type: str,
+    input_ports: list[str],
+) -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    force_proto = jnp.zeros((2,), dtype=jnp.float32)
+    node_spec = ComponentSpec(
+        type=component_type,
+        params={},
+        input_ports=input_ports,
+        output_ports=["force"],
+    )
+
+    outputs = output_prototypes_for_node(
+        "field",
+        node_spec,
+        {("field", "force"): force_proto},
+        {},
+        registry,
+    )
+
+    assert outputs["force"] is force_proto
+
+
+@pytest.mark.parametrize(
+    ("component_type", "input_ports"),
+    [
+        ("FixedField", ["force", "params_override"]),
+        ("CurlField", ["effector", "force", "params_override"]),
+        ("DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+    ],
+)
+def test_force_field_output_prototypes_require_force_input(
+    component_type: str,
+    input_ports: list[str],
+) -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    node_spec = ComponentSpec(
+        type=component_type,
+        params={},
+        input_ports=input_ports,
+        output_ports=["force"],
+    )
+
+    with pytest.raises(ValueError, match="input prototype 'force'"):
+        output_prototypes_for_node("field", node_spec, {}, {}, registry)
 
 
 def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
