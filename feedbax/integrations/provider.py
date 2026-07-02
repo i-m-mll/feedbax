@@ -82,7 +82,7 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
-from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingRunSpec, TrainingSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.tasks.presets import apply_delayed_reaches_preset
 
@@ -228,6 +228,7 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "AdditiveGraphChannelTargetSpec": AdditiveGraphChannelTargetSpec,
         "AnalysisInputRequirement": AnalysisInputRequirement,
         "TrainingSpec": TrainingSpec,
+        "TrainingRunSpec": TrainingRunSpec,
         "TaskSpec": TaskSpec,
         "LossTermSpec": LossTermSpec,
         "EvaluationRunSpec": EvaluationRunSpec,
@@ -502,10 +503,10 @@ def provider_manifest() -> ProviderManifest:
             selected_node_kinds=["feedbax.graph_spec"],
         ),
         "validate_training_spec": CapabilitySpec(
-            input_schema="TrainingSpec",
+            input_schema="TrainingRunSpec",
             output_schema="ProviderValidationResult",
             action="validate",
-            compatibility_predicates=["selected node has Feedbax training spec payload"],
+            compatibility_predicates=["selected node has Feedbax training run request payload"],
             selected_node_kinds=["feedbax.training_run", "feedbax.training_run_set"],
         ),
         "validate_task_spec": CapabilitySpec(
@@ -536,12 +537,12 @@ def provider_manifest() -> ProviderManifest:
             selected_node_kinds=["feedbax.report"],
         ),
         "start_training_run": CapabilitySpec(
-            input_schema="TrainingSpec",
+            input_schema="TrainingRunSpec",
             output_schema="TrainingRunManifest",
             requires_review=True,
             description="Start a local or configured worker training run.",
             action="execute",
-            compatibility_predicates=["graph and training specs validate through Feedbax"],
+            compatibility_predicates=["TrainingRunSpec validates through Feedbax"],
             mutates_state=True,
             may_launch_compute=True,
             artifact_roles=["training_checkpoint", "training_history", "execution_log"],
@@ -1300,6 +1301,26 @@ def validate_training_spec(
     return ProviderValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
 
+def validate_training_run_spec(payload: dict[str, Any] | TrainingRunSpec) -> ProviderValidationResult:
+    """Validate the public governed training-run request contract."""
+    try:
+        payload if isinstance(payload, TrainingRunSpec) else TrainingRunSpec.model_validate(payload)
+    except PydanticValidationError as exc:
+        return ProviderValidationResult(valid=False, errors=_pydantic_errors(exc))
+    except ValueError as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="invalid_training_run_spec",
+                    message=str(exc),
+                    location={"path": "/"},
+                )
+            ],
+        )
+    return ProviderValidationResult(valid=True)
+
+
 def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidationResult:
     try:
         spec = payload if isinstance(payload, TaskSpec) else TaskSpec.model_validate(payload)
@@ -1829,6 +1850,8 @@ def validate_spec(
         return validate_graph_spec_manifest(payload)
     if kind == "training":
         return validate_training_spec(payload, graph_spec=graph_spec)
+    if kind == "training_run":
+        return validate_training_run_spec(payload)
     if kind == "task":
         return validate_task_spec(payload)
     if kind == "evaluation":

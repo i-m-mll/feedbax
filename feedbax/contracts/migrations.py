@@ -31,10 +31,20 @@ from feedbax.contracts.retention_artifact_schema import (
     RETENTION_POLICY_PLAN_SCHEMA_ID,
     RETENTION_POLICY_PLAN_SCHEMA_VERSION,
 )
+from feedbax.contracts.training import (
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+    STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts.schema_namespace import (
     SchemaNamespaceKind,
     validate_schema_identity,
     validate_schema_version,
+)
+from feedbax.contracts.worker import (
+    WORKER_CONTRACT_SCHEMA_ID,
+    WORKER_CONTRACT_SCHEMA_VERSION,
 )
 
 
@@ -1116,6 +1126,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Graph-embedded retained-observable request.",
         ),
         _family(
+            "TrainingRunSpec",
+            TRAINING_RUN_SPEC_SCHEMA_ID,
+            TRAINING_RUN_SPEC_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
+            consumed_by=("training executor pre-launch validation", "downstream run-spec consumers"),
+            description=(
+                "Public durable request envelope for graph, task, objective, method, "
+                "worker, execution, artifact, checkpoint, and progress policy."
+            ),
+            required_tests=(
+                "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "TrainingSpec",
             "feedbax.spec.training",
             "feedbax.spec.training.v1",
@@ -1141,6 +1167,24 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("TrainingSpec.loss", "provider_manifest.schemas"),
             consumed_by=("training loss lowering",),
             description="Legacy structured loss-term specification.",
+        ),
+        _family(
+            "StandardSupervisedMethodPayload",
+            STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_ID,
+            STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.training",
+            emitted_by=("TrainingRunSpec.method_payload",),
+            consumed_by=("TrainingRunSpec method registry dispatch",),
+            description=(
+                "Feedbax-owned payload schema for the standard supervised training method."
+            ),
+            rejected_old_versions=(
+                "feedbax.spec.training_method.standard_supervised_payload.v0",
+            ),
+            required_tests=(
+                "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
         _family(
             "ObjectiveSpec",
@@ -1225,6 +1269,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("CheckpointSelectionManifest.selection_spec", "provider_manifest.schemas"),
             consumed_by=("checkpoint-selection materializers", "downstream scorer plug-ins"),
             description="Declarative generic checkpoint-selection request.",
+        ),
+        _family(
+            "WorkerMethodContractSpec",
+            WORKER_CONTRACT_SCHEMA_ID,
+            WORKER_CONTRACT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.worker",
+            emitted_by=("method registry", "TrainingRunSpec.method_ref resolution"),
+            consumed_by=("feedbax.training.worker_validation", "training executor"),
+            description="Method-neutral worker axis/state/phase execution declaration.",
+            required_tests=(
+                "tests/test_worker_contract.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
     ]
 
