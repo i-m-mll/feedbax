@@ -137,6 +137,7 @@ class TaskTrainer(eqx.Module):
 
     optimizer: optax.GradientTransformation
     checkpointing: bool
+    checkpoint_custody: bool
     chkpt_dir: Path
     writer: Optional[SummaryWriter]
     model_update_funcs: PyTree[Callable]
@@ -146,6 +147,7 @@ class TaskTrainer(eqx.Module):
         self,
         optimizer: optax.GradientTransformation,
         checkpointing: bool = True,
+        checkpoint_custody: bool = False,
         chkpt_dir: str | Path = "/tmp/feedbax-checkpoints",
         enable_tensorboard: bool = False,
         tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
@@ -155,6 +157,9 @@ class TaskTrainer(eqx.Module):
         Arguments:
             optimizer: The Optax optimizer to use for training.
             checkpointing: Whether to save model checkpoints during training.
+            checkpoint_custody: Whether an external Feedbax checkpoint-custody
+                writer owns checkpoint transactions for this run. When enabled,
+                the legacy model-only writer must be disabled.
             chkpt_dir: The directory in which to save model checkpoints.
             enable_tensorboard: Whether to keep logs for Tensorboard.
             tensorboard_logdir: The directory in which to save Tensorboard logs.
@@ -164,8 +169,15 @@ class TaskTrainer(eqx.Module):
                 can be used for implementing state-dependent offline learning rules
                 such as batch-averaged Hebbian learning.
         """
+        if checkpoint_custody and checkpointing:
+            raise ValueError(
+                "TaskTrainer checkpoint_custody=True cannot be combined with "
+                "checkpointing=True; Feedbax checkpoint custody must be the only "
+                "active checkpoint writer for a run."
+            )
         self.optimizer = optimizer
         self.model_update_funcs = model_update_funcs
+        self.checkpoint_custody = checkpoint_custody
 
         self._use_tb = enable_tensorboard
         if self._use_tb:
@@ -983,6 +995,7 @@ class TaskTrainer(eqx.Module):
         model: Component,
         optimizer: optax.GradientTransformation,
         checkpointing: bool = True,
+        checkpoint_custody: bool = False,
         chkpt_dir: str | Path = "/tmp/feedbax-checkpoints",
         enable_tensorboard: bool = False,
         tensorboard_logdir: str | Path = "/tmp/feedbax-tensorboard",
@@ -998,6 +1011,8 @@ class TaskTrainer(eqx.Module):
                 TaskComponent.
             optimizer: The Optax optimizer to use for training.
             checkpointing: Whether to save model checkpoints during training.
+            checkpoint_custody: Whether Feedbax checkpoint custody owns
+                checkpoint transactions for this run.
             chkpt_dir: The directory in which to save model checkpoints.
             enable_tensorboard: Whether to keep logs for Tensorboard.
             tensorboard_logdir: The directory in which to save Tensorboard logs.
@@ -1034,6 +1049,7 @@ class TaskTrainer(eqx.Module):
         trainer = cls(
             optimizer=optimizer,
             checkpointing=checkpointing,
+            checkpoint_custody=checkpoint_custody,
             chkpt_dir=chkpt_dir,
             enable_tensorboard=enable_tensorboard,
             tensorboard_logdir=tensorboard_logdir,

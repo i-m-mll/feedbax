@@ -13,6 +13,10 @@ from feedbax.contracts.graph import (
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.checkpoints import (
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import (
     ArtifactMigrationRecord,
     REGENERATION_SPEC_SCHEMA_ID,
@@ -1138,6 +1142,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             required_tests=(
                 "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingCheckpointTransactionManifest",
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints",
+            emitted_by=("feedbax.training.checkpoint_custody",),
+            consumed_by=(
+                "Feedbax training resume loaders",
+                "cloud-backed training workers",
+                "downstream checkpoint adoption lanes",
+            ),
+            description=(
+                "Atomic multi-slot training checkpoint transaction manifest with "
+                "run-contract binding, slot ABI fingerprints, and content integrity."
+            ),
+            required_tests=(
+                "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
