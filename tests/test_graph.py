@@ -439,6 +439,43 @@ def test_graph_with_state_view_preserves_fields_and_subclass() -> None:
     assert updated.parameter_constraints == (constraint,)
 
 
+def test_graph_with_state_consistency_preserves_fields_and_subclass() -> None:
+    constraint = object()
+
+    def state_view(node_states):
+        return node_states
+
+    def state_consistency(state):
+        return state
+
+    graph = _RuntimeCallbackGraph(
+        nodes={"counter": Counter()},
+        wires=(),
+        input_ports=("in",),
+        output_ports=("out",),
+        input_bindings={"in": ("counter", "input")},
+        output_bindings={"out": ("counter", "output")},
+        state_view_fn=state_view,
+        checkpoint=True,
+        parameter_constraints=(constraint,),
+    )
+
+    updated = graph.with_state_consistency(state_consistency)
+
+    assert type(updated) is type(graph)
+    assert updated is not graph
+    assert updated.nodes is graph.nodes
+    assert updated.wires is graph.wires
+    assert updated.input_ports is graph.input_ports
+    assert updated.output_ports is graph.output_ports
+    assert updated.input_bindings is graph.input_bindings
+    assert updated.output_bindings is graph.output_bindings
+    assert updated.state_view_fn is state_view
+    assert updated.state_consistency_fn is state_consistency
+    assert updated.checkpoint is graph.checkpoint
+    assert updated.parameter_constraints == (constraint,)
+
+
 def test_graph_step_acyclic_returns_empty_cycle_values():
     """For an acyclic graph, ``step`` returns an empty cycle dict and works without one."""
     a = _Scaler(2.0)

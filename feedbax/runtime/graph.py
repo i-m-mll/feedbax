@@ -440,6 +440,13 @@ class Graph(Component):
             raise TypeError("state_view_fn must be callable")
         return self._with_runtime_callback("state_view_fn", state_view_fn)
 
+    def with_state_consistency(self, state_consistency_fn: Callable[[State], State]) -> "Graph":
+        """Return a copy with a runtime-only graph state-consistency function attached."""
+
+        if not callable(state_consistency_fn):
+            raise TypeError("state_consistency_fn must be callable")
+        return self._with_runtime_callback("state_consistency_fn", state_consistency_fn)
+
     @cached_property
     def _outgoing_wires(self) -> dict[tuple[str, str], list[Wire]]:
         outgoing: dict[tuple[str, str], list[Wire]] = {}
