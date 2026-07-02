@@ -301,6 +301,7 @@ class TrainingRunManifest(BaseManifest):
     training_spec: Optional[SpecPayload] = None
     task_spec: Optional[SpecPayload] = None
     task_binding_spec: Optional[SpecPayload] = None
+    checkpoint_custody: list[ParentRef | ArtifactRef] = Field(default_factory=list)
     overrides: list[OverridePatch] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -535,6 +536,14 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "AnalysisRunManifest": AnalysisRunManifest,
     "ReportManifest": ReportManifest,
 }
+
+
+def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
+    if kind == "TrainingCheckpointTransactionManifest":
+        from feedbax.contracts.checkpoints import CheckpointTransactionManifest
+
+        return CheckpointTransactionManifest
+    return MANIFEST_MODELS.get(kind)
 
 SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     "GraphSpecManifest": ("graph_spec",),
@@ -1176,7 +1185,7 @@ def load_manifest(path: Path | str) -> AnyManifest:
     if not isinstance(raw_kind, str):
         raise ValueError(f"Unknown Feedbax manifest kind: {raw_kind!r}")
     kind = raw_kind
-    model = MANIFEST_MODELS.get(kind)
+    model = _manifest_model_for_kind(kind)
     if model is None:
         raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
     return model.model_validate(data)  # type: ignore[return-value]
