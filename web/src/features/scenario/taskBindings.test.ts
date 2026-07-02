@@ -8,6 +8,7 @@ import {
   scopedTaskBindingSpec,
   taskBindingId,
   targetInputOccupied,
+  GRAPH_BINDABLE_TASK_DATA_ROLES,
 } from '@/features/scenario/taskBindings';
 import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
@@ -79,6 +80,11 @@ const graphWithNamedMux: GraphSpec = {
 const delayedTask: TaskSpec = { type: 'DelayedReaches', params: {} };
 
 describe('task data bindings', () => {
+  it('includes component parameters in graph-bindable roles', () => {
+    expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('component_parameter')).toBe(true);
+    expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('intervention')).toBe(false);
+  });
+
   it('exposes delayed-reach inputs as named bindable task data', () => {
     const data = defaultTaskData(delayedTask);
 

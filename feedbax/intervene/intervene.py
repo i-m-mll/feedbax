@@ -140,7 +140,7 @@ class CurlField(Component):
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -173,7 +173,7 @@ class FixedField(Component):
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -240,7 +240,7 @@ class DynamicsMatrixPerturb(Component):
         new_force = jax.lax.cond(params.active, apply_perturbation, lambda: force)
         return {"force": new_force}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -279,7 +279,7 @@ class AddNoise(Component):
         output = jax.lax.cond(params.active, apply_noise, lambda: signal)
         return {"output": output}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -320,7 +320,7 @@ class NetworkClamp(Component):
         output = jax.lax.cond(params.active, apply, lambda: signal)
         return {"output": output}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -361,7 +361,7 @@ class NetworkConstantInput(Component):
         output = jax.lax.cond(params.active, apply, lambda: signal)
         return {"output": output}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -398,7 +398,7 @@ class ConstantInput(Component):
         output = jax.lax.cond(params.active, apply, lambda: signal)
         return {"output": output}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {self.label: self.params_index}
 
 
@@ -413,4 +413,4 @@ class Copy(Component):
 
 
 def is_intervenor(element) -> bool:
-    return isinstance(element, Component) and bool(element.intervention_state_indices())
+    return isinstance(element, Component) and bool(element.task_parameter_state_indices())

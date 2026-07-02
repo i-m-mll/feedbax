@@ -99,12 +99,12 @@ class PreparedTrial(Module):
 
     Attributes:
         init_state: Model state after applying trial-specific initial values and
-            time-invariant intervention parameters.
+            time-invariant component parameters.
         inputs: Model inputs after graph-port normalization and time-varying
-            intervention input merging.
+            component-parameter input merging.
         n_steps: Number of timesteps inferred from the trial timeline or inputs.
-        intervention_inputs: Time-varying intervention inputs keyed by
-            intervention label, before ``intervene:<label>`` model-input
+        intervention_inputs: Legacy name for time-varying component-parameter
+            inputs keyed by label, before ``intervene:<label>`` model-input
             prefixing.
     """
 
@@ -252,7 +252,7 @@ def merge_intervene_inputs(
     inputs: dict[str, PyTree],
     intervene_inputs: dict[str, PyTree],
 ) -> dict[str, PyTree]:
-    """Merge time-varying intervention params into model inputs.
+    """Merge legacy time-varying intervention params into model inputs.
 
     Adds entries keyed by ``f"intervene:{label}"`` for each intervenor label
     that has time-varying params.  These keys match the input bindings added
@@ -330,10 +330,10 @@ def prepare_trial(model: Component, trial_spec: "TaskTrialSpec") -> PreparedTria
 
     intervention_inputs = {}
     if trial_spec.intervene:
-        indices = model.intervention_state_indices()
+        indices = model.task_parameter_state_indices()
         for label, params in trial_spec.intervene.items():
             if label not in indices:
-                raise ValueError(f"Unknown intervention label '{label}'")
+                raise ValueError(f"Unknown task-parameter label '{label}'")
             idx = indices[label]
             current = init_state.get(idx)
 

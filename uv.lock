@@ -707,7 +707,7 @@ requires-dist = [
     { name = "ipyfilechooser", marker = "extra == 'notebook'", specifier = ">=0.6.0" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.5" },
     { name = "jax", specifier = ">=0.5.2" },
-    { name = "jax-cookbook", git = "https://github.com/i-m-mll/jax-cookbook.git?rev=779693475337d5275e20e6a5c1bacce448e444f3" },
+    { name = "jax-cookbook", git = "https://github.com/i-m-mll/jax-cookbook.git?rev=9b40ab9dff124c982f77985f07bbd3776edb7283" },
     { name = "jaxtyping", specifier = ">=0.2.38" },
     { name = "kaleido", specifier = "==0.2.1" },
     { name = "matplotlib", specifier = ">=3.10.1" },
@@ -1073,7 +1073,7 @@ wheels = [
 [[package]]
 name = "jax-cookbook"
 version = "0.1.0"
-source = { git = "https://github.com/i-m-mll/jax-cookbook.git?rev=779693475337d5275e20e6a5c1bacce448e444f3#779693475337d5275e20e6a5c1bacce448e444f3" }
+source = { git = "https://github.com/i-m-mll/jax-cookbook.git?rev=9b40ab9dff124c982f77985f07bbd3776edb7283#9b40ab9dff124c982f77985f07bbd3776edb7283" }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },

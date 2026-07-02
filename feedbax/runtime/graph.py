@@ -12,6 +12,7 @@ from functools import cached_property
 from operator import attrgetter
 from collections.abc import Callable
 from typing import ClassVar, Literal, Optional
+import warnings
 
 import equinox as eqx
 from equinox import Module, field
@@ -147,9 +148,28 @@ class Component(Module):
                 outputs[port] = attrgetter(port)(state_value)
         return outputs
 
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
-        """Return labels mapped to StateIndex for intervention params."""
+    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
+        """Return task-parameter labels mapped to StateIndex values."""
+        legacy = type(self).__dict__.get("intervention_state_indices")
+        if legacy is not None and legacy is not Component.intervention_state_indices:
+            warnings.warn(
+                "Overriding intervention_state_indices() is deprecated; override "
+                "task_parameter_state_indices().",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return legacy(self)
         return {}
+
+    def intervention_state_indices(self) -> dict[str, StateIndex]:
+        """Deprecated alias for task_parameter_state_indices()."""
+        warnings.warn(
+            "intervention_state_indices() is deprecated; use "
+            "task_parameter_state_indices().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.task_parameter_state_indices()
 
 
 class RolloutStepContext(Module):
@@ -345,6 +365,26 @@ class Graph(Component):
             isinstance(node, Graph) and node._needs_iteration for node in self.nodes.values()
         )
 
+    def _graph_input_initializer_sources(self) -> set[str]:
+        sources: set[str] = set()
+        for wire in self._cycle_wires:
+            initializer = wire.recurrent_initializer
+            if initializer is None or initializer.get("kind") != "graph-input":
+                continue
+            source = initializer.get("source")
+            if isinstance(source, str):
+                sources.add(source)
+        for node_name, node in self.nodes.items():
+            if not isinstance(node, Graph):
+                continue
+            nested_sources = node._graph_input_initializer_sources()
+            if not nested_sources:
+                continue
+            for ext_port, (target_node, target_port) in self.input_bindings.items():
+                if target_node == node_name and target_port in nested_sources:
+                    sources.add(ext_port)
+        return sources
+
     def get_node(self, path: str) -> Component:
         """Return a named graph node by dotted graph-node path.
 
@@ -437,18 +477,28 @@ class Graph(Component):
             return GraphState(node_states)
         return self.state_view_fn(node_states)
 
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
+    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
         indices: dict[str, StateIndex] = {}
         for name, node in self.nodes.items():
-            node_indices = node.intervention_state_indices()
+            node_indices = node.task_parameter_state_indices()
             for label, idx in node_indices.items():
                 if label in indices:
                     raise ValueError(
-                        f"Duplicate intervention label '{label}' in graph nodes "
+                        f"Duplicate task-parameter label '{label}' in graph nodes "
                         f"('{name}' conflicts with another node)."
                     )
                 indices[label] = idx
         return indices
+
+    def intervention_state_indices(self) -> dict[str, StateIndex]:
+        """Deprecated alias for task_parameter_state_indices()."""
+        warnings.warn(
+            "Graph.intervention_state_indices() is deprecated; use "
+            "Graph.task_parameter_state_indices().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.task_parameter_state_indices()
 
     def state_consistency_update(self, state: State) -> State:
         if self.state_consistency_fn is None:
@@ -590,7 +640,7 @@ class Graph(Component):
             return outputs, new_state, {}
 
         if cycle_port_values is None:
-            cycle_port_values = self._get_initial_cycle_values(state)
+            cycle_port_values = self._get_initial_cycle_values(state, inputs=inputs)
 
         port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
 
@@ -648,7 +698,7 @@ class Graph(Component):
         """
         if self._needs_iteration:
             if cycle_port_values is None:
-                cycle_port_values = self._get_initial_cycle_values(state)
+                cycle_port_values = self._get_initial_cycle_values(state, inputs=inputs)
             port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
         else:
             port_values = {}
@@ -891,18 +941,22 @@ class Graph(Component):
         self,
         state: State,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        inputs: Optional[dict[str, PyTree]] = None,
     ) -> dict[tuple[str, str], PyTree]:
         """Return the cycle-wire port-value dict to seed the first ``step`` call.
 
         Equivalent to ``cycle_init`` augmented with values derived from
-        ``state`` (via each cycle source node's ``initial_outputs``). For
-        graphs without cycles, returns an empty dict.
+        ``state`` (via each cycle source node's ``initial_outputs``) and
+        recurrent-initializer metadata. For graphs without cycles, returns an
+        empty dict.
 
         Args:
             state: Current ``equinox.nn.State`` to derive defaults from.
             cycle_init: Optional explicit overrides keyed by
                 ``(target_node, target_port)``. Takes precedence over
                 state-derived defaults.
+            inputs: Optional external graph inputs used by ``graph-input``
+                recurrent initializers. Keys match this graph's ``input_ports``.
 
         Returns:
             Dict keyed by ``(target_node, target_port)`` suitable as the
@@ -912,18 +966,26 @@ class Graph(Component):
             ValueError: If a cycle-wire target has neither a ``cycle_init``
                 override nor a state-derivable default.
         """
-        return self._get_initial_cycle_values(state, cycle_init)
+        return self._get_initial_cycle_values(state, cycle_init, inputs=inputs)
 
     def _get_initial_cycle_values(
         self,
         state: State,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        inputs: Optional[dict[str, PyTree]] = None,
     ) -> dict[tuple[str, str], PyTree]:
         init_values: dict[tuple[str, str], PyTree] = {}
         missing_reasons: dict[tuple[str, str], str] = {}
+        initial_inputs = inputs or {}
 
         if cycle_init is not None:
             init_values.update(cycle_init)
+
+        bound_port_values = {
+            (node_name, node_port): initial_inputs[ext_port]
+            for ext_port, (node_name, node_port) in self.input_bindings.items()
+            if ext_port in initial_inputs
+        }
 
         node_states = {
             name: node.state_view(state)
@@ -937,7 +999,10 @@ class Graph(Component):
                 continue
             source_state = node_states.get(wire.source_node, None)
             if source_state is None:
-                metadata_value = self._initial_value_from_recurrent_initializer(wire)
+                metadata_value = self._initial_value_from_recurrent_initializer(
+                    wire,
+                    inputs=initial_inputs,
+                )
                 if metadata_value is not None:
                     init_values[target_key] = metadata_value
                     missing_reasons.pop(target_key, None)
@@ -955,7 +1020,10 @@ class Graph(Component):
                 init_values[target_key] = node_outputs[wire.source_port]
                 missing_reasons.pop(target_key, None)
                 continue
-            metadata_value = self._initial_value_from_recurrent_initializer(wire)
+            metadata_value = self._initial_value_from_recurrent_initializer(
+                wire,
+                inputs=initial_inputs,
+            )
             if metadata_value is not None:
                 init_values[target_key] = metadata_value
                 missing_reasons.pop(target_key, None)
@@ -972,7 +1040,12 @@ class Graph(Component):
                 continue
             key = _nested_cycle_key(node_name)
             if key not in init_values:
-                init_values[key] = node._get_initial_cycle_values(state)
+                nested_inputs = {
+                    port_name: bound_port_values[(node_name, port_name)]
+                    for port_name in node.input_ports
+                    if (node_name, port_name) in bound_port_values
+                }
+                init_values[key] = node._get_initial_cycle_values(state, inputs=nested_inputs)
 
         missing = [
             (wire.target_node, wire.target_port)
@@ -989,7 +1062,12 @@ class Graph(Component):
 
         return init_values
 
-    def _initial_value_from_recurrent_initializer(self, wire: Wire) -> PyTree | None:
+    def _initial_value_from_recurrent_initializer(
+        self,
+        wire: Wire,
+        *,
+        inputs: Optional[dict[str, PyTree]] = None,
+    ) -> PyTree | None:
         initializer = wire.recurrent_initializer
         if initializer is None:
             return None
@@ -1018,6 +1096,21 @@ class Graph(Component):
                     "kind 'constant' requires 'value'"
                 )
             return jnp.asarray(initializer["value"])
+        if kind == "graph-input":
+            source = initializer.get("source")
+            if not isinstance(source, str) or not source:
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'graph-input' requires non-empty string 'source'"
+                )
+            if inputs is None or source not in inputs:
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    f"kind 'graph-input' requires input {source!r}"
+                )
+            return inputs[source]
         raise ValueError(
             f"Wire {wire.source_node}.{wire.source_port} -> "
             f"{wire.target_node}.{wire.target_port} has unsupported "
@@ -1038,15 +1131,25 @@ class Graph(Component):
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if n_steps is None:
-            if not inputs:
+            timed_inputs = {
+                name: value
+                for name, value in inputs.items()
+                if name not in self._graph_input_initializer_sources()
+            }
+            if not timed_inputs:
                 raise ValueError("n_steps is required when inputs are empty")
-            first_input = next(iter(inputs.values()))
+            first_input = next(iter(timed_inputs.values()))
             first_leaf = jt.leaves(first_input)[0]
             n_steps = int(first_leaf.shape[0])
 
         keys = jax.random.split(key, n_steps)
 
-        init_cycle_values = self._get_initial_cycle_values(state, cycle_init)
+        init_cycle_values = self._get_initial_cycle_values(state, cycle_init, inputs=inputs)
+        scan_inputs = {
+            name: value
+            for name, value in inputs.items()
+            if name not in self._graph_input_initializer_sources()
+        }
 
         # Broadcast scalar input leaves to (n_steps, ...) so they can be
         # indexed by step.  Non-scalar leaves pass through as-is.
@@ -1055,7 +1158,7 @@ class Graph(Component):
                 return jnp.broadcast_to(x, (n_steps,))
             return x
 
-        step_inputs_seq = jt.map(_broadcast_scalar, inputs)
+        step_inputs_seq = jt.map(_broadcast_scalar, scan_inputs)
 
         def _step_inputs_at(i):
             return jt.map(lambda x: x[i], step_inputs_seq)
