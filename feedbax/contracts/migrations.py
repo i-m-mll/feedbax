@@ -8,12 +8,16 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.graph import (
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
 from feedbax.contracts.manifest import (
+    ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     ArtifactMigrationRecord,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
@@ -1215,6 +1219,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Declarative analysis run request.",
         ),
         _family(
+            "AnalysisDataProductRequirement",
+            ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+            ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("AnalysisRunSpec.input_requirements", "provider_manifest.schemas"),
+            consumed_by=("feedbax.integrations.provider.validate_analysis_spec",),
+            description="Typed analysis data-product input requirement.",
+            required_tests=(
+                "tests/test_analysis_data_products.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
             "feedbax.spec.analysis_bundle.v2",
@@ -1382,17 +1399,42 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "Durable checkpoint-selection manifest.",
         ),
         ("AnalysisRunManifest", "feedbax.manifest.analysis_run", "Durable analysis-run manifest."),
+        (
+            "AnalysisDataProduct",
+            ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+            "Typed data product emitted from an analysis-run manifest.",
+        ),
         ("ReportManifest", "feedbax.manifest.report", "Durable report manifest."),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                MANIFEST_SCHEMA_VERSION,
+                (
+                    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
+                    if kind == "AnalysisDataProduct"
+                    else MANIFEST_SCHEMA_VERSION
+                ),
                 owner_module="feedbax.contracts.manifest",
-                emitted_by=manifest_emitters,
-                consumed_by=("manifest load/write", "provider handoff"),
+                emitted_by=(
+                    ("AnalysisRunManifest.produced_data", "provider_manifest.schemas")
+                    if kind == "AnalysisDataProduct"
+                    else manifest_emitters
+                ),
+                consumed_by=(
+                    ("feedbax.integrations.provider.validate_analysis_spec",)
+                    if kind == "AnalysisDataProduct"
+                    else ("manifest load/write", "provider handoff")
+                ),
                 description=description,
+                required_tests=(
+                    (
+                        "tests/test_analysis_data_products.py",
+                        "tests/test_structured_spec_migrations.py",
+                    )
+                    if kind == "AnalysisDataProduct"
+                    else ("tests/test_structured_spec_migrations.py",)
+                ),
             )
         )
 
