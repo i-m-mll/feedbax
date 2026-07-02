@@ -60,7 +60,7 @@ from feedbax.contracts.graph import (
     TapSpec,
     build_default_studio_workspace,
 )
-from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingSpec
+from feedbax.contracts.training import LossTermSpec, TaskSpec, TrainingRunSpec, TrainingSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.web.worker.app import (
@@ -270,6 +270,8 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
 
     assert manifest.provider == "feedbax"
     assert manifest.capabilities["validate_graph_spec"].input_schema == "GraphSpec"
+    assert manifest.capabilities["validate_training_spec"].input_schema == "TrainingRunSpec"
+    assert manifest.capabilities["start_training_run"].input_schema == "TrainingRunSpec"
     assert manifest.capabilities["start_training_run"].output_schema == "TrainingRunManifest"
     assert manifest.capabilities["start_training_run"].action == "execute"
     assert manifest.capabilities["start_training_run"].requires_review
@@ -281,6 +283,7 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "model_parameters" in manifest.artifact_roles
     assert "array_store" in manifest.artifact_roles
     assert "TrainingRunManifest" in manifest.schemas
+    assert "TrainingRunSpec" in manifest.schemas
     assert "ModelArtifactManifest" in manifest.schemas
     assert "CheckpointSelectionManifest" in manifest.schemas
     assert "CheckpointSelectionSpec" in manifest.schemas
@@ -343,6 +346,7 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
         "GraphSpec": GraphSpec,
         "LossTermSpec": LossTermSpec,
         "TaskSpec": TaskSpec,
+        "TrainingRunSpec": TrainingRunSpec,
         "TrainingSpec": TrainingSpec,
     }
 

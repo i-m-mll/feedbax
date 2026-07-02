@@ -159,7 +159,13 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["GraphSpec"].current_version == GRAPH_SPEC_SCHEMA_VERSION
     assert families["PopulationStructureSpec"].identity == "feedbax.spec.population_structure"
     assert families["PopulationStructureSpec"].namespace == SchemaNamespaceKind.SPEC
+    assert families["TrainingRunSpec"].identity == "feedbax.spec.training_run"
+    assert families["TrainingRunSpec"].current_version == "feedbax.spec.training_run.v1"
     assert families["TrainingSpec"].identity == "feedbax.spec.training"
+    assert (
+        families["StandardSupervisedMethodPayload"].identity
+        == "feedbax.spec.training_method.standard_supervised_payload"
+    )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
     assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v2"
     assert (
@@ -237,8 +243,10 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
     spec_kinds = {
         "GraphSpec",
         "PopulationStructureSpec",
+        "TrainingRunSpec",
         "TrainingSpec",
         "TaskSpec",
+        "StandardSupervisedMethodPayload",
         "ObjectiveSpec",
         "EvaluationRunSpec",
         "AnalysisRunSpec",
