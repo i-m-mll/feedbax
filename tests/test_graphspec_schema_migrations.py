@@ -6,6 +6,7 @@ import feedbax.contracts.graphs.serialization as serialization
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     ComponentSpec,
     GraphSpec,
@@ -99,9 +100,28 @@ def test_legacy_graph_spec_migration_records_builtin_rewrites() -> None:
     assert result.payload["wires"][0]["target_port"] == "input"
     assert result.payload["input_bindings"]["target"] == ("network", "input")
     assert [record.migration_id for record in result.migration_records] == [
-        "graph-spec-legacy-v1-to-v2"
+        "graph-spec-legacy-v1-to-v2",
+        "graph-spec-v2-to-v3-derived-dimensions",
     ]
     assert result.migration_records[0].metadata["graph_path"] == "graph"
+    assert result.payload["derived_dimensions"] == []
+
+
+def test_graph_spec_v2_migration_adds_derived_dimensions_field() -> None:
+    result = migrate_graph_spec(
+        {
+            "schema_id": GRAPH_SPEC_SCHEMA_ID,
+            "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V2,
+            "nodes": {},
+            "wires": [],
+        }
+    )
+
+    assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
+    assert result.payload["derived_dimensions"] == []
+    assert [record.migration_id for record in result.migration_records] == [
+        "graph-spec-v2-to-v3-derived-dimensions"
+    ]
 
 
 def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
@@ -137,6 +157,8 @@ def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
     assert nested["nodes"]["feedback"]["type"] == "Channel"
     assert [record.metadata["graph_path"] for record in result.migration_records] == [
         "graph",
+        "graph",
+        "graph.subgraphs['network']",
         "graph.subgraphs['network']",
     ]
 
@@ -155,6 +177,7 @@ def test_unknown_graph_spec_schema_version_reports_available_migrations() -> Non
     assert f"current_version='{GRAPH_SPEC_SCHEMA_VERSION}'" in message
     assert "available_migrations=[" in message
     assert "graph-spec-legacy-v1-to-v2" in message
+    assert "graph-spec-v2-to-v3-derived-dimensions" in message
 
 
 def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
@@ -175,7 +198,8 @@ def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
         result.payload,
     ).sha256
     assert [record.migration_id for record in result.applied_migration_records] == [
-        "graph-spec-legacy-v1-to-v2"
+        "graph-spec-legacy-v1-to-v2",
+        "graph-spec-v2-to-v3-derived-dimensions",
     ]
     assert result.migration_records == loaded_manifest.migration_records
 
@@ -240,7 +264,8 @@ def test_provider_validation_reports_manifest_migration_custody_states() -> None
     assert migrated.valid
     assert migrated.migration_status == "feedbax_migrated"
     assert [record.migration_id for record in migrated.migration_records] == [
-        "graph-spec-legacy-v1-to-v2"
+        "graph-spec-legacy-v1-to-v2",
+        "graph-spec-v2-to-v3-derived-dimensions",
     ]
     routed = validate_spec(
         "graph_manifest",

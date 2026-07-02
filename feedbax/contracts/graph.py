@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
-GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v2"
+GRAPH_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.graph.v2"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v3"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = (
     "feedbax.spec.analysis_data_product_requirement"
@@ -101,6 +102,19 @@ class AdditiveGraphChannelAdapterSpec(BaseModel):
     payload_shape: Optional[List[int]] = None
     payload_dtype: Optional[str] = None
     provenance_role: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DerivedDimensionRuleSpec(BaseModel):
+    """Rule that derives one node builder parameter from resolved graph shapes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node: str
+    param: str
+    source: Literal["input_port"] = "input_port"
+    port: str
+    axis: int = -1
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -304,6 +318,7 @@ class GraphSpec(BaseModel):
     input_bindings: Dict[str, Tuple[str, str]] = Field(default_factory=dict)
     output_bindings: Dict[str, Tuple[str, str]] = Field(default_factory=dict)
     subgraphs: Optional[Dict[str, "GraphSpec"]] = None
+    derived_dimensions: List[DerivedDimensionRuleSpec] = Field(default_factory=list)
     barnacles: Optional[Dict[str, List[BarnacleSpec]]] = None
     user_ports: Optional[Dict[str, UserPortSpec]] = None
     taps: Optional[List[TapSpec]] = None

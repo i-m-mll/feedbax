@@ -1681,6 +1681,99 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes() 
     assert "mux_needs_two_connected_inputs" not in {issue.type for issue in registry.issues}
 
 
+def test_studio_schema_reports_derived_dimension_conflict() -> None:
+    graph = GraphSpec(
+        nodes={
+            "mux": {
+                "type": "Mux",
+                "params": {"n_inputs": 2},
+                "input_ports": ["in_0", "in_1"],
+                "output_ports": ["output"],
+            },
+            "cell": {
+                "type": "GRU",
+                "params": {"input_size": 7, "hidden_size": 5},
+                "input_ports": ["input", "hidden"],
+                "output_ports": ["output", "hidden"],
+            },
+        },
+        wires=[
+            {
+                "source_node": "mux",
+                "source_port": "output",
+                "target_node": "cell",
+                "target_port": "input",
+            }
+        ],
+        derived_dimensions=[
+            {
+                "node": "cell",
+                "param": "input_size",
+                "port": "input",
+                "metadata": {"dimension_source": "mux_concat_inputs"},
+            }
+        ],
+    )
+    workspace = build_default_studio_workspace(label="Derived dimension conflict", graph=graph)
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    scenario = workspace.scenarios[train_stage.scenario_id]
+    scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "position",
+                    "label": "Position",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.position",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 2],
+                    "metadata": {},
+                },
+                {
+                    "id": "cue",
+                    "label": "Cue",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.cue",
+                    "bindable": True,
+                    "dtype": "float32",
+                    "expected_shape": ["time", 1],
+                    "metadata": {},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:position->mux:in_0",
+                    "source_data_id": "position",
+                    "target_node_id": "mux",
+                    "target_port": "in_0",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:cue->mux:in_1",
+                    "source_data_id": "cue",
+                    "target_node_id": "mux",
+                    "target_port": "in_1",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+    registry = enumerate_studio_schema_registry(workspace, train_stage.scenario_id)
+    conflict = next(issue for issue in registry.issues if issue.type == "derived_dimension_conflict")
+
+    assert "declared 7" in conflict.message
+    assert "derived 3" in conflict.message
+    assert conflict.location["path"].endswith("/graph/derived_dimensions/0")
+
+
 def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports() -> None:
     child_graph = GraphSpec(
         nodes={

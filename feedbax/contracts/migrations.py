@@ -12,6 +12,7 @@ from feedbax.contracts.graph import (
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
@@ -635,6 +636,13 @@ def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any
     return migrated
 
 
+def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    migrated.setdefault("derived_dimensions", [])
+    return migrated
+
+
 def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if "exposed_outputs" in migrated and "exposed_data" not in migrated:
@@ -1079,7 +1087,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Canvas-authored executable graph specification.",
             stance="migrate",
-            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION,),
+            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_VERSION_V2),
             rejected_old_versions=(),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
         ),
@@ -1838,13 +1846,23 @@ default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
         migration_id="graph-spec-legacy-v1-to-v2",
         migrate=_migrate_legacy_graph_spec_payload,
         description=(
             "Promote legacy GraphSpec payloads to the explicit schema identity and "
             "rename built-in node types and Network input ports."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v2-to-v3-derived-dimensions",
+        migrate=_migrate_graph_spec_v2_to_v3_payload,
+        description="Add explicit derived_dimensions rules to GraphSpec.",
     ),
 )
 default_spec_registry.register_migration(
