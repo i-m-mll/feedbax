@@ -424,22 +424,28 @@ class Graph(Component):
                 raise ValueError(f"Node {node_path!r} has no attribute path {attr_path!r}") from exc
         return tuple(values)
 
+    def _with_runtime_callback(self, field_name: str, fn: Callable[..., PyTree]) -> "Graph":
+        field_values = {
+            field_obj.name: getattr(self, field_obj.name)
+            for field_obj in dataclasses.fields(self)
+            if field_obj.init
+        }
+        field_values[field_name] = fn
+        return type(self)(**field_values)
+
     def with_state_view(self, state_view_fn: Callable[[dict[str, PyTree]], PyTree]) -> "Graph":
         """Return a copy with a runtime-only graph state-view function attached."""
 
         if not callable(state_view_fn):
             raise TypeError("state_view_fn must be callable")
-        return Graph(
-            nodes=self.nodes,
-            wires=self.wires,
-            input_bindings=dict(self.input_bindings),
-            output_bindings=dict(self.output_bindings),
-            input_ports=self.input_ports,
-            output_ports=self.output_ports,
-            state_view_fn=state_view_fn,
-            state_consistency_fn=self.state_consistency_fn,
-            checkpoint=self.checkpoint,
-        )
+        return self._with_runtime_callback("state_view_fn", state_view_fn)
+
+    def with_state_consistency(self, state_consistency_fn: Callable[[State], State]) -> "Graph":
+        """Return a copy with a runtime-only graph state-consistency function attached."""
+
+        if not callable(state_consistency_fn):
+            raise TypeError("state_consistency_fn must be callable")
+        return self._with_runtime_callback("state_consistency_fn", state_consistency_fn)
 
     @cached_property
     def _outgoing_wires(self) -> dict[tuple[str, str], list[Wire]]:
