@@ -36,6 +36,10 @@ from feedbax.contracts.schema_namespace import (
     validate_schema_identity,
     validate_schema_version,
 )
+from feedbax.contracts.worker import (
+    WORKER_CONTRACT_SCHEMA_ID,
+    WORKER_CONTRACT_SCHEMA_VERSION,
+)
 
 
 MigrationPayload = Mapping[str, Any]
@@ -1225,6 +1229,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("CheckpointSelectionManifest.selection_spec", "provider_manifest.schemas"),
             consumed_by=("checkpoint-selection materializers", "downstream scorer plug-ins"),
             description="Declarative generic checkpoint-selection request.",
+        ),
+        _family(
+            "WorkerMethodContractSpec",
+            WORKER_CONTRACT_SCHEMA_ID,
+            WORKER_CONTRACT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.worker",
+            emitted_by=("method registry", "TrainingRunSpec.method_ref resolution"),
+            consumed_by=("feedbax.training.worker_validation", "training executor"),
+            description="Method-neutral worker axis/state/phase execution declaration.",
+            required_tests=(
+                "tests/test_worker_contract.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
         ),
     ]
 
