@@ -12,6 +12,7 @@ from functools import cached_property
 from operator import attrgetter
 from collections.abc import Callable
 from typing import ClassVar, Literal, Optional
+import warnings
 
 import equinox as eqx
 from equinox import Module, field
@@ -147,9 +148,28 @@ class Component(Module):
                 outputs[port] = attrgetter(port)(state_value)
         return outputs
 
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
-        """Return labels mapped to StateIndex for intervention params."""
+    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
+        """Return task-parameter labels mapped to StateIndex values."""
+        legacy = type(self).__dict__.get("intervention_state_indices")
+        if legacy is not None and legacy is not Component.intervention_state_indices:
+            warnings.warn(
+                "Overriding intervention_state_indices() is deprecated; override "
+                "task_parameter_state_indices().",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return legacy(self)
         return {}
+
+    def intervention_state_indices(self) -> dict[str, StateIndex]:
+        """Deprecated alias for task_parameter_state_indices()."""
+        warnings.warn(
+            "intervention_state_indices() is deprecated; use "
+            "task_parameter_state_indices().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.task_parameter_state_indices()
 
 
 class RolloutStepContext(Module):
@@ -437,18 +457,28 @@ class Graph(Component):
             return GraphState(node_states)
         return self.state_view_fn(node_states)
 
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
+    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
         indices: dict[str, StateIndex] = {}
         for name, node in self.nodes.items():
-            node_indices = node.intervention_state_indices()
+            node_indices = node.task_parameter_state_indices()
             for label, idx in node_indices.items():
                 if label in indices:
                     raise ValueError(
-                        f"Duplicate intervention label '{label}' in graph nodes "
+                        f"Duplicate task-parameter label '{label}' in graph nodes "
                         f"('{name}' conflicts with another node)."
                     )
                 indices[label] = idx
         return indices
+
+    def intervention_state_indices(self) -> dict[str, StateIndex]:
+        """Deprecated alias for task_parameter_state_indices()."""
+        warnings.warn(
+            "Graph.intervention_state_indices() is deprecated; use "
+            "Graph.task_parameter_state_indices().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.task_parameter_state_indices()
 
     def state_consistency_update(self, state: State) -> State:
         if self.state_consistency_fn is None:

@@ -14,8 +14,9 @@ from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.task_bindings import expose_task_inputs
 from feedbax.intervene import (
     CurlField,
     CurlFieldParams,
@@ -28,7 +29,11 @@ from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
-from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
+from feedbax.contracts.graphs.serialization import (
+    graph_to_spec,
+    prototypes_from_task_bindings,
+    spec_to_graph,
+)
 from feedbax.runtime.state import CartesianState
 
 
@@ -180,6 +185,109 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
     assert params["baseline"] == [1.0, 1.0, 1.0]
     assert params["gain_init"] == [0.5, -1.0, 2.0]
     assert jnp.allclose(jnp.asarray(params["bias_init"]), jnp.array([0.1, 0.0, -0.2]))
+
+
+def test_task_data_reference_vector_composes_into_affine_controller_reference() -> None:
+    task_binding_spec = {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": [
+            {
+                "id": "target_position",
+                "label": "Target position",
+                "kind": "signal",
+                "role": "model_input",
+                "path": "inputs.target_position",
+                "bindable": True,
+                "expected_shape": ["time", 2],
+                "dtype": "vector",
+                "metadata": {"temporal_support": "trajectory"},
+            }
+        ],
+        "bindings": [
+            {
+                "id": "task:target_position->reference_mux:in_0",
+                "source_data_id": "target_position",
+                "target_node_id": "reference_mux",
+                "target_port": "in_0",
+                "role": "model_input",
+                "metadata": {},
+            }
+        ],
+        "metadata": {},
+    }
+    spec = GraphSpec(
+        nodes={
+            "zero_velocity": ComponentSpec(
+                type="Constant",
+                params={"value": [0.0, 0.0]},
+                input_ports=[],
+                output_ports=["output"],
+            ),
+            "zero_feedback": ComponentSpec(
+                type="Constant",
+                params={"value": [0.0, 0.0, 0.0, 0.0]},
+                input_ports=[],
+                output_ports=["output"],
+            ),
+            "reference_mux": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "controller": ComponentSpec(
+                type="AffineFeedbackController",
+                params={
+                    "gain": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+                    "schedule_policy": "hold",
+                },
+                input_ports=["feedback", "reference", "feedforward"],
+                output_ports=["command"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="zero_velocity",
+                source_port="output",
+                target_node="reference_mux",
+                target_port="in_1",
+            ),
+            WireSpec(
+                source_node="zero_feedback",
+                source_port="output",
+                target_node="controller",
+                target_port="feedback",
+            ),
+            WireSpec(
+                source_node="reference_mux",
+                source_port="output",
+                target_node="controller",
+                target_port="reference",
+            ),
+        ],
+        output_ports=["command"],
+        output_bindings={"command": ("controller", "command")},
+    )
+
+    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+    graph, plans = expose_task_inputs(
+        graph,
+        StudioTaskBindingSpec.model_validate(task_binding_spec),
+    )
+    assert plans[0].graph_input == "task:target_position->reference_mux.in_0"
+
+    state = init_state_from_component(graph)
+    outputs, _ = graph(
+        {plans[0].graph_input: jnp.asarray([1.5, -2.0], dtype=jnp.float32)},
+        state,
+        key=jax.random.PRNGKey(0),
+    )
+
+    assert jnp.allclose(outputs["command"], jnp.asarray([1.5, -2.0]))
+    roundtrip = graph_to_spec(graph)
+    assert roundtrip.nodes["zero_velocity"].type == "Constant"
+    assert roundtrip.nodes["controller"].type == "AffineFeedbackController"
+    assert roundtrip.input_bindings[plans[0].graph_input] == ("reference_mux", "in_0")
 
 
 def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
@@ -385,7 +493,9 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
     assert materialized.label == params["label"]
     assert tuple(input_ports) == materialized.input_ports
     assert materialized.output_ports == ("force",)
-    assert set(materialized.intervention_state_indices()) == {params["label"]}
+    assert set(materialized.task_parameter_state_indices()) == {params["label"]}
+    with pytest.deprecated_call(match="intervention_state_indices"):
+        assert set(materialized.intervention_state_indices()) == {params["label"]}
 
     direct_out = _call_component(direct_component, inputs)
     materialized_out = _call_component(materialized, inputs)

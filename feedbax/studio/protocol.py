@@ -13,7 +13,9 @@ from typing import Any, Optional
 
 from feedbax.contracts.training import TaskSpec
 
-GRAPH_BINDABLE_TASK_DATA_ROLES = frozenset({"model_input", "graph_input"})
+GRAPH_BINDABLE_TASK_DATA_ROLES = frozenset(
+    {"model_input", "graph_input", "component_parameter"}
+)
 PROTOCOL_TASK_DATA_ROLES = frozenset(
     {
         "target",

@@ -3,7 +3,13 @@ import jax.numpy as jnp
 from equinox.nn import StateIndex
 
 from feedbax.config.mapping import WhereDict
+from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.runtime.graph import Component, Graph, init_state_from_component
+from feedbax.runtime.task_bindings import (
+    apply_task_parameter_state_inits,
+    binding_spec_from_legacy_extra_inputs,
+    expose_task_bindings,
+)
 from feedbax.intervene import TimeSeriesParam
 from feedbax.tasks import (
     TaskTrialSpec,
@@ -58,7 +64,7 @@ class _InterventionNode(Component):
     def __call__(self, inputs, state, *, key):
         return {"output": inputs["input"]}, state
 
-    def intervention_state_indices(self):
+    def task_parameter_state_indices(self):
         return {"foo": self.params_index}
 
 
@@ -168,6 +174,68 @@ def test_prepare_trial_applies_inits_interventions_and_infers_timeline_steps() -
     node = graph.get_node("net")
     assert prepared.init_state.get(node.params_index).static_gain == jnp.asarray(4.0)
     assert prepared.inputs["intervene:foo"].dynamic_gain.shape == (3,)
+
+
+def test_task_parameter_binding_exposes_constant_state_init_plan() -> None:
+    graph = _graph()
+    binding_spec = {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": [
+            {
+                "id": "foo",
+                "label": "Foo params",
+                "kind": "intervention",
+                "role": "component_parameter",
+                "path": "intervene.foo",
+                "bindable": True,
+                "dtype": "object",
+                "metadata": {"temporal_support": "constant"},
+            }
+        ],
+        "bindings": [
+            {
+                "id": "task:foo->net:params_override",
+                "source_data_id": "foo",
+                "target_node_id": "net",
+                "target_port": "params_override",
+                "role": "component_parameter",
+                "metadata": {"task_parameter_label": "foo"},
+            }
+        ],
+        "metadata": {},
+    }
+
+    exposure = expose_task_bindings(graph, StudioTaskBindingSpec.model_validate(binding_spec))
+
+    assert exposure.input_plans == ()
+    assert exposure.state_init_plans[0].target_label == "foo"
+    state = init_state_from_component(exposure.graph)
+    replacement = _Params(
+        static_gain=jnp.asarray(9.0, dtype=jnp.float32),
+        dynamic_gain=jnp.asarray(0.5, dtype=jnp.float32),
+    )
+    updated = apply_task_parameter_state_inits(
+        state,
+        exposure.graph,
+        exposure.state_init_plans,
+        {"foo": replacement},
+    )
+
+    node = exposure.graph.get_node("net")
+    assert updated.get(node.params_index).static_gain == jnp.asarray(9.0)
+
+
+def test_legacy_extra_inputs_map_intervene_prefix_to_component_parameter_binding() -> None:
+    graph = _graph()
+    binding_spec = binding_spec_from_legacy_extra_inputs(graph, ["intervene:foo"])
+
+    assert binding_spec.exposed_data[0].role == "component_parameter"
+    assert binding_spec.exposed_data[0].metadata["legacy_input"] == "intervene:foo"
+    exposure = expose_task_bindings(graph, binding_spec)
+
+    assert exposure.state_init_plans == ()
+    assert exposure.input_plans[0].graph_input == "intervene:foo"
+    assert exposure.input_plans[0].target_port == "params_override"
 
 
 def test_infer_n_steps_prefers_timeline_over_input_length() -> None:
