@@ -80,7 +80,8 @@ def test_load_manifest_migrates_embedded_graph_spec_and_preserves_source_hash(
     assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
     assert payload.source_sha256 == source_sha256
     assert [record.migration_id for record in payload.migration_records] == [
-        "graph-spec-legacy-v1-to-v2"
+        "graph-spec-legacy-v1-to-v2",
+        "graph-spec-v2-to-v3-derived-dimensions",
     ]
     assert payload.migration_records[0].metadata["graph_path"] == "graph_spec"
     assert payload.migration_records[0].metadata["spec_payload_path"] == "graph_spec"

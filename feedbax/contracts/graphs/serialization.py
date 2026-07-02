@@ -65,6 +65,7 @@ from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints, normalize_parameter_constraints
 from feedbax.contracts.graphs.builders import build_component, nonlinearity_name
 from feedbax.contracts.graphs.prototypes import (
+    normalize_derived_dimensions,
     normalize_stateful_prototypes,
     prototypes_from_task_bindings,
     shape_from_proto,
@@ -928,6 +929,11 @@ def spec_to_graph(
     migration = migrate_graph_spec(spec)
     spec = GraphSpec.model_validate(migration.payload)
     spec = materialize_additive_channel_adapters(spec)
+    spec = normalize_derived_dimensions(
+        spec,
+        input_prototypes,
+        component_registry=metadata_registry,
+    )
     spec = normalize_stateful_prototypes(
         spec,
         input_prototypes,

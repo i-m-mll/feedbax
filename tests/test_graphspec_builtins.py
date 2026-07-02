@@ -290,6 +290,144 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
     assert roundtrip.input_bindings[plans[0].graph_input] == ("reference_mux", "in_0")
 
 
+def _derived_mux_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec:
+    cell_params: dict[str, Any] = {"hidden_size": 5}
+    if declared_input_size != "__missing__":
+        cell_params["input_size"] = declared_input_size
+    return GraphSpec(
+        nodes={
+            "input_mux": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "cell": ComponentSpec(
+                type="GRU",
+                params=cell_params,
+                input_ports=["input", "hidden"],
+                output_ports=["output", "hidden"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="input_mux",
+                source_port="output",
+                target_node="cell",
+                target_port="input",
+            )
+        ],
+        output_ports=["hidden"],
+        output_bindings={"hidden": ("cell", "hidden")},
+        derived_dimensions=[
+            {
+                "node": "cell",
+                "param": "input_size",
+                "port": "input",
+                "metadata": {"dimension_source": "mux_concat_inputs"},
+            }
+        ],
+    )
+
+
+def _derived_mux_task_bindings(
+    *,
+    second_role: str = "model_input",
+    first_shape: list[Any] | None = None,
+    second_shape: list[Any] | None = None,
+) -> StudioTaskBindingSpec:
+    first_shape = first_shape or ["time", 2]
+    second_shape = second_shape or ["time", 1]
+    return StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "kinematics",
+                    "label": "Kinematics",
+                    "kind": "signal",
+                    "role": "model_input",
+                    "path": "inputs.kinematics",
+                    "bindable": True,
+                    "expected_shape": first_shape,
+                    "dtype": "float32",
+                    "metadata": {"temporal_support": "trajectory"},
+                },
+                {
+                    "id": "gain_schedule",
+                    "label": "Gain schedule",
+                    "kind": "signal",
+                    "role": second_role,
+                    "path": "inputs.gain_schedule",
+                    "bindable": True,
+                    "expected_shape": second_shape,
+                    "dtype": "float32",
+                    "metadata": {"temporal_support": "trajectory"},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:kinematics->input_mux:in_0",
+                    "source_data_id": "kinematics",
+                    "target_node_id": "input_mux",
+                    "target_port": "in_0",
+                    "role": "model_input",
+                    "metadata": {},
+                },
+                {
+                    "id": "task:gain_schedule->input_mux:in_1",
+                    "source_data_id": "gain_schedule",
+                    "target_node_id": "input_mux",
+                    "target_port": "in_1",
+                    "role": second_role,
+                    "metadata": {},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+
+def test_derived_dimension_rule_sets_gru_input_size_from_task_data_mux_fan_in() -> None:
+    spec = _derived_mux_gru_spec()
+    task_binding_spec = _derived_mux_task_bindings()
+
+    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+    assert graph.nodes["cell"].input_size == 3
+    spec_payload = spec.model_dump(mode="json", exclude_none=True)
+    assert "input_size" not in spec_payload["nodes"]["cell"]["params"]
+    assert "input_size_source" not in spec_payload["nodes"]["cell"]["params"]
+
+
+def test_derived_dimension_rule_counts_component_parameter_mux_fan_in() -> None:
+    spec = _derived_mux_gru_spec()
+    task_binding_spec = _derived_mux_task_bindings(
+        second_role="component_parameter",
+        second_shape=["time", 4],
+    )
+
+    graph = spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+    assert graph.nodes["cell"].input_size == 6
+
+
+def test_derived_dimension_rule_rejects_declared_conflict() -> None:
+    spec = _derived_mux_gru_spec(declared_input_size=7)
+    task_binding_spec = _derived_mux_task_bindings()
+
+    with pytest.raises(ValueError, match="Derived dimension conflict"):
+        spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+
+def test_derived_dimension_rule_rejects_null_declaration() -> None:
+    spec = _derived_mux_gru_spec(declared_input_size=None)
+    task_binding_spec = _derived_mux_task_bindings()
+
+    with pytest.raises(ValueError, match="declared null"):
+        spec_to_graph(spec, input_prototypes=prototypes_from_task_bindings(task_binding_spec))
+
+
 def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
     spec = GraphSpec(
         nodes={

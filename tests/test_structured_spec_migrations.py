@@ -13,7 +13,11 @@ from feedbax.contracts.migrations import (
     migrate_studio_task_binding_spec,
 )
 from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
-from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
+from feedbax.contracts.graph import (
+    GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
+    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+)
 from feedbax.objectives.spec import validate_objective_spec
 
 
@@ -370,7 +374,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
-    assert graph_policy.supported_old_versions == (LEGACY_GRAPH_SPEC_SCHEMA_VERSION,)
+    assert graph_policy.supported_old_versions == (
+        LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
+        GRAPH_SPEC_SCHEMA_VERSION_V2,
+    )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"
     assert task_binding_policy.supported_old_versions == (STUDIO_TASK_BINDING_LEGACY_V1,)
