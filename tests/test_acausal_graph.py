@@ -8,6 +8,7 @@ execution.
 :license: Apache 2.0.  See LICENSE for details.
 """
 
+import pytest
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -28,7 +29,7 @@ from feedbax.acausal.translational import PrescribedMotion
 from equinox.nn import State
 from jaxtyping import PRNGKeyArray, PyTree
 
-jax.config.update("jax_enable_x64", True)
+pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
 # =========================================================================

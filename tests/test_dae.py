@@ -22,8 +22,7 @@ from feedbax.runtime.state import CartesianState
 from feedbax.runtime.graph import init_state_from_component
 
 
-# Enable 64-bit for numerical precision tests
-jax.config.update("jax_enable_x64", True)
+pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
 class TestPointMassDAE:
