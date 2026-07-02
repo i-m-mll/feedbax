@@ -10,7 +10,11 @@ import type {
 import { delayedReachTaskDataValueSpec, VALUE_SCHEMA_VERSION } from './taskTimeline';
 
 export const TASK_BINDING_SCHEMA_VERSION = 'feedbax.studio.task_bindings.v2';
-export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
+export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set([
+  'model_input',
+  'graph_input',
+  'component_parameter',
+]);
 export const ROOT_TASK_BINDING_GRAPH_PATH: string[] = [];
 
 export const TASK_COMPONENT_TYPES = new Set([

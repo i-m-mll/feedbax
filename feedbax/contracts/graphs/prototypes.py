@@ -98,6 +98,9 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         item = data_by_id.get(str(source_id))
         if item is None or target_node is None or target_port is None:
             continue
+        role = _field(binding, "role") or _field(item, "role")
+        if role == "component_parameter" and _task_data_temporality(item) == "constant":
+            continue
         expected_shape = (
             getattr(item, "expected_shape", None)
             if not isinstance(item, Mapping)
@@ -107,6 +110,34 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         if sample_shape is not None:
             prototypes[(str(target_node), str(target_port))] = jnp.zeros(tuple(sample_shape))
     return prototypes
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _metadata(value: Any) -> dict[str, Any]:
+    metadata = _field(value, "metadata", {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _task_data_temporality(data: Any) -> str:
+    metadata = _metadata(data)
+    explicit = metadata.get("temporality") or metadata.get("temporal_support")
+    if isinstance(explicit, str):
+        if explicit in {"trajectory", "materialized_trajectory", "epoch_masked_signal"}:
+            return "time_varying"
+        if explicit in {"constant", "trial_constant", "initial", "per_trial"}:
+            return "constant"
+    shape = _field(data, "expected_shape")
+    value_spec = _field(data, "value_spec")
+    if shape is None:
+        shape = _field(value_spec, "shape")
+    if isinstance(shape, (list, tuple)) and shape and shape[0] == "time":
+        return "time_varying"
+    return "constant"
 
 
 def explicit_proto(

@@ -45,6 +45,7 @@ from feedbax.studio.schema import (
     RuntimeSampleLeafSchema,
     enumerate_studio_schema_registry,
     validate_graph_connection_schema,
+    validate_task_binding_schema,
 )
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
 from feedbax.web.app import create_app
@@ -1932,6 +1933,95 @@ def test_studio_schema_enumerates_task_data_roles_and_rejects_protocol_bindings(
     assert "task_data_bindable_role_mismatch" in issue_types
     assert "task_data_protocol_path_bindable" in issue_types
     assert "task_data_not_bindable" in issue_types
+
+
+def test_studio_schema_accepts_component_parameter_bindings_with_declared_label() -> None:
+    graph = GraphSpec(
+        nodes={
+            "field": {
+                "type": "FixedField",
+                "params": {
+                    "scale": 1.0,
+                    "amplitude": 1.0,
+                    "field": [0.0, 0.0],
+                    "active": False,
+                    "label": "perturb",
+                },
+                "input_ports": ["force", "params_override"],
+                "output_ports": ["force"],
+            }
+        },
+        input_ports=["force"],
+        output_ports=["force"],
+        input_bindings={"force": ("field", "force")},
+        output_bindings={"force": ("field", "force")},
+    )
+    task_binding = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "perturb",
+                    "label": "Perturbation params",
+                    "kind": "intervention",
+                    "role": "component_parameter",
+                    "path": "intervene.perturb",
+                    "bindable": True,
+                    "dtype": "object",
+                    "value_spec": {
+                        "mode": "constant",
+                        "value": {"scale": 2.0, "active": True},
+                    },
+                    "metadata": {"temporal_support": "constant"},
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "task:perturb->field:params_override",
+                    "source_data_id": "perturb",
+                    "target_node_id": "field",
+                    "target_port": "params_override",
+                    "role": "component_parameter",
+                    "metadata": {"task_parameter_label": "perturb"},
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    issues = validate_task_binding_schema(task_binding, graph, "/task_binding_spec")
+    assert not [issue for issue in issues if issue.severity == "error"]
+
+    task_binding.bindings[0].metadata["task_parameter_label"] = "missing"
+    issues = validate_task_binding_schema(task_binding, graph, "/task_binding_spec")
+    assert {issue.type for issue in issues} >= {"component_parameter_label_unknown"}
+
+    occupied_payload = graph.model_dump(mode="json", exclude_none=True)
+    occupied_payload.update(
+        {
+            "nodes": {
+                **occupied_payload["nodes"],
+                "params_source": {
+                    "type": "Constant",
+                    "params": {"value": {"active": True}},
+                    "input_ports": [],
+                    "output_ports": ["output"],
+                },
+            },
+            "wires": [
+                {
+                    "source_node": "params_source",
+                    "source_port": "output",
+                    "target_node": "field",
+                    "target_port": "params_override",
+                }
+            ],
+        }
+    )
+    occupied_graph = GraphSpec.model_validate(occupied_payload)
+    task_binding.bindings[0].metadata["task_parameter_label"] = "perturb"
+    issues = validate_task_binding_schema(task_binding, occupied_graph, "/task_binding_spec")
+    assert {issue.type for issue in issues} >= {"task_binding_target_occupied"}
 
 
 def test_studio_schema_enumeration_validates_intervention_targets() -> None:
