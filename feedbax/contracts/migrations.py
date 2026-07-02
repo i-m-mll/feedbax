@@ -1633,7 +1633,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 schema_id,
                 MANIFEST_SCHEMA_VERSION,
-                owner_module="feedbax.studio.schema",
+                owner_module=(
+                    "feedbax.contracts.value_schema"
+                    if kind == "ValueSchema"
+                    else "feedbax.studio.schema"
+                ),
                 emitted_by=studio_schema_emitters,
                 consumed_by=("Studio frontend", "provider HTTP API"),
                 durable=kind not in {

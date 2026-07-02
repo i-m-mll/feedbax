@@ -14,6 +14,7 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_VERSION, LEGACY_GRAPH_SPEC_SCHEMA_VERSION
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import validate_objective_spec
 
 
@@ -172,6 +173,7 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         families["StagedAnalysisBundleExecution"].identity
         == "feedbax.manifest.analysis_bundle_execution"
     )
+    assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
     assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
@@ -222,6 +224,10 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.integrations.provider",
             ("feedbax.integrations.provider.provider_manifest",),
         ),
+        "ValueSchema": (
+            "feedbax.contracts.value_schema",
+            ("feedbax.studio.schema", "feedbax.integrations.provider"),
+        ),
         "StudioSchemaRegistry": (
             "feedbax.studio.schema",
             ("feedbax.studio.schema", "feedbax.integrations.provider"),
@@ -237,6 +243,30 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
         assert policy is not None
         assert policy.owner_module == owner_module
         assert policy.emitted_by == emitted_by
+
+
+def test_contract_value_schema_round_trips_without_payload_shape_change() -> None:
+    from feedbax.studio.schema import ValueSchema as StudioValueSchema
+
+    payload = {
+        "id": "node.output",
+        "label": "Node output",
+        "kind": "array",
+        "dtype": "float32",
+        "shape": [None, 2],
+        "rank": 2,
+        "units": "m",
+        "frame": "world",
+        "origin": "declared",
+        "metadata": {"source": "test"},
+    }
+
+    schema = ValueSchema.model_validate(payload)
+    dumped = schema.model_dump()
+
+    assert dumped == payload
+    assert ValueSchema.__module__ == "feedbax.contracts.value_schema"
+    assert StudioValueSchema is ValueSchema
 
 
 def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> None:
