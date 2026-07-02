@@ -20,13 +20,14 @@ from feedbax.contracts.manifest import StrictModel
 WORKER_CONTRACT_SCHEMA_ID = "feedbax.spec.worker.execution_program"
 WORKER_CONTRACT_SCHEMA_VERSION = "feedbax.spec.worker.execution_program.v1"
 CONSISTENCY_PREDICATE_SCHEMA_ID = "feedbax.manifest.worker.consistency_predicate"
-CONSISTENCY_PREDICATE_SCHEMA_VERSION = "feedbax.manifest.worker.consistency_predicate.v1"
+CONSISTENCY_PREDICATE_SCHEMA_VERSION = "feedbax.manifest.worker.consistency_predicate.v2"
 FIXED_UPDATE_KERNEL_SIGNATURE = ("slots", "coordinate", "context")
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:/@+-]*$")
 _GENERATOR_SOURCE = (
-    "feedbax.training.worker_contract.v1:"
-    "slot-init-read-write+optimizer-bindings+reducer-ownership"
+    "feedbax.training.worker_contract.v2:"
+    "slot-init-read-write+lifetime+optimizer-bindings+objective-reads+"
+    "measurement-control+metric-guards"
 )
 CONSISTENCY_PREDICATE_GENERATOR_HASH = hashlib.sha256(
     _GENERATOR_SOURCE.encode("utf-8")
@@ -53,7 +54,9 @@ StateSlotRole = Literal[
     "environment",
     "objective",
     "checkpoint",
+    "metric",
 ]
+SlotLifetime = Literal["persistent", "per-phase-init", "per-outer-step-init"]
 PhaseKind = Literal[
     "warmup",
     "collect",
@@ -71,6 +74,8 @@ UpdateStepKind = Literal[
     "projection",
     "reduce",
     "checkpoint",
+    "measurement",
+    "control",
     "custom",
 ]
 OptimizationDirection = Literal["minimize", "maximize"]
@@ -129,6 +134,7 @@ class StateSlotSpec(StrictModel):
     axis: str | None = None
     shape: tuple[int | str, ...] | None = None
     dtype: str | None = None
+    lifetime: SlotLifetime = "persistent"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name")
@@ -147,6 +153,7 @@ class OptimizerTargetBinding(StrictModel):
     direction: OptimizationDirection = "minimize"
     projection: Literal["none", "after_step", "phase_end"] = "none"
     phase_scope: list[str] = Field(default_factory=list)
+    objective_reads: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name", "optimizer_slot", "target_slot")
@@ -189,6 +196,8 @@ class UpdateStepSpec(StrictModel):
     writes: list[str] = Field(default_factory=list)
     axes: list[str] = Field(default_factory=list)
     optimizer_binding: str | None = None
+    data_member: str | None = None
+    schedule_coordinate: str | None = None
     emits_progress: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -211,6 +220,7 @@ class PhaseSpec(StrictModel):
     checkpoint_barrier: str | None = None
     graph_binding: str | None = None
     loop_axis: str | None = None
+    schedule_origin: "ScheduleOriginSpec | None" = None
     max_steps: int = 1
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -234,6 +244,34 @@ class PhaseTransitionSpec(StrictModel):
     target: str
     barrier: str | None = None
     condition: str | None = None
+    guard: "MetricGuardSpec | None" = None
+
+
+class ScheduleOriginSpec(StrictModel):
+    """Schedule-origin coordinate recorded when entering a phase."""
+
+    mode: Literal["run_start", "phase_entry", "resume_barrier"] = "phase_entry"
+    step_offset: int = 0
+
+
+class MetricGuardSpec(StrictModel):
+    """Metric-slot transition guard evaluated at a checkpoint barrier."""
+
+    predicate_ref: str
+    metric_slots: list[str]
+    bookkeeping_slots: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("predicate_ref")
+    @classmethod
+    def _validate_predicate_ref(cls, value: str) -> str:
+        validate_worker_identifier(value, path="guard.predicate_ref")
+        leaf = value.rsplit(".", 1)[-1]
+        if leaf.startswith("run_") or leaf in {"runner", "train", "fit"}:
+            raise ValueError(
+                "guard predicate must name a predicate kernel, not a method-owned runner"
+            )
+        return value
 
 
 class ResumeCoordinateSpec(StrictModel):
@@ -354,6 +392,7 @@ class ProgressCoordinate(StrictModel):
     member_id: str | None = None
     replicate_id: str | None = None
     completed_barrier: str | None = None
+    schedule_origin_step: int | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -438,6 +477,11 @@ def derive_consistency_predicate(program: PhaseProgramSpec) -> ConsistencyPredic
                     "initializes": sorted(phase.initializes),
                     "reads": sorted(phase.reads),
                     "writes": sorted(phase.writes),
+                    "schedule_origin": (
+                        None
+                        if phase.schedule_origin is None
+                        else phase.schedule_origin.model_dump(mode="json")
+                    ),
                 },
             )
         )
@@ -453,6 +497,22 @@ def derive_consistency_predicate(program: PhaseProgramSpec) -> ConsistencyPredic
                     "direction": binding.direction,
                     "projection": binding.projection,
                     "phase_scope": sorted(binding.phase_scope),
+                    "objective_reads": sorted(binding.objective_reads),
+                },
+            )
+        )
+    for transition_index, transition in enumerate(program.transitions):
+        if transition.guard is None:
+            continue
+        rules.append(
+            ConsistencyPredicateRule(
+                path=f"/phase_program/transitions/{transition_index}/guard",
+                rule="metric-guard",
+                expected={
+                    "predicate_ref": transition.guard.predicate_ref,
+                    "metric_slots": sorted(transition.guard.metric_slots),
+                    "bookkeeping_slots": sorted(transition.guard.bookkeeping_slots),
+                    "barrier": transition.barrier,
                 },
             )
         )
@@ -635,3 +695,100 @@ def toy_minimax_method_contract() -> MethodContractSpec:
         state_slots=slots,
         phase_program=program,
     )
+
+
+def toy_adaptive_curriculum_method_contract() -> MethodContractSpec:
+    """Return a toy adaptive-curriculum contract for guard/control tests."""
+    axes = [
+        AxisSpec(name="realization", role="realization", size=1),
+    ]
+    slots = [
+        StateSlotSpec(name="controller", role="model"),
+        StateSlotSpec(name="heldout_metric", role="metric"),
+        StateSlotSpec(name="adaptive_lambda", role="auxiliary"),
+        StateSlotSpec(name="guard_counter", role="auxiliary"),
+    ]
+    update_steps = [
+        UpdateStepSpec(
+            name="heldout_measurement",
+            kind="measurement",
+            kernel=UpdateKernelSpec(kernel_ref="toy_adaptive.measure_heldout"),
+            reads=["controller"],
+            writes=["heldout_metric"],
+            data_member="heldout_realization",
+        ),
+        UpdateStepSpec(
+            name="lambda_control",
+            kind="control",
+            kernel=UpdateKernelSpec(kernel_ref="toy_adaptive.update_lambda"),
+            reads=["heldout_metric"],
+            writes=["adaptive_lambda", "guard_counter"],
+            schedule_coordinate="schedule_origin_step",
+        ),
+    ]
+    program = PhaseProgramSpec(
+        phases=[
+            PhaseSpec(
+                name="adaptive",
+                kind="custom",
+                reads=["controller", "heldout_metric", "adaptive_lambda", "guard_counter"],
+                writes=["heldout_metric", "adaptive_lambda", "guard_counter"],
+                update_steps=["heldout_measurement", "lambda_control"],
+                legal_next=["done", "adaptive"],
+                checkpoint_barrier="after_adaptive_measurement",
+                schedule_origin=ScheduleOriginSpec(mode="phase_entry"),
+            ),
+            PhaseSpec(
+                name="done",
+                kind="evaluation",
+                reads=["heldout_metric", "adaptive_lambda", "guard_counter"],
+            ),
+        ],
+        initial_phase="adaptive",
+        transitions=[
+            PhaseTransitionSpec(
+                source="adaptive",
+                target="done",
+                barrier="after_adaptive_measurement",
+                guard=MetricGuardSpec(
+                    predicate_ref="toy_adaptive.stop_when_counter_satisfied",
+                    metric_slots=["heldout_metric"],
+                    bookkeeping_slots=["guard_counter"],
+                ),
+            ),
+            PhaseTransitionSpec(
+                source="adaptive",
+                target="adaptive",
+                barrier="after_adaptive_measurement",
+            ),
+        ],
+        update_steps=update_steps,
+        checkpoint_barriers=[
+            CheckpointBarrierSpec(
+                name="after_adaptive_measurement",
+                phase="adaptive",
+                slots=[
+                    CheckpointSlotSpec(slot="controller"),
+                    CheckpointSlotSpec(slot="heldout_metric"),
+                    CheckpointSlotSpec(slot="adaptive_lambda"),
+                    CheckpointSlotSpec(slot="guard_counter"),
+                ],
+                resume_coordinate=ResumeCoordinateSpec(
+                    phase="adaptive",
+                    completed_barrier="after_adaptive_measurement",
+                    global_step=1,
+                ),
+            ),
+        ],
+    )
+    return MethodContractSpec(
+        method_ref="feedbax.toy_adaptive_curriculum",
+        method_payload_schema_version="feedbax.spec.worker.toy_adaptive_payload.v1",
+        axes=axes,
+        state_slots=slots,
+        phase_program=program,
+    )
+
+
+PhaseSpec.model_rebuild()
+PhaseTransitionSpec.model_rebuild()

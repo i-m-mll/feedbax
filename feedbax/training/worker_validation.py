@@ -49,6 +49,7 @@ SUPPORTED_STATE_SLOT_ROLES: frozenset[StateSlotRole] = frozenset(
         "environment",
         "objective",
         "checkpoint",
+        "metric",
     }
 )
 SUPPORTED_PHASE_KINDS: frozenset[PhaseKind] = frozenset(
@@ -71,6 +72,8 @@ SUPPORTED_UPDATE_STEP_KINDS: frozenset[UpdateStepKind] = frozenset(
         "projection",
         "reduce",
         "checkpoint",
+        "measurement",
+        "control",
         "custom",
     }
 )
@@ -408,6 +411,34 @@ def validate_worker_contract(
                 f"{transition_path}/barrier",
                 f"unknown barrier {transition.barrier!r}",
             )
+        if transition.guard is not None:
+            _require(
+                transition.barrier is not None,
+                f"{transition_path}/guard",
+                "metric guard must be evaluated at a checkpoint barrier",
+            )
+            for slot_name in transition.guard.metric_slots:
+                _require(
+                    slot_name in slots,
+                    f"{transition_path}/guard/metric_slots",
+                    f"unknown metric slot {slot_name!r}",
+                )
+                _require(
+                    slots[slot_name].role == "metric",
+                    f"{transition_path}/guard/metric_slots",
+                    f"guard slot {slot_name!r} is not a metric slot",
+                )
+            for slot_name in transition.guard.bookkeeping_slots:
+                _require(
+                    slot_name in slots,
+                    f"{transition_path}/guard/bookkeeping_slots",
+                    f"unknown guard bookkeeping slot {slot_name!r}",
+                )
+                _require(
+                    slots[slot_name].role == "auxiliary",
+                    f"{transition_path}/guard/bookkeeping_slots",
+                    f"guard bookkeeping slot {slot_name!r} is not an auxiliary slot",
+                )
         transition_pairs.add((transition.source, transition.target))
 
     for phase_index, phase in enumerate(contract.phase_program.phases):
@@ -437,6 +468,59 @@ def validate_worker_contract(
                 f"{step_path}/optimizer_binding",
                 f"unknown optimizer binding {step.optimizer_binding!r}",
             )
+        if step.kind == "measurement":
+            _require(
+                step.data_member is not None,
+                f"{step_path}/data_member",
+                "measurement step must declare a held-out/realization data member",
+            )
+            _require(
+                step.optimizer_binding is None,
+                f"{step_path}/optimizer_binding",
+                "measurement step must not declare an optimizer binding",
+            )
+            _require(
+                bool(step.writes),
+                f"{step_path}/writes",
+                "measurement step must write at least one metric slot",
+            )
+            for slot_name in step.writes:
+                _require(
+                    slots[slot_name].role == "metric",
+                    f"{step_path}/writes",
+                    f"measurement step may only write metric slots; {slot_name!r} "
+                    f"has role {slots[slot_name].role!r}",
+                )
+        if step.kind == "control":
+            _require(
+                step.schedule_coordinate is not None,
+                f"{step_path}/schedule_coordinate",
+                "control step must declare the schedule coordinate it reads",
+            )
+            _require(
+                step.optimizer_binding is None,
+                f"{step_path}/optimizer_binding",
+                "control step must not declare an optimizer binding",
+            )
+            _require(
+                bool(step.reads),
+                f"{step_path}/reads",
+                "control step must read at least one metric slot",
+            )
+            for slot_name in step.reads:
+                _require(
+                    slots[slot_name].role == "metric",
+                    f"{step_path}/reads",
+                    f"control step may only read metric slots; {slot_name!r} "
+                    f"has role {slots[slot_name].role!r}",
+                )
+            for slot_name in step.writes:
+                _require(
+                    slots[slot_name].role == "auxiliary",
+                    f"{step_path}/writes",
+                    f"control step may only write auxiliary slots; {slot_name!r} "
+                    f"has role {slots[slot_name].role!r}",
+                )
         if update_kernels is not None:
             kernel = update_kernels.get(step.kernel.kernel_ref)
             _require(
@@ -468,6 +552,12 @@ def validate_worker_contract(
                 phase in phases,
                 f"{binding_path}/phase_scope",
                 f"unknown phase {phase!r}",
+            )
+        for slot_name in binding.objective_reads:
+            _require(
+                slot_name in slots,
+                f"{binding_path}/objective_reads",
+                f"unknown objective read slot {slot_name!r}",
             )
 
     for barrier_index, barrier in enumerate(contract.phase_program.checkpoint_barriers):

@@ -15,6 +15,7 @@ from feedbax.contracts.worker import (
     StateSlotSpec,
     UpdateKernelSpec,
     supervised_task_trainer_mapping,
+    toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
 )
 from feedbax.training.phase_executor import InMemoryCheckpointStore, PhaseProgramExecutor
@@ -56,6 +57,35 @@ def _toy_kernels():
     }
 
 
+def _measure_heldout(slots, coordinate, context):
+    return {"heldout_metric": context.get("heldout_metric", 1.0)}
+
+
+def _update_lambda(slots, coordinate, context):
+    next_counter = slots["guard_counter"] + int(slots["heldout_metric"] >= 1.0)
+    return {
+        "adaptive_lambda": (coordinate.schedule_origin_step or 0) + next_counter,
+        "guard_counter": next_counter,
+    }
+
+
+def _stop_when_counter_satisfied(slots, coordinate, context):
+    return slots["guard_counter"] >= 2
+
+
+def _toy_adaptive_kernels():
+    return {
+        "toy_adaptive.measure_heldout": _measure_heldout,
+        "toy_adaptive.update_lambda": _update_lambda,
+    }
+
+
+def _toy_adaptive_guards():
+    return {
+        "toy_adaptive.stop_when_counter_satisfied": _stop_when_counter_satisfied,
+    }
+
+
 def test_task_trainer_and_ppo_map_to_worker_vocabulary() -> None:
     supervised = supervised_task_trainer_mapping()
 
@@ -90,6 +120,20 @@ def test_toy_minimax_contract_validates_and_emits_governed_predicate() -> None:
     assert predicate.generator_hash == CONSISTENCY_PREDICATE_GENERATOR_HASH
     assert predicate.rules
     assert effective.phase_program.initial_phase == "warmup"
+
+
+def test_adaptive_curriculum_contract_validates_and_emits_guard_rules() -> None:
+    contract = toy_adaptive_curriculum_method_contract()
+
+    effective = validate_worker_contract(
+        contract,
+        update_kernels=_toy_adaptive_kernels(),
+        dry_run_shape_check=lambda _contract: DryRunShapeCheckResult(passed=True),
+    )
+
+    rules = {rule.rule for rule in effective.consistency_predicate.rules}
+    assert "metric-guard" in rules
+    assert effective.phase_program.phases[0].schedule_origin is not None
 
 
 def test_method_contract_rejects_method_owned_runner_refs() -> None:
@@ -201,6 +245,49 @@ def test_toy_minimax_executes_and_resumes_at_warmup_barrier() -> None:
     assert resumed.coordinate.completed_barrier == "after_adversarial"
 
 
+def test_adaptive_curriculum_executes_and_resumes_guard_state() -> None:
+    contract = toy_adaptive_curriculum_method_contract()
+    validate_worker_contract(
+        contract,
+        update_kernels=_toy_adaptive_kernels(),
+        dry_run_shape_check=lambda _contract: DryRunShapeCheckResult(passed=True),
+    )
+    store = InMemoryCheckpointStore()
+    executor = PhaseProgramExecutor(
+        contract.phase_program,
+        _toy_adaptive_kernels(),
+        guard_predicates=_toy_adaptive_guards(),
+        checkpoint_store=store,
+    )
+    slots = {
+        "controller": 7,
+        "heldout_metric": 0.0,
+        "adaptive_lambda": 0,
+        "guard_counter": 0,
+    }
+
+    first = executor.run(
+        slots,
+        run_id="adaptive-run",
+        stop_after_barrier="after_adaptive_measurement",
+    )
+    assert first.slots["controller"] == 7
+    assert first.slots["guard_counter"] == 1
+    assert first.slots["adaptive_lambda"] == 1
+    assert first.coordinate.schedule_origin_step == 0
+
+    resumed = executor.run(
+        {},
+        run_id="adaptive-run",
+        resume_from_barrier="after_adaptive_measurement",
+    )
+
+    assert resumed.coordinate.phase == "done"
+    assert resumed.slots["controller"] == 7
+    assert resumed.slots["guard_counter"] == 2
+    assert resumed.slots["adaptive_lambda"] == 3
+
+
 def test_population_length_mismatch_is_rejected_at_load() -> None:
     contract = toy_minimax_method_contract()
 
@@ -263,3 +350,47 @@ def test_unsupported_axis_fails_closed() -> None:
 
     assert "/axes/1/name" in str(exc.value)
     assert "adversary_member" in str(exc.value)
+
+
+def test_measurement_step_cannot_write_model_slot() -> None:
+    contract = toy_adaptive_curriculum_method_contract()
+    contract.phase_program.update_steps[0].writes = ["controller"]
+
+    with pytest.raises(WorkerContractValidationError) as exc:
+        validate_worker_contract(contract, update_kernels=_toy_adaptive_kernels())
+
+    assert "/phase_program/update_steps/0/writes" in str(exc.value)
+    assert "metric slots" in str(exc.value)
+
+
+def test_control_step_rejects_undeclared_metric_read() -> None:
+    contract = toy_adaptive_curriculum_method_contract()
+    contract.phase_program.update_steps[1].reads = ["missing_metric"]
+
+    with pytest.raises(WorkerContractValidationError) as exc:
+        validate_worker_contract(contract, update_kernels=_toy_adaptive_kernels())
+
+    assert "/phase_program/update_steps/1/reads" in str(exc.value)
+    assert "missing_metric" in str(exc.value)
+
+
+def test_guard_rejects_undeclared_metric_slot() -> None:
+    contract = toy_adaptive_curriculum_method_contract()
+    contract.phase_program.transitions[0].guard.metric_slots = ["missing_metric"]
+
+    with pytest.raises(WorkerContractValidationError) as exc:
+        validate_worker_contract(contract, update_kernels=_toy_adaptive_kernels())
+
+    assert "/phase_program/transitions/0/guard/metric_slots" in str(exc.value)
+    assert "missing_metric" in str(exc.value)
+
+
+def test_optimizer_binding_rejects_undeclared_objective_read() -> None:
+    contract = toy_minimax_method_contract()
+    contract.phase_program.optimizer_bindings[0].objective_reads = ["missing_lambda"]
+
+    with pytest.raises(WorkerContractValidationError) as exc:
+        validate_worker_contract(contract, update_kernels=_toy_kernels())
+
+    assert "/phase_program/optimizer_bindings/0/objective_reads" in str(exc.value)
+    assert "missing_lambda" in str(exc.value)

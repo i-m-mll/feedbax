@@ -69,17 +69,24 @@ class PhaseProgramExecutor:
         program: PhaseProgramSpec,
         kernels: Mapping[str, UpdateKernel],
         *,
+        guard_predicates: Mapping[str, UpdateKernel] | None = None,
         checkpoint_store: InMemoryCheckpointStore | None = None,
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
+        self.guard_predicates = dict(guard_predicates or {})
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
         self._phases = {phase.name: phase for phase in program.phases}
         self._steps = {step.name: step for step in program.update_steps}
-        self._transitions = {(transition.source, transition.target): transition for transition in program.transitions}
+        self._transitions = {
+            (transition.source, transition.target): transition
+            for transition in program.transitions
+        }
         self._barriers = {barrier.name: barrier for barrier in program.checkpoint_barriers}
         for kernel_ref, kernel in self.kernels.items():
             validate_update_kernel_callable(kernel, path=f"/kernels/{kernel_ref}")
+        for predicate_ref, predicate in self.guard_predicates.items():
+            validate_update_kernel_callable(predicate, path=f"/guard_predicates/{predicate_ref}")
 
     def run(
         self,
@@ -111,7 +118,12 @@ class PhaseProgramExecutor:
         phase_name: str | None = start_phase
         while phase_name is not None:
             phase = self._phases[phase_name]
-            coordinate = coordinate.model_copy(update={"phase": phase.name})
+            coordinate = coordinate.model_copy(
+                update={
+                    "phase": phase.name,
+                    "schedule_origin_step": self._schedule_origin_step(phase.name, coordinate),
+                }
+            )
             for inner_step in range(phase.max_steps):
                 coordinate = coordinate.model_copy(update={"inner_step": inner_step})
                 for step_name in phase.update_steps:
@@ -148,7 +160,12 @@ class PhaseProgramExecutor:
                         checkpoints=self.checkpoint_store.as_dict(),
                     )
 
-            phase_name = self._next_phase(phase.name)
+            phase_name = self._next_phase(
+                phase.name,
+                current_slots,
+                coordinate,
+                checkpoint_context,
+            )
 
         return PhaseExecutionResult(
             slots=current_slots,
@@ -194,14 +211,50 @@ class PhaseProgramExecutor:
             return barrier.resume_coordinate.phase
         return self._next_phase(barrier.phase) or barrier.phase
 
-    def _next_phase(self, phase_name: str) -> str | None:
+    def _schedule_origin_step(self, phase_name: str, coordinate: ProgressCoordinate) -> int | None:
+        phase = self._phases[phase_name]
+        if phase.schedule_origin is None:
+            return coordinate.schedule_origin_step
+        if phase.schedule_origin.mode == "run_start":
+            return phase.schedule_origin.step_offset
+        if phase.schedule_origin.mode in {"phase_entry", "resume_barrier"}:
+            return coordinate.global_step + phase.schedule_origin.step_offset
+        return coordinate.schedule_origin_step
+
+    def _next_phase(
+        self,
+        phase_name: str,
+        slots: Mapping[str, Any] | None = None,
+        coordinate: ProgressCoordinate | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> str | None:
         phase = self._phases[phase_name]
         if not phase.legal_next:
             return None
-        target = phase.legal_next[0]
+        for target in phase.legal_next:
+            transition = self._transitions.get((phase_name, target))
+            if transition is None:
+                raise WorkerContractValidationError(
+                    f"/phase_program/phases/{phase_name}/legal_next",
+                    f"missing transition {phase_name!r} -> {target!r}",
+                )
+            if transition.guard is None:
+                return target
+            if slots is None or coordinate is None:
+                continue
+            predicate = self.guard_predicates.get(transition.guard.predicate_ref)
+            if predicate is None:
+                raise WorkerContractValidationError(
+                    f"/phase_program/transitions/{phase_name}->{target}/guard",
+                    f"missing predicate for guard {transition.guard.predicate_ref!r}",
+                )
+            if bool(predicate(slots, coordinate, dict(context or {}))):
+                return target
+        return None
+
+    def _required_transition(self, phase_name: str, target: str) -> None:
         if (phase_name, target) not in self._transitions:
             raise WorkerContractValidationError(
                 f"/phase_program/phases/{phase_name}/legal_next",
                 f"missing transition {phase_name!r} -> {target!r}",
             )
-        return target
