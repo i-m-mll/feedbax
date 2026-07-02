@@ -26,6 +26,9 @@ from feedbax.contracts.checkpoints import (
     StructuralAbiFingerprint,
 )
 from feedbax.contracts.graph import (
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
+    AnalysisDataProductRequirement,
     AnalysisInputConsumerSpec,
     AnalysisInputRequirement,
     BarnacleSpec,
@@ -60,6 +63,14 @@ from feedbax.contracts.graph import (
     ValidationResult,
     ValidationWarning,
     WireSpec,
+)
+from feedbax.contracts.manifest import (
+    ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
+    AnalysisDataProduct,
+    DataProductParentRef,
+    analysis_data_product_identity_envelope,
+    analysis_data_product_identity_hash,
 )
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
@@ -147,6 +158,12 @@ from feedbax.contracts.studio_api import (
 )
 
 __all__ = [
+    "ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID",
+    "ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION",
+    "ANALYSIS_DATA_PRODUCT_SCHEMA_ID",
+    "ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION",
+    "AnalysisDataProduct",
+    "AnalysisDataProductRequirement",
     "AnalysisInputConsumerSpec",
     "AnalysisInputRequirement",
     "AnalysisJobStatusResponse",
@@ -175,6 +192,7 @@ __all__ = [
     "ConsistencyPredicateSpec",
     "ContentIntegrityDigest",
     "DEFAULT_TRAINING_METHOD_REGISTRY",
+    "DataProductParentRef",
     "EarlyStoppingSpec",
     "EffectivePhaseSpec",
     "ExecutionPolicySpec",
@@ -270,6 +288,8 @@ __all__ = [
     "WorkerStatusEnvelope",
     "WorkerMappingRow",
     "WireSpec",
+    "analysis_data_product_identity_envelope",
+    "analysis_data_product_identity_hash",
     "derive_consistency_predicate",
     "default_training_method_registry",
     "supervised_task_trainer_mapping",

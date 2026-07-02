@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
 GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v2"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
+ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = (
+    "feedbax.spec.analysis_data_product_requirement"
+)
+ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION = (
+    "feedbax.spec.analysis_data_product_requirement.v1"
+)
 
 
 # Use Any for nested param values to avoid recursive type issues
@@ -194,6 +200,60 @@ class AnalysisInputConsumerSpec(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class AnalysisDataProductRequirement(BaseModel):
+    """Typed requirement for a resolved analysis data product.
+
+    ``descriptor_basis_hash`` is reserved for the descriptor identity contract
+    owned by issue 844acc6. It is present when descriptor or component-selector
+    identity is part of the product semantics, and otherwise remains ``None``.
+    The descriptor vocabulary itself is intentionally not defined here.
+    """
+
+    schema_id: str = ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID
+    schema_version: str = ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION
+    role: str
+    product_schema_id: str
+    exact_product_schema_version: Optional[str] = None
+    min_product_schema_version: Optional[str] = None
+    max_product_schema_version: Optional[str] = None
+    logical_name: Optional[str] = None
+    descriptor_selector_requirements: Dict[str, Any] = Field(default_factory=dict)
+    descriptor_basis_hash: Optional[str] = None
+    product_identity_hash: Optional[str] = None
+    artifact_sha256: Optional[str] = None
+    producer_manifest_id: Optional[str] = None
+    producer_manifest_hash: Optional[str] = None
+    parent_manifest_ids: List[str] = Field(default_factory=list)
+    parent_manifest_hashes: List[str] = Field(default_factory=list)
+    checkpoint_policy: Optional[Dict[str, Any]] = None
+    rollout_policy: Optional[Dict[str, Any]] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    fallback_policy: Literal["forbid", "allow_declared"] = "forbid"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_schema_identity(self) -> "AnalysisDataProductRequirement":
+        if self.schema_id != ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID:
+            raise ValueError(
+                "unsupported AnalysisDataProductRequirement schema_id: "
+                f"{self.schema_id!r}, expected "
+                f"{ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID!r}"
+            )
+        if self.schema_version != ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported AnalysisDataProductRequirement schema_version: "
+                f"{self.schema_version!r}, expected "
+                f"{ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION!r}"
+            )
+        if not self.role.strip():
+            raise ValueError("AnalysisDataProductRequirement role must not be empty")
+        if not self.product_schema_id.strip():
+            raise ValueError(
+                "AnalysisDataProductRequirement product_schema_id must not be empty"
+            )
+        return self
+
+
 class AnalysisInputRequirement(BaseModel):
     """Observable requirement owned by an analysis consumer.
 
@@ -208,6 +268,7 @@ class AnalysisInputRequirement(BaseModel):
     target: Optional[RetainedObservableTargetSpec] = None
     retention: RetentionPolicySpec = Field(default_factory=RetentionPolicySpec)
     value_schema: Optional[Dict[str, Any]] = None
+    data_product: Optional[AnalysisDataProductRequirement] = None
     consumer: AnalysisInputConsumerSpec = Field(default_factory=AnalysisInputConsumerSpec)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
