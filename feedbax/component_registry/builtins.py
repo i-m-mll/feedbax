@@ -6,6 +6,10 @@ from typing import Any, Protocol
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
 from feedbax.control.affine import affine_feedback_output_prototype
+from feedbax.runtime.affine_composer import (
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    affine_value_composer_output_prototype,
+)
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
@@ -850,6 +854,57 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={'force': PortType(dtype='vector')},
             ),
             output_prototype_fn=force_passthrough_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
+            name='AffineValueComposer',
+            category='Interventions',
+            description='State/target-conditioned affine value composer.',
+            param_schema=[
+                ParamSchema(
+                    name='schema_version',
+                    type='str',
+                    default=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+                    required=True,
+                ),
+                ParamSchema(name='output_block_size', type='int', default=1, min=1, required=True),
+                ParamSchema(
+                    name='feature_rules',
+                    type='object',
+                    default=[{'kind': 'identity', 'state_slice': [0, 1]}],
+                    required=True,
+                    description=(
+                        "Ordered rules. Supported kinds: identity and "
+                        "target_relative_difference."
+                    ),
+                ),
+                ParamSchema(name='gain_init', type='array', default=[[0.0]], required=False),
+                ParamSchema(name='bias_init', type='array', default=[0.0], required=False),
+                ParamSchema(name='use_bias', type='bool', default=True, required=False),
+                ParamSchema(
+                    name='label',
+                    type='str',
+                    default='affine_value_composer',
+                    required=False,
+                ),
+            ],
+            input_ports=['base', 'state', 'target', 'gain', 'bias'],
+            output_ports=['value'],
+            icon='Blend',
+            port_types=PortTypeSpec(
+                inputs={
+                    'base': PortType(dtype='vector'),
+                    'state': PortType(dtype='vector'),
+                    'target': PortType(dtype='vector'),
+                    'gain': PortType(dtype='array'),
+                    'bias': PortType(dtype='vector'),
+                },
+                outputs={'value': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=affine_value_composer_output_prototype,
+            param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+            supported_param_schema_versions=[AFFINE_VALUE_COMPOSER_SCHEMA_VERSION],
         )
     )
     registry.register(

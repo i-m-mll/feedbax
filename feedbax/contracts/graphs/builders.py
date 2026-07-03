@@ -31,6 +31,10 @@ from feedbax.runtime.components import (
     Spring,
     Sum,
 )
+from feedbax.runtime.affine_composer import (
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AffineValueComposer,
+)
 from feedbax.control.affine import build_affine_feedback_controller
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component
@@ -659,6 +663,28 @@ def _build_dynamics_matrix_perturb(params: Mapping[str, Any]) -> DynamicsMatrixP
     )
 
 
+def _build_affine_value_composer(params: Mapping[str, Any]) -> AffineValueComposer:
+    schema_version = str(
+        params.get("schema_version", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION)
+    )
+    if schema_version != AFFINE_VALUE_COMPOSER_SCHEMA_VERSION:
+        raise ValueError(
+            "AffineValueComposer unsupported schema_version "
+            f"{schema_version!r}; expected {AFFINE_VALUE_COMPOSER_SCHEMA_VERSION!r}"
+        )
+    return AffineValueComposer(
+        output_block_size=int(params.get("output_block_size", 1)),
+        feature_rules=params.get(
+            "feature_rules",
+            [{"kind": "identity", "state_slice": [0, 1]}],
+        ),
+        gain_init=params.get("gain_init"),
+        bias_init=params.get("bias_init"),
+        use_bias=bool(params.get("use_bias", True)),
+        label=str(params.get("label", "affine_value_composer")),
+    )
+
+
 _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "Gain": _build_gain,
     "Sum": _build_sum,
@@ -691,6 +717,7 @@ _BUILDERS: dict[str, Callable[[Mapping[str, Any]], Component]] = {
     "CurlField": _build_curl_field,
     "FixedField": _build_fixed_field,
     "DynamicsMatrixPerturb": _build_dynamics_matrix_perturb,
+    "AffineValueComposer": _build_affine_value_composer,
     "AddNoise": lambda params: AddNoise(
         params=AddNoiseParams(
             scale=float(params.get("scale", 1.0)),
