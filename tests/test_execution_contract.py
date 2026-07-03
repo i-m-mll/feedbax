@@ -10,10 +10,13 @@ from pydantic import ValidationError
 from feedbax.execution.backends import render_modal_app
 from feedbax.execution.local import run_local_execution
 from feedbax.execution.models import (
+    EXECUTION_PLAN_SCHEMA_VERSION,
     EXECUTION_SPEC_SCHEMA_VERSION,
     ExecutionCell,
     ExecutionSpec,
+    LOCAL_EXECUTION_RESULT_SCHEMA_VERSION,
     RepoSource,
+    validate_materialized_execution_artifact,
 )
 from feedbax.execution.planning import (
     default_feedbax_sources,
@@ -110,14 +113,23 @@ def test_training_execution_plan_derives_local_command_from_training_run_spec() 
     assert "--duplicated-flag" not in plan.command
     assert "--run-id training-local" in plan.command
     training_record = plan.reproducibility["training_run_spec"]
+    assert plan.schema_version == EXECUTION_PLAN_SCHEMA_VERSION
     assert training_record["identity"] == "studio:training-run-spec:toy"
     assert len(training_record["content_sha256"]) == 64
     assert training_record["path"].endswith("/feedbax_runs/training-local/training-run-spec.json")
-    assert any(route.role == "training_run_spec" for route in plan.artifact_routes)
+    spec_route = next(route for route in plan.artifact_routes if route.role == "training_run_spec")
+    assert spec_route.logical_name == "training-run-spec.json"
+    assert spec_route.uri is not None
+    assert spec_route.uri.endswith("/feedbax_runs/training-local/training-run-spec.json")
+    assert spec_route.sha256 is None
+    assert spec_route.size_bytes is None
+    assert spec_route.metadata["hash_status"] == "deferred_until_materialization"
+    assert spec_route.metadata["size_status"] == "deferred_until_materialization"
     manifest_route = next(
         route for route in plan.artifact_routes if route.role == "training_run_manifest"
     )
-    assert manifest_route.source.endswith(
+    assert manifest_route.uri is not None
+    assert manifest_route.uri.endswith(
         "/feedbax_runs/training-local/manifests/training_runs/"
         "feedbax-training-run_training-local.json"
     )
@@ -331,11 +343,31 @@ def test_local_execution_emits_manifest_and_logs(tmp_path: Path) -> None:
 
     result = run_local_execution(spec, root=tmp_path, timeout=10)
 
+    assert result.schema_version == LOCAL_EXECUTION_RESULT_SCHEMA_VERSION
     assert result.status == "completed"
     assert result.return_code == 0
     assert Path(result.stdout_path).read_text(encoding="utf-8") == "feedbax local smoke\n"
     assert Path(result.stderr_path).read_text(encoding="utf-8") == ""
     assert Path(result.manifest_path).exists()
+    assert result.stdout.role == "execution_stdout"
+    assert result.stdout.sha256 is not None
+    assert result.stdout.size_bytes == len("feedbax local smoke\n")
+    assert result.stderr.role == "execution_stderr"
+    assert result.stderr.sha256 is not None
+    assert result.manifest.role == "training_run_manifest"
+    assert result.execution_plan.role == "execution_plan"
+    assert {artifact.role for artifact in result.produced_artifacts} == {
+        "execution_plan",
+        "execution_stdout",
+        "execution_stderr",
+        "training_run_manifest",
+    }
+    validate_materialized_execution_artifact(result.stdout, expected_role="execution_stdout")
+    with pytest.raises(ValueError, match="role mismatch"):
+        validate_materialized_execution_artifact(result.stdout, expected_role="execution_stderr")
+    Path(result.stdout_path).write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        validate_materialized_execution_artifact(result.stdout, expected_role="execution_stdout")
     assert result.manifest_payload["kind"] == "TrainingRunManifest"
     assert result.manifest_payload["job_id"] == "local-smoke"
     assert result.manifest_payload["provenance"]["entrypoint"]["kind"] == "feedbax-execution"

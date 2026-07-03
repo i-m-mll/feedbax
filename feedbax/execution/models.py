@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import shlex
 import uuid
@@ -11,7 +12,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from feedbax.contracts.manifest import ManifestStatus, canonical_json_bytes, sha256_bytes
+from feedbax.contracts.manifest import (
+    ArtifactRef,
+    ManifestStatus,
+    canonical_json_bytes,
+    sha256_bytes,
+    sha256_file,
+)
 from feedbax.contracts.training import (
     TRAINING_RUN_SPEC_SCHEMA_ID,
     TRAINING_RUN_SPEC_SCHEMA_VERSION,
@@ -20,7 +27,8 @@ from feedbax.contracts.training import (
 
 
 EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v2"
-EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v2"
+EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
+LOCAL_EXECUTION_RESULT_SCHEMA_VERSION = "feedbax.manifest.execution.v3"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
@@ -327,12 +335,100 @@ class HealthCheck(ExecutionModel):
     critical: bool = True
 
 
-class ArtifactRoute(ExecutionModel):
-    role: str
-    source: str
-    destination: Optional[str] = None
-    tracked: bool = False
-    description: str = ""
+def execution_artifact_ref(
+    *,
+    role: str,
+    logical_name: str,
+    uri: str,
+    media_type: str | None = None,
+    storage_backend: str = "feedbax-local",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Return a prospective execution artifact route with deferred byte custody."""
+    artifact_metadata = {
+        "hash_status": "deferred_until_materialization",
+        "size_status": "deferred_until_materialization",
+        **(metadata or {}),
+    }
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name,
+        uri=uri,
+        media_type=media_type or _media_type_for_path(uri),
+        storage_backend=storage_backend,
+        metadata=artifact_metadata,
+    )
+
+
+def materialized_execution_artifact_ref(
+    path: Path | str,
+    *,
+    role: str,
+    logical_name: str | None = None,
+    media_type: str | None = None,
+    storage_backend: str = "feedbax-local",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Return an ``ArtifactRef`` stamped with the current bytes for a local file."""
+    artifact_path = Path(path)
+    if not artifact_path.is_file():
+        raise FileNotFoundError(artifact_path)
+    stat = artifact_path.stat()
+    artifact_metadata = {"hash_status": "materialized", **(metadata or {})}
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name or artifact_path.name,
+        sha256=sha256_file(artifact_path),
+        media_type=media_type or _media_type_for_path(str(artifact_path)),
+        size_bytes=stat.st_size,
+        storage_backend=storage_backend,
+        uri=str(artifact_path),
+        metadata=artifact_metadata,
+    )
+
+
+def validate_materialized_execution_artifact(
+    ref: ArtifactRef,
+    *,
+    path: Path | str | None = None,
+    expected_role: str | None = None,
+) -> ArtifactRef:
+    """Validate that a materialized artifact ref still matches bytes and role."""
+    if expected_role is not None and ref.role != expected_role:
+        raise ValueError(
+            f"Artifact role mismatch: expected {expected_role!r}, found {ref.role!r}"
+        )
+    artifact_path = Path(path if path is not None else ref.uri or "")
+    if not artifact_path.is_file():
+        raise FileNotFoundError(artifact_path)
+    if ref.sha256 is None:
+        raise ValueError(
+            f"Artifact {ref.logical_name!r} has no sha256; materialized validation requires it"
+        )
+    actual_sha256 = sha256_file(artifact_path)
+    if actual_sha256 != ref.sha256:
+        raise ValueError(
+            f"Artifact sha256 mismatch for {ref.logical_name!r}: "
+            f"expected {ref.sha256}, found {actual_sha256}"
+        )
+    actual_size = artifact_path.stat().st_size
+    if ref.size_bytes is not None and actual_size != ref.size_bytes:
+        raise ValueError(
+            f"Artifact size mismatch for {ref.logical_name!r}: "
+            f"expected {ref.size_bytes}, found {actual_size}"
+        )
+    return ref
+
+
+def _media_type_for_path(path: str) -> str:
+    if path.endswith("/"):
+        return "inode/directory"
+    guessed, _ = mimetypes.guess_type(path)
+    if guessed is not None:
+        return guessed
+    if path.endswith(".log"):
+        return "text/plain"
+    return "application/octet-stream"
 
 
 class ExecutionPlan(ExecutionModel):
@@ -348,7 +444,7 @@ class ExecutionPlan(ExecutionModel):
     health_checks: list[HealthCheck]
     launch: PlanStep
     monitor: list[PlanStep] = Field(default_factory=list)
-    artifact_routes: list[ArtifactRoute] = Field(default_factory=list)
+    artifact_routes: list[ArtifactRef] = Field(default_factory=list)
     cloud_payload: dict[str, Any] = Field(default_factory=dict)
     reproducibility: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
@@ -357,11 +453,29 @@ class ExecutionPlan(ExecutionModel):
 class LocalExecutionResult(ExecutionModel):
     """Result from an explicitly local execution."""
 
+    kind: Literal["LocalExecutionResult"] = "LocalExecutionResult"
+    schema_version: Literal[LOCAL_EXECUTION_RESULT_SCHEMA_VERSION] = (
+        LOCAL_EXECUTION_RESULT_SCHEMA_VERSION
+    )
     job_id: str
     status: ManifestStatus
     return_code: int
-    stdout_path: str
-    stderr_path: str
-    manifest_path: str
+    stdout: ArtifactRef
+    stderr: ArtifactRef
+    manifest: ArtifactRef
+    execution_plan: ArtifactRef
+    produced_artifacts: list[ArtifactRef] = Field(default_factory=list)
     manifest_payload: dict[str, Any]
     plan: ExecutionPlan
+
+    @property
+    def stdout_path(self) -> str:
+        return self.stdout.uri or ""
+
+    @property
+    def stderr_path(self) -> str:
+        return self.stderr.uri or ""
+
+    @property
+    def manifest_path(self) -> str:
+        return self.manifest.uri or ""
