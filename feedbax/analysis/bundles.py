@@ -84,6 +84,7 @@ class BundleStageSpec(StrictModel):
     kind: BundleStageKind
     mode: AnalysisBundleMode = "grouped"
     depends_on: list[str] = Field(default_factory=list)
+    include_bundle_inputs: bool = False
     evaluation_type: str | None = None
     analysis_type: str | None = None
     report_type: str | None = None
@@ -432,9 +433,9 @@ def _resolve_stage_inputs(
     matched_manifests: Sequence[AnyManifest],
     stage_products: dict[str, list[StageMaterialization]],
 ) -> list[ParentRef]:
-    if not stage.depends_on:
-        return [_parent_ref_for_manifest(manifest) for manifest in matched_manifests]
     inputs: list[ParentRef] = []
+    if stage.include_bundle_inputs or not stage.depends_on:
+        inputs.extend(_parent_ref_for_manifest(manifest) for manifest in matched_manifests)
     for dependency in stage.depends_on:
         products = stage_products.get(dependency)
         if products is None:
