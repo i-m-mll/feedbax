@@ -1667,15 +1667,15 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         (
             "ExecutionPlan",
             "feedbax.manifest.execution_plan",
-            "feedbax.manifest.execution.v2",
-            ("feedbax.manifest.execution.v1",),
+            "feedbax.manifest.execution.v3",
+            ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
             "Inspectable concrete execution plan.",
         ),
         (
             "LocalExecutionResult",
             "feedbax.manifest.local_execution_result",
-            "feedbax.manifest.execution.v2",
-            ("feedbax.manifest.execution.v1",),
+            "feedbax.manifest.execution.v3",
+            ("feedbax.manifest.execution.v2", "feedbax.manifest.execution.v1"),
             "Local execution result.",
         ),
     ):

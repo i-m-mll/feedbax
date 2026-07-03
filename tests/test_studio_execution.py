@@ -224,7 +224,7 @@ def test_prepare_studio_training_execution_lowers_workspace_to_provider_plan():
     assert set(prepared.execution_spec.metadata["studio"]["graph_spec"]["nodes"]) == {"network"}
     assert prepared.plan.job_id == "studio-plan"
     assert prepared.plan.run_directory == "/tmp/feedbax-studio/feedbax_runs/studio-plan"
-    assert any(route.source == "training-spec.json" for route in prepared.plan.artifact_routes)
+    assert any(route.uri == "training-spec.json" for route in prepared.plan.artifact_routes)
     assert any("real JAX training runner" in warning for warning in prepared.plan.warnings)
 
     train_stage = next(stage for stage in prepared.workspace.stages if stage.kind == "train")

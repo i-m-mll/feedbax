@@ -184,7 +184,9 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["ExecutionSpec"].identity == "feedbax.spec.execution"
     assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
     assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
-    assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v2"
+    assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v3"
+    assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
+    assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v3"
     assert (
         families["StagedAnalysisBundleExecution"].identity
         == "feedbax.manifest.analysis_bundle_execution"
@@ -426,6 +428,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
     execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
@@ -444,7 +447,15 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert execution_policy is not None
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
     assert execution_plan_policy is not None
-    assert execution_plan_policy.rejected_old_versions == ("feedbax.manifest.execution.v1",)
+    assert execution_plan_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v2",
+        "feedbax.manifest.execution.v1",
+    )
+    assert local_execution_result_policy is not None
+    assert local_execution_result_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v2",
+        "feedbax.manifest.execution.v1",
+    )
     assert population_policy.stance == "reject"
     assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)
 

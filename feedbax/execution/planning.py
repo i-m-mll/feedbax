@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import shlex
 import json
+import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,15 +14,15 @@ from feedbax.execution.backends import (
     rsync_transport,
     ssh_prefix_for_backend,
 )
+from feedbax.contracts.manifest import ArtifactRef, utc_now
 from feedbax.execution.models import (
-    ArtifactRoute,
     ExecutionPlan,
     ExecutionSpec,
     HealthCheck,
     PlanStep,
     RepoSource,
+    execution_artifact_ref,
 )
-from feedbax.contracts.manifest import utc_now
 
 
 def default_feedbax_sources(feedbax_ref: str = "develop") -> list[RepoSource]:
@@ -448,51 +448,78 @@ def _monitor_steps(spec: ExecutionSpec, run_directory: str) -> list[PlanStep]:
     ]
 
 
-def _artifact_routes(spec: ExecutionSpec, run_directory: str) -> list[ArtifactRoute]:
+def _artifact_routes(spec: ExecutionSpec, run_directory: str) -> list[ArtifactRef]:
     routes = [
-        ArtifactRoute(
+        execution_artifact_ref(
             role="execution_log",
-            source=f"{run_directory.rstrip('/')}/{spec.artifact_policy.log_dir}/",
-            tracked=False,
-            description="Bulk logs are artifact-store data, not tracked source.",
+            logical_name=spec.artifact_policy.log_dir,
+            uri=f"{run_directory.rstrip('/')}/{spec.artifact_policy.log_dir}/",
+            media_type="inode/directory",
+            metadata={
+                "tracked": False,
+                "description": "Bulk logs are artifact-store data, not tracked source.",
+            },
         )
     ]
     if spec.training_run_spec is not None:
         routes.extend(
             [
-                ArtifactRoute(
+                execution_artifact_ref(
                     role="training_run_spec",
-                    source=_training_run_spec_path(spec, run_directory),
-                    tracked=True,
-                    description="Source TrainingRunSpec consumed by the generic Feedbax executor.",
+                    logical_name=Path(_training_run_spec_path(spec, run_directory)).name,
+                    uri=_training_run_spec_path(spec, run_directory),
+                    media_type="application/json",
+                    metadata={
+                        "tracked": True,
+                        "description": (
+                            "Source TrainingRunSpec consumed by the generic Feedbax executor."
+                        ),
+                    },
                 ),
-                ArtifactRoute(
+                execution_artifact_ref(
                     role="training_run_manifest",
-                    source=_training_manifest_path(
+                    logical_name=(
+                        f"feedbax-training-run_"
+                        f"{run_directory.rstrip('/').rsplit('/', 1)[-1]}.json"
+                    ),
+                    uri=_training_manifest_path(
                         run_directory.rstrip("/").rsplit("/", 1)[-1],
                         run_directory,
                     ),
-                    tracked=True,
-                    description="Native TrainingRunManifest emitted by execute-training-run-spec.",
+                    media_type="application/json",
+                    metadata={
+                        "tracked": True,
+                        "description": (
+                            "Native TrainingRunManifest emitted by execute-training-run-spec."
+                        ),
+                    },
                 ),
             ]
         )
     for path in spec.artifact_policy.tracked_paths:
         routes.append(
-            ArtifactRoute(
+            execution_artifact_ref(
                 role="tracked_spec",
-                source=path,
-                tracked=True,
-                description="Small specs/narratives that may be committed to git.",
+                logical_name=Path(path).name or path.rstrip("/"),
+                uri=path,
+                metadata={
+                    "tracked": True,
+                    "description": "Small specs/narratives that may be committed to git.",
+                },
             )
         )
     for path in spec.artifact_policy.bulk_paths:
         routes.append(
-            ArtifactRoute(
+            execution_artifact_ref(
                 role="bulk_output",
-                source=path,
-                tracked=False,
-                description="Checkpoints, histories, trajectories, figures, and large outputs.",
+                logical_name=Path(path).name or path.rstrip("/"),
+                uri=path,
+                metadata={
+                    "tracked": False,
+                    "description": (
+                        "Checkpoints, histories, trajectories, figures, and large outputs."
+                    ),
+                },
             )
         )
     return routes
