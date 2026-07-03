@@ -29,6 +29,10 @@ from feedbax.runtime.components import (
     Spring,
     Sum,
 )
+from feedbax.runtime.affine_composer import (
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AffineValueComposer,
+)
 from feedbax.control.affine import AffineFeedbackController
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Component, Graph, Wire
@@ -709,6 +713,31 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="DynamicsMatrixPerturb",
                 params=params,
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+
+        if isinstance(component, AffineValueComposer):
+            params = {
+                "schema_version": AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+                "output_block_size": component.output_block_size,
+                "feature_rules": [
+                    {
+                        key: list(value) if key.endswith("_slice") else value
+                        for key, value in rule.items()
+                    }
+                    for rule in component.feature_rules
+                ],
+                "gain_init": jnp.asarray(component.gain).tolist(),
+                "bias_init": jnp.asarray(component.bias).tolist(),
+                "use_bias": component.use_bias,
+                "label": component.label,
+            }
+            nodes[name] = ComponentSpec(
+                type="AffineValueComposer",
+                params=params,
+                param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

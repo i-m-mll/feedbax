@@ -1,5 +1,10 @@
 """Graph execution runtime primitives."""
 
+from feedbax.runtime.affine_composer import (
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AffineValueComposer,
+    affine_value_composer_output_prototype,
+)
 from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState, toggle_channel_noise
 from feedbax.runtime.components import (
     Constant,
@@ -54,6 +59,8 @@ from feedbax.runtime.task_bindings import (
 
 __all__ = [
     "AbstractModel",
+    "AFFINE_VALUE_COMPOSER_SCHEMA_VERSION",
+    "AffineValueComposer",
     "CartesianState",
     "Channel",
     "ChannelSpec",
@@ -94,6 +101,7 @@ __all__ = [
     "Wire",
     "apply_task_parameter_state_inits",
     "align_state_indices_like",
+    "affine_value_composer_output_prototype",
     "binding_spec_from_legacy_extra_inputs",
     "clip_state",
     "expose_task_bindings",

@@ -61,6 +61,23 @@ def recurrent_graph_input_initializer(source: str, *, state_slot: str) -> dict[s
     }
 
 
+def recurrent_node_output_initializer(
+    source_node: str,
+    source_port: str,
+    *,
+    state_slot: str,
+) -> dict[str, Any]:
+    """Return a recurrent initializer supplied by a same-graph node output."""
+
+    return {
+        "kind": "node-output",
+        "scope": "trial",
+        "source_node": str(source_node),
+        "source_port": str(source_port),
+        "state_slot": state_slot,
+    }
+
+
 def network_recurrent_wires(
     cell_type: str,
     hidden_size: int,
@@ -402,6 +419,8 @@ __all__ = [
     "network_recurrent_wires",
     "network_template_graph",
     "recurrent_controller_template_graph",
+    "recurrent_graph_input_initializer",
+    "recurrent_node_output_initializer",
     "recurrent_zero_initializer",
     "simple_feedback_template_graph",
 ]

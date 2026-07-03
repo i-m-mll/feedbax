@@ -11,6 +11,7 @@ from feedbax.runtime.graph import Graph, Wire, init_state_from_component
 from feedbax.contracts.graphs.templates import (
     network_template_graph,
     recurrent_graph_input_initializer,
+    recurrent_node_output_initializer,
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
@@ -174,6 +175,43 @@ def _graph_input_recurrent_spec() -> GraphSpec:
     )
 
 
+def _node_output_recurrent_spec() -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "encoder": ComponentSpec(
+                type="Gain",
+                params={"gain": 2.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "gain": ComponentSpec(
+                type="Gain",
+                params={"gain": 0.5},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="gain",
+                source_port="output",
+                target_node="gain",
+                target_port="input",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_node_output_initializer(
+                    "encoder",
+                    "output",
+                    state_slot="input",
+                ),
+            )
+        ],
+        input_ports=["context"],
+        output_ports=["out"],
+        input_bindings={"context": ("encoder", "input")},
+        output_bindings={"out": ("gain", "output")},
+    )
+
+
 def test_graph_input_recurrent_initializer_graphspec_runs_from_external_input() -> None:
     graph = spec_to_graph(
         _graph_input_recurrent_spec(),
@@ -222,6 +260,62 @@ def test_graph_input_recurrent_initializer_feeds_prototype_inference() -> None:
     input_prototypes = infer_node_input_prototypes(
         spec,
         {("__graph__", "seed"): jnp.zeros((3,))},
+        {},
+        component_registry={},
+    )
+
+    assert input_prototypes[("gain", "input")].shape == (3,)
+
+
+def test_node_output_recurrent_initializer_graphspec_runs_from_source_node() -> None:
+    graph = spec_to_graph(
+        _node_output_recurrent_spec(),
+        {},
+        input_prototypes={("__graph__", "context"): jnp.zeros((2,))},
+    )
+    state = init_state_from_component(graph)
+
+    outputs, _ = graph(
+        {"context": jnp.array([3.0, 5.0])},
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert jnp.allclose(
+        outputs["out"],
+        jnp.array([[3.0, 5.0], [1.5, 2.5], [0.75, 1.25]]),
+    )
+
+
+def test_node_output_recurrent_initializer_serializes_verbatim() -> None:
+    spec = _node_output_recurrent_spec()
+
+    json_roundtrip = GraphSpec.model_validate_json(spec.model_dump_json())
+    runtime_roundtrip = graph_to_spec(
+        spec_to_graph(
+            spec,
+            {},
+            input_prototypes={("__graph__", "context"): jnp.zeros((2,))},
+        )
+    )
+
+    assert json_roundtrip.wires[0].recurrent_initializer == {
+        "kind": "node-output",
+        "scope": "trial",
+        "source_node": "encoder",
+        "source_port": "output",
+        "state_slot": "input",
+    }
+    assert runtime_roundtrip.wires[0].recurrent_initializer == spec.wires[0].recurrent_initializer
+
+
+def test_node_output_recurrent_initializer_feeds_prototype_inference() -> None:
+    spec = _node_output_recurrent_spec()
+
+    input_prototypes = infer_node_input_prototypes(
+        spec,
+        {("__graph__", "context"): jnp.zeros((3,))},
         {},
         component_registry={},
     )
