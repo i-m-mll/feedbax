@@ -28,7 +28,7 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         role="training_run",
     )
     spec = EvaluationRunSpec(
-        evaluation_type="toy_eval",
+        evaluation_type="testpkg.toy_eval",
         inputs=[parent],
         params={"n_trials": 3},
     )
@@ -47,7 +47,7 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
             metadata={"states_path_seen": str(states_path)},
         )
 
-    register_evaluation_recipe("toy_eval", recipe, replace=True)
+    register_evaluation_recipe("testpkg.toy_eval", recipe, replace=True)
     try:
         manifest, path = execute_evaluation_run_spec(
             spec_path,
@@ -57,7 +57,7 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         assert manifest.status == "completed"
         assert path.exists()
         assert manifest.id == evaluation_run_manifest_id(spec)
-        assert manifest.evaluation_spec.inline["evaluation_type"] == "toy_eval"
+        assert manifest.evaluation_spec.inline["evaluation_type"] == "testpkg.toy_eval"
         assert manifest.input_training_runs == [parent]
         assert manifest.provenance.parents == [parent]
         assert manifest.provenance.issues == ["8f40e2d"]
@@ -96,7 +96,7 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(tmp_pat
         assert row == ("EvaluationRunManifest", "completed")
         assert edge == ("TrainingRunManifest", parent.id, "training_run")
     finally:
-        unregister_evaluation_recipe("toy_eval")
+        unregister_evaluation_recipe("testpkg.toy_eval")
 
 
 def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: Path):
@@ -106,7 +106,7 @@ def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: 
         role="training_run",
     )
     spec = EvaluationRunSpec(
-        evaluation_type="copy_provenance_eval",
+        evaluation_type="testpkg.copy_provenance_eval",
         inputs=[parent],
         params={},
     )
@@ -123,7 +123,7 @@ def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: 
     ) -> EvaluationRecipeResult:
         return EvaluationRecipeResult()
 
-    register_evaluation_recipe("copy_provenance_eval", recipe, replace=True)
+    register_evaluation_recipe("testpkg.copy_provenance_eval", recipe, replace=True)
     try:
         manifest, _path = execute_evaluation_run_spec(
             spec,
@@ -141,4 +141,4 @@ def test_evaluation_run_spec_copies_caller_provenance_before_stamping(tmp_path: 
         assert caller_provenance.issues == ["existing"]
         assert caller_provenance.entrypoint is None
     finally:
-        unregister_evaluation_recipe("copy_provenance_eval")
+        unregister_evaluation_recipe("testpkg.copy_provenance_eval")

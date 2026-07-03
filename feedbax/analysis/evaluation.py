@@ -1,4 +1,21 @@
-"""Registered execution for manifest-canonical evaluation runs."""
+"""Registered execution for manifest-canonical evaluation runs.
+
+Producer contract:
+
+1. Evaluation producers register lowercase dotted ``evaluation_type`` keys of
+   the form ``<package>.<name>``. Feedbax-owned recipes use ``feedbax.*`` keys;
+   downstream packages use their import-name prefix, for example ``rlrmp.*``.
+2. A conforming producer registers a params schema family for
+   ``<package>.spec.evaluation.<name>``. Feedbax v1 conformance allows an
+   explicit waiver for un-schema'd params; strict executor rejection is a later
+   ratchet.
+3. Recipes that return states declare
+   ``EvaluationRecipeResult.metadata["states_schema"]`` as an opaque non-empty
+   string identifying the states pytree shape.
+4. Recipes are deterministic for the same ``EvaluationRunSpec``, avoid durable
+   writes inside the recipe, do not depend on ambient CWD or global config, and
+   access model/artifact inputs only through resolved ``ParentRef`` inputs.
+"""
 
 from __future__ import annotations
 
@@ -25,12 +42,21 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
-from feedbax.analysis.validation import EvaluationRecipeProtocol, validate_evaluation_recipe
+from feedbax.analysis.validation import (
+    EvaluationRecipeProtocol,
+    validate_evaluation_recipe,
+    validate_namespaced_type_key,
+)
 
 
 @dataclass(frozen=True)
 class EvaluationRecipeResult:
-    """Result returned by an evaluation recipe."""
+    """Result returned by an evaluation recipe.
+
+    ``metadata["states_schema"]`` is a reserved producer-declared identifier
+    for the returned states pytree shape. Runtime execution treats it as opaque;
+    the conformance suite requires it when a recipe returns states.
+    """
 
     states: Any = None
     summary_metrics: dict[str, Any] = field(default_factory=dict)
@@ -39,6 +65,7 @@ class EvaluationRecipeResult:
 
 
 EvaluationRecipe = EvaluationRecipeProtocol
+STATES_SCHEMA_METADATA_KEY = "states_schema"
 
 _EVALUATION_RECIPES: dict[str, EvaluationRecipe] = {}
 
@@ -62,8 +89,10 @@ def register_evaluation_recipe(
     replace: bool = False,
 ) -> None:
     """Register an executable evaluation recipe by stable type key."""
-    if not evaluation_type.strip():
-        raise ValueError("evaluation_type must not be empty")
+    evaluation_type = validate_namespaced_type_key(
+        evaluation_type,
+        field="evaluation_type",
+    )
     if evaluation_type in _EVALUATION_RECIPES and not replace:
         raise ValueError(f"Evaluation recipe {evaluation_type!r} is already registered")
     _EVALUATION_RECIPES[evaluation_type] = validate_evaluation_recipe(evaluation_type, recipe)
