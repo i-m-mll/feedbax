@@ -16,15 +16,29 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.runtime.graph import Component
 
 
-def _activation_fn(name: str) -> Callable:
-    mapping = {
-        "relu": jax.nn.relu,
-        "tanh": jax.nn.tanh,
-        "sigmoid": jax.nn.sigmoid,
-        "softmax": jax.nn.softmax,
-        "identity": lambda x: x,
-    }
-    return mapping.get(name, jax.nn.relu)
+def identity_activation(x: Any) -> Any:
+    return x
+
+
+NAMED_ACTIVATIONS: dict[str, Callable] = {
+    "relu": jax.nn.relu,
+    "tanh": jax.nn.tanh,
+    "sigmoid": jax.nn.sigmoid,
+    "softmax": jax.nn.softmax,
+    "identity": identity_activation,
+}
+
+
+def _callable_name(activation: Callable) -> str:
+    return getattr(activation, "__name__", activation.__class__.__name__)
+
+
+def resolve_activation(activation: str | Callable) -> tuple[str, Callable]:
+    if isinstance(activation, str):
+        return activation, NAMED_ACTIVATIONS.get(activation, jax.nn.relu)
+    if callable(activation):
+        return _callable_name(activation), activation
+    raise TypeError("activation must be a string name or callable")
 
 
 class Gain(Component):
@@ -385,7 +399,7 @@ class Linear(Component):
         input_size: int,
         output_size: int,
         use_bias: bool = True,
-        activation: str = "identity",
+        activation: str | Callable = "identity",
         dtype: Any = jnp.float32,
         *,
         key: PRNGKeyArray,
@@ -394,8 +408,7 @@ class Linear(Component):
         self.output_size = int(output_size)
         self.use_bias = bool(use_bias)
         self.dtype = dtype
-        self.activation_name = activation
-        self.activation = _activation_fn(self.activation_name)
+        self.activation_name, self.activation = resolve_activation(activation)
         self.layer = eqx.nn.Linear(
             self.input_size,
             self.output_size,
@@ -430,8 +443,8 @@ class MLP(Component):
         input_size: int,
         output_size: int,
         hidden_sizes: Sequence[int] = (64,),
-        activation: str = "relu",
-        final_activation: str = "identity",
+        activation: str | Callable = "relu",
+        final_activation: str | Callable = "identity",
         dtype: Any = jnp.float32,
         *,
         key: PRNGKeyArray,
@@ -440,17 +453,14 @@ class MLP(Component):
         self.output_size = int(output_size)
         self.hidden_sizes = tuple(int(x) for x in hidden_sizes)
         self.dtype = dtype
-        self.activation_name = activation
-        self.final_activation_name = final_activation
+        self.activation_name, self.activation = resolve_activation(activation)
+        self.final_activation_name, self.final_activation = resolve_activation(final_activation)
         sizes = [self.input_size, *self.hidden_sizes, self.output_size]
         keys = jax.random.split(key, len(sizes) - 1)
         self.linears = tuple(
             eqx.nn.Linear(sizes[i], sizes[i + 1], dtype=dtype, key=keys[i])
             for i in range(len(sizes) - 1)
         )
-        self.activation = _activation_fn(self.activation_name)
-        self.final_activation = _activation_fn(self.final_activation_name)
-
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         x = inputs["input"]
         for idx, layer in enumerate(self.linears):
