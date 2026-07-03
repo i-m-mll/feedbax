@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import prod
 from typing import Any, Protocol
+
+import jax.numpy as jnp
+import jax.tree as jt
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
@@ -10,15 +14,80 @@ from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
     affine_value_composer_output_prototype,
 )
+from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 from .cde_templates import register_cde_templates
-from .meta import ComponentMeta
+from .meta import ComponentMeta, MissingPrototypeInput
 from .templates import register_builtin_graph_templates
 
 
 class _Registry(Protocol):
     def register(self, meta: ComponentMeta) -> None: ...
+
+
+def _missing_input(port: str, *, component: str) -> MissingPrototypeInput:
+    return MissingPrototypeInput(f"{component} output prototype requires input prototype {port!r}")
+
+
+def _required_input(inputs: Mapping[str, Any], port: str, *, component: str) -> Any:
+    if port not in inputs:
+        raise _missing_input(port, component=component)
+    return inputs[port]
+
+
+def _shape_from_single_array(proto: Any, *, component: str, port: str) -> tuple[int, ...]:
+    leaves = jt.leaves(proto)
+    if len(leaves) != 1 or not hasattr(leaves[0], "shape"):
+        raise ValueError(
+            f"{component} output prototype requires {port!r} to be a single array prototype"
+        )
+    return tuple(int(dim) for dim in leaves[0].shape)
+
+
+def _array_proto_from_shape(shape: Any) -> Any | None:
+    if not isinstance(shape, (list, tuple)):
+        return None
+    try:
+        return jnp.zeros(tuple(int(dim) for dim in shape))
+    except (TypeError, ValueError):
+        return None
+
+
+def _proto_from_value(value: Any) -> Any:
+    return jt.map(lambda x: jnp.zeros_like(jnp.asarray(x)), value)
+
+
+def _positive_sizes(params: Mapping[str, Any], *, component: str) -> tuple[int, ...]:
+    sizes = params.get("sizes")
+    if not isinstance(sizes, (list, tuple)):
+        raise ValueError(f"{component} requires 'sizes' as a list of positive integers")
+    parsed = tuple(int(size) for size in sizes)
+    if not parsed:
+        raise ValueError(f"{component} sizes must contain at least one output size")
+    if any(size <= 0 for size in parsed):
+        raise ValueError(f"{component} sizes must be positive integers")
+    return parsed
+
+
+def _n_dims_proto(params: Mapping[str, Any], *, key: str = "n_dims") -> Any:
+    return jnp.zeros((int(params.get(key, 1)),))
+
+
+def _ravel_width(proto: Any, *, component: str, port: str) -> int:
+    leaves = jt.leaves(proto)
+    if not leaves or any(not hasattr(leaf, "shape") for leaf in leaves):
+        raise ValueError(f"{component} output prototype requires {port!r} to be array-shaped")
+    return sum(prod(tuple(int(dim) for dim in leaf.shape)) for leaf in leaves)
+
+
+def input_passthrough_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the incoming ``input`` prototype as ``output``."""
+
+    return {"output": _required_input(inputs, "input", component="input passthrough")}
 
 
 def force_passthrough_output_prototype(
@@ -27,9 +96,291 @@ def force_passthrough_output_prototype(
 ) -> dict[str, Any]:
     """Return the incoming force prototype for force-passthrough interventions."""
 
-    if "force" not in inputs:
-        raise ValueError("force passthrough output prototype requires input prototype 'force'")
-    return {"force": inputs["force"]}
+    return {"force": _required_input(inputs, "force", component="force passthrough")}
+
+
+def source_value_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a source prototype from the configured scalar/array value."""
+
+    return {"output": _proto_from_value(params.get("value", 0.0))}
+
+
+def step_source_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a ramp/sine/pulse prototype from amplitude or slope params."""
+
+    return {"output": _proto_from_value(params.get("amplitude", params.get("slope", 1.0)))}
+
+
+def noise_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a random-noise sample prototype from the configured shape."""
+
+    return {"output": jnp.zeros(tuple(int(dim) for dim in params.get("shape", [1])))}
+
+
+def binary_elementwise_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the first available binary elementwise input prototype."""
+
+    proto = inputs.get("a")
+    if proto is None:
+        proto = inputs.get("b")
+    if proto is None:
+        raise MissingPrototypeInput(
+            "binary elementwise output prototype requires input prototype 'a' or 'b'"
+        )
+    return {"output": proto}
+
+
+def ravel_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a one-dimensional flattened prototype for an arbitrary PyTree input."""
+
+    proto = _required_input(inputs, "input", component="Ravel")
+    return {"output": jnp.zeros((_ravel_width(proto, component="Ravel", port="input"),))}
+
+
+def stateful_passthrough_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return input-shaped output, falling back to configured ``input_shape``."""
+
+    proto = inputs.get("input")
+    if proto is None:
+        proto = _array_proto_from_shape(params.get("input_shape"))
+    if proto is None:
+        raise _missing_input("input", component="stateful passthrough")
+    return {"output": proto}
+
+
+def linear_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a dense-layer output prototype from ``output_size``."""
+
+    return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
+
+
+def recurrent_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return GRU output and hidden prototypes from ``hidden_size``."""
+
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    return {"output": hidden, "hidden": hidden}
+
+
+def lstm_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return LSTM output, hidden, and cell prototypes from ``hidden_size``."""
+
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    return {"output": hidden, "hidden": hidden, "cell": hidden}
+
+
+def mux_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a concatenated vector prototype for all declared mux inputs."""
+
+    n_inputs = int(params.get("n_inputs", 2))
+    ports = [f"in_{index}" for index in range(n_inputs)]
+    missing = [port for port in ports if port not in inputs]
+    if missing:
+        raise MissingPrototypeInput(
+            "Mux output prototype requires input prototypes for ports "
+            + ", ".join(repr(port) for port in missing)
+        )
+    widths = [
+        _ravel_width(inputs[port], component="Mux", port=port)
+        for port in ports
+    ]
+    return {"output": jnp.zeros((sum(widths),))}
+
+
+def demux_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return per-output prototypes by slicing the input final dimension."""
+
+    proto = _required_input(inputs, "input", component="Demux")
+    shape = _shape_from_single_array(proto, component="Demux", port="input")
+    if not shape:
+        raise ValueError("Demux input prototype must have at least one dimension")
+    sizes = _positive_sizes(params, component="Demux")
+    width = shape[-1]
+    total = sum(sizes)
+    if width != total:
+        raise ValueError(
+            f"Demux input final dimension {width} does not match sum(sizes) {total}"
+        )
+    prefix = shape[:-1]
+    return {
+        f"out_{index}": jnp.zeros((*prefix, size))
+        for index, size in enumerate(sizes)
+    }
+
+
+def switch_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the routed-signal prototype when both switch arms agree."""
+
+    true_proto = _required_input(inputs, "true_input", component="Switch")
+    false_proto = _required_input(inputs, "false_input", component="Switch")
+    true_shape = _shape_from_single_array(true_proto, component="Switch", port="true_input")
+    false_shape = _shape_from_single_array(false_proto, component="Switch", port="false_input")
+    if true_shape != false_shape:
+        raise ValueError(
+            "Switch output prototype requires true_input and false_input "
+            f"to have matching shapes, got {true_shape!r} and {false_shape!r}"
+        )
+    return {"output": true_proto}
+
+
+def elementwise_affine_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the signal prototype for elementwise affine modulation."""
+
+    signal = inputs.get("signal")
+    if signal is not None:
+        return {"output": signal}
+    proto = _array_proto_from_shape(params.get("signal_shape"))
+    if proto is None:
+        raise _missing_input("signal", component="ElementwiseAffineModulator")
+    return {"output": proto}
+
+
+def feedback_channels_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the configured feedback-channel state prototype."""
+
+    input_shape = params.get("input_shape")
+    if isinstance(input_shape, (list, tuple)) and input_shape and all(
+        isinstance(item, (list, tuple)) for item in input_shape
+    ):
+        return {"feedback": tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in input_shape)}
+    proto = _array_proto_from_shape(input_shape)
+    if proto is None:
+        proto = (jnp.zeros(2), jnp.zeros(2))
+    return {"feedback": proto}
+
+
+def spring_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return spring force with displacement shape."""
+
+    return {"force": _required_input(inputs, "displacement", component="Spring")}
+
+
+def damper_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return damper force with velocity shape."""
+
+    return {"force": _required_input(inputs, "velocity", component="Damper")}
+
+
+def mechanics_state_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the default Cartesian state prototype used by mechanics plants."""
+
+    effector = CartesianState()
+    return {"effector": effector, "state": effector}
+
+
+def linear_state_space_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return LinearStateSpace effector/state prototypes from matrices and slices."""
+
+    a_matrix = jnp.asarray(params["A"])
+    b_matrix = jnp.asarray(params["B"])
+    state_dim = int(a_matrix.shape[0])
+    pos_start, pos_stop = (int(value) for value in params.get("pos_slice", [0, 2]))
+    vel_start, vel_stop = (int(value) for value in params.get("vel_slice", [2, 4]))
+    force_dim = int(b_matrix.shape[1]) if b_matrix.ndim == 2 else 0
+    return {
+        "effector": CartesianState(
+            pos=jnp.zeros((pos_stop - pos_start,), dtype=a_matrix.dtype),
+            vel=jnp.zeros((vel_stop - vel_start,), dtype=a_matrix.dtype),
+            force=jnp.zeros((force_dim,), dtype=a_matrix.dtype),
+        ),
+        "state": jnp.zeros((state_dim,), dtype=a_matrix.dtype),
+    }
+
+
+def scalar_muscle_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return scalar muscle force and activation prototypes."""
+
+    proto = jnp.zeros(())
+    return {"force": proto, "activation": proto}
+
+
+def input_or_n_dims_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the input prototype, or an ``n_dims`` vector when unconnected."""
+
+    proto = inputs.get("input")
+    if proto is not None:
+        return {"output": proto}
+    return {"output": _n_dims_proto(params)}
+
+
+def error_or_n_dims_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the error prototype, or an ``n_dims`` vector when unconnected."""
+
+    proto = inputs.get("error")
+    if proto is not None:
+        return {"output": proto}
+    return {"output": _n_dims_proto(params)}
+
+
+def rate_limiter_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return input-shaped rate limiter output, or ``n_dims`` when unconnected."""
+
+    return input_or_n_dims_output_prototype(params, inputs)
 
 
 def register_builtin_components(registry: _Registry) -> None:
@@ -87,6 +438,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -102,6 +454,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=binary_elementwise_output_prototype,
         )
     )
     registry.register(
@@ -117,6 +470,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'a': PortType(dtype='any'), 'b': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=binary_elementwise_output_prototype,
         )
     )
     registry.register(
@@ -146,6 +500,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=elementwise_affine_output_prototype,
         )
     )
     registry.register(
@@ -163,6 +518,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=source_value_output_prototype,
         )
     )
     registry.register(
@@ -182,6 +538,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=step_source_output_prototype,
         )
     )
     registry.register(
@@ -203,6 +560,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=step_source_output_prototype,
         )
     )
     registry.register(
@@ -224,6 +582,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=step_source_output_prototype,
         )
     )
     registry.register(
@@ -243,6 +602,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=noise_output_prototype,
         )
     )
     registry.register(
@@ -261,6 +621,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -279,6 +640,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -312,6 +674,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=linear_output_prototype,
         )
     )
     registry.register(
@@ -338,6 +701,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=linear_output_prototype,
         )
     )
     registry.register(
@@ -356,6 +720,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
             ),
+            output_prototype_fn=recurrent_output_prototype,
         )
     )
     registry.register(
@@ -382,6 +747,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'cell': PortType(dtype='vector'),
                 },
             ),
+            output_prototype_fn=lstm_output_prototype,
         )
     )
     registry.register(
@@ -432,6 +798,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'displacement': PortType(dtype='vector')},
                 outputs={'force': PortType(dtype='vector')},
             ),
+            output_prototype_fn=spring_output_prototype,
         )
     )
     registry.register(
@@ -449,6 +816,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'velocity': PortType(dtype='vector')},
                 outputs={'force': PortType(dtype='vector')},
             ),
+            output_prototype_fn=damper_output_prototype,
         )
     )
     registry.register(
@@ -469,6 +837,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'state': PortType(dtype='state'),
                 },
             ),
+            output_prototype_fn=mechanics_state_output_prototype,
         )
     )
     registry.register(
@@ -491,6 +860,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'state': PortType(dtype='state'),
                 },
             ),
+            output_prototype_fn=mechanics_state_output_prototype,
         )
     )
     registry.register(
@@ -545,6 +915,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'state': PortType(dtype='vector'),
                 },
             ),
+            output_prototype_fn=linear_state_space_output_prototype,
         )
     )
     registry.register(
@@ -701,6 +1072,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -748,6 +1120,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'mechanics': PortType(dtype='state')},
                 outputs={'feedback': PortType(dtype='state')},
             ),
+            output_prototype_fn=feedback_channels_output_prototype,
         )
     )
     registry.register(
@@ -768,6 +1141,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -923,6 +1297,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -941,6 +1316,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     # --- Muscles ---
@@ -985,6 +1361,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'activation': PortType(dtype='scalar'),
                 },
             ),
+            output_prototype_fn=scalar_muscle_output_prototype,
         )
     )
     registry.register(
@@ -1157,6 +1534,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -1175,6 +1553,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -1315,6 +1694,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1334,6 +1714,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1390,6 +1771,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'error': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=error_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1412,6 +1794,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'error': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=error_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1463,6 +1846,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1481,6 +1865,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1500,6 +1885,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     # --- Signal processing components ---
@@ -1521,6 +1907,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=mux_output_prototype,
         )
     )
     registry.register(
@@ -1536,6 +1923,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=ravel_output_prototype,
         )
     )
     registry.register(
@@ -1556,6 +1944,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     'out_1': PortType(dtype='vector'),
                 },
             ),
+            output_prototype_fn=demux_output_prototype,
         )
     )
     registry.register(
@@ -1577,6 +1966,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=switch_output_prototype,
         )
     )
     registry.register(
@@ -1594,6 +1984,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='any')},
                 outputs={'output': PortType(dtype='any')},
             ),
+            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -1614,6 +2005,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=rate_limiter_output_prototype,
         )
     )
     registry.register(
@@ -1633,6 +2025,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     registry.register(
@@ -1653,6 +2046,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={'input': PortType(dtype='vector')},
                 outputs={'output': PortType(dtype='vector')},
             ),
+            output_prototype_fn=input_or_n_dims_output_prototype,
         )
     )
     registry.register(

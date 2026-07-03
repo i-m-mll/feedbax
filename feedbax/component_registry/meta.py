@@ -16,6 +16,10 @@ ComponentBuilder = Callable[[Mapping[str, Any]], "Component"]
 OutputPrototypeFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 
 
+class MissingPrototypeInput(ValueError):
+    """Raised when an output prototype needs an input prototype not yet known."""
+
+
 @dataclass
 class ComponentMeta:
     name: str

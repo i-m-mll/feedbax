@@ -41,6 +41,7 @@ from feedbax.contracts.graphs.serialization import (
     spec_to_graph,
 )
 from feedbax.contracts.graphs.prototypes import output_prototypes_for_node
+from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
 
 
@@ -737,6 +738,472 @@ def test_force_field_output_prototypes_require_force_input(
 
     with pytest.raises(ValueError, match="input prototype 'force'"):
         output_prototypes_for_node("field", node_spec, {}, {}, registry)
+
+
+def _tree_shapes(proto: Any) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(int(dim) for dim in leaf.shape) for leaf in jax.tree.leaves(proto))
+
+
+def _registered_outputs(
+    component_type: str,
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    *,
+    input_ports: list[str],
+    output_ports: list[str],
+) -> dict[str, Any]:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    node_spec = ComponentSpec(
+        type=component_type,
+        params=dict(params),
+        input_ports=input_ports,
+        output_ports=output_ports,
+    )
+    return output_prototypes_for_node(
+        "node",
+        node_spec,
+        {("node", port): proto for port, proto in inputs.items()},
+        {},
+        registry,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {
+            "type": "Gain",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "Sum",
+            "inputs": {"a": jnp.zeros((2,))},
+            "input_ports": ["a", "b"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "Multiply",
+            "inputs": {"b": jnp.zeros((4,))},
+            "input_ports": ["a", "b"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "ElementwiseAffineModulator",
+            "params": {"signal_shape": [5]},
+            "inputs": {},
+            "input_ports": ["signal", "modulator", "scale", "bias"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((5,),)},
+        },
+        {
+            "type": "Constant",
+            "params": {"value": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Ramp",
+            "params": {"slope": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Sine",
+            "params": {"amplitude": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Pulse",
+            "params": {"amplitude": 1.0},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((),)},
+        },
+        {
+            "type": "Noise",
+            "params": {"shape": [2, 3]},
+            "input_ports": [],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2, 3),)},
+        },
+        {
+            "type": "Saturation",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "DelayLine",
+            "params": {"input_shape": [2]},
+            "inputs": {},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "MLP",
+            "params": {"output_size": 7},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((7,),)},
+        },
+        {
+            "type": "Linear",
+            "params": {"output_size": 6},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((6,),)},
+        },
+        {
+            "type": "GRU",
+            "params": {"hidden_size": 4},
+            "input_ports": ["input", "hidden"],
+            "output_ports": ["output", "hidden"],
+            "shapes": {"output": ((4,),), "hidden": ((4,),)},
+        },
+        {
+            "type": "LSTM",
+            "params": {"hidden_size": 4},
+            "input_ports": ["input", "hidden", "cell"],
+            "output_ports": ["output", "hidden", "cell"],
+            "shapes": {"output": ((4,),), "hidden": ((4,),), "cell": ((4,),)},
+        },
+        {
+            "type": "Spring",
+            "inputs": {"displacement": jnp.zeros((2,))},
+            "input_ports": ["displacement"],
+            "output_ports": ["force"],
+            "shapes": {"force": ((2,),)},
+        },
+        {
+            "type": "Damper",
+            "inputs": {"velocity": jnp.zeros((2,))},
+            "input_ports": ["velocity"],
+            "output_ports": ["force"],
+            "shapes": {"force": ((2,),)},
+        },
+        {
+            "type": "Channel",
+            "params": {"input_shape": [3]},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "FeedbackChannels",
+            "params": {"input_shape": [[2], [3]]},
+            "input_ports": ["mechanics"],
+            "output_ports": ["feedback"],
+            "shapes": {"feedback": ((2,), (3,))},
+        },
+        {
+            "type": "FirstOrderFilter",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "AddNoise",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "NetworkClamp",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "ReluMuscle",
+            "input_ports": ["excitation"],
+            "output_ports": ["force", "activation"],
+            "shapes": {"force": ((),), "activation": ((),)},
+        },
+        {
+            "type": "NetworkConstantInput",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "ConstantInput",
+            "inputs": {"input": jnp.zeros((4,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "Integrator",
+            "params": {"n_dims": 3},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "Derivative",
+            "inputs": {"input": jnp.zeros((2,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "PID",
+            "params": {"n_dims": 2},
+            "input_ports": ["error"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "PIDDiscrete",
+            "inputs": {"error": jnp.zeros((5,))},
+            "input_ports": ["error"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((5,),)},
+        },
+        {
+            "type": "IntegratorDiscrete",
+            "params": {"n_dims": 2},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "UnitDelay",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "ZeroOrderHold",
+            "params": {"n_dims": 4},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((4,),)},
+        },
+        {
+            "type": "Mux",
+            "params": {"n_inputs": 3},
+            "inputs": {
+                "in_0": jnp.zeros((2,)),
+                "in_1": {"x": jnp.zeros((2, 2))},
+                "in_2": jnp.zeros(()),
+            },
+            "input_ports": ["in_0", "in_1", "in_2"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((7,),)},
+        },
+        {
+            "type": "Ravel",
+            "inputs": {"input": {"x": jnp.zeros((2, 3)), "y": jnp.zeros((1,))}},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((7,),)},
+        },
+        {
+            "type": "Switch",
+            "inputs": {
+                "true_input": jnp.zeros((3,)),
+                "false_input": jnp.zeros((3,)),
+            },
+            "input_ports": ["condition", "true_input", "false_input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "DeadZone",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "RateLimiter",
+            "params": {"n_dims": 2},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+        {
+            "type": "HighPassFilter",
+            "inputs": {"input": jnp.zeros((3,))},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((3,),)},
+        },
+        {
+            "type": "BandPassFilter",
+            "params": {"n_dims": 2},
+            "input_ports": ["input"],
+            "output_ports": ["output"],
+            "shapes": {"output": ((2,),)},
+        },
+    ],
+)
+def test_registered_builtin_output_prototypes(case: dict[str, Any]) -> None:
+    outputs = _registered_outputs(
+        case["type"],
+        case.get("params", {}),
+        case.get("inputs", {}),
+        input_ports=case["input_ports"],
+        output_ports=case["output_ports"],
+    )
+
+    for port, expected_shapes in case["shapes"].items():
+        assert _tree_shapes(outputs[port]) == expected_shapes
+
+
+@pytest.mark.parametrize("component_type", ["TwoLinkArm", "PointMass"])
+def test_registered_mechanics_state_output_prototypes(component_type: str) -> None:
+    outputs = _registered_outputs(
+        component_type,
+        {},
+        {},
+        input_ports=["force"],
+        output_ports=["effector", "state"],
+    )
+
+    assert isinstance(outputs["effector"], CartesianState)
+    assert outputs["state"] is outputs["effector"]
+
+
+def test_registered_linear_state_space_output_prototype() -> None:
+    outputs = _registered_outputs(
+        "LinearStateSpace",
+        {
+            "A": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "B": [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]],
+            "pos_slice": [0, 1],
+            "vel_slice": [1, 3],
+        },
+        {},
+        input_ports=["force", "epsilon"],
+        output_ports=["effector", "state"],
+    )
+
+    assert isinstance(outputs["effector"], CartesianState)
+    assert outputs["effector"].pos.shape == (1,)
+    assert outputs["effector"].vel.shape == (2,)
+    assert outputs["effector"].force.shape == (2,)
+    assert outputs["state"].shape == (3,)
+
+
+def test_demux_output_prototype_splits_input_final_dimension() -> None:
+    outputs = _registered_outputs(
+        "Demux",
+        {"sizes": [2, 1, 3]},
+        {"input": jnp.zeros((4, 6))},
+        input_ports=["input"],
+        output_ports=["out_0", "out_1", "out_2"],
+    )
+
+    assert outputs["out_0"].shape == (4, 2)
+    assert outputs["out_1"].shape == (4, 1)
+    assert outputs["out_2"].shape == (4, 3)
+
+
+def test_demux_output_prototype_requires_input_prototype() -> None:
+    with pytest.raises(ValueError, match="Demux output prototype requires input prototype 'input'"):
+        _registered_outputs(
+            "Demux",
+            {"sizes": [2, 1]},
+            {},
+            input_ports=["input"],
+            output_ports=["out_0", "out_1"],
+        )
+
+
+def test_demux_output_prototype_rejects_width_mismatch() -> None:
+    with pytest.raises(ValueError, match="Demux input final dimension 4.*sum\\(sizes\\) 5"):
+        _registered_outputs(
+            "Demux",
+            {"sizes": [2, 3]},
+            {"input": jnp.zeros((4,))},
+            input_ports=["input"],
+            output_ports=["out_0", "out_1"],
+        )
+
+
+def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    spec = GraphSpec(
+        nodes={
+            "join": ComponentSpec(
+                type="Mux",
+                params={"n_inputs": 2},
+                input_ports=["in_0", "in_1"],
+                output_ports=["output"],
+            ),
+            "split": ComponentSpec(
+                type="Demux",
+                params={"sizes": [2, 3]},
+                input_ports=["input"],
+                output_ports=["out_0", "out_1"],
+            ),
+            "left": ComponentSpec(
+                type="Gain",
+                params={"gain": 1.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "right": ComponentSpec(
+                type="Gain",
+                params={"gain": 1.0},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="split",
+                source_port="out_0",
+                target_node="left",
+                target_port="input",
+            ),
+            WireSpec(
+                source_node="split",
+                source_port="out_1",
+                target_node="right",
+                target_port="input",
+            ),
+            WireSpec(
+                source_node="join",
+                source_port="output",
+                target_node="split",
+                target_port="input",
+            ),
+        ],
+        input_ports=["a", "b"],
+        output_ports=["left", "right"],
+        input_bindings={"a": ("join", "in_0"), "b": ("join", "in_1")},
+        output_bindings={"left": ("left", "output"), "right": ("right", "output")},
+    )
+
+    inputs = infer_node_input_prototypes(
+        spec,
+        {("__graph__", "a"): jnp.zeros((2,)), ("__graph__", "b"): jnp.zeros((3,))},
+        {},
+        component_registry=registry,
+    )
+
+    assert inputs[("split", "input")].shape == (5,)
+    assert inputs[("left", "input")].shape == (2,)
+    assert inputs[("right", "input")].shape == (3,)
 
 
 def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
