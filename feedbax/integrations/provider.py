@@ -10,6 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticVa
 
 import feedbax.analysis as analysis_pkg
 from feedbax.contracts.artifact_schema import ArrayRecord, ArrayStorePayload
+from feedbax.contracts.descriptors import (
+    ComponentDescriptor,
+    ComponentSelectorSyntax,
+    DescriptorBasisIdentity,
+    SelectorFallbackPolicyIdentity,
+    SelectorRoleIdentity,
+    VariableDescriptor,
+)
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
@@ -240,6 +248,12 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "ReportSpec": ReportSpec,
         "RegenerationSpec": RegenerationSpec,
         "AnalysisDataProduct": AnalysisDataProduct,
+        "VariableDescriptor": VariableDescriptor,
+        "ComponentDescriptor": ComponentDescriptor,
+        "DescriptorBasisIdentity": DescriptorBasisIdentity,
+        "SelectorRoleIdentity": SelectorRoleIdentity,
+        "ComponentSelectorSyntax": ComponentSelectorSyntax,
+        "SelectorFallbackPolicyIdentity": SelectorFallbackPolicyIdentity,
         "CheckpointSelectionSpec": CheckpointSelectionSpec,
         "ArtifactRef": ArtifactRef,
         "ArrayRecord": ArrayRecord,

@@ -12,6 +12,14 @@ from feedbax.contracts.migrations import (
     default_spec_registry,
     migrate_studio_task_binding_spec,
 )
+from feedbax.contracts.descriptors import (
+    COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
+    COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
+    DESCRIPTOR_BASIS_SCHEMA_VERSION,
+    SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
+    SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
+    VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
+)
 from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
@@ -178,6 +186,9 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
         == "feedbax.manifest.analysis_bundle_execution"
     )
     assert families["ValueSchema"].identity == "feedbax.spec.studio.schema.value"
+    assert families["VariableDescriptor"].identity == "feedbax.spec.descriptor.variable"
+    assert families["ComponentDescriptor"].identity == "feedbax.spec.descriptor.component"
+    assert families["DescriptorBasisIdentity"].identity == "feedbax.spec.descriptor.basis"
     assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
@@ -216,6 +227,14 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
     families = {family.kind: family for family in default_spec_registry.families()}
 
     expected_policy_paths = {
+        "VariableDescriptor": (
+            "feedbax.contracts.descriptors",
+            ("GraphSpec/training/run metadata", "provider_manifest.schemas"),
+        ),
+        "DescriptorBasisIdentity": (
+            "feedbax.contracts.descriptors",
+            ("descriptor-bearing specs", "provider_manifest.schemas"),
+        ),
         "ArrayStorePayload": (
             "feedbax.contracts.artifact_schema",
             ("feedbax.contracts.artifact_schema", "provider_manifest.schemas"),
@@ -487,3 +506,29 @@ def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -
 def test_objective_entrypoint_rejects_explicit_unsupported_version() -> None:
     with pytest.raises(UnsupportedSpecVersion, match="feedbax.objective.v0"):
         validate_objective_spec({"schema_version": "feedbax.objective.v0"})
+
+
+def test_descriptor_schema_families_reject_old_versions() -> None:
+    descriptor_versions = {
+        "VariableDescriptor": VARIABLE_DESCRIPTOR_SCHEMA_VERSION,
+        "ComponentDescriptor": COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
+        "DescriptorBasisIdentity": DESCRIPTOR_BASIS_SCHEMA_VERSION,
+        "SelectorRoleIdentity": SELECTOR_ROLE_IDENTITY_SCHEMA_VERSION,
+        "ComponentSelectorSyntax": COMPONENT_SELECTOR_SYNTAX_SCHEMA_VERSION,
+        "SelectorFallbackPolicyIdentity": SELECTOR_FALLBACK_POLICY_SCHEMA_VERSION,
+    }
+
+    for kind, current_version in descriptor_versions.items():
+        family = default_spec_registry.resolve(kind)
+        assert family.policy is not None
+        assert family.policy.stance == "reject"
+        assert "tests/test_descriptor_schema.py" in family.policy.required_tests
+
+        old_version = current_version.removesuffix(".v1") + ".v0"
+        with pytest.raises(UnsupportedSpecVersion) as excinfo:
+            default_spec_registry.migrate(kind, {"schema_version": old_version})
+
+        message = str(excinfo.value)
+        assert f"family='{kind}'" in message
+        assert f"source_version='{old_version}'" in message
+        assert "migration_intentionally_absent=yes" in message
