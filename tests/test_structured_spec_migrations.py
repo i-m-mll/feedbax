@@ -26,6 +26,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
 )
+from feedbax.contracts.manifest import EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
 from feedbax.contracts.value_schema import ValueSchema
 from feedbax.objectives.spec import validate_objective_spec
 
@@ -148,6 +149,15 @@ def test_structured_spec_registry_reports_unknown_family() -> None:
     message = str(excinfo.value)
     assert "Unknown Feedbax structured spec family 'MissingSpec'" in message
     assert "known families: DemoSpec" in message
+
+
+def test_default_registry_registers_evaluation_states_container_family() -> None:
+    family = default_spec_registry.resolve("EvaluationStatesContainer")
+
+    assert family.identity == "feedbax.manifest.evaluation_states_container"
+    assert family.current_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+    assert family.policy is not None
+    assert family.policy.stance == "reject"
 
 
 def test_structured_spec_registry_reports_missing_migration_path() -> None:

@@ -38,6 +38,8 @@ from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     ArtifactMigrationRecord,
+    EVALUATION_STATES_CONTAINER_SCHEMA_ID,
+    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
@@ -1913,15 +1915,40 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             True,
             "Analysis registry snapshot capability alias.",
         ),
+        (
+            "EvaluationStatesContainer",
+            EVALUATION_STATES_CONTAINER_SCHEMA_ID,
+            True,
+            "Governed NPZ custody envelope for evaluation-state pytrees.",
+        ),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                MANIFEST_SCHEMA_VERSION,
-                owner_module="feedbax.integrations.provider",
-                emitted_by=("feedbax.integrations.provider.provider_manifest",),
-                consumed_by=("Mandible provider integration",),
+                (
+                    EVALUATION_STATES_CONTAINER_SCHEMA_VERSION
+                    if kind == "EvaluationStatesContainer"
+                    else MANIFEST_SCHEMA_VERSION
+                ),
+                owner_module=(
+                    "feedbax.contracts.evaluation_states"
+                    if kind == "EvaluationStatesContainer"
+                    else "feedbax.integrations.provider"
+                ),
+                emitted_by=(
+                    ("feedbax.analysis.evaluation.execute_evaluation_run_spec",)
+                    if kind == "EvaluationStatesContainer"
+                    else ("feedbax.integrations.provider.provider_manifest",)
+                ),
+                consumed_by=(
+                    (
+                        "feedbax.analysis.evaluation.load_evaluation_states",
+                        "feedbax.analysis.specs.resolve_analysis_inputs",
+                    )
+                    if kind == "EvaluationStatesContainer"
+                    else ("Mandible provider integration",)
+                ),
                 durable=durable,
                 description=description,
                 covers="RegistrySnapshot" if kind.endswith("RegistrySnapshot") else None,
