@@ -1571,6 +1571,11 @@ def _static_task_parameter_labels(node_id: str, node: Any) -> set[str]:
     if "label" not in getattr(node, "params", {}):
         return set()
     label = node.params.get("label") or node_id
+    if getattr(node, "type", None) == "AffineValueComposer":
+        labels = {f"{label}.gain"}
+        if bool(node.params.get("use_bias", True)):
+            labels.add(f"{label}.bias")
+        return {str(item) for item in labels}
     return {str(label)}
 
 

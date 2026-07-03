@@ -13,10 +13,16 @@ import pytest
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel
 from feedbax.component_registry import ComponentRegistry
+from feedbax.runtime.affine_composer import AffineValueComposer
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.runtime.task_bindings import expose_task_inputs
+from feedbax.runtime.task_bindings import (
+    apply_task_parameter_state_inits,
+    expose_task_bindings,
+    expose_task_inputs,
+)
+from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.intervene import (
     CurlField,
     CurlFieldParams,
@@ -776,6 +782,282 @@ def test_dynamics_matrix_perturb_graphspec_rejects_bad_delta_shape() -> None:
                 output_ports=["force"],
             )
         )
+
+
+def _affine_composer_params() -> dict[str, Any]:
+    return {
+        "schema_version": "feedbax.component.affine_value_composer.v1",
+        "output_block_size": 2,
+        "feature_rules": [
+            {
+                "kind": "target_relative_difference",
+                "state_slice": [0, 2],
+                "target_slice": [0, 2],
+            },
+            {"kind": "identity", "state_slice": [2, 4]},
+        ],
+        "gain_init": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 1.0, 0.0]],
+        "bias_init": [0.5, -0.5],
+        "use_bias": True,
+        "label": "composer_binding",
+    }
+
+
+def _affine_composer_inputs() -> dict[str, Any]:
+    return {
+        "base": jnp.array([10.0, 20.0], dtype=jnp.float32),
+        "state": jnp.array([3.0, 4.0, 5.0, 6.0], dtype=jnp.float32),
+        "target": jnp.array([1.0, 2.0], dtype=jnp.float32),
+    }
+
+
+def test_affine_value_composer_runtime_and_trainable_defaults() -> None:
+    params = _affine_composer_params()
+    component = AffineValueComposer(
+        output_block_size=2,
+        feature_rules=params["feature_rules"],
+        gain_init=params["gain_init"],
+        bias_init=params["bias_init"],
+        use_bias=True,
+        label="composer_binding",
+    )
+
+    outputs = _call_component(component, _affine_composer_inputs())
+
+    assert jnp.allclose(outputs["value"], jnp.array([12.5, 26.5], dtype=jnp.float32))
+
+    updated = eqx.tree_at(
+        lambda node: (node.gain, node.bias),
+        component,
+        (
+            jnp.array([[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=jnp.float32),
+            jnp.array([1.0, 2.0], dtype=jnp.float32),
+        ),
+    )
+    updated_outputs = _call_component(updated, _affine_composer_inputs())
+
+    assert jnp.allclose(updated_outputs["value"], jnp.array([16.0, 28.0], dtype=jnp.float32))
+
+
+def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides() -> None:
+    spec = _single_node_spec(
+        "AffineValueComposer",
+        _affine_composer_params(),
+        input_ports=["base", "state", "target", "gain", "bias"],
+        output_ports=["value"],
+    )
+
+    graph = spec_to_graph(spec)
+    component = graph.nodes["field"]
+
+    assert isinstance(component, AffineValueComposer)
+    assert component.output_block_size == 2
+    assert component.feature_dim == 4
+    assert set(component.task_parameter_state_indices()) == {
+        "composer_binding.gain",
+        "composer_binding.bias",
+    }
+
+    inputs = {
+        **_affine_composer_inputs(),
+        "gain": jnp.array([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=jnp.float32),
+        "bias": jnp.array([2.0, 3.0], dtype=jnp.float32),
+    }
+    outputs = _call_component(component, inputs)
+    assert jnp.allclose(outputs["value"], jnp.array([14.0, 25.0], dtype=jnp.float32))
+
+    roundtrip = graph_to_spec(graph)
+    node = roundtrip.nodes["field"]
+    assert node.type == "AffineValueComposer"
+    assert node.param_schema_version == "feedbax.component.affine_value_composer.v1"
+    assert node.params["output_block_size"] == 2
+    assert node.params["feature_rules"] == _affine_composer_params()["feature_rules"]
+    assert jnp.allclose(
+        jnp.asarray(node.params["gain_init"]),
+        jnp.asarray(_affine_composer_params()["gain_init"]),
+    )
+    assert jnp.allclose(
+        jnp.asarray(node.params["bias_init"]),
+        jnp.asarray(_affine_composer_params()["bias_init"]),
+    )
+    assert node.params["label"] == "composer_binding"
+
+
+def test_affine_value_composer_component_parameter_binding_updates_state() -> None:
+    spec = GraphSpec(
+        nodes={
+            "field": ComponentSpec(
+                type="AffineValueComposer",
+                params=_affine_composer_params(),
+                input_ports=["base", "state", "target", "gain", "bias"],
+                output_ports=["value"],
+            )
+        },
+        input_ports=["base", "state", "target"],
+        output_ports=["value"],
+        input_bindings={
+            "base": ("field", "base"),
+            "state": ("field", "state"),
+            "target": ("field", "target"),
+        },
+        output_bindings={"value": ("field", "value")},
+    )
+    graph = spec_to_graph(spec)
+    binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "exposed_data": [
+                {
+                    "id": "composer_gain",
+                    "label": "Composer gain",
+                    "kind": "intervention",
+                    "role": "component_parameter",
+                    "path": "intervene.composer_gain",
+                    "bindable": True,
+                    "dtype": "array",
+                    "value_spec": {
+                        "mode": "constant",
+                        "value": [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                    },
+                    "metadata": {"temporal_support": "constant"},
+                },
+                {
+                    "id": "composer_bias",
+                    "label": "Composer bias",
+                    "kind": "intervention",
+                    "role": "component_parameter",
+                    "path": "intervene.composer_bias",
+                    "bindable": True,
+                    "dtype": "vector",
+                    "value_spec": {
+                        "mode": "constant",
+                        "value": [1.0, 2.0],
+                    },
+                    "metadata": {"temporal_support": "constant"},
+                },
+            ],
+            "bindings": [
+                {
+                    "id": "task:composer_gain->field:gain",
+                    "source_data_id": "composer_gain",
+                    "target_node_id": "field",
+                    "target_port": "gain",
+                    "role": "component_parameter",
+                    "metadata": {"task_parameter_label": "composer_binding.gain"},
+                },
+                {
+                    "id": "task:composer_bias->field:bias",
+                    "source_data_id": "composer_bias",
+                    "target_node_id": "field",
+                    "target_port": "bias",
+                    "role": "component_parameter",
+                    "metadata": {"task_parameter_label": "composer_binding.bias"},
+                },
+            ],
+            "metadata": {},
+        }
+    )
+
+    issues = validate_task_binding_schema(binding_spec, spec, "/task_binding_spec")
+    assert not [issue for issue in issues if issue.severity == "error"]
+    exposure = expose_task_bindings(graph, binding_spec)
+    assert exposure.input_plans == ()
+    assert {plan.target_label for plan in exposure.state_init_plans} == {
+        "composer_binding.gain",
+        "composer_binding.bias",
+    }
+
+    state = init_state_from_component(exposure.graph)
+    updated_state = apply_task_parameter_state_inits(
+        state,
+        exposure.graph,
+        exposure.state_init_plans,
+        {
+            "composer_gain": jnp.array(
+                [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                dtype=jnp.float32,
+            ),
+            "composer_bias": jnp.array([1.0, 2.0], dtype=jnp.float32),
+        },
+    )
+    component = exposure.graph.nodes["field"]
+    outputs, _ = component(_affine_composer_inputs(), updated_state, key=jr.PRNGKey(0))
+
+    assert jnp.allclose(outputs["value"], jnp.array([16.0, 28.0], dtype=jnp.float32))
+
+
+def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    node_spec = ComponentSpec(
+        type="AffineValueComposer",
+        params=_affine_composer_params(),
+        input_ports=["base", "state", "target", "gain", "bias"],
+        output_ports=["value"],
+    )
+    inputs = {
+        ("field", "base"): jnp.zeros((2,), dtype=jnp.float32),
+        ("field", "state"): jnp.zeros((4,), dtype=jnp.float32),
+        ("field", "target"): jnp.zeros((2,), dtype=jnp.float32),
+    }
+
+    outputs = output_prototypes_for_node("field", node_spec, inputs, {}, registry)
+
+    assert outputs["value"] is inputs[("field", "base")]
+
+    with pytest.raises(ValueError, match="input prototype 'base'"):
+        output_prototypes_for_node(
+            "field",
+            node_spec,
+            {("field", "state"): jnp.zeros((4,), dtype=jnp.float32)},
+            {},
+            registry,
+        )
+    with pytest.raises(ValueError, match="input prototype 'state'"):
+        output_prototypes_for_node(
+            "field",
+            node_spec,
+            {("field", "base"): jnp.zeros((2,), dtype=jnp.float32)},
+            {},
+            registry,
+        )
+    with pytest.raises(ValueError, match="state_slice .* exceeds state size"):
+        output_prototypes_for_node(
+            "field",
+            node_spec.model_copy(
+                update={
+                    "params": {
+                        **_affine_composer_params(),
+                        "feature_rules": [{"kind": "identity", "state_slice": [3, 5]}],
+                    }
+                }
+            ),
+            inputs,
+            {},
+            registry,
+        )
+    with pytest.raises(ValueError, match="base prototype trailing dimension"):
+        output_prototypes_for_node(
+            "field",
+            node_spec.model_copy(
+                update={"params": {**_affine_composer_params(), "output_block_size": 3}}
+            ),
+            inputs,
+            {},
+            registry,
+        )
+
+
+def test_affine_value_composer_registry_metadata() -> None:
+    registry = ComponentRegistry(load_user_components=False, discover_plugins=False)
+    meta = registry.get("AffineValueComposer")
+
+    assert meta is not None
+    assert meta.output_prototype_fn is not None
+    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v1"
+    assert set(meta.input_ports) == {"base", "state", "target", "gain", "bias"}
+    assert meta.output_ports == ["value"]
+    assert meta.default_params["label"] == "affine_value_composer"
+    assert meta.default_params["schema_version"] == "feedbax.component.affine_value_composer.v1"
 
 
 def test_channel_rejects_unknown_noise_model() -> None:
