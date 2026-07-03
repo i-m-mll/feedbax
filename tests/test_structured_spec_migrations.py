@@ -181,10 +181,20 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     )
     assert families["AnalysisBundleSpec"].identity == "feedbax.spec.analysis_bundle"
     assert families["AnalysisBundleSpec"].current_version == "feedbax.spec.analysis_bundle.v2"
+    assert (
+        families["AnalysisDataProductRequirement"].identity
+        == "feedbax.spec.analysis_data_product_requirement"
+    )
+    assert (
+        families["AnalysisDataProduct"].identity
+        == "feedbax.manifest.analysis_data_product"
+    )
     assert families["ExecutionSpec"].identity == "feedbax.spec.execution"
     assert families["ExecutionSpec"].current_version == "feedbax.spec.execution.v2"
     assert families["ExecutionPlan"].identity == "feedbax.manifest.execution_plan"
     assert families["ExecutionPlan"].current_version == "feedbax.manifest.execution.v2"
+    assert families["LocalExecutionResult"].identity == "feedbax.manifest.local_execution_result"
+    assert families["LocalExecutionResult"].current_version == "feedbax.manifest.execution.v2"
     assert (
         families["StagedAnalysisBundleExecution"].identity
         == "feedbax.manifest.analysis_bundle_execution"
@@ -193,6 +203,14 @@ def test_default_structured_spec_registry_exposes_foundation_families() -> None:
     assert families["VariableDescriptor"].identity == "feedbax.spec.descriptor.variable"
     assert families["ComponentDescriptor"].identity == "feedbax.spec.descriptor.component"
     assert families["DescriptorBasisIdentity"].identity == "feedbax.spec.descriptor.basis"
+    assert (
+        families["TrainingCheckpointTransactionManifest"].identity
+        == "feedbax.manifest.training_checkpoint_transaction"
+    )
+    assert (
+        families["TrainingRunManifest"].identity
+        == "feedbax.manifest.training_run"
+    )
     assert families["RegenerationSpec"].identity == "feedbax.spec.regeneration"
     assert families["ProviderManifest"].current_version == "feedbax.manifest.v1"
     assert families["ModelArtifactManifest"].identity == "feedbax.manifest.model_artifact"
@@ -214,6 +232,10 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         "RegistrySnapshot": "feedbax.manifest.registry_snapshot",
         "SpecPayload": "feedbax.manifest.spec_payload",
         "StagedAnalysisBundleExecution": "feedbax.manifest.analysis_bundle_execution",
+        "TrainingCheckpointTransactionManifest": (
+            "feedbax.manifest.training_checkpoint_transaction"
+        ),
+        "TrainingRunManifest": "feedbax.manifest.training_run",
         "StudioPipelineMaterializationResult": (
             "feedbax.manifest.studio.pipeline_materialization_result"
         ),
@@ -235,9 +257,45 @@ def test_policy_matrix_uses_canonical_owner_and_emitter_modules() -> None:
             "feedbax.contracts.descriptors",
             ("GraphSpec/training/run metadata", "provider_manifest.schemas"),
         ),
+        "ComponentDescriptor": (
+            "feedbax.contracts.descriptors",
+            ("VariableDescriptor components", "provider_manifest.schemas"),
+        ),
         "DescriptorBasisIdentity": (
             "feedbax.contracts.descriptors",
             ("descriptor-bearing specs", "provider_manifest.schemas"),
+        ),
+        "AnalysisDataProductRequirement": (
+            "feedbax.contracts.graph",
+            ("AnalysisRunSpec.input_requirements", "provider_manifest.schemas"),
+        ),
+        "AnalysisDataProduct": (
+            "feedbax.contracts.manifest",
+            ("AnalysisRunManifest.produced_data", "provider_manifest.schemas"),
+        ),
+        "TrainingRunSpec": (
+            "feedbax.contracts.training",
+            ("TrainingRunManifest.training_spec", "provider_manifest.schemas"),
+        ),
+        "TrainingRunManifest": (
+            "feedbax.contracts.manifest",
+            ("feedbax.contracts.manifest", "feedbax.integrations.provider"),
+        ),
+        "TrainingCheckpointTransactionManifest": (
+            "feedbax.contracts.checkpoints",
+            ("feedbax.training.checkpoint_custody",),
+        ),
+        "ExecutionSpec": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
+        "ExecutionPlan": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
+        ),
+        "LocalExecutionResult": (
+            "feedbax.execution.models",
+            ("feedbax.execution.models", "feedbax.integrations.provider"),
         ),
         "ArrayStorePayload": (
             "feedbax.contracts.artifact_schema",
@@ -304,6 +362,10 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "TrainingSpec",
         "TaskSpec",
         "StandardSupervisedMethodPayload",
+        "AnalysisDataProductRequirement",
+        "VariableDescriptor",
+        "ComponentDescriptor",
+        "DescriptorBasisIdentity",
         "ObjectiveSpec",
         "EvaluationRunSpec",
         "AnalysisRunSpec",
@@ -321,6 +383,9 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ModelArtifactManifest",
         "ArrayStorePayload",
         "ArrayRecord",
+        "TrainingCheckpointTransactionManifest",
+        "TrainingRunManifest",
+        "AnalysisDataProduct",
         "ExecutionPlan",
         "LocalExecutionResult",
         "StagedAnalysisBundleExecution",
@@ -426,6 +491,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
     execution_policy = default_spec_registry.resolve("ExecutionSpec").policy
     execution_plan_policy = default_spec_registry.resolve("ExecutionPlan").policy
+    local_execution_result_policy = default_spec_registry.resolve("LocalExecutionResult").policy
 
     assert graph_policy is not None
     assert graph_policy.stance == "migrate"
@@ -445,6 +511,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     assert execution_policy.rejected_old_versions == ("feedbax.spec.execution.v1",)
     assert execution_plan_policy is not None
     assert execution_plan_policy.rejected_old_versions == ("feedbax.manifest.execution.v1",)
+    assert local_execution_result_policy is not None
+    assert local_execution_result_policy.rejected_old_versions == (
+        "feedbax.manifest.execution.v1",
+    )
     assert population_policy.stance == "reject"
     assert population_policy.rejected_old_versions == ("feedbax.population_structure.v1",)
 
