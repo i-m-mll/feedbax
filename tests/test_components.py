@@ -1,15 +1,18 @@
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 import equinox as eqx
 import pytest
 
 import feedbax.components.equinox as graph_eqx
 import feedbax.runtime.components as runtime_components
+import jax_cookbook.tree as jtree
 from jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.iteration import run_component
+from feedbax.runtime.state_indices import align_state_indices_like
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -48,6 +51,50 @@ def test_runtime_neural_components_default_trainable_leaves_to_float32():
     assert mlp.linears[0].weight.dtype == jnp.float32
     assert gru.cell.weight_ih.dtype == jnp.float32
     assert gru._initial_state.hidden.dtype == jnp.float32
+
+
+def test_runtime_named_activations_use_shared_static_callables():
+    first = runtime_components.Linear(2, 3, key=jax.random.PRNGKey(0))
+    second = runtime_components.Linear(2, 3, key=jax.random.PRNGKey(1))
+    first_mlp = runtime_components.MLP(2, 3, hidden_sizes=(4,), key=jax.random.PRNGKey(2))
+    second_mlp = runtime_components.MLP(2, 3, hidden_sizes=(4,), key=jax.random.PRNGKey(3))
+
+    assert first.activation_name == "identity"
+    assert first.activation is second.activation
+    assert first_mlp.activation is second_mlp.activation
+    assert first_mlp.final_activation is second_mlp.final_activation
+    assert jtu.tree_structure(first) == jtu.tree_structure(second)
+
+
+def test_runtime_linear_named_activation_ensemble_aligns_state_indices():
+    ensemble = jtree.get_ensemble(
+        lambda *, key: runtime_components.Linear(2, 3, key=key),
+        n=2,
+        key=jax.random.PRNGKey(0),
+    )
+
+    aligned = align_state_indices_like(ensemble, ensemble)
+
+    assert aligned.layer.weight.shape == (2, 3, 2)
+
+
+def test_runtime_linear_accepts_custom_activation_callable():
+    def square(x):
+        return x * x
+
+    linear = runtime_components.Linear(2, 2, activation=square, key=jax.random.PRNGKey(0))
+    state = init_state_from_component(linear)
+    raw = linear.layer(jnp.array([2.0, 3.0], dtype=jnp.float32))
+
+    outputs, _ = linear(
+        {"input": jnp.array([2.0, 3.0], dtype=jnp.float32)},
+        state,
+        key=jax.random.PRNGKey(1),
+    )
+
+    assert linear.activation is square
+    assert linear.activation_name == "square"
+    assert jnp.allclose(outputs["output"], raw * raw)
 
 
 def test_simplestagednetwork_defaults_trainable_leaves_to_float32_with_float64_inputs():
