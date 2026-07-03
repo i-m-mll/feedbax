@@ -11,7 +11,11 @@ import dill as pickle
 
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
-from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.evaluation import (
+    EvaluationStatesArtifactNotFound,
+    execute_evaluation_run_spec,
+    load_evaluation_states,
+)
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.analysis.validation import AnalysisRecipeProtocol, validate_analysis_recipe
 from feedbax.contracts.manifest import (
@@ -146,9 +150,20 @@ def resolve_analysis_inputs(
         if ref.kind == "EvaluationRunManifest":
             states_path = evaluation_states_cache_path(ref.id, root=root_path)
             if not states_path.exists():
-                _rederive_evaluation_states(ref.id, manifest, root=root_path)
-            with states_path.open("rb") as stream:
-                states = pickle.load(stream)
+                if isinstance(manifest, EvaluationRunManifest):
+                    try:
+                        states = load_evaluation_states(manifest, root=root_path)
+                    except EvaluationStatesArtifactNotFound:
+                        _rederive_evaluation_states(ref.id, manifest, root=root_path)
+                    else:
+                        states_path.parent.mkdir(parents=True, exist_ok=True)
+                        with states_path.open("wb") as stream:
+                            pickle.dump(states, stream)
+                else:
+                    _rederive_evaluation_states(ref.id, manifest, root=root_path)
+            if states is None:
+                with states_path.open("rb") as stream:
+                    states = pickle.load(stream)
         resolved.append(
             ResolvedAnalysisInput(
                 ref=ref,

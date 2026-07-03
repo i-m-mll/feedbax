@@ -41,6 +41,10 @@ REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
 REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
 ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
 ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v1"
+EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
+EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = (
+    "feedbax.manifest.evaluation_states_container.v1"
+)
 
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
@@ -995,6 +999,38 @@ def store_json_artifact(
         artifact_id=f"artifact://sha256/{digest}",
         sha256=digest,
         media_type="application/json",
+        size_bytes=stat.st_size,
+        uri=str(dest),
+        metadata=artifact_metadata,
+    )
+
+
+def store_bytes_artifact(
+    data: bytes,
+    *,
+    root: Path | str | None = None,
+    role: str,
+    logical_name: str,
+    media_type: str = "application/octet-stream",
+    suffix: str = "",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Write opaque bytes into the local content-addressed artifact store."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    digest = sha256_bytes(data)
+    dest = _artifact_path(root_path, digest, suffix)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        dest.write_bytes(data)
+    stat = dest.stat()
+    artifact_metadata = dict(metadata or {})
+    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name,
+        artifact_id=f"artifact://sha256/{digest}",
+        sha256=digest,
+        media_type=media_type,
         size_bytes=stat.st_size,
         uri=str(dest),
         metadata=artifact_metadata,
