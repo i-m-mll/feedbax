@@ -1147,7 +1147,21 @@ def _normalize_spec_payload_field(value: Any, *, path: str) -> Any:
             for index, item in enumerate(value)
         ]
     if isinstance(value, SpecPayload) or _is_spec_payload_data(value):
-        return migrate_spec_payload(value, path=path)
+        from feedbax.contracts.migrations import UnknownSpecFamily
+
+        try:
+            return migrate_spec_payload(value, path=path)
+        except UnknownSpecFamily:
+            payload = value if isinstance(value, SpecPayload) else SpecPayload.model_validate(value)
+            if payload.schema_id is None or payload.schema_version is None:
+                raise
+            if payload.schema_id.startswith("feedbax."):
+                raise
+            if payload.sha256 is None:
+                payload = payload.model_copy(
+                    update={"sha256": sha256_bytes(canonical_json_bytes(payload.inline))}
+                )
+            return payload
     return value
 
 

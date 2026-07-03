@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
@@ -287,6 +287,10 @@ class TrainingMethodRegistration:
     payload_schema_version: str
     payload_model: type[BaseModel]
     contract_factory: Callable[[], MethodContractSpec]
+    update_kernels_factory: Callable[[BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]]
+    guard_predicates_factory: Callable[[BaseModel], Mapping[str, Callable[..., Mapping[str, Any]]]] = (
+        lambda _payload: {}
+    )
     rejected_payload_versions: tuple[str, ...] = ()
     owner: str = "feedbax"
     package: str | None = None
@@ -441,6 +445,40 @@ def standard_supervised_effective_phase_spec() -> EffectivePhaseSpec:
     )
 
 
+def standard_supervised_update_kernels(
+    _payload: BaseModel | None = None,
+) -> Mapping[str, Callable[..., Mapping[str, Any]]]:
+    """Return generic kernels for the standard supervised worker declaration.
+
+    The kernel is intentionally method-neutral: it updates declared slots and lets
+    real trainers provide richer kernels by overriding the registry entry.
+    """
+
+    def gradient_update(
+        slots: Mapping[str, Any],
+        coordinate: ProgressCoordinate,
+        context: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del context
+        updates: dict[str, Any] = {
+            "model": slots["model"],
+            "optimizer": slots["optimizer"],
+            "prng": slots["prng"],
+            "train_loss": float(coordinate.global_step + 1),
+        }
+        model = slots["model"]
+        optimizer = slots["optimizer"]
+        if isinstance(optimizer, Mapping) and "count" in optimizer:
+            updates["optimizer"] = {**dict(optimizer), "count": optimizer["count"] + 1}
+            try:
+                updates["model"] = model + optimizer["count"]
+            except TypeError:
+                updates["model"] = model
+        return updates
+
+    return {"feedbax.training.standard_supervised.gradient_update": gradient_update}
+
+
 def default_training_method_registry() -> TrainingMethodRegistry:
     """Return the default method-ref keyed payload registry."""
     registry = TrainingMethodRegistry()
@@ -451,6 +489,7 @@ def default_training_method_registry() -> TrainingMethodRegistry:
             payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
             payload_model=StandardSupervisedMethodPayload,
             contract_factory=standard_supervised_method_contract,
+            update_kernels_factory=standard_supervised_update_kernels,
             rejected_payload_versions=(
                 "feedbax.spec.training_method.standard_supervised_payload.v0",
             ),

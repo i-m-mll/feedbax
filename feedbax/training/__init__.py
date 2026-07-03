@@ -31,6 +31,13 @@ try:
         structural_abi_fingerprint,
         write_checkpoint_transaction,
     )
+    from .executor import (
+        ManifestEmissionConflictError,
+        TrainingRunExecutionResult,
+        TrainingRunExecutorError,
+        execute_training_run_spec,
+        load_training_run_spec,
+    )
 except ImportError:
     pass
 
@@ -45,14 +52,19 @@ __all__ = [
     "SimpleTrainer",
     "TaskTrainer",
     "TaskTrainerHistory",
+    "ManifestEmissionConflictError",
+    "TrainingRunExecutionResult",
+    "TrainingRunExecutorError",
     "WhereFunc",
     "concat_save_iterations",
     "checkpoint_slot_names",
     "checkpoint_slot_specs",
+    "execute_training_run_spec",
     "grad_wrap_simple_loss_func",
     "init_task_trainer_history",
     "load_hps",
     "load_latest_checkpoint",
+    "load_training_run_spec",
     "make_delayed_cosine_schedule",
     "partition_by_training_status",
     "run_contract_binding",
