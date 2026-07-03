@@ -25,6 +25,9 @@ from feedbax.runtime.components import (
     Sine,
     Sum,
     Switch,
+    NAMED_ACTIVATIONS,
+    identity_activation,
+    resolve_activation,
 )
 from feedbax.runtime.graph import (
     Component,
@@ -81,6 +84,7 @@ __all__ = [
     "Linear",
     "Multiply",
     "Mux",
+    "NAMED_ACTIVATIONS",
     "Ramp",
     "RateLimiter",
     "Ravel",
@@ -106,7 +110,9 @@ __all__ = [
     "clip_state",
     "expose_task_bindings",
     "expose_task_inputs",
+    "identity_activation",
     "init_state_from_component",
+    "resolve_activation",
     "select",
     "task_data_temporality",
     "toggle_channel_noise",

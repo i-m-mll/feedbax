@@ -40,11 +40,21 @@ def run_local_execution(
         plan.model_dump_json(indent=2, exclude_none=True) + "\n",
         encoding="utf-8",
     )
+    if spec.training_run_spec is not None:
+        inline_payload = spec.training_run_spec.inline_payload()
+        if inline_payload is not None:
+            source_record = plan.reproducibility["training_run_spec"]
+            source_path = Path(source_record["path"])
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(
+                json.dumps(inline_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
     cwd = Path(spec.local.cwd).expanduser() if spec.local.cwd else None
     env = {**os.environ, **spec.env}
     proc = subprocess.run(
-        [spec.local.shell, "-lc", spec.command],
+        [spec.local.shell, "-lc", plan.command],
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
@@ -111,7 +121,7 @@ def run_local_execution(
     provenance = Provenance(
         entrypoint=EntrypointRef(
             kind="feedbax-execution",
-            command=spec.command,
+            command=plan.command,
             metadata={"backend": "local", "return_code": proc.returncode},
         ),
         issues=list(spec.issues),

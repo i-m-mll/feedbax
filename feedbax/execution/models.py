@@ -9,13 +9,18 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from feedbax.contracts.manifest import ManifestStatus
+from feedbax.contracts.manifest import ManifestStatus, canonical_json_bytes, sha256_bytes
+from feedbax.contracts.training import (
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    TRAINING_RUN_SPEC_SCHEMA_VERSION,
+    TrainingRunSpec,
+)
 
 
-EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v1"
-EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v1"
+EXECUTION_SPEC_SCHEMA_VERSION = "feedbax.spec.execution.v2"
+EXECUTION_PLAN_SCHEMA_VERSION = "feedbax.manifest.execution.v2"
 
 ExecutionBackend = Literal["local", "ssh", "runpod", "modal"]
 ExecutionKind = Literal["training", "evaluation", "analysis", "report", "custom"]
@@ -66,6 +71,88 @@ class ArtifactPolicy(ExecutionModel):
     log_dir: str = "logs"
     sync_back: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingRunSpecSource(ExecutionModel):
+    """Inline or referenced source of truth for a training execution."""
+
+    kind: Literal["inline", "ref"] = "inline"
+    inline: Optional[TrainingRunSpec] = None
+    ref: Optional[str] = None
+    path: str = "training-run-spec.json"
+    identity: Optional[str] = None
+    schema_id: str = TRAINING_RUN_SPEC_SCHEMA_ID
+    schema_version: str = TRAINING_RUN_SPEC_SCHEMA_VERSION
+    content_sha256: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "TrainingRunSpecSource":
+        if self.schema_id != TRAINING_RUN_SPEC_SCHEMA_ID:
+            raise ValueError(
+                "training_run_spec.schema_id must be "
+                f"{TRAINING_RUN_SPEC_SCHEMA_ID!r}; found {self.schema_id!r}"
+            )
+        if self.schema_version != TRAINING_RUN_SPEC_SCHEMA_VERSION:
+            raise ValueError(
+                "training_run_spec.schema_version must be "
+                f"{TRAINING_RUN_SPEC_SCHEMA_VERSION!r}; found {self.schema_version!r}"
+            )
+        if self.kind == "inline":
+            if self.inline is None:
+                raise ValueError("training_run_spec.inline is required when kind='inline'")
+            expected_hash = self.resolved_content_sha256()
+            if self.content_sha256 is not None and self.content_sha256 != expected_hash:
+                raise ValueError(
+                    "training_run_spec.content_sha256 does not match inline TrainingRunSpec"
+                )
+            self.content_sha256 = expected_hash
+            return self
+        if self.ref is None:
+            raise ValueError("training_run_spec.ref is required when kind='ref'")
+        if self.inline is not None:
+            raise ValueError("training_run_spec.inline must be omitted when kind='ref'")
+        if self.content_sha256 is None:
+            raise ValueError("training_run_spec.content_sha256 is required when kind='ref'")
+        return self
+
+    def inline_payload(self) -> dict[str, Any] | None:
+        """Return the inline TrainingRunSpec payload, if this source embeds one."""
+        if self.inline is None:
+            return None
+        return self.inline.model_dump(mode="json", exclude_none=True)
+
+    def resolved_content_sha256(self) -> str:
+        """Return the canonical content hash for the referenced TrainingRunSpec."""
+        if self.inline is not None:
+            return sha256_bytes(canonical_json_bytes(self.inline_payload()))
+        if self.content_sha256 is None:
+            raise ValueError("training_run_spec.content_sha256 is required for ref sources")
+        return self.content_sha256
+
+    def resolved_identity(self) -> str:
+        """Return a stable human-readable identity for planning records."""
+        if self.identity:
+            return self.identity
+        if self.ref:
+            return self.ref
+        return f"sha256:{self.resolved_content_sha256()}"
+
+    def plan_record(self, *, path: str) -> dict[str, Any]:
+        """Return deterministic provenance fields for an execution plan."""
+        record: dict[str, Any] = {
+            "source_kind": self.kind,
+            "identity": self.resolved_identity(),
+            "content_sha256": self.resolved_content_sha256(),
+            "schema_id": self.schema_id,
+            "schema_version": self.schema_version,
+            "path": path,
+        }
+        if self.ref is not None:
+            record["ref"] = self.ref
+        if self.metadata:
+            record["metadata"] = self.metadata
+        return record
 
 
 class LocalBackendConfig(ExecutionModel):
@@ -192,7 +279,8 @@ class ExecutionSpec(ExecutionModel):
     kind: ExecutionKind = "training"
     job_id: Optional[str] = None
     backend: ExecutionBackend = "local"
-    command: str
+    command: Optional[str] = None
+    training_run_spec: Optional[TrainingRunSpecSource] = None
     cells: list[ExecutionCell] = Field(default_factory=list)
     repos: list[RepoSource] = Field(default_factory=list)
     primary_repo: Optional[str] = None
@@ -206,6 +294,18 @@ class ExecutionSpec(ExecutionModel):
     modal: ModalBackendConfig = Field(default_factory=ModalBackendConfig)
     issues: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_execution_source(self) -> "ExecutionSpec":
+        if self.training_run_spec is not None and self.kind != "training":
+            raise ValueError("training_run_spec is only valid for kind='training'")
+        if self.kind == "training":
+            if self.training_run_spec is None and not self.command:
+                raise ValueError("training executions require command or training_run_spec")
+            return self
+        if not self.command:
+            raise ValueError(f"{self.kind!r} executions require command")
+        return self
 
     def resolved_job_id(self) -> str:
         return self.job_id or f"{self.kind}-{uuid.uuid4().hex[:12]}"
