@@ -31,6 +31,7 @@ from feedbax.runtime.streaming import (
 )
 
 _NESTED_CYCLE_NODE = "__nested__"
+_INITIALIZER_KEY_SALT = 0xFFFF_FFFF
 
 
 def _nested_cycle_key(node_name: str) -> tuple[str, str]:
@@ -343,6 +344,8 @@ class Graph(Component):
             if node_port not in self.nodes[node_name].output_ports:
                 raise ValueError(f"Output binding port '{node_name}.{node_port}' does not exist")
 
+        self._validate_node_output_recurrent_initializers()
+
     @cached_property
     def _cycle_analysis(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
         return self._analyze_cycles()
@@ -384,6 +387,132 @@ class Graph(Component):
                 if target_node == node_name and target_port in nested_sources:
                     sources.add(ext_port)
         return sources
+
+    def _node_output_initializer_source(self, wire: Wire) -> tuple[str, str] | None:
+        initializer = wire.recurrent_initializer
+        if initializer is None or initializer.get("kind") != "node-output":
+            return None
+        source_node = initializer.get("source_node")
+        source_port = initializer.get("source_port")
+        if not isinstance(source_node, str) or not source_node:
+            raise ValueError(
+                f"Wire {wire.source_node}.{wire.source_port} -> "
+                f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                "kind 'node-output' requires non-empty string 'source_node'"
+            )
+        if not isinstance(source_port, str) or not source_port:
+            raise ValueError(
+                f"Wire {wire.source_node}.{wire.source_port} -> "
+                f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                "kind 'node-output' requires non-empty string 'source_port'"
+            )
+        if source_node not in self.nodes:
+            raise ValueError(
+                f"Wire {wire.source_node}.{wire.source_port} -> "
+                f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                f"kind 'node-output' references missing source node {source_node!r}"
+            )
+        if source_port not in self.nodes[source_node].output_ports:
+            raise ValueError(
+                f"Wire {wire.source_node}.{wire.source_port} -> "
+                f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                f"kind 'node-output' references missing source port "
+                f"{source_node}.{source_port}"
+            )
+        return source_node, source_port
+
+    def _incoming_wires_by_target_node(self) -> dict[str, list[Wire]]:
+        incoming: dict[str, list[Wire]] = {name: [] for name in self.nodes}
+        for wire in self.wires:
+            incoming.setdefault(wire.target_node, []).append(wire)
+        return incoming
+
+    def _node_output_initializer_upstream_nodes(self, wire: Wire) -> set[str]:
+        source = self._node_output_initializer_source(wire)
+        if source is None:
+            return set()
+
+        source_node, _ = source
+        incoming = self._incoming_wires_by_target_node()
+        upstream: set[str] = set()
+        visiting: set[str] = set()
+
+        def visit(node_name: str) -> None:
+            if node_name in visiting:
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'node-output' source sub-DAG contains a cycle at "
+                    f"{node_name!r}"
+                )
+            if node_name in upstream:
+                return
+            if node_name == wire.target_node:
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'node-output' source "
+                    f"{source_node}.{source[1]} depends on recurrent target "
+                    f"{wire.target_node}.{wire.target_port}"
+                )
+            visiting.add(node_name)
+            for incoming_wire in incoming.get(node_name, []):
+                if incoming_wire.temporality == "recurrent":
+                    raise ValueError(
+                        f"Wire {wire.source_node}.{wire.source_port} -> "
+                        f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                        "kind 'node-output' source "
+                        f"{source_node}.{source[1]} depends on recurrent edge "
+                        f"{incoming_wire.source_node}.{incoming_wire.source_port} -> "
+                        f"{incoming_wire.target_node}.{incoming_wire.target_port}"
+                    )
+                visit(incoming_wire.source_node)
+            visiting.remove(node_name)
+            upstream.add(node_name)
+
+        visit(source_node)
+        return upstream
+
+    @cached_property
+    def _node_output_initializer_upstream_node_set(self) -> set[str]:
+        upstream: set[str] = set()
+        for wire in self._cycle_wires:
+            upstream.update(self._node_output_initializer_upstream_nodes(wire))
+        return upstream
+
+    def _node_output_initializer_input_sources(self) -> set[str]:
+        sources: set[str] = set()
+        upstream_nodes = self._node_output_initializer_upstream_node_set
+        for ext_port, (node_name, _) in self.input_bindings.items():
+            if node_name in upstream_nodes:
+                sources.add(ext_port)
+        for node_name, node in self.nodes.items():
+            if not isinstance(node, Graph):
+                continue
+            nested_sources = node._trial_scope_initializer_input_sources()
+            if not nested_sources:
+                continue
+            for ext_port, (target_node, target_port) in self.input_bindings.items():
+                if target_node == node_name and target_port in nested_sources:
+                    sources.add(ext_port)
+        return sources
+
+    def _trial_scope_initializer_input_sources(self) -> set[str]:
+        return (
+            self._graph_input_initializer_sources()
+            | self._node_output_initializer_input_sources()
+        )
+
+    def _validate_node_output_recurrent_initializers(self) -> None:
+        for wire in self.wires:
+            initializer = wire.recurrent_initializer
+            if (
+                wire.temporality != "recurrent"
+                or initializer is None
+                or initializer.get("kind") != "node-output"
+            ):
+                continue
+            self._node_output_initializer_upstream_nodes(wire)
 
     def get_node(self, path: str) -> Component:
         """Return a named graph node by dotted graph-node path.
@@ -646,12 +775,17 @@ class Graph(Component):
             return outputs, new_state, {}
 
         if cycle_port_values is None:
-            cycle_port_values = self._get_initial_cycle_values(state, inputs=inputs)
+            cycle_port_values = self._get_initial_cycle_values(
+                state,
+                inputs=inputs,
+                key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
+            )
 
         port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
 
+        trial_scope_sources = self._trial_scope_initializer_input_sources()
         for ext_port, (node_name, node_port) in self.input_bindings.items():
-            if ext_port in inputs:
+            if ext_port in inputs and ext_port not in trial_scope_sources:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
         port_values, new_state = self._execute_step(
@@ -704,13 +838,18 @@ class Graph(Component):
         """
         if self._needs_iteration:
             if cycle_port_values is None:
-                cycle_port_values = self._get_initial_cycle_values(state, inputs=inputs)
+                cycle_port_values = self._get_initial_cycle_values(
+                    state,
+                    inputs=inputs,
+                    key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
+                )
             port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
         else:
             port_values = {}
 
+        trial_scope_sources = self._trial_scope_initializer_input_sources()
         for ext_port, (node_name, node_port) in self.input_bindings.items():
-            if ext_port in inputs:
+            if ext_port in inputs and ext_port not in trial_scope_sources:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
         port_values, new_state = self._execute_step(
@@ -768,6 +907,11 @@ class Graph(Component):
                 for port_name in node.input_ports
                 if (node_name, port_name) in port_values
             }
+            if (
+                node_name in self._node_output_initializer_upstream_node_set
+                and len(node_inputs) < len(node.input_ports)
+            ):
+                continue
             if rollout_step_hook is not None:
                 context = RolloutStepContext(
                     graph=self,
@@ -948,6 +1092,7 @@ class Graph(Component):
         state: State,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
         inputs: Optional[dict[str, PyTree]] = None,
+        key: PRNGKeyArray | None = None,
     ) -> dict[tuple[str, str], PyTree]:
         """Return the cycle-wire port-value dict to seed the first ``step`` call.
 
@@ -961,8 +1106,10 @@ class Graph(Component):
             cycle_init: Optional explicit overrides keyed by
                 ``(target_node, target_port)``. Takes precedence over
                 state-derived defaults.
-            inputs: Optional external graph inputs used by ``graph-input``
-                recurrent initializers. Keys match this graph's ``input_ports``.
+            inputs: Optional external graph inputs used by trial-scope
+                recurrent initializers. Keys match this graph's
+                ``input_ports``.
+            key: Optional PRNG key for ``node-output`` pre-step evaluation.
 
         Returns:
             Dict keyed by ``(target_node, target_port)`` suitable as the
@@ -972,13 +1119,14 @@ class Graph(Component):
             ValueError: If a cycle-wire target has neither a ``cycle_init``
                 override nor a state-derivable default.
         """
-        return self._get_initial_cycle_values(state, cycle_init, inputs=inputs)
+        return self._get_initial_cycle_values(state, cycle_init, inputs=inputs, key=key)
 
     def _get_initial_cycle_values(
         self,
         state: State,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
         inputs: Optional[dict[str, PyTree]] = None,
+        key: PRNGKeyArray | None = None,
     ) -> dict[tuple[str, str], PyTree]:
         init_values: dict[tuple[str, str], PyTree] = {}
         missing_reasons: dict[tuple[str, str], str] = {}
@@ -1008,6 +1156,8 @@ class Graph(Component):
                 metadata_value = self._initial_value_from_recurrent_initializer(
                     wire,
                     inputs=initial_inputs,
+                    state=state,
+                    key=key,
                 )
                 if metadata_value is not None:
                     init_values[target_key] = metadata_value
@@ -1029,6 +1179,8 @@ class Graph(Component):
             metadata_value = self._initial_value_from_recurrent_initializer(
                 wire,
                 inputs=initial_inputs,
+                state=state,
+                key=key,
             )
             if metadata_value is not None:
                 init_values[target_key] = metadata_value
@@ -1044,14 +1196,18 @@ class Graph(Component):
         for node_name, node in self.nodes.items():
             if not isinstance(node, Graph) or not node._needs_iteration:
                 continue
-            key = _nested_cycle_key(node_name)
-            if key not in init_values:
+            nested_key = _nested_cycle_key(node_name)
+            if nested_key not in init_values:
                 nested_inputs = {
                     port_name: bound_port_values[(node_name, port_name)]
                     for port_name in node.input_ports
                     if (node_name, port_name) in bound_port_values
                 }
-                init_values[key] = node._get_initial_cycle_values(state, inputs=nested_inputs)
+                init_values[nested_key] = node._get_initial_cycle_values(
+                    state,
+                    inputs=nested_inputs,
+                    key=key,
+                )
 
         missing = [
             (wire.target_node, wire.target_port)
@@ -1073,6 +1229,8 @@ class Graph(Component):
         wire: Wire,
         *,
         inputs: Optional[dict[str, PyTree]] = None,
+        state: State | None = None,
+        key: PRNGKeyArray | None = None,
     ) -> PyTree | None:
         initializer = wire.recurrent_initializer
         if initializer is None:
@@ -1117,11 +1275,91 @@ class Graph(Component):
                     f"kind 'graph-input' requires input {source!r}"
                 )
             return inputs[source]
+        if kind == "node-output":
+            if state is None:
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'node-output' requires graph state"
+                )
+            return self._evaluate_node_output_initializer(
+                wire,
+                inputs=inputs or {},
+                state=state,
+                key=key if key is not None else jax.random.PRNGKey(0),
+            )
         raise ValueError(
             f"Wire {wire.source_node}.{wire.source_port} -> "
             f"{wire.target_node}.{wire.target_port} has unsupported "
             f"recurrent_initializer kind {kind!r}"
         )
+
+    def _evaluate_node_output_initializer(
+        self,
+        wire: Wire,
+        *,
+        inputs: dict[str, PyTree],
+        state: State,
+        key: PRNGKeyArray,
+    ) -> PyTree:
+        source = self._node_output_initializer_source(wire)
+        if source is None:
+            raise ValueError("node-output initializer source is absent")
+        source_node, source_port = source
+        upstream_nodes = self._node_output_initializer_upstream_nodes(wire)
+        port_values: dict[tuple[str, str], PyTree] = {}
+
+        for ext_port, (node_name, node_port) in self.input_bindings.items():
+            if node_name in upstream_nodes and ext_port in inputs:
+                port_values[(node_name, node_port)] = inputs[ext_port]
+
+        eval_state = state
+        keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
+        for node_name, node_key in zip(self._execution_order, keys):
+            if node_name not in upstream_nodes:
+                continue
+            node = self.nodes[node_name]
+            missing_inputs = [
+                port_name
+                for port_name in node.input_ports
+                if (node_name, port_name) not in port_values
+            ]
+            if missing_inputs:
+                missing_text = ", ".join(f"{node_name}.{port}" for port in missing_inputs)
+                raise ValueError(
+                    f"Wire {wire.source_node}.{wire.source_port} -> "
+                    f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                    "kind 'node-output' could not evaluate source "
+                    f"{source_node}.{source_port}; missing input(s): {missing_text}"
+                )
+            node_inputs = {
+                port_name: port_values[(node_name, port_name)] for port_name in node.input_ports
+            }
+            if isinstance(node, Graph):
+                node_outputs, eval_state = node._call_single_step(
+                    node_inputs,
+                    eval_state,
+                    key=node_key,
+                )
+            else:
+                node_outputs, eval_state = node(node_inputs, eval_state, key=node_key)
+
+            for port_name, value in node_outputs.items():
+                port_values[(node_name, port_name)] = value
+                for outgoing_wire in self._outgoing_wires.get((node_name, port_name), []):
+                    if outgoing_wire.temporality != "instant":
+                        continue
+                    port_values[(outgoing_wire.target_node, outgoing_wire.target_port)] = value
+
+        source_key = (source_node, source_port)
+        if source_key not in port_values:
+            raise ValueError(
+                f"Wire {wire.source_node}.{wire.source_port} -> "
+                f"{wire.target_node}.{wire.target_port} recurrent_initializer "
+                "kind 'node-output' did not produce source "
+                f"{source_node}.{source_port}"
+            )
+        return port_values[source_key]
 
     def _call_with_iteration(
         self,
@@ -1137,10 +1375,9 @@ class Graph(Component):
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if n_steps is None:
+            trial_scope_sources = self._trial_scope_initializer_input_sources()
             timed_inputs = {
-                name: value
-                for name, value in inputs.items()
-                if name not in self._graph_input_initializer_sources()
+                name: value for name, value in inputs.items() if name not in trial_scope_sources
             }
             if not timed_inputs:
                 raise ValueError("n_steps is required when inputs are empty")
@@ -1150,11 +1387,16 @@ class Graph(Component):
 
         keys = jax.random.split(key, n_steps)
 
-        init_cycle_values = self._get_initial_cycle_values(state, cycle_init, inputs=inputs)
+        init_cycle_values = self._get_initial_cycle_values(
+            state,
+            cycle_init,
+            inputs=inputs,
+            key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
+        )
         scan_inputs = {
             name: value
             for name, value in inputs.items()
-            if name not in self._graph_input_initializer_sources()
+            if name not in self._trial_scope_initializer_input_sources()
         }
 
         # Broadcast scalar input leaves to (n_steps, ...) so they can be
