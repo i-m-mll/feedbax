@@ -32,6 +32,7 @@ from .validation import (
     AnalysisRecipeProtocol,
     EvaluationRecipeProtocol,
     RecipeValidationError,
+    validate_namespaced_type_key,
     validate_analysis_recipe,
     validate_evaluation_recipe,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "materialization_metadata",
     "register_analysis_recipe",
     "unregister_analysis_recipe",
+    "validate_namespaced_type_key",
     "validate_analysis_recipe",
     "validate_evaluation_recipe",
 ]

@@ -47,8 +47,8 @@ from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
-TOY_ANALYSIS_TYPE = "feedbax_test_toy_analysis"
-TOY_EVALUATION_TYPE = "feedbax_test_bundle_eval"
+TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
+TOY_EVALUATION_TYPE = "feedbax.test.bundle_eval"
 
 
 def _register_toy_analysis_recipe() -> None:

@@ -13,7 +13,11 @@ from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
 from feedbax.analysis.execution import run_analyses_with_context
-from feedbax.analysis.validation import AnalysisRecipeProtocol, validate_analysis_recipe
+from feedbax.analysis.validation import (
+    AnalysisRecipeProtocol,
+    validate_analysis_recipe,
+    validate_namespaced_type_key,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
@@ -74,8 +78,10 @@ def register_analysis_recipe(
     replace: bool = False,
 ) -> None:
     """Register an executable analysis recipe by stable type key."""
-    if not analysis_type.strip():
-        raise ValueError("analysis_type must not be empty")
+    analysis_type = validate_namespaced_type_key(
+        analysis_type,
+        field="analysis_type",
+    )
     if analysis_type in _ANALYSIS_RECIPES and not replace:
         raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
     _ANALYSIS_RECIPES[analysis_type] = validate_analysis_recipe(analysis_type, recipe)
