@@ -1427,6 +1427,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "ManifestPacket",
+            "feedbax.spec.manifest_packet",
+            "feedbax.spec.manifest_packet.v1",
+            owner_module="feedbax.contracts.manifest_packet",
+            emitted_by=("feedbax.contracts.manifest_packet", "feedbax.bin.packet"),
+            consumed_by=("feedbax.contracts.manifest_packet",),
+            description=(
+                "Directory packet index for identity-preserving manifest and artifact "
+                "import/export."
+            ),
+            required_tests=(
+                "tests/test_manifest_packets.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "CheckpointSelectionSpec",
             "feedbax.spec.checkpoint_selection",
             "feedbax.spec.checkpoint_selection.v1",
