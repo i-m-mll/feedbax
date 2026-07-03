@@ -28,6 +28,7 @@ from feedbax.analysis.evaluation import (
     register_evaluation_recipe,
     unregister_evaluation_recipe,
 )
+from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, REPORT_RENDER_ROLE
 from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
@@ -536,7 +537,7 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
                     name="report",
                     kind="report",
                     depends_on=["summary", "detail"],
-                    report_type="toy_report",
+                    report_type=BUNDLE_SUMMARY_REPORT_TYPE,
                     outputs=[BundleStageOutputSpec(role="report")],
                 ),
             ],
@@ -575,6 +576,13 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
         report_manifest = load_manifest(result.stages[3].manifest_refs[0].uri)
         assert report_manifest.kind == "ReportManifest"
         assert report_manifest.regeneration_specs[0].kind == "RegenerationSpec"
+        report_artifacts = {artifact.role: artifact for artifact in report_manifest.artifacts}
+        assert set(report_artifacts) == {"report", REPORT_RENDER_ROLE}
+        assert report_artifacts[REPORT_RENDER_ROLE].media_type == "text/markdown"
+        assert report_artifacts[REPORT_RENDER_ROLE].sha256 is not None
+        assert Path(report_artifacts[REPORT_RENDER_ROLE].uri or "").read_text(
+            encoding="utf-8"
+        ).startswith("# toy_staged / report")
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)

@@ -1379,6 +1379,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("ReportManifest.report_spec", "provider_manifest.schemas"),
             consumed_by=("Studio report materialization",),
             description="Declarative report request.",
+            rejected_old_versions=("feedbax.spec.report.v0",),
         ),
         _family(
             "RegenerationSpec",

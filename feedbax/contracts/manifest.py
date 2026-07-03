@@ -1311,6 +1311,12 @@ def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
     return f"feedbax-analysis-run:{digest[:32]}"
 
 
+def report_manifest_id(spec: ReportSpec) -> str:
+    """Return deterministic report identity for a report spec."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
+    return f"feedbax-report:{digest[:32]}"
+
+
 def checkpoint_selection_manifest_id(spec: CheckpointSelectionSpec) -> str:
     """Return deterministic identity for a checkpoint-selection spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))

@@ -371,6 +371,8 @@ def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:
     assert "trajectory_dataset" in manifest.capabilities["execute_evaluation_run"].artifact_roles
     assert "analysis_table" in manifest.capabilities["execute_analysis_run"].artifact_roles
     assert "report" in manifest.capabilities["materialize_report"].artifact_roles
+    assert "report_render" in manifest.capabilities["materialize_report"].artifact_roles
+    assert "report_render" in manifest.capabilities["handoff_report_artifacts"].artifact_roles
     assert (
         "artifact_id fields are optional and local URIs remain valid"
         in manifest.capabilities["handoff_report_artifacts"].custody_expectations

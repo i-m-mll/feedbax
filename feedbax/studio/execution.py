@@ -26,6 +26,7 @@ from feedbax.execution.planning import (
 )
 from feedbax.execution.local import run_local_execution
 from feedbax.analysis.evaluation import execute_evaluation_run_spec
+from feedbax.analysis.reports import STUDIO_REPORT_TYPE, execute_report_spec
 from feedbax.analysis.specs import execute_analysis_run_spec
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
@@ -34,13 +35,9 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ParentRef,
     Provenance,
-    ReportManifest,
     ReportSpec,
     default_manifest_root,
-    spec_payload,
-    store_json_artifact,
     utc_now,
-    write_manifest,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
@@ -973,7 +970,7 @@ def _materialize_report_stage(
     scenario = workspace.scenarios.get(report_stage.scenario_id or "")
     report_spec_payload = scenario.report_spec if scenario is not None else None
     spec = ReportSpec(
-        report_type=str((report_spec_payload or {}).get("report_type", "studio_report_stub")),
+        report_type=str((report_spec_payload or {}).get("report_type", STUDIO_REPORT_TYPE)),
         inputs=input_refs,
         params={
             "stage_id": report_stage.id,
@@ -981,32 +978,17 @@ def _materialize_report_stage(
             "selection_spec": report_stage.selection_spec,
             "input_collection_id": analysis_collection.id,
             "report_spec": report_spec_payload or {},
+            "studio": {
+                "job_id": job_id,
+                "stage_id": report_stage.id,
+                "title": workspace.label,
+            },
         },
         narrative="MVP report stub assembled from selected Studio analysis products.",
     )
-    report_body = {
-        "kind": "StudioReportProduct",
-        "job_id": job_id,
-        "stage_id": report_stage.id,
-        "input_analysis_products": [ref.id for ref in input_refs],
-        "title": workspace.label,
-        "status": "completed",
-    }
-    artifact = store_json_artifact(
-        report_body,
+    manifest, path = execute_report_spec(
+        spec,
         root=root_path,
-        role="report",
-        logical_name=f"{job_id}-report.json",
-        metadata={"stage_id": report_stage.id, "job_id": job_id},
-    )
-    manifest = ReportManifest(
-        id=f"feedbax-report:{job_id}",
-        status="completed",
-        report_spec=spec_payload(
-            "ReportSpec",
-            spec.model_dump(mode="json", exclude_none=True),
-        ),
-        inputs=input_refs,
         provenance=_stage_provenance(
             stage_kind="report",
             issues=issues,
@@ -1014,12 +996,13 @@ def _materialize_report_stage(
             request_metadata=request_metadata,
             job_id=job_id,
         ),
-        artifacts=[artifact],
         metadata={"studio": _stage_manifest_metadata(workspace, report_stage, job_id)},
     )
-    path = write_manifest(manifest, root=root_path)
     manifest_ref = _studio_manifest_ref(manifest.kind, manifest.id, "report", path, job_id)
-    artifact_refs = [_studio_artifact_ref(artifact, kind="ReportArtifact")]
+    artifact_refs = [
+        _studio_artifact_ref(artifact, kind="ReportArtifact")
+        for artifact in manifest.artifacts
+    ]
     _complete_stage_with_manifest(
         workspace,
         report_stage,
