@@ -392,7 +392,7 @@ def output_prototypes_for_node(
         return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
     if node_type == "MLP":
         return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
-    if node_type == "GRU":
+    if node_type in {"GRU", "VanillaRNN"}:
         hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
         return {"output": hidden, "hidden": hidden}
     if node_type == "LSTM":

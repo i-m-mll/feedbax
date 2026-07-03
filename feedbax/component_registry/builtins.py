@@ -725,6 +725,33 @@ def register_builtin_components(registry: _Registry) -> None:
     )
     registry.register(
         ComponentMeta(
+            name='VanillaRNN',
+            category='Neural Networks',
+            description='Vanilla recurrent cell.',
+            param_schema=[
+                ParamSchema(name='input_size', type='int', default=4, min=1, required=True),
+                ParamSchema(name='hidden_size', type='int', default=4, min=1, required=True),
+                ParamSchema(name='use_bias', type='bool', default=True, required=False),
+                ParamSchema(
+                    name='activation',
+                    type='enum',
+                    options=['tanh', 'relu', 'identity'],
+                    default='tanh',
+                    required=False,
+                ),
+            ],
+            input_ports=['input', 'hidden'],
+            output_ports=['output', 'hidden'],
+            icon='BrainCircuit',
+            port_types=PortTypeSpec(
+                inputs={'input': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
+                outputs={'output': PortType(dtype='vector'), 'hidden': PortType(dtype='vector')},
+            ),
+            output_prototype_fn=recurrent_output_prototype,
+        )
+    )
+    registry.register(
+        ComponentMeta(
             name='LSTM',
             category='Neural Networks',
             description='LSTM cell.',

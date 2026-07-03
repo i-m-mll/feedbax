@@ -872,6 +872,13 @@ def _registered_outputs(
             "shapes": {"output": ((4,),), "hidden": ((4,),)},
         },
         {
+            "type": "VanillaRNN",
+            "params": {"hidden_size": 4},
+            "input_ports": ["input", "hidden"],
+            "output_ports": ["output", "hidden"],
+            "shapes": {"output": ((4,),), "hidden": ((4,),)},
+        },
+        {
             "type": "LSTM",
             "params": {"hidden_size": 4},
             "input_ports": ["input", "hidden", "cell"],

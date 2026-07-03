@@ -10,6 +10,7 @@ import jax.numpy as jnp
 
 from feedbax.runtime.components import GRU, LSTM, Linear
 from feedbax.contracts.graph import ParameterConstraintSpec
+from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.graph import Component, Graph
 
 
@@ -48,7 +49,10 @@ def _linear_role(component: Linear, role: str) -> tuple[Any, Callable[[Any], Any
     )
 
 
-def _recurrent_role(component: GRU | LSTM, role: str) -> tuple[Any, Callable[[Any], Any]]:
+def _recurrent_role(
+    component: GRU | LSTM | VanillaRNN,
+    role: str,
+) -> tuple[Any, Callable[[Any], Any]]:
     if role in {"input_kernel", "weight_ih"}:
         return component.cell.weight_ih, lambda node: node.cell.weight_ih
     if role in {"hidden_kernel", "weight_hh"}:
@@ -65,7 +69,7 @@ def _recurrent_role(component: GRU | LSTM, role: str) -> tuple[Any, Callable[[An
 def _resolve_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
     if isinstance(component, Linear):
         return _linear_role(component, role)
-    if isinstance(component, (GRU, LSTM)):
+    if isinstance(component, (GRU, LSTM, VanillaRNN)):
         return _recurrent_role(component, role)
     raise ValueError(
         f"Parameter constraints are not supported for {type(component).__name__} components"

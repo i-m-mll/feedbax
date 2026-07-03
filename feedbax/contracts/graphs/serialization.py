@@ -55,7 +55,7 @@ from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
-from feedbax.models.networks import SimpleStagedNetwork
+from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.components.penzai import PenzaiSubgraph
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
@@ -230,7 +230,17 @@ def graph_to_spec(graph: Any) -> GraphSpec:
 
         if isinstance(component, SimpleStagedNetwork):
             hidden_type_name = type(component.hidden).__name__
-            cell_type = "LSTM" if hidden_type_name == "LSTMCell" else "GRU"
+            if hidden_type_name == "LSTMCell":
+                cell_type = "LSTM"
+            elif isinstance(component.hidden, LeakyRNNCell):
+                cell_type = "VanillaRNN"
+            elif hidden_type_name == "GRUCell":
+                cell_type = "GRU"
+            else:
+                raise ValueError(
+                    f"Cannot serialize SimpleStagedNetwork {name!r}: unsupported hidden "
+                    f"cell type {hidden_type_name!r}"
+                )
             out_nonlinearity = nonlinearity_name(component.out_nonlinearity)
             template = recurrent_controller_template_graph(
                 input_size=component.input_size,
@@ -457,6 +467,18 @@ def graph_to_spec(graph: Any) -> GraphSpec:
             nodes[name] = ComponentSpec(
                 type="GRU",
                 params={"input_size": component.input_size, "hidden_size": component.hidden_size},
+                input_ports=list(component.input_ports),
+                output_ports=list(component.output_ports),
+            )
+            continue
+        if isinstance(component, VanillaRNN):
+            nodes[name] = ComponentSpec(
+                type="VanillaRNN",
+                params={
+                    "input_size": component.input_size,
+                    "hidden_size": component.hidden_size,
+                    "activation": component.activation_name,
+                },
                 input_ports=list(component.input_ports),
                 output_ports=list(component.output_ports),
             )

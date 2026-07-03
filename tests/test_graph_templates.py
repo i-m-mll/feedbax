@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import equinox as eqx
 import pytest
 
 from feedbax.runtime.channel import Channel
@@ -16,7 +17,7 @@ from feedbax.contracts.graphs.templates import (
     simple_feedback_template_graph,
 )
 from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
-from feedbax.models.networks import SimpleStagedNetwork
+from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.graphs.prototypes import infer_node_input_prototypes
 from feedbax.contracts.graphs.serialization import graph_to_spec, spec_to_graph
@@ -144,6 +145,108 @@ def test_lstm_network_subgraph_runs_with_recurrent_zero_initializers() -> None:
 
     assert outputs["output"].shape == (3, 2)
     assert outputs["hidden"].shape == (3, 4)
+
+
+def test_vanilla_rnn_network_subgraph_runs_and_serializes_roundtrip() -> None:
+    subgraph = recurrent_controller_template_graph(
+        input_size=3,
+        hidden_size=4,
+        out_size=2,
+        cell_type="VanillaRNN",
+        out_nonlinearity="identity",
+    )
+    json_roundtrip = GraphSpec.model_validate_json(subgraph.model_dump_json())
+
+    assert json_roundtrip.nodes["cell"].type == "VanillaRNN"
+    assert json_roundtrip.nodes["cell"].input_ports == ["input", "hidden"]
+    assert json_roundtrip.nodes["cell"].output_ports == ["output", "hidden"]
+
+    graph = spec_to_graph(json_roundtrip, {})
+    state = init_state_from_component(graph)
+
+    assert isinstance(graph.nodes["cell"], VanillaRNN)
+    outputs, _ = graph(
+        {
+            "input": jnp.ones((3, 2)),
+            "feedback": jnp.zeros((3, 1)),
+        },
+        state,
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+    )
+
+    assert outputs["output"].shape == (3, 2)
+    assert outputs["hidden"].shape == (3, 4)
+
+    serialized = graph_to_spec(graph)
+    runtime_roundtrip = GraphSpec.model_validate_json(serialized.model_dump_json())
+    assert runtime_roundtrip.nodes["cell"].type == "VanillaRNN"
+    assert runtime_roundtrip.nodes["cell"].params["activation"] == "tanh"
+
+
+def test_network_hidden_type_normalization_preserves_vanilla_and_rejects_unknown() -> None:
+    subgraph = network_template_graph(
+        {
+            "input_size": 3,
+            "hidden_size": 4,
+            "out_size": 2,
+            "hidden_type": "VanillaRNNCell",
+        }
+    )
+
+    assert subgraph.nodes["cell"].type == "VanillaRNN"
+
+    with pytest.raises(
+        ValueError,
+        match="Network\\.params\\.hidden_type.*BogusCell.*VanillaRNN",
+    ):
+        network_template_graph(
+            {
+                "input_size": 3,
+                "hidden_size": 4,
+                "out_size": 2,
+                "hidden_type": "BogusCell",
+            }
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="Recurrent Controller\\.params\\.cell_type.*Linear.*VanillaRNN",
+    ):
+        recurrent_controller_template_graph(
+            input_size=3,
+            hidden_size=4,
+            out_size=2,
+            cell_type="Linear",
+        )
+
+
+@pytest.mark.parametrize(
+    ("nonlinearity", "expected_fn"),
+    [(jnp.tanh, jnp.tanh), (jax.nn.relu, jax.nn.relu)],
+)
+def test_leaky_rnn_cell_plain_recurrence_math(nonlinearity, expected_fn) -> None:
+    cell = LeakyRNNCell(
+        2,
+        2,
+        use_bias=True,
+        nonlinearity=nonlinearity,
+        dt=1.0,
+        tau=1.0,
+        key=jax.random.PRNGKey(0),
+    )
+    weight_ih = jnp.array([[0.5, -0.25], [0.75, 0.1]])
+    weight_hh = jnp.array([[0.2, 0.3], [-0.4, 0.6]])
+    bias = jnp.array([0.1, -0.2])
+    cell = eqx.tree_at(lambda c: c.weight_ih, cell, weight_ih)
+    cell = eqx.tree_at(lambda c: c.weight_hh, cell, weight_hh)
+    cell = eqx.tree_at(lambda c: c.bias, cell, bias)
+
+    inputs = jnp.array([1.0, -2.0])
+    state = jnp.array([0.25, -0.5])
+    expected = expected_fn(weight_ih @ inputs + weight_hh @ state + bias)
+
+    assert jnp.allclose(cell(inputs, state), expected)
 
 
 def _graph_input_recurrent_spec() -> GraphSpec:
