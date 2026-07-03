@@ -518,24 +518,52 @@ def infer_node_input_prototypes(
         if graph_proto is not None:
             input_prototypes[(node_name, node_port)] = graph_proto
 
-    for wire in spec.wires:
+    def initializer_prototype(wire: Any) -> Any | None:
         initializer = wire.recurrent_initializer
         if initializer is None:
-            continue
-        init_proto = None
+            return None
         if initializer.get("kind") == "zeros":
-            init_proto = array_proto_from_shape(initializer.get("shape"))
-        elif initializer.get("kind") == "constant" and "value" in initializer:
-            init_proto = proto_from_value(initializer["value"])
-        elif initializer.get("kind") == "graph-input":
+            return array_proto_from_shape(initializer.get("shape"))
+        if initializer.get("kind") == "constant" and "value" in initializer:
+            return proto_from_value(initializer["value"])
+        if initializer.get("kind") == "graph-input":
             source = initializer.get("source")
             if isinstance(source, str):
-                init_proto = external_input_prototypes.get(("__graph__", source))
+                return external_input_prototypes.get(("__graph__", source))
+            return None
+        if initializer.get("kind") == "node-output":
+            source_node = initializer.get("source_node")
+            source_port = initializer.get("source_port")
+            if not isinstance(source_node, str) or not isinstance(source_port, str):
+                return None
+            source_spec = spec.nodes.get(source_node)
+            if source_spec is None:
+                return None
+            outputs = output_prototypes_for_node(
+                source_node,
+                source_spec,
+                input_prototypes,
+                subgraphs,
+                component_registry=component_registry,
+                strict=False,
+            )
+            return outputs.get(source_port)
+        return None
+
+    for wire in spec.wires:
+        init_proto = initializer_prototype(wire)
         if init_proto is not None:
             input_prototypes[(wire.target_node, wire.target_port)] = init_proto
 
     for _ in range(max(1, len(spec.nodes) + len(spec.wires) + 1)):
         changed = False
+        for wire in spec.wires:
+            init_proto = initializer_prototype(wire)
+            key = (wire.target_node, wire.target_port)
+            if init_proto is None or key in input_prototypes:
+                continue
+            input_prototypes[key] = init_proto
+            changed = True
         for wire in spec.wires:
             source_spec = spec.nodes.get(wire.source_node)
             if source_spec is None:
