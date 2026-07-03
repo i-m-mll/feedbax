@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from feedbax.analysis.bundles import (
@@ -47,8 +48,8 @@ from feedbax.plugins.registry import ExperimentRegistry
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
-TOY_ANALYSIS_TYPE = "feedbax_test_toy_analysis"
-TOY_EVALUATION_TYPE = "feedbax_test_bundle_eval"
+TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
+TOY_EVALUATION_TYPE = "feedbax.test.bundle_eval"
 
 
 def _register_toy_analysis_recipe() -> None:
@@ -66,7 +67,7 @@ def _register_toy_analysis_recipe() -> None:
 def _register_toy_evaluation_recipe() -> None:
     def recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
         return EvaluationRecipeResult(
-            states={"value": run_spec.params["n_trials"]},
+            states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
             summary_metrics={"n_trials": run_spec.params["n_trials"]},
         )
 
@@ -332,6 +333,64 @@ def test_analysis_run_spec_rederives_missing_evaluation_states_cache(tmp_path: P
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
+def test_analysis_run_spec_prefers_durable_states_on_cache_miss(tmp_path: Path):
+    calls: list[int] = []
+
+    def recipe(run_spec: EvaluationRunSpec, _root: Path, _states_path: Path):
+        calls.append(int(run_spec.params["n_trials"]))
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
+            summary_metrics={"n_trials": run_spec.params["n_trials"]},
+        )
+
+    register_evaluation_recipe(TOY_EVALUATION_TYPE, recipe, replace=True)
+    _register_toy_analysis_recipe()
+    try:
+        parent = ParentRef(
+            kind="TrainingRunManifest",
+            id="feedbax-training-run:durable-cache-miss",
+            role="training_run",
+        )
+        eval_spec = EvaluationRunSpec(
+            evaluation_type=TOY_EVALUATION_TYPE,
+            inputs=[parent],
+            params={"n_trials": 6, "states_custody": "durable"},
+        )
+        eval_manifest, eval_path = execute_evaluation_run_spec(
+            eval_spec,
+            root=tmp_path,
+            force=True,
+        )
+        states_path = evaluation_states_cache_path(eval_manifest.id, root=tmp_path)
+        assert states_path.exists()
+        states_path.unlink()
+
+        analysis_spec = AnalysisRunSpec(
+            analysis_type=TOY_ANALYSIS_TYPE,
+            inputs=[
+                ParentRef(
+                    kind="EvaluationRunManifest",
+                    id=eval_manifest.id,
+                    role="evaluation_run",
+                    uri=str(eval_path),
+                )
+            ],
+            params={"requested_outputs": ["toy"]},
+        )
+        manifest, _path = execute_analysis_run_spec(
+            analysis_spec,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+        )
+
+        assert manifest.status == "completed"
+        assert calls == [6]
+        assert states_path.exists()
+    finally:
+        unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
 def test_analysis_run_spec_records_failed_manifest_for_unknown_requested_output(
     tmp_path: Path,
 ) -> None:
@@ -518,6 +577,49 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
         assert report_manifest.regeneration_specs[0].kind == "RegenerationSpec"
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_evaluation_stage_can_request_durable_states(
+    tmp_path: Path,
+) -> None:
+    _register_toy_evaluation_recipe()
+    try:
+        training = _write_toy_training(tmp_path, method="minimax")
+        bundle = AnalysisBundleSpec(
+            name="toy_durable_eval_stage",
+            predicate=ManifestPredicate(
+                manifest_kind="TrainingRunManifest",
+                metadata_equals={"method": "minimax"},
+            ),
+            stages=[
+                BundleStageSpec(
+                    name="eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    params={"n_trials": 3},
+                    states_custody="durable",
+                    outputs=[
+                        BundleStageOutputSpec(role="manifest"),
+                        BundleStageOutputSpec(role="evaluation_states"),
+                    ],
+                ),
+            ],
+        )
+
+        result = execute_staged_analysis_bundle(bundle, root=tmp_path)
+
+        assert result.matched_run_ids == [training.id]
+        eval_stage = result.stages[0]
+        assert eval_stage.outputs[0].status == "materialized"
+        assert eval_stage.outputs[1].status == "materialized"
+        assert eval_stage.artifact_groups["evaluation_states"][0].role == (
+            "evaluation_states"
+        )
+        eval_manifest = load_manifest(eval_stage.manifest_refs[0].uri)
+        assert eval_manifest.evaluation_spec.inline["params"]["states_custody"] == "durable"
+        assert eval_manifest.artifacts[0].role == "evaluation_states"
+    finally:
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 

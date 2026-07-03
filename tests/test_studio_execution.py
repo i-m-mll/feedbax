@@ -152,11 +152,11 @@ def studio_default_eval_recipe():
             artifacts=[artifact],
         )
 
-    register_evaluation_recipe("studio_default_eval", recipe, replace=True)
+    register_evaluation_recipe("feedbax.studio.default_eval", recipe, replace=True)
     try:
         yield
     finally:
-        unregister_evaluation_recipe("studio_default_eval")
+        unregister_evaluation_recipe("feedbax.studio.default_eval")
 
 
 @pytest.fixture
@@ -419,7 +419,7 @@ def test_materialize_studio_pipeline_requires_registered_eval_recipe(tmp_path: P
         )
     )
 
-    with pytest.raises(ValueError, match="studio_default_eval.*not registered"):
+    with pytest.raises(ValueError, match="feedbax\\.studio\\.default_eval.*not registered"):
         materialize_studio_pipeline(
             StudioPipelineMaterializationRequest(
                 workspace=training.workspace,
@@ -511,7 +511,9 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
         Path(materialized.manifest_paths["stage:analysis"]).read_text()
     )
     assert eval_manifest["status"] == "completed"
-    assert eval_manifest["evaluation_spec"]["inline"]["evaluation_type"] == "studio_default_eval"
+    assert eval_manifest["evaluation_spec"]["inline"]["evaluation_type"] == (
+        "feedbax.studio.default_eval"
+    )
     assert eval_manifest["summary_metrics"]["toy_rollouts"] == 1
     assert eval_manifest["provenance"]["parents"][0]["id"].startswith("feedbax-training-run:")
     assert "cache/states" in eval_manifest["metadata"]["cache"]["states_path"]

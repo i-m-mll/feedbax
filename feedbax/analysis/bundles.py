@@ -88,6 +88,7 @@ class BundleStageSpec(StrictModel):
     analysis_type: str | None = None
     report_type: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    states_custody: Literal["cache", "durable"] | None = None
     requested_outputs: list[str] = Field(default_factory=list)
     input_requirements: list[Any] = Field(default_factory=list)
     outputs: list[BundleStageOutputSpec] = Field(default_factory=list)
@@ -359,6 +360,12 @@ def _params_for_template(template: AnalysisSpecTemplate) -> dict[str, Any]:
 
 def _params_for_stage(stage: BundleStageSpec) -> dict[str, Any]:
     params = dict(stage.params)
+    if (
+        stage.kind == "evaluation"
+        and stage.states_custody is not None
+        and "states_custody" not in params
+    ):
+        params["states_custody"] = stage.states_custody
     if stage.requested_outputs and "requested_outputs" not in params and "outputs" not in params:
         params["requested_outputs"] = list(stage.requested_outputs)
     return params

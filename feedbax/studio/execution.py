@@ -817,7 +817,7 @@ def _materialize_eval_stage(
 
     input_refs = _collection_manifest_parents(training_collection)
     spec = EvaluationRunSpec(
-        evaluation_type="studio_default_eval",
+        evaluation_type="feedbax.studio.default_eval",
         training_run_ids=[ref.id for ref in input_refs if ref.kind == "TrainingRunManifest"],
         inputs=input_refs,
         params={
