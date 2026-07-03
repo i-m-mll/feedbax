@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 
 from feedbax.contracts.graph import ComponentSpec, DerivedDimensionRuleSpec, GraphSpec
+from feedbax.component_registry.meta import MissingPrototypeInput
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
@@ -276,6 +277,8 @@ def _registered_output_prototypes(
     node_spec: ComponentSpec,
     input_prototypes: Mapping[tuple[str, str], Any],
     component_registry: Any,
+    *,
+    strict: bool,
 ) -> dict[str, Any] | None:
     output_prototype_fn = _lookup_output_prototype_fn(component_registry, node_spec.type)
     if output_prototype_fn is None:
@@ -287,7 +290,10 @@ def _registered_output_prototypes(
     }
     params = _lookup_default_params(component_registry, node_spec.type)
     params.update(node_spec.params)
-    outputs = output_prototype_fn(params, node_inputs)
+    try:
+        outputs = output_prototype_fn(params, node_inputs)
+    except MissingPrototypeInput as exc:
+        return _defer_or_raise(str(exc), strict=strict)
     if not isinstance(outputs, Mapping):
         raise TypeError(
             f"Output prototype function for {node_spec.type!r} node {node_name!r} "
@@ -336,6 +342,7 @@ def output_prototypes_for_node(
         node_spec,
         input_prototypes,
         component_registry,
+        strict=strict,
     )
     if registered_outputs is not None:
         return registered_outputs
