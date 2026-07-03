@@ -625,7 +625,7 @@ def provider_manifest() -> ProviderManifest:
             action="execute",
             compatibility_predicates=["report spec validates and input analysis products exist"],
             mutates_state=True,
-            artifact_roles=["report", "manifest"],
+            artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.analysis_run", "feedbax.report"],
             custody_expectations=[
                 "Report bundles can carry optional Mandible artifact IDs after handoff."
@@ -652,7 +652,7 @@ def provider_manifest() -> ProviderManifest:
             output_schema="ReportManifest",
             description="Inspect report manifest lineage, specs, and artifact refs.",
             action="inspect",
-            artifact_roles=["report", "manifest"],
+            artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.report"],
         ),
         "handoff_evaluation_artifacts": CapabilitySpec(
@@ -678,7 +678,7 @@ def provider_manifest() -> ProviderManifest:
             output_schema="ReportManifest",
             description="Attach optional external artifact custody IDs to report refs.",
             action="handoff",
-            artifact_roles=["report", "manifest"],
+            artifact_roles=["report", "report_render", "manifest"],
             selected_node_kinds=["feedbax.report"],
             custody_expectations=["artifact_id fields are optional and local URIs remain valid"],
         ),
@@ -762,7 +762,13 @@ def provider_manifest() -> ProviderManifest:
                 "selected Studio stage has compatible upstream manifest collection"
             ],
             mutates_state=True,
-            artifact_roles=["evaluation_result", "analysis_table", "report", "manifest"],
+            artifact_roles=[
+                "evaluation_result",
+                "analysis_table",
+                "report",
+                "report_render",
+                "manifest",
+            ],
             selected_node_kinds=[
                 "feedbax.studio_stage.eval",
                 "feedbax.studio_stage.analysis",
@@ -813,6 +819,7 @@ def provider_manifest() -> ProviderManifest:
             "analysis_table",
             "figure",
             "report",
+            "report_render",
             "regeneration_spec",
             "analysis_data_product",
             "manifest",

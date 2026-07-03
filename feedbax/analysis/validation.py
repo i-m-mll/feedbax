@@ -8,13 +8,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec
+from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
 
 if TYPE_CHECKING:
     from feedbax.analysis.evaluation import EvaluationRecipeResult
+    from feedbax.analysis.reports import ReportRecipeResult, ResolvedReportInput
     from feedbax.analysis.specs import AnalysisRecipeResult, ResolvedAnalysisInput
 else:
     EvaluationRecipeResult = Any
+    ReportRecipeResult = Any
+    ResolvedReportInput = Any
     AnalysisRecipeResult = Any
     ResolvedAnalysisInput = Any
 
@@ -80,6 +83,19 @@ class AnalysisRecipeProtocol(Protocol):
         """Build executable analyses for one analysis run spec."""
 
 
+class ReportRecipeProtocol(Protocol):
+    """Callable protocol for registered executable ``ReportSpec`` recipes."""
+
+    def __call__(
+        self,
+        report_spec: ReportSpec,
+        root: Path,
+        inputs: Sequence[ResolvedReportInput],
+        /,
+    ) -> ReportRecipeResult:
+        """Build rendered report artifacts for one report spec."""
+
+
 def validate_evaluation_recipe(
     evaluation_type: str,
     recipe: Any,
@@ -108,6 +124,22 @@ def validate_analysis_recipe(
         recipe=recipe,
         example_args=(object(), object(), object()),
         expected="(run_spec, root, inputs)",
+    )
+    return recipe
+
+
+def validate_report_recipe(
+    report_type: str,
+    recipe: Any,
+) -> ReportRecipeProtocol:
+    """Validate and return a registered report recipe callable."""
+    validate_namespaced_type_key(report_type, field="report_type")
+    _validate_callable_shape(
+        kind="Report recipe",
+        type_key=report_type,
+        recipe=recipe,
+        example_args=(object(), object(), object()),
+        expected="(report_spec, root, inputs)",
     )
     return recipe
 

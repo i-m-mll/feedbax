@@ -28,6 +28,7 @@ from feedbax.analysis.evaluation import (
     register_evaluation_recipe,
     unregister_evaluation_recipe,
 )
+from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, REPORT_RENDER_ROLE
 from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
@@ -536,7 +537,7 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
                     name="report",
                     kind="report",
                     depends_on=["summary", "detail"],
-                    report_type="toy_report",
+                    report_type=BUNDLE_SUMMARY_REPORT_TYPE,
                     outputs=[BundleStageOutputSpec(role="report")],
                 ),
             ],
@@ -575,8 +576,100 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
         report_manifest = load_manifest(result.stages[3].manifest_refs[0].uri)
         assert report_manifest.kind == "ReportManifest"
         assert report_manifest.regeneration_specs[0].kind == "RegenerationSpec"
+        report_artifacts = {artifact.role: artifact for artifact in report_manifest.artifacts}
+        assert set(report_artifacts) == {"report", REPORT_RENDER_ROLE}
+        assert report_artifacts[REPORT_RENDER_ROLE].media_type == "text/markdown"
+        assert report_artifacts[REPORT_RENDER_ROLE].sha256 is not None
+        assert Path(report_artifacts[REPORT_RENDER_ROLE].uri or "").read_text(
+            encoding="utf-8"
+        ).startswith("# toy_staged / report")
     finally:
         unregister_analysis_recipe(TOY_ANALYSIS_TYPE)
+        unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
+
+
+def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs(
+    tmp_path: Path,
+) -> None:
+    paired_analysis_type = "feedbax.test.paired_bundle_analysis"
+    observed_inputs: list[list[tuple[str, str]]] = []
+
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs):
+        observed_inputs.append([(item.ref.kind, item.ref.id) for item in inputs])
+        eval_values = [
+            int(item.states["value"])
+            for item in inputs
+            if item.ref.kind == "EvaluationRunManifest"
+        ]
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=sum(eval_values)),
+            common_inputs={"presentation": spec.params.get("presentation", {})},
+        )
+
+    _register_toy_evaluation_recipe()
+    register_analysis_recipe(paired_analysis_type, recipe, replace=True)
+    try:
+        training = _write_toy_training(tmp_path, method="minimax")
+        bundle = AnalysisBundleSpec(
+            name="toy_paired_eval",
+            predicate=ManifestPredicate(
+                manifest_kind="TrainingRunManifest",
+                metadata_equals={"method": "minimax"},
+            ),
+            stages=[
+                BundleStageSpec(
+                    name="short_eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    params={"n_trials": 3},
+                ),
+                BundleStageSpec(
+                    name="long_eval",
+                    kind="evaluation",
+                    evaluation_type=TOY_EVALUATION_TYPE,
+                    params={"n_trials": 5},
+                ),
+                BundleStageSpec(
+                    name="comparison",
+                    kind="analysis",
+                    depends_on=["short_eval", "long_eval"],
+                    include_bundle_inputs=True,
+                    analysis_type=paired_analysis_type,
+                    requested_outputs=["toy"],
+                    params={"variant": "paired"},
+                    outputs=[BundleStageOutputSpec(role="manifest")],
+                ),
+            ],
+        )
+
+        result = execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+        )
+
+        short_eval_ref = result.stages[0].manifest_refs[0]
+        long_eval_ref = result.stages[1].manifest_refs[0]
+        comparison_stage = result.stages[2]
+
+        assert comparison_stage.inputs == [
+            ParentRef(kind="TrainingRunManifest", id=training.id, role="training_run"),
+            short_eval_ref,
+            long_eval_ref,
+        ]
+        assert observed_inputs == [
+            [
+                ("TrainingRunManifest", training.id),
+                ("EvaluationRunManifest", short_eval_ref.id),
+                ("EvaluationRunManifest", long_eval_ref.id),
+            ]
+        ]
+        analysis_manifest = load_manifest(comparison_stage.manifest_refs[0].uri)
+        assert analysis_manifest.inputs == comparison_stage.inputs
+        assert analysis_manifest.provenance.parents == comparison_stage.inputs
+    finally:
+        unregister_analysis_recipe(paired_analysis_type)
         unregister_evaluation_recipe(TOY_EVALUATION_TYPE)
 
 
