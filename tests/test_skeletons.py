@@ -22,11 +22,15 @@ except ImportError:
     # StateT is not exported from the skeleton module (pre-existing issue on develop).
     # Define a local TypeVar as a stand-in for type annotations in this test file.
     StateT = TypeVar("StateT", bound=AbstractSkeletonState)
-from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
+from feedbax.mechanics.skeleton.arm import TwoLinkArm as TwoLinkArmSkeleton, TwoLinkArmState
 from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
+
+# The TwoLinkArm round trip is precision-sensitive, so it needs x64 explicitly
+# instead of relying on leaked process-wide JAX config from other tests.
+pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
 # TODO: examine TwoLinkArm forward consistency so we can make this lower!
@@ -50,13 +54,15 @@ def inverse_cycle(
     return skeleton.effector(skeleton.inverse_kinematics(cartesian_state))
 
 
-TwoLinkArm = TwoLinkArm()
+@pytest.fixture
+def two_link_arm() -> TwoLinkArmSkeleton:
+    return TwoLinkArmSkeleton()
 
 
-def test_TwoLinkArm_forward_consistency():
+def test_TwoLinkArm_forward_consistency(two_link_arm):
 
-    skeleton_state = TwoLinkArmState()
-    skeleton_state_cycle = forward_cycle(TwoLinkArm, skeleton_state)
+    skeleton_state = TwoLinkArmState(angle=jnp.array([0.2, 0.3]))
+    skeleton_state_cycle = forward_cycle(two_link_arm, skeleton_state)
 
     if not all(jtu.tree_leaves(jt.map(
             lambda x, y: jnp.allclose(x, y, atol=ALL_CLOSE_ATOL),
@@ -68,10 +74,10 @@ def test_TwoLinkArm_forward_consistency():
         raise AssertionError(f"Not equal:\n\n{tree1_str}\n{tree2_str}")
 
 
-def test_TwoLinkArm_inverse_consistency():
+def test_TwoLinkArm_inverse_consistency(two_link_arm):
 
     effector_state = CartesianState(pos=jnp.array([0.0, 0.5]))
-    effector_state_cycle = inverse_cycle(TwoLinkArm, effector_state)
+    effector_state_cycle = inverse_cycle(two_link_arm, effector_state)
 
     eqx.tree_pprint(effector_state, short_arrays=False)
     eqx.tree_pprint(effector_state_cycle, short_arrays=False)
@@ -114,5 +120,3 @@ def test_pointmass_inverse_consistency():
         effector_state,
         effector_state_cycle,
     )))
-
-

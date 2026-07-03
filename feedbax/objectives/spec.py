@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 OBJECTIVE_SCHEMA_VERSION = "feedbax.spec.objective.v1"
 
 MetricKind = Literal["squared_l2", "l2", "l1", "squared", "absolute", "huber"]
-ReductionKind = Literal["mean", "sum", "none"]
+ReductionKind = Literal["mean", "sum", "none", "tail"]
 TimeReductionKind = Literal["mean", "sum", "none", "final"]
 MatrixPayloadKind = Literal["dense", "diagonal"]
 SelectorKind = Literal[
@@ -181,6 +181,7 @@ class ReductionSpec(ObjectiveSpecModel):
     time: TimeReductionKind = "mean"
     trial: ReductionKind = "mean"
     feature: ReductionKind = "sum"
+    tail_fraction: float = Field(default=0.1, gt=0.0, le=1.0)
     empty_mask: Literal["zero", "error"] = "zero"
 
 
@@ -319,6 +320,27 @@ class TaskTimelineSpec(ObjectiveSpecModel):
         return self
 
 
+class ObjectiveExecutionRequirements(ObjectiveSpecModel):
+    """Axis and aggregation declarations emitted by executable objective lowering."""
+
+    schema_id: str = "feedbax.spec.objective.execution_requirements"
+    schema_version: str = OBJECTIVE_SCHEMA_VERSION
+    requires_axes: list[str] = Field(default_factory=list)
+    aggregation_semantics: dict[str, ReductionKind] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_axes(self) -> "ObjectiveExecutionRequirements":
+        if len(set(self.requires_axes)) != len(self.requires_axes):
+            raise ValueError("requires_axes entries must be unique")
+        missing = sorted(set(self.aggregation_semantics) - set(self.requires_axes))
+        if missing:
+            raise ValueError(
+                "aggregation_semantics must only name required axes; "
+                f"unknown axes {missing!r}"
+            )
+        return self
+
+
 class ObjectiveSpec(ObjectiveSpecModel):
     """A durable objective made of selector-addressed terms."""
 
@@ -378,6 +400,7 @@ def objective_schema_models() -> dict[str, type[BaseModel]]:
         "MovementEpochRampScheduleSpec": MovementEpochRampScheduleSpec,
         "MetricSpec": MetricSpec,
         "ReductionSpec": ReductionSpec,
+        "ObjectiveExecutionRequirements": ObjectiveExecutionRequirements,
         "TaskTimelineSpec": TaskTimelineSpec,
         "TimelineEpochSpec": TimelineEpochSpec,
         "TimelineEventSpec": TimelineEventSpec,

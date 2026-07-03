@@ -39,6 +39,7 @@ from feedbax.runtime.model import (
 )
 from feedbax.runtime.selectors import Selection, select, tree_at
 from feedbax.runtime.state import CartesianState, State, StateBounds, StateT, clip_state
+from feedbax.runtime.state_indices import align_state_indices_like
 from feedbax.runtime.task_bindings import (
     COMPONENT_PARAMETER_ROLE,
     TaskBindingExposure,
@@ -92,6 +93,7 @@ __all__ = [
     "TaskParameterStateInitPlan",
     "Wire",
     "apply_task_parameter_state_inits",
+    "align_state_indices_like",
     "binding_spec_from_legacy_extra_inputs",
     "clip_state",
     "expose_task_bindings",

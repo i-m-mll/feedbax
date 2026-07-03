@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ParamSchema
@@ -14,6 +15,17 @@ from .templates import register_builtin_graph_templates
 
 class _Registry(Protocol):
     def register(self, meta: ComponentMeta) -> None: ...
+
+
+def force_passthrough_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the incoming force prototype for force-passthrough interventions."""
+
+    if "force" not in inputs:
+        raise ValueError("force passthrough output prototype requires input prototype 'force'")
+    return {"force": inputs["force"]}
 
 
 def register_builtin_components(registry: _Registry) -> None:
@@ -776,6 +788,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={'force': PortType(dtype='vector')},
             ),
+            output_prototype_fn=force_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -800,6 +813,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={'force': PortType(dtype='vector')},
             ),
+            output_prototype_fn=force_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -835,6 +849,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={'force': PortType(dtype='vector')},
             ),
+            output_prototype_fn=force_passthrough_output_prototype,
         )
     )
     registry.register(

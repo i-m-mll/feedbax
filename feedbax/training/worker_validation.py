@@ -217,10 +217,24 @@ def validate_per_trial_bindings(
 def _validate_reducers(
     contract: MethodContractSpec,
     axes: Mapping[str, Any],
+    objective_requirements: Any | None = None,
 ) -> None:
     requirements: list[ReducerRequirement] = []
     requirements.extend(contract.objective_reducers)
     requirements.extend(contract.worker_reducers)
+    if objective_requirements is not None:
+        objective_axes = _field(objective_requirements, "requires_axes", ())
+        objective_semantics = _field(objective_requirements, "aggregation_semantics", {})
+        for axis in objective_axes:
+            semantic = objective_semantics.get(axis, "none")
+            if semantic != "none":
+                requirements.append(
+                    ReducerRequirement(
+                        axis=axis,
+                        owner="objective",
+                        path=f"/objective_execution_requirements/aggregation_semantics/{axis}",
+                    )
+                )
     for index, axis in enumerate(contract.axes):
         if axis.reducer is not None:
             requirements.append(
@@ -247,6 +261,24 @@ def _validate_reducers(
                 f"second={requirement.owner!r}",
             )
         by_axis[requirement.axis] = requirement
+
+    if objective_requirements is not None:
+        objective_semantics = _field(objective_requirements, "aggregation_semantics", {})
+        expected_semantics = _metadata(contract).get("required_objective_aggregation", {})
+        if isinstance(expected_semantics, Mapping):
+            for axis, expected in expected_semantics.items():
+                if axis not in axes:
+                    raise WorkerContractValidationError(
+                        f"/metadata/required_objective_aggregation/{axis}",
+                        f"required objective aggregation references unknown axis {axis!r}",
+                    )
+                actual = objective_semantics.get(axis)
+                if actual != expected:
+                    raise WorkerContractValidationError(
+                        f"/objective_execution_requirements/aggregation_semantics/{axis}",
+                        "objective aggregation semantic mismatch: "
+                        f"expected {expected!r}, found {actual!r}",
+                    )
 
 
 def _validate_dry_run(
@@ -294,6 +326,7 @@ def validate_worker_contract(
     dry_run_shape_check: Callable[[MethodContractSpec], DryRunShapeCheckResult | bool | None] | None = None,
     update_kernels: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
     task_binding_spec: Any | None = None,
+    objective_requirements: Any | None = None,
 ) -> EffectivePhaseSpec:
     """Validate a method declaration for executability before launch."""
     env = environment or WorkerExecutabilityEnvironment()
@@ -593,7 +626,7 @@ def validate_worker_contract(
                     f"{barrier.resume_coordinate.completed_barrier!r}",
                 )
 
-    _validate_reducers(contract, axes)
+    _validate_reducers(contract, axes, objective_requirements)
     _validate_dry_run(contract, environment=env, dry_run_shape_check=dry_run_shape_check)
 
     if task_binding_spec is not None:

@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.contracts.migrations import migrate_studio_workspace_spec
 from feedbax.contracts.manifest import SCHEMA_VERSION, utc_now
 from feedbax.studio.protocol import (
@@ -23,38 +24,21 @@ from feedbax.contracts.graphs.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
+from feedbax.contracts.graphs.prototypes import (
+    DerivedDimensionConflict,
+    DerivedDimensionError,
+    normalize_derived_dimensions,
+    prototypes_from_task_bindings,
+)
 from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_temporality
 from feedbax.contracts.component import PortType
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec, StudioWorkspaceSpec
-
-SchemaOrigin = Literal[
-    "declared",
-    "inferred_static",
-    "runtime_sample",
-    "curated_fallback",
-    "unknown",
-]
 
 
 class StudioSchemaModel(BaseModel):
     """Base model for static Studio schema records."""
 
     model_config = ConfigDict(extra="forbid")
-
-
-class ValueSchema(StudioSchemaModel):
-    """Provider-owned value type metadata for selectable Studio surfaces."""
-
-    id: str
-    label: str
-    kind: str
-    dtype: Optional[str] = None
-    shape: Optional[list[Any]] = None
-    rank: Optional[int] = None
-    units: Optional[str] = None
-    frame: Optional[str] = None
-    origin: SchemaOrigin = "unknown"
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PortSchema(StudioSchemaModel):
@@ -285,6 +269,10 @@ def enumerate_studio_schema_registry(
             authoring_graph,
             task_binding_spec,
         )
+        schema_graph = _normalize_derived_dimensions_for_schema(
+            schema_graph,
+            task_binding_spec,
+        )
         registry.ports = _enumerate_graph_ports(schema_graph, task_binding_spec)
         registry.selector_targets.extend(_port_selector_targets(registry.ports))
         registry.selector_targets.extend(_graph_structural_selector_targets(schema_graph))
@@ -468,8 +456,72 @@ def validate_graph_connection_schema(
         )
 
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
+    issues.extend(_derived_dimension_issues(graph, task_binding_spec, base_path))
     issues.extend(_instant_cycle_issues(graph, base_path))
     return issues
+
+
+def _normalize_derived_dimensions_for_schema(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+) -> GraphSpec:
+    if not graph.derived_dimensions and not graph.subgraphs:
+        return graph
+    try:
+        return normalize_derived_dimensions(
+            graph,
+            prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+        )
+    except DerivedDimensionError:
+        return graph
+
+
+def _derived_dimension_issues(
+    graph: GraphSpec,
+    task_binding_spec: Optional[StudioTaskBindingSpec],
+    base_path: str,
+) -> list[SchemaValidationIssue]:
+    if not graph.derived_dimensions and not graph.subgraphs:
+        return []
+    try:
+        normalize_derived_dimensions(
+            graph,
+            prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+        )
+    except DerivedDimensionConflict as exc:
+        return [
+            SchemaValidationIssue(
+                type="derived_dimension_conflict",
+                message=str(exc),
+                location={
+                    "path": f"{base_path}/derived_dimensions/{_derived_dimension_index(graph, exc)}",
+                    "node": exc.rule.node,
+                    "param": exc.rule.param,
+                    "declared": str(exc.declared),
+                    "derived": str(exc.derived),
+                },
+            )
+        ]
+    except DerivedDimensionError as exc:
+        return [
+            SchemaValidationIssue(
+                type="derived_dimension_unresolved",
+                message=str(exc),
+                location={
+                    "path": f"{base_path}/derived_dimensions/{_derived_dimension_index(graph, exc)}",
+                    "node": exc.rule.node,
+                    "param": exc.rule.param,
+                },
+            )
+        ]
+    return []
+
+
+def _derived_dimension_index(graph: GraphSpec, exc: DerivedDimensionError) -> int:
+    for index, rule in enumerate(graph.derived_dimensions):
+        if rule == exc.rule:
+            return index
+    return 0
 
 
 def _mux_connected_input_issues(

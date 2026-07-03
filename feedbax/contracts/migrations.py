@@ -8,12 +8,21 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.graph import (
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
+    GRAPH_SPEC_SCHEMA_VERSION_V2,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     GraphSpec,
 )
+from feedbax.contracts.checkpoints import (
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+)
 from feedbax.contracts.manifest import (
+    ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     ArtifactMigrationRecord,
     REGENERATION_SPEC_SCHEMA_ID,
     REGENERATION_SPEC_SCHEMA_VERSION,
@@ -627,6 +636,13 @@ def _migrate_legacy_graph_spec_payload(payload: dict[str, Any]) -> dict[str, Any
     return migrated
 
 
+def _migrate_graph_spec_v2_to_v3_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
+    migrated.setdefault("derived_dimensions", [])
+    return migrated
+
+
 def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if "exposed_outputs" in migrated and "exposed_data" not in migrated:
@@ -1071,7 +1087,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Canvas-authored executable graph specification.",
             stance="migrate",
-            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION,),
+            supported_old_versions=(LEGACY_GRAPH_SPEC_SCHEMA_VERSION, GRAPH_SPEC_SCHEMA_VERSION_V2),
             rejected_old_versions=(),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
         ),
@@ -1138,6 +1154,26 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             required_tests=(
                 "tests/test_training_run_spec.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "TrainingCheckpointTransactionManifest",
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID,
+            TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.checkpoints",
+            emitted_by=("feedbax.training.checkpoint_custody",),
+            consumed_by=(
+                "Feedbax training resume loaders",
+                "cloud-backed training workers",
+                "downstream checkpoint adoption lanes",
+            ),
+            description=(
+                "Atomic multi-slot training checkpoint transaction manifest with "
+                "run-contract binding, slot ABI fingerprints, and content integrity."
+            ),
+            required_tests=(
+                "tests/test_checkpoint_custody.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -1215,6 +1251,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Declarative analysis run request.",
         ),
         _family(
+            "AnalysisDataProductRequirement",
+            ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
+            ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("AnalysisRunSpec.input_requirements", "provider_manifest.schemas"),
+            consumed_by=("feedbax.integrations.provider.validate_analysis_spec",),
+            description="Typed analysis data-product input requirement.",
+            required_tests=(
+                "tests/test_analysis_data_products.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
             "AnalysisBundleSpec",
             "feedbax.spec.analysis_bundle",
             "feedbax.spec.analysis_bundle.v2",
@@ -1280,6 +1329,22 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Method-neutral worker axis/state/phase execution declaration.",
             required_tests=(
                 "tests/test_worker_contract.py",
+                "tests/test_structured_spec_migrations.py",
+            ),
+        ),
+        _family(
+            "ObjectiveExecutionRequirements",
+            "feedbax.spec.objective.execution_requirements",
+            "feedbax.spec.objective.v1",
+            owner_module="feedbax.objective_spec",
+            emitted_by=("feedbax.objectives.service", "provider_manifest.schemas"),
+            consumed_by=("feedbax.training.worker_validation",),
+            description=(
+                "Axis and aggregation declaration emitted by objective lowering for "
+                "worker reducer validation."
+            ),
+            required_tests=(
+                "tests/test_loss_schedule_specs.py",
                 "tests/test_structured_spec_migrations.py",
             ),
         ),
@@ -1382,17 +1447,42 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "Durable checkpoint-selection manifest.",
         ),
         ("AnalysisRunManifest", "feedbax.manifest.analysis_run", "Durable analysis-run manifest."),
+        (
+            "AnalysisDataProduct",
+            ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
+            "Typed data product emitted from an analysis-run manifest.",
+        ),
         ("ReportManifest", "feedbax.manifest.report", "Durable report manifest."),
     ):
         families.append(
             _family(
                 kind,
                 schema_id,
-                MANIFEST_SCHEMA_VERSION,
+                (
+                    ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
+                    if kind == "AnalysisDataProduct"
+                    else MANIFEST_SCHEMA_VERSION
+                ),
                 owner_module="feedbax.contracts.manifest",
-                emitted_by=manifest_emitters,
-                consumed_by=("manifest load/write", "provider handoff"),
+                emitted_by=(
+                    ("AnalysisRunManifest.produced_data", "provider_manifest.schemas")
+                    if kind == "AnalysisDataProduct"
+                    else manifest_emitters
+                ),
+                consumed_by=(
+                    ("feedbax.integrations.provider.validate_analysis_spec",)
+                    if kind == "AnalysisDataProduct"
+                    else ("manifest load/write", "provider handoff")
+                ),
                 description=description,
+                required_tests=(
+                    (
+                        "tests/test_analysis_data_products.py",
+                        "tests/test_structured_spec_migrations.py",
+                    )
+                    if kind == "AnalysisDataProduct"
+                    else ("tests/test_structured_spec_migrations.py",)
+                ),
             )
         )
 
@@ -1633,7 +1723,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 kind,
                 schema_id,
                 MANIFEST_SCHEMA_VERSION,
-                owner_module="feedbax.studio.schema",
+                owner_module=(
+                    "feedbax.contracts.value_schema"
+                    if kind == "ValueSchema"
+                    else "feedbax.studio.schema"
+                ),
                 emitted_by=studio_schema_emitters,
                 consumed_by=("Studio frontend", "provider HTTP API"),
                 durable=kind not in {
@@ -1752,13 +1846,23 @@ default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
         migration_id="graph-spec-legacy-v1-to-v2",
         migrate=_migrate_legacy_graph_spec_payload,
         description=(
             "Promote legacy GraphSpec payloads to the explicit schema identity and "
             "rename built-in node types and Network input ports."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V2,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v2-to-v3-derived-dimensions",
+        migrate=_migrate_graph_spec_v2_to_v3_payload,
+        description="Add explicit derived_dimensions rules to GraphSpec.",
     ),
 )
 default_spec_registry.register_migration(

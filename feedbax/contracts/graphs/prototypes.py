@@ -7,12 +7,33 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graph import ComponentSpec, DerivedDimensionRuleSpec, GraphSpec
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 
 STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
+
+
+class DerivedDimensionError(ValueError):
+    """Raised when a GraphSpec derived-dimension rule cannot be resolved."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rule: DerivedDimensionRuleSpec,
+        declared: Any = None,
+        derived: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.rule = rule
+        self.declared = declared
+        self.derived = derived
+
+
+class DerivedDimensionConflict(DerivedDimensionError):
+    """Raised when a declared builder dimension contradicts the derived value."""
 
 
 def array_proto_from_shape(shape: Any) -> jax.Array | None:
@@ -613,6 +634,115 @@ def normalize_stateful_prototypes(
                 nested_inputs,
                 component_registry=component_registry,
             )
+
+    return spec.model_copy(
+        update={
+            "nodes": nodes,
+            "subgraphs": normalized_subgraphs or None,
+        }
+    )
+
+
+def normalize_derived_dimensions(
+    spec: GraphSpec,
+    input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+    component_registry: Any = None,
+) -> GraphSpec:
+    """Materialize declared derived builder dimensions into node parameters.
+
+    Rules read from the same prototype propagation path used by stateful shape
+    normalization. Missing parameters are filled from resolved graph structure;
+    explicit mismatches raise instead of being overwritten.
+    """
+
+    subgraphs = dict(spec.subgraphs or {})
+    node_inputs = infer_node_input_prototypes(
+        spec,
+        input_prototypes or {},
+        subgraphs,
+        component_registry=component_registry,
+    )
+    nodes = dict(spec.nodes)
+
+    for index, rule in enumerate(spec.derived_dimensions):
+        node = nodes.get(rule.node)
+        if node is None:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} targets missing node {rule.node!r}",
+                rule=rule,
+            )
+        if rule.source != "input_port":
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} uses unsupported source {rule.source!r}",
+                rule=rule,
+            )
+        if rule.port not in node.input_ports:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} targets missing input port "
+                f"{rule.node}.{rule.port}",
+                rule=rule,
+            )
+
+        shape = shape_from_proto(node_inputs.get((rule.node, rule.port)))
+        if shape is None:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} for {rule.node}.{rule.param} could not "
+                f"resolve a serializable prototype for input port {rule.port!r}",
+                rule=rule,
+            )
+        axis = rule.axis if rule.axis >= 0 else len(shape) + rule.axis
+        if axis < 0 or axis >= len(shape):
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} for {rule.node}.{rule.param} axis "
+                f"{rule.axis} is out of range for resolved shape {shape!r}",
+                rule=rule,
+            )
+        derived = int(shape[axis])
+        if derived <= 0:
+            raise DerivedDimensionError(
+                f"Derived dimension rule {index} for {rule.node}.{rule.param} resolved "
+                f"non-positive dimension {derived}",
+                rule=rule,
+                derived=derived,
+            )
+
+        params = dict(node.params)
+        if rule.param in params:
+            declared = params[rule.param]
+            if declared is None:
+                raise DerivedDimensionConflict(
+                    f"Derived dimension conflict for {rule.node}.{rule.param}: declared "
+                    f"null but derived {derived} from {rule.node}.{rule.port} shape {shape!r}; "
+                    "omit the parameter when using derived_dimensions",
+                    rule=rule,
+                    declared=declared,
+                    derived=derived,
+                )
+            if not isinstance(declared, bool) and isinstance(declared, int) and declared == derived:
+                continue
+            raise DerivedDimensionConflict(
+                f"Derived dimension conflict for {rule.node}.{rule.param}: declared "
+                f"{declared!r} but derived {derived} from {rule.node}.{rule.port} "
+                f"shape {shape!r}",
+                rule=rule,
+                declared=declared,
+                derived=derived,
+            )
+        params[rule.param] = derived
+        nodes[rule.node] = node.model_copy(update={"params": params})
+
+    normalized_subgraphs: dict[str, GraphSpec] = {}
+    for node_name, subgraph in subgraphs.items():
+        nested_inputs = {
+            (node, port): node_inputs[(node_name, graph_port)]
+            for graph_port, (node, port) in subgraph.input_bindings.items()
+            if (node_name, graph_port) in node_inputs
+        }
+        normalized_subgraphs[node_name] = normalize_derived_dimensions(
+            subgraph,
+            nested_inputs,
+            component_registry=component_registry,
+        )
 
     return spec.model_copy(
         update={

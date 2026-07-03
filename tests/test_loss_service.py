@@ -1,15 +1,42 @@
 """Tests for the loss service."""
 
+from types import SimpleNamespace
+
+import jax.numpy as jnp
 import pytest
-from feedbax.objectives.service import LossService
+
 from feedbax.contracts.graph import (
-    GraphSpec,
-    ComponentSpec,
-    WireSpec,
     BarnacleSpec,
+    ComponentSpec,
+    GraphSpec,
     TapSpec,
+    WireSpec,
 )
-from feedbax.contracts.training import LossTermSpec, TimeAggregationSpec
+from feedbax.contracts.training import (
+    LossTermSpec,
+    TimeAggregationSpec,
+    standard_supervised_method_contract,
+)
+from feedbax.contracts.worker import AxisReducerSpec, toy_adaptive_curriculum_method_contract
+from feedbax.objectives.service import LossService, ObjectiveLoweringError
+from feedbax.objectives.spec import (
+    EpochMaskSpec,
+    MatrixPayloadSpec,
+    MatrixQuadraticLossSpec,
+    MovementEpochRampScheduleSpec,
+    ObjectiveSpec,
+    PowerLawScheduleSpec,
+    ReductionSpec,
+    SelectorAddressSpec,
+    TargetStateLossSpec,
+    TargetValueSpec,
+    TaskTimelineSpec,
+    TimelineEpochSpec,
+)
+from feedbax.training.worker_validation import (
+    WorkerContractValidationError,
+    validate_worker_contract,
+)
 
 
 @pytest.fixture
@@ -378,3 +405,218 @@ class TestSpecToLossConfig:
         assert "position" in config["children"]
         assert "velocity" in config["children"]
         assert config["children"]["velocity"]["weight"] == 0.5
+
+
+def _runtime_state() -> SimpleNamespace:
+    return SimpleNamespace(
+        output=jnp.asarray(
+            [
+                [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                [[2.0, 1.0], [4.0, 3.0], [6.0, 5.0]],
+            ]
+        ),
+        control=jnp.asarray(
+            [
+                [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0]],
+                [[-1.0, 1.0], [-2.0, 2.0], [-3.0, 3.0]],
+            ]
+        ),
+    )
+
+
+def _timeline() -> TaskTimelineSpec:
+    return TaskTimelineSpec(
+        n_steps=3,
+        epochs=[
+            TimelineEpochSpec(name="hold", index=0, length_range=(1, 1)),
+            TimelineEpochSpec(name="movement", index=1, length_range=(2, 2)),
+        ],
+    )
+
+
+def _state_selector(selector: str) -> SelectorAddressSpec:
+    return SelectorAddressSpec(
+        selector=selector,
+        kind="state",
+        temporal_axis="time",
+        feature_axis="coordinate",
+    )
+
+
+class TestExecutableLowering:
+    def test_loss_term_lowers_to_executable_loss_matching_hand_reduction(self) -> None:
+        spec = LossTermSpec(
+            type="target_state",
+            label="output",
+            selector="state.output",
+            target_value=[1.0, 0.0],
+            norm="squared_l2",
+            time_agg=TimeAggregationSpec(mode="mean"),
+        )
+
+        lowered = LossService().lower_loss_term_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
+        expected = jnp.mean(jnp.mean(jnp.sum(jnp.square(diff), axis=-1), axis=1))
+        assert jnp.allclose(value, expected)
+        assert lowered.requirements.requires_axes == ["batch"]
+        assert lowered.requirements.aggregation_semantics == {"batch": "mean"}
+
+    def test_objective_spec_lowers_matrix_mask_and_schedule_terms(self) -> None:
+        spec = ObjectiveSpec(
+            timeline=_timeline(),
+            terms=[
+                TargetStateLossSpec(
+                    label="masked_output",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[1.0, 0.0]),
+                    mask=EpochMaskSpec(epochs=["movement"]),
+                    schedule=MovementEpochRampScheduleSpec(
+                        anchor_epoch="movement",
+                        duration_steps=2,
+                        start_value=0.0,
+                        end_value=1.0,
+                    ),
+                    reduction=ReductionSpec(time="sum", trial="mean", feature="sum"),
+                ),
+                MatrixQuadraticLossSpec(
+                    label="control_cost",
+                    selector=_state_selector("state.control"),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                    matrix=MatrixPayloadSpec(kind="diagonal", value=[1.0, 2.0]),
+                    reduction=ReductionSpec(time="sum", trial="mean", feature="sum"),
+                    weight=0.5,
+                ),
+            ],
+        )
+
+        lowered = LossService().lower_objective_spec(spec)
+        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        output_diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
+        ramp = jnp.asarray([0.0, 0.0, 0.5])
+        mask = jnp.asarray([0.0, 1.0, 1.0])
+        output_expected = jnp.mean(
+            jnp.sum(jnp.sum(jnp.square(output_diff), axis=-1) * ramp * mask, axis=1)
+        )
+        control_expected = jnp.mean(
+            jnp.sum(
+                jnp.sum(jnp.square(_runtime_state().control) * jnp.asarray([1.0, 2.0]), axis=-1),
+                axis=1,
+            )
+        )
+        assert jnp.allclose(value, output_expected + 0.5 * control_expected)
+
+    def test_tail_reduction_emits_risk_axis_requirement(self) -> None:
+        spec = ObjectiveSpec(
+            terms=[
+                TargetStateLossSpec(
+                    label="tail_output",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                    reduction=ReductionSpec(time="sum", trial="tail", feature="sum"),
+                )
+            ],
+        )
+
+        lowered = LossService().lower_objective_spec(spec, trial_axis="realization")
+
+        assert lowered.requirements.requires_axes == ["realization"]
+        assert lowered.requirements.aggregation_semantics == {"realization": "tail"}
+
+    def test_invalid_selector_error_names_path(self) -> None:
+        spec = LossTermSpec(type="target_state", label="bad", selector="probe:missing")
+
+        with pytest.raises(ObjectiveLoweringError) as excinfo:
+            LossService().lower_loss_term_spec(spec, graph=GraphSpec())
+
+        assert "/loss/selector" in str(excinfo.value)
+        assert "probe:missing" in str(excinfo.value)
+
+    def test_unknown_loss_term_error_names_path(self) -> None:
+        spec = LossTermSpec(type="mystery", label="bad", selector="state.output")
+
+        with pytest.raises(ObjectiveLoweringError, match="/loss/type"):
+            LossService().lower_loss_term_spec(spec)
+
+    def test_matrix_shape_error_names_offending_path(self) -> None:
+        spec = LossTermSpec(
+            type="MatrixQuadraticLoss",
+            label="bad_matrix",
+            selector="state.output",
+            matrix=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            matrix_kind="dense",
+        )
+        lowered = LossService().lower_loss_term_spec(spec)
+
+        with pytest.raises(ObjectiveLoweringError) as excinfo:
+            lowered.loss(_runtime_state(), SimpleNamespace(), None).total
+
+        assert "/loss/matrix" in str(excinfo.value)
+        assert "feature dimension" in str(excinfo.value)
+
+    def test_unsupported_epoch_schedule_error_names_path(self) -> None:
+        spec = ObjectiveSpec(
+            timeline=_timeline(),
+            terms=[
+                TargetStateLossSpec(
+                    label="bad_schedule",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                    schedule=PowerLawScheduleSpec(
+                        exponent=2.0,
+                        window="epoch",
+                        epoch="movement",
+                    ),
+                )
+            ],
+        )
+
+        with pytest.raises(ObjectiveLoweringError, match="/objective/terms/0/schedule"):
+            LossService().lower_objective_spec(spec)
+
+    def test_worker_validation_rejects_required_tail_when_objective_is_mean(self) -> None:
+        spec = ObjectiveSpec(
+            terms=[
+                TargetStateLossSpec(
+                    label="mean_output",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                    reduction=ReductionSpec(time="sum", trial="mean", feature="sum"),
+                )
+            ],
+        )
+        lowered = LossService().lower_objective_spec(spec, trial_axis="realization")
+        contract = toy_adaptive_curriculum_method_contract()
+        contract.metadata["required_objective_aggregation"] = {"realization": "tail"}
+
+        with pytest.raises(WorkerContractValidationError) as excinfo:
+            validate_worker_contract(contract, objective_requirements=lowered.requirements)
+
+        assert "/objective_execution_requirements/aggregation_semantics/realization" in str(
+            excinfo.value
+        )
+        assert "expected 'tail', found 'mean'" in str(excinfo.value)
+
+    def test_worker_validation_rejects_objective_and_worker_double_reducer(self) -> None:
+        spec = ObjectiveSpec(
+            terms=[
+                TargetStateLossSpec(
+                    label="mean_output",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                    reduction=ReductionSpec(time="sum", trial="mean", feature="sum"),
+                )
+            ],
+        )
+        lowered = LossService().lower_objective_spec(spec)
+        contract = standard_supervised_method_contract()
+        contract.axes[0].reducer = AxisReducerSpec(
+            owner="worker",
+            reduction="mean",
+            path="/axes/0/reducer",
+        )
+
+        with pytest.raises(WorkerContractValidationError, match="more than one reducer"):
+            validate_worker_contract(contract, objective_requirements=lowered.requirements)
