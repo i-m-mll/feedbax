@@ -688,7 +688,14 @@ def provider_manifest() -> ProviderManifest:
             description="Prepare a deterministic local, SSH, RunPod, or Modal execution plan.",
             action="validate",
             compatibility_predicates=["execution spec is provider-owned and backend-supported"],
-            artifact_roles=["execution_plan"],
+            artifact_roles=[
+                "execution_plan",
+                "execution_log",
+                "training_run_spec",
+                "training_run_manifest",
+                "tracked_spec",
+                "bulk_output",
+            ],
         ),
         "run_local_execution": CapabilitySpec(
             input_schema="ExecutionSpec",
@@ -699,7 +706,14 @@ def provider_manifest() -> ProviderManifest:
             compatibility_predicates=["execution spec backend is local"],
             mutates_state=True,
             may_launch_compute=True,
-            artifact_roles=["manifest", "execution_log"],
+            artifact_roles=[
+                "execution_plan",
+                "execution_log",
+                "execution_stdout",
+                "execution_stderr",
+                "manifest",
+                "training_run_manifest",
+            ],
             custody_expectations=[
                 "Local outputs remain usable without Mandible.",
                 "Mandible may ingest emitted manifest and artifacts later.",

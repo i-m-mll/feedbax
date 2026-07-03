@@ -297,6 +297,43 @@ def test_provider_manifest_exposes_phase_one_capabilities() -> None:
     assert "RuntimeIntrospectionOptions" in manifest.schemas
     assert "RuntimeSampleLeafSchema" in manifest.schemas
     assert "MandibleManifestMapping" in manifest.schemas
+    assert "ExecutionPlan" in manifest.schemas
+    assert "LocalExecutionResult" in manifest.schemas
+
+
+def test_provider_manifest_exports_governed_execution_artifact_refs() -> None:
+    manifest = provider_manifest()
+    plan_schema = manifest.schemas["ExecutionPlan"]
+    result_schema = manifest.schemas["LocalExecutionResult"]
+
+    assert (
+        plan_schema["properties"]["artifact_routes"]["items"]["$ref"]
+        == "#/$defs/ArtifactRef"
+    )
+    for field in ("stdout", "stderr", "manifest", "execution_plan"):
+        assert result_schema["properties"][field]["$ref"] == "#/$defs/ArtifactRef"
+    assert (
+        result_schema["properties"]["produced_artifacts"]["items"]["$ref"]
+        == "#/$defs/ArtifactRef"
+    )
+
+    prepare_roles = set(manifest.capabilities["prepare_execution_plan"].artifact_roles)
+    assert {
+        "execution_plan",
+        "execution_log",
+        "training_run_spec",
+        "training_run_manifest",
+        "tracked_spec",
+        "bulk_output",
+    }.issubset(prepare_roles)
+    local_roles = set(manifest.capabilities["run_local_execution"].artifact_roles)
+    assert {
+        "execution_plan",
+        "execution_log",
+        "execution_stdout",
+        "execution_stderr",
+        "training_run_manifest",
+    }.issubset(local_roles)
 
 
 def test_provider_manifest_exposes_eval_analysis_report_action_depth() -> None:
